@@ -2,6 +2,7 @@ package builtin_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -147,5 +148,35 @@ func TestASwitchedOffOfficerIsNotFedButItsScheduleAdvances(t *testing.T) {
 		if _, err := w.store.PutSchedule(ctxOp(), 1, backendtest.OfficerA, builtin.Schedule{Name: "bad", Cron: bad, Kind: "k", SubjectKey: "s", Enabled: true}, put); err == nil {
 			t.Fatalf("cron %q was accepted", bad)
 		}
+	}
+}
+
+// TestAScheduleWhoseItemCannotBeInsertedNeitherSticksNorStarvesOthers: a
+// per-fire subject too long for an item is refused at put; and a fire whose
+// insert the store refuses anyway (a subject made too long behind the API's
+// back) still advances its schedule, so a schedule due right after it fires
+// in the same pass even with a batch of one.
+func TestAScheduleWhoseItemCannotBeInsertedNeitherSticksNorStarvesOthers(t *testing.T) {
+	w := newPGWorld(t, false)
+	put := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	long := strings.Repeat("s", 490)
+	if _, err := w.store.PutSchedule(ctxOp(), 1, backendtest.OfficerA, builtin.Schedule{Name: "long", Cron: "0 * * * *", Kind: "k",
+		SubjectKey: long, SkipIfLive: false, Enabled: true}, put); err == nil || !strings.Contains(err.Error(), "at most 482") {
+		t.Fatalf("a per-fire subject that cannot fit: %v, want a refusal naming 482", err)
+	}
+	putSchedule(t, w, builtin.Schedule{Name: "bad", Cron: "0 * * * *", Kind: "k", SubjectKey: "short", SkipIfLive: false, Enabled: true}, put)
+	putSchedule(t, w, builtin.Schedule{Name: "good", Cron: "2 1 * * *", Kind: "k", SubjectKey: "good", SkipIfLive: true, Enabled: true}, put)
+	if _, err := w.store.Pool().Exec(ctxOp(), `UPDATE officer_schedules SET subject_key = $1 WHERE name = 'bad'`, long); err != nil {
+		t.Fatal(err)
+	}
+	sys := authz.System(context.Background())
+	at := time.Date(2026, 11, 12, 1, 5, 0, 0, time.UTC)
+	f, err := w.store.FireDue(sys, at, 1)
+	if err != nil || len(f) != 1 || f[0].Schedule != "bad" || f[0].Item != 0 || !strings.HasPrefix(f[0].Skipped, "failed: ") {
+		t.Fatalf("the refused fire: %+v (%v), want it recorded as failed", f, err)
+	}
+	f, err = w.store.FireDue(sys, at, 1)
+	if err != nil || len(f) != 1 || f[0].Schedule != "good" || f[0].Item == 0 {
+		t.Fatalf("the next pass with a batch of one: %+v (%v), want the good schedule fired (the failed one advanced)", f, err)
 	}
 }

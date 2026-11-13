@@ -319,6 +319,9 @@ func TestTheAdminAPIManagesSchedules(t *testing.T) {
 	if err != nil || len(fires) != 1 || fires[0].Item == 0 {
 		t.Fatalf("the scheduler at the next fire: %+v (%v), want one item", fires, err)
 	}
+	if code, _ := adminCall(t, h, "GET", "/api/officers/defs/nosuch:x/schedules", ""); code != http.StatusNotFound {
+		t.Fatalf("schedules of an undefined officer: %d, want 404", code)
+	}
 	if code, out := adminCall(t, h, "GET", base, ""); code != 200 || len(out["schedules"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, out)
 	}

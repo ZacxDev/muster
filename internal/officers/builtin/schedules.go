@@ -58,6 +58,13 @@ func (s *Store) PutSchedule(ctx context.Context, owner int64, officer string, sc
 	if err != nil {
 		return Schedule{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	// A per-fire subject is the subject plus perFireSuffixLen characters, and
+	// an item's subject is at most maxSubjectLen (0118's CHECK): refused here,
+	// at put, rather than as a fire that can never insert its item.
+	if !sc.SkipIfLive && len(sc.SubjectKey)+perFireSuffixLen > maxSubjectLen {
+		return Schedule{}, fmt.Errorf("%w: with skip_if_live off each fire's subject is the subject plus %d characters, so the subject must be at most %d",
+			ErrInvalid, perFireSuffixLen, maxSubjectLen-perFireSuffixLen)
+	}
 	next, ok := c.Next(now)
 	if !ok {
 		return Schedule{}, fmt.Errorf("%w: cron %q never comes due", ErrInvalid, sc.Cron)
@@ -93,6 +100,13 @@ func (s *Store) PutSchedule(ctx context.Context, owner int64, officer string, sc
 	}
 	return Schedule{}, ErrNotFound
 }
+
+// maxSubjectLen is an item's (and a schedule's) subject bound (0118's CHECK);
+// perFireSuffixLen is what a per-fire subject adds: "@2006-01-02T15:04Z".
+const (
+	maxSubjectLen    = 500
+	perFireSuffixLen = len("@2006-01-02T15:04Z")
+)
 
 // ListSchedules is owner's officer's schedules, by name.
 func (s *Store) ListSchedules(ctx context.Context, owner int64, officer string) ([]Schedule, error) {
@@ -131,8 +145,9 @@ type Fire struct {
 	// Item is the item enqueued (0: none).
 	Item int64
 	// Skipped says why nothing was enqueued: "live" (an item of that subject
-	// is still live), "switched off", "no next fire" (the schedule stops); ""
-	// when Item is set.
+	// is still live), "switched off", "failed: <why>" (the store refused the
+	// item; the schedule advanced anyway), "no next fire" (the schedule
+	// stops); "" when Item is set.
 	Skipped string
 }
 
@@ -216,6 +231,14 @@ func (s *Store) fireOne(ctx context.Context, d dueSchedule, now time.Time) (Fire
 		if !skipIfLive {
 			subject = subject + "@" + d.nextFireAt.UTC().Format("2006-01-02T15:04Z")
 		}
+		// 🔴 A FIRE WHOSE ITEM CANNOT BE INSERTED STILL ADVANCES. The insert
+		// runs under a savepoint: refused (a row the store's CHECKs reject),
+		// it is rolled back alone and the advance commits, so the schedule
+		// is not left due — at the head of every batch, retried for ever and
+		// holding every other schedule out of FireDue's limit.
+		if _, err := tx.Exec(ctx, `SAVEPOINT fire_item`); err != nil {
+			return f, false, err
+		}
 		err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
 			ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
@@ -224,7 +247,10 @@ func (s *Store) fireOne(ctx context.Context, d dueSchedule, now time.Time) (Fire
 		case errors.Is(err, pgx.ErrNoRows):
 			f.Skipped = "live"
 		case err != nil:
-			return f, false, err
+			if _, rerr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT fire_item`); rerr != nil {
+				return f, false, rerr
+			}
+			f.Item, f.Skipped = 0, "failed: "+err.Error()
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

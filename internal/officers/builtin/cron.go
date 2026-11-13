@@ -10,8 +10,10 @@ import (
 // Cron is a parsed five-field cron expression — minute hour day-of-month
 // month day-of-week — evaluated in UTC. Each field takes `*`, a number, a
 // range `a-b`, a list `a,b,c` and a step `*/n` or `a-b/n`; day-of-week is
-// 0–6 with 0 (or 7) Sunday. As in Vixie cron, when BOTH day fields are
-// restricted a day matches if EITHER does. No names (MON, JAN), no `@daily`
+// 0–6 with 0 (or 7) Sunday. When BOTH day fields are restricted a day
+// matches if EITHER does; a field counts as unrestricted only when it is a
+// bare `*` — so `*/2` restricts (robfig/cron's rule; Vixie cron treats any
+// field starting with `*` as unrestricted). No names (MON, JAN), no `@daily`
 // macros, no seconds: 0118's CHECK already holds the column to five fields.
 type Cron struct {
 	min, hour, dom, month, dow uint64 // bit i set: value i allowed

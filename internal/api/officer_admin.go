@@ -326,6 +326,11 @@ func (s *Server) handleOfficerItemResolve(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleOfficerSchedules(w http.ResponseWriter, r *http.Request) {
+	// An officer the caller does not define is a 404, as on PUT and DELETE.
+	if _, err := s.officerStore.GetDef(r.Context(), adminOwner(r), r.PathValue("officer")); err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	}
 	list, err := s.officerStore.ListSchedules(r.Context(), adminOwner(r), r.PathValue("officer"))
 	if err != nil {
 		s.adminStoreErr(w, "officer", err)
