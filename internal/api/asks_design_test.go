@@ -50,7 +50,7 @@ var groupLabel = regexp.MustCompile(`data-asks-group="([a-z]+)"><h2 [^>]*data-as
 // not on the Ask tab. RED at origin/main: no groups, no labels.
 func TestTheAskTabIsGroupedUnderLabelsWithCounts(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
-	out := s.askListHTML(context.Background(), designItems(), designNow)
+	out := s.askListHTML(context.Background(), designItems(), asksRead{}, designNow)
 	var got []string
 	for _, m := range groupLabel.FindAllStringSubmatch(out, -1) {
 		got = append(got, m[1]+"="+m[2]+" "+m[3])
@@ -70,7 +70,7 @@ func TestTheAskTabIsGroupedUnderLabelsWithCounts(t *testing.T) {
 		}
 	}
 	// Nothing waiting: the empty line, no label.
-	if out := s.askListHTML(context.Background(), nil, designNow); out != attentionEmptyHTML {
+	if out := s.askListHTML(context.Background(), nil, asksRead{}, designNow); out != attentionEmptyHTML {
 		t.Fatalf("an empty list draws %q, want the empty line", out)
 	}
 }

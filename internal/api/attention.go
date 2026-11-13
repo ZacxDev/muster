@@ -683,6 +683,34 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 // attentionItemsIn is attentionItems with its waiting sessions taken from hs,
 // one read of ctx's principal's hosts (waitingSessionsIn).
 func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]attentionItem, error) {
+	return s.attentionItemsWith(ctx, hs, s.waitingSessionsIn(ctx, hs))
+}
+
+// asksRead is ONE read of ctx's owner's hub for an Asks render (readAsks):
+// the hosts and their waiting sessions (waitingSessionsIn over them). Every
+// part of the list — its items (attentionItemsWith), which of them session
+// state covers (pageAttentionItems), and the "Stalled / waiting" rows with
+// their names and lines (episodeRowsHTML) — is drawn from this one snapshot,
+// never a read of its own (TestTheAsksListReadsTheHostsOncePerRender). The
+// zero value is a muster that mirrors nothing.
+type asksRead struct {
+	hosts   []mirror.HostView
+	waiting []attentionItem
+}
+
+// readAsks is the one asksRead of an Asks render.
+func (s *Server) readAsks(ctx context.Context) asksRead {
+	if s.ext.Mirror == nil {
+		return asksRead{}
+	}
+	hs := s.ext.Mirror.Hosts(ctx)
+	return asksRead{hosts: hs, waiting: s.waitingSessionsIn(ctx, hs)}
+}
+
+// attentionItemsWith is attentionItemsIn with hs's waiting sessions already
+// read (waiting: waitingSessionsIn over hs). waiting is copied in, never
+// changed: an Asks render draws its episode rows from the same slice.
+func (s *Server) attentionItemsWith(ctx context.Context, hs []mirror.HostView, waiting []attentionItem) ([]attentionItem, error) {
 	var out []attentionItem
 	var errs []error
 	if s.ext.Attention != nil {
@@ -711,7 +739,7 @@ func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]
 			out = append(out, askItem(a, hs...))
 		}
 	}
-	out = append(out, s.waitingSessionsIn(ctx, hs)...)
+	out = append(out, waiting...)
 	drafts, err := s.pendingDraftItems(ctx)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
@@ -1515,7 +1543,8 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 // and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
 // (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
 func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
-	items, err := s.attentionItems(r.Context())
+	rd := s.readAsks(r.Context()) // the render's one hub read (asksRead)
+	items, err := s.attentionItemsWith(r.Context(), rd.hosts, rd.waiting)
 	s.withFocus(r.Context(), items)
 	s.withAskBoxes(r.Context(), items, true)
 	if err != nil {
@@ -1534,7 +1563,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(attentionNotice(r))
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
 	askList := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
-		s.askListHTML(r.Context(), items, now) + `</ul>`
+		s.askListHTML(r.Context(), items, rd, now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
 	} else {
@@ -1606,7 +1635,8 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	items, err := s.attentionItems(r.Context())
+	rd := s.readAsks(r.Context()) // the refresh's one hub read (asksRead)
+	items, err := s.attentionItemsWith(r.Context(), rd.hosts, rd.waiting)
 	if err != nil {
 		s.logger.Printf("attention: items: %v", err)
 	}
@@ -1615,7 +1645,7 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	now := s.now() // as renderAsksPage
-	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, now)))
+	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, rd, now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {

@@ -129,7 +129,7 @@ func TestTheOwnerAnsweringAStallAtTheTerminalEndsItAndClearsThePush(t *testing.T
 	if !f.cleared(t, id) {
 		t.Fatal("cleared_at not set")
 	}
-	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), time.Now()); sec != "" {
+	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), f.srv.readAsks(asUser(authz.OperatorUserID)), time.Now()); sec != "" {
 		t.Fatalf("the Stalled / waiting row is still drawn:\n%s", sec)
 	}
 	if list := f.episodes(t); len(list) != 1 {

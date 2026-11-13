@@ -772,10 +772,12 @@ var episodeQuietText = map[string]string{
 // refresh redraws them: the items (pageAttentionItems) in their groups, the
 // session-state rows in the Waiting group (episodeRowsHTML), then the
 // Answered group (askGroupsHTML). With a row drawn, the list's "Nothing is
-// waiting on you." line is not — a stalled session is waiting on you.
-func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now time.Time) string {
-	rows, n := s.episodeRowsHTML(ctx, now)
-	return askGroupsHTML(s.pageAttentionItems(ctx, items), rows, n, s.answeredAsksNow(ctx, now), now)
+// waiting on you." line is not — a stalled session is waiting on you. rd is
+// the render's one hub read (asksRead), items built from it: nothing here
+// reads the hosts again.
+func (s *Server) askListHTML(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) string {
+	rows, n := s.episodeRowsHTML(ctx, rd, now)
+	return askGroupsHTML(s.pageAttentionItems(items, rd.hosts), rows, n, s.answeredAsksNow(ctx, now), now)
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state
@@ -786,12 +788,11 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now tim
 // or not: its card is where it is answered, or read, at once — only its PUSH
 // waits the grace — and the section draws no row for its stop (episodeCarded).
 // One session state cannot key stays a list item, as it stays in the diff's
-// push.
-func (s *Server) pageAttentionItems(ctx context.Context, items []attentionItem) []attentionItem {
+// push. hs is the render's hosts (asksRead), the read items came from.
+func (s *Server) pageAttentionItems(items []attentionItem, hs []mirror.HostView) []attentionItem {
 	if !s.sessionStateOn() || s.ext.Mirror == nil {
 		return items
 	}
-	hs := s.ext.Mirror.Hosts(ctx)
 	out := items[:0:0]
 	for _, it := range items {
 		if _, _, _, ok := episodeCover(hs, it); !ok || cardedItem(it) {
@@ -815,18 +816,14 @@ func cardedItem(it attentionItem) bool {
 // episodeCarded is the episode keys (session keys) of ctx's owner's windows
 // that wait on a carded item now (cardedItem): drawn as that item's card on
 // the Asks list (pageAttentionItems), so the "Stalled / waiting" section draws
-// no second row for the same stop. Nil with nothing mirrored.
-func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
-	if s.ext.Mirror == nil {
-		return nil
-	}
-	hs := s.ext.Mirror.Hosts(ctx)
+// no second row for the same stop. Over rd, the render's one hub read.
+func episodeCarded(rd asksRead) map[string]bool {
 	out := map[string]bool{}
-	for _, it := range s.waitingSessionsIn(ctx, hs) {
+	for _, it := range rd.waiting {
 		if !cardedItem(it) {
 			continue
 		}
-		if key, _, _, ok := episodeWindowOf(hs, it); ok {
+		if key, _, _, ok := episodeWindowOf(rd.hosts, it); ok {
 			out[key] = true
 		}
 	}
@@ -846,8 +843,10 @@ func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
 // list's live refresh (handleAttentionItems) redraws it: an Asks page left
 // open shows a window that starts waiting. A stop waiting on an answerable ask
 // is that ask's card on the list instead (episodeCarded), not a row. "" with
-// session state off, or with no open episode to draw.
-func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, int) {
+// session state off, or with no open episode to draw. rd is the render's one
+// hub read (asksRead): the carded stops, the lines and the names all come
+// from it, so a refresh reads the hosts once, not once per part.
+func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time) (string, int) {
 	if !s.sessionStateOn() {
 		return "", 0
 	}
@@ -856,7 +855,7 @@ func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, in
 	// items of the SAME hub read (the hosts episodeWho names them over).
 	waits := map[string]attentionItem{}
 	if err == nil && len(eps) > 0 {
-		carded := s.episodeCarded(ctx)
+		carded := episodeCarded(rd)
 		kept := eps[:0:0]
 		for _, ep := range eps {
 			if !(ep.Kind == sessionstate.KindMirror && carded[ep.Key]) {
@@ -864,12 +863,9 @@ func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, in
 			}
 		}
 		eps = kept
-		if s.ext.Mirror != nil {
-			hs := s.ext.Mirror.Hosts(ctx)
-			for _, it := range s.waitingSessionsIn(ctx, hs) {
-				if key, _, _, ok := episodeWindowOf(hs, it); ok {
-					waits[key] = it
-				}
+		for _, it := range rd.waiting {
+			if key, _, _, ok := episodeWindowOf(rd.hosts, it); ok {
+				waits[key] = it
 			}
 		}
 	}
@@ -884,9 +880,8 @@ func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, in
 		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li>` + "\n")
 	}
 	esc := html.EscapeString
-	hosts := s.episodeHosts(ctx, eps...)
 	for _, ep := range eps {
-		who, _, _, _ := s.episodeWho(ctx, ep, hosts)
+		who, _, _, _ := s.episodeWho(ctx, ep, rd.hosts)
 		state := "Stalled"
 		if ep.State == sessionstate.StateNeedsYou {
 			state = "Needs you"
