@@ -212,9 +212,14 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   switcher dock, if open over the side panel, closes first). Without the
   claim the app's Back is the WebView's own, which walks the tab's joint
   session history, subframe navigations included. So, as a second layer, the
-  panel's frame adds no entry to that history: each hand-off loads in a NEW
-  frame element (src set before it is inserted) put in the old one's place,
-  and the gateway's session page opens a preview with `location.replace`.
+  panel's OWN loads add no entry to that history: each hand-off (and the
+  close) loads in a NEW frame element (src set before it is inserted) put in
+  the old one's place, and the gateway's session page opens a preview with
+  `location.replace`. ⚠ What the previewed page does inside the frame is
+  not muster's: an app's own `pushState` or a link it follows still adds
+  entries. While the panel is open Back is claimed, so they do not matter;
+  after it closes they belong to a frame that is gone, and each one takes a
+  Back press that does nothing.
 - **The panel's frame:**
 
   ```html

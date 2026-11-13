@@ -388,7 +388,9 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // a white, broken frame. So each load is a NEW frame, with the old one's
   // attributes (the sandbox first of all) and its src set BEFORE it is
   // inserted, put in the old one's place: a new frame's first load is no
-  // entry.
+  // entry. ⚠ Only the panel's own loads: the previewed page's own
+  // navigations in the frame (an app's pushState, a link it follows) still
+  // add entries, which outlive the frame (docs/plugins.md).
   function load(url) {
     var old = frame();
     if (!old) return;
@@ -470,33 +472,59 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // This document's panel's name among the claim's holders (a view-swap
   // frame has its own panel, and its own name).
   var WHO = 'preview-' + Math.random().toString(36).slice(2);
+  var SLOT = '__musterPreview:' + WHO;
   var holding = false;
+  // Each holding panel is registered on the main frame's window under its own
+  // name (SLOT), beside the holder list: both views can have a panel open
+  // at once (the rendered page's and the view-swap frame's, from sm up).
   function hold(on) {
     if (holding === on) return;
     holding = on;
     var S = shellWin();
-    try {
-      if (on) S.__musterPreview = { win: window, exitFull: exitFull, close: close };
-      else if (S.__musterPreview && S.__musterPreview.win === window) S.__musterPreview = null;
-    } catch (e) {}
+    try { S[SLOT] = on ? { win: window, exitFull: exitFull, close: close, onScreen: onScreen } : null; } catch (e) {}
     musterClaimBack(WHO, on);
   }
+  // onScreen: this panel is open and in the view on screen — not under the
+  // view-swap frame (the page under it is made inert) and not in that frame
+  // while it is hidden (visibility:hidden, inert).
+  function onScreen() {
+    var p = panel();
+    if (!p || p.hidden) return false;
+    try {
+      var el = p, w = window;
+      for (;;) {
+        if (el.closest('[inert]') || w.getComputedStyle(el).visibility === 'hidden') return false;
+        if (w === w.top || !w.frameElement) break;
+        el = w.frameElement;
+        w = w.parent;
+      }
+    } catch (e) { return false; }
+    return true;
+  }
   // Wrapped when the panel opens (the dock has defined its own by then), and
-  // again if anything has replaced the wrapper since. It reads whichever
-  // document's panel is open (S.__musterPreview), so one wrapper serves the
-  // main frame's panel and a view-swap frame's.
+  // again if anything has replaced the wrapper since. It acts on the panel ON
+  // SCREEN: the most recently opened holder whose panel is in the view shown
+  // (one wrapper serves the main frame's panel and a view-swap frame's). A
+  // panel in the hidden view is never closed by Back.
   function hookBack() {
     var S = shellWin();
     if (S.musterBack && S.musterBack === S.__musterPreviewBack) return;
     var prev = S.musterBack;
     S.musterBack = S.__musterPreviewBack = function () {
-      var o = S.__musterPreview, live = false;
-      try { live = !!o && !o.win.closed; } catch (e) {}
-      if (!live) S.__musterPreview = null;
-      if (live) { try { if (o.exitFull()) return true; } catch (e) {} }
+      var held = String(S.__musterBackHolders || '').split(' ').filter(Boolean), v = null;
+      for (var i = held.length - 1; i >= 0 && !v; i--) {
+        var o = S['__musterPreview:' + held[i]];
+        if (!o) continue;
+        var live = false;
+        try { live = !o.win.closed; } catch (e) {}
+        // A panel whose document is gone (a removed frame) holds nothing.
+        if (!live) { S['__musterPreview:' + held[i]] = null; musterClaimBack(held[i], false); continue; }
+        try { if (o.onScreen()) v = o; } catch (e) {}
+      }
+      if (v) { try { if (v.exitFull()) return true; } catch (e) {} }
       // The dock is modal over the panel when both are open: it goes first.
       if (typeof prev === 'function' && prev() === true) return true;
-      if (live) { try { if (o.close()) return true; } catch (e) {} }
+      if (v) { try { if (v.close()) return true; } catch (e) {} }
       return false;
     };
   }
@@ -527,6 +555,11 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // open (it would come back framing a spent hand-off), nor its claim on.
   document.addEventListener('htmx:beforeHistorySave', function () { close(); hold(false); });
   window.addEventListener('pagehide', function () { if (isFull()) exitFull(true); hold(false); });
+  // Back from the back/forward cache with the panel still open: claim again.
+  window.addEventListener('pageshow', function (e) {
+    var p = panel();
+    if (e.persisted && p && !p.hidden) { hookBack(); hold(true); }
+  });
 
   // label is the hand-off control's words for where the panel runs: New tab
   // in a browser (as drawn), Full screen in the app.

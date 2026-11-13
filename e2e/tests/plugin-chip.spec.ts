@@ -615,3 +615,106 @@ test('in the Android app Back closes the regular panel: the open panel claims Ba
   expect((await msgs()).slice(-1)).toEqual([CLAIM_OFF]);
   expect(await historyLength(), 'nothing on the wide screen added a history entry').toBe(h0);
 });
+
+// 🔴 BOTH VIEWS CAN HAVE A PANEL, AND BACK ACTS ON THE ONE ON SCREEN (the
+// Android app, from `sm` up, where nothing behind the side panel is inert):
+// the rendered page's panel and the view-swap frame's terminal panel each
+// hold the one claim. Back closes the panel in the view shown, never one in
+// the hidden view; a panel closed in the other view does not take the shown
+// one's Back with it. Also: a page back from the back/forward cache with the
+// panel open claims again (pageshow), and htmx's history snapshot closes the
+// panel and releases its claim (htmx:beforeHistorySave).
+test('in the Android app Back acts on the panel in the view on screen: a panel in the hidden view is neither closed nor in the way, and pageshow and the htmx snapshot keep the claim right', async ({ page, context }) => {
+  test.setTimeout(150_000);
+  await page.addInitScript(() => {
+    const w = window as unknown as { __appMsgs: string[]; musterApp: { postMessage(m: string): void } };
+    w.__appMsgs = [];
+    w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
+  });
+  const CLAIM_ON = JSON.stringify({ type: 'back-claim', open: true });
+  const CLAIM_OFF = JSON.stringify({ type: 'back-claim', open: false });
+  const last = () => page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs.slice(-1)[0] ?? 'none');
+  const back = () => page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack());
+  const tap = (sel: string, where: 'top' | 'term' = 'top') =>
+    where === 'top'
+      ? page.evaluate((s) => (document.querySelector(s) as HTMLElement).click(), sel)
+      : page.frameLocator('iframe[data-muster-view]').locator('body').evaluate((b, s) => (b.ownerDocument.querySelector(s) as HTMLElement).click(), sel);
+  await ready(page);
+  const { token } = await mintViewer(page, 'Views viewer');
+  await playEntry(context, token);
+  await buttonFor(page, '@1', true);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto(origin + viewOf('@1'));
+  const panel = page.locator('#preview-panel');
+  const term = page.frameLocator('iframe[data-muster-view]');
+  const termPanel = term.locator('#preview-panel');
+  const termShown = () => page.evaluate(() => document.documentElement.getAttribute('data-view'));
+
+  // THE AUDITED CASE: the rendered panel open, the Terminal view's panel
+  // opened and closed (its own Close), back on the rendered view: Back still
+  // closes the rendered panel (a single shared slot had been emptied by the
+  // other panel's close, and Back answered false: the shell's goBack).
+  await page.locator('#preview-toggle').click();
+  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  expect(await last()).toBe(CLAIM_ON);
+  await tap('#view-terminal');
+  await expect.poll(termShown, 'the terminal view on screen').toBe('terminal');
+  await expect(term.locator('#term')).toHaveCount(1);
+  await tap('#preview-toggle', 'term');
+  await expect(term.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await tap('#preview-panel [data-preview-close]', 'term');
+  await expect(termPanel).toBeHidden();
+  expect(await last(), 'the rendered panel still holds the claim').toBe(CLAIM_ON);
+  await tap('#view-rendered', 'term');
+  await expect.poll(termShown, 'the rendered view on screen').toBe('rendered');
+  await expect(panel).toBeVisible();
+  expect(await back(), 'Back closed the rendered view\'s panel after the terminal\'s closed').toBe(true);
+  await expect(panel).toBeHidden();
+  expect(await last()).toBe(CLAIM_OFF);
+
+  // A PANEL IN THE HIDDEN VIEW: the rendered panel open, the Terminal view
+  // shown (no panel open there): Back does NOT close the panel it cannot
+  // see, and answers false.
+  await page.locator('#preview-toggle').click();
+  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await tap('#view-terminal');
+  await expect.poll(termShown).toBe('terminal');
+  expect(await back(), 'no panel on screen, no dock: Back is the shell\'s').toBe(false);
+  await expect(panel, 'the rendered view\'s panel, off screen, was not closed').not.toHaveAttribute('hidden', '');
+  // Its panel opened there, Back closes THAT one, on screen, not the other.
+  await tap('#preview-toggle', 'term');
+  await expect(termPanel).toBeVisible();
+  expect(await back(), 'Back closed the terminal view\'s panel, on screen').toBe(true);
+  await expect(termPanel).toBeHidden();
+  await expect(panel, 'not the rendered view\'s').not.toHaveAttribute('hidden', '');
+  await tap('#view-rendered', 'term');
+  await expect.poll(termShown).toBe('rendered');
+  expect(await back()).toBe(true);
+  await expect(panel).toBeHidden();
+  expect(await last()).toBe(CLAIM_OFF);
+
+  // PAGESHOW FROM THE BACK/FORWARD CACHE (the handler, with the events the
+  // browser sends): pagehide released the claim of the open panel; a
+  // persisted pageshow claims it again, and Back then closes it.
+  await page.locator('#preview-toggle').click();
+  await expect(panel).toBeVisible();
+  expect(await last()).toBe(CLAIM_ON);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+  expect(await last(), 'pagehide released the claim').toBe(CLAIM_OFF);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+  expect(await last(), 'pageshow, the panel open, claimed again').toBe(CLAIM_ON);
+  expect(await back(), 'and Back closes it').toBe(true);
+  await expect(panel).toBeHidden();
+  expect(await last()).toBe(CLAIM_OFF);
+
+  // HTMX'S HISTORY SNAPSHOT (the event htmx fires on <body> before it saves
+  // one, on a boosted navigation away): the panel is closed in it and the
+  // claim released.
+  await page.locator('#preview-toggle').click();
+  await expect(panel).toBeVisible();
+  expect(await last()).toBe(CLAIM_ON);
+  await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('htmx:beforeHistorySave', { bubbles: true })));
+  await expect(panel, 'the snapshot never holds the panel open').toBeHidden();
+  await expect(panel.locator('iframe')).toHaveAttribute('src', 'about:blank');
+  expect(await last(), 'and its claim is released').toBe(CLAIM_OFF);
+});
