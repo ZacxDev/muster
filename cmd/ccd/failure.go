@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/podagent"
 )
@@ -38,7 +39,7 @@ const (
 	failAuth         = "auth_failed"   // 502: the model account's credential was rejected
 	failRateLimited  = "rate_limited"  // 429: the model account hit a usage limit (409 from the limit menu: limitMenuFailure)
 	failBilling      = "billing_error" // 502
-	failTurn         = "turn_failed"   // 502: any other API failure
+	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
 	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
 
@@ -91,7 +92,9 @@ func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, 
 // The CODE is checked first because it is the CLI's own classification and is
 // present even when no HTTP status is (a "Not logged in" record carries
 // error=authentication_failed and no apiErrorStatus). The status is the fallback
-// for codes this list does not know.
+// for codes this list does not know. One check precedes both: a message that is
+// an edge/CDN challenge page (edgeChallengePage) is turn_failed whatever its code
+// and status, because the response did not come from the API.
 //
 // ⚠ OWED: the rate-limit row is backed by real transcript records
 // (error=rate_limit, apiErrorStatus=429, "You've hit your session|weekly limit ·
@@ -110,6 +113,13 @@ func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, 
 func classifyAPIError(e apiError) *failure {
 	f := &failure{Code: e.Code, Upstream: e.Status, Message: e.Message}
 	switch {
+	case edgeChallengePage(e.Message):
+		// Before every code/status row: the CLI wraps this page as
+		// authentication_failed + 403, and auth_failed is a mark that clears only
+		// when the account's token is replaced. See edgeChallengePage.
+		f.Status, f.Type = http.StatusBadGateway, failTurn
+		f.Message = "an edge/CDN challenge page answered the request, not the model API " +
+			"(transient; the credential was not judged): " + e.Message
 	case e.Code == codeRateLimit:
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited
 	case e.Code == "authentication_failed":
@@ -127,4 +137,27 @@ func classifyAPIError(e apiError) *failure {
 		f.Message = "the turn failed with no message from the CLI"
 	}
 	return f
+}
+
+// cloudflareChallengeTitle is the <title> of Cloudflare's challenge/block page.
+// The CLI renders a non-JSON error body by its title, so a request the edge
+// challenged reaches ccd as "Please run /login · API Error: 403 Attention
+// Required! | Cloudflare" with error=authentication_failed.
+const cloudflareChallengeTitle = "Attention Required! | Cloudflare"
+
+// edgeChallengePage reports whether the CLI's error message is a CDN challenge
+// page rather than the model API's own answer.
+//
+// 🔴 SUCH A RESPONSE NEVER REACHED THE API, SO IT SAYS NOTHING ABOUT THE
+// CREDENTIAL. The CLI still types it authentication_failed (the status is 403),
+// and auth_failed makes muster mark the account until its token is replaced
+// (internal/ccpool) — so an egress hiccup would take an account out for good,
+// and with it every worker on it. It is classified turn_failed instead, which
+// no consumer marks an account for.
+//
+// The predicate is the page's exact title signature, case-sensitive, not the
+// word "Cloudflare": an API rejection that merely mentions Cloudflare is still
+// the API's answer and keeps its row in classifyAPIError.
+func edgeChallengePage(msg string) bool {
+	return strings.Contains(msg, cloudflareChallengeTitle)
 }
