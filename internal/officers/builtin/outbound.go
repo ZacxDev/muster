@@ -231,7 +231,13 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 // filed for it — the owner's question ("may it have been posted?") is now
 // answered — and withdraw names the escalation asks already raised, for the
 // caller to withdraw. settled false: the item was left as it is.
-func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id, draft int64, summary string, now time.Time) (settled bool, withdraw []OpenEscalation, err error) {
+//
+// 🔴 ONLY THE ESCALATION THIS DRAFT CAUSED: an item the owner sent back
+// (SettleEscalation re-opens it, recording an asks entry) and that was
+// escalated again since is about something else, so an asks entry made at or
+// after claimedAt — the draft's claim, before it went unconfirmed — leaves it
+// escalated.
+func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id, draft int64, claimedAt time.Time, summary string, now time.Time) (settled bool, withdraw []OpenEscalation, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, nil, err
@@ -255,6 +261,14 @@ func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id
 			return false, nil, err
 		}
 		if newer {
+			return false, nil, nil
+		}
+		var handled bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_items i, jsonb_array_elements(i.asks) e
+			WHERE i.id = $1 AND (e->>'asked_at')::timestamptz >= $2)`, it.ID, claimedAt).Scan(&handled); err != nil {
+			return false, nil, err
+		}
+		if handled {
 			return false, nil, nil
 		}
 		rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n

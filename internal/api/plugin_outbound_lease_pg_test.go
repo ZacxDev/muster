@@ -131,6 +131,29 @@ func TestALateOKLeavesAnItemANewerDraftWasFiledFor(t *testing.T) {
 	}
 }
 
+// TestALateOKLeavesAnItemEscalatedAgainForSomethingElse: the owner sent the
+// unconfirmed draft's item back (an asks entry, after the draft's claim) and
+// it was escalated again since; the draft's late ok:true does not close that
+// newer escalation or withdraw its asks.
+func TestALateOKLeavesAnItemEscalatedAgainForSomethingElse(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	item, id := w.unconfirmedForItem("x:late-again", "An unconfirmed post.")
+	if _, err := w.f.pool.Exec(authz.System(w.ctx), `UPDATE officer_items SET asks = asks || jsonb_build_array(jsonb_build_object(
+		'ask_id', 1, 'question', 'escalation', 'asked_by', 'user 1', 'asked_at', now(), 'status', 'answered', 'answer', 'look again'))
+		WHERE id = $1`, item); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.result(id, `{"ok":true,"external_ref":"post-late-3"}`); rec.Code != http.StatusOK {
+		t.Fatalf("the late result: %d %s", rec.Code, rec.Body.String())
+	}
+	if st, _, _, _ := w.itemRow(item); st != officers.StatusEscalated {
+		t.Fatalf("the late ok moved an item escalated again since to %s; want left escalated", st)
+	}
+	if got := w.escalationAsks(item); len(got) != 1 || got[0] != "open" {
+		t.Fatalf("the escalation asks: %v; want the open one left alone", got)
+	}
+}
+
 type renewed struct {
 	DraftID    int64     `json:"draft_id"`
 	LeaseUntil time.Time `json:"lease_until"`
@@ -224,6 +247,10 @@ func TestARenewIsRefusedToANonHolderALapsedLeaseAndAnUnclaimedDraft(t *testing.T
 	w.sweepByClaim()
 	if d := w.draft(id); d.Status != plugins.DraftUnconfirmed {
 		t.Fatalf("after a refused renewal of a lapsed lease the draft is %s; want unconfirmed", d.Status)
+	}
+	// Swept unconfirmed: still lease_lapsed, so the plugin still reports.
+	if code, r := w.renew(w.tok, id); code != http.StatusConflict || r.Code != "lease_lapsed" {
+		t.Fatalf("a renewal of a swept unconfirmed draft: %d %+v; want 409 lease_lapsed", code, r)
 	}
 	_, pending := w.fileForItem("x:renew-pending", "A post nobody claimed.")
 	if code, r := w.renew(w.tok, pending); code != http.StatusConflict || r.Code != "not_claimed" {

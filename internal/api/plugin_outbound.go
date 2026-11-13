@@ -572,7 +572,11 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 			// the owner asking whether it was posted) settles it too, and the
 			// owner's now-answered escalation asks are withdrawn.
 			summary := "posted " + d.ExternalRef + " (draft " + strconv.FormatInt(d.ID, 10) + ")"
-			settled, withdraw, err := s.officerStore.DraftPosted(ctx, owner, officer, *d.OfficerItemID, d.ID, summary, now)
+			var claimed time.Time
+			if d.ClaimedAt != nil {
+				claimed = *d.ClaimedAt
+			}
+			settled, withdraw, err := s.officerStore.DraftPosted(ctx, owner, officer, *d.OfficerItemID, d.ID, claimed, summary, now)
 			if err != nil || !settled {
 				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is (%v)", d.ID, *d.OfficerItemID, officer, err)
 			}

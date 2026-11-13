@@ -1074,7 +1074,8 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 // 🔴 ONLY A LIVE LEASE IS RENEWED, under the draft's row lock: a lapsed one
 // is unconfirmed — the at-most-once rule (file header) — whether or not the
 // sweep has said so yet, and renewing it would revive a claim muster has
-// given up on (ErrLeaseLapsed). Refused: another plugin's draft or none
+// given up on (ErrLeaseLapsed, also once the sweep has made it
+// unconfirmed). Refused: another plugin's draft or none
 // (ErrNotFound); one not claimed, or already settled (ErrDraftState); one
 // whose lease already runs to the bound (ErrLeaseAtMax). Audited.
 func (s *PGStore) RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error) {
@@ -1092,11 +1093,17 @@ func (s *PGStore) RenewDraft(ctx context.Context, pluginID, draftID int64) (Draf
 			return err
 		}
 		d = cur
+		if cur.Status == DraftUnconfirmed {
+			// Lapsed and already swept: the same answer as lapsed and not yet.
+			return ErrLeaseLapsed
+		}
 		if cur.Status != DraftApproved || cur.ClaimedAt == nil || cur.LeaseUntil == nil {
 			return ErrDraftState
 		}
+		// clock_timestamp(), not now(): the transaction's start time would let
+		// a renewal that waited on the row lock past lease_until revive it.
 		var lapsed, atMax bool
-		if err := tx.QueryRow(ctx, `SELECT lease_until <= now(), lease_until >= claimed_at + make_interval(secs => $2)
+		if err := tx.QueryRow(ctx, `SELECT lease_until <= clock_timestamp(), lease_until >= claimed_at + make_interval(secs => $2)
 			FROM plugin_reply_drafts WHERE id = $1`, draftID, MaxLeaseTotal.Seconds()).Scan(&lapsed, &atMax); err != nil {
 			return err
 		}
@@ -1107,7 +1114,7 @@ func (s *PGStore) RenewDraft(ctx context.Context, pluginID, draftID int64) (Draf
 			return ErrLeaseAtMax
 		}
 		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-			SET lease_until = least(now() + make_interval(secs => $2), claimed_at + make_interval(secs => $3))
+			SET lease_until = least(clock_timestamp() + make_interval(secs => $2), claimed_at + make_interval(secs => $3))
 			WHERE id = $1 RETURNING `+draftCols, draftID, LeaseDuration.Seconds(), MaxLeaseTotal.Seconds())); err != nil {
 			return err
 		}

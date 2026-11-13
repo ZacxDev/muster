@@ -454,7 +454,7 @@ drafts renew the same way, and renewing is optional.
 |---|---|
 | `200 {"draft_id", "lease_until", "lease_max"}` | renewed: report the result before `lease_until`, or renew again; `lease_max` is the bound |
 | `404 {"error"}` | no such draft claimed by this plugin (another plugin's, another owner's, or none) |
-| `409 {"error", "draft_id", "code": "lease_lapsed"}` | the lease already lapsed: the draft is unconfirmed and stays so. Report its result anyway |
+| `409 {"error", "draft_id", "code": "lease_lapsed"}` | the lease already lapsed (whether or not muster has marked the draft unconfirmed yet): it is unconfirmed and stays so. Report its result anyway: a late result is still recorded |
 | `409 {"error", "draft_id", "code": "lease_at_max"}` | the lease already runs to `lease_max`: report the result before then |
 | `409 {"error", "draft_id", "status", "code": "not_claimed"}` | the draft is not claimed, or already has its result |
 
@@ -831,7 +831,8 @@ After the result, for an outbound draft filed with an `item_id`:
     **late `ok: true`** for that draft (a slow post that did go out) completes
     the item `done` with the post's reference after all, and withdraws the
     escalation's open asks, so you are not left with a stale "may have been
-    posted" question. It does not if a newer draft was filed for the item. A
+    posted" question. It does not if a newer draft was filed for the item,
+    or if you sent the item back and it was escalated again since. A
     plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
     so the draft never goes unconfirmed in the first place.
 - 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,
