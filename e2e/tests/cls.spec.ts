@@ -123,6 +123,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
   'GET /f/{id}': 'a file download (the signed link an agent fetches)',
   'GET /uploads/{id}/file': 'a file download (the owner\'s attachment thumbnail)',
+  'GET /plugins/drafts/{id}/media/{n}': 'a file download (an outbound draft\'s image or video, on its card)',
   // Shareable pages need MUSTER_PAGES and an agent-made page, which no server
   // here has: pages.spec.ts measures them (its own server, the same bar).
   'GET /pages': 'measured in pages.spec.ts (the Pages screen)',

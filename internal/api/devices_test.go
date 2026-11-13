@@ -104,10 +104,11 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	// nine requireArmedHookToken routes; the seventh was GET /api/doctor, the eighth POST /api/agents, the ninth GET /api/pr-sessions);
 	// an unarmed service route was never in it, and at most the service tier's own routes may answer that way.
 	// The built-in officer store's admin API (officer_admin.go) is behind
-	// requireArmedHookToken too, every route of it.
+	// requireArmedHookToken too, every route of it, and so is the plugin
+	// binding's admin door (PUT /api/plugins/{id}/deliver-to): both counted below.
 	armedHook := 9
 	for _, r := range routeVias[authz.ViaHook] {
-		if strings.Contains(r, " /api/officers/") {
+		if strings.Contains(r, " /api/officers/") || strings.HasSuffix(r, "/deliver-to") {
 			armedHook++
 		}
 	}

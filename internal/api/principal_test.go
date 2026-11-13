@@ -59,6 +59,11 @@ const (
 
 // publicRoutes are served with no credential and therefore no Principal.
 var publicRoutes = []string{
+	// Plugin pairing (plugin_pairing.go): a plugin with no token asks for one,
+	// and collects it with its poll secret. A request only waits for its
+	// owner's approval, which must name the code the plugin printed.
+	"POST /plugin/v1/pair",
+	"GET /plugin/v1/pair/{request_id}",
 	// The admin claim (accounts PR 4): how an anonymous visitor holding a
 	// single-use link stops being anonymous, like /login.
 	"GET /auth/claim",
@@ -135,6 +140,10 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin-handoffs",
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/{id}/draft-checks",
+		"POST /plugins/{id}/deliver-to",
+		"POST /plugins/pair/{id}/approve",
+		"POST /plugins/pair/{id}/deny",
+		"GET /plugins/drafts/{id}/media/{n}",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",
@@ -411,6 +420,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/pr-sessions",
 		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		"PUT /api/plugins/{id}/deliver-to",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
 		"GET /api/officers/types",
 		"GET /api/officers/types/{key}",
@@ -465,6 +475,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/pr-sessions",
 		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		"PUT /api/plugins/{id}/deliver-to",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
 		"GET /api/officers/types",
 		"GET /api/officers/types/{key}",
@@ -529,6 +540,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/drafts/{id}/result",
 		"GET /plugin/v1/drafts/checks",
 		"POST /plugin/v1/drafts/{id}/check",
+		"POST /plugin/v1/drafts/{id}/media",
 		"POST /plugin/v1/tasks",
 		"GET /plugin/v1/tasks",
 		"POST /plugin/v1/task-writes/claim",
@@ -847,6 +859,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"POST /api/pr-sessions":                                true,
 		"GET /api/pr-sessions":                                 true,
 		"POST /api/plugins/messages/{id}/retry":                true,
+		"PUT /api/plugins/{id}/deliver-to":                     true,
 		"GET /api/officers/types":                              true,
 		"GET /api/officers/types/{key}":                        true,
 		"PUT /api/officers/types/{key}":                        true,

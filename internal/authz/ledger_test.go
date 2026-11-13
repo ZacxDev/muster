@@ -237,6 +237,14 @@ var (
 		// schedules and fires each with a compare-and-set, inserting the item
 		// with that schedule's own owner_id.
 		"internal/api.(*Server).RunOfficerScheduler",
+		// Plugin pairing (plugin_pairing.go, migration 0122): the
+		// unauthenticated request has nobody signed in, so the owner it names
+		// is LEARNED under System (as pluginFor learns a token's owner), and the
+		// request — or a decoy — is written naming that owner; the poll finds
+		// the request by its public id under System to learn whose it is, then
+		// mints acting AS that owner (the WithPrincipal ledger below).
+		"internal/api.(*Server).handlePairRequest",
+		"internal/plugins.(*PGStore).RedeemPair",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
@@ -354,6 +362,11 @@ var (
 		// authz.ViaAgent, so the rule store (which refuses every plugin
 		// principal) records the chief's own write. Never a new user id.
 		"internal/api.chiefWriteContext",
+		// A pairing's hand-out (internal/plugins pairing.go): the token is
+		// minted acting AS the request's owner, whose id the request row
+		// names (read under System above) — the owner who approved it. Never
+		// an id the caller chose.
+		"internal/plugins.(*PGStore).RedeemPair",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{

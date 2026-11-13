@@ -28,6 +28,11 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/handoffs/redeem":              "viewer",
 	"GET /plugin/v1/drafts/checks":                 "draft_checks",
 	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
+	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
+	// Pairing (plugin_pairing.go): NO plugin token at all — the request
+	// carries none, the poll carries its poll secret.
+	"POST /plugin/v1/pair":             "none",
+	"GET /plugin/v1/pair/{request_id}": "none",
 }
 
 // goldenPluginRoutes is every /plugin/v1/* route in the checked-in route golden.
@@ -108,7 +113,7 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			if viewerRefused {
 				t.Errorf("CONTROL %s with a viewer token: refused (%d); want it past the capability check", route, viewerCode)
 			}
-		case "any":
+		case "any", "none":
 			if viewerRefused || messagesRefused {
 				t.Errorf("%s: viewer-only %d, messages %d; want both past the capability check", route, viewerCode, messagesCode)
 			}
@@ -155,8 +160,8 @@ func TestAViewerOnlyTokenIsRefusedOnTheMessagesRoutes(t *testing.T) {
 func TestPluginSelfNamesTheTokensPluginAndOwner(t *testing.T) {
 	_, h, personal := newPluginsDoorServer(t, &countingPlugins{})
 	for tok, want := range map[string]string{
-		pgnTok:       `{"plugin_id":3,"plugin_name":"example-inbox","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["messages"]}`,
-		pgnViewerTok: `{"plugin_id":4,"plugin_name":"example-viewer","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["viewer"]}`,
+		pgnTok:       `{"plugin_id":3,"plugin_name":"example-inbox","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["messages"],"deliver_to":null}`,
+		pgnViewerTok: `{"plugin_id":4,"plugin_name":"example-viewer","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["viewer"],"deliver_to":null}`,
 	} {
 		rec := pServe(h, "GET", "/plugin/v1/self", "", pBearer(tok))
 		if rec.Code != http.StatusOK {

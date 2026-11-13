@@ -19,7 +19,7 @@ The verb set is pinned in two places:
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
-| plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)) |
+| plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)), `plugins deliver-to <plugin-id> officer:<id>` / `--clear` ([bind a plugin to an officer](plugins.md#a-plugin-bound-to-an-officer)) |
 | pull requests | `pr-session <owner>/<repo>#<n>` (which of your sessions created a pull request: [below](#which-session-created-a-pull-request)) |
 | setup | `doctor` ([below](#muster-doctor)) |
 | chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |

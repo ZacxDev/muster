@@ -55,9 +55,12 @@ import (
 // route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
 // phase 2), on its own agent-create token.
 //
-// 43 → 44: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
+// 43 → 44: `plugins deliver-to` (plugins.go), PUT /api/plugins/{id}/deliver-to —
+// bind a plugin to a builtin officer.
+//
+// 44 → 45: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
 // sessions created a pull request, and its `claude --resume` line.
-const wantVerbCount = 44
+const wantVerbCount = 45
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -113,6 +116,8 @@ var wiring = []struct {
 	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 	// Retrying an unconfirmed plugin message (plugin_retry.go).
 	{"plugins retry", []string{"plugins", "retry", "6"}, "POST /api/plugins/messages/6/retry"},
+	// Binding a plugin to a builtin officer (plugin_outbound.go).
+	{"plugins deliver-to", []string{"plugins", "deliver-to", "6", "officer:example:main"}, "PUT /api/plugins/6/deliver-to"},
 	// The built-in officer store's admin API (officer.go, #503 slice 7): ten
 	// verbs. `officer type put` reads its charter from a file (stdin here: the
 	// runner passes none, so the empty charter is what is sent).
@@ -295,6 +300,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"status":"cancelled"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
+			h.json("PUT /api/plugins/6/deliver-to", http.StatusOK, `{"plugin_id":6,"plugin_name":"example-relay","deliver_to":"officer:example:main"}`)
 			h.json("GET /api/officers/types", http.StatusOK, `{"types":[]}`)
 			h.json("GET /api/officers/types/marketing", http.StatusOK, `{"key":"marketing"}`)
 			h.json("PUT /api/officers/types/marketing", http.StatusOK, `{"key":"marketing","charter_version":1}`)

@@ -87,11 +87,24 @@ var ErrTooManyPendingRequests = errors.New("flows: too many pending flow request
 // secretShapedDeny is the part of it that is about SECRETS rather than
 // infrastructure: the one part StripSecretShaped also applies to text muster
 // itself sends (a fleet report's titles), where the rest is not wanted.
-var agentTextDeny = append([]textDeny{
-	{regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`), "an IP address"},
-	{regexp.MustCompile(`(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:lan|local|internal|svc|cluster|dev|com|net|org|io|ai|app)\b`), "a host name"},
-}, append(secretShapedDeny,
-	textDeny{regexp.MustCompile(`(?i)\b(?:kubeconfig|kubectl|namespace|password|secret)\b`), "an infrastructure word"})...)
+var agentTextDeny = append([]textDeny{ipAddressDeny, internalHostDeny, publicHostDeny}, infraDeny...)
+
+// outboundTextDeny is agentTextDeny without publicHostDeny: the screen of an
+// officer's OUTBOUND draft (OutboundTextRefusal), which may link to the
+// project's public pages. Everything else stays.
+var outboundTextDeny = append([]textDeny{ipAddressDeny, internalHostDeny}, infraDeny...)
+
+var (
+	ipAddressDeny = textDeny{regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`), "an IP address"}
+	// internalHostDeny: a name only a private network resolves. Refused in
+	// every agent text, outbound drafts included.
+	internalHostDeny = textDeny{regexp.MustCompile(`(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:lan|local|internal|svc|cluster)\b`), "an internal host name"}
+	// publicHostDeny: a public name (and so a URL). Refused in a reply draft
+	// and a flow's text; allowed in an outbound draft.
+	publicHostDeny = textDeny{regexp.MustCompile(`(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:dev|com|net|org|io|ai|app)\b`), "a host name"}
+	infraDeny      = append(append([]textDeny(nil), secretShapedDeny...),
+		textDeny{regexp.MustCompile(`(?i)\b(?:kubeconfig|kubectl|namespace|password|secret)\b`), "an infrastructure word"})
+)
 
 type textDeny struct {
 	re   *regexp.Regexp
@@ -122,7 +135,21 @@ func StripSecretShaped(text string) (string, int) {
 // project names — MUSTER_FLOW_AGENT_DENY_WORDS): they are configuration, not
 // source, because this repository is public and may not name them.
 func AgentTextRefusal(text string, words []string) string {
-	for _, d := range agentTextDeny {
+	return textRefusal(agentTextDeny, text, words)
+}
+
+// OutboundTextRefusal is AgentTextRefusal for an officer's OUTBOUND draft
+// (internal/plugins outbound.go): public host names and URLs pass, so a post
+// can link to the project; internal host names, IP addresses, secrets,
+// infrastructure words and the deployment's own names are refused as ever.
+// 🔴 Only an outbound draft of a plugin bound to an officer is screened by
+// this; every other agent text keeps AgentTextRefusal.
+func OutboundTextRefusal(text string, words []string) string {
+	return textRefusal(outboundTextDeny, text, words)
+}
+
+func textRefusal(deny []textDeny, text string, words []string) string {
+	for _, d := range deny {
 		if d.re.MatchString(text) {
 			return "the text carries " + d.what + "; an agent may not send that to a third party"
 		}

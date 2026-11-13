@@ -794,6 +794,7 @@ listing and again at dispatch):
 | `officer_gap_task` `{item_id, store, kind, namespace?, tier?, affected?}` | **`datastore:*` officers (both pools) only**: `POST …/items/{item}/gap-tasks` — HQ keeps ONE open task per (officer, store, gap kind), from its own template, assigned to the officer's owner, filed in shadow too (civ-hq docs/OFFICERS.md §5o). A repeat while that task is open answers `filed: false` with it; once a person closes it, the next filing files a new task. Arguments are decoded strictly (no title, text or assignee: HQ writes them). **Does not end the lease** |
 | `officer_pr_context` `{item_id, pr}` | **the judgement pool of `web-performance:*` officers only**: `GET /officers/{id}/prs/{pr}/context?item={item}` — what HQ holds about one PR of a compare range the item names (its release row, the release captain's notes, its review rounds and its why entries), as **attribution evidence only**, never a review verdict. HQ refuses a type without `pr_context_read` (403 `pr_context_read_off`) and a PR in no range of the officer's live items (404 `pr_not_visible`); a 404 with any other code is `pr_context_route_unavailable` (an HQ older than the route), never "not in range". Read-only; not a read of the item's read budget |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
+| `officer_post_draft` `{plugin, venue, target, body, media?, item_id?}` | **builtin officers whose type grants `outbound_drafts` only** (never an HQ officer): no HQ call. Files an outbound draft for its owner to approve — see [Outbound drafts](#outbound-drafts-officer_post_draft) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
 **Claiming the next item.** `officer_claim` with no `item_id` asks HQ for the
@@ -836,6 +837,37 @@ charter says to — an officers muster usually runs headless, so an attention
 ask there reaches nobody. Its MCP instructions and system prompt say the same,
 in place of the generic attention paragraph every other agent gets
 ([attention.md](attention.md#what-agents-are-told)).
+
+### Outbound drafts (`officer_post_draft`)
+
+A [builtin](officers-builtin.md) officer whose type's policy lists
+`outbound_drafts` in `capabilities` can ask to post something outside — a new
+post, or a reply on an upstream thread — through a [plugin bound to
+it](plugins.md#a-plugin-bound-to-an-officer). It never posts anything itself:
+it files a draft, its owner approves the exact text and media on the Reply
+drafts tab, and the plugin, on the owner's own machine, claims and posts it.
+
+```json
+{"plugin": "example-relay", "venue": "example.forum",
+ "target": {"kind": "reply", "ref": "t1_abc"},
+ "body": "…", "media": ["launch/hero-1", "launch/demo-2"], "item_id": "42"}
+```
+
+| argument | rule |
+|---|---|
+| `plugin` | the name of one of the owner's live plugins whose `deliver_to` is THIS officer, with `draft_checks` |
+| `venue` | 1 to 64 lower-case letters, digits, `.`, `_` and `-` |
+| `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
+| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed ([plugins.md](plugins.md#outbound-drafts-officer_post_draft)) |
+| `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
+| `item_id` | optional: an item this instance holds under a live lease. When the post goes out muster completes it with the post's reference; when the plugin refuses it, muster queues a `draft.refused` item |
+
+It answers `{"draft_id", "status": "pending", "check": "awaiting"}`. Nothing
+is sent: the plugin checks the draft and uploads its media, then the owner
+decides. At most 20 of an officer's drafts may await a decision. The tool is
+offered to an instance only while its type grants the capability (read at
+call time), and an HQ officer is never offered it. The draft is filed as the
+officer's owner; its author on the card is the instance.
 
 ### Completing an item: outcomes and investigation
 

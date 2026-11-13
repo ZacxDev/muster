@@ -311,7 +311,14 @@ test('the owner opens a window\'s dev server from muster: the Preview button\'s 
   // THE PANEL: its frame lands on the gateway's session page (the
   // hand-off redeemed with muster), which offers both of the app's listeners
   // in this window under the listening process's name.
+  // 🔴 NOTHING ON THE WAY ADDS AN ENTRY TO THE TAB'S HISTORY (history.length
+  // in the top window): a frame's navigations are entries in the tab's joint
+  // session history, and the Android shell's Back (goBack) walked the panel's
+  // frame back through them to the spent hand-off, a white, broken frame.
+  const historyLength = () => page.evaluate(() => history.length);
+  const h0 = await historyLength();
   const framed = await showSessionPage(page);
+  expect(await historyLength(), 'the hand-off\'s load in the panel added no history entry').toBe(h0);
   await expect(framed.locator('.sub')).toHaveText(`${rig.host} · work (@1)`);
   await expect(rowOf(framed, A), allLogs()).toHaveAttribute('data-kind', 'offer', { timeout: 30_000 });
   await expect(rowOf(framed, A)).toContainText(`previewfix · :${A}`);
@@ -332,6 +339,7 @@ test('the owner opens a window\'s dev server from muster: the Preview button\'s 
   await expect(framed.locator('#app'), allLogs()).toHaveText(`preview app on ${A}`);
   await expect(framed.locator('#ws')).toHaveText('ws: echo ok');
   await expect(framed.locator('#sse')).toHaveText(`sse: hello from ${A}`);
+  expect(await historyLength(), 'the session page\'s Open (entry, check, the app) added no history entry').toBe(h0);
   const { frame, id } = await previewFrame(page);
   expect(new URL(frame.url()).pathname).toBe('/');
   expect(appHits(A, '/ws')).toBe(1);

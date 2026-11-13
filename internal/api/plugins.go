@@ -72,6 +72,12 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Checks replies on or off for an existing plugin (draft_checks), with the
 	// same token: revoke's gate — a session and a same-origin form, no step-up.
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/draft-checks", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginDraftChecksToggle)))
+	// Binding a plugin to a builtin officer (plugin_outbound.go): the card's
+	// form (revoke's gate), and the admin REST door behind the hook tier.
+	mux.HandleFunc("POST "+pluginsPath+"/{id}/deliver-to", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginDeliverToForm)))
+	mux.HandleFunc("PUT "+pluginDeliverToAPIPath, s.requirePluginsOn(s.requireArmedHookToken(s.handlePluginDeliverToAPI)))
+	// An outbound draft's media, as its owner sees them on the card.
+	mux.HandleFunc("GET "+pluginsPath+"/drafts/{id}/media/{n}", s.requirePluginsOn(s.requireSession(s.handleDraftMediaServe)))
 
 	// Reply drafts (plugin_drafts.go): the owner decides; Approve also needs a
 	// fresh sign-in, checked in the handler. Reject (and withdrawing an approval,
@@ -86,6 +92,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// the viewer plugin's token redeems. Off until MUSTER_PLUGIN_ORIGINS is set.
 	s.registerPluginHandoffRoutes(mux)
 
+	// Plugin pairing (plugin_pairing.go): the unauthenticated request and the
+	// poll, and the owner's decisions on /plugins.
+	s.registerPluginPairRoutes(mux)
+
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
 	// is its ledger: a route added, dropped or moved to another capability turns
@@ -98,6 +108,8 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// (plugin_drafts.go): only a plugin minted with draft_checks.
 	mux.HandleFunc("GET "+pluginAPIPrefix+"/drafts/checks", s.requirePluginToken(s.handlePluginDraftChecks, plugins.CapDraftChecks))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/check", s.requirePluginToken(s.handlePluginDraftCheck, plugins.CapDraftChecks))
+	// An outbound draft's media, uploaded at its check (plugin_outbound.go).
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/media", s.requirePluginToken(s.handlePluginDraftMedia, plugins.CapDraftChecks))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, plugins.CapMessages))
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
@@ -218,6 +230,7 @@ type pluginSelf struct {
 	OwnerID      int64                `json:"owner_id"`
 	OwnerLogin   string               `json:"owner_login"`
 	Capabilities []plugins.Capability `json:"capabilities"`
+	DeliverTo    *string              `json:"deliver_to"`
 }
 
 // handlePluginSelf is GET /plugin/v1/self: the presented token's plugin id and
@@ -227,7 +240,7 @@ type pluginSelf struct {
 func (s *Server) handlePluginSelf(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
 	s.writeJSON(w, http.StatusOK, pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
-		OwnerLogin: p.OwnerLogin, Capabilities: p.Capabilities})
+		OwnerLogin: p.OwnerLogin, Capabilities: p.Capabilities, DeliverTo: p.DeliverTo})
 }
 
 // handlePluginMessage is POST /plugin/v1/messages: store one inbound message
@@ -258,9 +271,25 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 		// Revoked between the token check and the insert.
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PluginTokenRefusal})
 		return
+	case errors.Is(err, plugins.ErrOfficerUnavailable):
+		// A bound plugin whose officer is gone: nothing was stored.
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the officer this plugin delivers to is not defined for its owner " +
+			"(or the built-in officer store is off): nothing was stored; send it again once the officer is back"})
+		return
 	default:
 		s.logger.Printf("plugins: plugin %d submit: %v", p.ID, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the message could not be stored"})
+		return
+	}
+	if m.OfficerItemID != nil {
+		// A bound plugin's message (plugin_outbound.go): an item in its
+		// officer's queue, made in the transaction that stored it. Never the
+		// chief's.
+		code := http.StatusOK
+		if created {
+			code = http.StatusAccepted
+		}
+		s.writeJSON(w, code, map[string]any{"id": m.ID, "status": string(m.Status), "item_id": *m.OfficerItemID})
 		return
 	}
 	if !created {
@@ -367,6 +396,8 @@ func (s *Server) handlePluginCreate(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, plugins.ErrInvalid):
 		s.renderPluginsPage(w, r, http.StatusBadRequest, "", strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "))
+	case errors.Is(err, plugins.ErrOfficerUnavailable):
+		s.renderPluginsPage(w, r, http.StatusBadRequest, "", "That officer is not defined in the built-in store for you (muster officer def put), or the built-in store is off.")
 	case err != nil:
 		s.logger.Printf("plugins: create: %v", err)
 		s.renderPluginsPage(w, r, http.StatusInternalServerError, "", "The plugin could not be created.")
@@ -425,7 +456,7 @@ func (s *Server) handlePluginDraftChecksToggle(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if changed {
-		s.logger.Printf("plugins: plugin %d: draft_checks turned %v by its owner; %d awaiting draft(s) lapsed", id, on == "1", len(lapsed))
+		s.logger.Printf("plugins: plugin %d: draft_checks turned %v by its owner; %d awaiting reply draft(s) lapsed (any outbound draft awaiting its check was refused)", id, on == "1", len(lapsed))
 	}
 	for _, d := range lapsed {
 		m, merr := s.ext.Plugins.Message(r.Context(), d.MessageID)
@@ -496,7 +527,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
 <label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where your chief is told to record anything durable from these messages</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="example-inbox" class="` + flowsInputClass + `">
-` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginDeliverToFieldHTML() + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
@@ -520,12 +551,14 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
 		} else {
 			b.WriteString(pluginDraftChecksToggleHTML(p))
+			b.WriteString(s.pluginDeliverToFormHTML(p))
 			b.WriteString(`<form method="POST" action="` + pluginsPath + `/` + id + `/revoke">
 <button type="submit" class="` + flowsQuietButton + `">Revoke</button></form>`)
 		}
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
+	b.WriteString(s.pairSectionHTML(r))
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
 	// them as it was (/plugins#draft-<id>, on a phone's older notification)
@@ -567,7 +600,7 @@ func queuedText(n int) string {
 // at mint, but for draft_checks (handlePluginDraftChecksToggle).
 func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) {
 	in := plugins.NewPlugin{Name: strings.TrimSpace(r.PostFormValue("name")), Label: r.PostFormValue("label"),
-		DataScope: strings.TrimSpace(r.PostFormValue("data_scope"))}
+		DataScope: strings.TrimSpace(r.PostFormValue("data_scope")), DeliverTo: strings.TrimSpace(r.PostFormValue("deliver_to"))}
 	for _, c := range r.PostForm["capability"] {
 		in.Capabilities = append(in.Capabilities, plugins.Capability(c))
 	}

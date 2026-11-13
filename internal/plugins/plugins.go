@@ -123,6 +123,11 @@ type Plugin struct {
 	// to (migration 0104); nil on every other token.
 	Origin   *string `json:"origin,omitempty"`
 	EntryURL *string `json:"entryUrl,omitempty"`
+	// DeliverTo binds the plugin to a builtin officer (migration 0121):
+	// "officer:<id>" — its messages become items in that officer's queue
+	// instead of chief turns, and the officer's outbound drafts are its
+	// (outbound.go). nil: the plugin is the chief's, as before.
+	DeliverTo *string `json:"deliverTo,omitempty"`
 	// OwnerLogin is how the owner's account is named to a person: its email,
 	// or its display name when it has none (the admin Users page's spelling).
 	// Set by Authenticate only, for GET /plugin/v1/self.
@@ -182,6 +187,11 @@ type MessageIn struct {
 	// the message waits ConversationRouteTimeout instead of RouteTimeout
 	// (internal/api's routeTimeout; migration 0062). Optional; false when absent.
 	HumanConversation bool `json:"human_conversation"`
+	// Kind and Venue are a plugin bound to an officer's (outbound.go): what
+	// the message is (MessageKinds; "" is note) and where it happened.
+	// Refused on any other plugin.
+	Kind  string `json:"kind"`
+	Venue string `json:"venue"`
 }
 
 // Message is one row of plugin_messages.
@@ -221,6 +231,11 @@ type Message struct {
 	Thread *string `json:"thread,omitempty"`
 	// HumanConversation is MessageIn.HumanConversation as stored.
 	HumanConversation bool `json:"humanConversation"`
+	// Kind and Venue are MessageIn's as stored (a bound plugin's message);
+	// OfficerItemID is the officer item it became (routed_to "officer").
+	Kind          *string `json:"kind,omitempty"`
+	Venue         *string `json:"venue,omitempty"`
+	OfficerItemID *int64  `json:"officerItemId,omitempty"`
 }
 
 // Errors the API maps to status codes.
