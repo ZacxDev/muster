@@ -17,11 +17,12 @@ mention them.
 
 ## ⚠ Before you declare one on a real deployment
 
-Every outward action an officer takes is meant to pass an Attention ask that
-shows the exact content (a muster draft the owner approves, carried out by a
-relay on the owner's own machine — the design's *Phase-3 gated outward
-posting*). **That path is not built yet.** Until it is, a builtin officer's
-only ways out of its pod are muster's tools and the connectors its owner
+Every outward action an officer takes passes an Attention approval that shows
+the exact content: the officer files an **outbound draft**
+(`officer_post_draft`), its owner approves the exact text and media, and a
+plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
+Only an officer whose type grants `outbound_drafts` gets that tool. Its only
+other ways out of its pod are muster's tools and the connectors its owner
 approves one request at a time: do not approve a connector that can write to
 the outside world for one, and give it no `repo` with write access. The
 empty roster (no officer declared) exposes nothing.
@@ -190,6 +191,23 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
   instance claims it, and the other recipients' asks are withdrawn.
   Dismissing it (or letting it expire) leaves the item escalated. A
   `--mode shadow` officer records its escalations and asks nobody.
+
+## 5b. Outbound drafts through a bound plugin
+
+1. Grant the type the capability:
+   `muster officer type put marketing --name "Marketing" --charter-file ./charter.md --policy '{"capabilities":["outbound_drafts"]}'`.
+2. Mint (or [pair](plugins.md#pairing-a-plugin-without-handling-its-token)) a
+   plugin with `messages` and `draft_checks`, and bind it:
+   `deliver_to = officer:marketing:example`
+   ([plugins.md](plugins.md#a-plugin-bound-to-an-officer)). The binding is
+   refused unless the officer is defined for the same owner.
+3. The plugin's messages (`kind`: `plan`, `reply`, `snapshot`, `note`) arrive
+   as `plugin.<kind>` items with the message fenced as untrusted.
+4. The officer files `officer_post_draft{plugin, venue, target, body, media?,
+   item_id?}`. The plugin checks the draft and uploads each medium's bytes;
+   the owner sees the exact text, images and videos on the Reply drafts tab,
+   and approval binds the body and every medium's SHA-256. The plugin claims
+   it, re-hashes its files, posts, reads the post back and reports the result.
 
 ## 6. Switch it off
 
