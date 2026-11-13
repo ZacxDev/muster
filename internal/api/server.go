@@ -496,6 +496,10 @@ type RouterNotification struct {
 	// CodenameKeep its TitleKeep. "" for a push that names no mirrored window:
 	// it always sends Title. goNotify decides, once, per owner.
 	CodenameTitle, CodenameKeep string
+	// Silent: a quiet re-show of a notification already alerted for
+	// (push.Payload.Silent — browsers that honour it only). Muster-native push
+	// only; the router is never sent an attention notification.
+	Silent bool
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -1453,7 +1457,7 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		n.Title = textplain.TitleKeeping(n.Title, n.TitleKeep)
 		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
 			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
-				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions})
+				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions, Silent: n.Silent})
 			if rep.Delivered > 0 && onDelivered != nil {
 				onDelivered(rep.Delivered)
 			}

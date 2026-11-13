@@ -29,17 +29,20 @@ import (
 //     replicas) — unless its last episode ended HANDLED on the same streak
 //     (sessionstate.Handled: the owner opened it, or the 0079 reset), so a
 //     stop the owner dealt with is not pushed again while it sits still — and
-//     one another process opened anyway is ended again (PG.EndRepeat);
+//     one another process opened anyway is ended again (PG.EndRepeat); one back
+//     from 'gone' on the same streak carries the ended one's push
+//     (sessionstate.resumedReasons);
 //   - an open episode follows its session (state, where it is, its streak) and
 //     ENDS when the OWNER ACTS in the session after it opened — a message of
 //     their own, or a waiting prompt answered (sessionstate.OwnerActed;
 //     episodeOwnerActed reads it) — when the owner OPENS the session's own page
 //     in muster (episodeViewed, session_viewed.go), after sustained work (sessionstate.Advance;
 //     for an agent, a reply turn that long), or when its window is gone from a
-//     host that is online, reporting status, and has sent its window list. A
-//     host that dropped or has not been read, a failed agent list, a failed
-//     transcript read, a failed classifier: none of them ends an episode or
-//     quiets one.
+//     host that is online, reporting status, and has sent its window list,
+//     on episodeGoneMisses consecutive passes (a window listed without its
+//     session key is present, not missing). A host that dropped or has not
+//     been read, a failed agent list, a failed transcript read, a failed
+//     classifier: none of them ends an episode or quiets one.
 //
 // 🔴 THE CLASSIFIER RUNS ONLY WHERE THE CHIEF'S NUDGES WOULD RUN IT: the
 // feature on and the owner's chief on (docs/chief-nudges.md, "The stall
@@ -169,7 +172,8 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	// failed. Neither reading may push a held wait as if its host had dropped:
 	// a connected host resets the drop push's clock (hostUnreads) every pass,
 	// so it never pushes, while ending nothing. If the window really closed,
-	// the host's next non-empty list ends it 'gone'; if the list was a failed
+	// the host's next non-empty lists end it 'gone'
+	// (after episodeGoneMisses of them); if the list was a failed
 	// read and the window still waits, that next list shows it waiting and the
 	// pass pushes it — a delay, never a silence.
 	reporting := map[string]bool{}
@@ -211,16 +215,32 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		if seen[k] {
 			continue
 		}
-		gone := false
+		missing, dead := false, false
 		switch ep.Kind {
 		case sessionstate.KindMirror:
-			gone = reporting[ep.Host]
+			// 🔴 LISTED WITHOUT ITS KEY IS PRESENT, NOT MISSING: the stall
+			// facts skip a window whose session key is empty (a host that lists
+			// windows before their Claude session ids), so it is unseen there
+			// while it is right where the episode left it — when its pane still
+			// holds its agent (listedUnkeyed).
+			ev := listingNone
+			if reporting[ep.Host] {
+				ev = listedUnkeyed(hs, ep)
+			}
+			dead = ev == listingDead
+			if ev == listingPresent {
+				if err := s.ext.Episodes.Present(octx, ep.ID); err != nil {
+					s.logger.Printf("session state: episode %d: present: %v", ep.ID, err)
+				}
+				continue
+			}
+			missing = reporting[ep.Host]
 		case sessionstate.KindAgent:
 			// 🔴 A FAILED AGENT LIST PROVES NOTHING: it lists no agent at all.
-			gone = read.agentsRead && !agentsSeen[ep.AgentID]
+			missing = read.agentsRead && !agentsSeen[ep.AgentID]
 		}
-		if gone {
-			s.endEpisode(octx, ep, sessionstate.EndGone, sp.now)
+		if missing {
+			s.missedPass(octx, ep, dead, sp.now)
 			continue
 		}
 		// 🔴 A HOST THAT DROPS NEVER SILENCES A HELD WAIT (audit round 1 F2):
@@ -240,12 +260,114 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		// still waiting (sessionStateStep), and the episode ends when that
 		// listing shows it not waiting — so a drop cannot push a stop answered
 		// long ago, nor leave a later real prompt without its push.
-		if ep.Kind == sessionstate.KindMirror && ep.Waiting && ep.StreakKey != "" &&
+		//
+		// 🔴 NOR FOR A WAIT THE LAST CONNECTED LISTING SHOWED DEAD (audit rounds
+		// 2 and 3): the host listed the window, at its place, holding no agent
+		// of this conversation (its Claude Ctrl-C'd and the shell left, a new
+		// conversation started in it — Episode.DeadListed), so a drop before
+		// the threshold must not push "needs you" for a session that no longer
+		// exists. POSITIVE EVIDENCE ONLY: a window the last listing merely
+		// LEFT OUT (an omission, about hourly on a live fleet) is no evidence,
+		// and its held wait is pushed on the drop as before — as is one still
+		// listed waiting.
+		if ep.Kind == sessionstate.KindMirror && ep.Waiting && ep.StreakKey != "" && !ep.DeadListed &&
 			s.hostsUnread.unreadFor(owner, ep.Host, dropped[ep.Host], sp.now) >= s.waitingGrace {
 			s.settleEpisode(octx, ep, heldWaitFacts(ep, sp.now), sp.now.Sub(ep.OpenedAt), sp.hs)
 		}
 	}
 }
+
+// episodeGoneMisses is how many CONSECUTIVE passes must find an open
+// episode's session missing — its window absent from a host that is online,
+// reporting status and listing windows (or its agent absent from a list that
+// was read) — before the episode ends 'gone': about 90 s at
+// SessionStateInterval. A connected host's listing can leave a window out for
+// one pass (measured on a live fleet, about hourly); ending the episode on
+// that pass withdrew its notification, and the window, listed again on the
+// next, was the same stop. 3 rides out a one-pass omission with room for a
+// second, and still ends a genuinely closed window within about 90 s.
+//
+// The count is PERSISTED on the episode (missed_passes, PG.Missed), never
+// derived from a time: a restart neither loses it nor ends early — muster's
+// own downtime, and a pass whose host is offline or unread, count as no pass
+// at all (nothing observed the window missing), and any pass that sees the
+// window (keyed: Observe; listed without its key: Present) resets it to 0.
+const episodeGoneMisses = 3
+
+// missedPass records one pass that found open episode ep's session missing —
+// dead: its window listed holding no agent of it (listedUnkeyed), not merely
+// left out — and ends it 'gone' once episodeGoneMisses consecutive passes have.
+func (s *Server) missedPass(octx context.Context, ep sessionstate.Episode, dead bool, now time.Time) {
+	n, err := s.ext.Episodes.Missed(octx, ep.ID, dead)
+	if err != nil {
+		s.logger.Printf("session state: episode %d: missed: %v", ep.ID, err)
+		return
+	}
+	if n >= episodeGoneMisses {
+		s.endEpisode(octx, ep, sessionstate.EndGone, now)
+	}
+}
+
+// listedUnkeyed is how hs lists mirrored episode ep's window — on its host,
+// online and reporting status, at its tmux session and window id — when the
+// stall facts did not see ep's session there:
+//
+//   - present: listed with no session key (stateWindowKey "") WHILE ITS PANE
+//     STILL HOLDS AN AGENT THAT CAN BE THIS CONVERSATION — Claude Code, or
+//     opencode, or a Claude Code pane the host could not match to an existing
+//     transcript (Window.ClaudeUnmatched: its no-view reason code). Unseen by
+//     the stall facts (a host that lists windows before their session ids),
+//     but right where the episode left it.
+//   - dead: listed there holding NO agent of this conversation — a pane that
+//     runs no agent (Claude exited and left the shell, or a tmux restart
+//     reused the window id for another shell), a NEW Claude conversation with
+//     no transcript yet (reason not_yet), or another conversation's key.
+//     POSITIVE evidence the session is gone from it (Episode.DeadListed).
+//   - unknown: listed there as a Claude Code pane whose reason says nothing
+//     about which conversation it holds — the host cannot read its process
+//     table (no_procs), or an older host's note with no code. Not present
+//     (it counts toward the gone threshold, as missing), but no evidence the
+//     session is dead either: it never sets DeadListed (audit round 4).
+//   - none: not listed at all — an omission, no evidence either way.
+//
+// 🔴 A PANE THAT HOLDS NO AGENT OF THE CONVERSATION IS NOT "UNKEYED" (audit
+// rounds 1 and 3): counted present, such an episode never ended, its push was
+// never withdrawn, and a later host drop could push a held "needs you" for a
+// session that no longer exists.
+func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) listingEvidence {
+	for _, h := range hs {
+		if h.Host != ep.Host || !h.Online || !h.StatusReport {
+			continue
+		}
+		for _, w := range h.Windows {
+			if w.Session != ep.TmuxSession || w.ID != ep.Window {
+				continue
+			}
+			key, _ := stateWindowKey(w)
+			switch {
+			case key != "":
+				return listingDead // another conversation's key
+			case w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode || w.ClaudeUnmatched():
+				return listingPresent
+			case w.AgentNoteCode == mirror.AgentNoteNoProcs || (w.AgentNote != "" && w.AgentNoteCode == ""):
+				return listingUnknown
+			}
+			return listingDead // a shell, or a new conversation (not_yet)
+		}
+	}
+	return listingNone
+}
+
+// listingEvidence is what a connected listing says of an episode's window
+// that the stall facts did not see (listedUnkeyed).
+type listingEvidence int
+
+const (
+	listingNone    listingEvidence = iota // not listed: an omission
+	listingPresent                        // its pane still holds its agent
+	listingDead                           // listed holding no agent of it
+	listingUnknown                        // listed, its reason unreadable
+)
 
 // heldWaitFacts is what open waiting episode ep is settled on when no status
 // is read for it — by the waiting hook, and by the pass for a window it cannot
@@ -429,6 +551,8 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// Nothing the owner wrote can be after an episode opened this instant:
 		// its owner-acted check starts from this streak.
 		s.ownerChecked.checked(ep.ID, c.StreakKey)
+		// A stop back from gone, already pushed: its notification, quietly.
+		s.reshowEpisode(octx, ep, c.IdleFor, sp.hs)
 	}
 	if f.Stalled && classified && (ep.ClassifiedStreak != c.StreakKey || ep.Jev.Err != jev.Err || ep.Jev.Label != jev.Label) {
 		asked := sessionstate.Asked(true, jev.Err, f.AskStall)

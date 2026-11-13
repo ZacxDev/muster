@@ -485,6 +485,23 @@ const (
 	NoViewNoEnv = "Claude Code is running here, but muster-mirror cannot read its environment, so it cannot tell which Claude config directory it uses."
 )
 
+// noViewCode is the wire code of a NoView* line (mirror.Window.AgentNoteCode),
+// "" for no line. ONE TABLE: each line has exactly one code, so muster can
+// branch on the reason without reading the words.
+func noViewCode(line string) string {
+	switch line {
+	case NoViewNotYet:
+		return mirror.AgentNoteNotYet
+	case NoViewNoTranscript:
+		return mirror.AgentNoteNoTranscript
+	case NoViewNoEnv:
+		return mirror.AgentNoteNoEnv
+	case NoViewNoProcs:
+		return mirror.AgentNoteNoProcs
+	}
+	return ""
+}
+
 // whyNoView is why pane p, which no runtime claimed, has no rendered view —
 // one of the NoView* lines — or "" when nothing says Claude Code is in it.
 // command is the pane's #{pane_current_command}; procs/children the table

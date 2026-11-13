@@ -32,6 +32,13 @@ import (
 // any ended episode whose push is still shown, so a stop that ended while
 // muster was down is closed too).
 //
+// A STOP BACK FROM 'gone' ON THE SAME STREAK IS NOT PUSHED AGAIN: its new
+// episode opens already carrying the ended one's pushed_at, and the chief's
+// decision on it (streakDecision), and its withdrawn notification is shown
+// again silently (reshowEpisode) — sessionstate.resumedReasons says why; a
+// backstop since an episode ends gone only after episodeGoneMisses missing
+// passes (session_state.go).
+//
 // WHEN IT PUSHES (episodeVerdict):
 //   - a WAITING window — 🔴 WHATEVER IT WAITS ON: a prompt muster cannot
 //     answer, and an answerable ask too (a held AskUserQuestion, an opencode
@@ -236,9 +243,15 @@ func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 
 // streakDecision is the chief's decision for ep's streak, if any. A failed
 // read is no decision (the stop then pushes after episodeChiefWait). 🔴 A
-// DECISION TAKEN IN ANOTHER EPISODE IS NOT THIS STOP'S: a window gone and back
-// with the same idle-since opens a new stop on the same streak, and the old
-// stop's sent nudge or leave must not quiet it.
+// DECISION TAKEN IN ANOTHER EPISODE IS NOT THIS STOP'S — EXCEPT THE SAME STOP
+// RESUMED: an episode opened after its session's latest one ended 'gone' on
+// the same streak links that stop's first episode (Episode.ResumedFrom, set
+// by PG.Open under sessionstate.resumedReasons), and a chief's decision taken
+// in ANY episode of that stop — its first, or one resumed in between (audit
+// round 1 🟡2) — holds here, as its push does: one stop, one chain root
+// (episodeRoot) on both sides. Any other episode's decision (a stop the owner
+// handled, one that ended worked or owner) does not, and nor does one whose
+// episode cannot be read (the stop then pushes: never a silence).
 func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (chiefnudge.Decision, bool) {
 	r, ok := s.ext.ChiefNudges.(streakDecisionReader)
 	if !ok || s.ext.ChiefNudges == nil || ep.StreakKey == "" {
@@ -250,9 +263,24 @@ func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (
 		return chiefnudge.Decision{}, false
 	}
 	if found && d.EpisodeID != 0 && d.EpisodeID != ep.ID {
-		return chiefnudge.Decision{}, false
+		de, ok, err := s.ext.Episodes.Get(octx, d.EpisodeID)
+		if err != nil {
+			s.logger.Printf("session state: episode %d: the decision's episode %d: %v", ep.ID, d.EpisodeID, err)
+		}
+		if err != nil || !ok || episodeRoot(de) != episodeRoot(ep) {
+			return chiefnudge.Decision{}, false
+		}
 	}
 	return d, found
+}
+
+// episodeRoot is the first episode of ep's stop: the one it resumed
+// (ResumedFrom), else ep itself — PG.Open's coalesce(resumed_from, id).
+func episodeRoot(ep sessionstate.Episode) int64 {
+	if ep.ResumedFrom != 0 {
+		return ep.ResumedFrom
+	}
+	return ep.ID
 }
 
 // settleEpisode is one open episode's push, for the state pass and the waiting
@@ -305,6 +333,27 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 		return // pushed already — by the hook, another pass or a replica
 	}
 	s.goNotify(ep.Owner, push.EventAttention, s.episodeNotification(octx, ep, idle, hosts), nil)
+	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
+}
+
+// reshowEpisode puts back, QUIETLY, the notification of a stop that came back
+// from 'gone' already pushed: PG.Open just opened ep carrying the ended
+// episode's pushed_at (sessionstate.resumedReasons), and that episode's
+// notification was withdrawn when it ended. The operator's rule is that a
+// stop's notification stays up through a blip, so it is shown again — under
+// ep's OWN tag and tap route (the old tag was closed; ep's is the one its own
+// end will withdraw) and SILENT (push.Payload.Silent: no sound, no vibration;
+// sent only to devices that honour it). It is no new push: nothing is
+// claimed, pushed_at stays the first push's time, so the repush floor and the
+// one-push-per-stop claim are untouched. Called only by the one process whose
+// Open claimed ep, so it is shown once.
+func (s *Server) reshowEpisode(octx context.Context, ep sessionstate.Episode, idle time.Duration, hosts []mirror.HostView) {
+	if ep.ResumedFrom == 0 || ep.PushedAt.IsZero() {
+		return
+	}
+	n := s.episodeNotification(octx, ep, idle, hosts)
+	n.Silent = true
+	s.goNotify(ep.Owner, push.EventAttention, n, nil)
 	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
 }
 
@@ -709,6 +758,7 @@ func (s *Server) episodeWaitingPushes(octx context.Context, owner int64, items [
 				continue
 			}
 			ep = opened
+			s.reshowEpisode(octx, ep, 0, hs)
 		}
 		switch {
 		case !ep.PushedAt.IsZero():

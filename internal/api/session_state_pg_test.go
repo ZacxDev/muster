@@ -286,7 +286,8 @@ func TestABusyBlipKeepsTheEpisodeAndSustainedWorkEndsIt(t *testing.T) {
 
 // TestOnlyAReportingHostCanEndAnEpisodeAsGone: a host that dropped ends
 // nothing (a failure never quiets a session); the window gone from a host
-// that is online and reporting status ends it as gone.
+// that is online and reporting status, for episodeGoneMisses passes, ends it
+// as gone.
 func TestOnlyAReportingHostCanEndAnEpisodeAsGone(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.statePass(t)
@@ -304,7 +305,11 @@ func TestOnlyAReportingHostCanEndAnEpisodeAsGone(t *testing.T) {
 	f.mirror.online = true
 	f.mirror.windows = []mirror.Window{{Session: "main", ID: "@2", Index: 2, Label: "shell"}}
 	f.mirror.mu.Unlock()
-	f.statePass(t)
+	// Gone only on episodeGoneMisses consecutive passes of the reporting host
+	// (session_gone_resume_pg_test.go pins the count).
+	for i := 0; i < episodeGoneMisses; i++ {
+		f.statePass(t)
+	}
 	if e := f.oneEpisode(t); e.ID != first.ID || e.Open() || e.EndReason != sessionstate.EndGone {
 		t.Fatalf("the window left a reporting host: %+v", e)
 	}

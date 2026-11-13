@@ -679,6 +679,14 @@ type Window struct {
 	// of a list) and stripped of control characters by NormalizeWindows.
 	// Backward-compatible both ways, like AgentSession.
 	AgentNote string `json:"agentNote,omitempty"`
+	// AgentNoteCode is the REASON of a Claude Code pane's no-view note
+	// (AgentNote on a window that is not Claude and names no runtime), as a
+	// code: one of the AgentNote* constants. "" for none — an older host
+	// sends only the words, and muster then knows no reason (ClaudeUnmatched
+	// is false). Kept only on such a window, and only a known code. It
+	// outlives the list-wide note bound (a few bytes): a capped note's window
+	// still says why. Backward-compatible both ways, like AgentNote.
+	AgentNoteCode string `json:"agentNoteCode,omitempty"`
 	// AgentSend: the host sends to this window's session (AgentSession)
 	// through its runtime's gated send — an opencode pane started by the
 	// launcher (`muster-mirror opencode`), whose session the host knows
@@ -806,6 +814,39 @@ const (
 	MaxAgentNote        = 200
 	MaxAgentNoteWindows = 8
 )
+
+// The reasons a Claude Code pane has no rendered view (Window.AgentNoteCode;
+// mirrorhost's NoView* lines, one code each).
+const (
+	// AgentNoteNotYet: Claude Code runs and named its session, but has
+	// written no transcript for it yet — a NEW conversation (a CLI just
+	// started), so not one muster already knows.
+	AgentNoteNotYet = "not_yet"
+	// AgentNoteNoTranscript: Claude Code runs, holding a conversation the host
+	// cannot match to a transcript (none of its own, or only a guess another
+	// pane makes too).
+	AgentNoteNoTranscript = "no_transcript"
+	// AgentNoteNoEnv: Claude Code runs, and its environment could not be
+	// read, so which config directory — and so which transcript — is unknown.
+	AgentNoteNoEnv = "no_env"
+	// AgentNoteNoProcs: the host cannot read its process table at all; the
+	// pane only looks like Claude Code.
+	AgentNoteNoProcs = "no_procs"
+)
+
+// validNoteCode reports whether c is an AgentNote* code.
+func validNoteCode(c string) bool {
+	return c == AgentNoteNotYet || c == AgentNoteNoTranscript || c == AgentNoteNoEnv || c == AgentNoteNoProcs
+}
+
+// ClaudeUnmatched reports whether w is a Claude Code pane holding a
+// conversation the host could not match to its transcript (AgentNoteCode
+// no_transcript or no_env): a running conversation muster may already know
+// by its key. False for a NEW conversation (not_yet), a host that cannot read
+// processes (no_procs), and a note with no code (an older host: unknown).
+func (w Window) ClaudeUnmatched() bool {
+	return w.AgentNoteCode == AgentNoteNoTranscript || w.AgentNoteCode == AgentNoteNoEnv
+}
 
 // cleanNote is a note as the wire carries it: control characters made
 // spaces, trimmed, cut to MaxAgentNote bytes on a rune boundary.
@@ -1182,7 +1223,15 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// A note about a runtime muster does not know is that runtime's
 		// words: dropped with it.
 		if w.AgentNote = cleanNote(w.AgentNote); (!onWire && w.Claude) || unknownRuntime {
-			w.AgentNote = ""
+			// Its code goes with it: the two never disagree.
+			w.AgentNote, w.AgentNoteCode = "", ""
+		}
+		// Its code names a Claude Code pane's reason: only on a window that is
+		// not Claude and names no runtime; only a known one. NOT tied to the
+		// note's words: the list-wide bound below (on either side of the wire)
+		// may drop those, and the code still says why.
+		if w.Claude || w.Runtime != "" || !validNoteCode(w.AgentNoteCode) {
+			w.AgentNoteCode = ""
 		}
 		// A status describes an agent's pane; a window without one has none.
 		if w.Status = NormalizeStatus(w.Status); w.AgentRuntime() == "" {
@@ -1425,7 +1474,7 @@ func (w Window) Equal(o Window) bool {
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession && w.AgentSend == o.AgentSend &&
 		w.AgentBind == o.AgentBind &&
-		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
+		w.AgentNote == o.AgentNote && w.AgentNoteCode == o.AgentNoteCode && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
 		w.LiveCopy == o.LiveCopy && w.Dispatch == o.Dispatch
 }
 

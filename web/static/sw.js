@@ -350,6 +350,11 @@ self.addEventListener('push', (event) => {
     data: data,
     requireInteraction: false,
     actions: [],
+    // A re-show of a notification this device already alerted for (the
+    // server sends it only to browsers that honour it): no sound, no
+    // vibration, and no re-alert under the tag.
+    silent: payload.silent === true,
+    renotify: false,
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

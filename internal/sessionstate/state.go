@@ -39,7 +39,7 @@ const (
 // The reasons an episode ends.
 const (
 	EndWorked = "worked" // the session worked, continuously, for EndAfter
-	EndGone   = "gone"   // its window left a host that is online and reporting status
+	EndGone   = "gone"   // its window left a host that is online and reporting status, for several passes (api: episodeGoneMisses)
 	EndOwner  = "owner"  // the owner acted in the session after it opened (OwnerActed)
 	// EndViewed: the owner opened the session's own page in muster (its
 	// rendered view, its terminal, an agent's conversation) after it opened.
@@ -84,6 +84,44 @@ func Handled(reason string) bool {
 // handledReasons is Handled's set, as PG.Open's and PG.EndRepeat's guards read
 // it.
 var handledReasons = []string{EndViewed, EndReset}
+
+// resumedReasons is the end reasons whose stop, seen again on the SAME
+// streak, is that same stop back: PG.Open writes the new episode carrying the
+// ended one's pushed_at, so a stop already pushed is never pushed again, and
+// linking the stop's first episode (Episode.ResumedFrom), so a chief's
+// decision on it — a sent nudge, a "leave" on a stop that asked nothing —
+// still quiets it (api streakDecision). 🔴
+// THE ONE PLACE THIS RULE IS REASONED (pointers: PG.Open, session_push.go,
+// session_state.go; docs/design/session-state.md, "gone").
+//
+// 🔴 ONLY 'gone'. A connected host's listing can leave a window out and list
+// it again unchanged (measured on a live fleet, about hourly: every idle
+// window of one host ended gone in one pass, opened again on its unchanged
+// streak the next, and was pushed again once the chief's wait ran out — a
+// burst of the same stops). The pass now ends an episode gone only after
+// several consecutive missing passes (episodeGoneMisses, internal/api), so a
+// one-pass omission ends nothing; this carry is the BACKSTOP for an omission
+// longer than that. The streak is the host's own status time (or an agent's
+// newest message), so an EQUAL streak means the session has not run since —
+// any turn, a resume or a new process writes a new one, and a new
+// conversation in a new window is a new session key altogether. The other
+// reasons are not the same stop: 'worked' and 'owner' mean the session moved
+// (see Handled for why 'owner' can still carry an unchanged streak), and
+// 'viewed'/'reset' never reopen on their streak at all (Handled).
+//
+// 🔴 IT CARRIES WHAT THE STOP HAD, NEVER A NEW SILENCE: a stop that was never
+// pushed carries no push; one the chief never judged carries no decision —
+// held in its grace or the chief's wait, its return is pushed exactly as a
+// new stop would be (the hold delays, it never silences). Only a decision the
+// chief already took on this very stop and streak carries over — in ANY
+// episode of the stop (api streakDecision compares chain roots).
+//
+// 🔴 ITS NOTIFICATION STAYS UP: the first push's notification is withdrawn
+// when its episode ends gone, so a return that carried the push shows it
+// again QUIETLY, under the new episode's tag, as no new push (api
+// reshowEpisode; push.Payload.Silent — only devices that can show it without
+// sound get it).
+var resumedReasons = []string{EndGone}
 
 // EndAfter is how long a session must work, continuously, before its episode
 // ends on its own (the design's N). A shorter blip — a quick tool call, a

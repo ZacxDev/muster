@@ -463,8 +463,9 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			m.AgentNote, m.AgentSend, m.AgentBind = w.Agent.Note, w.Agent.Send, w.Agent.Bind
 			m.TurnError = w.Agent.TurnError
 		} else if claude {
-			// A Claude Code pane with no rendered view says why.
-			m.AgentNote = w.NoView
+			// A Claude Code pane with no rendered view says why — in words,
+			// and as a code muster can branch on (noViewCode).
+			m.AgentNote, m.AgentNoteCode = w.NoView, noViewCode(w.NoView)
 		}
 		if claude {
 			for _, o := range w.Others {

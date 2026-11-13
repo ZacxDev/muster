@@ -44,6 +44,14 @@ type Payload struct {
 	// muster's icon when it is absent. BROWSER ONLY: payload v2 never carries
 	// it — the Android app reads the logo from GET /api/instance itself.
 	Icon string `json:"icon,omitempty"`
+	// Silent: show this notification WITHOUT sound or vibration — a re-show
+	// of one the device already alerted for (a session-state stop back from a
+	// blip, internal/api session_push.go). The service worker passes it as the
+	// Notifications API's `silent` (with `renotify: false`). 🔴 SENT ONLY TO
+	// DEVICES THAT HONOUR IT (silentCapable): a native device's app as shipped
+	// ignores payload v2's "update" and alerts on every post, and Safari
+	// ignores `silent`; both are skipped — a missing re-show, never a buzz.
+	Silent bool `json:"silent,omitempty"`
 }
 
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
@@ -389,6 +397,9 @@ func (s *Service) SendTo(ctx context.Context, owner int64, p Payload) Report {
 	if p.Type == TypeResolved {
 		devs = withoutSilentPenalty(devs)
 	}
+	if p.Silent {
+		devs = silentCapable(devs)
+	}
 	rep.Devices = len(devs)
 	if len(devs) == 0 {
 		return rep
@@ -460,6 +471,26 @@ func withoutSilentPenalty(devs []Device) []Device {
 	for _, d := range devs {
 		if d.Kind == KindAndroid {
 			out = append(out, d)
+			continue
+		}
+		if u, err := url.Parse(d.Sub.Endpoint); err == nil && strings.EqualFold(u.Hostname(), applePushHost) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// silentCapable is the devices a Silent payload is sent to: browser devices
+// whose push service is not Safari's. A native device (KindAndroid) is
+// skipped — its app as shipped ignores payload v2's "update" and alerts on
+// every post (docs/design/android.md) — and so is a Safari browser device,
+// whose WebKit ignores the Notifications API's `silent`. A device that cannot
+// show it quietly is not shown it at all.
+func silentCapable(devs []Device) []Device {
+	out := devs[:0:0]
+	for _, d := range devs {
+		if d.Kind == KindAndroid {
 			continue
 		}
 		if u, err := url.Parse(d.Sub.Endpoint); err == nil && strings.EqualFold(u.Hostname(), applePushHost) {
