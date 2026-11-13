@@ -293,9 +293,17 @@ func (s *Server) missedPass(octx context.Context, ep sessionstate.Episode, now t
 
 // listedUnkeyed reports whether hs lists mirrored episode ep's window — on its
 // host, online and reporting status, at its tmux session and window id —
-// with no session key (stateWindowKey ""): present, though the stall facts
-// cannot see it. A window listed under ANOTHER key holds another conversation
-// now, so ep's session is missing from it.
+// with no session key (stateWindowKey "") WHILE ITS PANE STILL RUNS AN AGENT
+// (Claude Code, or opencode): present, though the stall facts cannot see it
+// (a host that lists windows before their session ids). A window listed under
+// ANOTHER key holds another conversation now, so ep's session is missing from
+// it.
+//
+// 🔴 A PANE THAT RUNS NO AGENT IS NOT "UNKEYED", IT IS GONE (audit round 1 🔴1):
+// Claude exited (Ctrl-C, /exit) and left the shell, or a tmux restart reused
+// the window id for an unrelated shell. Counted present, such an episode never
+// ended, its push was never withdrawn, and a later host drop could push a
+// held "needs you" for a session that no longer exists.
 func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) bool {
 	for _, h := range hs {
 		if h.Host != ep.Host || !h.Online || !h.StatusReport {
@@ -304,7 +312,7 @@ func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) bool {
 		for _, w := range h.Windows {
 			if w.Session == ep.TmuxSession && w.ID == ep.Window {
 				key, _ := stateWindowKey(w)
-				return key == ""
+				return key == "" && (w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode)
 			}
 		}
 	}
@@ -493,6 +501,8 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 		// Nothing the owner wrote can be after an episode opened this instant:
 		// its owner-acted check starts from this streak.
 		s.ownerChecked.checked(ep.ID, c.StreakKey)
+		// A stop back from gone, already pushed: its notification, quietly.
+		s.reshowEpisode(octx, ep, c.IdleFor, sp.hs)
 	}
 	if f.Stalled && classified && (ep.ClassifiedStreak != c.StreakKey || ep.Jev.Err != jev.Err || ep.Jev.Label != jev.Label) {
 		asked := sessionstate.Asked(true, jev.Err, f.AskStall)

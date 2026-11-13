@@ -346,10 +346,21 @@ An episode is one stop of one session.
   for it carries the ended one's `pushed_at` (set in the same `INSERT`), so a
   stop already pushed is not pushed a second time; and it links the stop's
   first episode (`resumed_from`), so the Chief's decision on it (a sent
-  nudge, a "leave" on a stop that asked nothing) still quiets it. One that
-  ended `gone` before it was pushed, unjudged, carries nothing and is pushed
-  as any new stop. A new streak, or a new session key, is a new stop, judged
+  nudge, a "leave" on a stop that asked nothing), taken in any episode of the
+  stop (compared by chain root), still quiets it. Its notification, withdrawn
+  when it ended `gone`, is shown again **silently** under the new episode's
+  tag — no sound, no vibration, not a new push (the repush floor and the
+  claim are untouched). Only browsers whose push service honours `silent`
+  get it; the Android app (which ignores payload v2's `update`) and Safari
+  (which ignores `silent`) are skipped rather than buzzed. One that ended
+  `gone` before it was pushed, unjudged, carries nothing and is pushed as any
+  new stop. A new streak, or a new session key, is a new stop, judged
   afresh.
+
+  A window whose pane runs no agent any more (Claude exited and left the
+  shell, or a tmux restart reused the window id for another shell) is
+  missing, not "listed without its key": only a pane still running Claude
+  Code or opencode counts as present while its key is empty.
 
   **A handled stop is not opened again on the same streak**
   (`sessionstate.Handled`: `viewed`, and the one-time `reset` below): while

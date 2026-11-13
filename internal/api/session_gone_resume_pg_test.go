@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
@@ -23,13 +24,24 @@ import (
 // These tests use only names that exist at the base too, so each is run there
 // to show which are red before the fix.
 
-// sentEpisodes is the episode pushes SENT so far (not their clears), as
-// "attention attention-episode-<id>" lines.
+// sentEpisodes is the episode pushes that ALERTED so far (not their clears,
+// not a silent re-show), as "attention attention-episode-<id>" lines.
 func (f *stateFixture) sentEpisodes() []string {
 	var out []string
-	for _, p := range f.pushes() {
-		if strings.HasPrefix(p, "attention attention-episode-") {
-			out = append(out, p)
+	for _, p := range f.payloads() {
+		if p.Type != push.TypeResolved && !p.Silent && strings.HasPrefix(p.Tag, "attention-episode-") {
+			out = append(out, p.Type+" "+p.Tag)
+		}
+	}
+	return out
+}
+
+// reshows is the silent re-shows sent so far, by tag.
+func (f *stateFixture) reshows() []string {
+	var out []string
+	for _, p := range f.payloads() {
+		if p.Silent && p.Type != push.TypeResolved {
+			out = append(out, p.Tag)
 		}
 	}
 	return out
