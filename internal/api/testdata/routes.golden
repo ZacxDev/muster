@@ -29,6 +29,7 @@
 /llm/
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
+DELETE /api/agents/{name}
 DELETE /api/device
 DELETE /api/device/push
 DELETE /api/instance/branding/app-icon

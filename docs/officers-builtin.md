@@ -21,9 +21,20 @@ Every outward action an officer takes **through muster** passes an Attention
 approval that shows the exact content: the officer files an **outbound draft**
 (`officer_post_draft`), its owner approves the exact text and media, and a
 plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
-This holds for pod and host officers alike, and a host instance cannot approve
-its own draft or connector request through muster. Only an officer whose type
-grants `outbound_drafts` gets that tool.
+This holds for pod and host officers alike. On a host the machine's MCP door
+names its caller by a header the caller sets — any process of that user,
+the officer included, can call it as one of your sessions there — so while a
+host officer is declared on a machine, every owner-authority tool reached
+through that machine's door (`plugin_draft_decide`,
+`connector_request_decide`, `attention_answer`, `agent_destroy`,
+`chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
+`plugin_request_decide`) decides nothing: it files a **confirmation card**
+that you confirm on your **paired phone** (a signed action: a fresh step-up,
+single use, bound to that one decision); a browser or MCP answer of the card
+is refused. That step-up is what makes a decision from that machine provably
+yours. Deciding in muster's own web UI (Reply drafts, Connectors, Attention)
+is unchanged. Only an officer whose type grants `outbound_drafts` gets that
+tool.
 
 - **On a pod** that approval is also the only way out: its other ways out of
   its pod are muster's tools and the connectors its owner approves one request
@@ -185,11 +196,17 @@ What happens:
   `postgres_query`, through the mirror door. Every call is bound to the Claude
   session muster recorded for that spawn, in the window it recorded, and runs
   as the instance's agent row; any other session gets a tool error. A bound
-  instance gets ONLY these (and `attention_ask`): the operator's tools on the
-  mirror door — deciding a draft or a connector request, answering an ask —
-  are refused to it. While a host officer is declared, every mirrored
-  session's tool list shows these tools (a list carries no session); only the
-  instance can use them.
+  instance gets ONLY these (and `attention_ask`). While a host officer is
+  declared, every mirrored session's tool list shows these tools (a list
+  carries no session); only the instance can use them.
+- **The step-up gate.** The instance could still name ANOTHER of your windows
+  to the machine's MCP door (the header is the caller's to set) and arrive as
+  that session. So on this machine every owner-authority tool — deciding a
+  draft, a connector request or a plugin's pairing, answering an ask,
+  destroying an agent, restarting the chief, approving a held start,
+  answering or routing a plugin message — files a confirmation card instead
+  of deciding; it runs once, exactly as asked, when you answer **Confirm** on
+  your paired phone. Without a paired phone, decide in muster's web UI.
 - **Connectors.** Each `connector_request` is decided by its owner, per
   request, never from a shared approval — as for a pod. Not `github`: it works
   through an HTTP proxy with an agent token no host session holds; the
@@ -197,11 +214,22 @@ What happens:
 - **More work while it is up.** muster pastes the re-prompt into its window,
   only while the host reports it idle.
 - **Scale to zero.** After `idle_scale_to_zero_after` with nothing to do,
-  muster closes the window (`/exit` at an idle prompt, the window closed after
-  30 s otherwise); the host then removes the worktree if it is clean. muster
+  muster closes the window — and asks only while the host reports it **idle**
+  in the recorded conversation (an instance still finishing its last turn is
+  left for the next idle pass): the host types `/exit` at the empty idle
+  prompt and closes the window if Claude Code has not exited 30 s later; a
+  window that is NOT at an empty idle prompt when the close arrives (a turn
+  started, a person being asked, text in the box) is closed **at once**, with
+  no grace. The host then removes the worktree if it is clean. If the
+  recorded window starts another conversation (a `/clear` in it), muster
+  follows it at its next poll. muster
   closes only the window it recorded for that instance — the one exception to
   "muster never closes a host-spawned window", and declaring `"runtime":
   "host"` is the consent to it ([decisions.md](decisions.md#a-host-officers-window-is-the-one-window-muster-closes-by-itself)).
+- **Moving it.** Changing an officer's `host`, or moving it between pods and
+  a host, leaves its instance rows on the old side; the officer's next start
+  is refused naming the command that clears each: `muster agent rm <instance>`
+  (a host row needs no provisioner; drafts and grants on it go with it).
 - **Host offline.** The officer changes nothing until the host is back: its
   items wait.
 

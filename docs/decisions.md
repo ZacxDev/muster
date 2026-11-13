@@ -140,11 +140,28 @@ when idle" is not a mechanism. So, by operator decision (2026-11-13, "Yes,
 opt-in is enough"), **declaring an officer `"runtime": "host"` is the owner's
 consent for muster to close that officer's instance windows** — only the
 window muster recorded from the spawn reply, running the conversation it
-recorded, through the existing `agent-close` (`/exit` at an idle prompt, the
-window closed after the grace otherwise). No other window, and no
+recorded, through the existing `agent-close`, asked only while the host
+reports the window idle (`/exit` at the empty idle prompt, the window closed
+30 s later if it has not exited; a window not at an empty idle prompt when the
+close arrives is closed at once). No other window, and no
 chief-dispatched window, is closed this way. The ledger of `CloseAgent`'s
 callers names both: the owner's tap and the host officer fleet's `Stop`.
 [design/officers-on-hosts.md](design/officers-on-hosts.md#closing-a-window-the-exception-to-d7).
+
+## On a host officer's machine, an owner decision needs the phone
+
+A mirrored session's MCP door names its caller by a header the caller sets:
+the machine's loopback endpoint maps whatever pane a process names to a
+session. On a machine that also runs a host officer, that process may be the
+officer, so a decision reached through that door — approving its own draft,
+deciding its own connector request — proved nothing about who made it. By
+operator decision (2026-11-13), while any host officer is declared on a
+machine, every owner-authority tool reached through that machine's door
+files a confirmation card instead, and runs only when the owner confirms it
+on their paired phone: the phone's signed action, single use and bound to
+that card and that answer, so it can be neither replayed for another
+decision nor ridden as a time window. Deciding in muster's own web UI is
+unchanged. [design/officers-on-hosts.md](design/officers-on-hosts.md).
 
 ## Step-up: twelve hours, per browser session
 

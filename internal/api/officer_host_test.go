@@ -42,6 +42,8 @@ const (
 // SpawnAgent, CloseAgent and PasteWindow, and an AgentState per window.
 type hostOfficerMirror struct {
 	Mirror
+	// owner is the user whose hosts these are.
+	owner  int64
 	mu     sync.Mutex
 	hosts  []mirror.HostView
 	spawns []spawnCall
@@ -55,18 +57,21 @@ type hostOfficerMirror struct {
 	spawned chan struct{}
 }
 
-func newHostOfficerMirror() *hostOfficerMirror {
+func newHostOfficerMirror() *hostOfficerMirror { return newHostOfficerMirrorFor(hostOffOwner) }
+
+// newHostOfficerMirrorFor is the fake with its hosts owned by owner.
+func newHostOfficerMirrorFor(owner int64) *hostOfficerMirror {
 	v := func(name string) mirror.HostView {
 		h := spawnableHost(name, true)
 		h.AgentClose = true
 		return h
 	}
-	return &hostOfficerMirror{hosts: []mirror.HostView{v(hostOffOther), v(hostOffHost)}, state: map[string]mirror.AgentState{},
+	return &hostOfficerMirror{owner: owner, hosts: []mirror.HostView{v(hostOffOther), v(hostOffHost)}, state: map[string]mirror.AgentState{},
 		spawned: make(chan struct{}, 16)}
 }
 
 func (m *hostOfficerMirror) Hosts(ctx context.Context) []mirror.HostView {
-	if p, ok := authz.From(ctx); !ok || p.UserID != hostOffOwner {
+	if p, ok := authz.From(ctx); !ok || p.UserID != m.owner {
 		return nil
 	}
 	m.mu.Lock()

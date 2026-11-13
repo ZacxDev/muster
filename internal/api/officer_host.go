@@ -49,13 +49,16 @@ import (
 // first start and kept across scale-to-zero, which its outbound drafts and
 // connector grants are filed against — exactly as a pod instance's are.
 //
-// 🔴 A BOUND INSTANCE IS NOT ITS OWNER'S SESSION. The mirror door gives the
-// owner's own sessions operator powers (attention_answer, the connector and
-// draft decisions, agent_destroy …). A call bound to a host officer instance
-// runs ONLY hostInstanceTool's set — so the instance cannot approve its own
-// draft or connector request through muster. (It runs as the machine's user,
-// so muster's approval is the SANCTIONED path, not a boundary: the design's
-// security section says so.)
+// 🔴 A BOUND INSTANCE IS NOT ITS OWNER'S SESSION. A call bound to a host
+// officer instance runs ONLY hostInstanceTool's set — never the operator tools
+// the mirror door gives the owner's own sessions. That alone is NOT a
+// boundary: the door names its caller by a header the caller sets, so a
+// process on the machine (the officer included) can name another of the
+// owner's windows and arrive unbound. What makes an owner-authority decision
+// provably the owner's on such a machine is the STEP-UP GATE
+// (host_stepup.go): every such tool from it is a request the owner confirms
+// on their paired phone. The officer can still act outside muster with the
+// machine user's credentials (the design's security section).
 // ---------------------------------------------------------------------------
 
 // The host fleet's sentences.
@@ -158,9 +161,36 @@ func (f officerFleet) hostInstances(ctx context.Context, o officers.Officer) ([]
 	for n := 1; n <= o.MaxInstances; n++ {
 		name := o.InstanceName(n)
 		r, ok := rows[name]
+		if ok {
+			s.followHostSpawnSession(octx, st, r, v.Windows)
+		}
 		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && hostSpawnUp(r, v.Windows, now)})
 	}
 	return out, nil
+}
+
+// followHostSpawnSession re-records spawn r's Claude session when its
+// RECORDED window (the id from the host's spawn reply, carrying r's tag) now
+// runs ANOTHER Claude conversation — a /clear in it, or Claude Code restarted
+// there. Without it the instance stayed up but wedged: never re-prompted
+// (its idle check names the old conversation) and never closed (agent-close
+// names it too). The window is muster's record; whatever conversation runs in
+// it IS the instance, exactly as a pod's ccd starting a new conversation is
+// still that pod. A window that has not started Claude yet, or runs none, is
+// left alone.
+func (s *Server) followHostSpawnSession(ctx context.Context, st officers.HostSpawnStore, r officers.HostSpawn, windows []mirror.Window) {
+	if r.Window == "" || r.AgentSession == "" {
+		return
+	}
+	w, ok := hostSpawnWindow(r, windows)
+	if !ok || w.ID != r.Window || !w.Claude || w.ClaudeSession == "" || w.ClaudeSession == r.AgentSession {
+		return
+	}
+	if moved, err := st.RecordHostSpawnSession(ctx, r.ID, r.Host, r.Window, w.ClaudeSession); err != nil {
+		s.logger.Printf("officers: %s: re-record spawn %d's conversation: %v", r.Instance, r.ID, err)
+	} else if moved {
+		s.logger.Printf("officers: %s: its window %s on %s now runs another conversation (%s); following it", r.Instance, r.Window, r.Host, w.ClaudeSession)
+	}
 }
 
 // officerSpawnPrompt is the spawn's prompt: the officer preface (the host's
@@ -252,7 +282,8 @@ func (s *Server) ensureHostInstanceRow(ctx context.Context, o officers.Officer, 
 			if !a.Provisioned() {
 				where = "host " + a.RunsOnHost + "'s"
 			}
-			return agents.Agent{}, fmt.Errorf("officers: %s: an agent row of that name exists as %s; destroy it before %s can run on host %s", name, where, o.ID, o.Host)
+			return agents.Agent{}, fmt.Errorf("officers: %s: an agent row of that name exists as %s (from before %s moved); remove it with "+
+				"`muster agent rm %s` (or agent_destroy from one of your sessions) and %s starts on host %s at its next pass", name, where, o.ID, name, o.ID, o.Host)
 		}
 		return a, nil
 	}
@@ -364,6 +395,18 @@ func (f officerFleet) hostStop(ctx context.Context, o officers.Officer, n int) e
 	r, ok := rows[name]
 	if !ok || r.Window == "" || r.AgentSession == "" {
 		return fmt.Errorf("officers: %s: its window is not recorded yet; the next pass stops it", name)
+	}
+	// 🔴 ONLY WHEN IT IS IDLE. agent-close types /exit only at an empty idle
+	// prompt and closes the window after the grace if Claude Code has not
+	// exited — but a window NOT at an empty idle prompt (mid-turn, waiting on
+	// a person, text in the box) is closed AT ONCE, with no grace. An officer
+	// idle in its queue may still be finishing its last turn, so muster asks
+	// only while the host reports the window idle in the recorded
+	// conversation; otherwise the next idle pass asks again. A host that
+	// reports no status (an older muster-mirror) cannot say, and is asked.
+	if as := s.ext.Mirror.AgentState(octx, o.Host, mirror.AgentSpawnSession, r.Window); as.Unknown == nil &&
+		(as.Status != mirror.StatusIdle || as.Session != r.AgentSession) {
+		return nil
 	}
 	hs := &s.officerRT.host
 	hs.mu.Lock()

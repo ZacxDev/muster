@@ -432,6 +432,13 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			if c.openCodeSession() && !openCodeMirrorTools[name] {
 				return toolErr("%s", openCodeToolRefusal(name))
 			}
+			// 🔴 THE STEP-UP GATE (host_stepup.go): on a machine that runs a host
+			// officer, an owner-authority tool is a request to the owner's phone,
+			// never a decision — the caller is named by a header any process
+			// there can set.
+			if text, ok := s.hostStepUpGate(r.Context(), t.Host, c, name, args); ok {
+				return text
+			}
 			// chief_ask is this door's alone, like route_reply below (listed only
 			// with chiefAskOn, and serveMCP refuses an unlisted name).
 			if name == chiefAskTool {

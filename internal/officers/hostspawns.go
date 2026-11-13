@@ -26,10 +26,11 @@ import (
 // the branch muster/<id>-<slug>), so it is drawn from host_dispatches' own
 // sequence: it can never equal a chief dispatch's id on any host.
 //
-// 🔴 THREE WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
-// internal/api): InsertHostSpawn (the fleet's Start), and RecordHostSpawnWindow
+// 🔴 FOUR WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
+// internal/api): InsertHostSpawn (the fleet's Start), RecordHostSpawnWindow
 // and RecordHostSpawnRefusal (the one reply application, for the waiter and
-// the hub's late-reply hook alike). The two records write only a row whose
+// the hub's late-reply hook alike), and RecordHostSpawnSession (the fleet's
+// read, when the recorded window runs another conversation). The two records write only a row whose
 // window and refusal are both still empty, on the row's own host: a late or
 // repeated reply never moves a recorded window.
 // ---------------------------------------------------------------------------
@@ -63,6 +64,11 @@ type HostSpawnStore interface {
 	// RecordHostSpawnRefusal records the host's refusal on row id of host,
 	// under the same rule.
 	RecordHostSpawnRefusal(ctx context.Context, id int64, host, refusal string) (bool, error)
+	// RecordHostSpawnSession re-records the Claude session of row id, ONLY on
+	// its host and its recorded window (never a first record, never another
+	// window): the recorded window now runs another conversation (a /clear in
+	// it), and the instance is that window's.
+	RecordHostSpawnSession(ctx context.Context, id int64, host, window, session string) (bool, error)
 	// LatestHostSpawns is officer's newest row per instance name.
 	LatestHostSpawns(ctx context.Context, officer string) (map[string]HostSpawn, error)
 	// HostSpawnByID is row id.
@@ -112,6 +118,13 @@ func (s *PGHostSpawnStore) RecordHostSpawnRefusal(ctx context.Context, id int64,
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET refusal = $3
 		WHERE id = $1 AND host = $2 AND tmux_window = '' AND refusal = ''`, id, host, refusal)
+	return tag.RowsAffected() == 1, err
+}
+
+// RecordHostSpawnSession implements HostSpawnStore.
+func (s *PGHostSpawnStore) RecordHostSpawnSession(ctx context.Context, id int64, host, window, session string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET agent_session = $4
+		WHERE id = $1 AND host = $2 AND tmux_window = $3 AND tmux_window <> '' AND agent_session <> '' AND agent_session <> $4`, id, host, window, session)
 	return tag.RowsAffected() == 1, err
 }
 
@@ -220,6 +233,20 @@ func (m *MemHostSpawnStore) RecordHostSpawnWindow(_ context.Context, id int64, h
 // RecordHostSpawnRefusal implements HostSpawnStore.
 func (m *MemHostSpawnStore) RecordHostSpawnRefusal(_ context.Context, id int64, host, refusal string) (bool, error) {
 	return m.record(id, host, func(r *HostSpawn) { r.Refusal = refusal }), nil
+}
+
+// RecordHostSpawnSession implements HostSpawnStore.
+func (m *MemHostSpawnStore) RecordHostSpawnSession(_ context.Context, id int64, host, window, session string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.ID == id && r.Host == host && r.Window == window && window != "" && r.AgentSession != "" && r.AgentSession != session {
+			r.AgentSession = session
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // LatestHostSpawns implements HostSpawnStore.

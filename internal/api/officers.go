@@ -797,6 +797,12 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 		f.s.officerRT.forgetStale(name)
 	}
 	a, err := f.s.ext.Agents.GetByName(octx, name)
+	if err == nil && !a.Provisioned() {
+		// A host row left from when the officer ran on a host: never handed to
+		// the provisioner (which refuses it anyway) — say how to clear it.
+		return fmt.Errorf("officers: %s: an agent row of that name is host %s's (from when %s ran there); remove it with `muster agent rm %s` "+
+			"(or agent_destroy from one of your sessions) and %s starts in a pod at its next pass", name, a.RunsOnHost, o.ID, name, o.ID)
+	}
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
 			Name:              name,
@@ -1159,9 +1165,25 @@ func (s *Server) deleteProtection(list []agents.Agent) func(agents.Agent) bool {
 		if chief(a) {
 			return true
 		}
-		_, _, officer := s.officerOf(a)
-		return officer
+		return s.isDeclaredInstanceRow(a)
 	}
+}
+
+// isDeclaredInstanceRow reports whether a is a declared officer's instance row
+// FOR ITS CURRENT RUNTIME: a pod officer's provisioned row, or a host
+// officer's row on its declared host. Only such a row is delete-protected; a
+// row left from before the officer moved (a pod row of a host officer, a host
+// row of a pod officer or of another host) is not, so it can be removed
+// (destroyAgent's host-row branch) and the officer can run where it now is.
+func (s *Server) isDeclaredInstanceRow(a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	if !ok {
+		return false
+	}
+	if o.OnHost() {
+		return a.RunsOnHost == o.Host
+	}
+	return a.Provisioned()
 }
 
 // agentIsDeleteProtected reads the agent table and answers deleteProtection

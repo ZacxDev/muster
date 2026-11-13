@@ -36,7 +36,7 @@ host's loopback endpoint. An officer instance needs nothing more than that.
 | instance identity | the agent row's name `officer-<slug>-<n>` | an agent row of the same name that nothing provisions (`agents.runs_on_host`, below), plus the spawn row; the window is bound by muster's record, never by a tag |
 | first message | the kickoff, delivered by the kickoff deliverer through ccd | the same kickoff (`KickoffText`), sent as the spawn's prompt behind `mirror.OfficerSpawnPreface` |
 | a new turn for an idle instance (`Reprompt`) | ccd's gateway, under the session claim | a paste into its window, only while the host reports it idle (`AgentState`), stamped with the spawn id (`mirror.ForDispatch`) |
-| scale to zero (`Stop`) | provisioner Stop (agent and volume kept) | `agent-close` on that window: `/exit` at an idle prompt, the window closed after the grace otherwise; the host then removes the worktree if it is clean |
+| scale to zero (`Stop`) | provisioner Stop (agent and volume kept) | `agent-close` on that window, asked only while the host reports it idle in the recorded conversation: `/exit` at the empty idle prompt, the window closed 30 s later if Claude Code has not exited; a window not at an empty idle prompt when the close arrives is closed at once; the host then removes the worktree if it is clean |
 | up / down (`Instances`) | the agent row and the provisioner's instances | the latest spawn row per instance, against the host's live listing: a recorded window the host lists with that spawn's id is up; a row still waiting for its reply is up for 180 s (the chief's pending countdown); anything else is down |
 | officer MCP tools | the agent door (`/mcp`), bound by the agent's own token | the mirror door (`/mirror/mcp`), bound on EVERY call by the caller's (host, Claude session) to a spawn row, then to the caller's window as listed — the rule `agent_report_done` uses (`callerHostDispatch`) — then to the instance's agent row |
 | outbound drafts, connector grants | filed against the agent row | the same: filed against the instance's agent row |
@@ -91,8 +91,19 @@ a connector grant (granted per agent, decided per request) — works unchanged.
   host's listing). It is not shown in the agent list; the instance is seen as
   its mirrored window.
 - **A row of that name that is not this host's** (a pod instance's left from
-  before the officer moved, or another host's) is refused at start, naming it
-  — never adopted or rewritten.
+  before the officer moved, or another host's) is refused at start, naming
+  the command that clears it — never adopted or rewritten. A pod officer over
+  a host row is refused the same way, before the provisioner.
+- **Removing one** (round 1's 🟡2): `destroyAgent` tears a host row down as
+  the row alone (`destroyHostRow`, never the provisioner), on every door —
+  `muster agent rm <name>` (`DELETE /api/agents/{name}`, which needs no
+  provisioner for a host row), `agent_destroy`. The declared officer's OWN
+  row (its current runtime and host) stays delete-protected; a row left from
+  a move or an undeclared officer is not.
+- **A `/clear` in the window** (round 1's 🟢3): the fleet's read follows the
+  recorded window's new conversation (`followHostSpawnSession`, the spawn's
+  fourth writer), so re-prompt and close work again instead of wedging. The
+  tool binding follows it from that read on (within one poll).
 
 ### Lifecycle
 
@@ -144,8 +155,28 @@ a connector grant (granted per agent, decided per request) — works unchanged.
   `connector_request_decide`, `plugin_draft_decide`, `agent_destroy` …). A
   call bound to a host instance runs ONLY its own tools (the officer tools, the
   connector tools, `attention_ask`/`_wait`/`_cancel`); anything else is
-  refused naming the instance (`hostOfficerMirrorTool`). So an instance cannot
-  approve its own draft or connector request **through muster**.
+  refused naming the instance (`hostOfficerMirrorTool`). **That is not a
+  boundary by itself** (round 1's 🟡1): the machine's MCP door names its
+  caller by a header the caller sets, so the instance can name another of the
+  owner's windows and arrive unbound, as that session. The boundary is the
+  step-up gate below.
+- **The step-up gate** (operator decision, 2026-11-13; `host_stepup.go`).
+  While any host officer of the owner is declared on a machine, every
+  owner-authority tool reached through that machine's mirror door — the
+  ledger `hostStepUpTools`: `plugin_draft_decide`,
+  `connector_request_decide`, `attention_answer`, `agent_destroy`,
+  `chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
+  `plugin_request_decide`; every other mirror tool is classified exempt with a
+  reason, and the test fails when a new one is neither — decides nothing. It
+  files a **confirmation card** naming the tool and its exact arguments; the
+  decision runs once, as the session that asked, only when the owner answers
+  **Confirm** from their **paired phone**: a signed action whose challenge is
+  single use, lives two minutes and is bound to that card's id and the exact
+  answer (`device_actions.go`), so a step-up for one decision cannot be
+  replayed for another, and there is no time window an officer could ride. A
+  browser answer of the card, an MCP answer (from any machine) and an answer
+  after a restart lost the pending decision are refused. Deciding in muster's
+  web UI is unchanged; a machine with no host officer is unaffected.
 - **The mirror door lists these tools to every session of the owner's hosts
   while a host officer is declared** (the connector tools only when one
   declares a connector) — `tools/list` carries no session (the same reason
@@ -205,9 +236,10 @@ State it plainly; the operator chose this knowing it.
   to push; that is prose, not a gate.
 - **muster's approval is the SANCTIONED path, not an enforcement boundary.**
   `officer_post_draft` puts every post behind the owner's Attention approval of
-  the exact text and media, and the instance cannot approve its own draft or
-  connector request through muster. But the session runs with the machine
-  user's credentials and network: a host marketing officer COULD post directly
+  the exact text and media, and on a host officer's machine the step-up gate
+  makes an approval reached through that machine's MCP door provably the
+  owner's (their phone's signed confirm), however the caller named itself.
+  But the session runs with the machine user's credentials and network: a host marketing officer COULD post directly
   (a browser session, a CLI token, an API key in that user's files). On a pod,
   the missing credentials and the egress lock make the approval the only way
   out; on a host nothing does. The charter is what keeps it on the sanctioned
@@ -239,8 +271,10 @@ nothing about one of the owner's sessions is ended without the owner's tap.
 2026-11-13, "Yes, opt-in is enough"): declaring `"runtime": "host"` is the
 owner's consent for muster to close **only that officer's recorded instance
 windows** — the window muster recorded from the spawn reply, running the
-conversation it recorded — through the existing `agent-close` (`/exit` at an
-idle prompt, the window closed after the grace otherwise). No other window,
+conversation it recorded — through the existing `agent-close`, asked only
+while the host reports the window idle (`/exit` at the empty idle prompt,
+closed 30 s later if it has not exited; closed at once if it is not at an
+empty idle prompt when the close arrives). No other window,
 and no chief-dispatched window, is ever closed this way. Recorded in
 [decisions.md](../decisions.md#a-host-officers-window-is-the-one-window-muster-closes-by-itself).
 
@@ -273,6 +307,18 @@ and no chief-dispatched window, is ever closed this way. Recorded in
 - end to end on Postgres: `officer_post_draft` from a host instance through
   the owner's approval and the plugin's claim and result to a completed item;
   `connector_request` from a host instance files a pending grant for its row.
+- the step-up gate (round 2), through the real mirror door on Postgres: an
+  impersonating `connector_request_decide`, `attention_answer` and
+  `plugin_draft_decide` file cards and decide nothing; the browser and the MCP
+  door cannot answer a card; the owner's phone (a device principal) can, and
+  the decision then runs once as the session that asked; Refuse runs nothing;
+  a signed confirm for card A is refused for card B; a machine with no host
+  officer, and the browser's own Asks page, are unaffected; every mirror tool
+  is classified gated or exempt, read from `mirrorTools`' source.
+- removing a host row with no provisioner (`muster agent rm`), the declared
+  officer's own row still protected, a moved officer self-heals after the
+  rm; a pod officer over a host row is refused naming the command; a
+  `/clear` is followed; a busy or waiting window is not asked to close.
 - seam: one `Reconciler`, one fleet, both runtimes driven by the same `Decide`;
   `dispatchOfficerTool` reached from exactly the agent door and the mirror
   door's host binding; `SpawnAgent` and `CloseAgent` callers widened by exactly
