@@ -1,6 +1,7 @@
 # Design: team sharing on one muster server
 
-**Status: proposal for review. Nothing here is built.** The operator asked for
+**Status: decided; phase 1 is next. Nothing here is built yet.** The
+operator accepted every recommendation ([operator decisions](#operator-decisions-2026-11-13)). The operator asked for
 muster as "multiplayer": a personal instance for your own work, plus shared
 team instances where people share sessions and officers. The operator's
 decision is a design doc first, with no code.
@@ -191,7 +192,7 @@ So [features.md:361](../features.md) ("one chief per install: the admin's") is
 correct **for the Compose stack**, which is the section it sits in, and
 [auth.md:56](../auth.md) ("each user has their own … chief") is correct **for a
 Kubernetes deployment**. auth.md should say so; that one-line docs fix is out of
-this page's scope and is listed under [open questions](#open-questions).
+this page's scope and is listed under [operator decisions](#operator-decisions-2026-11-13).
 
 ## Part 2: the design
 
@@ -317,7 +318,7 @@ same trust it places in `muster.uid` today. A seam test pins that the setting a
 principal produces equals `team_members` for that user, and fails when either
 side changes. An alternative is a SECURITY DEFINER function that computes the
 memberships from `team_members` on every acquire; it costs a query per acquire
-and is [open question 3](#open-questions).
+and is [decision 3](#operator-decisions-2026-11-13).
 
 #### The policy
 
@@ -426,7 +427,7 @@ or holds `need` in it:
 |---|---|
 | `Hosts` | lists the principal's own hosts **plus** every team's where it is ≥ viewer, each tagged with its owner |
 | `WatchWindow`, `CatalogWindow`, read-only `AttachWindow` | viewer |
-| `ScrollWindow` | viewer (scrolling moves copy-mode for everyone watching; see [open question 7](#open-questions)) |
+| `ScrollWindow` | viewer (scrolling moves copy-mode for everyone watching; see [decision 7](#operator-decisions-2026-11-13)) |
 | interactive `AttachWindow`, `PasteWindow`, `AnswerWindow`, `AnswerOpenCodeAsk`, `AnswerOpenCodeForm` | operator, **and** step-up, checked here as today (`:383`) |
 
 Every page handler that takes `?host=&session=` gains an `owner` parameter (or
@@ -507,7 +508,7 @@ re-admitted later by its own decision.
 | Terminal, read-only | yes | the live pane, including scrollback |
 | attachments sent into the session (`uploads`) | yes | they are part of the transcript |
 | focus title and description | yes | |
-| subagents, background shells, preview button | yes; opening a preview is viewer | a preview is a web server on the host (see [previews.md](../previews.md)); [open question 8](#open-questions) |
+| subagents, background shells, preview button | yes; opening a preview is viewer | a preview is a web server on the host (see [previews.md](../previews.md)); [decision 8](#operator-decisions-2026-11-13) |
 | the composer, quick keys, live keys | no | the box says "viewer: you can watch this session" |
 | drafts on this device | — | drafts stay per browser, as today |
 
@@ -579,12 +580,12 @@ team. Managers read the team's rows on `/teams/12/audit`.
 - **A personal chief never sees team sessions.** `sessions_overview` and
   `focus_search` read the owner's hosts. The alternative (a personal chief that
   also reads your teams) would put team transcripts into a turn running on
-  your personal credentials; [open question 10](#open-questions).
+  your personal credentials; [decision 10](#operator-decisions-2026-11-13).
 - **Who may message the team chief:** operators. Each chat turn already
   records `typed_by` (0081).
 - **Compose:** the Compose chief serves user 1 only
   (`internal/api/compose_chief.go:317`). A team chief needs Kubernetes, or a
-  change to that rule ([open question 9](#open-questions)).
+  change to that rule ([decision 9](#operator-decisions-2026-11-13)).
 
 ### 6. UI surfaces
 
@@ -621,7 +622,7 @@ team. Managers read the team's rows on `/teams/12/audit`.
 | A viewer sees a secret a command printed | Viewer = reads everything on screen and in the transcript, stated on the role picker. No redaction promise. |
 | The team host's MCP door acts as the team | A reduced tool set for team tokens (above). |
 | A leaked team mirror token | Same as today's leaked token, scoped to the team: revoke on `/teams/12/hosts`. Revocation already cuts the tunnel (`watchToken`, `internal/mirror/service.go:239`). |
-| **A removed member keeps a copy of the team host token** (they had a shell there) | Removing an operator or manager marks every team host token **rotate**, shown to managers until rotated. Not auto-revoked: that would cut every team session at once ([open question 6](#open-questions)). |
+| **A removed member keeps a copy of the team host token** (they had a shell there) | Removing an operator or manager marks every team host token **rotate**, shown to managers until rotated. Not auto-revoked: that would cut every team session at once ([decision 6](#operator-decisions-2026-11-13)). |
 | Removal, leaving, role downgrade | The membership row goes in one statement. Next request: no access. Open terminal and Rendered streams re-check membership on the same timer that already cuts a disabled user's streams within 10 s ([auth.md:51-53](../auth.md)). Their queued sends to that team are cancelled. Pushes already on their phone stay; the withdraw push clears them. |
 | A disabled user | Their principal fails, as today; `CancelQueuedBy` cancels their sends on every team; their memberships stay (re-enabling restores them) but grant nothing while disabled. |
 | A deleted user | The team's rows are the team's, so nothing they shared is lost. Their `queued_by`/`answered_by_user` values stay as ids; the name function returns nothing for them ("a former member"). |
@@ -656,24 +657,28 @@ series, ships alone, and rolls back alone.
 
 ### Phase 1: teams, no shared data
 
-- **Migration `teams`:** `users.kind` and its CHECKs; `team_members` with
-  `owner_isolation`-style policies of its own (a member reads its teams' rows;
-  a manager writes them; System all); `muster_team_role()`;
-  `muster_team_people()`; `audit_log.owner_id` and the manager read arm.
-- **Code:** `authz.Principal.Teams`; `principalFor` reads memberships
-  (`internal/api/principal.go:135`); `scopeSettings`/`applyScopeSQL` set
-  `muster.teams` (`internal/db/scope.go:85-113`); `internal/users` excludes
-  team rows from sign-in lookups (`BySub`, `IDByEmail`), `/admin/users` and the
-  last-admin rule; `/admin/teams`, `/teams/{id}`; the token, invite and device
-  routes refuse a team row.
-- **No table changes policy.** The ledger test is unchanged.
-- **Acceptance:** a team row cannot sign in by any route class; membership
-  change is visible to the next request and to an open stream within 10 s;
-  `muster_team_role()` per-row cost measured on the largest owned table
-  (**UNVERIFIED**: expected negligible next to the existing `current_setting`
-  calls).
-- **Rollback:** an older image ignores the column, table and setting. To
-  remove: drop them and the functions.
+- **Migration `teams`:** `users.kind` and its CHECKs; `team_members` under
+  forced row-level security (a person reads their own membership rows; every
+  write goes through the admin handlers under System, which the System ledger
+  lists).
+- **Code:** `authz.Principal.Teams`, read once per request by `principalFor`
+  (`internal/api/principal.go:135`), with a seam test pinning it against
+  `team_members`; a team row is refused at every sign-in, session, token,
+  invite and device path, with a ledger test over every auth entry point that
+  fails when a new one appears without the check; `internal/users` excludes
+  team rows from `/admin/users` and the last-admin rule; `/admin/teams`
+  (admin-only in this phase: create a team, add, remove and re-role members),
+  each change an `audit_log` row naming the acting admin.
+- **No table changes policy, and nothing is shared.** A test over every
+  `owner_id` table proves a member cannot read a row the team owns.
+- **Moved to phase 2, where the first policy reads them:** the `muster.teams`
+  setting, `muster_team_role()`, `muster_team_people()`,
+  `audit_log.owner_id` with its manager read arm, and the managers' own
+  `/teams/{id}` pages.
+- **Acceptance:** a team row cannot sign in by any entry point; a membership
+  change is visible to the next request.
+- **Rollback:** an older image ignores the column and the table. To remove
+  them: delete the team rows, drop `team_members` and `users.kind`.
 
 ### Phase 2: shared sessions on team hosts
 
@@ -689,6 +694,11 @@ series, ships alone, and rolls back alone.
   `/teams/{id}/hosts`; the reduced MCP tool set for team tokens
   (`internal/api/mirror_mcp.go`); the device answer route's team check
   (`internal/api/device_actions.go`); the sidebar groups.
+- **Also in this phase** (moved from phase 1): the `muster.teams` setting,
+  `muster_team_role()`, `muster_team_people()`, `audit_log.owner_id` and its
+  manager read arm, `/teams/{id}`. Measure `muster_team_role()`'s per-row cost
+  on the largest owned table (**UNVERIFIED**: expected negligible next to the
+  existing `current_setting` calls).
 - **Acceptance:** the extended isolation walk; two operators answering one ask
   yield one answer; a removed operator's queued send is cancelled and its open
   terminal closes within 10 s; a team token's MCP listing omits the refused
@@ -730,14 +740,14 @@ series, ships alone, and rolls back alone.
 A per-session **view** grant (`session_shares(owner, host, session, user,
 expires_at)`), viewer only, never typing, time-limited, revocable. Only if
 phase 2's "a team host" turns out to be too heavy for "show my teammate this
-one run". See [open question 4](#open-questions).
+one run". See [decision 4](#operator-decisions-2026-11-13).
 
-## Open questions
+## Operator decisions (2026-11-13)
 
-Each has a recommendation; a "yes, use the recommendations" answer settles
-all of them.
+The operator accepted every recommendation this page made, and phase 1 is
+the next step. Each question below is decided as stated.
 
-| # | question | recommendation |
+| # | question | decision |
 |---|---|---|
 | 1 | Team as a `users` row of kind `team`, or a new `teams` table? | **A `users` row.** Every `owner_id` foreign key, composite key and owner-keyed map works unchanged. The cost is excluding team rows from the handful of user listings and sign-in lookups, each pinned by a test. |
 | 2 | Several teams per server, or one implicit team per server? | **Several in the schema, one in the UI until a second exists.** A team server with one team then looks like "the instance is the team", and a later second team needs no migration. |
@@ -753,4 +763,3 @@ all of them.
 | 12 | Push for team asks: every operator, or an on-call rota? | **Every operator and manager with `notify` on**, first answer wins, the rest withdrawn (the escalation precedent). A rota is a later feature. |
 | 13 | Who creates teams: admins only, or any user? | **Admins**, naming the first manager. A team grants access to machines, so creating one is an instance decision. |
 | 14 | Fix auth.md:56 to say the per-user chief is Kubernetes-only? | **Yes**, as a one-line docs PR, independent of this design. |
-
