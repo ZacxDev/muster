@@ -1,6 +1,6 @@
 # Officers as a first-class feature (pluggable backend)
 
-**Status: slices 0–8 built** (this revision supersedes the draft of
+**Status: slices 0–10 built** (this revision supersedes the draft of
 muster#503). Each slice below lands as its own pull request; slices 0–4 change
 nothing an existing HQ officer sees or does.
 
@@ -281,8 +281,8 @@ S is up to 300 changed non-test lines, M up to 1,000.
 | 6 | **Attention asks + escalation** for builtin officers (built: migration 0120 `asks`/`notices` columns; an instance's ask and an escalation are both Attention **asks** — an answer to an escalation re-opens the item for the officer with the answer on it (operator ask: "escalations become Attention asks; answers flow back to the officer"), a dismissal leaves it escalated; the sweep settles all of it conditionally, across replicas) | M | one Attention ask per ask, re-open on answer; one notification per recipient per escalated item, zero in shadow (tests) |
 | 7 | **admin REST + CLI `muster officer`** (built; schedules' admin landed with slice 8): list/enqueue/resolve items, types, defs; `MUSTER_OFFICERS=[]` (the empty roster) turns the store on with no officer declared | M | the CLI enqueues an item that a builtin officer then claims (test) |
 | 8 | **schedules** (built: an in-package five-field UTC cron, no new dependency; a fire is a CAS on `next_fire_at` in the same transaction as the enqueue; admin + `muster officer schedule`): cron fire with `skip_if_live`, missed fires collapse to one, once across replicas | M | a schedule fires once across a restart and two replicas (tests) |
-| 9 | **egress** for officer instances (below) | S | an instance reaches exactly the admitted CIDRs; DNS only when unfiltered is set (policy test) |
-| 10 | **docs**: split officers.md into runtime / contract / built-in backend; a runnable sample | M | a fresh reader runs the sample from the doc alone |
+| 9 | **egress** for officer instances (built, #627: `MUSTER_OFFICER_EGRESS_CIDRS` / `MUSTER_OFFICER_EGRESS_DNS=unfiltered`, IPv4, ≤/16, non-public ranges refused, officers only, refused without an agent NetworkPolicy) | S | an instance reaches exactly the admitted CIDRs; DNS only when unfiltered is set (policy test) |
+| 10 | **docs** (built: `docs/officers-builtin.md` is the built-in backend's operator guide — enable, define, egress, declare, feed, schedule, asks/escalations, switch off — with the command sequence as the runnable sample; officers.md stays the runtime + HQ reference, this doc the contract) | M | a fresh reader runs the sample from the doc alone |
 
 Slices 1–4 carry no behaviour change for an HQ officer and can ship before any
 builtin officer exists.

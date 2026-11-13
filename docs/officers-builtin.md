@@ -81,6 +81,28 @@ statement names the caller as owner).
 (409) while something still names the row: a type an officer uses, an officer
 with items or schedules.
 
+## 2b. Let its instances reach the model (egress)
+
+An officer instance's pod is egress-locked: no public address and no DNS,
+only muster's connector door. On a cluster whose policy engine filters by
+name (a Cilium `toFQDNs` rule) the operator allows Anthropic there. On one
+that cannot (flannel with the k3s NetworkPolicy controller), let muster write
+the allow by address:
+
+```yaml
+- name: MUSTER_OFFICER_EGRESS_CIDRS        # Anthropic's published API ranges (example: check
+  value: "160.79.104.0/23:443,153.61.224.0/22:443"   # https://platform.claude.com/docs/en/api/ip-addresses)
+- name: MUSTER_OFFICER_EGRESS_DNS          # the API and muster's connect URL are names
+  value: "unfiltered"
+```
+
+An officer pod then reaches exactly: cluster DNS, those blocks on 443, and
+muster's connector door. IPv4 only; private, shared and reserved ranges and
+anything wider than a /16 are refused at boot. Unfiltered DNS is a channel a
+prompt-injected session could leak through by name — see
+[officers.md](officers.md#on-a-cluster-without-fqdn-policies-muster_officer_egress_)
+and [configuration.md](configuration.md) for the risk stated in full.
+
 ## 3. Declare it in `MUSTER_OFFICERS`
 
 ```yaml
