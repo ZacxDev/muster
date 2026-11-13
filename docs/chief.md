@@ -602,20 +602,23 @@ What that costs: the chief's chat history, focus, connector grants and
 workspace volume are deleted with it; grants have to be approved again for the
 new chief.
 
-**Owner-asked actions pause while a tool call's process runs.** Because no
-prompt stops the chief from starting a background process (`nohup … &`), such a
-process could wait for your next chat turn and then make an `owner_asked` call
-itself — releasing a gate, routing into your own session, starting an agent
-without an approval card. So every `owner_asked` check also reads ccd's scan of
-the chief's pod: any live process that is not ccd, the CLIs it started, their
-tmux server, or the few helpers ccd allows (its own tmux and git, a CLI's hook,
-the `hq mcp` server it registers) counts. While one runs, the chief is told
-*"a background process started by a tool call is still running in your pod;
-owner-asked actions are paused until it exits"* and nothing is released. The
-scan is made at the moment of the check. A chief image too old to report its
-processes, or a scan that fails, is refused the same way (fail closed). A stdio
-MCP server you add to the chief's `.claude.json` yourself also counts, and
-keeps owner-asked actions paused while it runs.
+🔴 **Accepted risk: a process the chief starts can act with your authority.**
+No prompt stops the chief from starting a background process (`nohup … &`). That
+process runs as the same user as the chief's Claude Code CLI and holds the
+chief's muster token. It can wait for your next chat turn and then make an
+`owner_asked` call itself — releasing a gate, routing into your own session,
+starting an agent without an approval card. muster's `owner_asked` check
+verifies that your turn is in flight and that no other Claude Code CLI in the
+pod is working; nothing in the pod can tell a process a tool call started
+apart from the CLI, so the check cannot refuse it. The operator accepted this
+together with the token-exfiltration risk above. A message the chief reads is
+therefore as dangerous as one that tries to make it exfiltrate a token.
+
+⚠ **Named limit: the chief's agent token is not tied to its pod.** Anyone
+holding it who can reach a muster port that serves `POST /mcp` — the connect
+port (`MUSTER_CONNECT_PORT`) and, in muster itself, the main port too, unless
+your front door blocks `/mcp` — can act as the chief, including waiting for one
+of your turns to make an `owner_asked` call.
 
 ## The chief on OpenRouter
 

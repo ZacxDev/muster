@@ -149,23 +149,14 @@ func TestTheCLIsAnswerIsMusters(t *testing.T) {
 	procRoot = t.TempDir() // a fixture /proc: not this host's own CLIs
 	t.Cleanup(func() { procRoot = old })
 	writeProc(t, procRoot, pid, "S", "800")
-	// The process scan: ccd is the fixture's PID 1, the CLI (pid, under it)
-	// is the one it started, and an orphaned loop under ccd is a stray.
-	writeProcTree(t, procRoot, 1, 0, "S", "ccd", "", "ccd", "serve")
-	writeProcTree(t, procRoot, 5000, 1, "S", "sh", "/bin/sh", "sh", "-c", "loop")
-	oldSelf := procSelf
-	procSelf = func() int { return 1 }
-	t.Cleanup(func() { procSelf = oldSelf })
-	srv.cliPID = func(context.Context) (int, error) { return pid, nil }
 	gw := mustersGateway(t, gatewayServer(t, srv).URL)
 	got, err := gw.CLIActivity(context.Background(), contractAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, PID: pid, SessionID: fixtureSessionID, Status: "busy"}},
-		Processes: &agents.ProcessReport{Scanned: true, Strays: []agents.StrayProcess{{PID: 5000, PPID: 1, Comm: "sh"}}}}
+	want := agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, PID: pid, SessionID: fixtureSessionID, Status: "busy"}}}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("muster read %+v (processes %+v), want %+v (processes %+v)", got, got.Processes, want, want.Processes)
+		t.Fatalf("muster read %+v, want %+v", got, want)
 	}
 	other := contractAgent
 	other.HooksToken = "some-other-agents-token"

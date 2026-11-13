@@ -54,20 +54,25 @@ import (
 //     another lane. A live CLI process with no sessions file to say what it is
 //     doing counts as working (its own refusal). A ccd that cannot answer
 //     (unreachable, an image without the route) refuses: fail closed.
-//  2a. NO PROCESS A TOOL CALL STARTED IS STILL RUNNING IN THE POD. A process a
-//     tool call left running (a detached loop a Bash call started — the
-//     claude-code chief runs every tool with no prompt, PR #626) is no CLI,
-//     holds the agent's muster token, and could wait for the owner's next turn
-//     and then make this very call itself. So the same GET /v1/clis carries
-//     ccd's scan of the pod's process table (agents.ProcessReport, cmd/ccd
-//     strays.go): every live process except ccd and its ancestors, the CLIs it
-//     started and their tmux server, and the few direct children it allows (its
-//     own tmux/git/ccd helpers, a CLI's `ccd hook`, the `hq mcp` server ccd
-//     registers) — matched by exact executable path, not by name. Any stray
-//     refuses (chiefReleaseStrayProcess) until it exits. The scan is made while
-//     answering the request, so it is never stale; a report that is ABSENT (a
-//     ccd from before the scan) or FAILED refuses too (chiefReleaseProcessesUnknown):
-//     fail closed. What the scan cannot close is in strays.go's header.
+//     🔴 ACCEPTED RISK — NOT AGAINST ARBITRARY SAME-USER PROCESSES (operator
+//     decision, PR #626). A process a tool call starts in the pod (a detached
+//     loop a Bash call left running; the claude-code chief runs every tool
+//     with no prompt, and a job lane runs with bypassPermissions) runs as the
+//     same user as the CLI and holds the agent's muster token. It can wait for
+//     the owner's next turn — when this check passes — and call the MCP door
+//     itself, so its owner_asked call carries the owner's authority (a gate
+//     released, a route into the owner's own session, an agent started with no
+//     approval card). Nothing inside the pod can tell such a process from the
+//     CLI: they share one uid, so it can read, impersonate or hide behind any
+//     process ccd could allow (a process-table scan was built and broken three
+//     ways in audit, and removed). The operator accepted this together with the
+//     token-exfiltration risk of the chief's bypass.
+//     ⚠ NAMED LIMIT: the chief's agent token is not tied to its pod. Anyone
+//     holding it who can reach a muster port that serves POST /mcp — the
+//     connect port (MUSTER_CONNECT_PORT, api.OnlyConnectSurface) and, in
+//     muster itself, the main port too, unless the deployment's front door
+//     blocks /mcp — can act as the chief, including waiting for an owner turn
+//     to make an owner_asked call.
 //  3. NO MUSTER-STARTED TURN HOLDS THE CHIEF'S SESSION CLAIM. Mostly implied by
 //     2 now; kept because the claim is taken before a delivery's CLI turn
 //     starts, so it also covers the instant before that CLI reports busy.
@@ -221,12 +226,6 @@ const (
 	chiefReleaseCLIsUnknown = "owner_asked: muster could not read which of your sessions are working (your pod did not answer, " +
 		"or its image is too old to say), so the gate was not released; ask your owner to release it on the board, or use " +
 		"task_route_attention"
-	chiefReleaseStrayProcess = "owner_asked: a background process started by a tool call is still running in your pod; " +
-		"owner-asked actions are paused until it exits (muster cannot tell that this call is not that process's); stop it, " +
-		"then ask your owner again in the chat, or use task_route_attention"
-	chiefReleaseProcessesUnknown = "owner_asked: muster could not confirm that no background process started by a tool call " +
-		"is running in your pod (its image does not report its processes, or the scan failed), so owner-asked actions are " +
-		"paused; ask your owner to release it on the board, or use task_route_attention"
 	chiefReleaseNotOverMCP = "owner_asked: this session is not a Claude Code session, and the gate is released only from one; " +
 		"ask your owner to release it on the board, or use task_route_attention"
 	chiefReleaseUnverifiable = "owner_asked: your owner's turn could not be read, so the gate was not released; " +
@@ -319,19 +318,6 @@ func onlyTheOwnersLaneWorks(act agents.CLIActivity, lane string) string {
 	return ""
 }
 
-// noStrayProcess is "" when ccd's scan (rep) completed and found no stray
-// process; else the refusal. A missing report (an older ccd) or a failed scan
-// refuses: fail closed (header, 2a).
-func noStrayProcess(rep *agents.ProcessReport) string {
-	switch {
-	case rep == nil || !rep.Scanned:
-		return chiefReleaseProcessesUnknown
-	case len(rep.Strays) > 0:
-		return chiefReleaseStrayProcess
-	}
-	return ""
-}
-
 // ownerTurnFor is the owner's message whose turn is in flight on chief now —
 // and the only thing working in its pod — or the refusal saying which condition
 // failed (see the header).
@@ -377,14 +363,6 @@ func (s *Server) ownerTurnFor(ctx context.Context, chief agents.Agent) (agents.C
 		return agents.ChatMessage{}, chiefReleaseCLIsUnknown
 	}
 	if why := onlyTheOwnersLaneWorks(act, turn.Lane); why != "" {
-		return agents.ChatMessage{}, why
-	}
-	if why := noStrayProcess(act.Processes); why != "" {
-		if act.Processes != nil && len(act.Processes.Strays) > 0 {
-			s.logger.Printf("task routing: %s's owner_asked refused: stray process(es) in its pod %+v", chief.Name, act.Processes.Strays)
-		} else if act.Processes != nil {
-			s.logger.Printf("task routing: %s's owner_asked refused: its process scan failed: %s", chief.Name, act.Processes.Error)
-		}
 		return agents.ChatMessage{}, why
 	}
 	return msg, ""

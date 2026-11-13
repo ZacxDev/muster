@@ -78,17 +78,10 @@ func (g lanesGateway) CLIActivity(context.Context, agents.Agent) (agents.CLIActi
 }
 
 // clis builds a pod's answer: the owner's lane (lane, "" = primary) busy, plus
-// others, and a completed process scan with no stray.
+// others.
 func clis(lane string, others ...agents.CLIState) agents.CLIActivity {
 	own := agents.CLIState{Known: true, Lane: lane, Primary: lane == "", SessionID: "own", Status: "busy"}
-	return agents.CLIActivity{Version: 1, CLIs: append([]agents.CLIState{own}, others...),
-		Processes: &agents.ProcessReport{Scanned: true}}
-}
-
-// withProcesses is act with its process scan replaced by rep.
-func withProcesses(act agents.CLIActivity, rep *agents.ProcessReport) agents.CLIActivity {
-	act.Processes = rep
-	return act
+	return agents.CLIActivity{Version: 1, CLIs: append([]agents.CLIState{own}, others...)}
 }
 
 // TestOwnerTurnForChecksEveryCondition: ownerTurnFor releases only on a marker
@@ -135,13 +128,6 @@ func TestOwnerTurnForChecksEveryCondition(t *testing.T) {
 		{"ccd unreachable or too old", own, "", agents.CLIActivity{}, errors.New("404"), false, false, chiefReleaseCLIsUnknown},
 		{"a gateway that cannot read the pod", own, "", agents.CLIActivity{}, nil, true, false, chiefReleaseCLIsUnknown},
 		{"a gateway-runtime session's in-process call", own, "", clis("lane-owner"), nil, false, true, chiefReleaseNotOverMCP},
-		{"a stray process a tool call left running", own, "", withProcesses(clis("lane-owner"),
-			&agents.ProcessReport{Scanned: true, Strays: []agents.StrayProcess{{PID: 4711, PPID: 1, Comm: "sh"}}}), nil, false, false, chiefReleaseStrayProcess},
-		{"no process report (a ccd from before the scan)", own, "", withProcesses(clis("lane-owner"), nil), nil, false, false, chiefReleaseProcessesUnknown},
-		{"a process scan that failed", own, "", withProcesses(clis("lane-owner"),
-			&agents.ProcessReport{Error: "read /proc: permission denied"}), nil, false, false, chiefReleaseProcessesUnknown},
-		{"a failed scan that still lists nothing stray", own, "", withProcesses(clis("lane-owner"),
-			&agents.ProcessReport{Scanned: false}), nil, false, false, chiefReleaseProcessesUnknown},
 		{"only the owner's lane works, others idle (control)", own, "", clis("lane-owner", idle("lane-a"), agents.CLIState{Known: true, Primary: true, SessionID: "p", Status: "idle"}), nil, false, false, ""},
 		{"the owner's turn on the primary, a lane idle (control)", agents.OwnerTurn{By: 7, MessageID: 501}, "", clis("", idle("lane-a")), nil, false, false, ""},
 	} {
