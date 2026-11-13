@@ -16,6 +16,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/askimage"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // --- asks: officer_ask_person on a builtin officer ----------------------------
@@ -492,7 +493,7 @@ func (s *Store) UsersExist(ctx context.Context, ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT x FROM unnest($1::bigint[]) x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x AND u.kind = 'person')`, ids)
+	rows, err := s.pool.Query(ctx, `SELECT x FROM unnest($1::bigint[]) x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x AND u.id IN (`+users.PersonIDs+`))`, ids)
 	if err != nil {
 		return nil, err
 	}

@@ -148,6 +148,10 @@ func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) aut
 // attached; authz.WithPrincipal's panic is the backstop for any other caller.
 const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
 
+// AccountUnreadableRefusal is what every door answers when the request's
+// account could not be read (admit: fail closed).
+const AccountUnreadableRefusal = "your account could not be read just now; retry shortly"
+
 // admit attaches p to the request and hands it to next. See the file header:
 // it is the only way a wrapper may call next.
 func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.HandlerFunc, p authz.Principal) {
@@ -165,6 +169,17 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if p.Team {
 		s.logger.Printf("principal: refused a %s credential that resolves to team %d", p.Via, p.UserID)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamSignInRefusal})
+		return
+	}
+	// 🔴 FAIL CLOSED ON AN UNREADABLE ACCOUNT. When the users row could not be
+	// read, principalFor's fallback cannot know the KIND either: Team false
+	// there is a guess, and a guess must not admit a request that might be a
+	// team's. So no request door hands on a RoleUncertain principal: it is a
+	// retryable 503 (TestAnUnreadableAccountIsRefusedAtEveryDoor).
+	if p.RoleUncertain {
+		s.logger.Printf("principal: refused a %s request for user %d: the account could not be read", p.Via, p.UserID)
+		w.Header().Set("Retry-After", "5")
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": AccountUnreadableRefusal})
 		return
 	}
 	r = r.WithContext(authz.WithPrincipal(r.Context(), p))

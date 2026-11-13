@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ErrBadToken is the refusal for a mirror token that is unknown or revoked.
@@ -113,7 +115,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	t, err := scanToken(s.pool.QueryRow(ctx, `
 		UPDATE mirror_tokens SET last_used_at = now()
 		WHERE token_hash = $1 AND revoked_at IS NULL
-			AND owner_id IN (SELECT id FROM users WHERE kind = 'person')
+			AND owner_id IN (`+users.PersonIDs+`)
 		RETURNING `+tokenCols, HashToken(token)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken

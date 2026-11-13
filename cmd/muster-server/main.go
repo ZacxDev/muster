@@ -1207,32 +1207,32 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// delivery takes a per-agent claim (agents.Store.ClaimKickoff) and re-reads the
 	// row under it, so replicas cannot both pay one turn.
 	if a.kickoff != nil {
-		go a.kickoff.Run(ctx, agentkickoff.DefaultInterval)
+		a.loop(ctx, "a.kickoff.Run", func(ctx context.Context) { a.kickoff.Run(ctx, agentkickoff.DefaultInterval) })
 	}
 	// Same reasoning, and it needs no leader either: each promotion is a write
 	// conditional on the row not having moved (agents.Store.MarkRunning), so two
 	// replicas promoting one row apply it once.
 	if a.status != nil {
-		go a.status.Run(ctx, agentstatus.DefaultInterval)
+		a.loop(ctx, "a.status.Run", func(ctx context.Context) { a.status.Run(ctx, agentstatus.DefaultInterval) })
 	}
 	// The memo relay needs no leader either: each delivery takes the agent's
 	// session claim (agents.Store.ClaimKickoff) and re-reads the agent and its
 	// delivery record under it, so two replicas cannot both send one agent a memo.
 	if a.memo != nil {
-		go a.memo.Run(ctx, memorelay.DefaultInterval)
+		a.loop(ctx, "a.memo.Run", func(ctx context.Context) { a.memo.Run(ctx, memorelay.DefaultInterval) })
 	}
 	// The usage poller is unguarded at replicas > 1: two pods each read every
 	// account once per interval (two calls instead of one), and the last
 	// write of a row wins — both are readings of the same account.
 	if a.ccUsage != nil {
-		go a.ccUsage.Run(ctx)
+		a.loop(ctx, "a.ccUsage.Run", func(ctx context.Context) { a.ccUsage.Run(ctx) })
 	}
 	// The officer wake loop. Unguarded at replicas > 1 like the loops below:
 	// two pods would both start an instance, which is one Create winning on
 	// the unique agent name and one logged failure, and both stop one, which
 	// is idempotent (docs/officers.md).
 	if a.officers != nil {
-		go a.officers.Run(ctx)
+		a.loop(ctx, "a.officers.Run", func(ctx context.Context) { a.officers.Run(ctx) })
 	}
 	// The built-in officer store's Attention sweep (asks back onto items,
 	// escalation notices out). Unguarded at replicas > 1: every write it makes
@@ -1240,23 +1240,23 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// unraised), so two pods settle each once and the loser of a notice race
 	// withdraws its copy.
 	if a.srv != nil && a.srv.OfficerStoreOn() {
-		go a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep)
+		a.loop(ctx, "a.srv.RunOfficerAttentionSweep", func(ctx context.Context) { a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep) })
 		// Schedules: unguarded at replicas > 1 — a fire is a compare-and-set
 		// on next_fire_at, so of two pods exactly one fires each due time.
-		go a.srv.RunOfficerScheduler(ctx, builtin.DefaultScheduleInterval)
+		a.loop(ctx, "a.srv.RunOfficerScheduler", func(ctx context.Context) { a.srv.RunOfficerScheduler(ctx, builtin.DefaultScheduleInterval) })
 	}
 	// The officers' declared pools, to each officer's HQ: at once (boot), then
 	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
 	// set, and HQ replaces it.
 	if a.officerPools != nil {
-		go a.officerPools.Run(ctx)
+		a.loop(ctx, "a.officerPools.Run", func(ctx context.Context) { a.officerPools.Run(ctx) })
 	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves
 	// the attention queue) without waiting for a page to ask. In memory, no
 	// database.
 	if a.srv != nil {
-		go a.srv.RunAskSweep(ctx, askSweepEvery)
+		a.loop(ctx, "a.srv.RunAskSweep", func(ctx context.Context) { a.srv.RunAskSweep(ctx, askSweepEvery) })
 	}
 	// The machine job API's reaper: a pass now (boot) and every
 	// jobReapEvery, failing only jobs past their own deadline, so it is safe
@@ -1265,54 +1265,63 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// guard because it keys on the job store, not the pool: it returns at once
 	// when there is none.
 	if a.srv != nil {
-		go a.srv.RunJobReaper(ctx, jobReapEvery)
+		a.loop(ctx, "a.srv.RunJobReaper", func(ctx context.Context) { a.srv.RunJobReaper(ctx, jobReapEvery) })
 	}
 	// Suggested replies' text leaves memory past its TTL (suggest.CacheTTL).
 	// In memory, no database.
 	if a.srv != nil {
-		go a.srv.RunSuggestSweep(ctx)
+		a.loop(ctx, "a.srv.RunSuggestSweep", func(ctx context.Context) { a.srv.RunSuggestSweep(ctx) })
 	}
 	if a.pool == nil {
 		return
 	}
-	go a.srv.RunTaskRetention(ctx, retentionInterval)
+	a.loop(ctx, "a.srv.RunTaskRetention", func(ctx context.Context) { a.srv.RunTaskRetention(ctx, retentionInterval) })
 	// 🔴 ITS OWN LOOP, ON ITS OWN INTERVAL, NOT THE DAILY ONE. A ticker's first
 	// tick lands a full interval in, so on a 24h ticker a pod had to survive a
 	// day to reap even once — upstream, across 11 pod lifetimes, only 2 did, and
 	// the reaper had effectively never run. api.TaskReapInterval carries the
 	// measurement.
-	go a.srv.RunTaskReap(ctx, api.TaskReapInterval)
+	a.loop(ctx, "a.srv.RunTaskReap", func(ctx context.Context) { a.srv.RunTaskReap(ctx, api.TaskReapInterval) })
 	// The send queue's dispatcher. ONE replica: its startup recovery fails any
 	// message a previous process left mid-send, which would be a peer's live
 	// send with two (the mirror hub is single-replica state already).
-	go a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval)
+	a.loop(ctx, "a.srv.RunSendQueue", func(ctx context.Context) { a.srv.RunSendQueue(ctx, sendqueue.DefaultInterval) })
 	// Session focus's periodic refresh (MUSTER_FOCUS_INTERVAL; 0 = off), and
 	// its retention sweep, which runs whether or not the refresh does.
 	if a.cfg.FocusInterval > 0 {
-		go a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval)
+		a.loop(ctx, "a.srv.RunFocusRefresh", func(ctx context.Context) { a.srv.RunFocusRefresh(ctx, a.cfg.FocusInterval) })
 	}
-	go a.srv.RunFocusRetention(ctx)
+	a.loop(ctx, "a.srv.RunFocusRetention", func(ctx context.Context) { a.srv.RunFocusRetention(ctx) })
 	// Session routing's deadline: due routes are timed out and handed back.
-	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
+	a.loop(ctx, "a.srv.RunRouteTimeouts", func(ctx context.Context) { a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval) })
 	// The attention queue: lapsed asks expire and leave the owner's devices.
-	go a.srv.RunAttentionSweep(ctx, 0)
+	a.loop(ctx, "a.srv.RunAttentionSweep", func(ctx context.Context) { a.srv.RunAttentionSweep(ctx, 0) })
 	// The ask log's retention (MUSTER_ASK_LOG=1; returns at once when off).
-	go a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval)
+	a.loop(ctx, "a.srv.RunAskLogSweep", func(ctx context.Context) { a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval) })
 	// Host dispatches whose host was not seen for a day end (and free their slot).
-	go a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval)
+	a.loop(ctx, "a.srv.RunHostDispatchSweep", func(ctx context.Context) { a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval) })
 	// Task claims whose session ended (its window gone from a reporting host)
 	// are released (returns at once without a mirror).
-	go a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval)
+	a.loop(ctx, "a.srv.RunClaimSweep", func(ctx context.Context) { a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval) })
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
-	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
+	a.loop(ctx, "a.srv.RunChiefNudgeSweep", func(ctx context.Context) { a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval) })
 	// The outcome watchdog: a started agent gone quiet is called stuck, once
 	// (returns at once with no outcome store). Unguarded at replicas > 1 like
 	// the sweeps above: each verdict is a conditional write, so two pods apply —
 	// and push — it once.
-	go a.srv.RunAgentWatchdog(ctx, a.cfg.AgentWatchdogInterval)
+	a.loop(ctx, "a.srv.RunAgentWatchdog", func(ctx context.Context) { a.srv.RunAgentWatchdog(ctx, a.cfg.AgentWatchdogInterval) })
 	// Session state: every session's state and its episodes
 	// (MUSTER_SESSION_STATE=1; returns at once when off).
-	go a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval)
+	a.loop(ctx, "a.srv.RunSessionStateSweep", func(ctx context.Context) { a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval) })
+}
+
+// loop starts one background loop under api.Supervise: a panic in it is logged
+// and counted, and the loop is restarted after a backoff, instead of killing
+// the process (a bare `go` has no recover: one panicking pass — a principal
+// built for an owner it must not act as — took every request down with it).
+// TestEveryBackgroundLoopIsSupervised pins startBackgroundLoops to it.
+func (a *app) loop(ctx context.Context, name string, run func(context.Context)) {
+	api.Supervise(ctx, a.logger, name, run)
 }
 
 // shutdown drains in-flight requests and the kickoff deliverer, then waits for

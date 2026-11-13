@@ -164,6 +164,16 @@ func (s *PGStore) Account(ctx context.Context, id int64) (Account, error) {
 	return a, nil
 }
 
+// PersonIDs is THE "owners who are people" predicate, as a subquery: every
+// users-table read outside this package that yields a user to act as, notify,
+// look up by name or authenticate a credential for filters through it
+// (`<col> IN (` + users.PersonIDs + `)`). A team (users.kind = 'team') owns
+// things and is never acted as: a per-owner background loop that met one
+// would build a principal for it, and authz.WithPrincipal refuses that.
+// TestEveryUsersReadIsLedgered pins every users-table read in the module to a
+// class, and requires the person-only class to use this.
+const PersonIDs = `SELECT id FROM public.users WHERE kind = 'person'`
+
 // The two kinds of users row (migration 0125).
 const (
 	KindPerson = "person"

@@ -72,7 +72,9 @@ team owns is visible to no person, its members included.
   password, and it cannot be an admin, be invited, hold a passkey, mint a token
   or pair a phone. Any credential that resolves to a team is refused at every
   door with "a team cannot sign in; sign in as a person", and so is a mirror
-  token whose owner is a team.
+  token whose owner is a team. A plugin pairing request that names a team as
+  its owner is answered exactly as one that names no account. No background
+  sweep acts as a team.
 - **Members and roles.** Each member has one role: `viewer`, `operator` or
   `manager`. A team is never a member of a team. The roles take effect in later
   versions (watch; type and answer; manage the team's tokens, charters and

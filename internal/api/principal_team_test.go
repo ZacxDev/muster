@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -126,14 +127,19 @@ var publicRouteTeamGuard = map[string]string{
 	// subject or email, which never names a team (users.BySub, IDByEmail,
 	// CreateClaimInvite and the users_team_no_login CHECK:
 	// TestATeamRowIsNeverASignInIdentity) — and the session then passes admit.
-	"POST /login":                      guardSignIn,
-	"POST /auth/claim":                 guardSignIn,
-	"POST /invite":                     guardSignIn,
-	"POST /auth/reset":                 guardSignIn,
-	"POST /auth/passkey/options":       guardSignIn,
-	"POST /auth/passkey/verify":        guardSignIn,
-	"POST /plugin/v1/pair":             guardMintedByASession,
-	"GET /plugin/v1/pair/{request_id}": guardMintedByASession,
+	"POST /login":                guardSignIn,
+	"POST /auth/claim":           guardSignIn,
+	"POST /invite":               guardSignIn,
+	"POST /auth/reset":           guardSignIn,
+	"POST /auth/passkey/options": guardSignIn,
+	"POST /auth/passkey/verify":  guardSignIn,
+	// Pairing is started by an ANONYMOUS caller naming its owner by email or
+	// display name — a team's name is one — so the owner lookup finds persons
+	// only (users.PersonIDs): a team's name yields a decoy
+	// (TestAPairingRequestNamingATeamIsADecoy). The poll reads the request the
+	// first call filed, so it can name no one else.
+	"POST /plugin/v1/pair":             guardPairOwner,
+	"GET /plugin/v1/pair/{request_id}": guardPairOwner,
 	"POST /api/device/pair":            guardMintedByASession,
 	"GET /f/{id}":                      "an HMAC over one upload's id; it names no user",
 	// The mirror plugin's own doors: the token lookup refuses a token whose
@@ -148,6 +154,7 @@ const (
 	guardSignIn           = "a sign-in that finds persons only"
 	guardMintedByASession = "its single-use code is minted by a signed-in session, which admit refuses to a team"
 	guardMirrorToken      = "the mirror token lookup refuses a team owner"
+	guardPairOwner        = "an anonymous request whose owner lookup by name finds persons only"
 )
 
 func TestEveryPublicRouteSaysHowATeamIsKeptOut(t *testing.T) {
@@ -166,4 +173,65 @@ func TestEveryPublicRouteSaysHowATeamIsKeptOut(t *testing.T) {
 	if len(publicRoutes) < 20 {
 		t.Fatalf("publicRoutes has %d entries; the ledger is reading nothing", len(publicRoutes))
 	}
+}
+
+// TestAnUnreadableAccountIsRefusedAtEveryDoor (#654 round 1 🟢): when the
+// account cannot be read, principalFor's fallback cannot know the kind, so
+// every door fails CLOSED — a retryable 503, no handler reached — on every
+// route/door pair. The CONTROL is the same request with the account readable.
+func TestAnUnreadableAccountIsRefusedAtEveryDoor(t *testing.T) {
+	s, h, seen := newPrincipalTestServer(t)
+	var fail atomic.Bool
+	s.ext.Users = failingUsers{fail: &fail}
+	refused := 0
+	for _, v := range sortedVias() {
+		via := authz.Via(v)
+		for _, pattern := range routeVias[via] {
+			method, path := concretePath(pattern)
+			fail.Store(false)
+			*seen = nil
+			req := httptest.NewRequest(method, path, nil)
+			credential(s, req, via)
+			if aborted, code := serve(t, h, req); !aborted || len(*seen) != 1 {
+				t.Fatalf("control %s %s: a readable account did not reach the handler (status %d)", via, pattern, code)
+			}
+			fail.Store(true)
+			*seen = nil
+			req = httptest.NewRequest(method, path, nil)
+			credential(s, req, via)
+			rec := httptest.NewRecorder()
+			func() {
+				defer func() {
+					if r := recover(); r == errProbeAbort { //nolint:errorlint // identity of the sentinel
+						t.Fatalf("%s %s: an unreadable account reached the handler", via, pattern)
+					} else if r != nil {
+						t.Fatalf("%s %s: the request panicked instead of being refused: %v", via, pattern, r)
+					}
+				}()
+				h.ServeHTTP(rec, req)
+			}()
+			if len(*seen) != 0 {
+				t.Fatalf("%s %s: an unreadable account reached the handler", via, pattern)
+			}
+			// The connector door refuses an unreadable owner itself, before
+			// admit, with its own retryable 503; every other door is admit's.
+			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "could not be read") ||
+				(rec.Header().Get("Retry-After") == "" && !strings.Contains(rec.Body.String(), `"retryable":true`)) {
+				t.Fatalf("%s %s: an unreadable account got %d %q; want a retryable 503 with the refusal", via, pattern, rec.Code, rec.Body.String())
+			}
+			refused++
+		}
+	}
+	if nonPublic := len(readGolden(t)) - len(publicRoutes); refused < nonPublic || nonPublic < 90 {
+		t.Fatalf("refused %d route/door pairs; the golden has %d non-public routes", refused, nonPublic)
+	}
+}
+
+func sortedVias() []string {
+	out := make([]string, 0, len(routeVias))
+	for v := range routeVias {
+		out = append(out, string(v))
+	}
+	sort.Strings(out)
+	return out
 }
