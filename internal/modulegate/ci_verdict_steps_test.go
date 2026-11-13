@@ -30,8 +30,10 @@ import (
 // ---------------------------------------------------------------------------
 
 var wantVerdictPipes = map[string]string{
-	"test": "go test -race -cover -timeout 30m -json ./... | python3 -u tests/verdict.py --echo summary" +
-		" --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream",
+	// The shard's packages / `-run` and its `--require` names come from the
+	// plan step (tests/goshard.py); the required names are pinned there, in
+	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
+	"test": `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
 		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
@@ -73,6 +75,54 @@ func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 			t.Errorf("job %q: the verdict pipe must be directly under `run: |` and "+
 				"`set -o pipefail`; without pipefail a `go test` that exits non-zero over "+
 				"a clean stream is reported green.", job)
+		}
+	}
+}
+
+// TestCIRequiresTheIsolationWalkInTheShardPlan pins the accounts isolation
+// walk's three tests as `--require` lines of the `test` job's goshard.py plan
+// step — the one place those names now enter CI (goshard.py refuses in every
+// internal/api shard if one is missing from the package, and passes it to
+// verdict.py in the shard that runs it).
+func TestCIRequiresTheIsolationWalkInTheShardPlan(t *testing.T) {
+	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := jobLines(string(b), "test")
+	plan := -1
+	for i, l := range lines {
+		if l == "python3 tests/goshard.py" {
+			plan = i
+		}
+	}
+	if plan < 0 {
+		t.Fatalf("positive control FAILED: no `python3 tests/goshard.py` line in the `test` job of %s", path)
+	}
+	// The plan step's folded `run: >-` block: the lines after the command, up
+	// to the first that is not part of it.
+	var block []string
+	for _, l := range lines[plan+1:] {
+		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "- ") {
+			break
+		}
+		block = append(block, l)
+	}
+	for _, name := range []string{
+		"TestEveryRouteIsClassifiedForIsolation",
+		"TestNoRouteLetsOneUserReachAnothersData",
+		"TestAnotherUsersWritesNeverReachYourEventStream",
+	} {
+		found := false
+		for _, l := range block {
+			if l == "--require "+name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the `test` job's goshard.py plan step does not --require %s; "+
+				"the isolation walk could stop running and CI stay green", name)
 		}
 	}
 }
