@@ -796,6 +796,9 @@ After the result, for an outbound draft filed with an `item_id`:
   - the claim finds its **binding broken** (the body or media no longer what
     you approved) and withdraws it: the same, `status: "rejected"`,
     `by: "muster"`, `detail: "the body or media changed after approval"`;
+  - you turn the plugin's **Checks replies off** while the draft awaits its
+    check, which refuses it: the same, `status: "rejected"`, `by: "muster"`,
+    `detail` saying Checks replies was turned off;
   - 🔴 the draft becomes **unconfirmed** (the plugin collected it and its
     lease lapsed with no result): it **may have been posted**, so muster
     never hands it back to be redrafted, which could post it twice. No

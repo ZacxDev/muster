@@ -505,9 +505,11 @@ const ExpiredDetail = "not sent within 7 days of being written: it expired undec
 // outbound draft's unsent end is worded and the officer's follow-up built,
 // for every path that ends one: outboundSettled (a plugin's refusal or
 // failed send, the owner's rejection) and officerPluginLink.DraftEndedTx
-// (the sweep's expiry and lapsed lease, the claim's broken binding).
+// (the sweep's expiry and lapsed lease, the claim's broken binding, Checks
+// replies turned off).
 //
-//   - a REFUSED, REJECTED, EXPIRED or BINDING-BROKEN draft can be redrafted:
+//   - a REFUSED, REJECTED, EXPIRED, BINDING-BROKEN or CHECKS-OFF draft can
+//     be redrafted:
 //     a draft.refused item for the officer, bounded by maxOpenRefusedItems;
 //   - an UNCONFIRMED draft cannot: its plugin collected it and never said
 //     whether it posted it, so it MAY be live. No follow-up is queued (a
@@ -529,6 +531,8 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 		e.Ended, by, detail = "draft "+id+" expired, not posted.", settledByMuster, ExpiredDetail
 	case plugins.OutboundBindingBroken:
 		e.Ended, by, detail = "draft "+id+" was withdrawn at its claim, not posted: "+plugins.BindingBrokenDetail+".", settledByMuster, plugins.BindingBrokenDetail
+	case plugins.OutboundChecksOff:
+		e.Ended, by, detail = "draft "+id+" was refused unchecked, not posted: "+plugins.ChecksOffDetail+".", settledByMuster, plugins.ChecksOffDetail
 	case "":
 		ended := "rejected by the owner"
 		if by == settledByPlugin {

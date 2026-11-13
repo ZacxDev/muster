@@ -23,7 +23,8 @@ import (
 //   - posted: muster completes it `done` with the post's reference
 //     (Store.ResolveItem);
 //   - ended unsent — refused by its plugin, rejected by its owner, expired
-//     undecided, or withdrawn at the claim for a broken binding: muster
+//     undecided, withdrawn at the claim for a broken binding, or refused
+//     unchecked when Checks replies is turned off: muster
 //     queues a draft.refused item and, in the same transaction, finishes the
 //     waiting item `no_action` naming that follow-up (DraftEndedTx) — so the
 //     work continues on ONE item, never two. Past the bound no follow-up is

@@ -192,7 +192,7 @@ type OfficerLink interface {
 	WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, item int64, instance string) error
 	// DraftEndedTx, inside the transaction that ended outbound draft d
 	// unsent by muster's own hand (how: the sweep's expiry or lapsed lease,
-	// the claim's broken binding), settles what d was filed for: its
+	// the claim's broken binding, Checks replies turned off), settles what d was filed for: its
 	// officer's follow-up and the item that waits on it (internal/api
 	// draftEndFor). An error rolls the end back with it, so the next sweep
 	// or claim tries again: a draft never ends while its item still waits.
@@ -212,6 +212,9 @@ const (
 	// OutboundBindingBroken: the claim withdrew it, its body or media no
 	// longer what was approved (claimOne).
 	OutboundBindingBroken OutboundEnd = "binding_broken"
+	// OutboundChecksOff: its plugin's draft_checks was turned off while it
+	// awaited the check, so it was refused (SetDraftChecks).
+	OutboundChecksOff OutboundEnd = "checks_off"
 )
 
 // outboundEnded is OfficerLink.DraftEndedTx for drafts ds that ended how in

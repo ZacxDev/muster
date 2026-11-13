@@ -340,3 +340,46 @@ func TestAnEndedDraftLeavesAnItemWaitingOnAnotherDraft(t *testing.T) {
 		t.Fatalf("after the newer draft's rejection the item is %s %s; want done no_action", st, outcome)
 	}
 }
+
+// TestTurningChecksOffSettlesAnAwaitingDraftsItem (a fifth end, round 1's
+// Y1): the owner turns the plugin's Checks replies off while an outbound
+// draft for an item awaits its check; the draft is refused and, in the same
+// transaction, its officer gets a draft.refused item and the item is closed.
+func TestTurningChecksOffSettlesAnAwaitingDraftsItem(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	item, _, err := w.store.Enqueue(w.ctx, 1, builtin.NewItem{Officer: builtinOfficerID, Kind: "plugin.reply", SubjectKey: "x:checks-off"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolClaim, `{"item_id":"`+strconv.FormatInt(item, 10)+`"}`); isToolErr(out) {
+		t.Fatalf("claim: %s", out)
+	}
+	id, out := w.postDraft(`{"plugin":"` + outboundPluginName + `","venue":"example.forum","target":{"kind":"post"},"body":"Awaiting its check.","item_id":"` +
+		strconv.FormatInt(item, 10) + `"}`)
+	if id == 0 {
+		t.Fatalf("file: %s", out)
+	}
+	if st, _, _, _ := w.itemRow(item); st != officers.StatusWaiting {
+		t.Fatalf("control: the item before the toggle is %s; want waiting", st)
+	}
+	sess1 := authz.WithPrincipal(w.ctx, authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	if _, _, _, err := w.ps.SetDraftChecks(sess1, w.plugin.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if d := w.draft(id); d.Status != plugins.DraftRejected {
+		t.Fatalf("the draft: %s; want refused", d.Status)
+	}
+	refused, p, ok := w.refusedItemOf(id)
+	if !ok {
+		t.Fatal("no draft.refused item for the draft refused by the turn-off")
+	}
+	if p["by"] != "muster" || p["detail"] != "the plugin's Checks replies was turned off before it checked this draft" {
+		t.Fatalf("the draft.refused payload: %v", p)
+	}
+	st, outcome, summary, _ := w.itemRow(item)
+	want := "draft " + strconv.FormatInt(id, 10) + " was refused unchecked, not posted: the plugin's Checks replies was turned off before it checked this draft. " +
+		"The work continues on item " + strconv.FormatInt(refused, 10) + "."
+	if st != officers.StatusDone || outcome != "no_action" || summary != want {
+		t.Fatalf("the item: %s %s %q; want %q", st, outcome, summary, want)
+	}
+}
