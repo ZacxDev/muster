@@ -54,7 +54,10 @@ import (
 // 29 → 30: `agent create` (agent_create.go), POST /api/agents — the machine
 // route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
 // phase 2), on its own agent-create token.
-const wantVerbCount = 43
+//
+// 43 → 44: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
+// sessions created a pull request, and its `claude --resume` line.
+const wantVerbCount = 44
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -133,6 +136,8 @@ var wiring = []struct {
 	{"doctor", []string{"doctor", "--skip", "server,manifest,sign-in,push,dictation"}, "GET /api/doctor"},
 	// A host's chief-nudge notices (nudge.go), read from the attention summary.
 	{"nudge next", []string{"nudge", "next", "--host", "alpha"}, "GET /api/attention/summary"},
+	// Which session created a pull request (pr_session.go), read from session_prs.
+	{"pr-session", []string{"pr-session", "acme/widget#12"}, "GET /api/pr-sessions"},
 }
 
 // tenantWiring is the `tenant …` half of the ledger. These verbs manage files
@@ -303,6 +308,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/officers/defs/marketing:example/schedules", http.StatusOK, `{"schedules":[]}`)
 			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
 			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
+			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","host":"alpha","kind":"gh-pr-create","first_seen":"2000-01-02T12:00:00Z"}]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -227,4 +228,75 @@ func (s *Server) handlePRSessionBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// --- the read path ---------------------------------------------------------------
+
+// prSessionsQueryBadRequest is the 400 body for every refused lookup.
+const prSessionsQueryBadRequest = `the query is ?repo=<owner>/<repo>&pr=<positive integer>`
+
+// prSessionRow is one row GET /api/pr-sessions answers.
+type prSessionRow struct {
+	ClaudeSession string `json:"claude_session"`
+	// Host is the mirror host whose window showed the session when it was
+	// reported; null when none did.
+	Host      *string   `json:"host"`
+	Kind      string    `json:"kind"`
+	Repo      string    `json:"repo"`
+	PR        int64     `json:"pr"`
+	HeadRef   *string   `json:"head_ref"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+// handlePRSessionList is GET /api/pr-sessions?repo=<owner>/<repo>&pr=<n>:
+// which of the caller's sessions created that pull request, as the hook
+// reported it (session_prs, migration 0055) — newest first by first_seen.
+// The caller's own rows only: the table is under row-level security, so a
+// personal token reads its owner's and the hook token the machine user's.
+// 200 {"repo","pr","sessions":[…]} (an empty list when none is recorded); 400
+// on a missing or malformed repo or pr; 404 when the server keeps no
+// authorship store.
+//
+// 🔴 THE SAME DOOR AS THE REPORT (requireArmedHookToken), NOT THE OPEN
+// enforce-when-set ONE. A row names a Claude session id — a `claude --resume`
+// handle — and the host it ran on; reading that on an unarmed server would be
+// a disclosure to anyone who can reach the machine port.
+//
+// It is not gated on pull-request ROUTING being on, unlike the report: what
+// was recorded stays readable after routing is switched off.
+func (s *Server) handlePRSessionList(w http.ResponseWriter, r *http.Request) {
+	if s.ext.PRSessions == nil {
+		s.writeFeatureDisabled(w, r, features.PRMailRouting)
+		return
+	}
+	q := r.URL.Query()
+	repo := strings.TrimSpace(q.Get("repo"))
+	pr, err := strconv.ParseInt(strings.TrimSpace(q.Get("pr")), 10, 64)
+	if err != nil || pr <= 0 || len(repo) < 3 || len(repo) > 200 || !prroute.RepoPattern.MatchString(repo) {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": prSessionsQueryBadRequest})
+		return
+	}
+	repo = strings.ToLower(repo)
+	rows, err := s.ext.PRSessions.ListPRSessions(r.Context(), repo, pr)
+	if err != nil {
+		s.logger.Printf("prroute: list %s#%d: %v", repo, pr, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the sessions could not be read"})
+		return
+	}
+	out := make([]prSessionRow, 0, len(rows))
+	for _, p := range rows {
+		row := prSessionRow{ClaudeSession: p.ClaudeSession, Kind: string(p.Kind), Repo: p.Repo, PR: p.PR,
+			FirstSeen: p.FirstSeen.UTC(), LastSeen: p.LastSeen.UTC()}
+		if p.Host != "" {
+			h := p.Host
+			row.Host = &h
+		}
+		if p.HeadRef != "" {
+			ref := p.HeadRef
+			row.HeadRef = &ref
+		}
+		out = append(out, row)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"repo": repo, "pr": pr, "sessions": out})
 }

@@ -87,6 +87,7 @@ officer type get
 officer type ls
 officer type put
 plugins retry
+pr-session
 route reply
 task comment
 task create
@@ -113,7 +114,8 @@ whoami"
 # 30 -> 40: the ten `officer type|def|item` verbs (the built-in officer store's
 #           admin API, docs/officers-builtin.md; muster#503 slice 7).
 # 40 -> 43: `officer schedule ls|put|delete` (slice 8).
-WANT_COUNT=43
+# 43 -> 44: `pr-session` (which of your sessions created a pull request).
+WANT_COUNT=44
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

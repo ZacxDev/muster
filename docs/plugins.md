@@ -2145,6 +2145,30 @@ routing is on.
 5. **No author recorded**, or not a review muster reads: the ordinary
    delivery, unchanged.
 
+#### Which session created a pull request
+
+`GET /api/pr-sessions?repo=<owner>/<repo>&pr=<n>` reads the rows step 1
+recorded: every one of **your** sessions recorded as creating that pull request
+(`kind` `gh-pr-create`; a push names no number, so it is never one of them),
+newest first by `first_seen`, at most 100. The same credential as the report,
+on the same fail-closed door (a server with no `MUSTER_HOOK_TOKEN` answers 503
+with `"unarmed": true` to the hook token); row-level security answers the
+caller's own rows only.
+
+```json
+{"repo": "acme/widget", "pr": 12, "sessions": [
+  {"claude_session": "<id>", "host": "<mirror host>" | null, "kind": "gh-pr-create",
+   "repo": "acme/widget", "pr": 12, "head_ref": "<branch>" | null,
+   "first_seen": "<RFC 3339>", "last_seen": "<RFC 3339>"}]}
+```
+
+`repo` is matched case-insensitively. `200` with `"sessions": []` when none is
+recorded; `400` when `repo` is not `<owner>/<repo>` or `pr` is not a positive
+integer; `404` (`feature_disabled`) on a server with no authorship store. Rows
+are listed while they are stored — a report prunes the owner's rows unseen for
+30 days — and the read is not gated on routing being on. From the CLI:
+[`muster pr-session`](cli.md#which-session-created-a-pull-request).
+
 #### A review answered through HQ
 
 Some review senders take **no mail** — HQ's own PR-review address refuses
