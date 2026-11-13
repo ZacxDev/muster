@@ -13,13 +13,22 @@ The mic turns into a **✓** and Send into a **↑**. Then:
 - **✓ (Stop and insert transcript)**: the recording is transcribed and the
   text is **inserted into the box at the cursor**. Nothing is sent: you read
   it and press Send (on an answer box, **Answer**).
-- **↑ (Transcribe and send)**: the recording is transcribed, inserted, and
-  sent at once, by the box's own Send. It goes through exactly what a tap on
-  Send does, so a mirrored session that needs you to confirm it's you still
-  asks first ([step-up](sending-and-step-up.md#step-up-confirm-its-you)). If
-  the transcription fails or hears nothing, nothing is sent: the reason is
-  shown and the box is left as it was. One tap sends once: a double tap, or a
-  second tap just after the send, sends nothing more.
+- **↑ (Transcribe and send)**: the recording is transcribed and sent at once,
+  by the box's own Send. What is sent is **what was already in the box,
+  followed by the transcript**; while you record, that draft is shown on one
+  line beside the waveform so you know it goes too. It goes through exactly
+  what a tap on Send does, so a mirrored session that needs you to confirm
+  it's you still asks first
+  ([step-up](sending-and-step-up.md#step-up-confirm-its-you)). If the
+  transcription fails or hears nothing, nothing is sent: the reason is shown
+  and the box is left as it was. If Send can't be used when the transcript
+  comes back (for example while an agent is still answering), the text is put
+  in the box and not sent, and the note says so. The ↑ is disabled while Send
+  is.
+- **One tap sends once.** For 1.5 seconds after a voice send, a tap on Send is
+  ignored: Send is back where the ↑ was, so the second tap of a double tap
+  would otherwise send again. A new recording sent with ↑ in that time is
+  still sent.
 - **× (Discard recording)**: the recording is thrown away. Nothing is
   transcribed and the box is left as it was.
 

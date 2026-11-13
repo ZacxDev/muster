@@ -113,6 +113,10 @@ func recorderOf(t *testing.T, name, page, mic, input string, submit, hide []stri
 	for _, want := range []string{
 		`data-dictate-wave-for="` + mic + `" class="hidden `,
 		`<button id="` + mic + `-discard" type="button" data-dictate-discard="` + mic + `" aria-label="Discard recording" title="Discard recording"`,
+		// The draft preview: hidden until a recording with a draft, one line
+		// cut with an ellipsis, and announced as the draft the ↑ sends.
+		`<span data-dictate-draft="" class="hidden min-w-0 max-w-[45%] shrink truncate `,
+		`<span class="sr-only">Your draft, sent before the transcript: </span><span data-dictate-draft-text=""></span></span><canvas`,
 		`<canvas data-dictate-canvas="" aria-hidden="true"`,
 		`<span data-dictate-clock="" aria-hidden="true"`,
 	} {

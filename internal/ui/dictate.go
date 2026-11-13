@@ -26,17 +26,23 @@ import (
 //   - ✓ — the mic, and likewise the DictateMaxSeconds cap and the view switch
 //     hiding the view: the text is INSERTED INTO THE BOX AT THE CARET and NOT
 //     sent. The operator reads it and presses Send.
-//   - ↑ — Send's place while recording: the text is inserted at the caret AND
-//     then sent by CLICKING THE BOX'S OWN SEND, the button the operator would
-//     have pressed. Never a request of this script's own: the send takes
-//     exactly the path a tap on Send takes, with its confirm-it's-you step-up
+//   - ↑ — Send's place while recording: the text is put AFTER the box's
+//     draft (draft + transcript, operator decision; the draft is previewed
+//     beside the waveform while recording) and then sent by CLICKING THE
+//     BOX'S OWN SEND — the one on screen when the transcript comes back,
+//     never one remembered from the start (a chief-mode switch can flip
+//     between). Never a request of this script's own: the send takes exactly
+//     the path a tap on Send takes, with its confirm-it's-you step-up
 //     (docs/sending-and-step-up.md), its pending bubble, its nonce and its
 //     refusals. It is sent ONLY when a non-empty transcript was inserted: a
 //     refused, failed or silent recording sends nothing and leaves the box as
-//     it was. It is sent AT MOST ONCE: one tap arms it (the ↑ is then
-//     disabled), and for DictateSendHoldMs after the send a repeat tap on the
-//     box's Send is swallowed — Send is back where the ↑ was by then, so the
-//     second tap of an impatient double tap would land on it.
+//     it was; a transcript whose Send is disabled or gone stays in the box
+//     and says so (DictateNotSent). The ↑ is disabled while its Send is,
+//     read live. It is sent AT MOST ONCE per tap: for DictateSendHoldMs after
+//     the send a TAP on the box's Send is swallowed — Send is back where the
+//     ↑ was by then, so the second tap of an impatient double tap would land
+//     on it — while this script's own click for a NEXT voice send goes
+//     through.
 //   - × — the recording is thrown away: nothing is posted, the box is as it
 //     was.
 //
@@ -158,6 +164,8 @@ const (
 	DictateSendingLabel = "Transcribing, then sending…"
 	// DictateDiscardLabel is the ×'s name.
 	DictateDiscardLabel = "Discard recording"
+	// DictateDraftPrefix is said (visually hidden) before the draft preview.
+	DictateDraftPrefix = "Your draft, sent before the transcript: "
 )
 
 // dictateMessages are the inline notes. Spelled once, here, and handed to the
@@ -181,6 +189,9 @@ const (
 	DictateSignedOut   = "You are signed out. Reload the page to sign in again."
 	DictateEmpty       = "Nothing was recorded."
 	DictateFailed      = "The recording stopped with an error, so nothing was transcribed. Try again."
+	// DictateNotSent: the ↑'s transcript is in the box, but the box's Send
+	// could not be pressed when it came back (disabled, or gone).
+	DictateNotSent = "Inserted, not sent: Send is unavailable right now."
 )
 
 // dictateButtonClass is the mic's look: a 40px square target
@@ -249,6 +260,13 @@ func dictateWave(path, buttonID string) g.Node {
 			g.Attr("title", DictateDiscardLabel),
 			Class("press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s3 hover:text-fg"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>`),
+		),
+		// The box's draft, while it is out of sight: one line, cut with an
+		// ellipsis (the whole text in its title), so the operator knows the ↑
+		// sends it ahead of the transcript. Shown only when there is one.
+		Span(g.Attr("data-dictate-draft", ""), Class("hidden min-w-0 max-w-[45%] shrink truncate text-sm text-fg2"),
+			Span(Class("sr-only"), g.Text(DictateDraftPrefix)),
+			Span(g.Attr("data-dictate-draft-text", "")),
 		),
 		Canvas(g.Attr("data-dictate-canvas", ""), g.Attr("aria-hidden", "true"), Class("block h-8 min-w-0 flex-1 text-accent")),
 		Span(g.Attr("data-dictate-clock", ""), g.Attr("aria-hidden", "true"), Class("shrink-0 text-sm tabular-nums text-fg2"), g.Text("0:00")),
@@ -360,11 +378,11 @@ func dictateScript(path string) g.Node {
 		"nomic": DictateNoMic, "micbusy": DictateMicBusy, "nothing": DictateNothing,
 		"unavailable": DictateUnavailable, "signedout": DictateSignedOut, "empty": DictateEmpty,
 		"idle": dictateIdleLabel, "stop": DictateStopLabel, "busy": dictateBusyLabel,
-		"failed": DictateFailed, "send": DictateSendLabel, "sending": DictateSendingLabel,
+		"failed": DictateFailed, "send": DictateSendLabel, "sending": DictateSendingLabel, "notsent": DictateNotSent,
 	}
 	js := "{"
 	first := true
-	for _, k := range []string{"insecure", "unsupported", "denied", "deniedapp", "nomic", "micbusy", "nothing", "unavailable", "signedout", "empty", "idle", "stop", "busy", "failed", "send", "sending"} {
+	for _, k := range []string{"insecure", "unsupported", "denied", "deniedapp", "nomic", "micbusy", "nothing", "unavailable", "signedout", "empty", "idle", "stop", "busy", "failed", "send", "sending", "notsent"} {
 		if !first {
 			js += ","
 		}
@@ -397,7 +415,9 @@ func dictateScript(path string) g.Node {
       note: byId(btn.getAttribute('data-dictate-note')),
       wave: wave, arrow: byId(btn.getAttribute('data-dictate-arrow')),
       canvas: wave ? wave.querySelector('canvas') : null,
-      clock: wave ? wave.querySelector('[data-dictate-clock]') : null };
+      clock: wave ? wave.querySelector('[data-dictate-clock]') : null,
+      draft: wave ? wave.querySelector('[data-dictate-draft]') : null,
+      draftText: wave ? wave.querySelector('[data-dictate-draft-text]') : null };
   }
   function say(p, msg) { if (!p.note) return; p.note.textContent = msg || ''; p.note.hidden = !msg; }
   function state(p, s) {
@@ -444,12 +464,19 @@ func dictateScript(path string) g.Node {
   // opening, ac, src, an, raf, send, target, waved, arrowed }
   var active = null;
 
-  // THE BOX'S PLACE: the waveform instead of the textarea while recording.
-  // The caret, and whether the box had focus, are kept to put back.
+  // THE BOX'S PLACE: the waveform instead of the textarea while recording,
+  // with the box's draft (if any) as a one-line preview: the ↑ sends it,
+  // followed by the transcript. The caret is kept to put back.
   function waveOn(s) {
     var p = s.p;
     if (s.waved || !p.wave || !p.input) return;
     s.waved = hideEl(p.input);
+    var d = p.input.value.trim();
+    if (p.draft && p.draftText) {
+      p.draftText.textContent = d.replace(/\s+/g, ' ');
+      if (d) p.draft.setAttribute('title', d); else p.draft.removeAttribute('title');
+      shown(p.draft, !!d, 'block');
+    }
     shown(p.wave, true, 'flex');
     if (p.clock) p.clock.textContent = '0:00';
     // The note is still the screen reader's announcement; the clock beside
@@ -458,35 +485,71 @@ func dictateScript(path string) g.Node {
   }
   function waveOff(s) {
     var p = s.p;
-    if (!s.waved) return;
-    unhide(s.waved);
-    s.waved = null;
-    shown(p.wave, false, 'flex');
-    if (p.note) p.note.classList.remove('sr-only');
-    if (s.focused && p.input.isConnected) {
-      try { p.input.focus({ preventScroll: true }); } catch (e) { p.input.focus(); }
-      try { p.input.setSelectionRange(s.caret[0], s.caret[1]); } catch (e) {}
+    if (s.waved) {
+      unhide(s.waved);
+      s.waved = null;
+      shown(p.wave, false, 'flex');
+      if (p.draft) shown(p.draft, false, 'block');
+      if (p.note) p.note.classList.remove('sr-only');
     }
+    refocus(s);
+  }
+  // FOCUS: a recording moves it to the ✓ (the box is out of sight, and on a
+  // touch screen a tap would otherwise leave it on the body); every end of
+  // the recording puts it back in the box at its caret when the box had it
+  // at the start — else it stays on the mic, and it goes to the mic when the
+  // box is gone. (A transcript's insert focuses the box itself.)
+  // 🔴 NOT INTO A BOX THE OPERATOR NEVER FOCUSED: on the Asks list, focus in
+  // an answer box counts as "typing" (askBusyFunc) and holds the list's
+  // live refresh back; an empty box focused by this script held a refresh
+  // forever. Not when the page or the view is going (noFocus) either: a
+  // hidden view must not pull focus from the one on screen.
+  function refocus(s) {
+    var p = s.p;
+    if (s.noFocus || s.refocused || !s.rec) return;
+    s.refocused = true;
+    var box = s.hadBox && p.input && p.input.isConnected && p.input.getClientRects().length ? p.input : null;
+    var el = box || (p.btn.isConnected ? p.btn : null);
+    if (!el) return;
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+    if (box && s.caret) { try { box.setSelectionRange(s.caret[0], s.caret[1]); } catch (e) {} }
   }
 
-  // SEND'S PLACE: the ↑ instead of the box's Send while recording. Its
-  // target is the Send that was on screen when the recording started (a
-  // composer in chief mode shows the chief's Send instead of the agent's).
-  // No Send on screen, no ↑: the mic still records and inserts.
+  // SEND'S PLACE: the ↑ instead of the box's Send while recording.
+  //
+  // 🔴 ITS TARGET IS RESOLVED WHEN IT IS USED, NEVER KEPT: the Send the page
+  // would show NOW, of data-dictate-submit's (a composer in chief mode shows
+  // the chief's Send, else the agent's, and the switch can flip while
+  // recording). sendNow measures them as the page would draw them — the
+  // ↑'s own inline hiding lifted for the measurement, in the same task, so
+  // nothing is painted. No Send on screen at the start, no ↑: the mic still
+  // records and inserts.
+  function sendNow(p, hidden) {
+    var a = p.arrow, t = null, i;
+    if (!a) return null;
+    if (hidden) for (i = 0; i < hidden.length; i++) unhide(hidden[i]);
+    var ids = (a.getAttribute('data-dictate-submit') || '').split(/\s+/);
+    for (i = 0; i < ids.length && !t; i++) { var el = byId(ids[i]); if (el && el.getClientRects().length) t = el; }
+    if (hidden) for (i = 0; i < hidden.length; i++) hidden[i][0].style.setProperty('display', 'none', 'important');
+    return t;
+  }
+  // syncArrow: the ↑ is disabled exactly while the Send it would press is
+  // (a send of the box's in flight, an agent's turn running), read live on
+  // the recording's tick — never frozen at the start.
+  function syncArrow(s) {
+    if (!s.arrowed || s.send) return;
+    var t = sendNow(s.p, s.arrowed);
+    s.p.arrow.disabled = !t || !!t.disabled;
+  }
   function arrowOn(s) {
     var p = s.p, a = p.arrow;
-    if (s.arrowed || !a) return;
-    var ids = (a.getAttribute('data-dictate-submit') || '').split(/\s+/), t = null;
-    for (var i = 0; i < ids.length && !t; i++) { var el = byId(ids[i]); if (el && el.getClientRects().length) t = el; }
-    if (!t) return;
-    s.target = t;
+    if (s.arrowed || !a || !sendNow(p, null)) return;
     s.arrowed = [];
     var hs = (a.getAttribute('data-dictate-hide') || '').split(/\s+/);
     for (var j = 0; j < hs.length; j++) { var h = byId(hs[j]); if (h) s.arrowed.push(hideEl(h)); }
     a.setAttribute('data-state', 'idle');
     a.setAttribute('aria-label', M.send);
-    // A send of the box's already in flight (its Send disabled) disables it.
-    a.disabled = !!t.disabled;
+    syncArrow(s);
     shown(a, true, 'inline-flex');
   }
   function arrowOff(s) {
@@ -580,19 +643,24 @@ func dictateScript(path string) g.Node {
     if (s.p.btn.isConnected) { state(s.p, 'idle'); say(s.p, why || ''); }
   }
 
-  // held: the box Send the ↑ just clicked, and until when a further click on
-  // it is swallowed (DictateSendHoldMs).
-  var held = null;
+  // held: the box Send the ↑ just clicked, and until when a further TAP on
+  // it is swallowed (DictateSendHoldMs). selfClick marks this script's own
+  // click, which the hold lets through: a second voice send inside the hold
+  // still sends.
+  var held = null, selfClick = false;
   // 🔴 THE ↑'S SEND IS THE BOX'S OWN, ONCE, AND ONLY ON A TRANSCRIPT. ok is
   // true only when upload inserted a non-empty transcript into a box still on
   // the page; a refusal, a failure or silence leaves it false and nothing is
-  // sent. The send is a click on the box's Send — the same path, step-up
-  // included, as the operator's own tap.
+  // sent. The send is a click on the box's Send — the one on screen NOW
+  // (sendNow) — the same path, step-up included, as the operator's own tap.
+  // A transcript whose Send cannot be pressed stays in the box, and says so.
   function voiceSend(s, ok) {
-    var t = s.target;
     arrowOff(s);
-    if (!ok || !t || !t.isConnected || t.disabled) return;
-    t.click();
+    if (!ok) return;
+    var t = sendNow(s.p, null);
+    if (!t || t.disabled) { say(s.p, M.notsent); return; }
+    selfClick = true;
+    try { t.click(); } finally { selfClick = false; }
     held = { el: t, until: Date.now() + ` + strconv.Itoa(DictateSendHoldMs) + ` };
   }
 
@@ -613,6 +681,9 @@ func dictateScript(path string) g.Node {
           if (!t) { say(p, M.nothing); return; }
           if (!p.input || !p.input.isConnected) { say(p, ''); return; }
           say(p, '');
+          // The ↑ sends the draft FOLLOWED BY the transcript (operator
+          // decision): its text goes at the end, not at the caret.
+          if (s.send) { var n = p.input.value.length; try { p.input.setSelectionRange(n, n); } catch (e) {} }
           insert(p.input, t);
           ok = true;
           return;
@@ -673,11 +744,12 @@ func dictateScript(path string) g.Node {
       var show = function () {
         var el = (Date.now() - s.t0) / 1000;
         if (p.clock) p.clock.textContent = clock(el);
+        syncArrow(s);
         say(p, '● Recording ' + clock(el) + ' / ' + clock(max) + (s.arrowed ? ' — ✓ inserts the text, ↑ sends it, × discards it' : ' — ✓ inserts the text, × discards it'));
         if (el >= max && rec.state === 'recording') rec.stop();
       };
-      s.focused = document.activeElement === p.input;
       s.caret = p.input ? [p.input.selectionStart, p.input.selectionEnd] : [0, 0];
+      s.hadBox = !!p.input && document.activeElement === p.input;
       rec.start(1000);
       state(p, 'recording');
       // A collapsed Rendered-view box is revealed: the waveform takes ITS
@@ -686,6 +758,8 @@ func dictateScript(path string) g.Node {
       waveOn(s);
       arrowOn(s);
       meterOn(s);
+      // Focus to the ✓ (refocus, above, puts it back at the end).
+      try { p.btn.focus({ preventScroll: true }); } catch (e) { p.btn.focus(); }
       show();
       s.tick = setInterval(show, 250);
     }, function (err) {
@@ -700,15 +774,17 @@ func dictateScript(path string) g.Node {
     });
   }
 
-  // Pressing the mic, the ↑ or the × does not take focus from the box: the
-  // caret stays where the text will go, and on a phone the on-screen keyboard
-  // does not close (and resize the page) for every press.
+  // The PRESS itself never moves focus (its mousedown default is
+  // prevented), so the box's caret is still where the operator left it when
+  // the recording starts; where focus goes then is the script's choice: to
+  // the ✓ while recording, and back at every end (refocus: into the box if
+  // it had focus, else on the mic).
   document.addEventListener('mousedown', function (e) {
     if (e.target && e.target.closest && e.target.closest('[data-dictate], [data-dictate-send], [data-dictate-discard]')) e.preventDefault();
   });
   // The repeat tap on the box's Send just after the ↑ sent (held, above).
   document.addEventListener('click', function (e) {
-    if (!held) return;
+    if (!held || selfClick) return;
     if (Date.now() > held.until || !held.el.isConnected) { held = null; return; }
     if (e.target && e.target.closest && e.target.closest('button') === held.el) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
@@ -732,6 +808,10 @@ func dictateScript(path string) g.Node {
       e.preventDefault();
       var s = active;
       if (!s || s.p.arrow !== up || !s.rec) return;
+      // Read the Send live once more: it may have been disabled since the
+      // last tick.
+      syncArrow(s);
+      if (up.disabled) return;
       s.send = true;
       up.disabled = true;
       up.setAttribute('data-state', 'busy');
@@ -764,7 +844,7 @@ func dictateScript(path string) g.Node {
     if (active && !active.p.btn.isConnected) abandon();
     reveal(e.target);
   });
-  window.addEventListener('pagehide', function () { abandon(); });
+  window.addEventListener('pagehide', function () { if (active) active.noFocus = true; abandon(); });
   // The Rendered|Terminal switch (view_swap.go) does not unload the view it
   // takes off screen: it tells that view's window 'muster:view-hidden' — the
   // top page when the frame is revealed, the frame when it is hidden again.
@@ -779,6 +859,7 @@ func dictateScript(path string) g.Node {
   window.addEventListener('muster:view-hidden', function () {
     var s = active;
     if (!s) return;
+    s.noFocus = true;
     if (s.opening || !s.rec || s.rec.state === 'inactive') { abandon(); return; }
     try { s.rec.stop(); } catch (e) { abandon(); return; }
     release(s);

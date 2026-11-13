@@ -267,7 +267,7 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 				}
 			}
 			wave := regexp.MustCompile(`(?s)<div id="` + mic + `-wave"[^>]*>.*?</div>`).FindString(page)
-			for _, want := range []string{`data-dictate-wave-for="` + mic + `" class="hidden `, `data-dictate-discard="` + mic + `" aria-label="Discard recording"`, `<canvas data-dictate-canvas`, `data-dictate-clock`} {
+			for _, want := range []string{`data-dictate-wave-for="` + mic + `" class="hidden `, `data-dictate-discard="` + mic + `" aria-label="Discard recording"`, `<span data-dictate-draft="" class="hidden `, `<canvas data-dictate-canvas`, `data-dictate-clock`} {
 				if !strings.Contains(wave, want) {
 					t.Errorf("%s: mic %s's waveform lacks %s: %q", name, mic, want, wave)
 				}

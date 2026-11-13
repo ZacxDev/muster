@@ -1275,6 +1275,220 @@ test.describe('the recorder: a live waveform, ✓ inserts, ↑ sends, × discard
         expect(a.frames).toBeGreaterThan(0);
       });
 
+      // Y1: the ↑ follows its Send's disabled state LIVE (an agent's turn
+      // disables #chat-send and enables it again; here the Rendered view's
+      // Send is disabled and enabled by hand, the same attribute). And a
+      // transcript that comes back while Send is disabled stays in the box,
+      // unsent, saying why.
+      test('the ↑ follows Send’s disabled state live; a Send disabled during the transcription leaves the text in the box, unsent', async ({ page }) => {
+        await instrument(page);
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let posts = 0;
+        await page.route('**/transcribe', async (r) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          posts++;
+          await gate;
+          await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
+        });
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(u.up).toBeEnabled();
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = true));
+        await expect(u.up, 'Send disabled mid-recording disables the ↑').toBeDisabled();
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = false));
+        await expect(u.up, 'Send enabled again enables the ↑').toBeEnabled();
+        await page.waitForTimeout(500);
+        await u.up.click();
+        await expect.poll(() => posts).toBe(1);
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = true));
+        release();
+        await expect(u.note).toHaveText('Inserted, not sent: Send is unavailable right now.');
+        await expect(u.input).toHaveValue(FAKE_TEXT);
+        await page.waitForTimeout(600);
+        expect(sends(), 'nothing was sent').toBe(0);
+        await expectReleased(page, 'Y1');
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = false));
+      });
+
+      // Y2: the hold swallows a TAP on Send, never the script's own click for
+      // the next voice send: two ↑ in quick succession both send.
+      test('two voice sends in quick succession both send', async ({ page }) => {
+        await instrument(page);
+        let k = 0;
+        await page.route('**/transcribe', async (r) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          k++;
+          await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: `voice send number ${k}` });
+        });
+        const times: number[] = [];
+        page.on('request', (r) => {
+          if (r.method() === 'POST' && new URL(r.url()).pathname === '/mirror/view/send') times.push(Date.now());
+        });
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        for (let i = 0; i < 2; i++) {
+          await u.mic.click();
+          await expect(u.mic).toHaveAttribute('data-state', 'recording');
+          await page.waitForTimeout(300);
+          await u.up.click();
+          await expect.poll(() => times.length, { timeout: 10_000 }).toBe(i + 1);
+        }
+        expect(times[1] - times[0], 'the second voice send came inside the first one’s hold').toBeLessThan(1500);
+        await expect
+          .poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` })
+          .toBe('%e2e-dict-@1 voice send number 1\n%e2e-dict-@1 voice send number 2\n');
+      });
+
+      // Y3 (operator decision "Draft + transcript, draft shown"): the ↑ sends
+      // what was in the box FOLLOWED BY the transcript — wherever the caret
+      // was — and while recording the draft is previewed on one line (cut
+      // with an ellipsis, whole in its title). An empty box shows no preview.
+      test('the ↑ sends the draft followed by the transcript, and previews the draft while recording', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        const preview = page.locator('#mv-dictate-wave [data-dictate-draft]');
+        const draft = 'my draft that runs on well past the width of the waveform row so the preview has to cut it short';
+        await u.input.fill(draft);
+        await u.input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(0, 0));
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(preview, 'the draft is previewed').toBeVisible();
+        await expect(preview).toContainText(draft);
+        await expect(preview).toHaveAttribute('title', draft);
+        const pb = (await preview.boundingBox())!;
+        expect(pb.height, 'one line').toBeLessThan(30);
+        expect(await preview.evaluate((el) => el.scrollWidth > el.clientWidth), 'cut with an ellipsis').toBe(true);
+        await page.waitForTimeout(500);
+        await u.up.click();
+        await expect.poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` }).toBe(`%e2e-dict-@1 ${draft} ${FAKE_TEXT}\n`);
+        await expect(preview).toBeHidden();
+        // An empty box: no preview.
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(u.wave).toBeVisible();
+        await expect(preview, 'no draft, no preview').toBeHidden();
+        await u.discard.click();
+        await expectIdle(page, 'empty');
+      });
+
+      // Y4: the ↑ presses the Send on screen WHEN THE TRANSCRIPT COMES BACK.
+      // ⚠ SIMULATED CHIEF MODE: this server runs no chief, so the page is
+      // given a stand-in of view_chief.go's switch — a checkbox and an
+      // #mv-send-chief, shown and hidden by the same kind of :has() rule
+      // (viewChiefOn). What is real is the ↑'s choice between the two.
+      test('the chief switch flipped while recording: the ↑ presses the Send on screen at the end', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await page.evaluate(() => {
+          const st = document.createElement('style');
+          st.textContent =
+            '#mv-send-chief{display:none}#mv-compose:has(#wave-chief:checked) #mv-send-chief{display:inline-flex}' +
+            '#mv-compose:has(#wave-chief:checked) :is(#mv-send,#mv-send-group){display:none!important}';
+          document.head.appendChild(st);
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.id = 'wave-chief';
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.id = 'mv-send-chief';
+          b.textContent = 'chief';
+          (window as unknown as { __chief: number }).__chief = 0;
+          b.addEventListener('click', () => (window as unknown as { __chief: number }).__chief++);
+          const row = document.getElementById('mv-button-row')!;
+          row.prepend(cb);
+          row.appendChild(b);
+        });
+        const chief = () => page.evaluate(() => (window as unknown as { __chief: number }).__chief);
+        // Agent mode at the start, chief mode at the end: the chief's Send.
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.locator('#wave-chief').check();
+        await page.waitForTimeout(400);
+        await u.up.click();
+        await expect.poll(chief, { message: 'the chief’s Send was pressed' }).toBe(1);
+        await page.waitForTimeout(500);
+        expect(sends(), 'the agent’s Send was not').toBe(0);
+        // Chief mode at the start, agent mode at the end: the agent's Send.
+        await u.input.fill('');
+        await page.waitForTimeout(1600); // past the hold
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.locator('#wave-chief').uncheck();
+        await page.waitForTimeout(400);
+        await u.up.click();
+        await expect.poll(sends, { message: 'the agent’s Send was pressed' }).toBe(1);
+        expect(await chief(), 'the chief’s was not').toBe(1);
+        // Let the paste land before the test ends: the host writes it after
+        // the request, and a later test's fresh paste file must not get it.
+        await expect.poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` }).toBe(`%e2e-dict-@1 ${FAKE_TEXT}\n`);
+      });
+
+      // Y5: focus goes to the ✓ when a recording starts, and back into the
+      // box on every end — ✓, ↑ and ×.
+      test('focus: on the ✓ while recording, back in the box after ✓, ↑ and ×', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        const focused = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+        for (const x of [
+          { name: '✓', end: () => u.mic.click() },
+          { name: '↑', end: () => u.up.click() },
+          { name: '×', end: () => u.discard.click() },
+        ]) {
+          await u.input.fill('');
+          await page.waitForTimeout(1600); // past any hold
+          await u.mic.click();
+          await expect(u.mic).toHaveAttribute('data-state', 'recording');
+          await expect.poll(focused, { message: `${x.name}: focus is on the ✓ while recording` }).toBe('mv-dictate');
+          await page.waitForTimeout(300);
+          await x.end();
+          await expect(u.mic).toHaveAttribute('data-state', 'idle');
+          await expect.poll(focused, { message: `${x.name}: focus is back in the box` }).toBe('mv-input');
+        }
+      });
+
+      // G2: a voice send whose step-up is CANCELLED is not sent, and its text
+      // is back in the box (the send path's own rule; the ↑ adds nothing).
+      test('↑ then the step-up cancelled: nothing is sent and the transcript is back in the box', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        let refused = 0;
+        await page.route('**/mirror/view/send?*', async (route) => {
+          refused++;
+          await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        });
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.waitForTimeout(500);
+        await u.up.click();
+        const dialog = page.locator('#term-confirm');
+        await expect(dialog).toBeVisible();
+        await page.locator('#term-confirm-cancel').click();
+        await expect(dialog).toBeHidden();
+        await expect(u.input, 'the transcript is back in the box').toHaveValue(FAKE_TEXT);
+        await page.waitForTimeout(600);
+        expect(refused, 'one send, refused for the step-up, never retried').toBe(1);
+        expect(read(transcript + '.pasted'), 'nothing pasted').toBe('');
+        await page.unroute('**/mirror/view/send?*');
+      });
+
       // The agent chat's ↑ clicks #chat-send: the message goes over the chat's
       // own socket, once.
       test('the agent chat: ↑ transcribes and sends once through #chat-send', async ({ page }) => {
