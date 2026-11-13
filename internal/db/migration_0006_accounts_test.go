@@ -300,6 +300,8 @@ var wantForeignKeys = []string{
 	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_message_owner_fkey|FOREIGN KEY (message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"plugin_reply_drafts|plugin_reply_drafts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0121: an outbound draft names its plugin directly, under the same owner.
+	"plugin_reply_drafts|plugin_reply_drafts_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"plugins|plugins_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_preferences|push_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"push_subscriptions|push_subscriptions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

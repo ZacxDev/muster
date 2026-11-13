@@ -315,7 +315,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if strings.Join(keys, ",") != "approved_at,body,draft_id,message_external_id" || c["body"] != "Yes, noon works." ||
+	if strings.Join(keys, ",") != "approved_at,body,draft_id,kind,message_external_id" || c["kind"] != "reply" || c["body"] != "Yes, noon works." ||
 		c["message_external_id"] != "ext-1-"+d.suffix || int64(c["draft_id"].(float64)) != draftID {
 		t.Fatalf("the claim body: %s", rec.Body.String())
 	}

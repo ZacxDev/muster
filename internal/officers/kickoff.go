@@ -322,6 +322,12 @@ const (
 	// investigates — and, on today's HQ, unless the item is judgement tier.
 	// Read-only; it spends the item's read budget (reads.go).
 	ToolObsRaw = "officer_obs_raw"
+	// ToolPostDraft files an OUTBOUND draft through the plugin bound to the
+	// officer (internal/plugins outbound.go): a post or a reply its owner
+	// approves, exact text and media, before the plugin sends it. Offered to a
+	// BUILTIN officer only, and only while its type grants outbound_drafts
+	// (checked at call time by internal/api); never to an HQ officer.
+	ToolPostDraft = "officer_post_draft"
 )
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -381,6 +387,10 @@ func ToolOffered(o Officer, tool string) bool {
 		// pool that reads compare diffs and attributes. HQ also refuses a
 		// type without pr_context_read.
 		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
+	case ToolPostDraft:
+		// 🔴 A BUILTIN OFFICER'S ONLY. An HQ officer's outward actions are
+		// HQ's; the type grant (outbound_drafts) is read at call time.
+		return o.IsBuiltin()
 	}
 	return false
 }

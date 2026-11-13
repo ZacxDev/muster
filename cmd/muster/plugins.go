@@ -22,7 +22,51 @@ func newPluginsCmd(a *app) *cobra.Command {
 		Use:   "plugins",
 		Short: "Act on plugin messages",
 	}
-	cmd.AddCommand(newPluginsRetryCmd(a))
+	cmd.AddCommand(newPluginsRetryCmd(a), newPluginsDeliverToCmd(a))
+	return cmd
+}
+
+const pluginDeliverToRoute = "/api/plugins/{id}/deliver-to"
+
+// `plugins deliver-to <plugin-id> officer:<id>` (or --clear): bind a plugin
+// to a builtin officer (docs/plugins.md "A plugin bound to an officer").
+func newPluginsDeliverToCmd(a *app) *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "deliver-to <plugin-id> [officer:<id>]",
+		Short: "PUT " + pluginDeliverToRoute + " — bind a plugin to a builtin officer, or --clear it",
+		Long: `Bind a plugin to a builtin officer: its messages become items in that
+officer's queue instead of chief turns, and the officer's outbound drafts are
+sent through it. Refused (exit 5) unless the officer is defined in the built-in
+store for the plugin's owner. --clear gives the plugin back to your chief.`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
+			if err != nil || id <= 0 {
+				return failf(exitUsage, "plugin id %q is not a positive number (it is on /plugins)", args[0])
+			}
+			to := ""
+			switch {
+			case clear && len(args) == 2:
+				return failf(exitUsage, "give an officer or --clear, not both")
+			case !clear && len(args) != 2:
+				return failf(exitUsage, "give officer:<id>, or --clear")
+			case !clear:
+				to = strings.TrimSpace(args[1])
+			}
+			path, err := expandPath(pluginDeliverToRoute, map[string]string{"id": strconv.FormatInt(id, 10)})
+			if err != nil {
+				return err
+			}
+			raw, err := a.call(cmd.Context(), request{method: http.MethodPut, path: path, cred: credHook,
+				body: map[string]any{"deliver_to": to}})
+			if err != nil {
+				return err
+			}
+			return a.emit(raw)
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "unbind the plugin: its messages go to your chief again")
 	return cmd
 }
 

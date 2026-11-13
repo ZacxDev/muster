@@ -38,7 +38,12 @@ import (
 // muster-server when MUSTER_OFFICERS is set — `[]` included, the empty
 // roster — and there is a database; EnableOfficers takes the same store for
 // the builtin officers it declares.
-func (s *Server) EnableOfficerStore(store *builtin.Store) { s.officerStore = store }
+func (s *Server) EnableOfficerStore(store *builtin.Store) {
+	s.officerStore = store
+	// A plugin can now be bound to one of the store's officers
+	// (plugin_outbound.go).
+	s.linkPluginsToOfficers(store)
+}
 
 // OfficerStoreOn reports whether EnableOfficerStore was called.
 func (s *Server) OfficerStoreOn() bool { return s.officerStore != nil }

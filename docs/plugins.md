@@ -612,7 +612,9 @@ below.
 🔴 **A plugin that takes outbound drafts must have `draft_checks`.** The media
 reach muster only through the check, so `officer_post_draft` refuses a plugin
 without it. An outbound draft's check **never lapses**: it awaits the plugin's
-verdict until the draft expires (7 days).
+verdict until the draft expires (7 days). Turning **Checks replies** off for
+the plugin leaves its outbound drafts awaiting (they cannot be approved, and
+expire); turn it back on and the plugin checks them again.
 
 An outbound draft's body may contain **public host names and URLs**, such as
 `github.com/example/project`, so a post can link to the project. Everything

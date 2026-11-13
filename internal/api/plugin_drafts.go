@@ -180,6 +180,9 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 			// Once, on the result that made it failed: a repeat changes nothing.
 			s.draftRefused(r.Context(), p, d, true)
 		}
+		if fresh && d.Status == plugins.DraftSent {
+			s.outboundSettled(r.Context(), p, d)
+		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -263,6 +266,11 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
 	case errors.Is(err, plugins.ErrNotFound):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft of this plugin's"})
+	case errors.Is(err, plugins.ErrMediaMissing):
+		var mm plugins.MissingMediaError
+		errors.As(err, &mm)
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "upload every medium before saying it is sendable (POST " +
+			pluginAPIPrefix + "/drafts/{id}/media)", "draft_id": id, "missing": mm.Missing})
 	case errors.Is(err, plugins.ErrCheckConflict):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft already has the other verdict",
 			"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
@@ -303,6 +311,11 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 	}
 	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v): %s", p.ID, d.ID, sending, outcome)
 	switch outcome {
+	case plugins.RefusalOutbound:
+		// An officer's outbound draft: the owner is told, and its officer
+		// gets a draft.refused item (plugin_outbound.go).
+		s.notifyDraftRefused(p, d, refusalToOfficer)
+		s.outboundSettled(ctx, p, d)
 	case plugins.RefusalAnsweredElsewhere:
 		// Another reply went, or is on its way: nothing goes back anywhere.
 		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
@@ -332,6 +345,8 @@ const (
 	// refusalAnsweredElsewhere: nowhere — another reply to the message was
 	// sent or is on its way (plugins.OtherReplyOut).
 	refusalAnsweredElsewhere
+	// refusalToOfficer: an outbound draft's officer, as a draft.refused item.
+	refusalToOfficer
 )
 
 // The refused draft push's title (muster's), and its body's bound.
@@ -373,6 +388,8 @@ func draftRefusedPushBody(label, detail string, where int) string {
 		tail = " It is going back to the session that wrote it, or to your chief if that session is gone."
 	case refusalAnsweredElsewhere:
 		tail = " Another reply to this message was already sent or is on its way, so nothing more is done."
+	case refusalToOfficer:
+		tail = " It went back to the officer that wrote it."
 	}
 	// Where it goes first: a long reason is what the bound cuts, never that.
 	return truncate(body+" refused it."+tail+" It said: "+plugins.RefusalText(detail), draftRefusedPushBodyMax)
@@ -493,8 +510,15 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		refuseStale(w)
 		return
 	}
-	d, refused := s.decideDraftAs(r.Context(), id, plugins.DraftDecision{Approve: how == "approve",
-		Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}})
+	// The card's approve form carries the body's and (for an outbound draft)
+	// the media's SHA-256 it showed: the store refuses an approval of anything
+	// else (plugins.DraftDecision).
+	dec := plugins.DraftDecision{Approve: how == "approve", Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}}
+	if how == "approve" {
+		_ = r.ParseForm()
+		dec.BodySHA256, dec.MediaSHA256 = r.PostForm.Get("body_sha256"), formMediaSHA256(r)
+	}
+	d, refused := s.decideDraftAs(r.Context(), id, dec)
 	if refused != nil {
 		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, id)
 		return
@@ -552,6 +576,11 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 		return draftRefusal{http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrDraftUnchecked):
 		return draftRefusal{http.StatusConflict, DraftUncheckedRefusal, asksTabDrafts}
+	case errors.Is(err, plugins.ErrMediaMissing):
+		return draftRefusal{http.StatusConflict, "Not every image or video of that draft has been uploaded yet, so it cannot be approved.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftMediaMismatch):
+		return draftRefusal{http.StatusConflict, "media_sha256 is not the SHA-256 of that draft's media, in order: " +
+			"look at the draft again and decide on the media it holds.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrDraftState) && d.RefusedByCheck():
 		return draftRefusal{http.StatusConflict, "The plugin refused that draft before it could be approved, saying «" +
 			plugins.RefusalText(d.Detail) + "». It can never be sent; it went back to whoever wrote it for a new one.", asksTabArchived}
@@ -637,7 +666,13 @@ func draftCardHTML(c plugins.DraftCard) string {
 		`" data-draft-status="` + esc(string(d.Status)) + `">
 <div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg" data-draft-agent>` + esc(flows.VisibleEscape(d.AgentName)) + `</span>
 <span class="break-words text-xs text-fg2">` + esc(c.PluginLabel) + ` · <span data-draft-state>` + esc(draftStatusText(d)) + `</span></span></div>
-<div class="` + ui.AsksQuoteClass + `" data-draft-original>
+`)
+	if d.IsOutbound() {
+		// An officer's outbound draft (plugin_outbound.go): its venue and
+		// target, and every medium, in place of the message it answers.
+		b.WriteString(outboundCardHTML(c))
+	} else {
+		b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-original>
 <span class="break-all text-xs text-fg2"><span class="font-semibold">From ` + esc(m.Sender) + `</span> · untrusted · message ` +
 		strconv.FormatInt(m.ID, 10) + `</span>
 `)
@@ -645,10 +680,12 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(`<span class="break-all text-xs text-fg2">` + esc(m.Subject) + `</span>
 `)
 	}
-	b.WriteString(`<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
+		b.WriteString(`<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
 </div>
-<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<span class="text-xs font-semibold text-fg">Reply · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
+`)
+	}
+	b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
+<span class="text-xs font-semibold text-fg">` + draftTextLabel(d) + ` · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
 <code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</code>
 </div>
 `)
@@ -681,12 +718,32 @@ func draftCardHTML(c plugins.DraftCard) string {
 `)
 			break
 		}
-		b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0 flex-1"><button type="submit" class="` +
+		binding := ""
+		if d.IsOutbound() {
+			if missing := d.MissingMedia(); len(missing) > 0 {
+				// The store refuses it anyway; the card does not offer it.
+				b.WriteString(`<span class="text-xs text-fg2" data-draft-media-pending>Not every medium is uploaded yet, so it cannot be approved.</span>
+<div class="` + ui.AsksActionsClass + `">` + reject + `</div>
+`)
+				break
+			}
+			binding = outboundApproveFields(d)
+		}
+		b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0 flex-1">` + binding + `<button type="submit" class="` +
 			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
 `)
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// draftTextLabel names the card's text: a reply's, or an outbound draft's
+// post.
+func draftTextLabel(d plugins.Draft) string {
+	if d.IsOutbound() {
+		return "Post"
+	}
+	return "Reply"
 }
 
 // draftTextLead says what the reply text is FOR, by state.
