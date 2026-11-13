@@ -229,9 +229,12 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
 - **Switching** opens the other server in this window. You sign in there as
   usual; each server keeps its own sign-in, and its own installed app if you
   installed it.
-- **The way back:** the first time you switch to a server from another, it
-  offers to add the server you came from to its own list. It asks; it never
-  adds it by itself.
+- **The way back:** a switch tells the other server where it came from (in
+  the address after `#`, never sent to the server), and that server offers to
+  add it to its own list, also after you sign in there. It asks; it never adds
+  it by itself. Because any link can carry the same request, the offer says
+  "A link asked", shows the server's full address, and starts on **Not now**.
+  Add it only if it is a muster server you use.
 - **Labels and logos:** another server is labelled by its address until you
   give it a label of your own. Its display name is not shown, because this
   page never reads another server's data. Its [logo](branding.md) is drawn
@@ -258,8 +261,15 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
   server. No script on this page reads anything from another server.
   muster's pages may *draw* exactly that one path from another address (the
   CSP's `img-src`). `connect-src` stays `'self'`, and `/api/instance` and
-  `/brand/` send no CORS header. muster's sign-in cookies are
+  `/brand/` send no CORS header. muster's sign-in cookie is
   `SameSite=Lax`, so a cross-site image request carries none. Between two
-  servers on one site (sibling subdomains, or two ports of one host) it may
-  carry the other server's own cookie, to that same server's public image
-  route.
+  servers on sibling subdomains of one site, it may carry the other server's
+  own cookie, to that same server's public image route.
+- **Use a separate host name for each server.** Cookies are not port-scoped,
+  so two muster servers on different ports of one host share one
+  `muster_session` cookie jar and see each other's sign-in cookie on every
+  request, with or without the switcher (it adds nothing beyond ordinary
+  navigation between them).
+- **A server addressed by IP** may show no logo, only its colour and label:
+  the CSP's wildcard host does not match IP addresses in browsers that follow
+  the spec (`localhost` and `127.0.0.1` are listed explicitly).

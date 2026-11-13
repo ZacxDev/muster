@@ -62,7 +62,6 @@ func serverSwitcher(b Brand) g.Node {
 			Type("button"),
 			g.Attr("aria-expanded", "false"),
 			g.Attr("aria-controls", "server-switcher-menu"),
-			g.Attr("aria-describedby", "server-switcher-hint"),
 			Class("press flex h-11 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-sm text-fg transition hover:bg-s2"),
 			serverDot(),
 			Span(ID("server-switcher-hint"), Class("sr-only"), g.Text("Server in view:")),
@@ -175,23 +174,48 @@ func serverManageDialog() g.Node {
 	)
 }
 
-// serverOfferDialog is the hand-off: a switch from another server named it
-// in the fragment, and this page offers to add it (never adds it unasked).
+// serverOfferDialog is the hand-off: a link's fragment (#muster-from=…) named
+// another server, and this page offers to add it (never adds it unasked).
+//
+// 🔴 THE COPY CLAIMS NOTHING ABOUT WHERE THE PERSON CAME FROM. Anyone can craft
+// that link, so the page cannot know it was a switch from the person's own
+// server: it says a LINK asked, shows the FULL origin (scheme, host and port)
+// prominently, and its focus starts on "Not now" (servers.js), so a stray
+// Enter does not add it.
 func serverOfferDialog() g.Node {
 	return Dialog(
 		ID("server-offer"),
 		g.Attr("aria-labelledby", "server-offer-title"),
+		g.Attr("aria-describedby", "server-offer-why"),
 		serverDialogClass(),
 		Div(
 			Class("flex flex-col gap-3 px-5 py-6"),
-			H2(ID("server-offer-title"), Class("text-base font-semibold text-fg"), g.Text("Add the server you came from?")),
-			P(Class("text-sm text-fg2"),
-				g.Text("You switched here from "), Strong(g.Attr("data-server-host", ""), Class("break-all text-fg")),
-				g.Text(". Add it to this server's list so you can switch back?")),
+			H2(ID("server-offer-title"), Class("text-base font-semibold text-fg"), g.Text("Add a server to your list?")),
+			P(ID("server-offer-why"), Class("text-sm text-fg2"),
+				g.Text("A link asked to add this server to the list of servers you switch between:")),
+			P(g.Attr("data-server-origin-text", ""), Class("break-all rounded-lg bg-bg px-3 py-2 font-mono text-base font-semibold text-fg ring-1 ring-inset ring-edge")),
+			P(Class("text-sm text-fg2"), g.Text("Add it only if it is a muster server you use.")),
 			Div(Class("flex justify-end gap-2"),
-				Button(Type("button"), g.Attr("data-dialog-close", ""), Class(serverSecondaryBtn), g.Text("Not now")),
+				Button(ID("server-offer-dismiss"), Type("button"), g.Attr("data-dialog-close", ""), g.Attr("autofocus", ""), Class(serverSecondaryBtn), g.Text("Not now")),
 				Button(ID("server-offer-add"), Type("button"), Class(serverPrimaryBtn), g.Text("Add")),
 			),
 		),
 	)
+}
+
+// ServerHandoffKey is the sessionStorage key the sign-in page keeps a
+// switcher hand-off under; servers.js spells it once too (HANDOFF_KEY), and
+// TestTheSignInPageKeepsTheHandoffUnderTheSwitchersKey pins the two together.
+const ServerHandoffKey = "muster-from"
+
+// ServerHandoffKeepHTML is the inline script every server-written auth page
+// carries (internal/api writeAuthDocument): a switch to a server you are not
+// signed in to lands on /login with its #muster-from fragment, and the
+// post-sign-in redirect drops the fragment. This keeps it, with the time, in
+// sessionStorage (this tab only), where the first signed-in page's servers.js
+// reads it once and offers the add. It stores the raw fragment and decides
+// nothing: servers.js validates it exactly as it validates a fragment, and
+// ignores it after ten minutes.
+func ServerHandoffKeepHTML() string {
+	return `<script>try{if(/^#muster-from=/.test(location.hash))sessionStorage.setItem('` + ServerHandoffKey + `',Date.now()+'|'+location.hash)}catch(e){}</script>`
 }

@@ -67,19 +67,36 @@ exactly as if the person had typed its address.
     exactly `/brand/icon-192.png` on any `https` origin, and on
     `http://localhost` / `http://127.0.0.1` for development. It gains no
     other path and no prefix;
-  - **cookies on the image request**: muster's session cookies are
-    `SameSite=Lax` and host-only, so a cross-site image request carries none.
-    Two musters on the same site (sibling subdomains, or two ports of one
-    host) are *same-site*, and there the image request carries the other
+  - **cookies on the image request**: muster's session cookie
+    (`muster_session`) is `SameSite=Lax` and host-only, so a cross-site
+    image request carries none. Two musters on sibling subdomains of one
+    site are *same-site*, and there the image request carries the other
     server's **own** cookie to that same server, to a public route that
-    ignores it. Nothing of the server in view travels with it.
+    ignores it. 🔴 **Two musters on different ports of one host share one
+    cookie jar.** Cookies are not port-scoped, so both servers already
+    receive each other's `muster_session` on every request, whether or not
+    the switcher exists. The switcher adds nothing to that beyond ordinary
+    navigation between them. Run separate servers on **separate host names**;
+  - **an IP address**: a CSP host wildcard (`https://*:*`) does not match an
+    IP address in browsers that follow the CSP spec, so a server addressed
+    by IP (other than the two loopback sources listed) may show no logo,
+    only its colour and label.
 - **The list is per origin**, so a server added on A is not on B's list. The
   switch carries one thing across: A's own origin, in the URL fragment of the
   navigation (`#muster-from=<A's origin>`; a fragment is never sent to a
   server). B's page reads it, removes it from the address bar, and, when A is
-  not in B's list, **offers** to add it ("Add <host> to this server's
-  switcher?"). It never adds it by itself: anyone can link to
-  `B/#muster-from=…`, so the person decides, seeing the exact host.
+  not in B's list, **offers** to add it. It never adds it by itself, and,
+  since anyone can link to `B/#muster-from=…`, the offer claims nothing about
+  where the person came from. It says "A link asked to add this server",
+  shows the **full origin** (scheme, host and port) prominently, and starts
+  its focus on **Not now**, so a stray Enter dismisses it.
+  - **Through a sign-in:** a switch to a server you are not signed in to
+    lands on its `/login` with the fragment, and the post-sign-in redirect
+    drops it. The sign-in page keeps it in `sessionStorage` (this tab only,
+    with the time), and the first signed-in page offers it, then forgets it.
+    A kept hand-off older than ten minutes is ignored. This was chosen over
+    "the offer appears only if you were already signed in", because a first
+    switch to a server is exactly when you are not.
 - **Privacy.** The list holds origins and labels only. Nothing of one server
   (a cookie, a token, a path, a page's data) is ever sent to another. The
   only cross-origin requests are the logo images, with no referrer. muster's
@@ -156,7 +173,7 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
 | switch | instant, each server's WebView kept | a page load of the other server's origin |
 | separate sign-ins | per-server WebView profile | per-origin by the browser, always |
 | add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |
-| the list | one list for the app | one list **per server, per browser**; a switch offers to add the server you came from |
+| the list | one list for the app | one list **per server, per browser**; a switch offers to add the server it names (also through a sign-in) |
 | the other server's name | from its `GET /api/instance` | **not shown**: the label is yours, else the host (no cross-origin read, by operator decision) |
 | the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); colour and label when it has none |
 | notifications from every server | yes, one UnifiedPush instance each | yes, if notifications were turned on **on each server** (Web Push is per origin); each arrives with that server's icon |
@@ -202,5 +219,12 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
     Origin, and none is made while the menu is shut;
   - the real muster under a second origin: its data cannot be read (CSP and
     no CORS), and only the icon path can be drawn;
-  - adding, rejecting bad addresses, renaming, removing, switching, and the
-    hand-off offer on the other side.
+  - adding, rejecting bad addresses, renaming (the keyboard stays in the
+    row), removing, switching, and the hand-off offer on the other side;
+  - a crafted hand-off: neutral copy, the full origin, focus on Not now,
+    nothing stored, and Enter dismisses;
+  - a switch to a server you are not signed in to: the offer survives the
+    sign-in, and it is read once.
+- `internal/ui` and `internal/api`: the sign-in page keeps the hand-off under
+  the key `servers.js` reads; the row button is announced once; the offer's
+  copy claims no origin.

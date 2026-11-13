@@ -1,10 +1,13 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE WEB APP'S SERVER SWITCHER, the server half
@@ -102,5 +105,22 @@ func TestThePagesReadNothingOnOtherOriginsAndDrawOnlyTheLogoPath(t *testing.T) {
 		if got := strings.Join(cspDirective(csp, "img-src"), " "); got != want {
 			t.Errorf("frame-ancestors %s:\n %q\nwant\n %q", fa, got, want)
 		}
+	}
+}
+
+// TestTheSignInPageKeepsTheSwitchersHandoff: /login (and so every switch to a
+// server you are not signed in to, which lands there with its #muster-from
+// fragment) carries the script that keeps the fragment across the sign-in.
+// Red before: the sign-in dropped it and the offer never appeared.
+func TestTheSignInPageKeepsTheSwitchersHandoff(t *testing.T) {
+	_, ts, _, _ := snapServer(t)
+	resp, err := ts.Client().Get(ts.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), ui.ServerHandoffKeepHTML()) {
+		t.Fatalf("/login does not keep the switcher's hand-off:\n%s", b)
 	}
 }

@@ -180,6 +180,21 @@ test('colours: one per server, from the origin, the same on every list holding t
   assert.ok(new Set(lone).size > 1, `a lone server's colour comes from its origin: ${lone}`);
 });
 
+test('🔴 this server keeps its label when it is plain http on a LAN address (not addable, but the one in view)', () => {
+  const LAN = 'http://192.0.2.10:8105';
+  assert.equal(core.parseServer(LAN).ok, false, 'fixture: such an address is not one you could add');
+  const mem = new Map();
+  const st = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+  let l = core.add(core.load(st, LAN), B).list;
+  l = core.rename(l, LAN, 'Home lab');
+  core.save(st, l);
+  const back = core.load(st, LAN); // a reload
+  deq(back.map((s) => [s.origin, s.label]), [[LAN, 'Home lab'], [B, '']]);
+  // ...and only for the server in view: on another server's list the same
+  // stored entry is still refused.
+  deq(core.load(st, B).map((s) => s.origin), [B]);
+});
+
 // ---- logos -------------------------------------------------------------------
 
 test('another server’s logo is its own fixed icon path, and nothing of this page', () => {
@@ -218,4 +233,19 @@ test('the hand-off is read only for a valid, canonical origin that is not this s
   assert.equal(core.handoff('#task-12', B), null);
   assert.equal(core.handoff('', B), null);
   assert.equal(h('http://localhost:8105'), 'http://localhost:8105');
+});
+
+test('a hand-off kept through a sign-in is read only while fresh, and only in its own form', () => {
+  const NOW = 1_000_000_000_000;
+  const h = '#muster-from=' + encodeURIComponent(SELF);
+  assert.equal(core.kept(`${NOW - 1000}|${h}`, NOW), h);
+  assert.equal(core.kept(`${NOW - core.HANDOFF_MAX_AGE_MS}|${h}`, NOW), h, 'at the limit');
+  assert.equal(core.kept(`${NOW - core.HANDOFF_MAX_AGE_MS - 1}|${h}`, NOW), null, 'too old');
+  assert.equal(core.kept(`${NOW + 1000}|${h}`, NOW), null, 'from the future');
+  assert.equal(core.kept(h, NOW), null, 'no time');
+  assert.equal(core.kept(`${NOW}|#task-12`, NOW), null, 'not a hand-off');
+  assert.equal(core.kept(null, NOW), null);
+  // What it yields goes through the same check as a fragment.
+  assert.equal(core.handoff(core.kept(`${NOW}|${h}`, NOW), B), SELF);
+  assert.equal(core.HANDOFF_KEY, 'muster-from');
 });

@@ -129,6 +129,14 @@
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
       if (!s || typeof s.origin !== 'string') continue;
+      // This server's own entry is matched BEFORE the address rules: a
+      // server reached over plain http on a LAN address is not one you could
+      // ADD (parseServer refuses it), but it is the one you are on, and its
+      // label must survive a reload.
+      if (s.origin === self) {
+        if (!mine) mine = entry(self, s);
+        continue;
+      }
       var p = parseServer(s.origin);
       if (!p.ok || p.origin !== s.origin || seen[p.origin]) continue;
       seen[p.origin] = true;
@@ -192,6 +200,23 @@
 
   // handoff reads the offer from a location hash: the origin it names (valid,
   // canonical, not self), or null.
+  // HANDOFF_KEY is where the sign-in page keeps a #muster-from fragment
+  // (sessionStorage, this tab only) across the sign-in, which drops it: an
+  // unauthenticated switch lands on /login with the fragment, and the
+  // post-sign-in redirect has none (internal/api writeAuthDocument,
+  // ui.ServerHandoffKeepHTML). Kept at most HANDOFF_MAX_AGE_MS.
+  var HANDOFF_KEY = 'muster-from';
+  var HANDOFF_MAX_AGE_MS = 10 * 60 * 1000;
+
+  // kept reads a stored hand-off ("<ms>|<hash>"): the hash, when it was kept
+  // at most HANDOFF_MAX_AGE_MS before now; else null.
+  function kept(value, now) {
+    var m = /^(\d+)\|(#muster-from=.*)$/.exec(String(value == null ? '' : value));
+    if (!m) return null;
+    var age = now - Number(m[1]);
+    return age >= 0 && age <= HANDOFF_MAX_AGE_MS ? m[2] : null;
+  }
+
   function handoff(hash, self) {
     var m = /^#muster-from=([^&#]*)$/.exec(String(hash || ''));
     if (!m) return null;
@@ -206,7 +231,7 @@
     KEY: KEY, MAX: MAX, PALETTE: PALETTE, LOGO_PATH: LOGO_PATH,
     parseServer: parseServer, hostLabel: hostLabel, cleanText: cleanText, colours: colours, normalize: normalize,
     load: load, save: save, add: add, remove: remove, rename: rename, display: display, logoSrc: logoSrc,
-    switchHref: switchHref, handoff: handoff,
+    switchHref: switchHref, handoff: handoff, kept: kept, HANDOFF_KEY: HANDOFF_KEY, HANDOFF_MAX_AGE_MS: HANDOFF_MAX_AGE_MS,
   };
   root.musterServersCore = core;
   if (typeof document === 'undefined') return;
@@ -383,7 +408,15 @@
       render(true);
     });
     rows.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); e.target.dispatchEvent(new Event('change', { bubbles: true })); }
+      if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+      e.preventDefault();
+      var li = e.target.closest('[data-server-origin]');
+      var origin = li && li.getAttribute('data-server-origin');
+      e.target.dispatchEvent(new Event('change', { bubbles: true }));
+      // The rows were redrawn: keep the keyboard in the row just renamed.
+      var again = Array.prototype.find.call(rows.querySelectorAll('[data-server-origin]'), function (r) { return r.getAttribute('data-server-origin') === origin; });
+      var input = again && again.querySelector('input');
+      if (input) input.focus();
     });
     rows.addEventListener('click', function (e) {
       var b = e.target.closest('[data-server-remove]');
@@ -409,18 +442,32 @@
   // The fragment hand-off: a switch from another server names it; offer to
   // put it on this list (never add it unasked). The fragment is removed from
   // the address bar either way.
+  // The hand-off arrives in this page's own fragment, or — through a sign-in
+  // — as what the sign-in page kept in sessionStorage. Either is read once.
   function offerHandoff() {
-    var from = handoff(location.hash, self);
-    if (!/^#muster-from=/.test(location.hash)) return;
-    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* keep going */ }
+    var inHash = /^#muster-from=/.test(location.hash);
+    var stored = null;
+    try {
+      stored = root.sessionStorage.getItem(HANDOFF_KEY);
+      if (stored !== null) root.sessionStorage.removeItem(HANDOFF_KEY);
+    } catch (e) { stored = null; }
+    var hash = inHash ? location.hash : kept(stored, Date.now());
+    if (inHash) {
+      try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* keep going */ }
+    }
+    if (!hash) return;
+    var from = handoff(hash, self);
     var offer = $('server-offer');
     if (!from || !offer) return;
     var list = current();
     if (list.some(function (s) { return s.origin === from; }) || list.length >= MAX) return;
     offer.setAttribute('data-origin', from);
-    var host = offer.querySelector('[data-server-host]');
-    if (host) host.textContent = hostLabel(from);
+    var text = offer.querySelector('[data-server-origin-text]');
+    if (text) text.textContent = from;
     offer.showModal();
+    // Focus on "Not now", whatever the browser picked: a stray Enter dismisses.
+    var no = $('server-offer-dismiss');
+    if (no) no.focus();
   }
 
   // Once per window: Escape and a click outside close the menu (focus back

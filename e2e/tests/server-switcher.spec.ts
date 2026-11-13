@@ -4,7 +4,8 @@ import zlib from 'node:zlib';
 import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
-import { baseURL, port, serverSwitcherStubPort } from '../lib/env';
+import { authState, baseURL, password, port, serverSwitcherStubPort } from '../lib/env';
+import { noteFormSignIn } from '../lib/server';
 
 // THE SERVER SWITCHER (web/static/servers.js, internal/ui/server_switcher.go;
 // docs/design/web-server-switcher.md), in a real browser against the real
@@ -241,6 +242,9 @@ for (const vp of [
       await row.locator('input').fill('Work');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
+      // The keyboard stays in the row just renamed (the rows are redrawn).
+      expect(await page.evaluate(() => document.activeElement?.closest('[data-server-origin]')?.getAttribute('data-server-origin'))).toBe(STUB);
+      expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('INPUT');
       await row.locator('input').fill('');
       await row.locator('input').press('Enter');
       await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
@@ -347,7 +351,8 @@ test.describe('another muster (desktop)', () => {
 
     const offer = page.locator('#server-offer');
     await expect(offer).toHaveJSProperty('open', true);
-    await expect(offer.locator('[data-server-host]')).toHaveText(hostOf(A));
+    await expect(offer.locator('[data-server-origin-text]')).toHaveText(A);
+    await expect(page.locator('#server-offer-dismiss')).toBeFocused();
     expect(await page.evaluate(() => location.hash)).toBe('');
     await offer.locator('#server-offer-add').click();
     await expect(offer).toHaveJSProperty('open', false);
@@ -359,6 +364,60 @@ test.describe('another muster (desktop)', () => {
     await page.waitForURL((u) => u.origin === A);
     await expect(page.locator('#server-switcher')).toHaveCount(1);
     await expect(page.locator('#server-offer')).toHaveJSProperty('open', false);
+  });
+
+  test('a crafted hand-off: neutral copy, the full origin, focus on Not now, and nothing added without a click', async ({ page }) => {
+    await fresh(page);
+    const crafted = 'https://b.example.net:8443';
+    await page.goto('about:blank');
+    await page.goto(A + '/tasks#muster-from=' + encodeURIComponent(crafted));
+    const offer = page.locator('#server-offer');
+    await expect(offer).toHaveJSProperty('open', true);
+    await expect(offer.locator('#server-offer-title')).toHaveText('Add a server to your list?');
+    await expect(offer.locator('[data-server-origin-text]')).toHaveText(crafted);
+    await expect(offer).toContainText('A link asked');
+    expect((await offer.innerText()).toLowerCase()).not.toMatch(/came from|switched here|switch back/);
+    await expect(page.locator('#server-offer-dismiss')).toBeFocused();
+    expect(await page.evaluate(() => location.hash)).toBe('');
+    // Nothing is stored while it is open, and a stray Enter dismisses it.
+    expect(await stored(page)).toBeNull();
+    await page.keyboard.press('Enter');
+    await expect(offer).toHaveJSProperty('open', false);
+    expect(await stored(page)).toBeNull();
+    await openSwitcher(page);
+    await expect(items(page)).toHaveCount(1);
+  });
+
+  test('switching to a server you are not signed in to: the offer survives the sign-in', async ({ browser }) => {
+    // A context signed in to A only (the suite's saved state is localhost's).
+    const ctx = await browser.newContext({ storageState: authState, viewport: { width: 1280, height: 800 } });
+    const page = await ctx.newPage();
+    try {
+      await fresh(page);
+      await openSwitcher(page);
+      await addServer(page, A2);
+      await expect(item(page, A2)).toHaveCount(1);
+      await item(page, A2).click();
+      // Not signed in there: the sign-in page, the fragment still on it.
+      await page.waitForURL((u) => u.origin === A2 && u.pathname.startsWith('/login'));
+      expect(await page.evaluate(() => location.hash)).toBe('#muster-from=' + encodeURIComponent(A));
+      await page.fill('#muster-password', password);
+      await Promise.all([page.waitForURL((u) => u.origin === A2 && !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+      noteFormSignIn(A2);
+      // The fragment is gone after the sign-in; the offer is not.
+      const offer = page.locator('#server-offer');
+      await expect(offer).toHaveJSProperty('open', true);
+      await expect(offer.locator('[data-server-origin-text]')).toHaveText(A);
+      expect(await page.evaluate((k) => sessionStorage.getItem(k), 'muster-from')).toBeNull();
+      await offer.locator('#server-offer-add').click();
+      expect((await stored(page)).servers.map((x: { origin: string }) => x.origin)).toEqual([A2, A]);
+      // Read once: the next page offers nothing.
+      await page.reload();
+      await expect(page.locator('#server-switcher')).toHaveCount(1);
+      await expect(page.locator('#server-offer')).toHaveJSProperty('open', false);
+    } finally {
+      await ctx.close();
+    }
   });
 
   test('a hand-off naming an address that is not a server is not offered', async ({ page }) => {

@@ -172,6 +172,9 @@ func securityHeaders(next http.Handler) http.Handler {
 // two loopback hosts the switcher accepts (development). ⚠ A source's path is
 // not checked after a redirect, and an image URL can carry a query: neither
 // matters for exfiltration, which a navigation already allows (above).
+// ⚠ A host wildcard does not match an IP address in a browser that follows the
+// CSP spec, so a server addressed by IP (other than 127.0.0.1) may show no
+// logo; the switcher then draws its colour and label.
 const serverSwitcherImgSrc = "https://*:*/brand/icon-192.png " +
 	"http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
 
