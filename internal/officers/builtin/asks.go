@@ -300,8 +300,8 @@ func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string) (js
 
 // DueNotice is one escalation notice muster has not raised yet.
 type DueNotice struct {
-	Owner, Item, Recipient                int64
-	Officer, Kind, SubjectKey, Summary    string
+	Owner, Item, Recipient             int64
+	Officer, Kind, SubjectKey, Summary string
 }
 
 // DueNotices is every owner's escalation notices not yet raised (and not
@@ -332,10 +332,10 @@ func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNo
 // not be the item's owner).
 func (s *Store) NoticeRaised(ctx context.Context, owner, item, recipient, attentionID int64) (won bool, err error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE officer_items SET notices = (
-			SELECT jsonb_agg(CASE WHEN (n->>'recipient')::bigint = $3 AND n->'attention_id' = 'null'::jsonb
+			SELECT jsonb_agg(CASE WHEN (n->>'recipient')::bigint = $3 AND n->'attention_id' = 'null'::jsonb AND n->'settled' = 'false'::jsonb
 				THEN n || jsonb_build_object('attention_id', $4::bigint) ELSE n END ORDER BY ord)
 			FROM jsonb_array_elements(notices) WITH ORDINALITY t(n, ord))
-		WHERE owner_id = $1 AND id = $2 AND notices @> jsonb_build_array(jsonb_build_object('recipient', $3::bigint, 'attention_id', null))`,
+		WHERE owner_id = $1 AND id = $2 AND notices @> jsonb_build_array(jsonb_build_object('recipient', $3::bigint, 'attention_id', null, 'settled', false))`,
 		owner, item, recipient, attentionID)
 	if err != nil {
 		return false, err
@@ -364,7 +364,9 @@ type OpenEscalation struct {
 func (s *Store) OpenEscalations(ctx context.Context, after int64, limit int) ([]OpenEscalation, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, (n->>'attention_id')::bigint, i.officer
 		FROM officer_items i, jsonb_array_elements(i.notices) n
-		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"settled": false}]' AND id > $2 ORDER BY id LIMIT $1)
+		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"settled": false}]' AND id > $2
+				AND EXISTS (SELECT 1 FROM jsonb_array_elements(notices) x WHERE x->'settled' = 'false'::jsonb AND x->'attention_id' <> 'null'::jsonb)
+				ORDER BY id LIMIT $1)
 			AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb
 		ORDER BY i.id`, limit, after)
 	if err != nil {
@@ -423,7 +425,10 @@ func (s *Store) SettleEscalation(ctx context.Context, owner, item, recipient, at
 		switch {
 		case rerr == nil:
 			reopened = true
-		case errors.As(rerr, &pg) && pg.Code == "23505":
+		case errors.As(rerr, &pg) && (pg.Code == "23505" || pg.Code == "23514"):
+			// 23505: another live item now holds the subject; 23514: the item
+			// already carries its 20 asks. Either way the re-open cannot land,
+			// and the settlement above must still commit.
 			if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT reopen`); err != nil {
 				return false, nil, err
 			}

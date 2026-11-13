@@ -223,8 +223,11 @@ var (
 		"internal/api.(*Server).ReleaseEndedClaims",
 		// The built-in officer store (#503 slices 6-7): the Attention sweep
 		// reads every owner's waiting asks and due escalations (ids, the
-		// officer, the item's kind/subject/summary for an escalation's text),
-		// each then settled or raised as THAT owner or recipient; and an
+		// officer, the item's kind/subject/summary for an escalation's text):
+		// an ask is settled as its owner, an escalation is raised in Attention
+		// as its recipient, and the item's own escalation bookkeeping
+		// (NoticeRaised/NoticeAbandoned/SettleEscalation, one row each) is
+		// written in the system scope, since the recipient need not own it; and an
 		// officer definition's escalate_to is checked against users, which is
 		// self-read under RLS — answering only which of the caller's own ids
 		// are not users.

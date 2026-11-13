@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -404,5 +406,47 @@ func TestAnUnraisableEscalationIsGivenUp(t *testing.T) {
 	missing, err := w.store.UsersExist(sys, []int64{1, 2, 987654})
 	if err != nil || len(missing) != 1 || missing[0] != 987654 {
 		t.Fatalf("UsersExist: %v (%v), want [987654]", missing, err)
+	}
+}
+
+// TestEscalationPagingAndTheFullItem: a page of OpenEscalations holds only
+// items with a raised, unsettled ask (an unraised one cannot end the sweep's
+// paging early), and an answer to an escalated item that already carries its
+// 20 asks still settles (the re-open cannot land; the settlement commits).
+func TestEscalationPagingAndTheFullItem(t *testing.T) {
+	w, b, _ := asksWorld(t)
+	ctx := context.Background()
+	sys := authz.System(ctx)
+	var ids []int64
+	for _, subj := range []string{"e1", "e2", "e3"} {
+		id := w.AddItem(backendtest.OfficerA, "k", subj, officers.TierJudgement, "")
+		claimed(t, b, id)
+		if _, err := b.Complete(ctx, id, "i1", officers.Completion{Outcome: "escalated", Summary: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, mustInt(id))
+	}
+	for _, i := range []int{0, 2} { // e2 stays unraised
+		if won, err := w.store.NoticeRaised(sys, 1, ids[i], 1, 7000+int64(i)); err != nil || !won {
+			t.Fatal(won, err)
+		}
+	}
+	page, err := w.store.OpenEscalations(sys, ids[0], 1)
+	if err != nil || len(page) != 1 || page[0].Item != ids[2] {
+		t.Fatalf("the page after e1 with a batch of one: %+v (%v), want e3 (the unraised e2 holds no slot)", page, err)
+	}
+	full := make([]string, 20)
+	for i := range full {
+		full[i] = fmt.Sprintf(`{"ask_id": %d, "status": "answered"}`, 100+i)
+	}
+	if _, err := w.store.Pool().Exec(ctxOp(), `UPDATE officer_items SET asks = $2::jsonb WHERE id = $1`, ids[0], "["+strings.Join(full, ",")+"]"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err := w.store.SettleEscalation(sys, 1, ids[0], 1, 7000, true, "go", w.clock())
+	if err != nil || reopened {
+		t.Fatalf("an answer to an item with 20 asks: reopened %v, %v; want settled without re-opening", reopened, err)
+	}
+	if open, _ := w.store.OpenEscalations(sys, 0, 10); len(open) != 1 || open[0].Item != ids[2] {
+		t.Fatalf("after settling the full item, open: %+v, want only e3", open)
 	}
 }
