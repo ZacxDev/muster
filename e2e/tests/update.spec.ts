@@ -853,6 +853,11 @@ for (const vp of pillViewports) {
       await expect(link).toHaveText('0.211.0');
       await expect(link).toHaveAttribute('href', 'https://github.com/ZacxDev/muster/releases/tag/v0.211.0');
       await expect(link).toHaveAttribute('target', '_blank');
+      // Only the version being moved to links; the current one is plain text.
+      await expect(page.locator('#sw-update-toast a'), 'one link: the new version').toHaveCount(1);
+      await expect(page.locator('#sw-update-toast [data-sw-to] a')).toHaveCount(1);
+      await expect(page.locator('#sw-update-toast [data-sw-from]')).toHaveText(versionA);
+      expect(await page.locator('#sw-update-toast [data-sw-from]').evaluate((e) => e.tagName)).toBe('SPAN');
       const popup = context.waitForEvent('page');
       if (vp.touch) await link.tap();
       else await link.click();

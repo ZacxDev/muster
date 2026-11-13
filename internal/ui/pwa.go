@@ -3,7 +3,6 @@ package ui
 import (
 	"io"
 	"net/url"
-	"regexp"
 	"strings"
 
 	g "maragu.dev/gomponents"
@@ -84,31 +83,20 @@ func SetBuildVersion(v string) { buildVersion = v }
 // releaseVersionPattern is what a RELEASE build version looks like: the
 // X.Y.Z the release flow stamps from a vX.Y.Z tag (ci.yml image-muster). A
 // main push is stamped with a short sha, a local build with "dev": those have
-// no release page, so they get no link. ONE spelling: Go tests the current
-// version with it and pwaScript is handed the same text as a regex literal for
-// the waiting worker's.
+// no release page, so they get no link. pwaScript is handed this text as a
+// regex literal and tests the waiting worker's version with it: only the
+// version being MOVED TO links to its notes; the current one is plain text.
 const releaseVersionPattern = `^[0-9]+\.[0-9]+\.[0-9]+$`
-
-var releaseVersionRE = regexp.MustCompile(releaseVersionPattern)
 
 // releaseNotesURL is where a release's notes live; the release flow pushes the
 // public tag v<version> and a GitHub Release for it.
 const releaseNotesURL = "https://github.com/ZacxDev/muster/releases/tag/v"
 
-// releaseLinkClass styles a version that links to its release notes — the
-// current version here, the new one in pwaScript (spliced in, so Tailwind sees
-// the classes in this file). 44px tall: it is a tap target.
+// releaseLinkClass styles the new version's release-notes link, drawn by
+// pwaScript (spliced in, so Tailwind sees the classes in this file). 44px
+// tall: it is a tap target.
 const releaseLinkClass = "inline-flex min-h-[44px] items-center font-semibold text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid"
 
-// versionNode is a version's text: a link to its release notes when it is a
-// release (releaseVersionPattern), plain text otherwise.
-func versionNode(v string, attr string) g.Node {
-	if releaseVersionRE.MatchString(v) {
-		return A(g.Attr(attr, ""), g.Attr("data-sw-release", v), Href(releaseNotesURL+v), Target("_blank"), Rel("noopener noreferrer"),
-			Class(releaseLinkClass), g.Attr("aria-label", "Release notes for "+v), g.Text(v))
-	}
-	return Span(g.Attr(attr, ""), Class("font-semibold"), g.Text(v))
-}
 
 // reloadIcon is the circular arrow the Reload button draws.
 const reloadIcon = `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>`
@@ -158,7 +146,7 @@ func updateToastFor(current string) g.Node {
 			g.Attr("data-sw-versions", ""),
 			g.Attr("hidden", ""),
 			Class("whitespace-nowrap"),
-			g.Text("Update "), versionNode(current, "data-sw-from"), g.Text(" → "), Span(g.Attr("data-sw-to", "")),
+			g.Text("Update "), Span(g.Attr("data-sw-from", ""), Class("font-semibold"), g.Text(current)), g.Text(" → "), Span(g.Attr("data-sw-to", "")),
 		)
 	}
 	return Div(
@@ -365,8 +353,8 @@ var pwaScriptSrc = staticJS("pwa", `
     } catch (err) { clearTimeout(timer); finish(null); }
   }
   // drawVersions: "Update <current> → <new>" when both are known and differ,
-  // the plain label otherwise. The new version links to its release notes
-  // only when it is a release (RELEASE_RE, the Go side's pattern).
+  // the plain label otherwise. Only the new version can link: to its release
+  // notes, when it is a release (RELEASE_RE). The current one is plain text.
   function drawVersions(t, v) {
     var label = t.querySelector('[data-sw-label]');
     var vs = t.querySelector('[data-sw-versions]');
@@ -525,7 +513,8 @@ var pwaScriptSrc = staticJS("pwa", `
   // A swap that lands a control UNDER a visible pill (a list refresh) moves the
   // pill off it. Only then: an unprompted move is a layout shift, so a pill
   // that covers nothing is never touched. A pill at a dragged spot stays there
-  // — only re-clamped, so a resize or a rotation cannot leave it off screen.
+  // — only re-clamped, so a resize cannot leave it off screen (a rotation
+  // fires resize too, so it needs no listener of its own).
   function replaceIfCovering() {
     var t = document.getElementById('sw-update-toast');
     if (!t || t.hidden) return;
@@ -536,7 +525,6 @@ var pwaScriptSrc = staticJS("pwa", `
   }
   document.addEventListener('htmx:afterSettle', replaceIfCovering);
   window.addEventListener('resize', replaceIfCovering);
-  window.addEventListener('orientationchange', replaceIfCovering);
   // A region drawn by a page's own script (the view's proposal card), and a
   // disclosure opened or closed (the card's kickoff), move what is under it.
   document.addEventListener('muster:layout', replaceIfCovering);

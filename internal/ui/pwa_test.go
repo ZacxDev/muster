@@ -77,7 +77,7 @@ func TestTheUpdatePillNamesTheRunningBuild(t *testing.T) {
 	for _, want := range []string{
 		`<span data-sw-label="" class="whitespace-nowrap">Update available</span>`,
 		`<span data-sw-versions="" hidden="" class="whitespace-nowrap">Update `,
-		`>7.31.902</a> → <span data-sw-to=""></span></span>`,
+		`<span data-sw-from="" class="font-semibold">7.31.902</span> → <span data-sw-to=""></span></span>`,
 	} {
 		if !strings.Contains(pill, want) {
 			t.Errorf("the pill lacks %q:\n%s", want, pill)
@@ -92,30 +92,30 @@ func TestTheUpdatePillNamesTheRunningBuild(t *testing.T) {
 	}
 }
 
-// TestTheReleaseLinkIsOnlyForReleaseVersions: a version links to its release
-// notes (the public tag v<version>) only when it is X.Y.Z — what a release
-// stamps. A main push's short sha, "dev", the e2e builds and anything
-// prefixed or suffixed get plain text.
-func TestTheReleaseLinkIsOnlyForReleaseVersions(t *testing.T) {
-	for _, v := range []string{"0.211.0", "12.0.3"} {
-		h := renderString(t, updateToastFor(v))
-		want := `<a data-sw-from="" data-sw-release="` + v + `" href="https://github.com/ZacxDev/muster/releases/tag/v` + v + `" target="_blank" rel="noopener noreferrer"`
-		if !strings.Contains(h, want) {
-			t.Errorf("%s: no release-notes link (%s):\n%s", v, want, h)
-		}
-	}
-	for _, v := range []string{"dev", "0d8b419", "e2e-a", "v0.211.0", "0.211", "0.211.0-rc1", "0.211.0\n<x>"} {
+// TestOnlyTheNewVersionLinksToItsNotes: the CURRENT version (the from-version
+// the server renders) is plain text, release or not; only the version being
+// moved to links, and pwaScript draws that link — with the anchored X.Y.Z
+// pattern, so a main push's short sha, "dev", the e2e builds and anything
+// prefixed or suffixed get plain text (e2e/tests/update.spec.ts drives it).
+func TestOnlyTheNewVersionLinksToItsNotes(t *testing.T) {
+	for _, v := range []string{"0.211.0", "12.0.3", "dev", "0d8b419", "e2e-a"} {
 		h := renderString(t, updateToastFor(v))
 		if strings.Contains(h, "<a ") || strings.Contains(h, "releases/tag") {
-			t.Errorf("%q is not a release, but the pill links it:\n%s", v, h)
+			t.Errorf("%q: the current version is linked; only the new one may be:\n%s", v, h)
 		}
-		if !strings.Contains(h, `<span data-sw-from="" class="font-semibold">`) {
-			t.Errorf("%q: not drawn as plain text:\n%s", v, h)
+		if !strings.Contains(h, `<span data-sw-from="" class="font-semibold">`+v+`</span>`) {
+			t.Errorf("%q: the current version is not drawn as plain text:\n%s", v, h)
 		}
 	}
-	// pwaScript tests the NEW version with the very same pattern.
-	if !strings.Contains(pwaJS(t), "var RELEASE_RE = /"+releaseVersionPattern+"/;") {
-		t.Error("pwaScript does not test the new version with releaseVersionPattern")
+	js := pwaJS(t)
+	for _, want := range []string{
+		"var RELEASE_RE = /^[0-9]+\\.[0-9]+\\.[0-9]+$/;",
+		"if (RELEASE_RE.test(v)) {",
+		"n.href = 'https://github.com/ZacxDev/muster/releases/tag/v' + v;",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("pwaScript does not link the new version as a release: missing %q", want)
+		}
 	}
 }
 
