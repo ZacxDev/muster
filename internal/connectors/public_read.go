@@ -228,6 +228,18 @@ func (p *Proxy) publicCheck(ctx context.Context, repo string) (public bool, why 
 
 	public, why, err = p.askGitHubPublic(ctx, repo)
 	if err != nil {
+		// A re-check GitHub could not answer (its anonymous API limit is 60 an
+		// hour per address, shared by the deployment) keeps serving a verdict
+		// that was PUBLIC: no credential is sent, so GitHub itself still
+		// refuses a repository made private meanwhile. Anything else — no
+		// verdict yet, or a not-public one — stays refused.
+		p.public.mu.Lock()
+		v, ok := p.public.seen[key]
+		p.public.mu.Unlock()
+		if ok && v.public {
+			p.logf("connectors: standing read of %s: re-check failed, serving the last public verdict: %v", repo, err)
+			return true, "", nil
+		}
 		return false, "", err
 	}
 	p.public.mu.Lock()

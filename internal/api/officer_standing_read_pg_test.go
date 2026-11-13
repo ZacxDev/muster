@@ -113,7 +113,9 @@ func TestABuiltinOfficersStandingReadIsPublicReadOnlyAndDeclaredOnly(t *testing.
 	proxy := muster.URL + "/connect/github/"
 	env := gitTestEnv(t)
 	git := func(args ...string) ([]byte, error) {
-		cmd := exec.Command("git", append([]string{"-c", "http.extraHeader=X-Muster-Token: " + tok}, args...)...)
+		// The kickoff's own form: the header scoped to muster's URL, redirects off.
+		cmd := exec.Command("git", append([]string{"-c", "http." + muster.URL + "/.extraHeader=X-Muster-Token: " + tok,
+			"-c", "http." + muster.URL + "/.followRedirects=false"}, args...)...)
 		cmd.Env = env
 		return cmd.CombinedOutput()
 	}

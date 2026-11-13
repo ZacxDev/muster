@@ -267,7 +267,7 @@ func standingReadNote(o Officer) string {
 	return fmt.Sprintf(`
 
 Public repositories you may READ with no approval: %[1]s. muster serves reads of them through its %[2]q connector with NO credential (a standing grant your operator declared for this officer: muster checks with GitHub that each is public, and serves reads only), so do not connector_request for them and do not wait on connector_status. %[3]s
-- git: `+"`git -c http.extraHeader=\"X-Muster-Token: $MUSTER_HOOK_TOKEN\" clone --depth 1%[4]s \"$MUSTER_CONNECT_URL/connect/%[2]s/github.com/<owner>/<name>.git\"`"+`, then read the clone.
+- git: `+"`git -c \"http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN\" -c \"http.$MUSTER_CONNECT_URL/.followRedirects=false\" clone --depth 1%[4]s \"$MUSTER_CONNECT_URL/connect/%[2]s/github.com/<owner>/<name>.git\"`"+`, then read the clone.
 - the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/<owner>/<name>/contents/<path>%[5]s\"`"+` — GitHub allows few anonymous API reads an hour, so prefer the clone.
 A push, or any other write, to them is refused.`, strings.Join(rr, ", "), GitHubConnector, at, branch, query)
 }

@@ -635,7 +635,10 @@ read or filed):
   `visibility: "public"`. A 404 (private, or absent), another name, a redirect
   (a rename: declare the current name) or another visibility is a **403**
   naming the repository and why (cached for a minute); a check GitHub could not
-  answer (rate limit, network) is a 502 and is asked again next time. A
+  answer (rate limit, network) is asked again next time: while a repository's
+  last verdict was public it keeps being served (GitHub still refuses a
+  private one, since no credential is sent); with no verdict yet, or a
+  not-public one, it is a 502. A
   private repository needs the per-instance grant: declare it without
   `read_grant` (and with `repo`).
 - 🔴 **Reads only.** `GET` and `HEAD`, git's `info/refs` for the
@@ -647,6 +650,10 @@ read or filed):
   path by the App's own rule (`connectors.GitHubTargetRepo`). A request for any
   other repository, or a path that names none (`/graphql`), is not a standing
   read: it takes the ordinary path — the instance's `github` grant, as above.
+- **Not stopped by revoking or denying the `github` grant.** A standing read
+  needs no grant, so the owner's decision on one does not reach it; to stop
+  it, remove `read_grant` (or the repository) from `MUSTER_OFFICERS` and
+  restart muster.
 - 🔴 **Builtin officers only.** `read_grant: "standing"` on an HQ officer is a
   boot refusal, and `officers.Officer.StandingReadRepos` — the one rule the
   connect door reads — gives an HQ or shipping officer nothing whatever its
@@ -674,7 +681,8 @@ gives both recipes with the proxy written out — git's `https://github.com/` is
 routed through the proxy only for an approved grant, so the clone names it:
 
 ```sh
-git -c http.extraHeader="X-Muster-Token: $MUSTER_HOOK_TOKEN" clone --depth 1 --branch v0.221.0 \
+git -c "http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" \
+  -c "http.$MUSTER_CONNECT_URL/.followRedirects=false" clone --depth 1 --branch v0.221.0 \
   "$MUSTER_CONNECT_URL/connect/github/github.com/<owner>/<name>.git"
 curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" \
   "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/contents/<path>?ref=v0.221.0"

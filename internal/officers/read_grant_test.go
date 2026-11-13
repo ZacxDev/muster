@@ -122,7 +122,7 @@ func TestTheKickoffNamesTheStandingReadAtTheReleaseTag(t *testing.T) {
 		"do not connector_request for them",
 		"Read them at tag v0.221.0: v0.221.0 is the release of muster this server runs",
 		"Cite the file paths you read",
-		"`git -c http.extraHeader=\"X-Muster-Token: $MUSTER_HOOK_TOKEN\" clone --depth 1 --branch v0.221.0 \"$MUSTER_CONNECT_URL/connect/github/github.com/<owner>/<name>.git\"`",
+		"`git -c \"http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN\" -c \"http.$MUSTER_CONNECT_URL/.followRedirects=false\" clone --depth 1 --branch v0.221.0 \"$MUSTER_CONNECT_URL/connect/github/github.com/<owner>/<name>.git\"`",
 		"/connect/github/api.github.com/repos/<owner>/<name>/contents/<path>?ref=v0.221.0\"`",
 		"A push, or any other write, to them is refused.",
 	} {

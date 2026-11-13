@@ -316,15 +316,28 @@ func TestTheStandingReadsPublicVerdictIsCachedThenRechecked(t *testing.T) {
 	if c := read("example-org/docs"); c != http.StatusOK {
 		t.Fatalf("the private verdict outlived its minute: %d", c)
 	}
-	// GitHub cannot answer: 502, and asked again next time.
+	// GitHub cannot answer the re-check (its anonymous rate limit): the last
+	// PUBLIC verdict keeps serving, and the check is asked again each time.
 	*now = now.Add(11 * time.Minute)
 	gh.fail = http.StatusForbidden
-	if c := read("example-org/docs"); c != http.StatusBadGateway {
-		t.Fatalf("a failed check: %d, want 502", c)
+	_, before := gh.snapshot()
+	if c := read("example-org/docs"); c != http.StatusOK {
+		t.Fatalf("a failed re-check of a repository last seen public: %d, want it still served", c)
+	}
+	if c := read("example-org/docs"); c != http.StatusOK {
+		t.Fatalf("a second failed re-check: %d", c)
+	}
+	if _, after := gh.snapshot(); after != before+2 {
+		t.Fatalf("a failed re-check was cached: %d checks, want %d", after, before+2)
+	}
+	// With no verdict yet, a failed check is a 502 (fail closed), uncached.
+	gh.meta["example-org/secret"] = `{"full_name":"example-org/secret","private":false,"visibility":"public"}`
+	if c := read("example-org/secret"); c != http.StatusBadGateway {
+		t.Fatalf("a failed first check: %d, want 502", c)
 	}
 	gh.fail = 0
-	if c := read("example-org/docs"); c != http.StatusOK {
-		t.Fatalf("a failed check was cached: %d", c)
+	if c := read("example-org/secret"); c != http.StatusOK {
+		t.Fatalf("a failed first check was cached: %d", c)
 	}
 }
 
