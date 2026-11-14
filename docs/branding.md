@@ -29,6 +29,10 @@ Open **Account** as an admin. The **Instance branding** section has:
   trimmed. Control characters, text-direction controls and invisible
   formatting characters (the zero-width space, direction marks, the
   byte-order mark) are refused. The zero-width joiners are allowed.
+  A name saved before this rule is kept as it is: the form sends it back
+  unchanged on every save, and an unchanged name is not checked again, so the
+  logo and the other settings still save. Any change to it is checked in full,
+  and a refusal names the character (`U+XXXX`).
   Save an empty name to clear it.
 - **Logo**: a PNG, JPEG or WebP file, up to 1 MiB, and at most 4096 pixels on
   each side and 4,194,304 pixels (2048 × 2048) in all, so a 4096 × 1024

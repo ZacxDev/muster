@@ -141,3 +141,17 @@ func TestEveryDisplayNameWriterRefusesControlAndFormatCharacters(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryDisplayNameWriterRefusesInvalidUTF8 (#666 G2): bytes that are not
+// UTF-8 are refused by the writer itself (branding.ErrNameInvalid), before
+// an invite's GoTrue user is created — not by Postgres afterwards.
+func TestEveryDisplayNameWriterRefusesInvalidUTF8(t *testing.T) {
+	s, _ := storeFor(t)
+	for i, w := range displayNameWriters() {
+		name := fmt.Sprintf("Quill\xffBrandt%d", 900+i)
+		stored, err := w.write(t, s, 900+i, name)
+		if !errors.Is(err, branding.ErrNameInvalid) || stored {
+			t.Errorf("%s: invalid UTF-8: err=%v stored=%t, want branding.ErrNameInvalid", w.name, err, stored)
+		}
+	}
+}

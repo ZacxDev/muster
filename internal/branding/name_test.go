@@ -67,6 +67,9 @@ func TestCheckNameTextNamesTheRefusedCharacter(t *testing.T) {
 	if ce.Rune != 0x202E || !strings.Contains(err.Error(), "U+202E") {
 		t.Fatalf("names U+%04X (%q), want the first refused character, U+202E", ce.Rune, err.Error())
 	}
+	if err := CheckNameText("Orla\xffFinch"); err != ErrNameInvalid {
+		t.Fatalf("invalid UTF-8: %v, want ErrNameInvalid", err)
+	}
 	if err := CheckNameText("Orla Finch 🦊 李"); err != nil {
 		t.Fatalf("an ordinary name: %v", err)
 	}

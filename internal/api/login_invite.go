@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -343,7 +342,7 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("invite: refused a redemption from %s: %v", ip, err)
 		bad()
 		return
-	case errors.Is(err, branding.ErrNameControl):
+	case nameRefused(err):
 		// The store refused the name before creating anyone. The field is drawn
 		// empty: what was refused is invisible, so it would only be sent again.
 		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, "", nameCharSentence("Your name", err))

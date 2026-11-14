@@ -58,7 +58,10 @@ func NormalizeName(raw string) (string, error) {
 // CheckNameText is THE character rule for a name a person reads as a name:
 // the instance's name (NormalizeName) and every name stored in
 // users.display_name — a person's (users.RedeemInvite) and a team's
-// (users.CreateTeam). It refuses, as a *NameCharError naming the first one,
+// (users.CreateTeam). It refuses invalid UTF-8 (ErrNameInvalid: a byte that
+// is not text cannot be stored, and Postgres would refuse it only after a
+// writer had done its other work), and, as a *NameCharError naming the first
+// one,
 //
 //   - a control character: C0 (U+0000–U+001F, tab and newline included), DEL
 //     and C1 (U+007F–U+009F) — unicode.IsControl;
@@ -68,6 +71,9 @@ func NormalizeName(raw string) (string, error) {
 // One rule, one place: a writer of a name calls this, never a copy of it
 // (internal/users' TestEveryDisplayNameWriterIsChecked holds the writers to it).
 func CheckNameText(s string) error {
+	if !utf8.ValidString(s) {
+		return ErrNameInvalid
+	}
 	for _, r := range s {
 		if unicode.IsControl(r) || nameFormatChar(r) {
 			return &NameCharError{Rune: r}
