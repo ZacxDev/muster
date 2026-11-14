@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -27,11 +28,16 @@ func (s *PGStore) Create(ctx context.Context, n Note) (Note, error) {
 	n.Tags = NormalizeTags(n.Tags)
 	// source_type / source_session_id are nullable (*string); a nil pointer encodes
 	// as SQL NULL (a pre-0017 / header-less task), which reads back as NULL.
+	//
+	// owner_id: n.Owner when it names one (a team task, filed explicitly),
+	// else the column's default — the acting person (muster.uid). Postgres's
+	// team_insert policy is what admits a team owner, at operator.
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO notes (directory, title, body, model, repo, repo_branch, tags, source_type, source_session_id, created_by, owner_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			COALESCE(NULLIF($11::bigint, 0), nullif(current_setting('muster.uid', true), '')::bigint))
 		RETURNING `+noteCols,
-		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy)
+		n.Directory, n.Title, n.Body, n.Model, n.Repo, n.RepoBranch, n.Tags, n.SourceType, n.SourceSessionID, n.CreatedBy, n.Owner)
 	err := scanNote(row, &n)
 	return n, err
 }
@@ -1237,3 +1243,80 @@ func (s *PGStore) ListAttachments(ctx context.Context, noteID int64) ([]Attachme
 
 // compile-time assertion.
 var _ Store = (*PGStore)(nil)
+
+// --- Moving a task into a team (move.go) -----------------------------------
+
+// MoveChildren are the foreign keys onto notes whose rows MOVE with the task:
+// the three children whose composite key (note_id, owner_id) demands the
+// parent's owner (migration 0006). MoveToTeam rewrites them in the SAME
+// statement as the task, because a non-deferrable composite key refuses
+// either half alone (23503). A function, not a var: a note_comments literal
+// outside a function body would escape TestNoteCommentsReadPathLedger.
+func MoveChildren() []string {
+	return []string{"note_attachments.note_id", "note_comments.note_id", "task_sessions.note_id"}
+}
+
+// MoveToTeam moves task id, owned by from, to team. 🔴 ctx MUST BE THE
+// SYSTEM SCOPE (authz.System): owner_id changes nowhere else, so any other
+// principal's move fails closed at owner_fixed (42501). It refuses (nothing
+// moved) a task that is not from's (ErrMoveNotYours), a plugin task
+// reference (its plugin is from's), and a task any MoveRefusals row of
+// another owner than team points at (*MoveBlockedError). The caller has
+// already checked that from may act in team.
+func (s *PGStore) MoveToTeam(ctx context.Context, id, from, team int64) error {
+	if from <= 0 || team <= 0 || from == team {
+		return fmt.Errorf("notes: move %d from %d to %d: not a move", id, from, team)
+	}
+	sys := ctx
+	tx, err := s.pool.Begin(sys)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(sys)) }()
+	var owner int64
+	var plugin *int64
+	err = tx.QueryRow(sys, `SELECT owner_id, ext_plugin_id FROM notes WHERE id = $1 AND `+liveOnly+` FOR UPDATE`, id).Scan(&owner, &plugin)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && owner != from) {
+		return ErrMoveNotYours
+	}
+	if err != nil {
+		return err
+	}
+	var links []string
+	if plugin != nil {
+		links = append(links, "it is a plugin task reference (its plugin is yours)")
+	}
+	keys := make([]string, 0, len(MoveRefusals))
+	for k := range MoveRefusals {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		tbl, col, _ := strings.Cut(k, ".")
+		var n int
+		// tbl and col come from MoveRefusals, a constant ledger; never input.
+		if err := tx.QueryRow(sys, `SELECT count(*) FROM `+tbl+` WHERE `+col+` = $1 AND owner_id IS DISTINCT FROM $2`, id, team).Scan(&n); err != nil {
+			return fmt.Errorf("notes: move %d: read %s: %w", id, k, err)
+		}
+		if n > 0 {
+			links = append(links, fmt.Sprintf("%s (%s: %d)", MoveRefusals[k], tbl, n))
+		}
+	}
+	if len(links) > 0 {
+		return &MoveBlockedError{Links: links}
+	}
+	// The task and every MoveChildren row in ONE statement, so the composite
+	// keys are checked once, at its end, against the moved rows. No comment
+	// column is read: owner_id is all that changes.
+	tag, err := tx.Exec(sys, `WITH c AS (UPDATE note_comments SET owner_id = $2 WHERE note_id = $1 RETURNING 1),
+	a AS (UPDATE note_attachments SET owner_id = $2 WHERE note_id = $1 RETURNING 1),
+	s AS (UPDATE task_sessions SET owner_id = $2 WHERE note_id = $1 RETURNING 1)
+UPDATE notes SET owner_id = $2, updated_at = now() WHERE id = $1`, id, team)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("notes: move %d: moved %d tasks", id, tag.RowsAffected())
+	}
+	return tx.Commit(sys)
+}

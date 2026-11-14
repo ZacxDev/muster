@@ -315,6 +315,31 @@ func (s *PGStore) ListTeams(ctx context.Context) ([]Team, error) {
 	return teams, rows.Err()
 }
 
+// TeamNames is the display name of each of ids that is a team (a person's
+// id is left out). It names the teams a caller's own memberships list — the
+// task board's owner groups and the Owner select — so the caller is a member
+// of each; it returns nothing else about them.
+func (s *PGStore) TeamNames(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(sys(ctx), `SELECT id, display_name FROM users WHERE kind = 'team' AND id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
 // setMemberTx upserts one membership and audits it, inside tx.
 func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, role authz.TeamRole) error {
 	var before *string

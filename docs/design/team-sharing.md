@@ -878,6 +878,32 @@ rule the later phases' rows will meet.
     old column; `agents.Store.Secrets` finds it through the fallback, so
     `ensureHooksToken` sees a token and writes nothing to `agent_secrets`.
     Dropping the columns without the backfill would lose that token.
+- **Shipped, slice 4.3 (team tasks):** no migration. Phase 2a's `0127`
+  already shares `notes`, `note_comments`, `note_attachments`,
+  `task_sessions` and `task_ref_writes` (read at viewer, written at
+  operator) and adds `note_comments.author_id`, so slice 4.3 is code only.
+  - **Filing:** the create form's Owner select lists the teams you are at
+    least an operator in; `notes.Create` writes that owner explicitly, and
+    the handler (403) and Postgres (42501) both refuse a viewer or an
+    outsider. Comments take the task's owner and record `author_id`.
+  - **Thresholds (handler, `internal/api/team_tasks.go`):** read viewer;
+    file, comment, change status, edit, tag and retract a comment operator;
+    dismiss manager (Postgres admits a dismiss at operator, so only the
+    handler holds it). A merge needs both tasks to have one owner.
+  - **Board:** grouped by owner (yours, then each team, by name) whenever a
+    team task is on it; otherwise the flat list it always was.
+  - **Move to team:** `POST /tasks/{id}/move`, by the task's owner into a team
+    they operate in, one system-scope transaction (`notes.PGStore.MoveToTeam`,
+    in the System ledger through `handleTaskMove`). It moves the task,
+    its comments, attachments and session links. It is refused, naming the
+    link, when an agent, an ask, a host dispatch, a plugin message, a session
+    route or a queued plugin write points at the task, and for a plugin task
+    reference. `task_ref_writes` is a refusal, not a moved child: each row
+    has a composite key onto its personal plugin. Every foreign key onto
+    `notes` is classified (`TestEveryForeignKeyOntoNotesIsClassified`).
+  - **Not yet:** dispatching an agent on a team task. Agents are not shared
+    until 4.4. A person's agent naming a team task would meet the
+    `agents (note_id, owner_id)` key; this slice does not test that path.
 
 ### Later: consent-based team invites
 

@@ -22,6 +22,26 @@ func (r TeamRole) Valid() bool {
 	return r == TeamViewer || r == TeamOperator || r == TeamManager
 }
 
+// rank orders the roles: viewer 1, operator 2, manager 3, anything else 0 —
+// the same numbers muster_team_ids (migration 0127) reads the setting with.
+func (r TeamRole) rank() int {
+	switch r {
+	case TeamViewer:
+		return 1
+	case TeamOperator:
+		return 2
+	case TeamManager:
+		return 3
+	}
+	return 0
+}
+
+// AtLeast reports whether r is min or above it. An unknown role is below
+// every role, and no role is at least an unknown one.
+func (r TeamRole) AtLeast(min TeamRole) bool {
+	return min.rank() > 0 && r.rank() >= min.rank()
+}
+
 // Membership is one person's role in one team.
 type Membership struct {
 	Team int64
