@@ -84,6 +84,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// which is a reject) does not.
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
+	mux.HandleFunc("POST "+outreachBatchPath+"/{id}/decide", s.requirePluginsOn(s.requireOperatorWrite(s.handleOutreachBatchDecide)))
 
 	// Retrying a message the chief never confirmed (plugin_retry.go).
 	s.registerPluginRetryRoutes(mux)
@@ -282,15 +283,17 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the message could not be stored"})
 		return
 	}
-	if m.OfficerItemID != nil {
+	if m.RoutedTo != nil && *m.RoutedTo == plugins.RoutedToOfficer {
 		// A bound plugin's message (plugin_outbound.go): an item in its
-		// officer's queue, made in the transaction that stored it. Never the
-		// chief's.
+		// officer's queue, made in the transaction that stored it — or, for
+		// an engagement, the person and the event recorded, on an item when
+		// one was due (item_id null otherwise: officer_contacts.go). Never
+		// the chief's.
 		code := http.StatusOK
 		if created {
 			code = http.StatusAccepted
 		}
-		s.writeJSON(w, code, map[string]any{"id": m.ID, "status": string(m.Status), "item_id": *m.OfficerItemID})
+		s.writeJSON(w, code, map[string]any{"id": m.ID, "status": string(m.Status), "item_id": m.OfficerItemID})
 		return
 	}
 	if !created {

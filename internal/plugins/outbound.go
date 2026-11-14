@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -45,16 +46,24 @@ const RoutedToOfficer = "officer"
 const DeliverToOfficerPrefix = "officer:"
 
 // MessageKinds are a bound plugin's message kinds; "" is MessageKindNote.
-var MessageKinds = []string{"plan", "reply", "snapshot", "note"}
+var MessageKinds = []string{"plan", "reply", "snapshot", "note", MessageKindEngagement}
 
 // MessageKindNote is the kind a bound plugin's message without one takes.
 const MessageKindNote = "note"
 
-// The outbound target kinds.
+// The outbound target kinds: a new post, a reply on an upstream thread, and
+// the OUTREACH kinds (outreach.go) — a DM to a person, a follow of a person,
+// a like of an upstream reference.
 const (
-	TargetPost  = "post"
-	TargetReply = "reply"
+	TargetPost   = "post"
+	TargetReply  = "reply"
+	TargetDM     = "dm"
+	TargetFollow = "follow"
+	TargetLike   = "like"
 )
+
+// TargetKinds are the outbound target kinds, in the order the tool offers them.
+var TargetKinds = []string{TargetPost, TargetReply, TargetDM, TargetFollow, TargetLike}
 
 // Bounds of an outbound draft.
 const (
@@ -141,10 +150,13 @@ func ValidMediaRef(r string) bool { return mediaRefRE.MatchString(r) }
 // plugin's alone, and a reply names where and what it answers.
 func boundOfficer(p Plugin, in MessageIn) (string, error) {
 	if p.DeliverTo == nil {
-		if in.Kind != "" || in.Venue != "" || in.URL != "" {
-			return "", invalid("kind, venue and url are taken only by a plugin bound to an officer (deliver_to)")
+		if in.Kind != "" || in.Venue != "" || in.URL != "" || in.Person != nil || in.Event != nil {
+			return "", invalid("kind, venue, url, person and event are taken only by a plugin bound to an officer (deliver_to)")
 		}
 		return "", nil
+	}
+	if err := engagementShape(in); err != nil {
+		return "", err
 	}
 	kind := officerKind("x", in.Kind)
 	switch {
@@ -197,6 +209,23 @@ type OfficerLink interface {
 	// draftEndFor). An error rolls the end back with it, so the next sweep
 	// or claim tries again: a draft never ends while its item still waits.
 	DraftEndedTx(ctx context.Context, tx pgx.Tx, d Draft, how OutboundEnd) error
+	// EngagementTx, inside the transaction that stores engagement message
+	// e.MessageID, records the person and the event with the officer store
+	// and puts them on the officer's item for that person (engagement.go).
+	// ErrOfficerUnavailable when the officer is not owner's; ErrInvalid for a
+	// person or event the store refuses.
+	EngagementTx(ctx context.Context, tx pgx.Tx, owner int64, e Engagement) (EngagementRecorded, error)
+	// OutreachTx, inside the filing's transaction, is THE outreach gate
+	// (outreach.go): the contact o reaches (nil for a reply that reaches no
+	// recorded person), or a refusal naming which guard refused it.
+	OutreachTx(ctx context.Context, tx pgx.Tx, owner int64, o Outreach) (OutreachResolved, error)
+	// ContactBlockedTx is why owner's contact may not be contacted now
+	// (do_not_contact, bot, hostile), or "": the approval's and the claim's
+	// re-check.
+	ContactBlockedTx(ctx context.Context, tx pgx.Tx, owner, contact int64) (string, error)
+	// OutreachSentTx records, inside the result's transaction, that outreach
+	// draft d reached its person.
+	OutreachSentTx(ctx context.Context, tx pgx.Tx, d Draft) error
 }
 
 // OutboundEnd is how an outbound draft ended unsent by muster's own hand,
@@ -215,6 +244,10 @@ const (
 	// OutboundChecksOff: its plugin's draft_checks was turned off while it
 	// awaited the check, so it was refused (SetDraftChecks).
 	OutboundChecksOff OutboundEnd = "checks_off"
+	// OutboundContactBlocked: the claim withdrew an outreach draft whose
+	// person was marked do-not-contact, a bot or hostile after it was
+	// approved (claimOne).
+	OutboundContactBlocked OutboundEnd = "contact_blocked"
 )
 
 // outboundEnded is OfficerLink.DraftEndedTx for drafts ds that ended how in
@@ -383,6 +416,9 @@ func (s *PGStore) officerDefined(ctx context.Context, owner int64, officer strin
 type OutboundTarget struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref"`
+	// Handle is a dm's or a follow's person (target_ref holds it); "" for
+	// every other kind.
+	Handle string `json:"handle,omitempty"`
 }
 
 // DraftMedia is one uploaded medium of an outbound draft (0121's media).
@@ -406,6 +442,9 @@ func (d Draft) Target() OutboundTarget {
 	}
 	if d.TargetRef != nil {
 		t.Ref = *d.TargetRef
+	}
+	if t.Kind == TargetDM || t.Kind == TargetFollow {
+		t.Handle, t.Ref = t.Ref, ""
 	}
 	return t
 }
@@ -475,6 +514,11 @@ type NewOutbound struct {
 	// flows.StripPublicLinks): internal/api sets them from the officer's
 	// standing-read repositories, never from the agent's arguments.
 	PublicLinks []string
+	// BecauseRef is an outreach's motivating engagement (required for a dm,
+	// a follow and a like); Contact the person's handle, for a like or a
+	// reply whose target is not one of their recorded engagements; Reason the
+	// officer's one-line reason (required for a follow and a like).
+	BecauseRef, Contact, Reason string
 }
 
 // validate checks every field but the body (ScreenOutbound's).
@@ -486,12 +530,38 @@ func (in NewOutbound) validate() error {
 		return invalid("venue is 1-64 lower-case letters, digits, '.', '_' and '-', starting with a letter or digit")
 	case in.Target.Kind == TargetPost && in.Target.Ref != "":
 		return invalid("a post target has no ref")
-	case in.Target.Kind == TargetReply && (in.Target.Ref == "" || !ValidThread(in.Target.Ref) || len(in.Target.Ref) > MaxTargetRefBytes):
-		return invalid("a reply target's ref is 1-%d bytes with no spaces, control or invisible characters", MaxTargetRefBytes)
-	case in.Target.Kind != TargetPost && in.Target.Kind != TargetReply:
-		return invalid("target.kind is post or reply")
+	case (in.Target.Kind == TargetReply || in.Target.Kind == TargetLike) &&
+		(in.Target.Ref == "" || !ValidThread(in.Target.Ref) || len(in.Target.Ref) > MaxTargetRefBytes):
+		return invalid("a %s target's ref is 1-%d bytes with no spaces, control or invisible characters", in.Target.Kind, MaxTargetRefBytes)
+	case (in.Target.Kind == TargetDM || in.Target.Kind == TargetFollow) && (in.Target.Ref != "" || in.Target.Handle == ""):
+		return invalid("a %s target names its person as handle, and no ref", in.Target.Kind)
+	case (in.Target.Kind == TargetDM || in.Target.Kind == TargetFollow) && (!ValidThread(in.Target.Handle) || len(in.Target.Handle) > MaxHandleBytes):
+		return invalid("target.handle is 1-%d bytes with no spaces, control or invisible characters", MaxHandleBytes)
+	case in.Target.Kind != TargetDM && in.Target.Kind != TargetFollow && in.Target.Handle != "":
+		return invalid("only a dm or a follow target names a handle")
+	case !slices.Contains(TargetKinds, in.Target.Kind):
+		return invalid("target.kind is one of %s", strings.Join(TargetKinds, ", "))
 	case len(in.Media) > MaxMediaRefs:
 		return invalid("at most %d media", MaxMediaRefs)
+	case len(in.Media) > 0 && in.Target.Kind != TargetPost && in.Target.Kind != TargetReply:
+		return invalid("only a post or a reply carries media")
+	case IsBatchKind(in.Target.Kind) && in.Body != "":
+		return invalid("a %s carries no body: leave body out (give your one-line reason as reason)", in.Target.Kind)
+	case NeedsBecause(in.Target.Kind) && in.BecauseRef == "":
+		return invalid("a %s cites because_ref: the ref of the person's recorded engagement that motivates it", in.Target.Kind)
+	case in.BecauseRef != "" && (!ValidThread(in.BecauseRef) || len(in.BecauseRef) > MaxTargetRefBytes):
+		return invalid("because_ref is 1-%d bytes with no spaces, control or invisible characters", MaxTargetRefBytes)
+	case in.Contact != "" && in.Target.Kind != TargetLike && in.Target.Kind != TargetReply:
+		return invalid("contact names the person of a like or a reply; a dm or a follow names it as target.handle")
+	case in.Contact != "" && (!ValidThread(in.Contact) || len(in.Contact) > MaxHandleBytes):
+		return invalid("contact is 1-%d bytes with no spaces, control or invisible characters", MaxHandleBytes)
+	case IsBatchKind(in.Target.Kind) && strings.TrimSpace(in.Reason) == "":
+		return invalid("a %s gives reason: one line, shown to your owner in the outreach batch", in.Target.Kind)
+	case utf8.RuneCountInString(in.Reason) > MaxReasonRunes:
+		return invalid("reason is at most %d characters", MaxReasonRunes)
+	}
+	if why := flows.HiddenCharRefusal(in.Reason); in.Reason != "" && why != "" {
+		return invalid("reason: %s", why)
 	}
 	seen := map[string]bool{}
 	for _, r := range in.Media {
@@ -535,15 +605,19 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 	if err := in.validate(); err != nil {
 		return Draft{}, err
 	}
-	body, err := ScreenOutbound(in.Body, s.denyWords, in.PublicLinks)
-	if err != nil {
-		return Draft{}, err
+	// A follow or a like has no text: nothing to screen (validate refused a body).
+	body := ""
+	if !IsBatchKind(in.Target.Kind) {
+		var err error
+		if body, err = ScreenOutbound(in.Body, s.denyWords, in.PublicLinks); err != nil {
+			return Draft{}, err
+		}
 	}
 	if err := s.sweep(ctx); err != nil {
 		return Draft{}, err
 	}
 	var d Draft
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		// The plugin row first, FOR SHARE (checkStateFor's lock order against
 		// SetDraftChecks and SetDeliverTo, which take it FOR UPDATE).
 		p, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins
@@ -572,6 +646,27 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 			return fmt.Errorf("%w: %d await your owner (the limit is %d); wait for a decision",
 				ErrTooManyPendingDrafts, pending, MaxPendingDraftsPerAgent)
 		}
+		// 🔴 THE OUTREACH GATE, IN THIS TRANSACTION, under the person's row
+		// lock (outreach.go): a dm, a follow, a like, or a reply to one of
+		// a person's recorded engagements, reaches someone — and is refused
+		// here unless every guard allows it.
+		var reached OutreachResolved
+		if in.Target.Kind != TargetPost {
+			if s.officers == nil {
+				if in.Target.Kind != TargetReply {
+					return ErrOfficerUnavailable
+				}
+			} else {
+				handle := in.Contact
+				if in.Target.Kind == TargetDM || in.Target.Kind == TargetFollow {
+					handle = in.Target.Handle
+				}
+				if reached, err = s.officers.OutreachTx(ctx, tx, ownerID, Outreach{Officer: in.Officer, Venue: in.Venue, Kind: in.Target.Kind,
+					Handle: handle, TargetRef: in.Target.Ref, BecauseRef: in.BecauseRef}); err != nil {
+					return err
+				}
+			}
+		}
 		if in.ItemID != nil {
 			// 🔴 THE ITEM WAITS ON THE DRAFT, IN THIS TRANSACTION: the instance
 			// must hold it under a live lease now (checked under the item's row
@@ -591,22 +686,27 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 			media = []string{}
 		}
 		var ref any
-		if in.Target.Kind == TargetReply {
+		switch in.Target.Kind {
+		case TargetReply, TargetLike:
 			ref = in.Target.Ref
+		case TargetDM, TargetFollow:
+			// the person's handle as their contact stores it (the guard's)
+			ref = reached.Handle
 		}
 		d, err = scanDraft(tx.QueryRow(ctx, `
 			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state, check_due_at,
-			                                 plugin_id, venue, target_kind, target_ref, media_refs, officer, officer_item_id)
+			                                 plugin_id, venue, target_kind, target_ref, media_refs, officer, officer_item_id,
+			                                 because_ref, contact_id, outreach_reason)
 			VALUES ($1, NULL, $2, $3, $4, now() + make_interval(secs => $5), 'awaiting', now() + make_interval(secs => $5),
-			        $6, $7, $8, $9, $10, $11, $12) RETURNING `+draftCols,
+			        $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, nullif($15, '')) RETURNING `+draftCols,
 			ownerID, agentID, cutRunes(agentName, 100), body, DraftTTL.Seconds(),
-			p.ID, in.Venue, in.Target.Kind, ref, media, in.Officer, in.ItemID))
+			p.ID, in.Venue, in.Target.Kind, ref, media, in.Officer, in.ItemID, in.BecauseRef, reached.Contact, strings.TrimSpace(in.Reason)))
 		if err != nil {
 			return err
 		}
 		return audit(ctx, tx, "plugin.draft.filed", DraftObject(d.ID), map[string]any{
 			"outbound": true, "plugin_id": p.ID, "officer": in.Officer, "agent_id": agentID, "venue": in.Venue,
-			"target_kind": in.Target.Kind, "media_refs": media, "item_id": in.ItemID,
+			"target_kind": in.Target.Kind, "media_refs": media, "item_id": in.ItemID, "because_ref": in.BecauseRef, "contact_id": reached.Contact,
 		})
 	})
 	if err != nil {
@@ -675,8 +775,17 @@ func (s *PGStore) UploadDraftMedia(ctx context.Context, pluginID, draftID int64,
 // thread ref — the human reply an outbound reply draft answers — if any: the
 // newest.
 func (s *PGStore) OutboundReplyTo(ctx context.Context, pluginID int64, venue, ref string) (Message, bool, error) {
+	return s.outboundReplyTo(ctx, pluginID, venue, ref, nil)
+}
+
+// outboundReplyTo is OutboundReplyTo; with contact, only the engagement
+// message OF THAT PERSON (its sender is their handle, engagement.go), so an
+// outreach card never shows someone else's words in the same thread.
+func (s *PGStore) outboundReplyTo(ctx context.Context, pluginID int64, venue, ref string, contact *int64) (Message, bool, error) {
 	m, err := scanMessage(s.pool.QueryRow(ctx, `SELECT `+messageCols+` FROM plugin_messages
-		WHERE plugin_id = $1 AND venue = $2 AND thread = $3 ORDER BY id DESC LIMIT 1`, pluginID, venue, ref))
+		WHERE plugin_id = $1 AND venue = $2 AND thread = $3
+		  AND ($4::bigint IS NULL OR (kind = 'engagement' AND sender = (SELECT handle FROM officer_contacts WHERE id = $4)))
+		ORDER BY id DESC LIMIT 1`, pluginID, venue, ref, contact))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, false, nil
 	}

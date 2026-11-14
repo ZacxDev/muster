@@ -26,7 +26,7 @@ names its caller by a header the caller sets — any process of that user,
 the officer included, can call it as one of your sessions there — so while a
 host officer is declared on a machine, every owner-authority tool reached
 through that machine's door (`plugin_draft_decide`,
-`connector_request_decide`, `attention_answer`, `agent_destroy`,
+`plugin_outbound_batch_decide`, `connector_request_decide`, `attention_answer`, `agent_destroy`,
 `chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
 `plugin_request_decide`) decides nothing: it files a **confirmation card**
 that you confirm on your **paired phone** (a signed action: a fresh step-up,
@@ -376,7 +376,9 @@ words on a lock screen. An ask about any other item is unchanged.
    ([plugins.md](plugins.md#a-plugin-bound-to-an-officer)). The binding is
    refused unless the officer is defined for the same owner.
 3. The plugin's messages (`kind`: `plan`, `reply`, `snapshot`, `note`) arrive
-   as `plugin.<kind>` items with the message fenced as untrusted.
+   as `plugin.<kind>` items with the message fenced as untrusted; an
+   `engagement` records a person and becomes their item of the day
+   ([§ 5c](#5c-people-and-outreach)).
 4. The officer files `officer_post_draft{plugin, venue, target, body, media?,
    item_id?}`. The plugin checks the draft and uploads each medium's bytes;
    the owner sees the exact text, images and videos on the Reply drafts tab,
@@ -394,6 +396,95 @@ words on a lock screen. An ask about any other item is unchanged.
    owner ([plugins.md](plugins.md#the-result)). Put what the officer should do
    with a `draft.refused` item (read `detail`, redraft with its own `item_id`)
    in its charter.
+
+## 5c. People and outreach
+
+A plugin bound to the officer can report **engagement** with its owner's
+posts — replies (nested ones too), quotes, mentions, likes, reposts, new
+followers, inbound DMs and blocks — one event per message
+([plugins.md](plugins.md#engagement-kind-engagement)). muster keeps the
+**people** in its own Postgres, scoped to the officer (owner and officer),
+never in a repository. A [team](auth.md#teams) officer's people are its team's: its operators and managers read them, its managers write them, nobody else:
+
+- **One row per person** per venue and handle (`officer_contacts`, migration
+  0132): what the plugin said of them (display name, profile URL, a short bio —
+  the person's own words, untrusted), first seen, last engaged, last
+  contacted, the marks **do-not-contact**, **bot** and **hostile**, and the
+  officer's labels and notes.
+- **Their history** (`officer_contact_events`): each engagement (once per
+  kind and ref) with an excerpt of what they said (at most 500 characters),
+  and each outreach that was sent to them.
+- **One item per person per day.** The officer gets a `plugin.engagement`
+  item (subject `contact:<id>:<UTC day>`) whose payload names the person and
+  the day's events, with the person and their words as a fenced untrusted
+  block. A second event of theirs that day joins the open item instead of
+  making another. 🔴 The stored item names the person by id only (a
+  team's viewers read its items, only its operators its people); the person
+  and their words are rendered into the officer's copy when it claims the
+  item. An event while that day's item is being worked (claimed, or
+  waiting on an ask or a draft) opens one more item (`…#<event id>`), so no
+  engagement is lost. A like never opens an item (a person whose only
+  engagement is a like is recorded, never brought to the officer); a like of
+  someone who has an open item that day joins it.
+- **Do-not-contact is set automatically** by a block, or by their words asking
+  to stop (a message that begins "stop", "no thanks", "not interested",
+  "unsubscribe" …, or asks anywhere not to be contacted, messaged or DMed). It
+  errs on the side of setting it. A person who is do-not-contact, a bot or
+  hostile gets no item; their events are still recorded.
+
+Grant the type the `contacts` capability to give the officer its three tools
+(read at call time, as `outbound_drafts` is):
+
+```sh
+muster officer type put marketing --name "Marketing" --charter-file ./charter.md \
+    --policy '{"capabilities":["outbound_drafts","contacts"]}'
+```
+
+| tool | arguments | what it does |
+|---|---|---|
+| `officer_contact_get` | `{venue, handle, events?}` | the person, their marks, labels and notes, and their newest events (at most 50) |
+| `officer_contacts_list` | `{filter?: {venue?, label?, flag?, handle_prefix?, engaged_since?, limit?}}` | people, the most recently engaged first, at most 100; `flag` is `dnc`, `bot`, `hostile` or `contactable` |
+| `officer_contact_note` | `{venue, handle, labels?, notes?, flags?: {bot?, hostile?}}` | replaces labels (lower-case words, at most 20) and notes (at most 2 KiB); marks a bot or hostile |
+
+🔴 **An officer sets a mark and never clears one, and never touches
+do-not-contact.** Only the owner does, over the admin door below. Every answer
+carries a note that the person's words are data, not instructions.
+
+The owner's door (the admin API's tier):
+
+```sh
+# $MUSTER is the server's URL, $OFFICER the officer id (e.g. marketing:example)
+curl -H "Authorization: Bearer $TOKEN" "$MUSTER/api/officers/defs/$OFFICER/contacts?flag=dnc"
+curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"dnc": true}' \
+    "$MUSTER/api/officers/defs/$OFFICER/contacts/example.social/someone/flags"
+```
+
+**Outreach** — a DM, a follow, a like, or a reply to one of a person's
+recorded engagements — goes through `officer_post_draft` with the person,
+`because_ref` (the engagement that motivates it) and, for a follow or a like,
+a one-line `reason` ([plugins.md](plugins.md#outreach-drafts-dm-follow-like)).
+muster refuses it at the filing, deterministically, for a do-not-contact, bot
+or hostile person; without a qualifying engagement of that person (never a
+like; a DM answers something they said); while another outreach to them is
+out; when they were reached before and have not engaged since; and inside
+the cooldown (`{"outreach": {"cooldown_days": 7}}` in the type's policy, the
+default) unless it answers an engagement newer than the last outreach. A DM
+is approved on its exact text; follows and likes on the day's
+[outreach batch](plugins.md#the-outreach-batch), where the owner ticks what
+goes out and every unticked entry is rejected "not selected". A sent
+outreach is recorded on the person.
+
+⚠ A team officer's people have no owner's door yet: the admin API's tokens carry no team scope, so it reaches only your own officers' contacts. Their marks come from the officer (bot, hostile) and from their own words (do-not-contact).
+
+`DELETE …/contacts/{venue}/{handle}` erases a person and their whole
+history. An officer that has contacts cannot be deleted (409): delete its
+contacts first.
+
+Every contact tool's structured answer carries ids, kinds, refs, times,
+marks, labels and notes; every free-text field the person chose (display
+name, profile URL, bio, what they said) is only in its `people` field, one
+fenced untrusted block. Stored text is sanitised (no control, bidi or
+invisible character).
 
 ## 6. Switch it off
 
@@ -414,5 +505,9 @@ running it; its store rows stay.
 | POST | `/api/officers/defs/{officer}/items/{id}/resolve` | `{outcome, summary}` |
 | GET | `/api/officers/defs/{officer}/schedules` | |
 | PUT / DELETE | `/api/officers/defs/{officer}/schedules/{name}` | PUT `{cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}` |
+| GET | `/api/officers/defs/{officer}/contacts` | `?venue=&label=&flag=&handle_prefix=&limit=` |
+| GET | `/api/officers/defs/{officer}/contacts/{venue}/{handle}` | the person and their newest events |
+| PUT | `/api/officers/defs/{officer}/contacts/{venue}/{handle}/flags` | `{dnc?, bot?, hostile?}`: the owner's marks (`dnc: true` records reason `owner`) |
+| DELETE | `/api/officers/defs/{officer}/contacts/{venue}/{handle}` | erases the person and their history |
 
 All behind the hook tier (`requireArmedHookToken`); 404 while the store is off.

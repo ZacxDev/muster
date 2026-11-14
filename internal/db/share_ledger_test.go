@@ -48,6 +48,9 @@ var shareClasses = map[string]shareClass{
 	"officer_types": {1, 3}, "plugin_handoffs": {2, 3}, "plugin_message_handling": {2, 3},
 	"plugin_messages": {2, 3}, "plugin_reply_drafts": {2, 3}, "plugin_threads": {2, 3},
 	"plugins": {2, 3},
+	// a builtin officer's people (0132): a team officer's are its team's,
+	// read where its plugin messages are, written by its managers
+	"officer_contacts": {2, 3}, "officer_contact_events": {2, 3},
 	// usage: the budgets a team's spending is checked against. Read at
 	// viewer; written by NO member (4: no role reaches it) — only by the
 	// owner's own recording path or the system scope, so an operator cannot

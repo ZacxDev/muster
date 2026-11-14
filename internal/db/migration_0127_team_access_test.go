@@ -13,13 +13,15 @@ import "testing"
 // schema; a new owned table added after 0127 is listed here, or the control
 // below counts one table too many.
 var ownedAfter0127 = []string{
-	"agent_secrets", // 0128
+	"agent_secrets",                                // 0128
+	"officer_contacts", "officer_contact_events", // 0132
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares
 // (it was personal at 0127), so the counts at 0127 leave it out.
 var sharedAfter0127 = []string{
-	"agents", // 0131
+	"agents",                                     // 0131
+	"officer_contacts", "officer_contact_events", // 0132
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {

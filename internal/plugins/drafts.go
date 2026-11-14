@@ -143,6 +143,14 @@ type Draft struct {
 	// shown on the card's history, and an outbound draft's officer is told it
 	// (internal/api outboundSettled). nil otherwise.
 	DecisionReason *string `json:"-"`
+	// An OUTREACH draft's (migration 0132, outreach.go): the recorded
+	// engagement that motivates it (required for a dm, a follow and a like),
+	// the person it reaches (an officer contact's id, as the filing's guard
+	// resolved it; nil for a post, or a reply to no recorded person), and
+	// the officer's one-line reason (shown on the outreach batch).
+	BecauseRef     *string `json:"becauseRef,omitempty"`
+	ContactID      *int64  `json:"contactId,omitempty"`
+	OutreachReason *string `json:"outreachReason,omitempty"`
 	// RequestedByUser is who CAUSED the draft (migration 0130, team sharing
 	// phase 3): the acting principal's id when it was filed — a person's
 	// routed session or chief, or for a TEAM officer's draft the team itself
@@ -233,6 +241,9 @@ type Claim struct {
 	Venue      string         `json:"venue,omitempty"`
 	Target     OutboundTarget `json:"target"`
 	Media      []ClaimMedia   `json:"media"`
+	// BecauseRef is an outreach draft's motivating engagement (outreach.go):
+	// the plugin may check it is still there before it acts.
+	BecauseRef string `json:"because_ref,omitempty"`
 }
 
 // The draft kinds a claim or a check listing names.
@@ -248,6 +259,9 @@ func (c Claim) MarshalJSON() ([]byte, error) {
 		"approved_at": c.ApprovedAt, "kind": c.Kind}
 	if c.Kind == DraftKindOutbound {
 		out["body_sha256"], out["venue"], out["target"], out["media"] = c.BodySHA256, c.Venue, c.Target, c.Media
+		if c.BecauseRef != "" {
+			out["because_ref"] = c.BecauseRef
+		}
 	}
 	return json.Marshal(out)
 }
@@ -454,14 +468,14 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
-	decision_reason, requested_by_user`
+	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
 		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
-		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser}
+		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
@@ -808,8 +822,18 @@ func (s *PGStore) outboundDraftCards(ctx context.Context, tail string, arg any) 
 	}
 	for i := range out {
 		d := out[i].Draft
+		// What it answers: a reply's thread, or an outreach's because_ref —
+		// the engagement message its plugin delivered with that ref
+		// (engagement.go sets an engagement's thread to its event ref).
+		ref := ""
 		if t := d.Target(); t.Kind == TargetReply {
-			m, ok, err := s.OutboundReplyTo(ctx, *d.PluginID, d.VenueText(), t.Ref)
+			ref = t.Ref
+		}
+		if d.BecauseRef != nil {
+			ref = *d.BecauseRef
+		}
+		if ref != "" {
+			m, ok, err := s.outboundReplyTo(ctx, *d.PluginID, d.VenueText(), ref, d.ContactID)
 			if err != nil {
 				return nil, err
 			}
@@ -966,6 +990,12 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			// refused while a ref has no bytes, or unless the decider names exactly
 			// the stored body's and media's hashes; the hashes are recorded and the
 			// claim re-checks them (ClaimDraft).
+			// 🔴 A FOLLOW OR A LIKE IS APPROVED IN ITS OUTREACH BATCH ONLY
+			// (outreach.go DecideOutreachBatch), ticked with the day's others.
+			if IsBatchKind(cur.Target().Kind) {
+				d = cur
+				return ErrBatchOnly
+			}
 			if missing := cur.MissingMedia(); len(missing) > 0 {
 				d = cur
 				return MissingMediaError{Missing: missing}
@@ -977,6 +1007,12 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			if !slices.Equal(dec.MediaSHA256, cur.MediaSHA256()) {
 				d = cur
 				return ErrDraftMediaMismatch
+			}
+			if why, err := s.contactBlockedTx(ctx, tx, cur); err != nil {
+				return err
+			} else if why != "" {
+				d = cur
+				return ContactBlockedError{Why: why}
 			}
 			q = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now(),
 				approved_body_sha256 = $2, approved_media_sha256 = $3 WHERE id = $1 RETURNING ` + draftCols
@@ -1043,6 +1079,27 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 		if err != nil {
 			return err
 		}
+		if d.IsOutbound() && d.ContactID != nil {
+			// 🔴 THE PERSON IS RE-CHECKED AT THE CLAIM (outreach.go): one who
+			// said "stop", blocked the owner or was marked since the approval
+			// is never reached — the draft is withdrawn, not handed out.
+			why, err := s.contactBlockedTx(ctx, tx, d)
+			if err != nil {
+				return err
+			}
+			if why != "" {
+				withdrawn, err := scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
+					approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1 RETURNING `+draftCols, d.ID, ContactBlockedDetail(why)))
+				if err != nil {
+					return err
+				}
+				retry = true
+				if err := audit(ctx, tx, "plugin.draft.contact_blocked", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": why}); err != nil {
+					return err
+				}
+				return s.outboundEnded(ctx, tx, []Draft{withdrawn}, OutboundContactBlocked)
+			}
+		}
 		if d.IsOutbound() && !d.BindingHolds() {
 			withdrawn, err := scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
 				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1 RETURNING `+draftCols, d.ID, BindingBrokenDetail))
@@ -1064,6 +1121,9 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 		c = Claim{DraftID: d.ID, MessageExternalID: ext, Body: d.Body, ApprovedAt: d.ApprovedAt.UTC(), Kind: DraftKindReply}
 		if d.IsOutbound() {
 			c.Kind, c.BodySHA256, c.Venue, c.Target, c.Media = DraftKindOutbound, *d.ApprovedBodySHA256, d.VenueText(), d.Target(), claimMediaOf(d)
+			if d.BecauseRef != nil {
+				c.BecauseRef = *d.BecauseRef
+			}
 		}
 		found = true
 		return audit(ctx, tx, "plugin.draft.claimed", DraftObject(d.ID), map[string]any{"plugin_id": pluginID})
@@ -1239,6 +1299,13 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 		if want == DraftFailed {
 			d.Refusal, err = refuseRouteDraftTx(ctx, tx, d, r.Detail)
 			return err
+		}
+		if d.IsOutbound() && d.ContactID != nil && s.officers != nil {
+			// The person was reached: an outreach event on them, in this
+			// transaction (outreach.go), so the guards see it at once.
+			if err := s.officers.OutreachSentTx(ctx, tx, d); err != nil {
+				return err
+			}
 		}
 		// 🔴 THE MESSAGE-SCOPED SUPERSEDE (see the doc comment). Lock order: the
 		// message (above), this row, then its siblings in id order. This row is

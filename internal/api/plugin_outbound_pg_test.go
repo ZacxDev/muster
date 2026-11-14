@@ -131,7 +131,7 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	dsn := dbtest.DSN(t)
 	ctx := dbtest.AsOperator(context.Background())
 	wipe := func() {
-		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
+		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_contact_events, officer_contacts, officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
 		dbtest.OwnerExec(t, dsn, `DELETE FROM plugins WHERE name IN ('`+outboundPluginName+`', 'example-other', 'example-mint', 'example-paired', 'example-late')`)
 		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label LIKE 'officer %'`)
 		dbtest.OwnerExec(t, dsn, `TRUNCATE plugin_pair_requests, plugin_pair_decoys`)

@@ -97,9 +97,10 @@ func TestAHostOfficerIsOfferedTheQueueToolsAndAskOnly(t *testing.T) {
 	host := pod
 	host.Runtime, host.Host, host.Repo = officers.RuntimeHost, "host-alpha", "example-org/example-site"
 	want := map[string]bool{officers.ToolBrief: true, officers.ToolItems: true, officers.ToolClaim: true, officers.ToolHeartbeat: true,
-		officers.ToolComplete: true, officers.ToolRelease: true, officers.ToolAskPerson: true, officers.ToolPostDraft: true}
+		officers.ToolComplete: true, officers.ToolRelease: true, officers.ToolAskPerson: true, officers.ToolPostDraft: true,
+		officers.ToolContactGet: true, officers.ToolContactsList: true, officers.ToolContactNote: true}
 	all := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
-		officers.ToolAskPerson, officers.ToolPostDraft, officers.ToolObsQueries, officers.ToolObsQuery, officers.ToolObsRaw, officers.ToolKubeRead,
+		officers.ToolAskPerson, officers.ToolPostDraft, officers.ToolContactGet, officers.ToolContactsList, officers.ToolContactNote, officers.ToolObsQueries, officers.ToolObsQuery, officers.ToolObsRaw, officers.ToolKubeRead,
 		officers.ToolMergePR, officers.ToolTaskList, officers.ToolGapTask, officers.ToolReleaseEvaluation}
 	for _, tool := range all {
 		if got := officers.ToolOffered(host, tool); got != want[tool] {

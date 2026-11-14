@@ -35,7 +35,7 @@ func ctxOp() context.Context { return dbtest.AsOperator(context.Background()) }
 func newPGWorld(t *testing.T, fault bool) *pgWorld {
 	t.Helper()
 	dsn := dbtest.DSN(t)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE officer_contact_events, officer_contacts, officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
 	pool, err := db.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)

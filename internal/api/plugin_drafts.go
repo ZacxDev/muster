@@ -643,7 +643,12 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 		// reply draft's rejection goes nowhere, as before: its chief or
 		// session is not told (outboundSettled decides which, in one place).
 		// Past the bound the officer is NOT told: the owner is, here.
-		if s.outboundSettled(ctx, d.OwnerID, d, settledByOwner) {
+		switch {
+		case d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Status == plugins.DraftRejected:
+			// A follow or a like rejected on its own: as an unticked batch
+			// entry, its item is finished quietly — nothing to redraft.
+			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
+		case s.outboundSettled(ctx, d.OwnerID, d, settledByOwner):
 			s.notifyOfficerNotTold(d.OwnerID, d)
 		}
 	}
@@ -728,6 +733,16 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	case errors.Is(err, plugins.ErrReplyInFlight):
 		return draftRefusal{http.StatusConflict, "Another reply to that message is already approved and not yet sent. " +
 			"Wait for its result before approving a second one.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrBatchOnly):
+		return draftRefusal{http.StatusConflict, "A follow or a like is approved in its outreach batch: tick it on the batch's card " +
+			"(or plugin_outbound_batch_decide). It can still be rejected on its own.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrContactBlocked):
+		var cb plugins.ContactBlockedError
+		why := ""
+		if errors.As(err, &cb) {
+			why = plugins.BlockedText(cb.Why)
+		}
+		return draftRefusal{http.StatusConflict, "That draft's person is now " + why + ": it can never be approved. Reject it.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrInvalid):
 		return draftRefusal{http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), asksTabDrafts}
 	}

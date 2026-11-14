@@ -386,21 +386,25 @@ var isolationClasses = map[string]routeClass{
 	// store call naming the caller's owner and under its principal.
 	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
 	// read and destroyed under the caller's principal.
-	"DELETE /api/agents/{name}":                            classAdmin,
-	"GET /api/officers/types":                              classAdmin,
-	"GET /api/officers/types/{key}":                        classAdmin,
-	"PUT /api/officers/types/{key}":                        classAdmin,
-	"DELETE /api/officers/types/{key}":                     classAdmin,
-	"GET /api/officers/defs":                               classAdmin,
-	"PUT /api/officers/defs/{officer}":                     classAdmin,
-	"DELETE /api/officers/defs/{officer}":                  classAdmin,
-	"GET /api/officers/defs/{officer}/items":               classAdmin,
-	"POST /api/officers/defs/{officer}/items":              classAdmin,
-	"POST /api/officers/defs/{officer}/items/{id}/resolve": classAdmin,
-	"GET /api/officers/defs/{officer}/schedules":           classAdmin,
-	"PUT /api/officers/defs/{officer}/schedules/{name}":    classAdmin,
-	"DELETE /api/officers/defs/{officer}/schedules/{name}": classAdmin,
-	"POST /api/tasks/{id}/comments":                        classAdmin,
+	"DELETE /api/agents/{name}":                                        classAdmin,
+	"GET /api/officers/types":                                          classAdmin,
+	"GET /api/officers/types/{key}":                                    classAdmin,
+	"PUT /api/officers/types/{key}":                                    classAdmin,
+	"DELETE /api/officers/types/{key}":                                 classAdmin,
+	"GET /api/officers/defs":                                           classAdmin,
+	"PUT /api/officers/defs/{officer}":                                 classAdmin,
+	"DELETE /api/officers/defs/{officer}":                              classAdmin,
+	"GET /api/officers/defs/{officer}/items":                           classAdmin,
+	"POST /api/officers/defs/{officer}/items":                          classAdmin,
+	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
+	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
+	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
+	"GET /api/officers/defs/{officer}/contacts":                        classAdmin,
+	"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}":       classAdmin,
+	"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": classAdmin,
+	"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    classAdmin,
+	"POST /api/tasks/{id}/comments":                                    classAdmin,
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
 	"POST /api/jobs":     classAdmin,
@@ -548,12 +552,13 @@ var isolationClasses = map[string]routeClass{
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
-	"POST /plugins/drafts/{id}/approve":  classParam,
-	"POST /plugins/drafts/{id}/reject":   classParam,
-	"POST /plugins/messages/{id}/retry":  classParam,
-	"POST /plugin/v1/drafts/claim":       classPlugin,
-	"POST /plugin/v1/drafts/{id}/result": classPlugin,
-	"POST /plugin/v1/drafts/{id}/renew":  classPlugin,
+	"POST /plugins/drafts/{id}/approve":          classParam,
+	"POST /plugins/drafts/{id}/reject":           classParam,
+	"POST /plugins/outreach-batches/{id}/decide": classParam,
+	"POST /plugins/messages/{id}/retry":          classParam,
+	"POST /plugin/v1/drafts/claim":               classPlugin,
+	"POST /plugin/v1/drafts/{id}/result":         classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":          classPlugin,
 	// The pre-approval check (draft_checks): the listing names nothing (the
 	// token owner's own plugin's drafts) and the verdict names A's draft — which
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
@@ -678,11 +683,11 @@ var isolationClasses = map[string]routeClass{
 	// page (and link, version) by id. The four share-link routes are public:
 	// the token in the path is the credential, which no walker holds
 	// (sideEffectControlled).
-	"GET /pages":                           classList,
-	"GET /pages/{id}":                      classParam,
+	"GET /pages":      classList,
+	"GET /pages/{id}": classParam,
 	// A team's manager pages (phase 2a): {id} is a team A manages.
-	"GET /teams/{id}":                         classParam,
-	"POST /teams/{id}/members":                classParam,
+	"GET /teams/{id}":                        classParam,
+	"POST /teams/{id}/members":               classParam,
 	"POST /teams/{id}/members/{user}/remove": classParam,
 	// A team's officers (phase 3): {id} is a team A manages, {key} and
 	// {officer} A's team's type and officer.
@@ -1211,6 +1216,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
 		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
 	must(err, "an officer schedule")
+	// A's officer's people (0132): one the read and flag routes name (its
+	// display carries the canary) and one the erase route names.
+	for _, h := range []string{"isoperson", "isodelete"} {
+		_, err = pool.Exec(ua, `INSERT INTO officer_contacts (owner_id, officer, venue, handle, display) VALUES ($1, $2, 'iso', $3, $4)`,
+			w.a.uid, aOffType+":a", h, w.canary+" person")
+		must(err, "an officer contact")
+	}
 	w.officerStore = ost
 	// A's host officer spawn (0125): its host carries the canary, so the
 	// spawns page shows it to A and to nobody else.
@@ -1614,7 +1626,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The built-in officer store's admin API: its own path names, and a
 		// body each route accepts, so a refusal is about WHOSE row.
 		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
-			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly").Replace(path)
+			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly", "{venue}", "iso").Replace(path)
+		handle := "isoperson"
+		if method == http.MethodDelete {
+			handle = "isodelete"
+		}
+		path = strings.ReplaceAll(path, "{handle}", handle)
 		switch {
 		case method == http.MethodGet || method == http.MethodDelete:
 			return method, path, ""
@@ -1624,6 +1641,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
 		case strings.Contains(path, "/types/"):
 			return method, path, `{"name":"iso","charter":"iso-write"}`
+		case strings.HasSuffix(path, "/flags"):
+			return method, path, `{"bot":true}`
 		case strings.Contains(path, "/schedules/"):
 			return method, path, `{"cron":"0 6 * * *","kind":"iso","subject_key":"iso"}`
 		}

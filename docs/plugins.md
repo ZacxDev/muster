@@ -627,7 +627,7 @@ The same route and body, with four more fields:
 
 | field | required | rule |
 |---|---|---|
-| `kind` | no | `plan`, `reply`, `snapshot` or `note` (the default). |
+| `kind` | no | `plan`, `reply`, `snapshot`, `note` (the default) or `engagement` ([below](#engagement-kind-engagement)). |
 | `venue` | with `kind: "reply"` | Where it happened: 1 to 64 lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit (`reddit`, `x`, `example.forum`). |
 | `thread` | with `kind: "reply"` | The upstream reference of the human reply to answer (the field every message already has). |
 | `url` | no | Where the message can be read upstream (a post's permalink): an absolute `http` or `https` URL with a host and no userinfo, at most 2048 bytes, with no spaces, control or invisible characters. It rides in the item's `payload.url` (not on the message row) and is shown to the owner **as text, never as a link** on an ask about the item. |
@@ -662,6 +662,47 @@ apart from the officer's note ([officers-builtin.md](officers-builtin.md#what-th
 
 The wake loop starts an instance for the new item within the officer's poll
 interval.
+
+#### Engagement: `kind: "engagement"`
+
+A bound plugin reports **one event of a person's engagement** with its
+owner's posts as a message of kind `engagement`, with the person and the event
+in place of a subject and body:
+
+```json
+{"kind": "engagement", "venue": "example.social",
+ "person": {"handle": "someone", "display": "Some One", "profile_url": "https://example.social/someone", "bio": "builds things"},
+ "event": {"kind": "reply", "ref": "c_123", "parent_ref": "c_100", "our_post_ref": "p_42",
+           "at": "2000-01-02T03:04:05Z", "text": "Does it handle retries?"}}
+```
+
+| field | required | rule |
+|---|---|---|
+| `venue` | yes | as for a reply |
+| `person.handle` | yes | the person's stable id on the venue (a username, a profile slug): a leading `@` is dropped and it is compared without case; 1–100 bytes, no spaces |
+| `person.display`, `person.profile_url`, `person.bio` | no | at most 100, 300 and 300 characters; a value sent replaces the stored one, an absent one leaves it |
+| `event.kind` | yes | `reply`, `quote`, `mention`, `like`, `repost`, `follow`, `nested_reply`, `dm_in` or `block` |
+| `event.ref` | yes | the upstream reference of the event (1–200 bytes, no spaces): recorded once per person, kind and ref |
+| `event.parent_ref` | no | what a nested reply answers |
+| `event.our_post_ref` | for `reply`, `quote`, `like`, `repost`, `nested_reply` | the owner's post it is on |
+| `event.at` | no | when it happened; muster's own time when absent or later than now |
+| `event.text` | no | what they said (kept as a 500-character excerpt; the whole is the message body) |
+| `external_id` | no | default: a hash of venue, event kind, handle and ref, so a repeat of one event is one message |
+
+muster stores the message (the same hourly allowance; `body` defaults to the
+text, `sender` to the handle, `thread` to the event's ref) and, in the same
+transaction, records the person and the event and puts them on the officer's
+**one open item of the day for that person**
+([officers-builtin.md](officers-builtin.md#5c-people-and-outreach)). A
+`block`, or their words asking to stop, sets the person **do-not-contact**.
+
+| answer | meaning |
+|---|---|
+| `202 {"id", "status": "delivered", "item_id"}` | stored and recorded; `item_id` is the person's item of the day, or `null` when none is due (a like that finds no open item of theirs that day, or a do-not-contact, bot or hostile person) |
+| `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: nothing new |
+| `400`, `409`, `429` | as above |
+
+`person` and `event` are refused (400) on any other kind.
 
 #### Outbound drafts: `officer_post_draft`
 
@@ -743,10 +784,12 @@ instead of a message:
 ]}
 ```
 
-`target.kind` is `post` (a new post; `ref` is `""`) or `reply` (`ref` is the
-upstream reference to answer). `media` is in the order the officer gave, at
-most 4; each `ref` is `<angle>/<id>`, which the plugin resolves on its own
-machine.
+`target.kind` is `post` (a new post; `ref` is `""`), `reply` (`ref` is the
+upstream reference to answer), or one of the [outreach](#outreach-drafts-dm-follow-like)
+kinds: `dm` and `follow` (`handle` is the person, `ref` is `""`) and `like`
+(`ref` is what to like). `media` is in the order the officer gave, at most 4
+(a post or a reply only); each `ref` is `<angle>/<id>`, which the plugin
+resolves on its own machine.
 
 #### `POST /plugin/v1/drafts/{id}/media`: upload one ref's bytes
 
@@ -893,6 +936,97 @@ After the result, for an outbound draft filed with an `item_id`:
   own (still pending or approved) is left as it is. An item left **claimed**
   by a draft filed before items waited on their drafts (muster 0.218.0) is
   settled the same way once its lease has lapsed.
+
+#### Outreach drafts: dm, follow, like
+
+An outbound draft that reaches a **person** — a DM, a follow, a like, or a
+reply to one of their recorded [engagements](#engagement-kind-engagement) — is
+**outreach**. `officer_post_draft` takes three more arguments for it:
+
+| argument | for | rule |
+|---|---|---|
+| `target` | | `{"kind": "dm", "handle"}`, `{"kind": "follow", "handle"}` or `{"kind": "like", "ref"}` |
+| `body` | post, reply, dm (required); follow, like (refused) | a follow or a like is no text |
+| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it |
+| `contact` | like, reply (optional) | the person's handle, when the target is not one of their recorded engagements |
+| `reason` | follow, like (required); others (optional) | the officer's one line (at most 200 characters), shown on the outreach batch |
+
+The person is a dm's or a follow's `handle`; a like's or a reply's target when
+it is one of a person's own recorded words (a reply, quote, mention, nested
+reply or DM — never the owner's post a like or a repost names); else
+`contact`. A reply that reaches no recorded person is an ordinary reply.
+
+🔴 **Refused at the filing, in its transaction, under the person's row lock**
+— nothing is filed, and the answer is `{"error", "refused": <code>}`:
+
+| code | refused when |
+|---|---|
+| `do_not_contact`, `bot`, `hostile` | the person is on the do-not-contact list, or marked a bot or hostile |
+| `because_ref_required` / an invalid filing | a dm, a follow or a like names no `because_ref` |
+| `no_qualifying_engagement` | `because_ref` is not a recorded engagement **of that person**, or one that cannot motivate it: never a like (a person whose only engagement is a like is never contacted), and a DM answers something they said (a reply, quote, mention, nested reply or DM); a follow may answer their follow (a follow-back) |
+| `unknown_person` | muster has recorded no engagement from that handle |
+| `person_unresolved`, `person_mismatch` | a like names nobody, or its target is another person's (or two people's) engagement |
+| `outreach_outstanding` | another outreach to them is still pending, approved or in flight |
+| `twice_without_engagement` | they were reached before (a sent outreach, or an unconfirmed one: it may have been sent) and have not engaged since in a way that qualifies for this kind |
+| `cooldown` | inside the per-person cooldown since that last outreach (the type's policy `{"outreach": {"cooldown_days": n}}`, a whole number 0–365, default 7), and the outreach does not answer an engagement **newer** than it — so a conversation they continue can be answered, and nothing else is sent |
+
+**Approved on its exact text**, as a post is: a DM through its card or
+`plugin_draft_decide` with its `body_sha256`. **A follow or a like has no
+text** and is approved only in its day's [outreach batch](#the-outreach-batch);
+an individual approval of one is refused (409); rejecting it alone is
+allowed, and finishes its item quietly, as an unticked batch entry. Its plugin's [check](#check-a-reply-before-it-can-be-approved) is
+where per-venue daily caps are refused.
+
+🔴 **The person is re-checked at the approval and at the claim.** A pending
+outreach to a person who has since said stop, blocked the owner, been marked,
+or been erased cannot be approved; an approved one is **withdrawn at the
+claim** (rejected, `detail` naming why; the item it was filed for is finished
+without a `draft.refused` item: there is nothing to redraft) and never handed
+out.
+
+The claim names the person and the engagement:
+
+```json
+{"draft_id": 19, "kind": "outbound", "body": "", "body_sha256": "<the SHA-256 of the empty string>",
+ "venue": "example.social", "target": {"kind": "follow", "ref": "", "handle": "someone"},
+ "because_ref": "c_123", "media": []}
+```
+
+Verify the target on the page (the handle) before acting, act once, read the
+state back (following, liked, the DM in the conversation) and report
+`{"ok": true, "external_ref"}`: muster records the outreach on the person
+(`follow_out`, `like_out`, `dm_out`, `reply_out`) in the result's
+transaction, so the guards see it at once.
+
+#### The outreach batch
+
+An officer's follows and likes of one UTC day are **one batch**, id
+`<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Reply drafts tab, one Attention item
+and one notification (each new entry replaces the batch's last notification),
+never one each. Each entry shows the person, the venue, the action, the
+engagement of theirs that motivated it (untrusted, escaped) and the officer's
+reason, with a checkbox; entries still awaiting their plugin's check are
+counted, not listed, and are not part of the decision.
+
+🔴 **The decision binds the exact set.** **Approve ticked, reject the rest**
+posts the ticked draft ids and the batch's `batch_sha256` (the SHA-256 of every
+listed entry's id); muster, in one transaction under every entry's row lock,
+refuses it unless the batch's decidable entries are exactly that set (an entry
+that joined, expired or was decided since: 409, look again), refuses a ticked
+id that is not one of them (400) and a ticked person who may no longer be
+contacted (409, nothing decided). A team officer's batch is decided by the
+team's managers only, never by the team itself, and nobody approves an entry
+they caused (403), as for every team draft. Then exactly the ticked entries are approved
+and **every other entry is rejected, reason `not selected`**: its item is
+finished `no_action` saying so, with no `draft.refused` item. The 12-hour
+sign-in rule is as for every approval.
+
+From the owner's mirrored sessions:
+
+| tool | arguments | |
+|---|---|---|
+| `plugin_outbound_batch_get` | `{batch_id?}` | the open batches (or one): entries `{draft_id, plugin, venue, action, person, target_ref, because_ref, engagement, reason, created_at, blocked?}`, `waiting`, `batch_sha256`. Read-only |
+| `plugin_outbound_batch_decide` | `{batch_id, batch_sha256, approve_ids}` | the same decision as the card (`approve_ids: []` rejects them all); on a machine that runs a host officer it is a step-up [confirmation card](officers-builtin.md#-before-you-declare-one-on-a-real-deployment) |
 
 ### Pairing a plugin without handling its token
 
