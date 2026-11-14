@@ -27,35 +27,37 @@ import (
 //   - readByID: it reads one row by an id it was handed (a principal being
 //     built, a row being locked, a disabled check) and returns no new user.
 var usersReads = map[string]string{
-	"internal/apitokens PGStore.Authenticate":    readPerson,
-	"internal/apitokens PGStore.Create":          readByID,
-	"internal/chiefnudge PG.Owners":              readPerson,
-	"internal/devices PGStore.Redeem":            readByID,
-	"internal/devices PGStore.Authenticate":      readPerson,
-	"internal/flows PGStore.AuthenticateRunner":  readPerson,
-	"internal/focus PGStore.Owners":              readPerson,
-	"internal/mirror PGStore.Authenticate":       readPerson,
-	"internal/officers/builtin Store.UsersExist": readPerson,
-	"internal/plugins PGStore.CreatePairRequest": readPerson,
-	"internal/plugins PGStore.Authenticate":      readPerson,
-	"internal/push PGStore.ForOwner":             readPerson,
-	"internal/users emailTaken":                  readByID, // uniqueness over every row; a team has no email
-	"internal/users PGStore.RedeemInvite":        readByID, // a count by GoTrue subject; a team has none
-	"internal/users PGStore.ListUsers":           readPerson,
-	"internal/users guardLastAdmin":              readByID, // admins only; a team is never an admin (CHECK)
-	"internal/users PGStore.SetRole":             readByID,
-	"internal/users PGStore.ListTeams":           readTeam,
-	"internal/users lockTeam":                    readTeam,
-	"internal/users lockPerson":                  readPerson,
-	"internal/users PGStore.Role":                readByID,
-	"internal/users PGStore.Account":             readByID, // returns the kind; admit refuses a team
-	"internal/users PGStore.BySub":               readPerson,
-	"internal/users PGStore.ByID":                readPerson,
-	"internal/users PGStore.IDByEmail":           readPerson,
-	"internal/users PGStore.DisabledAmong":       readByID,
-	"internal/users PGStore.CreateClaimInvite":   readPerson,
-	"internal/users PGStore.ClaimInviteLive":     readByID,
-	"internal/users PGStore.RedeemClaim":         readByID,
+	"internal/apitokens PGStore.Authenticate":              readPerson,
+	"internal/apitokens PGStore.Create":                    readByID,
+	"internal/chiefnudge PG.Owners":                        readPerson,
+	"internal/devices PGStore.Redeem":                      readByID,
+	"internal/devices PGStore.Authenticate":                readPerson,
+	"internal/flows PGStore.AuthenticateRunner":            readPerson,
+	"internal/focus PGStore.Owners":                        readPerson,
+	"internal/mirror PGStore.Authenticate":                 readPerson,
+	"internal/officers/builtin Store.UsersExist":           readPerson,
+	"internal/plugins PGStore.CreatePairRequest":           readPerson,
+	"internal/plugins PGStore.Authenticate":                readPerson,
+	"internal/push PGStore.ForOwner":                       readPerson,
+	"internal/users emailTaken":                            readByID, // uniqueness over every row; a team has no email
+	"internal/users PGStore.RedeemInvite":                  readByID, // a count by GoTrue subject; a team has none
+	"internal/users PGStore.ListUsers":                     readPerson,
+	"internal/users guardLastAdmin":                        readByID, // admins only; a team is never an admin (CHECK)
+	"internal/users PGStore.SetRole":                       readByID,
+	"internal/users PGStore.ListTeams":                     readTeam,
+	"internal/users PGStore.TeamMembers":                   readByID, // the members of a team id the manager page was handed
+	"internal/users lockTeam":                              readTeam,
+	"internal/users PGStore.AddTeamMemberByEmailAsManager": readPerson,
+	"internal/users lockPerson":                            readPerson,
+	"internal/users PGStore.Role":                          readByID,
+	"internal/users PGStore.Account":                       readByID, // returns the kind; admit refuses a team
+	"internal/users PGStore.BySub":                         readPerson,
+	"internal/users PGStore.ByID":                          readPerson,
+	"internal/users PGStore.IDByEmail":                     readPerson,
+	"internal/users PGStore.DisabledAmong":                 readByID,
+	"internal/users PGStore.CreateClaimInvite":             readPerson,
+	"internal/users PGStore.ClaimInviteLive":               readByID,
+	"internal/users PGStore.RedeemClaim":                   readByID,
 }
 
 const (

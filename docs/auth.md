@@ -64,8 +64,9 @@ usable. That lets you bind the operator's login before you switch modes.
 
 A team is a group of people on one muster server who will share sessions,
 officers and tasks ([design/team-sharing.md](design/team-sharing.md)). **This
-version records teams and their members, and shares nothing yet.** A row a
-team owns is visible to no person, its members included.
+version records teams and their members and enforces who may read and write a
+team's rows, but nothing creates a team's rows yet.** Team officers, team
+tasks and team hosts each arrive with their own release.
 
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
@@ -76,18 +77,42 @@ team owns is visible to no person, its members included.
   its owner is answered exactly as one that names no account. No background
   sweep acts as a team.
 - **Members and roles.** Each member has one role: `viewer`, `operator` or
-  `manager`. A team is never a member of a team. The roles take effect in later
-  versions (watch; type and answer; manage the team's tokens, charters and
-  approvals). Each request reads the person's memberships together with their
-  role, so a change applies from the next request.
-- **Who manages teams.** In this version only an admin does, on
-  **Admin → Teams** (`/admin/teams`). An admin creates a team, naming its first
-  manager, and adds, re-roles and removes members. Being an admin gives no
+  `manager`. A team is never a member of a team. Each request reads the
+  person's memberships together with their role, so a change applies from the
+  next request.
+- **What a role may do with a team's rows.** Postgres decides it, table by
+  table ([schema.md](schema.md#team-access)):
+  - A viewer reads.
+  - An operator writes the shared tables (tasks, asks, queued messages,
+    focus, officer items).
+  - A manager writes the managed ones (host tokens, officer types and
+    charters, plugins and their drafts).
+  - Credentials, connectors, devices, push and agents (until their secrets are
+    split off) are never shared.
+  - A person reaches a team's rows only from the browser or a paired phone.
+    A personal API token, their agents (their own chief included), their
+    mirror hosts and every background job act on their personal rows only. A
+    team-scoped token may come later.
+  - No one moves a row into or out of a team.
+- **Who manages teams.** An admin, on **Admin → Teams** (`/admin/teams`),
+  creates a team, naming its first manager, and adds, re-roles and removes
+  members. A team's **manager** does the same for their own team on
+  `/teams/<id>`: add a person by the email they sign in with, change an
+  existing member's role, remove a member, and read the team's recent
+  activity. Adding by email:
+  - The form's response does not reveal whether the email is registered, and
+    a disabled account is answered like an unregistered one.
+  - A successful add does show the person in the member list on the next
+    page view.
+  - The person is added **without their consent**. Consent-based team
+    invites are an open follow-up. A team always keeps
+  at least one manager there. Anyone else gets the same "no such team" a team
+  that does not exist gets. Being an admin gives no
   membership: an admin who is not a member sees nothing of a team either. Every
-  change writes an `audit_log` row naming the acting admin (`team.create`,
-  `team.member.set`, `team.member.remove`), in the same transaction as the
-  change. The rows are listed under **Recent account activity** on
-  `/admin/users`.
+  change writes an `audit_log` row naming the acting person and the team
+  (`team.create`, `team.member.set`, `team.member.remove`), in the same
+  transaction as the change. The rows are listed under **Recent account
+  activity** on `/admin/users`, and a team's under its managers' page.
 - **Not a user.** A team is not listed on `/admin/users`, and every user action
   there answers 404 for a team's id. An officer's `--escalate-to` refuses a
   team's id for now.

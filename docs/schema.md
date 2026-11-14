@@ -150,6 +150,7 @@ buys only a word.
 | `0120` | A [builtin officer](officers-builtin.md)'s asks and escalation notices, as two JSONB columns on `officer_items` (no new table, so nothing new to own): `asks` — every Attention ask an instance raised on the item (`ask_id`, question, options, status `open`/`answered`/`withdrawn`/`expired`, answer), the item `waiting` while one is open; `notices` — who an escalated item asks (`recipient`, `suppressed` for a shadow officer, `attention_id` set once, conditionally, when muster raises the Attention ask, `settled` once it is answered, dismissed or withdrawn — an answer re-opens the item for the officer), written in the escalating transaction. Partial indexes `officer_items_waiting`, `officer_items_notice_due` and `officer_items_escalation_open`. Rollback: an older image never reads either column; the statements are in the file's header. |
 | `0125` | `agents.runs_on_host`: the mirror host a [host officer](officers-builtin.md#officers-in-the-compose-stack-host-sessions) instance's agent row stands for (`''` for every other row) — a row nothing provisions (the provisioner adapter refuses it, the stopped-agent reaper's predicate excludes it); `agents_runs_on_host_check` gives it no namespace, no Claude account and no worker pool. `officer_host_spawns`: one row per host-spawned Claude Code session muster asked a mirror host to start for an instance of a [host officer](officers-builtin.md#officers-in-the-compose-stack-host-sessions) — `officer`, `instance` (the instance agent name), `host`, and what the host's reply named (`tmux_window`, `agent_session`) or its `refusal`; a window or refusal is recorded once. 🔴 Its `id` is `DEFAULT nextval` of `host_dispatches`' own sequence, because it travels on the wire as a host dispatch id (the window's `@muster-dispatch`, the worktree directory, the branch): sharing the sequence is what keeps it from ever equalling a chief dispatch's. Owned, under forced row-level security, and re-applied by `db.RLSOn`; no `DELETE` grant. Rollback: an older image never reads it; the statements are in the migration's header. |
 | `0126` | [Teams](auth.md#teams), phase 1 of [design/team-sharing.md](design/team-sharing.md): `users.kind` (`person`, every existing row, or `team`), with `users_team_no_login` (a team has no GoTrue subject, no email, role `member`, is never disabled and has a 1–64 character name, unique among teams case-insensitively), and a trigger that refuses any change of `kind`. `team_members` (`team_id`, `user_id`, `role` `viewer` \| `operator` \| `manager`, `added_by`, `added_at`): a trigger checks the team is a team and the member a person. User-keyed, under forced row-level security: a person reads the rows that name them; only the system scope writes. **No owned table's policy changes: nothing is shared.** Rollback: in the file's header. |
+| `0127` | [Team access](#team-access), phase 2a of [design/team-sharing.md](design/team-sharing.md): `muster_team_ids()` (the teams the caller holds at a role, from `muster.teams`); the share-class tables swap `owner_isolation` for four per-command team policies; `owner_fixed` keeps `owner_id` fixed outside the system scope; `audit_log.team_id` (managers read the team's rows), `send_queue.queued_by`, `note_comments.author_id`, `attention_asks.answered_by_user` and `plugin_reply_drafts.decided_by_user` record the acting person, forced by `muster_actor_column` for the application role (an insert naming someone else is overwritten; an update rewriting one is refused). Re-applied by `db.RLSOn`. Rollback: in the file's header. |
 
 To change the schema, add a new numbered file.
 
@@ -187,6 +188,33 @@ row-level security off **from the current binary**:
 The older image's `/muster-migrate` does not know the flag. It says "nothing to
 apply", exits 0, and leaves row-level security on. `--rls-off` and `--rls-on`
 each print the state of every owned table, and fail if any table is wrong.
+
+
+### Team access
+
+Phase 2a (`0127`) puts every owned table in one share class, pinned by
+`TestEveryOwnedTableHasAShareClass`:
+
+- **Personal** (`owner_isolation` only): never shared. This covers
+  credentials, connectors, devices, push, preferences, pins, recents, tags,
+  flows, pages, jobs, pairing requests, host spawns (`host_dispatches`,
+  `officer_host_spawns`), and `agents` until phase 4 splits off
+  its secrets.
+- **Shared:** a member reads at viewer and writes at operator.
+- **Usage** (`officer_llm_usage`, `officer_judgement_sessions`,
+  `chief_turn_usage`): a member reads them and no member writes them; only
+  the owner's recording path or the system scope does.
+- **Managed:** a member reads at viewer or operator and writes at manager.
+  This covers `mirror_tokens`, the officer types, defs and schedules, and the
+  plugin tables.
+
+A share-class table has four policies, one per command (`team_read`,
+`team_insert`, `team_update`, `team_delete`). Each is `owner_id = muster.uid OR owner_id = ANY(the
+caller's teams at that role) OR scope all`. The caller's teams come from
+`muster.teams`, which `internal/db/scope.go` sets on every acquire from the
+principal's memberships, for the browser session and a paired phone only
+(`authz.Principal.TeamScope`; not a personal API token). `owner_id` still defaults to the person, so a row is
+private unless the code names a team.
 
 ## Two properties worth knowing before you change it
 

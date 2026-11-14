@@ -225,6 +225,12 @@ var routeVias = map[authz.Via][]string{
 		"POST /admin/teams",
 		"POST /admin/teams/{id}/members",
 		"POST /admin/teams/{id}/members/{user}/remove",
+		// A team's manager pages (teams_pages.go): requireSession, and
+		// requireOperatorWrite for the writes; the manager check is AFTER the
+		// principal is attached.
+		"GET /teams/{id}",
+		"POST /teams/{id}/members",
+		"POST /teams/{id}/members/{user}/remove",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",

@@ -74,6 +74,9 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /admin/invites': { where: 'signed-in', url: '/admin/invites', ready: '#invite-ttl' },
   'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
   'GET /admin/teams': { where: 'signed-in', url: '/admin/teams', ready: '#team-name' },
+  // A team's own page, for its manager (teams_pages.go; TEAM: a team made for
+  // the measurement on /admin/teams, the signed-in admin its first manager).
+  'GET /teams/{id}': { where: 'signed-in', url: 'TEAM', ready: '#team-members [data-member-role="manager"]' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
@@ -802,6 +805,16 @@ test.describe('signed-in pages in gotrue mode', () => {
     await fp.fill('#claim-password', pw);
     await fp.fill('#claim-password2', pw);
     await Promise.all([fp.waitForURL(landedHome(signedURL)), fp.click('button[type=submit]')]);
+    // A team this admin manages, for its page (the TEAM url): made through the
+    // admin page's own form. The accounts reset in afterAll removes it (a team
+    // is a users row).
+    const teamName = `CLS team ${Date.now().toString(36)}`;
+    await fp.goto(signedURL + '/admin/teams');
+    await fp.fill('#team-name', teamName);
+    await fp.selectOption('#team-manager', { label: email });
+    await Promise.all([fp.waitForURL(signedURL + '/admin/teams'), fp.click('form[action="/admin/teams"] button[type=submit]')]);
+    const teamID = await fp.locator('#admin-teams [data-team-id]', { has: fp.locator('[data-team-name]', { hasText: teamName }) }).getAttribute('data-team-id');
+    expect(teamID, 'the team was made').toMatch(/^\d+$/);
     await first.close();
 
     const bad: string[] = [];
@@ -818,7 +831,8 @@ test.describe('signed-in pages in gotrue mode', () => {
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;
-          const r = await measure(page, signedURL + p.url, p.ready);
+          const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url;
+          const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
         }

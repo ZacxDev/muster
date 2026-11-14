@@ -159,6 +159,7 @@ GET /sw.js
 GET /tasks
 GET /tasks/{id}
 GET /tasks/{id}/attachments/{aid}
+GET /teams/{id}
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
@@ -355,6 +356,8 @@ POST /tasks/{id}/edit
 POST /tasks/{id}/ref-writes/{wid}/dismiss
 POST /tasks/{id}/ref-writes/{wid}/retry
 POST /tasks/{id}/tags
+POST /teams/{id}/members
+POST /teams/{id}/members/{user}/remove
 POST /telemetry/faro
 POST /transcribe
 POST /ui/connector-requests/{id}/approve

@@ -153,11 +153,12 @@ var uiExempt = map[string]exemption{
 
 // apiExempt: the same, for api's hand-written HTML.
 var apiExempt = map[string]exemption{
-	// A person is named on the teams page (personLabel: email, else display
+	// A person is named on the teams pages (personLabel: email, else display
 	// name) the same way renderAdminUsers names a user.
 	"admin.go Server.renderAdminUsers u.DisplayName":                 {3, whyPerson},
 	"admin_teams.go Server.renderAdminTeams m.DisplayName":           {1, whyPerson},
 	"admin_teams.go Server.renderAdminTeams u.DisplayName":           {1, whyPerson},
+	"teams_pages.go Server.renderTeamPage m.DisplayName":             {1, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
 	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
 	"plugin_pairing.go Server.pairSectionHTML p.Label":               {1, "a pairing request's label (the plugin's name to be), not a title"},

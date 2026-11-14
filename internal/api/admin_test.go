@@ -52,6 +52,21 @@ func (m *memAccounts) RemoveTeamMember(context.Context, users.Actor, int64, int6
 	return errMemAccounts
 }
 func (m *memAccounts) ListTeams(context.Context) ([]users.Team, error) { return nil, nil }
+func (m *memAccounts) ReroleTeamMemberAsManager(context.Context, users.Actor, int64, int64, authz.TeamRole) error {
+	return errMemAccounts
+}
+func (m *memAccounts) AddTeamMemberByEmailAsManager(context.Context, users.Actor, int64, string, authz.TeamRole) error {
+	return errMemAccounts
+}
+func (m *memAccounts) RemoveTeamMemberAsManager(context.Context, users.Actor, int64, int64) error {
+	return errMemAccounts
+}
+func (m *memAccounts) TeamMembers(context.Context, int64) ([]users.TeamMember, error) {
+	return nil, nil
+}
+func (m *memAccounts) TeamAudit(context.Context, int64, int) ([]users.AuditEntry, error) {
+	return nil, nil
+}
 func (m *memAccounts) SetRole(context.Context, users.Actor, int64, authz.Role) (users.User, error) {
 	return users.User{}, errMemAccounts
 }

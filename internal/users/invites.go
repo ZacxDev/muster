@@ -94,6 +94,13 @@ type AuditEntry struct {
 
 // auditInsert writes one audit_log row inside tx.
 func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string, detail map[string]any) error {
+	return auditInsertFor(ctx, tx, by, 0, action, object, detail)
+}
+
+// auditInsertFor is auditInsert recording the TEAM acted on (audit_log.team_id,
+// migration 0127). 0 records none. A team's managers read the rows that name
+// it.
+func auditInsertFor(ctx context.Context, tx pgx.Tx, by Actor, owner int64, action, object string, detail map[string]any) error {
 	if detail == nil {
 		detail = map[string]any{}
 	}
@@ -105,8 +112,12 @@ func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string
 	if by.UserID > 0 {
 		uid = by.UserID
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail) VALUES ($1, $2, $3, $4, $5::jsonb)`,
-		uid, string(by.Via), action, object, string(b))
+	var ownerID any
+	if owner > 0 {
+		ownerID = owner
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail, team_id) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		uid, string(by.Via), action, object, string(b), ownerID)
 	return err
 }
 
