@@ -127,6 +127,68 @@ func TestCIRequiresTheIsolationWalkInTheShardPlan(t *testing.T) {
 	}
 }
 
+// TestCIPublishJobsCheckTheirNeedsExplicitly pins the fix for an ancestor-skip
+// trap (PR #655 round 1). A job `if:` with no status function is an implicit
+// `success()`, which checks every ANCESTOR, not only the direct `needs`
+// (actions/runner#491). `main-verdict` is skipped on every non-tag run, and
+// the test jobs are skipped on a tag whose main run vouched for it, so a
+// job downstream of them with an implicit success() is skipped even when
+// publish-gate passed: no images on main, no release on a tag.
+//
+// So: every job with `needs` carries `!cancelled()` in its `if:`, and each
+// publish job names each of its needs as `needs.<x>.result == 'success'`.
+func TestCIPublishJobsCheckTheirNeedsExplicitly(t *testing.T) {
+	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	src := string(b)
+	field := func(lines []string, key string) string {
+		for _, l := range lines {
+			if strings.HasPrefix(l, key+": ") {
+				return strings.TrimPrefix(l, key+": ")
+			}
+		}
+		return ""
+	}
+	var withNeeds int
+	for _, line := range strings.Split(src, "\n") {
+		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") || !strings.HasSuffix(line, ":") || strings.HasPrefix(line, "  #") {
+			continue
+		}
+		job := strings.TrimSuffix(strings.TrimSpace(line), ":")
+		lines := jobLines(src, job)
+		if field(lines, "needs") == "" {
+			continue
+		}
+		withNeeds++
+		if !strings.Contains(field(lines, "if"), "!cancelled()") {
+			t.Errorf("job %q has `needs` but its `if:` has no `!cancelled()`: an implicit success() "+
+				"skips it whenever ANY ancestor was skipped (actions/runner#491)", job)
+		}
+	}
+	// Positive control: the walk must see the jobs this test is about.
+	if withNeeds < 10 {
+		t.Fatalf("positive control FAILED: only %d jobs with `needs` found in %s", withNeeds, path)
+	}
+	for _, job := range []string{"image-muster", "image-claude-code-agent", "image-stt-cohere", "release"} {
+		lines := jobLines(src, job)
+		needs := strings.Trim(field(lines, "needs"), "[]")
+		if needs == "" {
+			t.Errorf("positive control FAILED: job %q has no `needs:` line", job)
+			continue
+		}
+		cond := field(lines, "if")
+		for _, n := range strings.Split(needs, ",") {
+			n = strings.TrimSpace(n)
+			if !strings.Contains(cond, "needs."+n+".result == 'success'") {
+				t.Errorf("job %q needs %q but its `if:` does not require `needs.%s.result == 'success'`", job, n, n)
+			}
+		}
+	}
+}
+
 // jobLines returns the trimmed lines of the two-space-indented `job:` block
 // under `jobs:`; nil if there is none.
 func jobLines(src, job string) []string {
