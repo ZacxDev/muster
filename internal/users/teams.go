@@ -252,6 +252,23 @@ func (s *PGStore) TeamMembers(ctx context.Context, team int64) ([]TeamMember, er
 	})
 }
 
+// TeamNotifyMembers is who a TEAM OFFICER's notification reaches (team
+// sharing phase 3, the minimal fan-out): team's members with role operator or
+// manager, read NOW from team_members — a viewer, someone who has left and a
+// disabled person get nothing — persons only, by id. An id that is not a team
+// has no members, so a personal owner's list is empty. Read under System:
+// team_members and users are self-read, and the caller is a background push
+// naming the team, not a person.
+func (s *PGStore) TeamNotifyMembers(ctx context.Context, team int64) ([]int64, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id FROM team_members m JOIN users u ON u.id = m.user_id
+		WHERE m.team_id = $1 AND m.role IN ('operator', 'manager') AND u.kind = 'person' AND u.disabled_at IS NULL
+		ORDER BY m.user_id`, team)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
 // RemoveTeamMember removes person user from team and records it as by.
 func (s *PGStore) RemoveTeamMember(ctx context.Context, by Actor, team, user int64) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {

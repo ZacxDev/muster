@@ -77,7 +77,7 @@ func (a officerAsker) Raise(ctx context.Context, o officers.Officer, question st
 	case err != nil:
 		return 0, err
 	}
-	s.askFiled(ask)
+	s.officerAskFiled(ask)
 	return ask.ID, nil
 }
 
@@ -277,7 +277,7 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 		}
 		return
 	}
-	s.askFiled(a)
+	s.officerAskFiled(a)
 }
 
 // officerEscalationTail ends every escalation ask: what answering does.

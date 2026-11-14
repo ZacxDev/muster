@@ -211,6 +211,7 @@ func (s *Server) handleTeamOfficerTypePut(w http.ResponseWriter, r *http.Request
 	t, err := s.officerStore.PutTypeReturning(r.Context(), team, builtin.Type{Key: key, Name: strings.TrimSpace(r.FormValue("name")), Charter: r.FormValue("charter")})
 	if err == nil {
 		s.logger.Printf("teams: manager %d put team %d's officer type %s (charter version %d)", authz.MustFrom(r.Context()).UserID, team, t.Key, t.CharterVersion)
+		s.auditTeam(r.Context(), actorOf(r), team, "officer.type.put", "officer_type:"+t.Key, map[string]any{"charter_version": t.CharterVersion})
 	}
 	s.teamOfficerDone(w, r, team, "put team officer type", err)
 }
@@ -223,9 +224,10 @@ func (s *Server) handleTeamOfficerDefPut(w http.ResponseWriter, r *http.Request)
 	// 🔴 escalate_to MAY NAME A TEAM HERE, and only here: this team, or a team
 	// the manager operates (read from their own memberships). An escalation
 	// to a team is ONE ask the team owns, every member sees it and one answers
-	// it (design §4). Every other id must be a person (escalationRecipientsMissing,
-	// the JSON admin API's own check — which never admits a team: a personal
-	// API token carries no team access).
+	// it (design §4). Every other id must be a person: UsersExist, the JSON
+	// admin API's own check, which admits PERSONS only (users.PersonIDs) — so
+	// that API never admits a team (a personal API token carries no team
+	// access). Read in the system scope: users is self-read.
 	var esc, persons []int64
 	scope := authz.MustFrom(r.Context()).TeamScope()
 	for _, f := range strings.FieldsFunc(r.FormValue("escalate_to"), func(c rune) bool { return c == ',' || c == ' ' }) {
@@ -239,7 +241,7 @@ func (s *Server) handleTeamOfficerDefPut(w http.ResponseWriter, r *http.Request)
 			persons = append(persons, u)
 		}
 	}
-	if missing, err := s.escalationRecipientsMissing(r.Context(), persons); err != nil || len(missing) > 0 {
+	if missing, err := s.officerStore.UsersExist(authz.System(r.Context()), persons); err != nil || len(missing) > 0 {
 		s.renderTeamOfficers(w, r, team, authz.TeamManager, http.StatusBadRequest, "Escalate to names someone who is not a person here, or a team you do not operate.")
 		return
 	}
@@ -247,6 +249,8 @@ func (s *Server) handleTeamOfficerDefPut(w http.ResponseWriter, r *http.Request)
 		Mode: r.FormValue("mode"), EscalateTo: esc})
 	if err == nil {
 		s.logger.Printf("teams: manager %d put team %d's officer %s (enabled %v, mode %s)", authz.MustFrom(r.Context()).UserID, team, d.Officer, d.Enabled, d.Mode)
+		s.auditTeam(r.Context(), actorOf(r), team, "officer.def.put", "officer_def:"+d.Officer,
+			map[string]any{"enabled": d.Enabled, "mode": d.Mode, "escalate_to": d.EscalateTo})
 	}
 	s.teamOfficerDone(w, r, team, "put team officer", err)
 }

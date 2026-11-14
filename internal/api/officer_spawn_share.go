@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -95,12 +96,27 @@ func (s *Server) lendHostSpawn(ctx context.Context, id, team int64) (officers.Ho
 	if s.spawnLender == nil {
 		return officers.HostSpawn{}, ErrLendOff
 	}
+	// The team an unlend takes it back from, for the audit row (a row the
+	// principal cannot read is the store's "no such spawn" below).
+	prior, _ := s.spawnLender.HostSpawnByID(ctx, id)
 	h, err := s.spawnLender.LendHostSpawn(ctx, id, team)
-	if err == nil {
-		s.logger.Printf("officers: user %d set host spawn %d's team to %d (via %s)", p.UserID, id, team, p.Via)
+	if err != nil {
+		return h, err
 	}
+	s.logger.Printf("officers: user %d set host spawn %d's team to %d (via %s)", p.UserID, id, team, p.Via)
+	// 🔴 AN audit_log ROW, naming the person and the team (design §4; #668
+	// round 0 choice 12): the team's managers see it on /teams/{id}.
+	action, onTeam := "officer.spawn.share", team
+	if team == 0 {
+		action, onTeam = "officer.spawn.unshare", prior.SharedTeam
+	}
+	s.auditTeam(ctx, users.Actor{UserID: p.UserID, Via: p.Via}, onTeam, action, hostSpawnObject(id),
+		map[string]any{"officer": h.Officer, "instance": h.Instance, "host": h.Host})
 	return h, err
 }
+
+// hostSpawnObject is a host spawn's audit_log object.
+func hostSpawnObject(id int64) string { return "officer_host_spawn:" + strconv.FormatInt(id, 10) }
 
 // --- /officers/spawns ---------------------------------------------------------
 

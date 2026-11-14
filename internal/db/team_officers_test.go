@@ -218,11 +218,12 @@ func TestLeavingOrDroppingToViewerEndsALend(t *testing.T) {
 }
 
 // TestNobodyApprovesTheirOwnTeamDraft: draft_approver refuses (42501, its
-// hint) the TEAM approving a draft it owns — an update to approved, and a
-// draft filed born approved — and a manager approving a team draft they
-// caused (requested_by_user). CONTROLS: another manager approves the team
-// draft the team's officer filed, and a person approves their own personal
-// draft as today.
+// hint) the TEAM approving a draft it owns (an update to approved) and a
+// manager approving a team draft they caused (requested_by_user). A draft
+// FILED approved is NOT this guard's (a standing approval, #668 round 0 D2):
+// the team filing one is admitted. CONTROLS: another manager approves the
+// team draft the team's officer filed, and a person approves their own
+// personal draft as today.
 func TestNobodyApprovesTheirOwnTeamDraft(t *testing.T) {
 	f := newRLSFixture(t, "ms_0129_approver")
 	store := users.NewPG(f.pool)
@@ -259,7 +260,9 @@ func TestNobodyApprovesTheirOwnTeamDraft(t *testing.T) {
 	isApprover("the team approving its own officer's draft", err)
 	_, err = rolledBack(asTeam, f, `INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at, status, decided_at, approved_at)
 		SELECT message_id, agent_id, agent_name, 'born approved', expires_at, 'approved', now(), now() FROM plugin_reply_drafts WHERE id = $1`, draft)
-	isApprover("the team filing a draft born approved", err)
+	if err != nil {
+		t.Errorf("the team filing a draft already approved (a standing approval, not a decision): %v; want it admitted", err)
+	}
 	// A manager who CAUSED the draft (set by the login role, as a person's
 	// routed session would have stamped it).
 	mustExec(f.mig, t, f.pool, `UPDATE plugin_reply_drafts SET requested_by_user = $2 WHERE id = $1`, draft, m2)

@@ -871,9 +871,10 @@ rule the later phases' rows will meet.
 >   - `plugin_reply_drafts.requested_by_user` is stamped by
 >     `muster_actor_column`: the person, or the team for a team officer's
 >     draft.
->   - `draft_approver` (a trigger) refuses a team approving a draft it owns,
->     including one filed born approved. It also refuses a person approving a
->     team's draft they caused.
+>   - `draft_approver` (a trigger, on a decision: an update) refuses a team
+>     approving a draft it owns, and a person approving a team's draft they
+>     caused. A draft FILED approved is a standing approval (a route's
+>     allowlist) and is not refused (#668 round 0, D2).
 >   - `decideDraftAs` refuses first (`draftDeciderRefusal`): the team
 >     itself; a member below manager; and the requester, for an approval. A
 >     door without the person's teams (token, agent, mirror host) is "not a
@@ -899,8 +900,20 @@ rule the later phases' rows will meet.
 >     drop to viewer.
 >   - A team-owned spawn (a team officer's) is not lendable. It is visible
 >     only to the team acting principal until 2b.
-> - **Not done here:** an `audit_log` row for a lend or a charter edit (both
->   are logged).
+> - **Audit rows** (#668 round 0, choice 12): sharing and unsharing a spawn
+>   (`officer.spawn.share` / `.unshare`) and a team charter edit
+>   (`officer.type.put`, `officer.def.put`) each write an `audit_log` row
+>   naming the person and the team (`team_id`), read by its managers. The row
+>   is written after the change, not in its transaction; a failed write is
+>   logged.
+> - **The minimal team fan-out** (#668 round 0, Q1, operator decision): a
+>   team officer's asks, its escalations to the team and its outbound drafts
+>   push to the team's current operators and managers, read from
+>   `team_members` at send time (`users.PGStore.TeamNotifyMembers`). Viewers,
+>   people who have left and disabled people get nothing; a personal item is
+>   unchanged. Everything else is 2b's: other team-owned pushes, withdrawing
+>   these from members' devices once answered or decided, the per-member
+>   `notify` switch and team-labelled titles.
 
 ### Phase 4: team tasks and a team chief
 

@@ -225,7 +225,7 @@ func (s *Server) handleOfficerDefPut(w http.ResponseWriter, r *http.Request) {
 	// would be an escalation nobody can ever receive. Read in the system
 	// scope — users is self-read under row-level security — and answering
 	// only which of the caller's own ids are missing.
-	if missing, err := s.escalationRecipientsMissing(r.Context(), in.EscalateTo); err != nil {
+	if missing, err := s.officerStore.UsersExist(authz.System(r.Context()), in.EscalateTo); err != nil {
 		s.adminStoreErr(w, "officer", err)
 		return
 	} else if len(missing) > 0 {
@@ -239,15 +239,6 @@ func (s *Server) handleOfficerDefPut(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Printf("officers: user %d put officer %s (enabled %v, mode %s)", adminOwner(r), d.Officer, d.Enabled, d.Mode)
 	s.writeJSON(w, http.StatusOK, s.defView(d))
-}
-
-// escalationRecipientsMissing is which of ids name no user: an officer's
-// escalate_to (a person or a TEAM, team sharing phase 3) must name users
-// muster can ask. Read in the system scope — users is self-read under
-// row-level security — and answering only which of the caller's own ids are
-// missing. THE ONE check, for the JSON admin API and a team's officers page.
-func (s *Server) escalationRecipientsMissing(ctx context.Context, ids []int64) ([]int64, error) {
-	return s.officerStore.UsersExist(authz.System(ctx), ids)
 }
 
 func (s *Server) handleOfficerDefDelete(w http.ResponseWriter, r *http.Request) {

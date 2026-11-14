@@ -137,6 +137,12 @@ with their own release.
   - A team officer's question to its owner, and an escalation to a team, is
     **one** ask the team owns. Every member sees it, an operator answers it,
     and the answer records who did.
+  - Its asks, escalations and outbound drafts push to the team's current
+    operators and managers (not viewers). Other team notifications come
+    with team hosts.
+  - Sharing a spawn, taking it back, and editing a team officer's type or
+    definition each write an audit row naming the person and the team, which
+    the team's managers read on `/teams/<id>`.
   - A team is named as an escalation target only on that officers page, and
     only the page's own team or a team the manager operates. The JSON admin
     API's `--escalate-to` still refuses a team's id.

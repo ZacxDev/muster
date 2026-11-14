@@ -11,17 +11,22 @@
 --       officer's draft, the team itself), forced by muster_actor_column as
 --       0127's queued_by is: never written by hand.
 --
---   muster_draft_approver (BEFORE INSERT OR UPDATE on plugin_reply_drafts)
+--   muster_draft_approver (BEFORE UPDATE on plugin_reply_drafts)
 --       🔴 NOBODY APPROVES THEIR OWN TEAM DRAFT. For the application role
 --       outside the system scope:
 --         - a TEAM never approves a draft it owns, by an update that moves it
---           to approved OR by filing it born approved: the team acting
---           principal is a team officer's instance (or the team chief) acting
---           as the team, and its drafts are its MANAGERS' to approve;
+--           to approved: the team acting principal is a team officer's
+--           instance (or the team chief) acting as the team, and its drafts
+--           are its MANAGERS' to approve;
 --         - a person never approves a draft owned by SOMEONE ELSE (a team)
 --           that they caused (requested_by_user = them).
 --       A personal draft (owner = the approving person) is unchanged: the
 --       owner's own sessions are the owner (operator decision, #649).
+--       ONLY A DECISION (an UPDATE) is held to it. A draft FILED approved is
+--       a standing approval its owner set (a route's sender allowlist,
+--       plugins.RelayRoute), not the filer approving itself — round 0 of #668
+--       (D2): a team route relayed as the team under a manager's allowlist
+--       must not be refused here.
 --       Refused 42501 with HINT 'muster:draft-approver', which internal/api
 --       maps to its refusal text.
 --
@@ -79,7 +84,7 @@ DECLARE
 BEGIN
     IF current_user <> 'muster_app' OR current_setting('muster.scope', true) IS NOT DISTINCT FROM 'all'
        OR NEW.status IS DISTINCT FROM 'approved'
-       OR (TG_OP = 'UPDATE' AND OLD.status IS NOT DISTINCT FROM 'approved') THEN
+       OR OLD.status IS NOT DISTINCT FROM 'approved' THEN
         RETURN NEW;
     END IF;
     -- users is self_read: the actor reads its OWN row, so a team acting as
@@ -88,7 +93,7 @@ BEGIN
         RAISE EXCEPTION 'draft %: a team never approves its own draft; one of its managers does', NEW.id
             USING ERRCODE = 'insufficient_privilege', HINT = 'muster:draft-approver';
     END IF;
-    IF TG_OP = 'UPDATE' AND NEW.owner_id IS DISTINCT FROM actor AND NEW.requested_by_user = actor THEN
+    IF NEW.owner_id IS DISTINCT FROM actor AND NEW.requested_by_user = actor THEN
         RAISE EXCEPTION 'draft %: you caused it, so another manager of its team approves it', NEW.id
             USING ERRCODE = 'insufficient_privilege', HINT = 'muster:draft-approver';
     END IF;
@@ -96,7 +101,7 @@ BEGIN
 END
 $$;
 DROP TRIGGER IF EXISTS draft_approver ON public.plugin_reply_drafts;
-CREATE TRIGGER draft_approver BEFORE INSERT OR UPDATE ON public.plugin_reply_drafts
+CREATE TRIGGER draft_approver BEFORE UPDATE ON public.plugin_reply_drafts
     FOR EACH ROW EXECUTE FUNCTION public.muster_draft_approver();
 
 -- ---------------------------------------------------------------------------

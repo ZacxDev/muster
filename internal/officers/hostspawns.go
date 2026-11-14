@@ -222,6 +222,9 @@ type HostSpawnLender interface {
 	// principal's OWN has that id (a row only lent to them included);
 	// ErrLendRefused when the database refuses the team.
 	LendHostSpawn(ctx context.Context, id, team int64) (HostSpawn, error)
+	// HostSpawnByID is row id, as the principal reads it (the team a lend is
+	// taken back from, for its audit row).
+	HostSpawnByID(ctx context.Context, id int64) (HostSpawn, error)
 }
 
 var _ HostSpawnLender = (*PGHostSpawnStore)(nil)
