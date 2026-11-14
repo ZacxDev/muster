@@ -670,7 +670,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// A reply draft is screened with the browser-flow agent screen's list of
 		// the deployment's own names (MUSTER_FLOW_AGENT_DENY_WORDS): the same
 		// "agent text bound for an outside party" (internal/plugins/drafts.go).
-		pluginStore := plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
+		pluginStore := plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords).WithOutboundPublicLinks(cfg.OutboundPublicLinks)
 		ext.Plugins = pluginStore
 		// Session routing (MUSTER_SESSION_ROUTING=1): the same store's routes
 		// half, and the allowlist whose routed answers relay without approval.
@@ -1982,6 +1982,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"the GENERIC patterns only (addresses, host names, token shapes) and NOT for this deployment's own "+
 			"cluster/host/project names. Set it to a comma-separated list. The owner's approval on /flows is "+
 			"still required for every run", envFlowAgentDenyWords)
+	}
+	// Officers' outbound drafts: which links may spell a deployment name.
+	if n := len(a.cfg.OutboundPublicLinks); n > 0 {
+		l.Printf("outbound public links: ON — %d link(s) from %s may appear in an officer's outbound draft even when "+
+			"they spell a deployment name, beside each officer's standing-read repositories", n, envOutboundPublicLinks)
+	} else {
+		l.Printf("outbound public links: OFF — %s is unset, so only each officer's standing-read repositories "+
+			"(github.com/<owner>/<repo>) are exempt from the deployment-name screen in its outbound drafts", envOutboundPublicLinks)
 	}
 	a.logMemoRelayBanner(ext)
 	a.logSTTBanner(ext)

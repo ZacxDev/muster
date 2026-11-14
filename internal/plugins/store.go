@@ -166,6 +166,9 @@ type PGStore struct {
 	// denyWords are the deployment's own names a reply draft may not carry
 	// (WithAgentDenyWords; drafts.go).
 	denyWords []string
+	// outboundLinks are the operator's extra public links an officer's
+	// outbound draft may carry (WithOutboundPublicLinks; outbound.go).
+	outboundLinks []string
 	// officers is the builtin officer store a bound plugin delivers to
 	// (WithOfficerLink; outbound.go). nil: bindings and their messages are
 	// refused.
