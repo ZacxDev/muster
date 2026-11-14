@@ -273,7 +273,15 @@ func chatIndexScript() g.Node {
     if (item) { jump(item.getAttribute('data-chat-index-item')); return; }
     if (t.closest('[data-chat-index-close]')) close();
   });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  // Escape closes the sheet — unless a menu inside it is open (the chief's
+  // Chats rows' ⋯, a popover): that Escape is the menu's, which the browser
+  // closes, and the sheet stays.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var s = sheet();
+    try { if (s && s.querySelector(':popover-open')) return; } catch (err) {}
+    close();
+  });
   // The host's index arrived (or a Reset dropped it) while the sheet is open.
   document.addEventListener('muster:chat-index', function () { var s = sheet(); if (s && !s.hidden) build(); });
 

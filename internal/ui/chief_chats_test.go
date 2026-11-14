@@ -274,11 +274,14 @@ func TestTheChatsTabListsSwitchesAndManagesChats(t *testing.T) {
 		}
 		// The row menus: none on the primary; Make primary and Archive on side
 		// chat 6, Archive alone on side chat 8 (no default path), Unarchive on 7.
+		// Each names the open chat (?current=), so acting on another chat
+		// leaves the operator on theirs.
+		cur := "?current=" + strconv.FormatInt(c.bar.SessionID, 10)
 		menus := map[string][]string{
 			"5": nil,
-			"6": {`hx-post="/agents/42/sessions/6/default" hx-swap="none"`, `hx-post="/agents/42/sessions/6/archive" hx-swap="none"`},
-			"8": {`hx-post="/agents/42/sessions/8/archive" hx-swap="none"`},
-			"7": {`hx-post="/agents/42/sessions/7/unarchive" hx-swap="none"`},
+			"6": {`hx-post="/agents/42/sessions/6/default` + cur + `" hx-swap="none"`, `hx-post="/agents/42/sessions/6/archive` + cur + `" hx-swap="none"`},
+			"8": {`hx-post="/agents/42/sessions/8/archive` + cur + `" hx-swap="none"`},
+			"7": {`hx-post="/agents/42/sessions/7/unarchive` + cur + `" hx-swap="none"`},
 		}
 		for sid, want := range menus {
 			m := regexp.MustCompile(`(?s)<div id="chief-chat-menu-` + sid + `".*?</div>`).FindString(html)
@@ -404,6 +407,21 @@ func TestTheChiefSwitcherListsThePrimaryFirstWithUnreadDots(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("panel list", b.String())
+}
+
+// TestEscapeOnARowMenuClosesOnlyTheMenu: the sheet's Escape handler steps aside
+// while a popover inside the sheet (a Chats row's ⋯ menu) is open — the browser
+// closes that menu, and the sheet stays. e2e chief-mobile drives the keys.
+func TestEscapeOnARowMenuClosesOnlyTheMenu(t *testing.T) {
+	js := renderString(t, chatIndexScript())
+	for _, want := range []string{
+		`if (e.key !== 'Escape') return;`,
+		`if (s && s.querySelector(':popover-open')) return;`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("chatIndexScript lacks %q", want)
+		}
+	}
 }
 
 // TestTheChiefContextChipTints: the chief's chip is #601's contextView — model

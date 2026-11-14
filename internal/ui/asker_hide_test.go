@@ -60,6 +60,9 @@ func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
 		// refresh — re-applies it to the block and the button's aria-expanded.
 		`closest('[data-asks-fold]')) { folded = !folded; fit(); return; }`,
 		`block.setAttribute('data-asks-folded', '')`, `f.setAttribute('aria-expanded', on ? 'false' : 'true')`,
+		// …and a new question (more items than the last refresh), or no fold
+		// control at all (one question), unfolds it.
+		`if (!f || n > lastN) folded = false;`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)

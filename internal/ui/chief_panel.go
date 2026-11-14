@@ -654,6 +654,13 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 	}
 	rows := make([]g.Node, 0, len(v.Threads)+1)
 	archivedShown := false
+	// The thread the panel is on: a row's Make primary keeps the panel on it.
+	var current int64
+	for _, sess := range v.Threads {
+		if sess.Active {
+			current = sess.ID
+		}
+	}
 	for _, sess := range v.Threads {
 		// The archived chats come last (agents.SwitcherOrder), under their heading.
 		if sess.Archived && !archivedShown {
@@ -698,7 +705,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		)
 		// "Make default" sits BESIDE the row, never inside it: a form in a button is
 		// not valid HTML, and a tap meant to open the thread must not move the default.
-		if mk := makeDefaultControl(sess); mk != nil {
+		if mk := makeDefaultControl(sess, current); mk != nil {
 			rows = append(rows, Div(Class("flex items-stretch gap-1"), row, mk))
 		} else {
 			rows = append(rows, row)

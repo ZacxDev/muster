@@ -210,56 +210,99 @@ func TestATurnStartedElsewhereDrawsWorkingOnAnOpenChat(t *testing.T) {
 // TestTheMachineDoorSaysChatReplyOnceTheReplyIsStored: POST
 // /api/agents/{name}/messages stores the turn's reply AFTER the turn's own end
 // (chat.turn) is broadcast, so an open chat that refetched on chat.turn drew no
-// reply. The door now broadcasts chat.reply to the agent's owner once the reply
+// reply. The door now broadcasts chat.reply to the AGENT'S OWNER once the reply
 // is stored — and a render on that event shows the reply. Red before the fix:
 // the door published no chat.reply at all (an open chief page hid the race only
 // because its in-pane context chip re-dispatched every chat event, refetching
 // the transcript a second time).
+//
+// 🔴 THE CALLER IS NOT THE OWNER, SO THE SCOPE IS VISIBLE: the agent is owned
+// by a SECOND user, the handler runs under a system-scoped principal (see the
+// call below for why not the route), and both that user and the operator
+// (user 1) are subscribed. The owner must get chat.reply and the operator must
+// not. Mutation-checked: a CALLER-scoped broadcast (broadcast(dctx)) fails
+// "never said chat.reply to the agent's OWNER"; one that also tells user 1
+// fails the operator check.
 func TestTheMachineDoorSaysChatReplyOnceTheReplyIsStored(t *testing.T) {
 	gw := newHeldGateway("the stored answer")
 	f := newConnFixtureWith(t, func(ext *Extensions, _ *pgxpool.Pool) { ext.Gateway = gw })
 	bus := sse.New(512)
 	f.srv.bus = bus
-	_, stream := bus.Subscribe(1)
+	sys := authz.System(context.Background())
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
-	chief, err := agents.NewPG(f.pool).Create(asUser(1), agents.Agent{Name: "replychief-" + stamp, Namespace: "devpod-replychief-" + stamp,
+	var owner int64
+	if err := f.pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`,
+		"replyowner-"+stamp).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(sys, `DELETE FROM agents WHERE owner_id = $1`, owner)
+		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, owner)
+	})
+	_, stream := bus.Subscribe(owner)
+	_, operatorStream := bus.Subscribe(1)
+	chief, err := agents.NewPG(f.pool).Create(asUser(owner), agents.Agent{Name: "replychief-" + stamp, Namespace: "devpod-replychief-" + stamp,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "reply-chief-token-" + stamp})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, chief.ID)
-	})
-	primary, err := f.srv.primarySession(asUser(1), chief)
+	if chief.OwnerID != owner {
+		t.Fatalf("control: the agent is owned by %d, want the second user %d", chief.OwnerID, owner)
+	}
+	primary, err := f.srv.primarySession(asUser(owner), chief)
 	if err != nil {
 		t.Fatal(err)
 	}
 	logPath := "/ui/agents/" + chief.Name + "/chat-log?session=" + strconv.FormatInt(primary.ID, 10)
 	close(gw.release)
+	// ⚠ THE HANDLER, NOT THE ROUTE: through the route the caller cannot differ
+	// from the owner — the shared machine token acts as user 1, a personal token
+	// as its own user, and the agent is read under that principal (row-level
+	// security), so another user's agent is a 404 (measured: "no agent by that
+	// name"). A SYSTEM-scoped principal is the one caller that reaches another
+	// user's agent, and under it the caller-scoped broadcast's owner is 0
+	// ("nobody", requestOwner) — which is what makes the owner binding visible.
 	r := httptest.NewRequest(http.MethodPost, "/api/agents/"+chief.Name+"/messages", strings.NewReader(`{"message":"is it stored"}`))
-	r.Header.Set("Authorization", "Bearer "+connTestHookToken)
 	r.Header.Set("Content-Type", "application/json")
+	r.SetPathValue("name", chief.Name)
+	r = r.WithContext(authz.System(r.Context()))
 	w := httptest.NewRecorder()
-	f.h.ServeHTTP(w, r)
+	f.srv.handleAPIAgentSendMessage(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("chief ask answered %d: %s", w.Code, w.Body.String())
 	}
 	want, _ := json.Marshal(map[string]any{"id": chief.Name})
+	isReply := func(ev sse.Event) bool { return ev.Name == EventChatReply && ev.Data == string(want) }
 	deadline := time.After(5 * time.Second)
-	for {
+	for got := false; !got; {
 		select {
 		case ev := <-stream:
-			if ev.Name != EventChatReply || ev.Data != string(want) {
+			if !isReply(ev) {
 				continue
 			}
-			// What an open chat draws on that event: the reply.
-			lw := f.call(t, http.MethodGet, logPath, nil, f.operator())
-			if lw.Code != http.StatusOK || !strings.Contains(lw.Body.String(), "the stored answer") {
-				t.Fatalf("on chat.reply the chat draws %d without the reply:\n%.400s", lw.Code, lw.Body.String())
+			got = true
+			// What an open chat of the owner's reads on that event: the reply is
+			// already stored.
+			var n int
+			if err := f.pool.QueryRow(sys, `SELECT count(*) FROM chat_messages WHERE session_id = $1 AND role = 'assistant' AND content = $2`,
+				primary.ID, "the stored answer").Scan(&n); err != nil || n != 1 {
+				t.Fatalf("on chat.reply the reply is not stored (%d rows, %v); %s would draw without it", n, err, logPath)
 			}
-			return
 		case <-deadline:
-			t.Fatal("the machine door stored its reply and never said chat.reply to the agent's owner")
+			t.Fatal("the machine door stored its reply and never said chat.reply to the agent's OWNER")
+		}
+	}
+	// The operator (user 1) is not the owner: nothing of this agent's
+	// chat.reply reaches them. Everything was published before the owner's
+	// event arrived, so a drain sees it all.
+	for {
+		select {
+		case ev := <-operatorStream:
+			if isReply(ev) {
+				t.Fatal("the operator (user 1, not the owner) was told chat.reply for another user's agent")
+			}
+		default:
+			return
 		}
 	}
 }

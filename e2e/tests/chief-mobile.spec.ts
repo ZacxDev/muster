@@ -46,6 +46,14 @@ const FAILOVER = 'from alpha · rate_limited · resets Nov 6 22:00 UTC';
 
 const go = (pkg: string, ...args: string[]) =>
   execFileSync('go', ['run', pkg, ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+// appendToLatest stores one owner line in agent name's latest chat
+// (e2e/mkchat's MUSTER_E2E_APPEND).
+const appendToLatest = (name: string, text: string) =>
+  execFileSync('go', ['run', './e2e/mkchat'], {
+    cwd: repoRoot,
+    env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: name, MUSTER_E2E_APPEND: '1' },
+    input: JSON.stringify([{ role: 'user', content: text }]),
+  });
 
 const question = (i: number) =>
   `Question ${i + 1}: the nightly fleet check flagged node gpu-${i}-a as not ready and marked it as a control-plane node, ` +
@@ -428,6 +436,34 @@ for (const vp of [
       await expect(fold).toHaveAttribute('aria-expanded', 'true');
       await expect(page.locator('#asker-asks [data-attention-item]').first()).toBeVisible();
       await noSideScroll(page);
+
+      // The fold across the block's live refreshes (the same partial its
+      // attention_queue.changed refresh swaps in): the same questions keep it
+      // folded; a NEW question unfolds it, so the fold never hides it.
+      const items = page.locator('#asker-asks [data-attention-item]');
+      const refresh = () => page.evaluate(() => (window as any).htmx.ajax('GET',
+        document.getElementById('asker-asks')!.getAttribute('data-src'), { target: '#asker-asks', swap: 'innerHTML' }));
+      await fold.click();
+      await expect(fold).toHaveAttribute('aria-expanded', 'false');
+      await refresh();
+      await expect(items).toHaveCount(3);
+      await expect(fold, 'the same questions: still folded').toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('#asker-asks')).toHaveAttribute('data-asks-folded', '');
+      setChiefAsks(4);
+      await refresh();
+      await expect(items).toHaveCount(4);
+      await expect(fold).toHaveText('4 questions waiting');
+      await expect(fold, 'a new question unfolds the block').toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('#asker-asks')).not.toHaveAttribute('data-asks-folded', '');
+      await expect(items.first()).toBeVisible();
+      // Folded, then down to one (no fold control) and back up: not folded.
+      await fold.click();
+      await expect(fold).toHaveAttribute('aria-expanded', 'false');
+      setChiefAsks(1);
+      await refresh();
+      await expect(items).toHaveCount(1);
+      await expect(page.locator('#asker-asks')).not.toHaveAttribute('data-asks-folded', '');
+      await expect(items.first()).toBeVisible();
     });
   });
 }
@@ -469,53 +505,84 @@ for (const vp of [
       await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'Focus history']);
       await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
       await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
-      // Fresh primary keeps its confirm: dismissed, nothing happens.
+      // Fresh primary keeps its confirm: the confirm is asked, and dismissed,
+      // nothing happens.
       const here0 = page.url();
-      page.once('dialog', (d) => d.dismiss());
+      const asked: string[] = [];
+      page.once('dialog', (d) => { asked.push(d.type()); void d.dismiss(); });
       await chats.getByRole('button', { name: 'Fresh primary' }).click();
+      await expect.poll(() => asked, { message: 'Fresh primary asks its confirm' }).toEqual(['confirm']);
       await page.waitForTimeout(300);
       expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here0);
       await noSideScroll(page);
 
-      // Create a side chat.
+      // Create side chat A, then give it a line so the next New side chat is
+      // a new chat (an empty newest side chat is reused).
       await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
       await page.waitForURL((u) => u.toString() !== here0);
-      const side = sessionOf(page.url())!;
+      const sideA = sessionOf(page.url())!;
       await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
+      appendToLatest(CHIEF, `side A's line (${vp.name})`);
+      await page.reload();
+      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
       await open();
       await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'no Fresh primary off the primary').toHaveCount(0);
-      const sideRow = chats.locator(`[data-chief-chat-row="${side}"]`);
-      await expect(sideRow).toHaveAttribute('aria-current', 'page');
-      await expect(sideRow.locator('[data-chief-chat-current]')).toHaveText('Current');
+      const rowA = chats.locator(`[data-chief-chat-row="${sideA}"]`);
+      await expect(rowA).toHaveAttribute('aria-current', 'page');
+      await expect(rowA.locator('[data-chief-chat-current]')).toHaveText('Current');
 
-      // Switch to the primary: its row, first, with its badge.
-      const primaryRow = chats.locator('[data-chief-chat-row]').first();
-      await expect(primaryRow).toContainText('Primary');
-      await primaryRow.click();
-      await page.waitForURL((u) => sessionOf(u.toString()) !== side);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+      // Create side chat B.
+      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
+      await page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
+      const sideB = sessionOf(page.url())!;
+      expect(sideB, 'B is a new chat').not.toBe(sideA);
 
-      // Archive the side chat from its row's ⋯ menu: it moves into the
-      // collapsed Archived group, and the page is on the primary.
+      // Switch to A from its row.
+      await open();
+      await chats.locator(`[data-chief-chat-row="${sideA}"]`).click();
+      await page.waitForURL((u) => sessionOf(u.toString()) === sideA);
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
+
+      // Escape: the open ⋯ menu closes, the sheet stays; again: the sheet goes.
+      await open();
+      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
+      const menuB = page.locator(`#chief-chat-menu-${sideB}`);
+      await expect(menuB).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(menuB).toBeHidden();
+      await expect(sheet, 'Escape on the menu leaves the sheet open').toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+
+      // ON A, archive B from its row's ⋯ menu: B moves into the collapsed
+      // Archived group, and the page STAYS ON A (it used to jump to the primary).
       await open();
       const archivedBefore = await chats.locator('[data-chief-archived] [data-chief-chat-row]').count();
-      await chats.locator(`button[popovertarget="chief-chat-menu-${side}"]`).click();
-      const menu = page.locator(`#chief-chat-menu-${side}`);
-      await expect(menu).toBeVisible();
-      // The answer is HX-Redirect to the primary — this page — so htmx loads it
-      // again.
+      await chats.locator(`button[popovertarget="chief-chat-menu-${sideB}"]`).click();
+      await expect(menuB).toBeVisible();
+      // The answer is HX-Redirect to A — this page — so htmx loads it again.
       const reloaded = page.waitForEvent('load');
-      await menu.getByRole('menuitem', { name: 'Archive' }).click();
+      await menuB.getByRole('menuitem', { name: 'Archive' }).click();
       await reloaded;
-      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${side}"]`)).toHaveCount(1);
-      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+      expect(sessionOf(page.url()), 'archiving another chat stays on the open one').toBe(sideA);
+      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${sideB}"]`)).toHaveCount(1);
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
+      await expect(page.locator('#chat-log')).toContainText(`side A's line (${vp.name})`);
       await open();
       const group = chats.locator('[data-chief-archived]');
       await expect(group).not.toHaveAttribute('open', '');
-      await expect(chats.locator(`[data-chief-chat-row="${side}"]`)).toBeHidden();
+      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeHidden();
       await group.locator('summary').click();
-      await expect(chats.locator(`[data-chief-chat-row="${side}"]`)).toBeVisible();
+      await expect(chats.locator(`[data-chief-chat-row="${sideB}"]`)).toBeVisible();
       expect(await chats.locator('[data-chief-archived] [data-chief-chat-row]').count()).toBe(archivedBefore + 1);
+
+      // Archiving the OPEN chat (A, from its own row) lands on the primary.
+      await chats.locator(`button[popovertarget="chief-chat-menu-${sideA}"]`).click();
+      const toPrimary = page.waitForURL((u) => sessionOf(u.toString()) !== sideA);
+      await page.locator(`#chief-chat-menu-${sideA}`).getByRole('menuitem', { name: 'Archive' }).click();
+      await toPrimary;
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await open();
 
       // The other two tabs are the mirrored session's.
       await sheet.locator('[role="tab"][data-tab="messages"]').click();

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/url"
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -97,6 +98,20 @@ func ChiefArchivePath(agentID, sid int64, archived bool) string {
 	return agentSessionsPath(agentID) + "/" + strconv.FormatInt(sid, 10) + verb
 }
 
+// ChiefCurrentParam names the chat the operator is ON when a row's action
+// (archive, unarchive, make primary) acts on another one: the answer leaves
+// them on it (internal/api stayOnCurrent) instead of moving them.
+const ChiefCurrentParam = "current"
+
+// withCurrent is path with the open chat cur as ChiefCurrentParam.
+func withCurrent(path string, cur int64) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + ChiefCurrentParam + "=" + strconv.FormatInt(cur, 10)
+}
+
 // ChiefContextPath is the context chip's partial for chat sid of agent name.
 func ChiefContextPath(name string, sid int64) string {
 	return "/ui/agents/" + url.PathEscape(name) + "/chat-context?session=" + strconv.FormatInt(sid, 10)
@@ -174,7 +189,7 @@ func chiefChatsPanel(v AgentDetailView) g.Node {
 	kind, _ := chiefChatKind(*b)
 	var live, archived []g.Node
 	for _, sess := range v.Sessions {
-		row := chiefChatRow(v.Name, b.AgentID, sess)
+		row := chiefChatRow(v.Name, b.AgentID, b.SessionID, sess)
 		// The chat on screen is never hidden in the collapsed group, archived
 		// or not (chiefChatViews lists an open archived chat with the side ones).
 		if sess.Archived && !sess.Active {
@@ -216,7 +231,7 @@ func chiefChatsPanel(v AgentDetailView) g.Node {
 // on screen, with the Primary badge and the unread dot — and, when the chat has
 // any, its ⋯ menu BESIDE the link, never inside it: a form in a link is not
 // valid HTML, and a tap meant to open the chat must not archive it.
-func chiefChatRow(name string, agentID int64, sess SessionView) g.Node {
+func chiefChatRow(name string, agentID, current int64, sess SessionView) g.Node {
 	title := textplain.Title(sess.Title)
 	if title == "" {
 		title = "New chat"
@@ -241,7 +256,7 @@ func chiefChatRow(name string, agentID int64, sess SessionView) g.Node {
 				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 			),
 		),
-		chiefChatRowMenu(agentID, sess),
+		chiefChatRowMenu(agentID, current, sess),
 	)
 }
 
@@ -252,14 +267,16 @@ func chiefChatRow(name string, agentID int64, sess SessionView) g.Node {
 // A popover in the top layer, placed by floatingMenuScript, so the sheet's
 // scrolling list never clips it. Its actions answer HX-Redirect (the page
 // surface), which htmx follows.
-func chiefChatRowMenu(agentID int64, sess SessionView) g.Node {
+func chiefChatRowMenu(agentID, current int64, sess SessionView) g.Node {
 	if sess.IsDefault {
 		return nil
 	}
 	id := "chief-chat-menu-" + strconv.FormatInt(sess.ID, 10)
+	// Every action names the chat on screen (ChiefCurrentParam), so acting on
+	// another chat leaves the operator where they are.
 	action := func(path, attr, label string) g.Node {
 		return Form(
-			hx("hx-post", path),
+			hx("hx-post", withCurrent(path, current)),
 			hx("hx-swap", "none"),
 			Class("contents"),
 			Button(Type("submit"), g.Attr(attr, ""), g.Attr("role", "menuitem"),

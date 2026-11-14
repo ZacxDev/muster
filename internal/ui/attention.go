@@ -458,11 +458,16 @@ func askerAsksHideScript() g.Node {
   // ONE AT A TIME, CLAMPED: whether "Show N more" was used, and which cards'
   // text is open (by the card's id) — both outlive a refresh of the content.
   var all = false, opened = {};
-  // The heading's fold (AskerAsksHeading): kept across refreshes; a block
-  // whose heading has no fold (one question) is never folded.
-  var folded = false;
+  // The heading's fold (AskerAsksHeading): kept across refreshes — but a NEW
+  // question unfolds it (more items than the last refresh had), and a block
+  // whose heading has no fold (one question) forgets it, so a fold never hides
+  // a question that arrived after it.
+  var folded = false, lastN = 0;
   function fold() {
     var f = block.querySelector('[data-asks-fold]');
+    var n = block.querySelectorAll('[data-attention-item]').length;
+    if (!f || n > lastN) folded = false;
+    lastN = n;
     var on = folded && !!f;
     if (on) block.setAttribute('data-asks-folded', ''); else block.removeAttribute('data-asks-folded');
     if (f) f.setAttribute('aria-expanded', on ? 'false' : 'true');
