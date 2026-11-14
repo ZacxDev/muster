@@ -31,6 +31,9 @@ func TestNormalizeNameEdges(t *testing.T) {
 		{"Team‮elpmaxE", "", ErrNameControl},
 		{"Team⁦x⁩", "", ErrNameControl},
 		{"Team؜Example", "", ErrNameControl},
+		{"Team\u200bExample", "", ErrNameControl},
+		{"Team\u200eExample", "", ErrNameControl},
+		{"Team\ufeffExample", "", ErrNameControl},
 		{"Team\xffExample", "", ErrNameInvalid},
 	}
 	for _, c := range cases {
@@ -44,5 +47,23 @@ func TestNormalizeNameEdges(t *testing.T) {
 		if !errors.Is(err, c.err) {
 			t.Errorf("NormalizeName(%q) err = %v, want %s", c.in, err, c.err.Code)
 		}
+	}
+}
+
+// TestCheckNameTextNamesTheRefusedCharacter: the refusal is ErrNameControl
+// (and a *Error, for the branding route's code) and names the FIRST refused
+// character, so the sentence a person reads says what was refused.
+func TestCheckNameTextNamesTheRefusedCharacter(t *testing.T) {
+	err := CheckNameText("Orla\u202eFinch\x07")
+	var ce *NameCharError
+	var be *Error
+	if !errors.Is(err, ErrNameControl) || !errors.As(err, &ce) || !errors.As(err, &be) || be.Code != "name_control" {
+		t.Fatalf("CheckNameText = %v, want a NameCharError that is ErrNameControl", err)
+	}
+	if ce.Rune != 0x202E || !strings.Contains(err.Error(), "U+202E") {
+		t.Fatalf("names U+%04X (%q), want the first refused character, U+202E", ce.Rune, err.Error())
+	}
+	if err := CheckNameText("Orla Finch 🦊 李"); err != nil {
+		t.Fatalf("an ordinary name: %v", err)
 	}
 }

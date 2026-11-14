@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 )
 
 var (
@@ -371,6 +372,11 @@ func (s *PGStore) RedeemInvite(ctx context.Context, tokenHash []byte, email, dis
 	create func(context.Context) (string, error), undo func(sub string)) (User, error) {
 	ctx = sys(ctx)
 	email, displayName = strings.TrimSpace(email), strings.TrimSpace(displayName)
+	// Refused before the transaction, so a refused name never creates a GoTrue
+	// user (create is not called). A *branding.NameCharError.
+	if err := branding.CheckNameText(displayName); err != nil {
+		return User{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return User{}, err

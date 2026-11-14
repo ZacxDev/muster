@@ -46,6 +46,12 @@ usable. That lets you bind the operator's login before you switch modes.
 - **Invites:** an invite always creates a member. Links last 24, 72 (the
   default) or 168 hours, and carry their token in the URL fragment.
   Invites are managed on `/admin/users`.
+- **Display names:** the name a person gives when they redeem an invite, and
+  a team's name, are refused if they hold a control character (C0, DEL, C1)
+  or a text-direction or invisible formatting character (U+061C,
+  U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF). The form names the
+  character it refused. It is the rule the instance name uses
+  ([branding.md](branding.md)). Names saved before this rule are not changed.
 - **Admin pages:** promote a member, disable or enable a user, send a reset
   link, delete a user's passkeys. The last admin cannot be demoted.
 - **From the command line:** `muster-server user disable|enable <id>` does the
