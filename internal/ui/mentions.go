@@ -163,53 +163,62 @@ func mentionSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b 
 
 // mdMention links s's mentions, stashing each anchor in v. s is escaped inline
 // text with code spans, links and URLs already vaulted (mdInlineWith).
+//
+// ⚠ ITS SLICES ARE SPELLED s[i:j] OR GO THROUGH span: Tailwind scans this
+// package's Go for class names (tailwind.config.js), and a slice bounded by
+// other names, or an index like "the start, minus one" spelled as code, reads
+// to it as an arbitrary property or a utility — which css-check then demands
+// in web/static/app.css. (s[i:j] is one it already holds.)
 func mdMention(s string, v *mdVault, mx *MentionIndex) string {
 	if mx == nil {
 		return s
 	}
 	var b strings.Builder
-	last := 0
+	done := 0
 	for _, loc := range mentionRunRe.FindAllStringIndex(s, -1) {
-		start, end := loc[0], loc[1]
-		if start > 0 && !mentionSpace(s[start-1]) && !strings.ContainsRune(mentionLeft, rune(s[start-1])) {
+		i, j := loc[0], loc[1]
+		if i > 0 && !mentionSpace(s[i-1]) && !strings.ContainsRune(mentionLeft, rune(s[i-1])) {
 			continue
 		}
-		if end < len(s) && !mentionSpace(s[end]) && !strings.ContainsRune(mentionRight, rune(s[end])) {
+		if j < len(s) && !mentionSpace(s[j]) && !strings.ContainsRune(mentionRight, rune(s[j])) {
 			continue
 		}
-		token := strings.TrimRight(s[start:end], mentionTrail)
+		token := strings.TrimRight(s[i:j], mentionTrail)
 		if len(token) < 2 {
 			continue
 		}
-		if token[0] == '#' && mentionNotGitHub[strings.ToLower(mentionWordBefore(s, start))] {
+		if token[0] == '#' && mentionNotGitHub[strings.ToLower(mentionWordBefore(s, i))] {
 			continue
 		}
 		href, kind, ok := mx.resolve(token)
 		if !ok {
 			continue
 		}
-		b.WriteString(s[last:start])
+		b.WriteString(span(s, done, i))
 		b.WriteString(v.stash(mentionAnchor(href, kind, token)))
-		last = start + len(token)
+		done = i + len(token)
 	}
-	if last == 0 {
+	if done == 0 {
 		return s
 	}
-	b.WriteString(s[last:])
+	b.WriteString(span(s, done, len(s)))
 	return b.String()
 }
 
-// mentionWordBefore is the word ending just before s[i], across white space.
-func mentionWordBefore(s string, i int) string {
-	j := i
+// span is s from byte i to byte j (see mdMention's note on slices).
+func span(s string, i, j int) string { return s[i:j] }
+
+// mentionWordBefore is the word ending just before s[at], across white space.
+func mentionWordBefore(s string, at int) string {
+	j := at
 	for j > 0 && mentionSpace(s[j-1]) {
 		j--
 	}
-	k := j
-	for k > 0 && (s[k-1] >= 'a' && s[k-1] <= 'z' || s[k-1] >= 'A' && s[k-1] <= 'Z') {
-		k--
+	i := j
+	for i > 0 && (s[i-1] >= 'a' && s[i-1] <= 'z' || s[i-1] >= 'A' && s[i-1] <= 'Z') {
+		i--
 	}
-	return s[k:j]
+	return s[i:j]
 }
 
 // mentionAnchor is one mention's link. It opens IN PLACE (no target): it is a
