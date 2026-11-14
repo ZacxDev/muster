@@ -571,14 +571,16 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
 	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool, plane: plane}
-	// The usage poller does not probe an account the pool marks cooling down
-	// after a rate limit: the probe spends that account's quota.
+	// The usage poller reads the pool's cooldown for each account, keeps
+	// reading an account that is cooling, and clears its rate-limit mark when
+	// the live reading shows the account usable again (ccusage.LiveUsable).
 	if a.ccUsage != nil {
 		if ccPool == nil {
 			a.Close()
-			return nil, errors.New(envCCUsagePoll + " needs the claude-code account pool, whose rate-limit marks hold the probe; there is none")
+			return nil, errors.New(envCCUsagePoll + " needs the claude-code account pool, whose rate-limit marks it reads and clears; there is none")
 		}
-		a.ccUsage.Cooling = ccPool.CoolingUntil
+		a.ccUsage.Cooling = ccPool.Cooldown
+		a.ccUsage.ClearCooling = ccPool.ClearRateLimit
 	}
 	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, plane, logger)
 	if err != nil {

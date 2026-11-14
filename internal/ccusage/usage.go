@@ -37,8 +37,11 @@
 // the endpoint's), `-reset` (unix seconds) and `-status`, plus the overall
 // `-status`, `-reset` and `-representative-claim`. A window whose headers are
 // absent is absent (a measured 200 carried 7d headers and no 5h ones). It costs
-// one output token of quota, so its default interval is 15 minutes, and an
-// account the pool marks rate-limited is not probed until its reset.
+// one output token of quota, so its default interval is 15 minutes. An
+// account the pool marks rate-limited is STILL read, at the same interval: its
+// live reading is what clears the pool's mark when the account is usable again
+// before the CLI's stated reset ([LiveUsable], [Poller.ClearCooling]), so a
+// cooling account read by the probe spends that one token per interval too.
 //
 // 🔴 A READING HOLDS NO CREDENTIAL. The token is read from the account pool at
 // the moment of the call and sent in one header; no error, log line or stored
