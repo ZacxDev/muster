@@ -683,6 +683,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTeamPages(mux)
 	s.registerOfficerSpawnPages(mux)
 	s.registerTeamOfficerPages(mux)
+	s.registerTeamChiefPages(mux)
 	// Instance branding (branding.go): the public instance document and
 	// logo images, and the admin's writes (requireAdminRole).
 	s.registerBrandingRoutes(mux)

@@ -263,3 +263,63 @@ func TestShapeValidationNeverEchoesTheValue(t *testing.T) {
 		t.Errorf("an uppercase account name: %v", err)
 	}
 }
+
+// TestAListedTeamRunsOnTheServerPoolAndAnUnlistedOneDoesNot: a team listed in
+// MUSTER_TEAMS_ON_SERVER_POOL gets the ENVIRONMENT's Claude accounts — the
+// pool's names, and a dispatch of claude-code is available — and nothing else
+// of the environment (no OpenRouter key, the gateway kind refused by name). A
+// team NOT listed gets the environment's nothing: no account, and the
+// claude-code kind refused. The control is the admin, on the pool, and the
+// listed team's id read as a member's by a plane with no list.
+func TestAListedTeamRunsOnTheServerPoolAndAnUnlistedOneDoesNot(t *testing.T) {
+	const listed, unlisted = int64(70), int64(71)
+	env, err := ccpool.NewStatic(map[string]string{"work": envTokWork, "spare": envTokSpare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Plane{EnvClaude: env, EnvOpenRouterKey: envORKey, Personal: fakePersonal{}, Roles: teamRoles{},
+		TeamsOnServerPool: map[int64]bool{listed: true}}
+	ctx := context.Background()
+	kinds := []string{agents.KindGateway, agents.KindClaudeCode}
+
+	acc, err := p.Accounts(ctx, listed)
+	if err != nil || len(acc) != 2 || acc["work"] != envTokWork || acc["spare"] != envTokSpare {
+		t.Fatalf("listed team: accounts %d (%v); want the environment's two", len(acc), err)
+	}
+	u := p.Unavailable(ctx, listed, kinds)
+	if _, refused := u[agents.KindClaudeCode]; refused || u[agents.KindGateway] != TeamNoGateway || len(u) != 1 {
+		t.Fatalf("listed team: unavailable %v; want claude-code available and the gateway refused with TeamNoGateway", u)
+	}
+	if k, err := p.OpenRouterKey(ctx, listed); !errors.Is(err, ErrNoCredential) || k != "" {
+		t.Fatalf("listed team: got a %d-byte OpenRouter key (%v); the pool lends Claude accounts only", len(k), err)
+	}
+
+	acc, err = p.Accounts(ctx, unlisted)
+	if err != nil || len(acc) != 0 {
+		t.Fatalf("unlisted team: accounts %d (%v); want none", len(acc), err)
+	}
+	if u := p.Unavailable(ctx, unlisted, kinds); u[agents.KindClaudeCode] != NeedClaude {
+		t.Fatalf("unlisted team: unavailable %v; want claude-code refused", u)
+	}
+
+	// Controls: the admin is on the pool; with no list the same team id is not.
+	if acc, err := p.Accounts(ctx, admin); err != nil || len(acc) != 2 {
+		t.Fatalf("control: admin accounts %d (%v)", len(acc), err)
+	}
+	none := *p
+	none.TeamsOnServerPool = nil
+	if acc, err := none.Accounts(ctx, listed); err != nil || len(acc) != 0 {
+		t.Fatalf("control: with no list the team got %d accounts (%v)", len(acc), err)
+	}
+}
+
+// teamRoles: user 1 admin; every other id a member (a team's row is role
+// member, users_team_no_login).
+type teamRoles struct{}
+
+func (teamRoles) Role(_ context.Context, id int64) (authz.Role, error) {
+	if id == admin {
+		return authz.RoleAdmin, nil
+	}
+	return authz.RoleMember, nil
+}

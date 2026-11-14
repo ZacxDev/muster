@@ -160,6 +160,8 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 		{envAgentNSClusterRole, c.AgentNamespaceClusterRole != ""},
 		{envOfficers, len(c.Officers) > 0},
 		{envChiefDispatchOwners, len(c.ChiefDispatchOwners) > 0},
+		// A team chief is Kubernetes only (team sharing decision 9).
+		{envTeamsOnServerPool, len(c.TeamsOnServerPool) > 0},
 		{envChiefSessionRuntimes, len(c.ChiefSessionRuntimes) > 0},
 		{envTagAutoDispatch, c.TagAutoDispatch},
 		// The hosted store's credential lands in the chief's spec as a 0600

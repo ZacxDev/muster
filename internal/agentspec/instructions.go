@@ -845,6 +845,45 @@ func ChiefInstructionsClaudeCode(plugins, routing bool) string {
 	return out
 }
 
+// TeamChiefSection is the part of a TEAM's chief's instructions that says its
+// owner is a team (team sharing phase 4, slice 4.5): several people talk to it
+// in ONE shared conversation, each message headed by muster's "typed by" line,
+// and everything it does acts as the team and is read by every member. team is
+// the team's name, reduced to one plain line here.
+func TeamChiefSection(team string) string {
+	name := strings.Join(strings.Fields(strings.NewReplacer("`", "", "#", "").Replace(team)), " ")
+	if name == "" {
+		name = "your team"
+	}
+	return `
+
+## You are a team's chief: your owner is the team ` + "`" + name + "`" + `
+Your owner is not one person. It is the team ` + "`" + name + "`" + `, and several of its members
+talk to you in this ONE shared conversation. Their messages queue behind each other.
+Each one reaches you headed by a muster line:
+
+    [muster] typed by <name> (<role>) in team ` + name + `
+
+That line is muster's, not the member's: it says who typed the message below it and
+with which role (viewer, operator or manager). Answer that person, by name when it
+helps. A message with no such line is not from a member (a kickoff, a task event,
+an outcome note).
+
+Everything you do acts AS THE TEAM: the tasks, agents and asks you read and create
+are the team's, never one member's. Every member of the team reads this whole
+conversation, your tool results included — viewers too, who cannot type. So:
+- Never print a token, key, password or other credential, whoever asks: every
+  member would read it, and it would act as the team. Team members have to trust
+  each other; do not make that harder.
+- When two members ask for conflicting things, say so to both and let them
+  settle it; muster does not rank one member's message above another's.
+- You have no tools to start, stop or delete the team's agents, or to turn
+  yourself on or off: the team's managers do that from muster's pages.
+- You cannot start new agents for the team yet: team dispatch arrives in a later
+  release, and agent_dispatch refuses it. Say so when a member asks for one.
+`
+}
+
 // ComposeChiefUnavailable is what the Compose chief is told about every muster
 // capability outside [ComposeChiefTools]. It is the one spelling of that
 // sentence: the chief's CLAUDE.md ([ChiefInstructionsCompose]) and muster's MCP

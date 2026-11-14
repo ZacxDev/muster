@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -25,7 +29,9 @@ func buildCredentialPlane(cfg config, personal credentials.Personal, roles crede
 		EnvOpenRouterKey: cfg.AgentOpenRouterKey,
 		Personal:         personal,
 		Roles:            roles,
-		Logger:           logger,
+		// Every id is a team: checkTeamsOnServerPool refused boot otherwise.
+		TeamsOnServerPool: cfg.TeamsOnServerPool,
+		Logger:            logger,
 	}
 	// The Compose chief with no MUSTER_CHIEF_CLAUDE_TOKEN has no account at all:
 	// it runs on the OpenRouter key (composeChiefCredential), and an empty
@@ -68,4 +74,60 @@ type credentialPage struct {
 
 func (c credentialPage) UsesEnvironment(ctx context.Context, owner int64) bool {
 	return c.plane.UsesEnvironment(ctx, owner)
+}
+
+// teamNamer is the users store's read of which ids are teams
+// (users.PGStore.TeamNames: the system scope, teams only).
+type teamNamer interface {
+	TeamNames(ctx context.Context, ids []int64) (map[int64]string, error)
+}
+
+// checkTeamsOnServerPool is MUSTER_TEAMS_ON_SERVER_POOL's boot refusal: every
+// listed id must be a TEAM (users.kind = 'team'). 🔴 A PERSON'S ID, OR ONE THAT
+// NAMES NOBODY, REFUSES TO BOOT: the plane lends the server's Claude pool to
+// every id in the list (credentials.Plane.TeamsOnServerPool), so a typo naming
+// a member would build that member's pods on the admin's subscription. names
+// nil (no database) with a non-empty list refuses too: nothing could check it.
+// It returns the teams' names for the boot line.
+func checkTeamsOnServerPool(ctx context.Context, names teamNamer, ids map[int64]bool) (map[int64]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if names == nil {
+		return nil, fmt.Errorf("%s is set but there is no database to check that each id is a team; unset it", envTeamsOnServerPool)
+	}
+	list := make([]int64, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
+	got, err := names.TeamNames(ctx, list)
+	if err != nil {
+		return nil, fmt.Errorf("%s: reading which ids are teams: %w", envTeamsOnServerPool, err)
+	}
+	var bad []string
+	for _, id := range list {
+		if _, ok := got[id]; !ok {
+			bad = append(bad, strconv.FormatInt(id, 10))
+		}
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("%s lists %s, which %s not a team (a person, or no one): the list lends the server's "+
+			"Claude pool to each id, so it must name teams only. Correct it or unset it", envTeamsOnServerPool,
+			strings.Join(bad, ", "), map[bool]string{true: "is", false: "are"}[len(bad) == 1])
+	}
+	return got, nil
+}
+
+// teamOwnerLookup is agentprovision.Adapter.UseTeamOwner's lookup over the
+// users store: owner's team name, and whether it is a team at all.
+func teamOwnerLookup(names teamNamer) func(ctx context.Context, owner int64) (string, bool, error) {
+	return func(ctx context.Context, owner int64) (string, bool, error) {
+		got, err := names.TeamNames(ctx, []int64{owner})
+		if err != nil {
+			return "", false, err
+		}
+		name, ok := got[owner]
+		return name, ok, nil
+	}
 }

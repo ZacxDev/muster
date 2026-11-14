@@ -113,6 +113,13 @@ type AgentCardView struct {
 	// being the chief — a declared officer's instance (internal/api's
 	// deleteProtection). The server refuses the delete regardless.
 	DeleteProtected bool
+	// CanRotateCredentials: the viewer may rotate this agent's credentials —
+	// its owner (a person's own agent) or a manager of the team that owns it —
+	// and the deployment can (internal/api's canRotateCredentials). The ⋯ menu
+	// then offers "Rotate credentials" (agentRotateConfirm), behind the
+	// step-up the server requires; nobody else is offered it. The server
+	// refuses anyone else regardless.
+	CanRotateCredentials bool
 	// PrimaryChief: this is THE chief the viewer is sent to — where `/` opens,
 	// and the agent the sidebar pins first (navBefore). internal/api's
 	// primaryChief decides it, for both; it is never re-derived here. At most

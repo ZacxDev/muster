@@ -239,6 +239,15 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}/officers",
 		"POST /teams/{id}/officers/types/{key}",
 		"POST /teams/{id}/officers/defs/{officer}",
+		// A team's chief (team sharing phase 4, team_admin.go) and an agent's
+		// credential rotation: requireSession (+ same-origin for the writes);
+		// the member/manager check and the team acting context
+		// (teamAdminContext, a fresh role read) are AFTER the principal.
+		"GET /teams/{id}/chief",
+		"POST /teams/{id}/chief/provision",
+		"POST /teams/{id}/chief/stop",
+		"POST /teams/{id}/chief/restart",
+		"POST /agents/{id}/credentials/rotate",
 		"GET /officers/spawns",
 		"POST /officers/spawns/{id}/share",
 		"POST /officers/spawns/{id}/unshare",

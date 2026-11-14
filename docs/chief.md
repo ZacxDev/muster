@@ -257,8 +257,28 @@ the member who asked, and it keeps working after that member is removed from
 the team. The remedy is to **rotate the agent's credentials** (its hooks
 token, gateway secret and any connector or OAuth credential it holds). Do it
 when a member who could steer the agent leaves, and when a credential shows up
-where members can read it. This release has no control that rotates a team
-agent's credentials: its lifecycle is the managers' door of slice 4.5.
+where members can read it. A manager of the team rotates a team agent's
+hooks token and gateway secret from the agent page's ⋯ menu, **Rotate
+credentials** (`POST /agents/{id}/credentials/rotate`; an owner does the same
+for their own agent). It runs as the team, needs a fresh sign-in, writes both
+credentials in one transaction, and stores them in `agent_secrets` only. The
+old token stops working at once, and a running agent is re-applied with the
+new one.
+Connector and OAuth credentials are rotated where they are kept.
+
+A team's chief is provisioned, started, stopped and restarted by a manager of
+the team on `/teams/{id}/chief`, as the team. It is a `claude-code` agent named
+`chief-<team id>` and is Kubernetes only. It runs on the server's Claude pool
+only when an admin lists the team in `MUSTER_TEAMS_ON_SERVER_POOL`; otherwise
+the page says the team has no Claude account and provisioning is refused. Its
+instructions tell it that its owner is a team, that several people talk to it,
+and that every member reads what it prints. A team's chief cannot start agents
+yet: `agent_dispatch` refuses it until team dispatch arrives in a later release.
+A start or a restart the team could not run (the team dropped from the pool, the
+`claude-code` kind off) is refused before anything is stopped, and the page
+hides Start and Restart and says why. A manager also starts, stops and
+deletes the team's other agents (never the chief) from the agent's page;
+operators and viewers cannot.
 
 ## The chief on each kind
 

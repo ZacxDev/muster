@@ -98,6 +98,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -422,6 +423,9 @@ type Adapter struct {
 	// beforeStop is handed the agent's row before every Stop scales it to zero
 	// and every Destroy removes it (UseBeforeStop); nil = nothing.
 	beforeStop func(ctx context.Context, ag agents.Agent)
+	// teamOwner names a TEAM owner (UseTeamOwner): a team's chief is told its
+	// owner is a team (agentspec.TeamChiefSection). nil = no team ever.
+	teamOwner func(ctx context.Context, owner int64) (name string, team bool, err error)
 	// lifecycle serialises Start, Stop, Destroy and Rebind per agent in this
 	// process (lockAgent), so an account failover cannot race a Stop or a
 	// Destroy into bringing a stopped agent back or re-creating a deleted one.
@@ -464,6 +468,15 @@ func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (agentspec.ClaudeCod
 // lifecycle lock. Call it before the adapter serves.
 func (a *Adapter) UseBeforeStop(f func(ctx context.Context, ag agents.Agent)) {
 	a.beforeStop = f
+}
+
+// UseTeamOwner installs f, which reports whether an owner is a TEAM and its
+// name (internal/users TeamNames, under System). A chief whose owner is a team
+// gets the team section of its instructions (agentspec.TeamChiefSection):
+// several people talk to it in one shared room, and it acts as the team. Call
+// it before the adapter serves.
+func (a *Adapter) UseTeamOwner(f func(ctx context.Context, owner int64) (name string, team bool, err error)) {
+	a.teamOwner = f
 }
 
 // UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
@@ -1119,6 +1132,90 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 	return nil
 }
 
+// RotateCredentials gives agent agentID NEW credentials — a new hooks token
+// (its muster identity) and, for a claude-code agent, a new turn credential —
+// and, when the agent is live (stored running or provisioning), re-applies its
+// spec so the instance holds them. The old token is refused by muster the
+// moment the store holds the new one (agents.Store.GetByHooksToken).
+//
+// rotated reports whether the NEW credentials were committed: true with a
+// non-nil err is a rotation whose re-apply failed (the old token is dead, the
+// instance does not hold the new one yet); false with err is a rotation that
+// changed nothing.
+//
+// It is the remedy for a credential printed where it should not be: a team's
+// agent is steered into printing its token into the team's chat (the team
+// trust model, docs/chief.md), and rotation is what makes that copy worthless.
+//
+// 🔴 BOTH CREDENTIALS ARE WRITTEN IN ONE TRANSACTION (agents.CredentialsWriter):
+// neither changes unless both do, so a failed write never leaves the agent on
+// a new token beside its old turn credential. A store without the method is
+// refused before anything is minted. For a TEAM owner the credentials land in
+// agent_secrets ONLY: migration 0131's agents_team_no_secret trigger blanks the
+// shared row's legacy columns on every write. A person's agent is still
+// dual-written, as every mint is.
+//
+// ⚠ A STOPPED AGENT IS NOT RE-APPLIED HERE: its next Start re-applies the spec
+// (always for claude-code, and for every kind once credentials resolve per
+// owner — startLocked), so it comes up holding the new credentials. A gateway
+// agent on a deployment with no credential resolver is the one case whose
+// Start only scales; it would come up on the old token, which muster now
+// refuses (a loud 401, not a silent one) until its next re-apply.
+func (a *Adapter) RotateCredentials(ctx context.Context, agentID int64) (rotated bool, err error) {
+	ctx, cancel := a.opCtx(ctx)
+	defer cancel()
+	defer a.lockAgent(agentID)()
+	w, ok := a.store.(agents.CredentialsWriter)
+	if !ok {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: this store cannot write an agent's credentials together", agentID)
+	}
+	ag, err := a.store.Get(ctx, agentID)
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "rotate"); err != nil {
+		return false, err
+	}
+	token, err := mintCredential()
+	if err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: mint hooks token: %w", agentID, err)
+	}
+	secret := ""
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
+		if secret, err = mintCredential(); err != nil {
+			return false, fmt.Errorf("agentprovision: rotate agent %d: mint turn credential: %w", agentID, err)
+		}
+	}
+	if err := w.SetCredentials(ctx, ag.ID, token, secret); err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: store the new credentials: %w", agentID, err)
+	}
+	if ag.Status != agents.StatusRunning && ag.Status != agents.StatusProvisioning {
+		return true, nil
+	}
+	// ensureHooksToken reads the credentials just written (agents.WithSecrets),
+	// so the spec is built from them and mints nothing.
+	if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
+		return true, err
+	}
+	spec, err := a.buildSpec(ctx, ag)
+	if err != nil {
+		return true, a.fail(ctx, ag, "build spec after rotating credentials", err)
+	}
+	if err := a.driver.Update(ctx, spec); err != nil {
+		return true, a.fail(ctx, ag, "apply instance after rotating credentials", err)
+	}
+	return true, nil
+}
+
+// mintCredential is one new random credential, hex, of the hooks token's size.
+func mintCredential() (string, error) {
+	buf := make([]byte, hooksTokenBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
 // ---------------------------------------------------------------------------
 // INTERNALS
 // ---------------------------------------------------------------------------
@@ -1281,7 +1378,11 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	}
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
-		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route)
+		team, err := a.chiefTeam(ctx, ag)
+		if err != nil {
+			return provision.Spec{}, err
+		}
+		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route, team)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1320,7 +1421,10 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 //
 // jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a chief is never
 // listed for bypass (agentspec.JobBypassListed), so it is unused there.
-func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool) (provision.Spec, error) {
+//
+// team is the owning team's name when the chief's owner is a team ("" for a
+// person): its prose then carries agentspec.TeamChiefSection.
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool, team string) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
 		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
 		if a.ccSession != nil {
@@ -1353,9 +1457,33 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	if cfg.ComposeContainer {
 		instructions = agentspec.ChiefInstructionsCompose(cfg.Plugins, cfg.SessionRouting)
 	}
+	if team != "" {
+		instructions += agentspec.TeamChiefSection(team)
+	}
 	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: instructions,
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, ChiefBypass: !cfg.ComposeContainer,
 			LLMRoute: route}})
+}
+
+// chiefTeam is the name of the TEAM that owns chief ag, or "" when ag is not a
+// chief or its owner is a person (or no team lookup is wired). 🔴 A LOOKUP THAT
+// FAILS REFUSES THE SPEC rather than build a team's chief with a person's prose
+// (or the reverse): the start is refused, naming why, and retried by the next.
+func (a *Adapter) chiefTeam(ctx context.Context, ag agents.Agent) (string, error) {
+	if a.teamOwner == nil || !agents.IsChiefName(ag.Name) || ag.OwnerID <= 0 {
+		return "", nil
+	}
+	name, team, err := a.teamOwner(ctx, ag.OwnerID)
+	if err != nil {
+		return "", fmt.Errorf("agentprovision: chief %q: could not tell whether its owner %d is a team: %w", ag.Name, ag.OwnerID, err)
+	}
+	if !team {
+		return "", nil
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "team " + strconv.FormatInt(ag.OwnerID, 10)
+	}
+	return name, nil
 }
 
 // ChiefLLMRouted is THE predicate for whether agent ag runs on the LLM route

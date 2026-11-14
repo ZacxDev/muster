@@ -59,6 +59,27 @@ func StepUpDialog(s *StepUpView) g.Node {
 	return g.Group{confirmDialog(s), stepUpScript()}
 }
 
+// StepUpFormScript makes the submit of any form[data-step-up-form] on a page
+// that rendered StepUpDialog ask "Confirm it's you" BEFORE it submits on a
+// stale sign-in, and submit once confirmed: /plugins' Approve and the agent
+// page's Rotate credentials. It is a convenience: the server refuses a stale
+// write whatever this script did. BY DELEGATION, on the document, so a form
+// drawn after load (a re-drawn list) is covered too.
+const StepUpFormScript = `<script>
+(function () {
+  if (window.musterStepUpForms) return;
+  window.musterStepUpForms = true;
+  document.addEventListener('submit', function (ev) {
+    var f = ev.target;
+    if (!f || !f.matches || !f.matches('form[data-step-up-form]')) return;
+    var su = window.musterStepUp;
+    if (!su || su.fresh()) return;
+    ev.preventDefault();
+    su.ask('', function () { f.submit(); });
+  });
+})();
+</script>`
+
 // stepUpAttrs carries a StepUpView to the terminal script on #term; nothing for
 // nil.
 func stepUpAttrs(s *StepUpView) g.Node {

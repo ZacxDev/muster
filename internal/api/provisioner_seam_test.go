@@ -138,17 +138,23 @@ var provisionerDeps = []provisionerDep{
 			"POST /api/agents",
 			"POST /api/chief/replace",
 			"POST /chief/provision",
+			// The team chief's manager door (team_admin.go).
+			"POST /teams/{id}/chief/provision",
+			"POST /teams/{id}/chief/restart",
+			"POST /teams/{id}/chief/stop",
 		},
 		callers: []string{
 			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAPIAgentCreate, provisionChief
 			"(*Server).handleAPIAgentCreate",   // KickoffUndeliverableReason, the synchronous pre-flight before the row
 			"(*Server).handleAgentDelete",      // Destroy (passed to destroyAgent)
 			"(*Server).handleAgentLogsStream",  // StreamLogs
-			"(*Server).handleAgentStart",       // Start
-			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
 			"(*Server).provisionChief",         // Start; reached from handleChiefProvision, and handleAccountChief's nil-checked branch
 			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
+			// Start / Stop / Stop+Start: THE browser lifecycle (agents.go), reached
+			// from the agent page's Start and Stop and the team chief page's
+			// Start, Stop and Restart (team_admin.go), all through goLifecycle.
+			"(*Server).runLifecycleStep",
 		},
 	},
 	{

@@ -164,6 +164,7 @@ GET /tasks
 GET /tasks/{id}
 GET /tasks/{id}/attachments/{aid}
 GET /teams/{id}
+GET /teams/{id}/chief
 GET /teams/{id}/officers
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
@@ -234,6 +235,7 @@ POST /agent/work
 POST /agents/pins
 POST /agents/pins/delete
 POST /agents/sessions/{sid}/read
+POST /agents/{id}/credentials/rotate
 POST /agents/{id}/model
 POST /agents/{id}/name
 POST /agents/{id}/sessions
@@ -365,6 +367,9 @@ POST /tasks/{id}/move
 POST /tasks/{id}/ref-writes/{wid}/dismiss
 POST /tasks/{id}/ref-writes/{wid}/retry
 POST /tasks/{id}/tags
+POST /teams/{id}/chief/provision
+POST /teams/{id}/chief/restart
+POST /teams/{id}/chief/stop
 POST /teams/{id}/members
 POST /teams/{id}/members/{user}/remove
 POST /teams/{id}/officers/defs/{officer}

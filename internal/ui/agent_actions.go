@@ -162,6 +162,7 @@ func agentActionsMenuWith(a AgentCardView, align string, extra g.Node) g.Node {
 				g.Text("Rename"),
 			),
 			lifecycle,
+			g.If(a.CanRotateCredentials, agentRotateConfirm(ids)),
 			g.If(deletable, Div(Class("my-0.5 border-t border-line"))),
 			g.If(deletable, agentDeleteConfirm(ids)),
 		),
@@ -201,6 +202,43 @@ func agentActionItem(label, postURL, tone, when string) g.Node {
 		hx("hx-swap", "none"),
 		hx("hx-disabled-elt", "this"),
 		g.Text(label),
+	)
+}
+
+// AgentRotateWhy is the "Confirm it's you" dialog's sentence on the agent page
+// (StepUpView.Why), with the freshness window in it.
+func AgentRotateWhy(window string) string {
+	return "Rotating an agent's credentials needs a sign-in from the last " + window + "."
+}
+
+// agentRotateConfirm is "Rotate credentials", two steps like Delete: the
+// summary reveals what it does and an explicit "Confirm rotate", a plain form
+// POST to /agents/{id}/credentials/rotate marked data-step-up-form, so the
+// page's StepUpFormScript asks "Confirm it's you" first on a stale sign-in
+// (the server refuses a stale one regardless). The answer is a page saying the
+// old token no longer works and the agent is being re-applied. No credential
+// is ever drawn.
+func agentRotateConfirm(ids string) g.Node {
+	return Details(
+		Class("group/rot"),
+		Summary(
+			g.Attr("data-agent-action", "rotate"),
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center rounded-lg px-3 text-sm font-medium text-fg transition hover:bg-s2 [&::-webkit-details-marker]:hidden"),
+			g.Text("Rotate credentials"),
+		),
+		P(Class("px-3 py-1 text-xs text-fg2"),
+			g.Text("Gives the agent a new token. The old one stops working at once, and a running agent is re-applied.")),
+		Form(
+			Method("POST"),
+			Action("/agents/"+ids+"/credentials/rotate"),
+			g.Attr("data-step-up-form", ""),
+			Button(
+				Type("submit"),
+				g.Attr("data-agent-action", "confirm-rotate"),
+				Class("press mt-1 flex min-h-[44px] w-full items-center justify-center rounded-lg bg-s2 px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s2"),
+				g.Text("Confirm rotate"),
+			),
+		),
 	)
 }
 

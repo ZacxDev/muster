@@ -235,6 +235,12 @@ const (
 	// agents. Non-empty (with task routing on) is what offers the chief
 	// agent_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
+	// envTeamsOnServerPool is the TEAMS (ids, comma-separated) whose Claude Code
+	// agents — the team chief first — run on the server's Claude pool
+	// (MUSTER_AGENT_CC_ACCOUNTS), as an admin's do (team sharing phase 4,
+	// slice 4.5; credentials.Plane.TeamsOnServerPool). Boot is refused when an
+	// id is a person or names nobody, so a typo cannot lend a member the pool.
+	envTeamsOnServerPool = "MUSTER_TEAMS_ON_SERVER_POOL"
 	// envChiefDispatchModels is the OpenRouter models a mirrored opencode
 	// dispatch's model card offers (docs/design/chief-dispatch.md 2.8,
 	// decision 15): comma-separated <vendor>/<model> ids, or "none".
@@ -829,6 +835,10 @@ type config struct {
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
+	// TeamsOnServerPool is MUSTER_TEAMS_ON_SERVER_POOL, parsed (loadConfig
+	// refuses one that does not parse; boot refuses an id that is not a team,
+	// checkTeamsOnServerPool).
+	TeamsOnServerPool map[int64]bool
 	// ChiefDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS, parsed
 	// (parseDispatchModels): the model card's OpenRouter models.
 	ChiefDispatchModels []string
@@ -1892,6 +1902,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
+	if c.TeamsOnServerPool, err = parseOwnerIDs(strings.TrimSpace(getenv(envTeamsOnServerPool))); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want team ids, comma-separated)", envTeamsOnServerPool, err)
+	}
 	if c.ChiefDispatchModels, err = parseDispatchModels(getenv(envChiefDispatchModels)); err != nil {
 		return config{}, err
 	}

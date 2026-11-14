@@ -379,6 +379,13 @@ var (
 		// usage and reply are the team's. Never a new user id: the agent's
 		// own owner, read by agentPrincipal.
 		"internal/api.(*Server).turnActingContext",
+		// A TEAM MANAGER's lifecycle door (team sharing slice 4.5,
+		// team_admin.go): after a FRESH read of the person's role says manager
+		// of the team, the manager's start, stop, delete, credential rotation
+		// or chief provisioning runs as the team — the team acting principal
+		// through authz.ViaTeamAdmin. Never a new user id: the team the
+		// person's own memberships name.
+		"internal/api.(*Server).teamAdminContext",
 		// A host officer machine's confirmed step-up (host_stepup.go): the
 		// owner-authority call the owner's PHONE just confirmed (a signed
 		// device action, single use, bound to the card) runs as that SAME
@@ -416,7 +423,7 @@ var (
 	authzExports = []string{
 		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
 		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
-		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
+		"ViaSession", "ViaSystem", "ViaTeamAdmin", "ViaToken", "WithPrincipal",
 	}
 )
 

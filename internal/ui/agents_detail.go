@@ -197,6 +197,10 @@ type AgentDetailView struct {
 	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
 	// none of them — the chief panel's pane, and a minimal test view.
 	Card AgentCardView
+	// StepUp is the "Confirm it's you" dialog the ⋯ menu's Rotate credentials
+	// asks before it submits (agentRotateConfirm); drawn only when the card
+	// offers it (Card.CanRotateCredentials). nil: none.
+	StepUp *StepUpView
 }
 
 // SessionView is one chat session in the switcher.
@@ -358,6 +362,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				g.If(v.ChiefChat != nil, chatIndexScript()),
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
+				// Rotate credentials' "Confirm it's you" (agentRotateConfirm).
+				g.If(v.Card.CanRotateCredentials && v.StepUp != nil, g.Group{StepUpDialog(v.StepUp), g.Raw(StepUpFormScript)}),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step, and places the ⋯
 				// menu (agentActionsMenu).

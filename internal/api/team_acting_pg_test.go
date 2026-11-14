@@ -183,6 +183,18 @@ var perOwnerSites = map[string]perOwnerSite{
 			}
 			return out
 		}},
+	// A team manager's lifecycle door (team_admin.go): handed a person who
+	// manages the team (a FRESH read), it acts as the team through
+	// authz.ViaTeamAdmin. Walked here with the team's manager; a person who
+	// is not one is refused (TestOnlyAFreshManagerActsAsTheTeam).
+	"teamAdminContext": {actsAsTeam: true, via: authz.ViaTeamAdmin,
+		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
+			out, err := s.teamAdminContext(teamManagerPrincipal(s, ctx, team), team)
+			if err != nil {
+				return nil
+			}
+			return out
+		}},
 	"turnPrincipal": {refusal: refusedToolless,
 		mint: func(s *Server, ctx context.Context, _ int64, a agents.Agent) context.Context {
 			out, ok := s.turnPrincipal(ctx, a, authz.ViaKickoff)
@@ -207,6 +219,23 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.stepUpPrincipal(ctx, team)
 		}},
+}
+
+// teamManagerPrincipal is ctx signed in as team's (first) manager, through a
+// browser session, with the memberships principalFor reads.
+func teamManagerPrincipal(s *Server, ctx context.Context, team int64) context.Context {
+	ms, err := s.ext.Users.(interface {
+		TeamMembers(context.Context, int64) ([]users.TeamMember, error)
+	}).TeamMembers(authz.System(ctx), team)
+	if err != nil {
+		panic(err)
+	}
+	for _, m := range ms {
+		if m.Role == authz.TeamManager {
+			return authz.WithPrincipal(ctx, s.principalFor(ctx, m.UserID, authz.ViaSession))
+		}
+	}
+	panic("fixture: the team has no manager")
 }
 
 // withPrincipalCallers is every function or method in this package's non-test
@@ -370,8 +399,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 8 || refusing != 5 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 8 and 5", acting, refusing)
+	if acting != 9 || refusing != 5 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 9 and 5", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through

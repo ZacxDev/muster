@@ -28,6 +28,9 @@ type RoleReader interface {
 const (
 	NeedClaude     = "Add your Claude setup token in Account → Credentials to use Claude Code agents."
 	NeedOpenRouter = "Add your OpenRouter key in Account → Credentials to use Standard agents."
+	// TeamNoGateway is a team's gateway-kind refusal (team sharing phase 4):
+	// a team's agents are Claude Code agents on the server pool.
+	TeamNoGateway = "A team's agents are Claude Code agents; Standard agents are not available to a team."
 )
 
 // Plane decides whose model-provider credentials an OWNER's agents run on.
@@ -52,8 +55,15 @@ type Plane struct {
 	Personal Personal
 	// Roles reads an owner's role. nil: user 1 is admin, everyone else a
 	// member (the seeded row, as internal/api's roleOf does with no store).
-	Roles  RoleReader
-	Logger *log.Logger
+	Roles RoleReader
+	// TeamsOnServerPool is MUSTER_TEAMS_ON_SERVER_POOL (team sharing phase 4,
+	// slice 4.5): the TEAMS whose Claude Code agents run on the environment's
+	// pool (EnvClaude), as an admin's do. cmd/muster-server refuses to boot
+	// when an id in it is a person or names nobody, so every key is a team.
+	// It lends the pool ONLY: a listed team gets no OpenRouter key (gateway
+	// agents are not team agents), and an unlisted team gets nothing at all.
+	TeamsOnServerPool map[int64]bool
+	Logger            *log.Logger
 }
 
 var _ ccpool.Source = (*Plane)(nil)
@@ -93,9 +103,17 @@ func (p *Plane) UsesEnvironment(ctx context.Context, owner int64) bool {
 	return p.usesEnvironment(ctx, owner)
 }
 
+// onServerPool reports whether owner is a team an admin listed in
+// MUSTER_TEAMS_ON_SERVER_POOL: its Claude accounts are the environment's pool.
+// It answers for the Claude pool alone ([Plane.Accounts], [Plane.Unavailable]'s
+// claude-code arm), never for the OpenRouter key.
+func (p *Plane) onServerPool(owner int64) bool {
+	return owner > 0 && p.TeamsOnServerPool[owner]
+}
+
 // Accounts implements [ccpool.Source]: owner's Claude accounts.
 func (p *Plane) Accounts(ctx context.Context, owner int64) (map[string]string, error) {
-	if p.usesEnvironment(ctx, owner) {
+	if p.onServerPool(owner) || p.usesEnvironment(ctx, owner) {
 		if p.EnvClaude == nil {
 			return map[string]string{}, nil
 		}
@@ -134,14 +152,18 @@ func (p *Plane) Unavailable(ctx context.Context, owner int64, kinds []string) ma
 	if p.usesEnvironment(ctx, owner) {
 		return out
 	}
+	pool := p.onServerPool(owner)
 	for _, k := range kinds {
-		switch k {
-		case agents.KindClaudeCode:
+		switch {
+		case pool && k == agents.KindGateway:
+			// A listed team is lent the Claude pool, not the OpenRouter key.
+			out[k] = TeamNoGateway
+		case k == agents.KindClaudeCode:
 			acc, err := p.Accounts(ctx, owner)
 			if err != nil || len(acc) == 0 {
 				out[k] = NeedClaude
 			}
-		case agents.KindGateway:
+		case k == agents.KindGateway:
 			// It runs on the OpenRouter key.
 			ok := false
 			if p.Personal != nil {

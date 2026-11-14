@@ -27,25 +27,27 @@ import (
 // apiNavWriters are the functions that write a signed-in page through
 // writeNavDocument — each draws the side nav.
 var apiNavWriters = []string{
-	"handleAccountPage",     // /account
-	"handleFeaturesPage",    // /account/features
-	"renderAccountTokens",   // /account/tokens
-	"renderCredentials",     // /account/credentials
-	"renderAccountPasskeys", // /account/passkeys
-	"renderAsksPage",        // /attention (the Asks page)
-	"renderAskPage",         // /attention/asks/{id} (one ask, an app screen)
-	"renderPluginsPage",     // /plugins
-	"renderFlowsPage",       // /flows
-	"renderRulesPage",       // /rules (the chief's routing rules)
-	"renderPagesList",       // /pages (shareable pages)
-	"renderPageDetail",      // /pages/{id} (one page: versions, links, responses)
-	"handleUsagePage",       // /usage (what the chief costs)
-	"handleAnswersPage",     // /answers (how answering question cards went)
-	"writeAdminDocument",    // /admin/users, /admin/invites
-	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
-	"renderTeamPage",        // /teams/{id} (a team's manager page)
-	"renderTeamOfficers",    // /teams/{id}/officers (a team's officers, phase 3)
-	"renderOfficerSpawns",   // /officers/spawns (host officer spawns and their team lend)
+	"handleAccountPage",            // /account
+	"handleFeaturesPage",           // /account/features
+	"renderAccountTokens",          // /account/tokens
+	"renderCredentials",            // /account/credentials
+	"renderAccountPasskeys",        // /account/passkeys
+	"renderAsksPage",               // /attention (the Asks page)
+	"renderAskPage",                // /attention/asks/{id} (one ask, an app screen)
+	"renderPluginsPage",            // /plugins
+	"renderFlowsPage",              // /flows
+	"renderRulesPage",              // /rules (the chief's routing rules)
+	"renderPagesList",              // /pages (shareable pages)
+	"renderPageDetail",             // /pages/{id} (one page: versions, links, responses)
+	"handleUsagePage",              // /usage (what the chief costs)
+	"handleAnswersPage",            // /answers (how answering question cards went)
+	"writeAdminDocument",           // /admin/users, /admin/invites
+	"renderNotice",                 // a notice, when its reader is signed in (it is in apiBareWriters too)
+	"renderTeamPage",               // /teams/{id} (a team's manager page)
+	"renderTeamOfficers",           // /teams/{id}/officers (a team's officers, phase 3)
+	"renderTeamChief",              // /teams/{id}/chief (a team's chief, phase 4)
+	"handleAgentRotateCredentials", // a rotation's outcome page (team_admin.go)
+	"renderOfficerSpawns",          // /officers/spawns (host officer spawns and their team lend)
 }
 
 // apiBareWriters are the functions that write through writeAuthDocument — no
@@ -366,25 +368,27 @@ func TestANoticeHasTheNavOnlyForASignedInReader(t *testing.T) {
 // or TAKES one (an OAuth token or API key typed in, a passkey ceremony) — it
 // then loads no RUM script.
 var apiNavSecret = map[string]bool{
-	"renderAccountTokens":   true,  // shows a minted API token once
-	"renderPluginsPage":     true,  // shows a minted plugin token once
-	"renderFlowsPage":       true,  // shows a minted runner token once
-	"writeAdminDocument":    true,  // shows reset and invite links once
-	"renderCredentials":     true,  // takes a Claude OAuth token / an OpenRouter key
-	"renderAccountPasskeys": true,  // runs passkey ceremonies
-	"handleAccountPage":     false, // sign-out forms only
-	"handleFeaturesPage":    false, // variable names and states, never a value
-	"renderAsksPage":        false, // the queue; the shell beside it has Faro already
-	"renderAskPage":         false, // one ask and its answer box
-	"renderNotice":          false, // one sentence
-	"renderRulesPage":       false, // the owner's rules: matches, actions, counts; no secret
-	"renderPagesList":       false, // titles and counts; no link is shown here
-	"renderPageDetail":      true,  // shows each live share link: a bearer capability
-	"handleUsagePage":       false, // token counts and senders the owner already sees; no secret
-	"handleAnswersPage":     false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
-	"renderTeamPage":        false, // members, roles and activity; no secret shown or taken
-	"renderTeamOfficers":    false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
-	"renderOfficerSpawns":   false, // spawn rows: officer, instance, host, window; no secret shown or taken
+	"renderAccountTokens":          true,  // shows a minted API token once
+	"renderPluginsPage":            true,  // shows a minted plugin token once
+	"renderFlowsPage":              true,  // shows a minted runner token once
+	"writeAdminDocument":           true,  // shows reset and invite links once
+	"renderCredentials":            true,  // takes a Claude OAuth token / an OpenRouter key
+	"renderAccountPasskeys":        true,  // runs passkey ceremonies
+	"handleAccountPage":            false, // sign-out forms only
+	"handleFeaturesPage":           false, // variable names and states, never a value
+	"renderAsksPage":               false, // the queue; the shell beside it has Faro already
+	"renderAskPage":                false, // one ask and its answer box
+	"renderNotice":                 false, // one sentence
+	"renderRulesPage":              false, // the owner's rules: matches, actions, counts; no secret
+	"renderPagesList":              false, // titles and counts; no link is shown here
+	"renderPageDetail":             true,  // shows each live share link: a bearer capability
+	"handleUsagePage":              false, // token counts and senders the owner already sees; no secret
+	"handleAnswersPage":            false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
+	"renderTeamPage":               false, // members, roles and activity; no secret shown or taken
+	"renderTeamOfficers":           false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
+	"renderTeamChief":              false, // the team chief's status and account name; no secret shown or taken
+	"handleAgentRotateCredentials": false, // a rotation's outcome sentence; the new credentials are never shown, nothing is typed
+	"renderOfficerSpawns":          false, // spawn rows: officer, instance, host, window; no secret shown or taken
 }
 
 // TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this

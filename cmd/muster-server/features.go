@@ -104,7 +104,7 @@ func featureCatalog() []features.Feature {
 				envAgentCCPoolDeployKeys, envAgentCCEgressLockedPools, envAgentNetpolFromNS, envAgentNetpolFromLabels,
 				envOfficerEgressCIDRs, envOfficerEgressDNS, envCheckoutWaitTimeout,
 				envChiefLLM, envCCUsagePoll, envCCUsagePollInterval, envCCUsagePushURL, envCCUsagePushToken, envCCUsagePushInstance,
-				envCCConsumerUsage}},
+				envCCConsumerUsage, envTeamsOnServerPool}},
 		// The documented install: the Compose stack's `chief` profile and the
 		// Compose chief runtime (composechief.go). A Kubernetes deployment runs
 		// it through MUSTER_AGENT_PROVISIONER instead (docs/chief.md).
