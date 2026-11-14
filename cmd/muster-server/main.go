@@ -46,6 +46,7 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -487,6 +488,26 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			credStore, personal = cs, cs
 		}
 	}
+	// MUSTER_TEAMS_ON_SERVER_POOL: every id must be a team, read before the
+	// plane lends the pool to it (checkTeamsOnServerPool).
+	var namer teamNamer
+	if a.pool != nil {
+		namer = users.NewPG(a.pool)
+	}
+	poolTeams, err := checkTeamsOnServerPool(context.Background(), namer, cfg.TeamsOnServerPool)
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	if len(poolTeams) > 0 {
+		ids := make([]string, 0, len(poolTeams))
+		for id, name := range poolTeams {
+			ids = append(ids, fmt.Sprintf("%d (%s)", id, name))
+		}
+		sort.Strings(ids)
+		logger.Printf("team server pool: ON — %s: these teams' Claude Code agents run on the server's Claude pool: %s",
+			envTeamsOnServerPool, strings.Join(ids, ", "))
+	}
 	plane, err := buildCredentialPlane(cfg, personal, roles, logger)
 	if err != nil {
 		a.Close()
@@ -602,6 +623,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.JobWorkspace = prov
 		// The job-lane bypass veto (wireGitHubGrantVeto): after the connector
 		// store is built, or boot is refused.
+		// A team's chief is told its owner is a team (agentspec.TeamChiefSection).
+		if a.pool != nil {
+			prov.UseTeamOwner(teamOwnerLookup(users.NewPG(a.pool)))
+		}
 		if err := wireGitHubGrantVeto(cfg, prov, ext.Connectors); err != nil {
 			a.Close()
 			return nil, err

@@ -22,6 +22,9 @@ var actsAsTeam = map[Via]bool{
 	// A team officer's runtime (phase 3): an officer whose MUSTER_OFFICERS
 	// owner is a team runs as the team.
 	ViaOfficer: true,
+	// A team manager's lifecycle door (slice 4.5): stop, start, destroy and
+	// rotate a team agent, and provision the team's chief, as the team.
+	ViaTeamAdmin: true,
 	// A team-owned gateway agent's turn: NOT a team door in phase 4.
 	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
@@ -90,8 +93,8 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 9 {
-		t.Fatalf("accepted a team at %d doors; the ledger names 9", accepted)
+	if accepted != 10 {
+		t.Fatalf("accepted a team at %d doors; the ledger names 10", accepted)
 	}
 }
 

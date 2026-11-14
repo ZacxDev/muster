@@ -178,6 +178,14 @@ const (
 	// page's OWNER for that one page only — the link's capability, never a
 	// session. internal/api's requirePageLink, on the /s/{token}/* routes.
 	ViaPageLink Via = "page-link"
+	// ViaTeamAdmin is a TEAM MANAGER's lifecycle door (team sharing phase 4,
+	// slice 4.5): a person who manages a team, signed in, stopping, starting,
+	// destroying or rotating the credentials of an agent the TEAM owns, or
+	// provisioning and switching the team's chief (/teams/{id}/chief). The
+	// operation runs AS THE TEAM — its credentials, its budget, its rows — never
+	// on the manager's own. One site mints it — internal/api's teamAdminContext —
+	// after a FRESH read of the person's role says manager of that team.
+	ViaTeamAdmin Via = "team-admin"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -228,6 +236,8 @@ var requestVias = map[Via]bool{
 	ViaJobQueue: true,
 	// A page's share link (internal/api's requirePageLink).
 	ViaPageLink: true,
+	// A team manager's lifecycle door (internal/api's teamAdminContext).
+	ViaTeamAdmin: true,
 }
 
 // teamActingVias is the closed set of doors through which a principal may
@@ -249,11 +259,16 @@ var requestVias = map[Via]bool{
 //     approving its own draft, and internal/api's draftDeciderRefusal says
 //     so first.
 //
+//   - a TEAM MANAGER's lifecycle door (ViaTeamAdmin, phase 4 slice 4.5): a
+//     manager, after a fresh role read, stops, starts, destroys or rotates the
+//     credentials of a team agent, or provisions the team's chief — as the
+//     team, so the team's credentials are the ones used (internal/api's
+//     teamAdminContext, the one site).
+//
 // A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
 // the set: gateway agents are not team agents in phase 4. internal/api's
 // turnPrincipal refuses a team first (the turn goes toolless); this set's
-// panic is the second guard behind it. A team manager's lifecycle door is
-// added with its one caller (slice 4.5).
+// panic is the second guard behind it.
 //
 // 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
 // (WithPrincipal panics). A person's door (session, device, personal token),
@@ -277,7 +292,8 @@ var requestVias = map[Via]bool{
 var teamActingVias = map[Via]bool{
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
-	ViaOfficer: true,
+	ViaOfficer:   true,
+	ViaTeamAdmin: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -81,6 +81,9 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // sharing phase 3; the server's MUSTER_OFFICERS='[]' turns the store on):
   // the manager's new-type form is what the page is for.
   'GET /teams/{id}/officers': { where: 'signed-in', url: 'TEAM_OFFICERS', ready: '#type-key-new' },
+  // The same team's chief (team_admin.go, team sharing phase 4): the team is
+  // not on the server pool there, so the page states the chief's status and why.
+  'GET /teams/{id}/chief': { where: 'signed-in', url: 'TEAM_CHIEF', ready: '#team-chief-status' },
   // The admin's host officer spawns and their team lend (officer_spawn_share.go):
   // a fresh admin has none, so the empty state is what it draws.
   'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
@@ -840,7 +843,8 @@ test.describe('signed-in pages in gotrue mode', () => {
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;
-          const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers` : p.url;
+          const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers`
+            : p.url === 'TEAM_CHIEF' ? `/teams/${teamID}/chief` : p.url;
           const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));

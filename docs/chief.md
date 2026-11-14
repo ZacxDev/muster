@@ -257,8 +257,21 @@ the member who asked, and it keeps working after that member is removed from
 the team. The remedy is to **rotate the agent's credentials** (its hooks
 token, gateway secret and any connector or OAuth credential it holds). Do it
 when a member who could steer the agent leaves, and when a credential shows up
-where members can read it. This release has no control that rotates a team
-agent's credentials: its lifecycle is the managers' door of slice 4.5.
+where members can read it. A manager of the team rotates a team agent's
+hooks token and gateway secret with `POST /agents/{id}/credentials/rotate`
+(it runs as the team, needs a fresh sign-in, and stores the new credentials
+in `agent_secrets` only).
+Connector and OAuth credentials are rotated where they are kept.
+
+A team's chief is provisioned, started, stopped and restarted by a manager of
+the team on `/teams/{id}/chief`, as the team. It is a `claude-code` agent named
+`chief-<team id>` and is Kubernetes only. It runs on the server's Claude pool
+only when an admin lists the team in `MUSTER_TEAMS_ON_SERVER_POOL`; otherwise
+the page says the team has no Claude account and provisioning is refused. Its
+instructions tell it that its owner is a team, that several people talk to it,
+and that every member reads what it prints. A manager also starts, stops and
+deletes the team's other agents (never the chief) from the agent's page;
+operators and viewers cannot.
 
 ## The chief on each kind
 

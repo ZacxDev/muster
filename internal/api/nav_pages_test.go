@@ -45,6 +45,7 @@ var apiNavWriters = []string{
 	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
 	"renderTeamPage",        // /teams/{id} (a team's manager page)
 	"renderTeamOfficers",    // /teams/{id}/officers (a team's officers, phase 3)
+	"renderTeamChief",       // /teams/{id}/chief (a team's chief, phase 4)
 	"renderOfficerSpawns",   // /officers/spawns (host officer spawns and their team lend)
 }
 
@@ -384,6 +385,7 @@ var apiNavSecret = map[string]bool{
 	"handleAnswersPage":     false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
 	"renderTeamPage":        false, // members, roles and activity; no secret shown or taken
 	"renderTeamOfficers":    false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
+	"renderTeamChief":       false, // the team chief's status and account name; no secret shown or taken
 	"renderOfficerSpawns":   false, // spawn rows: officer, instance, host, window; no secret shown or taken
 }
 

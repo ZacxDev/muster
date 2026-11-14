@@ -689,6 +689,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /teams/{id}/officers":                  classParam,
 	"POST /teams/{id}/officers/types/{key}":     classParam,
 	"POST /teams/{id}/officers/defs/{officer}":  classParam,
+	"GET /teams/{id}/chief":                     classParam,
+	"POST /teams/{id}/chief/provision":          classParam,
+	"POST /teams/{id}/chief/stop":               classParam,
+	"POST /teams/{id}/chief/restart":            classParam,
+	"POST /agents/{id}/credentials/rotate":      classParam,
 	// Host officer spawns and their team lend (phase 3): the list shows the
 	// caller's own (and those lent to their teams); {id} is A's spawn.
 	"GET /officers/spawns":                      classList,
@@ -2710,6 +2715,7 @@ type isoProvisioner struct {
 	store agents.Store
 	mu    sync.Mutex
 	acted map[[2]int64]int // (agent id, acting uid) -> successful actions
+	vias  map[int64]authz.Via
 }
 
 func (p *isoProvisioner) check(ctx context.Context, id int64) error {
@@ -2723,7 +2729,18 @@ func (p *isoProvisioner) check(ctx context.Context, id int64) error {
 		p.acted = map[[2]int64]int{}
 	}
 	p.acted[[2]int64{id, pr.UserID}]++
+	if p.vias == nil {
+		p.vias = map[int64]authz.Via{}
+	}
+	p.vias[id] = pr.Via
 	return nil
+}
+
+// lastVia is the door of the last successful action on agent id.
+func (p *isoProvisioner) lastVia(id int64) authz.Via {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.vias[id]
 }
 
 // actedOn waits briefly for the handlers' background actions, then reports
@@ -2740,6 +2757,9 @@ func (p *isoProvisioner) Dispatch(ctx context.Context, id int64, _ bool) error {
 func (p *isoProvisioner) Start(ctx context.Context, id int64) error   { return p.check(ctx, id) }
 func (p *isoProvisioner) Stop(ctx context.Context, id int64) error    { return p.check(ctx, id) }
 func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p.check(ctx, id) }
+func (p *isoProvisioner) RotateCredentials(ctx context.Context, id int64) error {
+	return p.check(ctx, id)
+}
 func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil
 }

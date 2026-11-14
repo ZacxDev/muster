@@ -164,6 +164,13 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
 	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStart)))
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
+	// Credential rotation (team_admin.go): the owner's own agent, or a team
+	// agent by a manager of its team, as the team. Same-origin, like every
+	// form that changes an agent's identity. NOT behind
+	// requireLifecycleProvisioner: it reaches the provisioner only through
+	// the CredentialRotator assertion, which a nil provisioner fails — a 501
+	// that says so, never a 200 that did nothing.
+	mux.HandleFunc("POST /agents/{id}/credentials/rotate", s.requireOperatorWrite(s.handleAgentRotateCredentials))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
 	// Same-origin, like every other form that changes where the chief's turns
@@ -1041,6 +1048,14 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
+	// A MANAGER on a team agent starts it AS THE TEAM (teamLifecycle,
+	// team_admin.go): the refusal below and the provisioner's Start then read
+	// the team's credentials, never the manager's own.
+	actor := r
+	r, team, a, ok := s.teamLifecycle(w, r)
+	if !ok {
+		return
+	}
 	// 🔴 A START IS REFUSED, LIKE A DISPATCH, FOR A KIND THE CALLER HAS NO
 	// CREDENTIAL FOR — 409 with what to add. Start re-applies the agent's spec
 	// through its owner's credentials (agentprovision.Adapter.Start), so a
@@ -1065,14 +1080,22 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 		}
 		return err
 	}, "start")
+	s.auditTeamLifecycle(actor, team, "agent.start", a)
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
+	// A manager on a team agent stops it as the team (teamLifecycle).
+	actor := r
+	r, team, a, ok := s.teamLifecycle(w, r)
+	if !ok {
+		return
+	}
 	// A stopped pod cannot post its own clear: forget its work report now.
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 		s.clearAgentWork(id)
 	}
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
+	s.auditTeamLifecycle(actor, team, "agent.stop", a)
 }
 
 // agentStartRefusal is why a start of agent a is refused for its caller, or ""
@@ -1220,13 +1243,21 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	// A manager on a team agent destroys it as the team (teamLifecycle): the
+	// chief check and the teardown then see the team's agents, so the team's
+	// chief is refused as a person's chief is.
+	acting, team, ta, ok := s.teamLifecycle(w, r)
+	if !ok {
+		return
+	}
 	var chief errDestroyChief
 	// The provisioner is called HERE, in this route's own closure: the route is
 	// behind requireLifecycleProvisioner, which is its nil barrier.
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	deleted, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{})
+	deleted, err := s.destroyAgent(acting.Context(), id, destroy, destroyHooks{})
 	switch {
 	case err == nil:
+		s.auditTeamLifecycle(r, team, "agent.destroy", ta)
 	case errors.As(err, &chief):
 		http.Error(w, chief.Error(), http.StatusConflict)
 		return

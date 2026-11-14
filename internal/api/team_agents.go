@@ -52,13 +52,18 @@ const (
 	// teamAgentChat: a message to the agent — operator and up (plan §6: a
 	// viewer reads the chat, tool output included, and cannot type).
 	teamAgentChat
-	// teamAgentRefused: no member, at any role, in slice 4.4. Lifecycle and
-	// settings (start, stop, delete, model, name) are a manager's door that
-	// acts AS the team (slice 4.5's ViaTeamAdmin): run under a member's
-	// principal they would pick the member's credentials. New threads are
-	// refused because a team chief has ONE shared room (operator decision 4).
-	// The terminal is a shell in a pod holding the team's credentials and
-	// needs a fresh step-up (slice 4.7).
+	// teamAgentManage: a MANAGER of the team, and no one below (slice 4.5).
+	// The lifecycle — start, stop, delete, credential rotation — runs AS THE
+	// TEAM through the manager's door (teamAdminContext, authz.ViaTeamAdmin),
+	// after a fresh read of the manager's role: never on the member's own
+	// credentials. This gate refuses an operator and a viewer at the door;
+	// the handler's fresh read is the second check.
+	teamAgentManage
+	// teamAgentRefused: no member, at any role. Settings (model, name) are
+	// not a team agent's to change here. New threads are refused because a
+	// team chief has ONE shared room (operator decision 4). The terminal is a
+	// shell in a pod holding the team's credentials and needs a fresh step-up
+	// (slice 4.7).
 	teamAgentRefused
 )
 
@@ -86,10 +91,11 @@ var teamAgentRoutes = map[string]teamAgentRule{
 	// write the room. A viewer is refused (their page's call is fire-and-forget).
 	"POST /agents/sessions/{sid}/read":           teamAgentChat,
 	"POST /agents/{name}/send":                   teamAgentChat,
+	"POST /agents/{id}/start":                    teamAgentManage,
+	"POST /agents/{id}/stop":                     teamAgentManage,
+	"DELETE /agents/{id}":                        teamAgentManage,
+	"POST /agents/{id}/credentials/rotate":       teamAgentManage,
 	"GET /agents/{name}/terminal/ws":             teamAgentRefused,
-	"POST /agents/{id}/start":                    teamAgentRefused,
-	"POST /agents/{id}/stop":                     teamAgentRefused,
-	"DELETE /agents/{id}":                        teamAgentRefused,
 	"POST /agents/{id}/model":                    teamAgentRefused,
 	"POST /agents/{id}/name":                     teamAgentRefused,
 	"POST /agents/{id}/sessions":                 teamAgentRefused,
@@ -105,8 +111,12 @@ const TeamAgentViewerRefusal = "this is a team agent: you can read its chat; wri
 
 // TeamAgentRouteRefusal is what any member is answered on a route a team agent
 // does not take from a member in this release.
-const TeamAgentRouteRefusal = "this is a team agent: a member cannot do that to it here (its lifecycle and settings are its managers', " +
+const TeamAgentRouteRefusal = "this is a team agent: a member cannot do that to it here (its settings are not changed here, " +
 	"its terminal needs a fresh sign-in, and a team chief has one shared conversation)"
+
+// TeamAgentManagerOnly is what an operator or a viewer is answered on a team
+// agent's lifecycle route (teamAgentManage).
+const TeamAgentManagerOnly = "this is a team agent: only a manager of its team starts, stops, deletes it or rotates its credentials"
 
 // refuseTeamAgentRoute answers 403 and reports true when r names an agent its
 // principal's TEAM owns and the route's rule refuses the principal's role in
@@ -158,12 +168,18 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 	if !in {
 		return false // not a team agent of theirs: row-level security decided
 	}
-	if rule == teamAgentChat && role.AtLeast(authz.TeamOperator) {
+	switch {
+	case rule == teamAgentChat && role.AtLeast(authz.TeamOperator):
+		return false
+	case rule == teamAgentManage && role == authz.TeamManager:
 		return false
 	}
 	msg := TeamAgentRouteRefusal
-	if rule == teamAgentChat {
+	switch rule {
+	case teamAgentChat:
 		msg = TeamAgentViewerRefusal
+	case teamAgentManage:
+		msg = TeamAgentManagerOnly
 	}
 	http.Error(w, msg, http.StatusForbidden)
 	return true

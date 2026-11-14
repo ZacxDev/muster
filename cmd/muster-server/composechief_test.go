@@ -103,6 +103,7 @@ func TestTheComposeChiefRefusesAnAgentPlaneVariableBesideIt(t *testing.T) {
 		envAgentNSShared:        "1",
 		envAgentNSClusterRole:   "muster-agent-namespace",
 		envChiefDispatchOwners:  "1",
+		envTeamsOnServerPool:    "12",
 		envChiefSessionRuntimes: "claude-code",
 		envTagAutoDispatch:      "1",
 		envAgentCairnURL:        "https://cairn.example.test",

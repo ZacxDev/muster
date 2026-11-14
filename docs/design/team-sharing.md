@@ -1056,8 +1056,7 @@ rule the later phases' rows will meet.
     **rotate the agent's credentials** (its hooks token, gateway secret and
     any connector or OAuth credential it holds). Do it whenever a member who
     could steer the agent leaves, and whenever a credential shows up where
-    members can read it. This slice has no door that rotates a team agent's
-    credentials: its lifecycle is 4.5's managers' door.
+    members can read it. (Slice 4.5 adds the managers' rotation door.)
   - **Route rules** (`teamAgentRoutes`, decided in `admit` for every route
     naming an agent, ledgered against `routes.golden`): reads at viewer; the
     chat socket and the send form at operator (a viewer gets 403); lifecycle,
@@ -1079,6 +1078,50 @@ rule the later phases' rows will meet.
   - **Not yet:** the viewer's disabled composer and the team badge in the
     sidebar (UI); home falling back to a team chief; stop and start by an
     operator (4.5, so the team's credentials are used, not the member's).
+
+- **Slice 4.5: the team's credentials, its chief, and the managers' door.**
+  - **`MUSTER_TEAMS_ON_SERVER_POOL=<team ids>`** lends the server's Claude
+    pool (`MUSTER_AGENT_CC_ACCOUNTS`) to each listed team, as an admin's
+    agents use it (`credentials.Plane.TeamsOnServerPool`). It lends the Claude
+    pool only: no OpenRouter key, and the gateway kind is refused for a team.
+    A team not listed has no Claude account. Boot is refused when a listed id
+    is a person or names nobody, and beside the Compose chief runtime.
+  - **`ViaTeamAdmin`, the tenth team-acting door.** `teamAdminContext` is its
+    one site. After a fresh read of the person's role says manager of the
+    team, the action runs as the team acting principal, so the provisioner
+    uses the team's credentials and the team's rows, never the manager's.
+  - **Lifecycle on a team agent:** start, stop, delete and
+    `POST /agents/{id}/credentials/rotate` are a manager's (`teamAgentManage`
+    in `teamAgentRoutes`); operators and viewers get 403. The team's chief is
+    never deleted. Rotation writes a new hooks token and, for a claude-code
+    agent, a new gateway secret; for a team owner they land in
+    `agent_secrets` only (0131's trigger blanks the shared row's columns), and
+    a live instance is re-applied with them. Rotation needs a fresh sign-in.
+    Settings (model, name), new
+    threads and the terminal are still refused to every member.
+  - **`/teams/{id}/chief`:** every member reads its status and where it runs;
+    a manager provisions (`chief-<team>`, owned by the team, `claude-code`),
+    starts, stops and restarts it. Refused, naming why and creating nothing:
+    the Compose install, a deployment without the `claude-code` kind, and a
+    team not on the server pool.
+  - **Team instructions:** a team's chief gets a section saying its owner is
+    the team, that members talk to it in one shared room behind the
+    `[muster] typed by <name> (<role>) in team <team>` line, and that every
+    member reads what it prints.
+  - **Dispatch from a team's chief** refuses a host target (team hosts are
+    2b), the gateway kind and a worker pool, each by name.
+  - **Audit:** every manager action (`agent.start`, `agent.stop`,
+    `agent.destroy`, `agent.credentials.rotate`, `chief.provision`,
+    `chief.start`, `chief.stop`, `chief.restart`) writes an `audit_log` row
+    owned by the team and naming the manager, shown on `/teams/{id}`.
+  - **Deviations from the plan:** plan §6 lets an operator stop and start a
+    team agent; this slice keeps lifecycle at manager, per the slice brief.
+    Start, stop, delete and the chief's provisioning take no step-up
+    (plan §6 lists none); rotation, which §6 does not list, takes the
+    fresh sign-in (`stepup.Fresh`) the plan gives a manager's grant
+    approvals, for the owner and the manager alike. The team chief's on/off is the
+    agent's start/stop, with no `chief_preferences` row for the team. No
+    "replace".
 
 ### Later: consent-based team invites
 

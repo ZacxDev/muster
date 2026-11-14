@@ -168,10 +168,11 @@ func (tw *teamAgentWalk) path(r string) (method, path string) {
 // agent's routes (§6), written out LITERALLY — not read from teamAgentRoutes,
 // so a rule loosened there is caught here rather than walked past.
 var (
-	teamChatRoutes    = []string{"GET /agents/{name}/ws", "POST /agents/{name}/send", "POST /agents/sessions/{sid}/read"}
+	teamChatRoutes = []string{"GET /agents/{name}/ws", "POST /agents/{name}/send", "POST /agents/sessions/{sid}/read"}
+	// teamManageRoutes: a manager's only (slice 4.5), run as the team.
+	teamManageRoutes  = []string{"POST /agents/{id}/start", "POST /agents/{id}/stop", "DELETE /agents/{id}", "POST /agents/{id}/credentials/rotate"}
 	teamRefusedRoutes = []string{
 		"GET /agents/{name}/terminal/ws",
-		"POST /agents/{id}/start", "POST /agents/{id}/stop", "DELETE /agents/{id}",
 		"POST /agents/{id}/model", "POST /agents/{id}/name",
 		"POST /agents/{id}/sessions", "POST /agents/{id}/sessions/side", "POST /agents/{id}/sessions/fresh-primary",
 		"POST /agents/{id}/sessions/{sid}/default", "POST /agents/{id}/sessions/{sid}/archive",
@@ -191,6 +192,9 @@ func sessionAgentRoutes() map[string]teamAgentRule {
 	}
 	for _, r := range teamChatRoutes {
 		out[r] = teamAgentChat
+	}
+	for _, r := range teamManageRoutes {
+		out[r] = teamAgentManage
 	}
 	for _, r := range teamRefusedRoutes {
 		out[r] = teamAgentRefused
@@ -213,10 +217,12 @@ func (tw *teamAgentWalk) send(t *testing.T, uid int64, text string) *httptest.Re
 //   - V (viewer): reads the chat (the canary, on the chat log); every chat route
 //     and every refused route answers 403 from the team-agent gate; nothing of
 //     the team's changes;
-//   - B (operator): every refused route still 403 (lifecycle, settings, new
-//     threads, the terminal), and the send is accepted;
-//   - A (manager) is refused the same routes: in this slice no member's
-//     principal acts on a team agent's lifecycle (slice 4.5).
+//   - B (operator): every refused route and every manager route 403
+//     (lifecycle, settings, new threads, the terminal), and the send is
+//     accepted;
+//   - A (manager) is refused the refused routes (settings, new threads, the
+//     terminal); A's lifecycle — as the team — is walked by
+//     TestAManagersLifecycleOnATeamAgentRunsAsTheTeam.
 //
 // 🔴 RED at origin/main 006bbe5c: no member sees the team chief at all (agents
 // is personal there), so V's read and B's send fail.
@@ -226,6 +232,14 @@ func TestATeamAgentIsWalkedByEveryRole(t *testing.T) {
 	routes := sessionAgentRoutes()
 	if len(routes) < 20 {
 		t.Fatalf("instrument check FAILED: %d session agent routes", len(routes))
+	}
+	// The gate's own table is the plan's, route by route: a rule loosened
+	// there is caught here even where a handler's second check (a manager
+	// route's fresh role read) would answer the same 403.
+	for r, rule := range routes {
+		if got := teamAgentRoutes[r]; got != rule {
+			t.Errorf("teamAgentRoutes[%q] = %d; the role table says %d", r, got, rule)
+		}
 	}
 	before := tw.rows(t)
 	if !strings.Contains(before, tw.canary) {
@@ -266,12 +280,12 @@ func TestATeamAgentIsWalkedByEveryRole(t *testing.T) {
 
 	for _, who := range []isoUser{w.b, w.a} {
 		for r, rule := range routes {
-			if rule != teamAgentRefused {
+			if rule != teamAgentRefused && !(rule == teamAgentManage && who.uid == w.b.uid) {
 				continue
 			}
 			m, p := tw.path(r)
 			if rec := w.do(w.h, m, p, "", cred{sessionUser: who.uid}); rec.Code != http.StatusForbidden {
-				t.Errorf("%s (member) %s → %d; want 403: a member does not act on a team agent through it in this slice", who.name, r, rec.Code)
+				t.Errorf("%s (member) %s → %d; want 403: a member does not act on a team agent through it", who.name, r, rec.Code)
 			}
 		}
 	}

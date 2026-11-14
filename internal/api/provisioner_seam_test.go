@@ -138,6 +138,10 @@ var provisionerDeps = []provisionerDep{
 			"POST /api/agents",
 			"POST /api/chief/replace",
 			"POST /chief/provision",
+			// The team chief's manager door (team_admin.go).
+			"POST /teams/{id}/chief/provision",
+			"POST /teams/{id}/chief/restart",
+			"POST /teams/{id}/chief/stop",
 		},
 		callers: []string{
 			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAPIAgentCreate, provisionChief
@@ -147,6 +151,8 @@ var provisionerDeps = []provisionerDep{
 			"(*Server).handleAgentStart",       // Start
 			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
+			"(*Server).handleTeamChiefRestart", // Stop + Start, as the team (team_admin.go)
+			"(*Server).handleTeamChiefStop",    // Stop, as the team
 			"(*Server).provisionChief",         // Start; reached from handleChiefProvision, and handleAccountChief's nil-checked branch
 			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
 		},

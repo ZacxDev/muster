@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -102,6 +103,10 @@ const (
 
 	agentDispatchPoolNoTask = "a worker_pool agent serves machine jobs and takes no task_id"
 	agentDispatchPoolKind   = "worker_pool %q: only a claude-code agent can be a machine-job worker"
+	// A TEAM's chief (team sharing phase 4): pod/claude-code agents only.
+	agentDispatchTeamHost    = "a team's agents run on the cluster only: a host target is not available to a team yet (team hosts are a later phase); use pod/claude-code"
+	agentDispatchTeamGateway = "a team's agents are Claude Code agents: use pod/claude-code (a Standard agent is not available to a team)"
+	agentDispatchTeamPool    = "worker_pool: a team's agents are not machine-job workers"
 	agentDispatchPoolName   = "worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'"
 )
 
@@ -609,7 +614,16 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	// A HOST target — or "mirrored", which is host/?/? — is mirrored dispatch
 	// (host_dispatch.go): its own flow, the same guards in the same order.
+	//
+	// 🔴 A TEAM'S CHIEF STARTS POD AGENTS ONLY (team sharing phase 4, slice
+	// 4.5): a host target is refused for a team — team hosts are phase 2b — and
+	// so are the gateway kind and a worker pool (gateway and worker-pool agents
+	// are not team agents in phase 4), before anything is reserved.
+	teamOwned := s.ownerIsTeam(ctx, owner)
 	if t, ok := parseHostTarget(in.Target); ok {
+		if teamOwned {
+			return s.targetRefusal(ctx, agentDispatchTeamHost)
+		}
 		return s.toolHostDispatch(ctx, a, in, t)
 	}
 	// 🔴 FROM HERE ON EVERY ANSWER CARRIES THE CHIEF'S CURRENT BUDGET.
@@ -620,6 +634,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	kindArg, why := s.podKindOf(ctx, in.Target)
 	if why != "" {
 		return s.targetRefusal(ctx, why)
+	}
+	if teamOwned && kindArg != agents.KindClaudeCode {
+		return s.targetRefusal(ctx, agentDispatchTeamGateway)
+	}
+	if teamOwned && in.WorkerPool != "" {
+		return refuse(agentDispatchTeamPool)
 	}
 	if in.RequestKey != "" && !requestKeyRE.MatchString(in.RequestKey) {
 		return refuse(agentDispatchKeyShape)
@@ -1217,4 +1237,19 @@ func (s *Server) alreadyDispatchedAnswer(ctx context.Context, a agents.Agent, ta
 		out["agent_id"] = *res.AgentID
 	}
 	return toolJSON(out)
+}
+
+// ownerIsTeam reports whether owner is a TEAM: the team acting principal on
+// ctx names it, or its account says so. An account that cannot be read is
+// treated as a team — the refusal is the safe side.
+func (s *Server) ownerIsTeam(ctx context.Context, owner int64) bool {
+	if p, ok := authz.From(ctx); ok && !p.All() && p.UserID == owner {
+		return p.Team
+	}
+	acct, err := s.accountOfChecked(ctx, owner)
+	if err != nil {
+		s.logger.Printf("agent_dispatch: read owner %d: %v (refused as a team's)", owner, err)
+		return true
+	}
+	return acct.Team
 }
