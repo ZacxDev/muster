@@ -190,6 +190,9 @@ type mcpSurface struct {
 	// noHelp: the door does not add muster_help (the Compose chief, which
 	// could not run it).
 	noHelp bool
+	// listMeta, when set, is the tools/list result's _meta: the mirror door's
+	// marker that the list is a remote caller's (remoteListMetaKey).
+	listMeta map[string]any
 }
 
 // explainUnlisted is surface.disabled's answer for name, or "".
@@ -243,7 +246,11 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		if tools == nil {
 			tools = []map[string]any{}
 		}
-		s.writeMCP(w, req.ID, map[string]any{"tools": tools}, nil)
+		result := map[string]any{"tools": tools}
+		if surface.listMeta != nil {
+			result["_meta"] = surface.listMeta
+		}
+		s.writeMCP(w, req.ID, result, nil)
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`

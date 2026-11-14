@@ -549,6 +549,24 @@ presented (full) token's.
 From the CLI these are `muster whoami`, `muster token ls` and
 `muster token revoke <id>` ([cli.md](cli.md)).
 
+### Mirror tokens on another muster instance
+
+A host's mirror can call **another** muster instance's admin tools
+([mirroring.md](mirroring.md#several-muster-instances)) with a mirror token
+minted **on that instance** for that host (`muster-server mirror token create
+<host>` there). The host never connects there, so the instance can bind no call
+to a window. A call marked `X-Muster-Client: remote` is served unbound,
+restricted to the mirror door's admin tools (`remoteMirrorTools` in
+`internal/api/mirror_mcp.go`), and refused when that host is online there.
+
+What such a token reaches is therefore **a subset** of what the same token
+reaches on an instance the host mirrors to. The difference is that no session
+binding is involved: the session a call names (`X-Muster-Remote-Session`) is
+recorded on the rows it writes but is not checked against a listing. That is
+no wider in practice, because a mirror token can always open `/mirror/connect`
+and list any session it likes. Revoke it on that instance like any other
+mirror token.
+
 ### Mirror tokens and the chief
 
 `POST /mirror/mcp` also offers `chief_ask` ([attention.md](attention.md#asking-the-chief)).
