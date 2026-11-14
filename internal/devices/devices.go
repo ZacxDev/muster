@@ -553,7 +553,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Device, error
 	err := s.pool.QueryRow(ctx, `SELECT `+cols("d")+`,
 			u.disabled_at IS NOT NULL, u.sessions_not_before, u.signed_out_at
 		FROM devices d JOIN users u ON u.id = d.owner_id
-		WHERE d.token_sha256 = $1`, hash(token)).
+		WHERE d.token_sha256 = $1 AND u.id IN (`+users.PersonIDs+`)`, hash(token)).
 		Scan(append(deviceDest(&d), &disabled, &cutoff, &signedOut)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Device{}, ErrBadToken

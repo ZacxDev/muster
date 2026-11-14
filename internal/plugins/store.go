@@ -518,7 +518,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 		UPDATE plugins p SET last_seen_at = now()
 		  FROM users u
 		 WHERE p.token_hash = $1 AND p.revoked_at IS NULL
-		   AND u.id = p.owner_id AND u.disabled_at IS NULL
+		   AND u.id = p.owner_id AND u.disabled_at IS NULL AND u.id IN (`+users.PersonIDs+`)
 		RETURNING `+prefixed("p", pluginCols)+`, coalesce(nullif(u.email, ''), u.display_name)`, HashToken(token)).
 		Scan(append(pluginDest(&p), &p.OwnerLogin)...)
 	if errors.Is(err, pgx.ErrNoRows) {

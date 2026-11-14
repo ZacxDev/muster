@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Status is a job's state. The set is closed (the 0012 CHECK).
@@ -617,7 +618,7 @@ func (s *PGStore) AuthenticateRunner(ctx context.Context, token string) (RunnerT
 		UPDATE flow_runner_tokens t SET last_used_at = now()
 		  FROM users u
 		 WHERE t.token_hash = $1 AND t.revoked_at IS NULL
-		   AND u.id = t.owner_id AND u.disabled_at IS NULL
+		   AND u.id = t.owner_id AND u.disabled_at IS NULL AND u.id IN (`+users.PersonIDs+`)
 		RETURNING `+prefixed("t", runnerCols), HashRunnerToken(token)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RunnerToken{}, ErrBadRunnerToken

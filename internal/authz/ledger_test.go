@@ -77,7 +77,7 @@ var (
 	//   - agentOwner: the agent-named SSE nudge (BroadcastAgentChanged) is
 	//     handed only a NAME, by loops with no principal; the owner the event
 	//     reaches is read here.
-	//   - roleOfChecked (and roleOf through it): the request principal's ROLE, read inside the wrappers before
+	//   - accountOfChecked (and roleOf through principalFor): the request principal's ROLE, kind and team memberships, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
 		"internal/agentkickoff.(*Deliverer).Run",
@@ -93,7 +93,7 @@ var (
 		// for every owner. Nothing read under System is returned to a caller.
 		"internal/api.(*Server).AgentWatchdogPass",
 		"internal/api.outcomeCtx",
-		"internal/api.(*Server).roleOfChecked", // roleOf delegates to it; the connector door calls it directly
+		"internal/api.(*Server).accountOfChecked", // principalFor (and roleOf through it): role, kind and team memberships
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
 		// path asks it from loops with no principal (and a member's principal
@@ -397,8 +397,8 @@ var (
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

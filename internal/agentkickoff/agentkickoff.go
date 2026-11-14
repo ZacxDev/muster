@@ -349,7 +349,18 @@ func (d *Deliverer) Run(ctx context.Context, interval time.Duration) {
 	}
 	// Deferred FIRST so it runs LAST: Done closes only once d.Wait has returned,
 	// i.e. once every turn this Run started has written its outcome.
-	defer d.doneOnce.Do(func() { close(d.done) })
+	//
+	// 🔴 AND ONLY WHEN Run STOPPED BECAUSE ITS ctx ENDED. A Run that PANICS
+	// is restarted by its supervisor (api.Supervise); closing Done on that
+	// unwind would tell shutdown "finished" while the restarted Run still has
+	// turns in flight, and shutdown would stop waiting for them
+	// (TestAPanickedRunDoesNotSayDoneAndTheRestartedRunIsWaitedFor).
+	stopped := false
+	defer func() {
+		if stopped {
+			d.doneOnce.Do(func() { close(d.done) })
+		}
+	}()
 	defer d.Wait()
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -359,6 +370,7 @@ func (d *Deliverer) Run(ctx context.Context, interval time.Duration) {
 		}
 		select {
 		case <-ctx.Done():
+			stopped = true
 			return
 		case <-t.C:
 		}

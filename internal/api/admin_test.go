@@ -42,6 +42,16 @@ func (m *memAccounts) RedeemInvite(context.Context, []byte, string, string, func
 	return users.User{}, users.ErrInvalidInvite
 }
 func (m *memAccounts) ListUsers(context.Context) ([]users.User, error) { return nil, nil }
+func (m *memAccounts) CreateTeam(context.Context, users.Actor, string, int64) (users.Team, error) {
+	return users.Team{}, errMemAccounts
+}
+func (m *memAccounts) SetTeamMember(context.Context, users.Actor, int64, int64, authz.TeamRole) error {
+	return errMemAccounts
+}
+func (m *memAccounts) RemoveTeamMember(context.Context, users.Actor, int64, int64) error {
+	return errMemAccounts
+}
+func (m *memAccounts) ListTeams(context.Context) ([]users.Team, error) { return nil, nil }
 func (m *memAccounts) SetRole(context.Context, users.Actor, int64, authz.Role) (users.User, error) {
 	return users.User{}, errMemAccounts
 }
@@ -151,8 +161,15 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A team, managed by the target, for the /admin/teams routes.
+	team, err := users.NewPG(w.pool).CreateTeam(ctx, users.Actor{UserID: 1, Via: authz.ViaSession}, "walk-team-"+w.suffix, cID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE user_id = $1 OR team_id = $2`, cID, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE kind = 'team' AND display_name LIKE 'walk-%'`)
 		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE user_id = 1 OR object IN ($1, $2)`, users.UserObject(cID), "invite:"+strconv.FormatInt(inv.ID, 10))
 		_, _ = w.pool.Exec(bg, `DELETE FROM invites WHERE id = $1 OR created_by = 1 AND claim_user_id IS NULL`, inv.ID)
 		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, cID)
@@ -164,16 +181,20 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 		}
 	}
 	sort.Strings(routes)
-	// 9 admin pages + the instance branding's 3 writes (whose admin controls
-	// are TestBrandingWritesAreAnAdminsOnly and, for the app-icon removal,
-	// TestAnAppIconBecomesEveryIconAndRollsTheETag: this world has no branding
-	// store).
-	if len(routes) != 12 {
-		t.Fatalf("the admin-only class has %d routes, want 12: %v", len(routes), routes)
+	// 9 admin pages + 4 team pages + the instance branding's 3 writes (whose
+	// admin controls are TestBrandingWritesAreAnAdminsOnly and, for the
+	// app-icon removal, TestAnAppIconBecomesEveryIconAndRollsTheETag: this
+	// world has no branding store).
+	if len(routes) != 16 {
+		t.Fatalf("the admin-only class has %d routes, want 16: %v", len(routes), routes)
 	}
+	cs, ts := strconv.FormatInt(cID, 10), strconv.FormatInt(team.ID, 10)
 	concrete := func(route string) (string, string, string) {
 		method, path, _ := strings.Cut(route, " ")
-		path = strings.Replace(path, "{id}", strconv.FormatInt(cID, 10), 1)
+		if strings.HasPrefix(path, "/admin/teams/") {
+			path = strings.Replace(strings.Replace(path, "{id}", ts, 1), "{user}", cs, 1)
+		}
+		path = strings.Replace(path, "{id}", cs, 1)
 		if strings.HasPrefix(path, "/admin/invites/") {
 			path = "/admin/invites/" + strconv.FormatInt(inv.ID, 10) + "/revoke"
 		}
@@ -183,12 +204,18 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 			body = "role=admin"
 		case "POST /admin/invites":
 			body = "role=member"
+		case "POST /admin/teams":
+			body = "name=walk-second-" + w.suffix + "&manager=" + cs
+		case "POST /admin/teams/{id}/members":
+			body = "user=" + cs + "&role=operator"
 		}
 		return method, path, body
 	}
 	row := func() string {
 		var js string
-		_ = w.pool.QueryRow(ctx, `SELECT (SELECT row_to_json(u)::text FROM users u WHERE id=$1) || (SELECT row_to_json(i)::text FROM invites i WHERE id=$2)`, cID, inv.ID).Scan(&js)
+		_ = w.pool.QueryRow(ctx, `SELECT (SELECT row_to_json(u)::text FROM users u WHERE id=$1) || (SELECT row_to_json(i)::text FROM invites i WHERE id=$2)
+			|| (SELECT COALESCE(json_agg(m ORDER BY m.team_id, m.user_id)::text, '[]') FROM team_members m WHERE m.user_id = $1)
+			|| (SELECT count(*)::text FROM users WHERE kind = 'team')`, cID, inv.ID).Scan(&js)
 		return js
 	}
 	before := row()
@@ -230,17 +257,22 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 
 	// --- the CONTROL: the admin's session, each route's working answer ---
 	wantOp := map[string]int{
-		"GET /admin/users":                  http.StatusOK,
-		"GET /admin/invites":                http.StatusOK,
-		"POST /admin/invites":               http.StatusOK,
-		"POST /admin/users/{id}/disable":    http.StatusSeeOther,
-		"POST /admin/users/{id}/enable":     http.StatusSeeOther,
-		"POST /admin/users/{id}/role":       http.StatusSeeOther,
-		"POST /admin/users/{id}/reset-link": http.StatusOK,
-		"POST /admin/invites/{id}/revoke":   http.StatusSeeOther,
+		"GET /admin/users":                             http.StatusOK,
+		"GET /admin/invites":                           http.StatusOK,
+		"POST /admin/invites":                          http.StatusOK,
+		"POST /admin/users/{id}/disable":               http.StatusSeeOther,
+		"POST /admin/users/{id}/enable":                http.StatusSeeOther,
+		"POST /admin/users/{id}/role":                  http.StatusSeeOther,
+		"POST /admin/users/{id}/reset-link":            http.StatusOK,
+		"POST /admin/invites/{id}/revoke":              http.StatusSeeOther,
+		"GET /admin/teams":                             http.StatusOK,
+		"POST /admin/teams":                            http.StatusSeeOther,
+		"POST /admin/teams/{id}/members":               http.StatusSeeOther,
+		"POST /admin/teams/{id}/members/{user}/remove": http.StatusSeeOther,
 	}
 	order := []string{"GET /admin/users", "GET /admin/invites", "POST /admin/invites", "POST /admin/users/{id}/disable",
-		"POST /admin/users/{id}/enable", "POST /admin/users/{id}/role", "POST /admin/users/{id}/reset-link", "POST /admin/invites/{id}/revoke"}
+		"POST /admin/users/{id}/enable", "POST /admin/users/{id}/role", "POST /admin/users/{id}/reset-link", "POST /admin/invites/{id}/revoke",
+		"GET /admin/teams", "POST /admin/teams", "POST /admin/teams/{id}/members", "POST /admin/teams/{id}/members/{user}/remove"}
 	for _, route := range order {
 		m, p, b := concrete(route)
 		rec := w.do(w.h, m, p, b, cred{sessionUser: w.op.uid})
@@ -250,9 +282,27 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 		if route == "GET /admin/users" && !strings.Contains(rec.Body.String(), "c-target@iso.test") {
 			t.Error("CONTROL: the admin's user list does not show the target, so a member's clean body proves nothing")
 		}
+		if route == "GET /admin/teams" && !strings.Contains(rec.Body.String(), "c-target@iso.test") {
+			t.Error("CONTROL: the admin's team list does not show the target as a member, so a member's clean body proves nothing")
+		}
 	}
 	if after := row(); after == before {
 		t.Error("CONTROL: the admin's walk changed nothing, so the member's unchanged rows prove nothing")
+	}
+	// A team is not a user to the user pages: every /admin/users/{id} action
+	// on the team's id is a 404, and the team is not in the user list. (The
+	// target's id answered each of these above, so the 404 is about the kind.)
+	for _, route := range []string{"POST /admin/users/{id}/disable", "POST /admin/users/{id}/enable", "POST /admin/users/{id}/role",
+		"POST /admin/users/{id}/reset-link", "POST /admin/users/{id}/passkeys/delete"} {
+		method, path, _ := strings.Cut(route, " ")
+		_, _, body := concrete(route)
+		rec := w.do(w.h, method, strings.Replace(path, "{id}", ts, 1), body, cred{sessionUser: w.op.uid})
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("the admin's %s on the TEAM's id: %d, want 404\n  body: %s", route, rec.Code, truncate(rec.Body.String(), 200))
+		}
+	}
+	if rec := w.do(w.h, "GET", "/admin/users", "", cred{sessionUser: w.op.uid}); strings.Contains(rec.Body.String(), `data-user-id="`+ts+`"`) {
+		t.Error("the user list lists the team")
 	}
 }
 

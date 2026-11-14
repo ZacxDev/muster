@@ -540,13 +540,19 @@ func TestAnApprovalOnAnUnreadableRoleIsRefusedAndRetiresNothing(t *testing.T) {
 			case "tab":
 				out = f.call(t, http.MethodPost, "/ui/connector-requests/"+strconv.FormatInt(gb, 10)+"/approve", nil, f.operator()).Body.String()
 			case "mcp":
-				out, _ = f.decide(t, f.ws, focusSID, gb, "approve")
+				// The door itself refuses an unreadable account now (admit fails
+				// closed, #654), so the tool is never reached: read the raw answer.
+				_, _, out = f.mirrorRPC(t, mirrorAs(f.ws, focusSID), mcpToolCall("connector_request_decide",
+					map[string]any{"id": gb, "decision": "approve"}))
 			case "create":
 				body, hdr := form(url.Values{"request_id": {strconv.FormatInt(gb, 10)}, "preset": {"custom"}, "name": {name},
 					"hosts": {"api.example.com"}, "scheme": {"bearer"}, "secret": {connTestSecret}})
 				out = f.call(t, http.MethodPost, "/connectors", body, merge(f.operator(), hdr)).Body.String()
 			}
-			if !strings.Contains(strings.ToLower(out), "role could not be read just now") {
+			// The handler's own refusal ("role could not be read just now") or,
+			// since #654, admit's ("your account could not be read just now"):
+			// either way a try-again, and below, nothing changed.
+			if !strings.Contains(strings.ToLower(out), "could not be read just now") {
 				t.Fatalf("an approval on an unreadable role was not refused with a try-again message:\n%.600s", out)
 			}
 			if g := f.grantRow(t, gb); g.status != "pending" {
@@ -564,7 +570,16 @@ func TestAnApprovalOnAnUnreadableRoleIsRefusedAndRetiresNothing(t *testing.T) {
 			}
 
 			fail.Store(false) // CONTROL
-			f.approveOn(t, door2tab(door), gb)
+			if door == "create" {
+				// Since #654 the refused create never reached its handler, so
+				// the connector it names was not made: the control is the
+				// same create with the role readable.
+				body, hdr := form(url.Values{"request_id": {strconv.FormatInt(gb, 10)}, "preset": {"custom"}, "name": {name},
+					"hosts": {"api.example.com"}, "scheme": {"bearer"}, "secret": {connTestSecret}})
+				f.call(t, http.MethodPost, "/connectors", body, merge(f.operator(), hdr))
+			} else {
+				f.approveOn(t, door2tab(door), gb)
+			}
 			if g := f.grantRow(t, gb); g.status != "approved" || (door != "create" && g.source != connectors.SourceApp) {
 				t.Fatalf("control: once the role reads the approval lands: %+v", g)
 			}

@@ -40,6 +40,7 @@ import (
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -501,4 +502,9 @@ func (stubUsers) Role(_ context.Context, id int64) (authz.Role, error) {
 		return authz.RoleAdmin, nil
 	}
 	return authz.RoleMember, nil
+}
+
+func (u stubUsers) Account(ctx context.Context, id int64) (users.Account, error) {
+	r, err := u.Role(ctx, id)
+	return users.Account{Role: r}, err
 }

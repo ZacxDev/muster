@@ -245,6 +245,15 @@ type Principal struct {
 	// it is not — connectors.ReconcileGrant refuses to, and the connector door
 	// answers a retryable 503 instead of serving it.
 	RoleUncertain bool
+	// Team is true when UserID names a TEAM (users.kind = 'team',
+	// docs/design/team-sharing.md). A team owns things; nobody signs in as
+	// one. WithPrincipal refuses such a principal, and internal/api's admit
+	// answers 403 before it gets there.
+	Team bool
+	// Teams is the acting person's team memberships, read with the role (one
+	// read per request, internal/users Account). Phase 1 of team sharing reads
+	// it for nothing: no row a team owns is visible to a member yet.
+	Teams Memberships
 }
 
 // All reports whether this principal acts across every user's rows — true
@@ -272,6 +281,9 @@ type principalKey struct{}
 // ViaSystem, everybody). internal/api's recover middleware turns the panic into
 // a 500 for that one request.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	if p.Team {
+		panic(fmt.Sprintf("authz: request principal names team %d; a team never signs in", p.UserID))
+	}
 	if p.UserID <= 0 {
 		panic(fmt.Sprintf("authz: request principal with no user (UserID %d)", p.UserID))
 	}

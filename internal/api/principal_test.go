@@ -220,7 +220,11 @@ var routeVias = map[authz.Via][]string{
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",
+		"GET /admin/teams",
 		"GET /admin/users",
+		"POST /admin/teams",
+		"POST /admin/teams/{id}/members",
+		"POST /admin/teams/{id}/members/{user}/remove",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",

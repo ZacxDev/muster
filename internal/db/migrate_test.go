@@ -24,7 +24,7 @@ import (
 // applied. (0005 dropped the five privilege and runbook tables 0001 created;
 // 0006 added users, invites, api_tokens and audit_log; 0008 added mirror_tokens;
 // 0011 added user_credentials; 0012 added flow_jobs and flow_runner_tokens;
-// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes; 0043 added connector_standing_grants; 0048 added suggest_preferences; 0049 added suggest_usage; 0054 added plugin_threads; 0055 added session_prs; 0056 added mail_resumes; 0058 added device_challenges; 0059 dropped github_connection; 0060 added chief_preferences; 0064 added chief_nudges; 0066 added cc_account_failovers; 0072 added task_ref_writes; 0073 added session_episodes; 0075 added officer_llm_usage; 0082 added officer_judgement_sessions; 0086 added session_tags; 0089 added asks; 0093 added host_dispatches; 0094 added notify_preferences; 0100 added chief_proposals; 0104 added plugin_handoffs; 0105 added instance_branding; 0107 added routing_rules, chief_turn_usage and plugin_message_handling; 0108 added cc_account_usage; 0113 added ask_attempts; 0116 added pages, page_versions, page_links and page_responses; 0118 added officer_types, officer_defs, officer_items and officer_schedules; 0119 added officer_pr_loops; 0122 added plugin_pair_requests and plugin_pair_decoys; 0125 added officer_host_spawns.)
+// 0013 added push_subscriptions and push_preferences; 0014 added flow_requests; 0015 added plugins and plugin_messages; 0016 added plugin_reply_drafts; 0017 added pins; 0018 added recents; 0019 added send_queue; 0020 added agent_focus; 0021 added session_routes; 0022 added agent_focus_history; 0024 added uploads; 0025 added attention_asks; 0037 added jobs; 0039 added devices and device_pairing_codes; 0043 added connector_standing_grants; 0048 added suggest_preferences; 0049 added suggest_usage; 0054 added plugin_threads; 0055 added session_prs; 0056 added mail_resumes; 0058 added device_challenges; 0059 dropped github_connection; 0060 added chief_preferences; 0064 added chief_nudges; 0066 added cc_account_failovers; 0072 added task_ref_writes; 0073 added session_episodes; 0075 added officer_llm_usage; 0082 added officer_judgement_sessions; 0086 added session_tags; 0089 added asks; 0093 added host_dispatches; 0094 added notify_preferences; 0100 added chief_proposals; 0104 added plugin_handoffs; 0105 added instance_branding; 0107 added routing_rules, chief_turn_usage and plugin_message_handling; 0108 added cc_account_usage; 0113 added ask_attempts; 0116 added pages, page_versions, page_links and page_responses; 0118 added officer_types, officer_defs, officer_items and officer_schedules; 0119 added officer_pr_loops; 0122 added plugin_pair_requests and plugin_pair_decoys; 0125 added officer_host_spawns; 0126 added team_members.)
 //
 // 🔴 A LEDGER, NOT A SPOT CHECK. It fails when the set GROWS or SHRINKS, so a
 // table quietly dropped from 0001 reddens here and a table added without a
@@ -103,6 +103,7 @@ var tablesThisSchemaMustHave = []string{
 	"suggest_usage",
 	"task_ref_writes",
 	"task_sessions",
+	"team_members",
 	"uploads",
 	"user_credentials",
 	"users",
@@ -163,6 +164,9 @@ var tablesWithNoIdentityColumn = []string{
 	// (0054), for the agent_retired_names reason.
 	"plugin_threads",
 	"task_sessions",
+	// team_members is keyed by (team_id, user_id): one role per person per
+	// team (0126), for the agent_retired_names reason.
+	"team_members",
 }
 
 func migrated(t *testing.T) (context.Context, *pgxpool.Pool) {

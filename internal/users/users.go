@@ -39,6 +39,20 @@ type Store interface {
 	// Role returns the role of user id. ErrNotFound when there is no such
 	// user. An unknown role value is an error, never a guess.
 	Role(ctx context.Context, id int64) (authz.Role, error)
+	// Account returns everything a request principal is built from, in ONE
+	// read: the role, whether the row is a team (which no request may act
+	// as), and the person's team memberships. ErrNotFound when there is no
+	// such user.
+	Account(ctx context.Context, id int64) (Account, error)
+}
+
+// Account is what a request principal is built from (internal/api
+// principalFor): users.role, users.kind and team_members, read together so
+// one request has one consistent view of them.
+type Account struct {
+	Role  authz.Role
+	Team  bool
+	Teams authz.Memberships
 }
 
 // User is one muster account, as the session tier needs it. No Role: see the
@@ -108,6 +122,64 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 	}
 }
 
+// Account reads users.role and users.kind and the person's team_members rows
+// in one statement. Like Role, the api package calls it under authz.System:
+// it is how a request LEARNS who it is. An unknown role or team role is an
+// error, never a guess.
+func (s *PGStore) Account(ctx context.Context, id int64) (Account, error) {
+	var role, kind string
+	var teams []int64
+	var roles []string
+	err := s.pool.QueryRow(ctx, `SELECT u.role, u.kind,
+			COALESCE(array_agg(m.team_id ORDER BY m.team_id) FILTER (WHERE m.team_id IS NOT NULL), '{}'),
+			COALESCE(array_agg(m.role ORDER BY m.team_id) FILTER (WHERE m.team_id IS NOT NULL), '{}')
+		FROM users u LEFT JOIN team_members m ON m.user_id = u.id
+		WHERE u.id = $1 GROUP BY u.id`, id).Scan(&role, &kind, &teams, &roles)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	r := authz.Role(role)
+	if r != authz.RoleAdmin && r != authz.RoleMember {
+		return Account{}, fmt.Errorf("users: user %d has unknown role %q", id, role)
+	}
+	var a Account
+	a.Role = r
+	switch kind {
+	case KindPerson:
+	case KindTeam:
+		a.Team = true
+	default:
+		return Account{}, fmt.Errorf("users: user %d has unknown kind %q", id, kind)
+	}
+	ms := make([]authz.Membership, len(teams))
+	for i := range teams {
+		ms[i] = authz.Membership{Team: teams[i], Role: authz.TeamRole(roles[i])}
+	}
+	if a.Teams, err = authz.NewMemberships(ms); err != nil {
+		return Account{}, fmt.Errorf("users: user %d: %w", id, err)
+	}
+	return a, nil
+}
+
+// PersonIDs is THE "owners who are people" predicate, as a subquery: every
+// users-table read outside this package that yields a user to act as, notify,
+// look up by name or authenticate a credential for filters through it
+// (`<col> IN (` + users.PersonIDs + `)`). A team (users.kind = 'team') owns
+// things and is never acted as: a per-owner background loop that met one
+// would build a principal for it, and authz.WithPrincipal refuses that.
+// TestEveryUsersReadIsLedgered pins every users-table read in the module to a
+// class, and requires the person-only class to use this.
+const PersonIDs = `SELECT id FROM public.users WHERE kind = 'person'`
+
+// The two kinds of users row (migration 0126).
+const (
+	KindPerson = "person"
+	KindTeam   = "team"
+)
+
 // sys is the store's one authz.System call. See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
@@ -131,12 +203,14 @@ func (s *PGStore) BySub(ctx context.Context, sub string) (User, error) {
 		// which must read as "no such user", not as a 500.
 		return User{}, ErrNotFound
 	}
-	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE gotrue_sub = $1::uuid`, sub))
+	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE gotrue_sub = $1::uuid AND kind = 'person'`, sub))
 }
 
-// ByID returns user id.
+// ByID returns user id, a PERSON: a team row (migration 0126) is ErrNotFound
+// here, as it is to BySub and IDByEmail, so no sign-in, session or admin
+// action can resolve to one. Teams are read through teams.go.
 func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
-	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE id = $1`, id))
+	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE id = $1 AND kind = 'person'`, id))
 }
 
 // SetDisabled sets (or clears) disabled_at and returns the updated row.
@@ -421,7 +495,7 @@ func LockCredentialsTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // this id (internal/api/signin_limiter.go).
 func (s *PGStore) IDByEmail(ctx context.Context, email string) (int64, bool, error) {
 	var id int64
-	err := s.pool.QueryRow(sys(ctx), `SELECT id FROM users WHERE lower(email) = lower($1)`, strings.TrimSpace(email)).Scan(&id)
+	err := s.pool.QueryRow(sys(ctx), `SELECT id FROM users WHERE lower(email) = lower($1) AND kind = 'person'`, strings.TrimSpace(email)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -468,7 +542,7 @@ func (s *PGStore) CreateClaimInvite(ctx context.Context, tokenHash []byte, claim
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var unbound bool
-	if err := tx.QueryRow(ctx, `SELECT gotrue_sub IS NULL FROM users WHERE id = $1 FOR UPDATE`, claimUserID).Scan(&unbound); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT gotrue_sub IS NULL FROM users WHERE id = $1 AND kind = 'person' FOR UPDATE`, claimUserID).Scan(&unbound); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

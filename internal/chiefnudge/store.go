@@ -194,7 +194,7 @@ func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 // Owners implements Store.
 func (p *PG) Owners(ctx context.Context) ([]Owner, error) {
-	rows, err := p.pool.Query(sys(ctx), `SELECT id, coalesce(display_name, '') FROM users WHERE disabled_at IS NULL ORDER BY id`)
+	rows, err := p.pool.Query(sys(ctx), `SELECT id, coalesce(display_name, '') FROM users WHERE disabled_at IS NULL AND id IN (`+users.PersonIDs+`) ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

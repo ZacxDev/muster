@@ -214,7 +214,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	err := s.pool.QueryRow(ctx, `SELECT t.id, t.user_id, t.name, t.created_at, t.last_used_at, t.revoked_at, t.scope,
 			u.disabled_at IS NOT NULL
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
-		WHERE t.token_hash = $1`, Hash(token)).
+		WHERE t.token_hash = $1 AND u.id IN (`+users.PersonIDs+`)`, Hash(token)).
 		Scan(&t.ID, &t.UserID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.Scope, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken

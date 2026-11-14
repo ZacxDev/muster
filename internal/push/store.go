@@ -401,7 +401,7 @@ func (s *PGStore) ForOwner(ctx context.Context, owner int64) ([]Device, error) {
 	return collect(s.pool.Query(sys(ctx), `SELECT `+qualifiedCols+` FROM push_subscriptions p
 		JOIN users u ON u.id = p.owner_id
 		LEFT JOIN devices d ON d.id = p.device_id
-		WHERE p.owner_id = $1 AND (p.kind = 'browser' OR (d.id IS NOT NULL AND `+devices.LiveSQL("d", "u")+`))
+		WHERE p.owner_id = $1 AND u.id IN (`+users.PersonIDs+`) AND (p.kind = 'browser' OR (d.id IS NOT NULL AND `+devices.LiveSQL("d", "u")+`))
 		ORDER BY p.id`, owner))
 }
 

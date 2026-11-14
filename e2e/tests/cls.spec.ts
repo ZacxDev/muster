@@ -73,6 +73,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /answers': { where: 'signed-in', url: '/answers', ready: '[data-testid="answers-page"]' },
   'GET /admin/invites': { where: 'signed-in', url: '/admin/invites', ready: '#invite-ttl' },
   'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
+  'GET /admin/teams': { where: 'signed-in', url: '/admin/teams', ready: '#team-name' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',

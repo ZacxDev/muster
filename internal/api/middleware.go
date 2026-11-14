@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/url"
@@ -109,6 +110,77 @@ func safeGo(logger *log.Logger, what string, fn func()) {
 		defer recoverGoroutine(logger, what)
 		fn()
 	}()
+}
+
+// SuperviseBackoff is how long Supervise waits before restarting a loop that
+// panicked; it doubles per consecutive panic, up to SuperviseBackoffMax. A run
+// that stayed up at least SuperviseHealthy before it panicked counts as
+// healthy, and the wait starts again from SuperviseBackoff. Vars so a test
+// need not wait.
+var (
+	SuperviseBackoff    = 5 * time.Second
+	SuperviseBackoffMax = 5 * time.Minute
+	SuperviseHealthy    = 5 * time.Minute
+)
+
+// superviseExited, when set (tests only), is called with a supervised loop's
+// name as its supervisor goroutine returns.
+var superviseExited func(name string)
+
+// Supervise runs a background loop in a goroutine and keeps it alive across a
+// PANIC: the panic is logged and counted (as safeGo's are), and the loop is
+// started again after SuperviseBackoff, doubling per consecutive panic and
+// starting again from SuperviseBackoff after a run that stayed up
+// SuperviseHealthy. A loop that RETURNS (its ctx ended, or it is switched off)
+// is not restarted, and a ctx that ends during the backoff ends the
+// supervisor without another run.
+//
+// 🔴 EVERY LOOP cmd/muster-server STARTS GOES THROUGH IT. A bare `go` has no
+// recover, so one panicking pass of one sweep killed the whole process — and,
+// started again, the same sweep panicked again: a crash loop (a team row met
+// by a per-owner sweep, #654 round 1). Restarting the LOOP rather than
+// recovering once and returning keeps the rest of that loop's work running.
+// A loop with a "finished" signal for shutdown must raise it only when it
+// RETURNS, never on a panic's unwind (agentkickoff.Deliverer.Done,
+// officers.Reconciler.Done): a restarted run is still working.
+func Supervise(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) {
+	safeGo(logger, "supervise "+name, func() {
+		if superviseExited != nil {
+			defer superviseExited(name)
+		}
+		wait := SuperviseBackoff
+		for {
+			started := time.Now()
+			if !runRecovered(ctx, logger, name, run) {
+				return
+			}
+			if time.Since(started) >= SuperviseHealthy {
+				wait = SuperviseBackoff
+			}
+			logger.Printf("supervise: %s panicked; restarting it in %s", name, wait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if wait *= 2; wait > SuperviseBackoffMax {
+				wait = SuperviseBackoffMax
+			}
+		}
+	})
+}
+
+// runRecovered runs run once and reports whether it panicked.
+func runRecovered(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) (panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+			metrics.Panics.WithLabelValues("goroutine").Inc()
+			logger.Printf("PANIC in background loop %s: %v\n%s", name, rec, debug.Stack())
+		}
+	}()
+	run(ctx)
+	return false
 }
 
 // recoverGoroutine is safeGo's recover: deferred DIRECTLY (recover only works

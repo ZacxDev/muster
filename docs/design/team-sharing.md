@@ -299,6 +299,19 @@ has one consistent view of its memberships. A principal whose `UserID` is a
 team (a team mirror token, a team officer's instance, the team chief) carries
 `muster.uid` = the team and no `muster.teams`.
 
+> **As shipped in phase 1 (#654), the encoding differs from the sketch above.**
+> `authz.Principal.Teams` is `authz.Memberships`, a canonical **string** of
+> `'<team>:<role>'` pairs sorted by team id, with the role spelled out:
+> `'12:operator,15:viewer'`, not `map[int64]TeamRole` and not `'12:2'`. The
+> reason is that `Principal` must stay comparable with `==`, which a map
+> would break, and many tests and call sites compare principals by value.
+> Phase 2's `muster.teams` setting carries that same string, so
+> `muster_team_role()` must parse the role **name** (for example, by mapping
+> `viewer`/`operator`/`manager` to 1/2/3), never cast it `::int`. The
+> function below is the phase-2 sketch and has not been updated for this.
+> `team_members.notify` (§1) was **not** created in phase 1. It arrives with
+> phase 2's push fan-out.
+
 A STABLE SQL function reads the setting, so a policy never queries
 `team_members` per row:
 
