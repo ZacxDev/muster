@@ -147,6 +147,11 @@ type toolCaller struct {
 	// that is not a mirrored session): what ownersOwnSession reads its
 	// dispatch tag from.
 	mirrorWindow string
+	// remote: a REMOTE caller (mirror_mcp.go's remoteMirrorCaller) — a
+	// session mirrored to another muster, whose host this one cannot see.
+	// hostStepUpGate gates its owner-authority tools whatever this muster's
+	// own officer registry says.
+	remote bool
 }
 
 // callerOfAgent is agent a as a tool caller.
