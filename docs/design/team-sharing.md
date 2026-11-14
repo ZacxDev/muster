@@ -1,6 +1,8 @@
 # Design: team sharing on one muster server
 
-**Status: decided. Phase 1 is in review; phase 2a is next (build order 1 → 2a → 3 & 4 → 2b).** The
+**Status: decided; phases 1, 2a, 3 and 4.1–4.4 are built (see each phase's "as built" note), and
+phase 2b is [designed, not built](#phase-2b-design-team-hosts-proposed-2026-11-14)
+(build order 1 → 2a → 3 & 4 → 2b).** The
 operator accepted every recommendation ([operator decisions](#operator-decisions-2026-11-13)). The operator asked for
 muster as "multiplayer": a personal instance for your own work, plus shared
 team instances where people share sessions and officers. The operator's
@@ -803,6 +805,10 @@ rule the later phases' rows will meet.
 
 ### Phase 2b: team hosts (built last)
 
+> **The full design is [Phase 2b design: team hosts](#phase-2b-design-team-hosts-proposed-2026-11-14)**
+> (proposed 2026-11-14), at the end of this page. The list below is the
+> original scope; where they differ, the design section is the newer word.
+
 - **Migration:** a team mirror token is admitted by the mirror token lookup
   (today it refuses a team owner), and `ViaMirrorHost` joins the
   team-carrying doors.
@@ -1117,3 +1123,531 @@ the next step. Each question below is decided as stated.
 | 12 | Push for team asks: every operator, or an on-call rota? | **Every operator and manager with `notify` on**, first answer wins, the rest withdrawn (the escalation precedent). A rota is a later feature. |
 | 13 | Who creates teams: admins only, or any user? | **Admins**, naming the first manager. A team grants access to machines, so creating one is an instance decision. |
 | 14 | Fix auth.md:56 to say the per-user chief is Kubernetes-only? | **Yes**, as a one-line docs PR, independent of this design. |
+
+## Phase 2b design: team hosts (proposed 2026-11-14)
+
+**Status: proposed, not built.** This section is the design for phase 2b. It
+replaces the bullet list under [Phase 2b](#phase-2b-team-hosts-built-last),
+which stays as the original scope. It is written in the style of the "as
+built" notes above: where it says how muster works today, it cites
+`file:line` at `main` `2ddbd7ba`, and the code is the authority. Every
+example is synthetic: team `platform` (id 12) with `ana` (7) as manager,
+`ben` (8) as operator and `cal` (9) as viewer; a team host `build-01`; and
+`dee` (10), who is not a member.
+
+2b has four parts: team hosts (A), team officers on team hosts (B), the rest
+of phase 3's deferred fan-out (C), and the schema and doors that carry them
+(D). Then come the tests that pin each one (E), the slice plan (F) and the
+forks left for the operator (G).
+
+### Rulings that bind this design
+
+These are operator decisions. The design takes them as given and does not
+reopen them.
+
+1. **A personal API token carries no team access.** There is one exception,
+   carried unchanged from phase 3: a token-driven chief turn may lend and
+   unlend the owner's own `officer_host_spawns` rows to a team the owner
+   operates. 2b adds **no** token door. A personal token cannot list, watch,
+   type into, mint for, or hear about a team host.
+2. **Team members have to trust each other** (4.4). An operator who can steer
+   a team agent or a team session can make it print a credential that every
+   member then reads. 2b's team host adds one more such credential, the team
+   mirror token, which every operator can read on the host anyway (below).
+   The remedy is the same: rotate.
+3. **Team officers' notifications go to operators and managers**, never to
+   viewers. 2b keeps this rule and extends it to every team-owned push.
+
+### What the code does today
+
+| fact | where |
+|---|---|
+| A team-owned mirror token is refused as if unknown: the lookup admits persons only | `internal/mirror/store.go:111-124` (`users.PersonIDs`, `:118`) |
+| The mirror token's MCP door attaches a principal for the token's owner at `ViaMirrorHost` | `internal/api/mirror_mcp.go:220-262` (`:261`) |
+| `ViaMirrorHost` is not a team-acting door, so a team principal there panics in `authz.WithPrincipal` | `internal/authz/authz.go:277-281` (9 doors) |
+| The doors that carry a person's memberships are `ViaSession` and `ViaDevice` only | `internal/authz/teams.go:120-123` |
+| One chokepoint decides whose hub entries a request touches: `owner(ctx)` is the principal's own id | `internal/mirror/service.go:347-353` |
+| The hub keys a host by `(owner, host)` and lists one owner's hosts | `internal/mirror/hub.go:534` (`Hosts(owner)`) |
+| A queued send is checked at delivery against the row's **owner**, not the person who queued it | `internal/api/send_queue.go:1067-1090` (`sendQueueOwnerRefusal`, `ByID(ctx, it.Owner)` at `:1071`) |
+| `send_queue.queued_by` already exists and cannot be forged | `0127`; `TestTheActingPersonCannotBeForged` |
+| `sendPush` is the one caller of `push.SendTo`, and it sends to one owner | `internal/api/push_routes.go:293-303` |
+| The minimal team fan-out (phase 3) reaches operators and managers for officer asks, escalations and drafts only, and is not withdrawn from them | `internal/api/team_notify.go:11-25`, `:79-93`; `internal/users/teams.go:268` |
+| An SSE stream subscribes to one owner | `internal/api/server.go:1133-1134` |
+| The disable sweep ends a disabled user's open streams every 10 s | `internal/api/accounts.go:131`, `:300` (`sweepDisabled`) |
+| Boot refuses a team owning a `"runtime": "host"` officer | `internal/officers/owners.go:58-59` (`ErrTeamHostOfficer`) |
+| On a machine that runs a host officer, every owner-authority tool files a confirmation card, answered only from the owner's paired phone | `internal/api/host_stepup.go:57-67` (`hostStepUpTools`), `:179`, owner check at `:252` |
+| `officer_host_spawns` is personal and lendable; a team-owned row is visible only to the team acting principal | `0130_team_officers.sql:112-143`; `lentOwned` in `internal/db/share_ledger_test.go:81` |
+| Focus titles are refreshed for persons only, on each person's own key | `internal/focus/pgstore.go:401-415` |
+| `muster-server mirror token create` mints as user 1 | `cmd/muster-server/mirror_cli.go:44-48` |
+
+> 🔴 **A delta from phase 2a's note.** 2a's text says "phase 2b adds
+> `ViaMirrorHost` to the team-carrying set". There are two sets, and 2b
+> needs the other one. A team mirror token acts **as the team** (the team
+> acting principal: `muster.uid` = the team, no `muster.teams`). So
+> `ViaMirrorHost` joins **`teamActingVias`**, the doors where something the
+> team owns acts as its owner. It does **not** join `teamVias`
+> (`Principal.TeamScope`), the doors where a person's memberships reach the
+> database. A person's mirror token still carries none of their teams.
+
+### A. Team hosts
+
+#### What a team host is
+
+A team host is a `muster-mirror` connected with a **team mirror token**: a
+`mirror_tokens` row with `owner_id` = the team. The hub then keys the host as
+`(12, build-01)` with no change to the hub, because to the hub a team is just
+another owner. `build-01` may also exist as `(7, build-01)`, a personal host
+of `ana`: host names are unique per owner, not per server.
+
+The recommended setup does not change (§3): a machine, or a dedicated Unix
+user on one, that the team treats as shared, running its own tmux server and
+its own `muster-mirror` with the team token. INSTALL.md's team section says
+so in one paragraph.
+
+#### Who sees and does what
+
+| on a team host's sessions | viewer | operator | manager | enforced by |
+|---|---|---|---|---|
+| see the host and its sessions in the sidebar and the switcher, with state and focus | ✓ | ✓ | ✓ | `mirror.Service.access` (need viewer) |
+| Rendered view, read-only terminal, subagents, uploads, the asks list | ✓ | ✓ | ✓ | `access` (viewer) + RLS (shared tables, read at viewer) |
+| scroll the terminal (moves copy-mode for every watcher; decision 7) | ✓ | ✓ | ✓ | `access` (viewer) |
+| open a preview that is already running (decision 8) | ✓ | ✓ | ✓ | `access` (viewer) |
+| start a preview, use the composer catalog | | ✓ | ✓ | `access` (operator) |
+| type: interactive terminal, send, queue a send, answer a session's question in the pane | | ✓ + step-up | ✓ + step-up | `access` (operator) + `stepup.Fresh`, checked in the plugin as today (`service.go:383`) |
+| answer the session's Attention asks (`attention_ask`) | | ✓ | ✓ | RLS (`attention_asks`, write at operator); no step-up (decision 11) |
+| cancel or edit **your own** queued send | | ✓ | ✓ | handler (`queued_by` = you) + RLS |
+| cancel **anyone's** queued send | | | ✓ | handler (`requireTeamManager`) + RLS |
+| mint, revoke and rotate the team's host tokens | | | ✓ + step-up | handler + RLS (`mirror_tokens` is managed, write at manager) |
+| the session page's chief panel, proposals, succession, suggested replies | | | | refused on a team session (below) |
+
+A viewer reads **everything** on screen and in the transcript, including any
+secret a command printed. An operator who types runs commands as the host's
+Unix user, so an operator on a team host has a shell there. Both are stated
+on the role picker and on `/teams/12/hosts` (§3, the threat model). Nothing
+here changes that.
+
+**Refused on a team session, at every role.** Each of these sends the
+session's transcript to a model on a **person's** credentials or a person's
+chief, which decision 10 forbids for a team's transcripts:
+
+- `/mirror/view/chief`, `/mirror/view/chief/log` (the viewer's personal chief);
+- `/mirror/view/proposal`, `/mirror/view/successor` (that chief's proposals and
+  succession);
+- `/mirror/view/suggest`, `/mirror/view/suggest/event` (suggested replies, on
+  the viewer's own suggest key).
+
+The page shows no panel and no chips there, and the routes answer 403. A team
+chief's panel on a team session is later work, once a team chief can bind to a
+team host ([G](#g-operator-to-decide), item 4).
+
+#### Who can send, and the step-up
+
+- **Step-up is per person and per browser session**, unchanged
+  ([sending-and-step-up.md](../sending-and-step-up.md#step-up-confirm-its-you)).
+  `ben`'s send into a team session needs `ben`'s fresh sign-in in the browser
+  he sends from. A paired phone's signed action counts, as it does today for
+  an ask's suggestion.
+- **A queued send is checked against the person who queued it.**
+  `sendQueueOwnerRefusal` (`send_queue.go:1067`) reads `it.Owner`. For a team
+  row that is the team, which is never disabled and has no cutoffs, so **today
+  a disabled `ben`'s team send would be delivered**. 2b reads `queued_by`
+  instead, and adds two checks in the same place: `ben` is still a member of
+  the row's owner, and his role there is at least operator. All of them are
+  read fresh at delivery. A row that fails is cancelled with a reason that
+  names the check ("Not sent: ben is no longer an operator of platform").
+- **Edits.** Only the person who queued a row may edit it, so
+  `edit_stepup_at` always belongs to `queued_by` and needs no `edited_by`
+  column. A manager may cancel any row, but not edit it.
+- **Cancelling on leaving.** `removeMemberTx` and a downgrade below operator
+  (`internal/users/teams.go:289`, `:397`, where `endLends` already runs)
+  cancel that person's queued rows on that team in the same transaction
+  (`CancelQueuedBy(team, user)`, under System). A disable and a sign-out
+  everywhere already reach `CancelOwner` (`send_queue.go:1126`). For a team
+  row that names the team, so they gain the sibling
+  `CancelQueuedBy(0, user)`, which covers every team.
+- **One queue per window, shared.** This is unchanged from §3. The composer
+  shows "queued by ben" on rows that are not yours.
+
+#### The chokepoint
+
+`owner(ctx)` (`service.go:347`) becomes `access(ctx, owner, need)`. It
+returns `owner` when the principal is that owner, or when the principal holds
+`need` in it, read from `Principal.TeamScope()`. Otherwise it returns
+`ErrNoPrincipal`, the error a missing session gets today, so it is no oracle.
+
+- **Every Service method takes the owner explicitly.** `Hosts` returns the
+  principal's own hosts plus every team host where `TeamScope` is at least
+  viewer, each `HostView` carrying `Owner`.
+- **Every page handler that takes `?host=&session=` takes `owner=` too.** A
+  missing `owner` means the principal's own, so existing links keep working.
+- **`TeamScope` is empty on every door but the browser session and the
+  phone.** So a personal token, an agent, a person's own mirror host and every
+  background loop reach no team host through `access`.
+- **The team acting principal reaches its own hub entries.** A principal whose
+  `UserID` is the team is the owner. That covers the team's officer runtime
+  spawning on its host, and the team chief (phase 4).
+
+#### Live streams follow the membership
+
+2a's round 1 carried this forward to 2b: an open stream keeps the principal it
+was admitted with. 2b closes it. `gotrueState.live`
+(`internal/api/accounts.go:159`) records, for each live request on a team
+owner, the team and the role it needs. `sweepDisabled` (`:300`) also re-reads
+those people's memberships each `DisableSweepInterval` (10 s), in one query.
+A request whose role in that team fell below its need is ended: a terminal, a
+Rendered stream, a send socket. An SSE stream subscribes to its person and
+each of the person's teams when it opens. On a removal or a downgrade below
+viewer the sweep ends the stream, and the client reconnects with the new set.
+A person **added** to a team sees the team's events from their next reconnect
+or page load. That is accepted, and stated.
+
+#### How a host joins and leaves a team
+
+- **Joining.** A manager mints a team token on `/teams/12/hosts`, signed in
+  and with step-up. The token is shown once. Then on the machine, as the Unix
+  user the team shares: install the token in that user's `muster-mirror`
+  token file and restart the unit. `muster-server mirror token create
+  build-01 --team 12` mints the same token from the server's shell, under
+  System, and writes an audit row with `via = cli`. A server shell can already
+  do anything, so this grants nothing new. It exists for a headless bootstrap.
+- **A personal host becoming a team host.** This is the same machine
+  reconnecting with a different token. Its old entry `(7, build-01)` goes
+  offline, and a new entry `(12, build-01)` comes online. 🔴 **Nothing the
+  sessions had moves.** Rows keyed by the old owner stay `ana`'s: her focus
+  history, episodes, asks, queued sends, session routes, pins and tags. This
+  is because no one moves a row into or out of a team (`owner_fixed`, 0127).
+  Her open asks from those sessions expire under today's host-offline rules,
+  and her queued sends are held and then cancelled under the same rules. The
+  team's view of the sessions starts empty. To keep history, `ana` runs two
+  daemons on two tmux servers (multi-tenant.md's one process per tenant), one
+  personal and one team, so nothing has to move. Whether to offer a "move
+  this host's history to the team" operation is [G](#g-operator-to-decide),
+  item 5.
+- **Leaving.** A manager revokes the team token. `watchToken`
+  (`service.go:314`) cuts the tunnel within the recheck, and the team's
+  sessions on that host vanish from every member's listing. Team rows stay the
+  team's. The machine may then reconnect with a personal token as a personal
+  host, and the team's rows never reach it.
+- **A member leaves while a host stays.** Decision 6 holds: the team's host
+  tokens are **marked rotate** (`mirror_tokens.rotate_at`, 0133), set in the
+  same transaction that removes an operator or a manager or downgrades one to
+  viewer. Managers see "rotate: ben left on <date>" on `/teams/12/hosts` until
+  the token is revoked and re-minted. A former operator had a shell on the
+  host and may have the token file. Nothing is auto-revoked.
+
+#### The team host's MCP door
+
+A team token's `POST /mirror/mcp` acts as the team acting principal. Row-level
+security then shows it **every** team row. So the reduced tool set (decision 5)
+is the whole guard, and it must be a ledger, not a list in prose.
+
+- **`teamHostTools`** (`internal/api/mirror_mcp.go`) classifies **every**
+  mirror door tool as `kept` or `refused` for a team token.
+  - **Kept:** `attention_ask`, `attention_wait`, `attention_cancel` (the
+    session's own asks); `tasks_list`, `task_get`, `task_comment`,
+    `task_set_status` (tasks the session created); `agent_report_done` (the
+    session's own dispatch); the officer instance tools and the connector
+    instance tools, which `hostOfficerMirrorTool` binds to a recorded spawn.
+  - **Refused**, by name, in the listing **and** at the call: every tool in
+    `hostStepUpTools` (`attention_answer`, `connector_request_decide`,
+    `plugin_draft_decide`, `agent_destroy`, `chief_restart`,
+    `dispatch_approve`, `route_reply`, `plugin_message_route`,
+    `plugin_request_decide`); every read of the owner's whole estate
+    (`agents_list`, `connector_requests_list`, `plugin_drafts_list`,
+    `plugin_messages_list`, `plugin_requests_list`); `dispatch_request` and
+    `chief_ask`; and the page tools (`page_create`, `page_update`, `page_get`,
+    `page_list`, `page_share_request`, `page_responses`, `page_link_revoke`).
+    `pages` is a personal table, so a team-owned page would be unreadable by
+    every member.
+  - **A new mirror tool fails the ledger** until it is classified. The test
+    pins the listing and the call to the same set.
+- **`route_reply` is refused in 2b.** Decision 5 kept it "for a route to
+  itself". But on a team host it relays text to an outside party as the team,
+  with no manager's approval, and that is the role table's manager-only
+  "approve outbound text". [G](#g-operator-to-decide), item 2 covers how it
+  could be re-admitted.
+- **Remote mode is refused for a team token.** A call marked
+  `X-Muster-Client: remote` with a team token is refused (401, "a team host
+  token is not served remotely"). Every `remoteMirrorTools` tool
+  (`mirror_mcp.go:188`) is an owner-authority or estate tool, and all of them
+  are refused above.
+- 🔴 **The agent-read ledgers move with it.** `agentReadCallers` and
+  `agentsListCallers` (`internal/api/team_agents_test.go:328-506`) class
+  several callers as "machine: a mirrored session's tool (no team
+  memberships)". That was true while the mirror door never carried a team. On
+  a team token it does: the principal *is* the team, and a team agent is its
+  own row. Each such entry must name the `teamHostTools` refusal that keeps a
+  team token from reaching it, or be re-classed. A new check fails when a
+  mirror-door caller in either ledger is neither.
+
+#### Asks, Attention and push from a team host
+
+- **A session's question is the team's.** `/mirror/ask` takes the owner from
+  the token (`mirror_ask.go:179`), so a team host's question opens under owner
+  12 with no change. Members see it at viewer, and an operator answers it.
+  Answering in the pane is a typed answer, so it needs step-up. Answering an
+  `attention_ask` needs none (decision 11).
+- **The paired phone.** The device answer route (`device_actions.go:51`)
+  admits a team ask when the device's person is at least operator in the team,
+  read fresh. `ViaDevice` already carries `TeamScope`, so RLS lets the read
+  through and the handler checks the role.
+- **First answer wins**, as today: the asks are conditional updates.
+- **Pushes** are part C.
+
+#### What a team host does not get in 2b
+
+- **Chief nudges, and the host-dispatch reconciler's per-person sweeps, on
+  team sessions.** The nudge sweep iterates persons
+  (`internal/chiefnudge/store.go:197`). A team session gets no nudge until a
+  team chief binds to team hosts.
+- **Focus titles on team sessions.** The refresher iterates persons and
+  spends each one's key (`internal/focus/pgstore.go:401-415`). A team session
+  has no focus title in 2b ([G](#g-operator-to-decide), item 4).
+- **A team chief dispatching onto a team host.** `host_dispatches` is
+  personal, and the team acting principal can write its own rows, so nothing
+  blocks it structurally. It is **UNVERIFIED** end to end, and it is
+  phase 4's.
+
+### B. Team officers on team hosts
+
+Phase 3 refused a team owning a `"runtime": "host"` officer
+(`owners.go:58`), because the hub never listed a team's host. 2b lifts that
+refusal.
+
+- **Boot.** `CheckOwners` drops `ErrTeamHostOfficer`. It gains one refusal
+  in its place: a team host officer that declares `connectors`
+  (`ErrTeamHostOfficerConnectors`). A team's connector requests would be
+  `connector_grants` rows owned by the team. Those are personal, and no
+  member can read them, so nobody could decide one. **UNVERIFIED:** whether a
+  team **pod** officer with `connectors` boots today. Nothing in phase 3
+  decides who decides its requests ([G](#g-operator-to-decide), item 3).
+- **Which host it runs on.** The officer's `host` names a host connected
+  **with the team's token**. The runtime acts as the team (`ViaOfficer`,
+  already team-acting), so every spawn, close and listing goes through
+  `access` with the team as owner and reaches only `(12, build-01)`. 🔴 It
+  can never spawn on `(7, build-01)`, a member's personal host of the same
+  name, even when that is the only `build-01` online. That is structural (the
+  hub key), and a test pins it. Boot cannot know which hosts will connect, so
+  it does not check the host. An offline host changes nothing until it is
+  back, as today. The host's `muster-mirror` needs `-interactive
+  -agent-spawn` and the officer's `repo`, as a personal host does
+  ([officers-builtin.md](../officers-builtin.md#officers-in-the-compose-stack-host-sessions)).
+- **The agent row.** Each instance's row is an `agents` row with `owner_id`
+  = the team and `runs_on_host` = `build-01`. `agents` is shared (0131), so
+  members read it at viewer. `agents_team_no_secret` keeps it credential-free,
+  and a host row holds none anyway. It is not in the agent list
+  (`hostRowConsumers`), and its drafts are the team's. A manager approves them
+  with step-up, never the team itself (`draft_approver`, 0130). Nothing about
+  this row is new: phase 3 already makes it for a team pod officer. What is new
+  is that its window is on a team host.
+- **Its spawn rows.** `officer_host_spawns` rows for a team officer are owned
+  by the team. Phase 3 made them visible only to the team acting principal. 2b
+  adds a read arm, `team_owner_read`: members read a team-owned spawn row at
+  viewer. Nobody but the team acting principal writes it. A team-owned row is
+  never lendable: `lend_target` already refuses it, because the actor is not
+  its owner. `/officers/spawns` groups them under the team.
+- **The step-up gate on decide tools.** On a machine that runs a host
+  officer, `hostStepUpGate` turns every owner-authority tool into a
+  confirmation card for the **owner's** paired phone (`host_stepup.go:252`
+  checks `p.UserID == pending.owner`). A team has no phone. On a team host
+  this never arises, because every tool in `hostStepUpTools` is already
+  refused for a team token (A, `teamHostTools`). So 2b puts `teamHostTools`
+  **before** the gate, a team machine files no card, and the gate's owner
+  check stays as it is. A test pins the ordering: on a team host running a
+  team officer, `plugin_draft_decide` answers the `teamHostTools` refusal and
+  files no Attention row.
+- **What the instance can do.** It runs as the team host's Unix user, so it
+  can do what every operator there can already do (§3's threat model). It adds
+  no reach a member lacks, but an operator can steer it, which is ruling 2,
+  accepted. Its drafts wait for a manager. It cannot decide anything through
+  the mirror door.
+- **Its notifications.** Its asks, escalations and drafts reach operators and
+  managers (ruling 3), now through part C's one fan-out, with the notify
+  switch, the team title and the withdrawal.
+
+### C. The rest of the fan-out
+
+Phase 3 shipped the minimal fan-out at three call sites, with no withdrawal
+(`team_notify.go:11-25`). 2b makes it one rule in one place.
+
+- **`sendPush` expands a team owner.** `sendPush` (`push_routes.go:296`) is
+  already the one caller of `SendTo`. When `owner` is a team, it sends to each
+  of the team's **operators and managers** with `notify = true`, persons only
+  and not disabled, read fresh (`TeamNotifyMembers`, gaining the `notify`
+  filter). It never sends to the team id itself, which has no devices. A
+  personal owner is unchanged. Every team-owned push now reaches members with
+  no per-site code. That covers a session that is waiting or done, a team
+  ask, a routed message, a task status, a team agent's outcome, a team
+  officer's ask, escalation or draft, and a host officer's confirmation card,
+  which a team host never files.
+- **`teamOfficerRecipients` and its three call sites go.** Kept beside the
+  new rule, they would send each member a second copy of each officer push.
+  This is a consolidation: the test that a member gets **exactly one** push
+  per team officer ask is red if either copy remains.
+- **Withdrawal.** A `TypeResolved` payload also goes through `sendPush`, so an
+  answered ask or a decided draft is withdrawn from the same predicate's
+  members. A person removed or downgraded between the send and the withdrawal
+  would keep the notification, so `removeMemberTx` and a downgrade below
+  operator send that person a withdrawal for each of the team's open asks and
+  pending drafts. That is bounded by the open set, and it runs after the
+  transaction commits ([G](#g-operator-to-decide), item 1).
+- **Per-member notify switch.** `team_members.notify BOOLEAN NOT NULL
+  DEFAULT true` (0133). It is the member's own setting. A manager does not
+  set it for them. It is toggled on **Account → Teams**, a list of your
+  teams, your role in each and the switch. The route is `POST
+  /account/teams/{id}/notify`, at session tier, same-origin. It is written
+  under System by `users.PGStore.SetTeamNotify`, which updates only `notify`,
+  only on the caller's own row, and only while they are a member. That entry
+  goes in the System ledger. Off means no push from that team at all; the
+  team's items are still on Attention.
+- **Team-labelled titles.** A team push's title is prefixed with the team's
+  display name, `platform · build-01 · tests are red`, in `sendPush` and
+  nowhere else, so no call site can forget it. The name is read under System
+  with the recipients. A personal push's title is unchanged.
+- **The throttle.** `pushLimit.allow` is per owner today. A team push counts
+  against each **recipient's** cap, so a busy team cannot push one person past
+  their cap, and a team cannot dodge the cap by being a new owner.
+
+### D. Schema and doors
+
+**Migration `0133_team_hosts`** (2b reserves **0133**; phase 4.5 may take
+**0132**, and open PR #669 also claims a number in this range, so 🔴 **re-check
+the next free number against `main` before building** and renumber the file and
+its version constant if it is taken). It is one migration, landed with the
+first slice, and every statement is idempotent for `db.RLSOn`.
+
+| change | what | rollback |
+|---|---|---|
+| `team_members.notify` | `BOOLEAN NOT NULL DEFAULT true` | drop the column; an older image never reads it |
+| `mirror_tokens.rotate_at`, `rotate_reason` | set when an operator or a manager leaves or drops to viewer, cleared by nothing: a token marked rotate stays marked until revoked | drop the columns |
+| `officer_host_spawns` policy `team_owner_read` | `FOR SELECT USING (owner_id = ANY (coalesce((SELECT muster_team_ids(1)), '{}')))` | drop the policy; team spawn rows are visible only to the team again |
+| `muster_team_hosts_rollback()` | drops all three, called from the header's rollback block as 2a's is | |
+
+No share class changes. `mirror_tokens` has been managed (read viewer, write
+manager) since 0127, and `send_queue`, `attention_asks`, `agent_focus`,
+`session_episodes` and `uploads` have been shared since 0127. 2b writes the
+first team rows into them.
+
+**Code-only door changes:**
+
+| door | change |
+|---|---|
+| `mirror.PGStore.Authenticate` | admits a team-owned token. The `users.PersonIDs` filter (`store.go:118`) becomes "a person, or a team". A disabled person's token stays refused, as today. |
+| `authz.teamActingVias` | gains `ViaMirrorHost`: 10 doors, or 11 after 4.5's `ViaTeamAdmin`. |
+| `authz.teamVias` | **unchanged**: `ViaSession`, `ViaDevice`. |
+| `/teams/{id}/hosts` (GET; POST mint, revoke) | new manager page: tokens, last use, online state, rotate marks. Mint and revoke need step-up. |
+| `/account/teams` (GET), `/account/teams/{id}/notify` (POST) | new member page and switch. |
+| mirror page and send-queue routes | take `owner=`, with a rule per route (`mirrorTeamRoutes`). |
+
+### E. What pins each change
+
+Each test below is named before it exists. "Red at base" means the test must
+be shown failing at the commit before its fix and green after it. "Invariant"
+means it pins a property the base never violated. Name it as such, and do not
+count it as regression coverage.
+
+| change | pinned by | kind |
+|---|---|---|
+| `ViaMirrorHost` is team-acting | `TestTheTeamActingViasAreExactlyTheListedDoors` (`internal/authz/teamacting_test.go`), set +1 | ledger |
+| …and still carries no person's teams | `TestEveryDoorSaysWhetherItCarriesTeams` (`internal/authz/teamscope_test.go`), unchanged | invariant |
+| a team token authenticates as the team | `TestATeamMirrorTokenAuthenticatesAsTheTeam` (`internal/mirror`) | red at base (it is refused) |
+| the reduced tool set | `TestEveryMirrorToolIsClassifiedForATeamHost` (the `teamHostTools` ledger, failing when the mirror tool set grows or shrinks) **and** `TestATeamHostRefusesEachRefusedToolAtTheCall`, which calls each refused tool directly, expects the `teamHostTools` refusal text, and checks that no row changed | ledger + behaviour |
+| remote mode is refused | `TestATeamTokenIsNotServedRemotely` | behaviour |
+| no mirror-door reader of a team agent is unrefused | `TestNoMirrorDoorAgentReaderIsReachableByATeamToken`, over `agentReadCallers` / `agentsListCallers` | seam ledger |
+| `access()` is the one chokepoint | `TestEveryMirrorServiceCallerNamesItsOwner`, an AST walk of `internal/api` calls to `mirror.Service`'s owner-taking methods, each classed `viewer-owner` / `own-only` / `team-acting`, failing on growth or shrinkage | ledger |
+| route rules | `TestEveryMirrorRouteHasATeamRule` (`mirrorTeamRoutes` against `routes.golden`, every `/mirror/`, `/ui/mirror/` and `/send-queue` route) | ledger |
+| the refused personal-model routes | a row each in the isolation walk: viewer, operator and manager all get 403 on `/mirror/view/chief` and `/mirror/view/suggest` for a team session | behaviour |
+| who sees and types | the isolation walk (`internal/api/isolation_test.go`): `dee` sees no `(12, build-01)` canary on any route or SSE event; `cal` watches and is refused every write; `ben` types with step-up and is refused the manager routes; nobody sees `ana`'s personal `build-01` | behaviour |
+| delivery checks `queued_by` | `TestATeamSendIsCheckedAgainstWhoQueuedIt`: `ben` queues, is disabled, and the row is cancelled with `SendQueueOwnerDisabled`, not delivered | **red at base** (base reads the team owner and delivers) |
+| a removed operator's sends | `TestLeavingATeamCancelsYourQueuedSendsToIt`: remove, then downgrade to viewer, in two cases | red at base |
+| streams follow the membership | `TestARemovedOperatorsTerminalClosesWithinTheSweep` (≤ one `DisableSweepInterval`), plus the same for a Rendered stream and an SSE stream | red at base |
+| rotate marks | `TestRemovingAnOperatorMarksTheTeamsHostTokensRotate`, with a viewer's removal as the negative control: no mark | red at base (no column) |
+| team spawn rows readable | `TestTheShareLedgerHoldsForEveryRole` (`internal/db/share_ledger_test.go`): the `lentOwned` check now expects `owner_isolation`, `team_lent_read` **and** `team_owner_read` on `officer_host_spawns`, a viewer reads a team-owned row, and no member writes one | ledger |
+| a team may own a host officer | `TestCheckOwnersAdmitsATeamHostOfficer`, and `TestCheckOwnersRefusesATeamHostOfficerWithConnectors` | red at base |
+| it spawns only on the team's host | `TestATeamHostOfficerNeverSpawnsOnAPersonsHost`: only `(7, build-01)` is online, and the spawn is refused as "host offline", with nothing sent to it | invariant of the hub key: state it as one |
+| no card on a team machine | `TestATeamHostFilesNoStepUpCard`: `plugin_draft_decide` on a team host running a team officer returns the `teamHostTools` refusal, and no Attention row is filed | behaviour |
+| one fan-out | `TestATeamPushReachesItsOperatorsAndManagers`: viewer, `notify = false`, removed and disabled get none; `TestATeamOfficerAskPushesEachMemberOnce` (consolidation: red if `teamOfficerRecipients` stays) | red at base for the non-officer kinds |
+| withdrawal | `TestAnAnsweredTeamAskIsWithdrawnFromItsMembers`, and the removed-member sweep case | red at base |
+| titles | `TestATeamPushTitleNamesTheTeam`, with a personal push as the control. The team name is a fixture value that no constant in the code equals | red at base |
+| the notify switch | `TestTheNotifySwitchIsTheMembersOwn`: a member flips only their own row; a non-member gets 404. `SetTeamNotify` goes in the System ledger (`internal/authz/ledger_test.go`) | ledger + behaviour |
+| the device route | `TestAPhoneAnswersATeamAskAtOperator`: viewer refused, operator answers | red at base |
+| 0133 rollback | the migration re-apply tests (`db.RLSOn`) and a `muster_team_hosts_rollback()` round trip | invariant |
+
+The acceptance checks are §2b's original list: the extended isolation walk;
+two operators answering one ask produce one answer; a removed operator's
+queued send is cancelled and their terminal closes within 10 s; and a team
+token's listing omits each refused tool **and** a direct call to it is
+refused. To that list 2b adds one live check on a real two-daemon host: one
+personal and one team `muster-mirror` on one machine show as two hosts, and
+neither's sessions appear under the other owner.
+
+### F. Slice plan (ranked)
+
+1. **2b.1: the fan-out, and migration 0133.** Part C, plus the whole
+   migration. It needs no team host, it fixes phase 3's team officers today
+   (no withdrawal, no switch, no titles), and it is the smallest slice. It
+   adds the Account → Teams page.
+2. **2b.2: the team token and its door.** `Authenticate` admits a team;
+   `ViaMirrorHost` becomes team-acting; `teamHostTools` and remote-mode
+   refusal; the agent-read ledger seam; `/teams/{id}/hosts` and `--team`;
+   rotate marks. 🔴 `teamHostTools` lands in the **same** PR as admitting
+   the token. Admitting the token first would hand every team host session
+   the team's whole power for one release. After this slice a team host
+   connects, and no member sees it yet.
+3. **2b.3: viewers.** `access()`, team hosts in `Hosts`, the read routes and
+   `mirrorTeamRoutes`, SSE team subscriptions, the membership sweep on
+   streams, the sidebar groups, and the refused personal-model routes.
+4. **2b.4: operators.** Typing and step-up through `access`, the send queue's
+   `queued_by` checks, `CancelQueuedBy`, edit and cancel rules, the pane
+   answer, and the device route. It needs 2b.3's stream sweep, so that a
+   removed operator's terminal closes.
+5. **2b.5: team officers on team hosts.** The `CheckOwners` change, the
+   connectors refusal, `team_owner_read` in use on `/officers/spawns`, the
+   gate-ordering test, and docs: `officers-builtin.md`, `auth.md`'s "team
+   hosts come later" lines, and `mirroring.md`'s team host section.
+
+2b.1 is independent of the others and can ship in parallel with 2b.2. The rest
+are in order. Each slice rolls back alone: 2b.2 by refusing team tokens again
+(team rows stay intact, and a team host's sessions are shown to nobody), and
+2b.1 by `muster_team_hosts_rollback()`.
+
+### G. Operator to decide
+
+1. **Who a withdrawal reaches.** (a) The team's current operators and
+   managers, plus a withdrawal sweep to a person when they are removed or
+   downgraded (no new table). (b) The exact recipients of each push, recorded
+   in a new `push_fanout(team, tag, user)` table. **Recommend (a).** It is
+   correct for everyone who still holds the role. It reaches a removed member
+   through the sweep. A new member gets a withdrawal for a push they never
+   had, which is harmless. (b) costs a table that grows with every push for a
+   tighter guarantee no one has asked for.
+2. **`route_reply` on a team host.** (a) Refuse it in 2b. (b) Admit it, and
+   on a machine running a team host officer file the confirmation card as a
+   team-owned ask, answerable only from a **manager's** paired phone with a
+   fresh role read. **Recommend (a).** (b) widens `hostDecisionForAnswer`'s
+   one-owner check (`host_stepup.go:252`), the gate's core property, for a
+   flow that also needs a team chief routing team plugin messages, which is
+   Kubernetes-only and not yet bound to team hosts. Re-admit it with that
+   work.
+3. **A team host officer that declares `connectors`.** (a) Refuse it at boot
+   until team connector requests have a decider. (b) Let a team manager
+   decide them, which shares `connector_grants` for team owners and so breaks
+   the "connectors are never shared" ruling. **Recommend (a).** The ruling
+   is explicit. A team officer that needs a connector is its own design,
+   which should also settle the same open question for team pod officers.
+4. **Model-backed extras on team sessions** (focus titles, suggested
+   replies, the chief panel). (a) Off on team sessions in 2b, and on later
+   only on the team's own credential and the team chief. (b) Run them on the
+   viewing member's own key and chief. **Recommend (a).** (b) puts the team's
+   transcript into a person's model calls, which decision 10 refuses for the
+   chief. The same reasoning applies to the others.
+5. **A personal host joining a team: its history.** (a) The history stays
+   personal, and the team starts empty. (b) A System "move host to team"
+   that rewrites `owner_id` on that host's rows, as the task move does.
+   **Recommend (a).** The host's rows hang off a dozen tables, some of which
+   (`session_tags`, `pins`, `recents`) are personal by class, so a move would
+   be partial by design. Two daemons are the supported way to have both.
+6. **The notify switch's scope.** (a) One switch per team. (b) Per team and
+   per kind (asks, drafts, session waits). **Recommend (a)** for 2b. It is
+   one column. A per-kind switch is a second table, and that can wait until a
+   member asks for it.
