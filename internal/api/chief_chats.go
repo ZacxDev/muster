@@ -186,8 +186,31 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 				return
 			}
 		}
-		s.answerSessionOpened(ctx, w, r, a, sess)
+		// A row's menu acted on ANOTHER chat than the one on screen: the
+		// operator stays on theirs (stayOnCurrent).
+		s.answerSessionOpened(ctx, w, r, a, s.stayOnCurrent(ctx, r, a, sid, sess))
 	}
+}
+
+// stayOnCurrent is the chat an action on chat touched leaves the operator on:
+// the chat they were ON (?current=, ui.ChiefCurrentParam) when the action was
+// on another chat — a Chats-tab row's ⋯ menu archiving, unarchiving or making
+// primary a chat that is not the open one — else fallback (the action's own
+// answer: the primary after archiving the open chat, the chat itself after
+// unarchiving or making it primary).
+//
+// 🔴 THE CURRENT CHAT IS READ AS AGENT a's, like every id this file takes: an
+// id that is not a's chat (another owner's, a typo) is ignored, never opened.
+func (s *Server) stayOnCurrent(ctx context.Context, r *http.Request, a agents.Agent, touched int64, fallback agents.ChatSession) agents.ChatSession {
+	cur, err := strconv.ParseInt(r.URL.Query().Get(ui.ChiefCurrentParam), 10, 64)
+	if err != nil || cur <= 0 || cur == touched {
+		return fallback
+	}
+	sess, err := s.ext.Agents.GetSession(ctx, cur)
+	if err != nil || sess.AgentID != a.ID {
+		return fallback
+	}
+	return sess
 }
 
 // handleChiefFreshPrimary handles POST /agents/{id}/sessions/fresh-primary: a

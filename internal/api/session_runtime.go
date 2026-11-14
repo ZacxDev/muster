@@ -223,6 +223,9 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "could not set the default session", http.StatusInternalServerError)
 		return
 	}
+	// Made primary from a row of ANOTHER chat than the open one: stay on the
+	// open one (stayOnCurrent, chief_chats.go).
+	sess = s.stayOnCurrent(ctx, r, a, sess.ID, sess)
 	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
 		s.writeChiefPanelBodyFor(ctx, w, a, strconv.FormatInt(sess.ID, 10))
 		return

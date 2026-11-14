@@ -346,9 +346,13 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// body is fine — fixed escapes overflow clipping (no ancestor transform).
 				Div(ID("task-modal")),
 				// The agent's focus history (focus_history.go): a dialog the header's
-				// focusHistoryButton opens.
-				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
-				g.If(v.FocusHistory != "", focusHistoryScript()),
+				// focusHistoryButton opens. The chief's page has the mirrored
+				// session's sheet instead (chat_index.go), its Chats tab first and
+				// its focus history a tab.
+				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
+				g.If(v.ChiefChat == nil && v.FocusHistory != "", focusHistoryScript()),
+				g.If(v.ChiefChat != nil, chatIndexSheetWith(v.FocusHistory, "agent-chats:"+v.Name, chiefChatsPanel(v), chatIndexPartialPage)),
+				g.If(v.ChiefChat != nil, chatIndexScript()),
 				// The rename form the header's ⋯ menu opens (agent_actions.go).
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
 				// Places the header's full-title popover (agentTitle) beside its "…"
@@ -428,6 +432,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
+				// A chief chat's context chip (chief_chats.go): in this row, as a
+				// mirrored session's is in its header's second row.
+				chiefHeaderContext(v.ChiefChat, "shrink-0"),
 				agentMenuSlot(v.Card),
 				agentModelControl(v),
 			),
@@ -459,24 +466,31 @@ func agentHeaderTools(v AgentDetailView) g.Node { return agentHeaderToolsWith(v,
 // apart (gap-1) instead of 0.75rem, for a claude-code agent's one-row header (foldedHeader),
 // which also holds the status dot, the asks badge and the ⋯ beside them.
 func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
-	n := 2
-	if v.FocusHistory != "" {
-		n = 3
-	}
-	// A chief's chat has no ＋ here: its new chat is the chat bar's labelled
-	// "New side chat" (chief_chats.go), which an operator could find.
-	chief := v.ChiefChat != nil
-	if chief {
-		n--
-	}
 	gap := "gap-3 "
 	if compact {
 		gap = "gap-1 "
 	}
+	// 🔴 A CHIEF'S CHAT HAS ONE CONTROL HERE: the list icon a mirrored session's
+	// header has (chatIndexButton), opening the same sheet — with its Chats tab
+	// first, where the chief's chats are switched, made and archived
+	// (chief_chats.go), then Your messages and Focus history. No ＋, no clock,
+	// no target: the operator asked for the same icons a mirrored session has,
+	// and for the chat management in one place. Every other agent is unchanged.
+	if v.ChiefChat != nil {
+		return Div(
+			g.Attr("data-header-tools", ""),
+			Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(1, compact)),
+			chatIndexButtonNamed("chat-log", chatIndexChatsLabel),
+		)
+	}
+	n := 2
+	if v.FocusHistory != "" {
+		n = 3
+	}
 	return Div(
 		g.Attr("data-header-tools", ""),
 		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(n, compact)),
-		g.If(!chief, newChatButton(v.ID)),
+		newChatButton(v.ID),
 		chatHistoryButton(sessionDrawerID),
 		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
@@ -926,8 +940,19 @@ func agentChatPane(v AgentDetailView) g.Node {
 		hx("hx-ext", "sse"),
 		hx("sse-connect", "/events"),
 		// relative: the session switcher is placed at its bottom, in the room
-		// the chat form reserves (switcherRoom).
-		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative")),
+		// THIS SECTION reserves (switcherRoom, its bottom padding).
+		//
+		// 🔴 THE ROOM IS THE SECTION'S PADDING, NOT THE CHAT FORM'S, AND THAT IS
+		// WHAT PINS THE COMPOSER ABOVE THE BAR (an operator report: with questions
+		// waiting, the message bar was pushed down under the bottom bar). The bar
+		// is absolute in the padding; the column's in-flow content — the
+		// transcript, the asks block, the composer last — is laid out in the
+		// content box above it, so the composer's box ends at the bar's top. The
+		// form used to carry the padding itself, which put the bar inside the
+		// form's own box and let an overgrown column carry the composer down
+		// under it. With the asks block shrinking (askerAsksSection) and the
+		// transcript's floor (#chat-log), the content never outgrows the column.
+		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative "+switcherRoom(false))),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
 		// `translate-x-full` makes the panel the containing block for every fixed
@@ -936,7 +961,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// it. The panel renders chiefThreadList instead: an absolutely-positioned
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
-		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		//
+		// ⚠ NOR ON A CHIEF'S PAGE: its chats are the header sheet's Chats tab
+		// (chiefChatsPanel), and nothing there opens a drawer.
+		g.If(v.Surface != ChatSurfaceChiefPanel && v.ChiefChat == nil, sessionDrawer(v)),
 		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
 		// session does, with the chip in its header (foldedHeader); see below.
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
@@ -944,8 +972,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
-		// A chief chat's bar: which chat, its context, and the chat actions.
-		chiefChatBar(v),
+		// 🔴 NO CHAT BAR OVER A CHIEF'S TRANSCRIPT: its chats are managed in the
+		// header sheet's Chats tab (page) or under the panel's thread list, and
+		// its context chip is in the header (chief_chats.go).
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
@@ -954,7 +983,14 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// chief's page that read as a different kind of screen from every
 			// other session (an operator report). py-1 keeps a focus ring at the
 			// scroll edge from being clipped; the column's own gutter is the sides'.
-			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-0 [&[data-cg-unlaid]>*]:invisible"),
+			//
+			// 🔴 min-h-[7.5rem], NOT min-h-0: THE TRANSCRIPT'S FLOOR. Beside it the
+			// asks block shrinks (askerAsksSection) and the composer does not, so
+			// what is left after the composer and this floor is all the asks block
+			// can take — the conversation keeps a strip on screen however many
+			// questions wait, and the column's in-flow content never outgrows it
+			// (which is what slid the composer under the switcher).
+			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-[7.5rem] [&[data-cg-unlaid]>*]:invisible"),
 			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
 			// can paint mid-document — under load, between any two tags — and a
 			// frame of this log before window.__cgLayoutLog runs shows it raw and
@@ -1073,7 +1109,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// width/offset classes here.
 			// No divider above it: the transcript is not a card (see #chat-log),
 			// so there is no box for a rule to close.
-			Class("flex-none pt-1 [&[data-cg-unlaid]]:invisible"+classIf(withSwitcher, " "+switcherRoom(false))),
+			// The switcher's room is the pane's padding, below this form (see
+			// agentChatPane's section).
+			Class("flex-none pt-1 [&[data-cg-unlaid]]:invisible"),
 			// 🔴 INVISIBLE UNTIL THE TRANSCRIPT IS LAID OUT, LIKE #chat-log's
 			// children. The parser can stop mid-form (measured: a frame with only
 			// its first hidden <input> parsed, the form 58px tall, then 102px when
