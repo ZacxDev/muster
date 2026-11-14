@@ -70,6 +70,40 @@ func (l officerPluginLink) WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner i
 	return err
 }
 
+// OutreachTx implements plugins.OfficerLink: THE outreach gate
+// (builtin.OutreachGuardTx), inside the filing's transaction. A refusal is
+// returned as the *builtin.OutreachRefusal it is (officerPostDraft words it).
+func (l officerPluginLink) OutreachTx(ctx context.Context, tx pgx.Tx, owner int64, o plugins.Outreach) (plugins.OutreachResolved, error) {
+	c, err := l.store.OutreachGuardTx(ctx, tx, owner, builtin.Outreach{Officer: o.Officer, Venue: o.Venue, Kind: o.Kind, Handle: o.Handle,
+		TargetRef: o.TargetRef, BecauseRef: o.BecauseRef}, l.now())
+	if errors.Is(err, builtin.ErrInvalid) {
+		return plugins.OutreachResolved{}, fmt.Errorf("%w: %s", plugins.ErrInvalid, strings.TrimPrefix(err.Error(), builtin.ErrInvalid.Error()+": "))
+	}
+	if err != nil || c.ID == 0 {
+		return plugins.OutreachResolved{}, err
+	}
+	id := c.ID
+	return plugins.OutreachResolved{Contact: &id, Handle: c.Handle}, nil
+}
+
+// ContactBlockedTx implements plugins.OfficerLink.
+func (l officerPluginLink) ContactBlockedTx(ctx context.Context, tx pgx.Tx, owner, contact int64) (string, error) {
+	return l.store.ContactBlockedTx(ctx, tx, owner, contact)
+}
+
+// OutreachSentTx implements plugins.OfficerLink: outreach draft d reached its
+// person (its result's transaction).
+func (l officerPluginLink) OutreachSentTx(ctx context.Context, tx pgx.Tx, d plugins.Draft) error {
+	if d.ContactID == nil {
+		return nil
+	}
+	ref := d.ExternalRef
+	if ref == "" {
+		ref = d.Target().Ref
+	}
+	return l.store.OutreachSentTx(ctx, tx, d.OwnerID, *d.ContactID, d.ID, d.Target().Kind, ref, l.now())
+}
+
 // linkPluginsToOfficers wires the plugin store to the builtin officer store
 // (EnableOfficerStore): a plugin can then be bound to an officer.
 func (s *Server) linkPluginsToOfficers(store *builtin.Store) {
@@ -315,14 +349,24 @@ func outboundCardHTML(c plugins.DraftCard) string {
 	t := d.Target()
 	var b strings.Builder
 	what := "New post"
-	if t.Kind == plugins.TargetReply {
+	switch t.Kind {
+	case plugins.TargetReply:
 		what = "Reply to " + esc(flows.VisibleEscape(t.Ref))
+	case plugins.TargetDM:
+		what = "DM to " + esc(flows.VisibleEscape(t.Handle))
+	case plugins.TargetFollow:
+		what = "Follow " + esc(flows.VisibleEscape(t.Handle))
+	case plugins.TargetLike:
+		what = "Like " + esc(flows.VisibleEscape(t.Ref))
+	}
+	if d.BecauseRef != nil {
+		what += " · because of " + esc(flows.VisibleEscape(*d.BecauseRef))
 	}
 	b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-outbound data-draft-venue="` + esc(d.VenueText()) +
 		`" data-draft-target-kind="` + esc(t.Kind) + `">
 <span class="break-all text-xs text-fg2"><span class="font-semibold">Outbound · ` + esc(d.VenueText()) + `</span> · ` + what + `</span>
 `)
-	if t.Kind == plugins.TargetReply {
+	if t.Kind == plugins.TargetReply || d.BecauseRef != nil {
 		if m := c.ReplyTo; m != nil {
 			b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-reply-to>From ` + esc(m.Sender) + ` · untrusted · message ` +
 				strconv.FormatInt(m.ID, 10) + `</span>
@@ -389,7 +433,7 @@ func formMediaSHA256(r *http.Request) []string {
 // postDraftToolDef is officer_post_draft's definition.
 func postDraftToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: officers.ToolPostDraft,
-		Description: "Ask to post something outside — a new post, or a reply on an upstream thread — through the plugin bound to your officer. " +
+		Description: "Ask to post something outside — a new post, a reply on an upstream thread, a DM to a person, a follow of a person, or a like — through the plugin bound to your officer. " +
 			"NOTHING IS SENT by this call: it files a draft. The plugin checks it and uploads the media, your owner reads the exact text and sees every image and video, " +
 			"and only an approval lets the plugin post exactly that, once. Write the body exactly as it should appear. " +
 			"Public links are allowed, and a link to one of your officer's standing-read repositories (github.com/<owner>/<repo>) may name the project; " +
@@ -397,19 +441,28 @@ func postDraftToolDef() agents.ToolDef {
 			"Give item_id when the draft is for an item you hold: the item then WAITS ON THE DRAFT and leaves your hands (no holder), so do not complete or release it. " +
 			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft, your owner rejects it, or it expires, muster closes it and " +
 			"queues a draft.refused item saying why (your owner's reason, the plugin's, or muster's), which is where you redraft. " +
-			"If the plugin took it and never reported a result, it may have been posted: muster escalates the item to your owner and you must not redraft it.",
+			"If the plugin took it and never reported a result, it may have been posted: muster escalates the item to your owner and you must not redraft it. " +
+			"OUTREACH (dm, follow, like, and a reply to a person's recorded engagement) reaches a PERSON and is refused unless: they are not on the do-not-contact list " +
+			"and not marked a bot or hostile; a dm, follow or like cites because_ref — the ref of a recorded engagement OF THAT PERSON that motivates it (never a like; " +
+			"a dm answers something they said; a follow may answer their follow); no other outreach to them is still out; they engaged since you last reached them; and, " +
+			"inside the cooldown, it answers an engagement newer than your last outreach. A dm is approved on its exact text. A follow or a like has NO body: give a " +
+			"one-line reason instead; it goes on your owner's outreach batch card for the day, where they tick what goes out.",
 		Parameters: objSchema(map[string]any{
 			"plugin": strProp("The name of the plugin bound to your officer."),
 			"venue":  strProp("Where it goes, as the plugin names it: 1-64 lower-case letters, digits, '.', '_' and '-'."),
 			"target": objSchema(map[string]any{
-				"kind": map[string]any{"type": "string", "enum": []string{plugins.TargetPost, plugins.TargetReply}},
-				"ref":  strProp("For a reply: the upstream reference of what it answers (an item's thread). Omit for a post."),
+				"kind":   map[string]any{"type": "string", "enum": plugins.TargetKinds},
+				"ref":    strProp("For a reply: the upstream reference of what it answers (an item's thread). For a like: what to like. Omit for a post, a dm and a follow."),
+				"handle": strProp("For a dm or a follow: the person's handle (as their engagement item names it). Omit otherwise."),
 			}, "kind"),
-			"body": strProp("The exact text to post, at most 16 KiB."),
+			"body":        strProp("The exact text to post or send, at most 16 KiB. Required for a post, a reply and a dm; omit for a follow and a like."),
+			"because_ref": strProp("For a dm, a follow and a like (optional for a reply): the ref of the person's recorded engagement that motivates it."),
+			"contact":     strProp("For a like or a reply whose target is not one of the person's recorded engagements: the person's handle."),
+			"reason":      strProp("Your one-line reason (at most 200 characters): required for a follow and a like, shown on your owner's outreach batch."),
 			"media": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": plugins.MaxMediaRefs,
 				"description": "Optional, at most 4: media refs as <angle>/<id>, which the plugin resolves on its machine."},
 			"item_id": strProp("Optional: the id of an item you hold that this draft is for."),
-		}, "plugin", "venue", "target", "body")}
+		}, "plugin", "venue", "target")}
 }
 
 // officerOutboundGranted reports whether builtin officer o's type grants
@@ -452,12 +505,16 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		Body   string                 `json:"body"`
 		Media  []string               `json:"media"`
 		ItemID officers.ItemID        `json:"item_id"`
+		// outreach (plugins outreach.go)
+		BecauseRef string `json:"because_ref"`
+		Contact    string `json:"contact"`
+		Reason     string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {plugin, venue, target: {kind, ref?}, body, media?, item_id?}: %v", err)
+		return toolErr("arguments are {plugin, venue, target: {kind, ref?, handle?}, body?, media?, item_id?, because_ref?, contact?, reason?}: %v", err)
 	}
 	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media,
-		PublicLinks: officerPublicLinks(o)}
+		PublicLinks: officerPublicLinks(o), BecauseRef: in.BecauseRef, Contact: in.Contact, Reason: in.Reason}
 	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
 		// Whether this instance holds it is decided in the filing's
 		// transaction, under the item's row lock (plugins.FileOutbound).
@@ -468,8 +525,13 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		n.ItemID = &item
 	}
 	d, err := s.ext.Plugins.FileOutbound(s.officerPrincipal(ctx, o.Owner), a.ID, o.Owner, a.Name, n)
+	var refusal *builtin.OutreachRefusal
 	switch {
 	case err == nil:
+	case errors.As(err, &refusal):
+		// 🔴 AN OUTREACH GUARD REFUSED IT (builtin.OutreachGuardTx): nothing was
+		// filed. The code is stable; the sentence is the officer's.
+		return toolJSON(map[string]any{"error": "outreach refused: " + refusal.Msg, "refused": refusal.Code})
 	case errors.Is(err, plugins.ErrItemNotHeld):
 		return toolErr("you hold no live claim on item %s: claim it first, or leave item_id out", in.ItemID)
 	case errors.Is(err, plugins.ErrNotFound):
@@ -487,6 +549,11 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 	if n.ItemID != nil {
 		out["item"] = fmt.Sprintf("item %d now waits on this draft with no holder: do not complete or release it. muster completes it when the post goes out, "+
 			"or closes it and queues a draft.refused item if the draft is refused, rejected or expires.", *n.ItemID)
+	}
+	if plugins.IsBatchKind(d.Target().Kind) {
+		out["batch"] = plugins.BatchID(o.Owner, o.ID, d.CreatedAt.UTC().Format("2006-01-02"))
+		out["note"] = "filed, NOT sent: it goes on your owner's outreach batch for the day, where they tick what goes out. " +
+			"An entry they do not tick is rejected \"not selected\" and its item is closed: do not redraft it."
 	}
 	return toolJSON(out)
 }
@@ -550,6 +617,12 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 		e.Ended, by, detail = "draft "+id+" was withdrawn at its claim, not posted: "+plugins.BindingBrokenDetail+".", settledByMuster, plugins.BindingBrokenDetail
 	case plugins.OutboundChecksOff:
 		e.Ended, by, detail = "draft "+id+" was refused unchecked, not posted: "+plugins.ChecksOffDetail+".", settledByMuster, plugins.ChecksOffDetail
+	case plugins.OutboundContactBlocked:
+		// The person was marked after the approval: the draft is not to be
+		// redrafted either, so the item is finished quietly.
+		e.Ended = "draft " + id + " was withdrawn at its claim, not sent: its person may no longer be contacted."
+		e.Quiet = true
+		return e
 	case "":
 		ended := "rejected by the owner"
 		if by == settledByPlugin {
@@ -670,8 +743,15 @@ func outboundAttentionText(c plugins.DraftCard) string {
 	d := c.Draft
 	t := d.Target()
 	what := "new post"
-	if t.Kind == plugins.TargetReply {
+	switch t.Kind {
+	case plugins.TargetReply:
 		what = "reply"
+	case plugins.TargetDM:
+		what = "DM"
+	case plugins.TargetFollow:
+		what = "follow"
+	case plugins.TargetLike:
+		what = "like"
 	}
 	who := ""
 	if d.Officer != nil {

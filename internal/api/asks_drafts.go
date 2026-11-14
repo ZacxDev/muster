@@ -172,6 +172,11 @@ func askGroupOpen(key, label string, n int) string {
 func splitDraftCards(cards []plugins.DraftCard, now time.Time) (pending, archived []plugins.DraftCard) {
 	for _, c := range cards {
 		if c.Draft.Status == plugins.DraftPending && c.Draft.ExpiresAt.After(now) {
+			// A pending follow or like is not drawn from this list: its whole
+			// batch is (withBatches), so a cut can never draw one short.
+			if c.Draft.IsOutbound() && plugins.IsBatchKind(c.Draft.Target().Kind) {
+				continue
+			}
 			if len(pending) < pluginDraftsShown {
 				pending = append(pending, c)
 			}
@@ -189,8 +194,18 @@ func draftListHTML(cards []plugins.DraftCard, empty string) string {
 	if len(cards) == 0 {
 		return `<li class="text-sm text-fg2" data-drafts-empty>` + empty + `</li>`
 	}
+	// A pending follow or like is an entry of its outreach batch's ONE card,
+	// drawn where the batch's first entry falls (outreach_batch.go).
+	_, batches, at := groupBatches(cards)
 	var b strings.Builder
 	for _, c := range cards {
+		d := c.Draft
+		if d.Status == plugins.DraftPending && d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Officer != nil {
+			if i, first := at[d.ID]; first {
+				b.WriteString(outreachBatchCardHTML(batches[i]))
+			}
+			continue
+		}
 		b.WriteString(draftCardHTML(c))
 	}
 	return b.String()
@@ -222,6 +237,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 	}
 	now := time.Now()
 	pending, archived = splitDraftCards(cards, now)
+	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
 		return pending, archived, true
 	}

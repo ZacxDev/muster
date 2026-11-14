@@ -110,6 +110,17 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 // notifyDraftAwaitingNoting is notifyDraftAwaiting with muster's own note
 // after the body: a lapsed check's (lapseDraftChecks, DraftCheckLapsedNote).
 func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message, note string) {
+	if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) {
+		// A follow or a like: ONE notification per outreach batch (its tag
+		// replaces the last), never one each (outreach_batch.go).
+		s.notifyBatchAwaiting(owner, d)
+		// A TEAM officer's batch reaches the team's members as its single
+		// drafts do (team_notify.go): a team has no devices of its own.
+		for _, member := range s.teamOfficerRecipients(ctx, owner) {
+			s.notifyBatchAwaiting(member, d)
+		}
+		return
+	}
 	id := strconv.FormatInt(d.ID, 10)
 	label := ""
 	if m.ID != 0 {

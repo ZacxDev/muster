@@ -325,6 +325,7 @@ POST /plugins
 POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject
 POST /plugins/messages/{id}/retry
+POST /plugins/outreach-batches/{id}/decide
 POST /plugins/pair/{id}/approve
 POST /plugins/pair/{id}/deny
 POST /plugins/{id}/deliver-to
