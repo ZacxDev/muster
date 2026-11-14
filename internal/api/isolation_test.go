@@ -2757,8 +2757,9 @@ func (p *isoProvisioner) Dispatch(ctx context.Context, id int64, _ bool) error {
 func (p *isoProvisioner) Start(ctx context.Context, id int64) error   { return p.check(ctx, id) }
 func (p *isoProvisioner) Stop(ctx context.Context, id int64) error    { return p.check(ctx, id) }
 func (p *isoProvisioner) Destroy(ctx context.Context, id int64) error { return p.check(ctx, id) }
-func (p *isoProvisioner) RotateCredentials(ctx context.Context, id int64) error {
-	return p.check(ctx, id)
+func (p *isoProvisioner) RotateCredentials(ctx context.Context, id int64) (bool, error) {
+	err := p.check(ctx, id)
+	return err == nil, err
 }
 func (p *isoProvisioner) Instances(context.Context) ([]provision.Instance, error) {
 	return nil, nil

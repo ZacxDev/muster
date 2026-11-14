@@ -66,7 +66,7 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ChiefOffProvisionRefusal, http.StatusConflict)
 		return
 	}
-	rec, created, err := s.provisionChief(ctx, owner, strings.TrimSpace(r.FormValue("model")), "")
+	rec, created, err := s.provisionChief(ctx, owner, strings.TrimSpace(r.FormValue("model")), "", nil)
 	if err != nil {
 		// This is the route chief was provisioned through with an uncredentialed
 		// slug — it has no UI form, so the operator types the model straight into
@@ -97,8 +97,11 @@ const ChiefOffProvisionRefusal = "your chief is turned off; turn it on under Acc
 // false), or create and dispatch it. A create failure is logged here and
 // returned for the caller to word. kind is the new chief's agent kind ("" is
 // the deployment's default); a TEAM's chief is created as agents.KindClaudeCode
-// (/teams/{id}/chief: gateway is not a team agent kind).
-func (s *Server) provisionChief(ctx context.Context, owner int64, model, kind string) (agents.Agent, bool, error) {
+// (/teams/{id}/chief: gateway is not a team agent kind). settled, when set, is
+// handed a NEW chief's dispatch outcome (dispatchParams.Settled); the start of
+// an existing one does not call it (the team chief page starts an existing
+// chief through goLifecycle instead).
+func (s *Server) provisionChief(ctx context.Context, owner int64, model, kind string, settled func(agents.Agent, error)) (agents.Agent, bool, error) {
 	chiefName := agents.ChiefNameFor(owner)
 	if a, err := s.ext.Agents.GetByName(ctx, chiefName); err == nil {
 		// 🔴 safeGo, NOT `go func`, AND THE DIFFERENCE WAS A DEAD CONTAINER. This
@@ -140,6 +143,7 @@ func (s *Server) provisionChief(ctx context.Context, owner int64, model, kind st
 		// member's panel said "no agent carries the chief display name" over a
 		// chief that existed (accounts PR 3b audit). Same value for user 1.
 		Name: chiefName, DisplayName: ChiefDisplayName, DisplayNameSource: agents.NameSystem, Model: model, Kind: kind, NoteText: intro, Kickoff: true,
+		Settled: settled,
 	})
 	if err != nil {
 		s.logger.Printf("chief: provision: %v", err)

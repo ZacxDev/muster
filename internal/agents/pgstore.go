@@ -388,6 +388,41 @@ func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string)
 	return err
 }
 
+// CredentialsWriter is the store write a credential ROTATION takes
+// (agentprovision.Adapter.RotateCredentials): agent id's hooks token and turn
+// credential together, in ONE transaction. Asserted, not on Store, for
+// RebindCCAccount's reason: one caller, and every fake of Store would need it.
+type CredentialsWriter interface {
+	// SetCredentials stores hooksToken and — when gatewaySecret is not "" —
+	// gatewaySecret, each as SetHooksToken / SetGatewaySecret stores it.
+	// Neither changes unless both do.
+	SetCredentials(ctx context.Context, id int64, hooksToken, gatewaySecret string) error
+}
+
+// SetCredentials is CredentialsWriter's write: SetHooksToken's statement and
+// SetGatewaySecret's, in ONE transaction, so a failure of either leaves the
+// agent on its old credentials — never on a new token and an old turn
+// credential. A gatewaySecret of "" leaves the turn credential as it is (a
+// gateway agent has none to rotate). 0131's trigger blanks a team agent's
+// legacy columns on both statements, as on the single writes.
+func (s *PGStore) SetCredentials(ctx context.Context, id int64, hooksToken, gatewaySecret string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	in := &PGStore{pool: tx}
+	if err := in.SetHooksToken(ctx, id, hooksToken); err != nil {
+		return err
+	}
+	if gatewaySecret != "" {
+		if err := in.SetGatewaySecret(ctx, id, gatewaySecret); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // RebindCCAccount moves claude-code agent id from Claude account from to
 // account to, and reports whether it did. It is the ACCOUNT FAILOVER's one
 // write (internal/ccfailover, through agentprovision.Adapter.Rebind), and not

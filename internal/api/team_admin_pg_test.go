@@ -50,15 +50,31 @@ func (tw *teamAgentWalk) teamWorker(t *testing.T, name string) agents.Agent {
 	return a
 }
 
-// teamAudits is how many audit rows of action team T holds by user by.
+// teamAudits is how many audit rows of action team T holds by user by. A
+// manager's lifecycle row is written once the background action has ended
+// (goLifecycle), so it waits up to a few seconds for at least one; a caller
+// asserting NONE must have nothing in flight.
 func (tw *teamAgentWalk) teamAudits(t *testing.T, action string, by int64) int {
 	t.Helper()
-	var n int
-	if err := tw.w.pool.QueryRow(tw.w.sys, `SELECT count(*) FROM audit_log WHERE team_id = $1 AND action = $2 AND user_id = $3`,
-		tw.team, action, by).Scan(&n); err != nil {
-		t.Fatal(err)
+	return tw.teamAuditsWhere(t, action, by, "")
+}
+
+// teamAuditsWhere is teamAudits restricted to rows whose detail->>'outcome' is
+// outcome ("" for any).
+func (tw *teamAgentWalk) teamAuditsWhere(t *testing.T, action string, by int64, outcome string) int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var n int
+		if err := tw.w.pool.QueryRow(tw.w.sys, `SELECT count(*) FROM audit_log WHERE team_id = $1 AND action = $2 AND user_id = $3
+			AND ($4 = '' OR detail->>'outcome' = $4)`, tw.team, action, by, outcome).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return n
 }
 
 // TestAManagersLifecycleOnATeamAgentRunsAsTheTeam: A, a manager of T, starts,
@@ -126,8 +142,8 @@ func TestAManagersLifecycleOnATeamAgentRunsAsTheTeam(t *testing.T) {
 		t.Errorf("the delete did not act as the team (%d actions as the team; want 3)", got)
 	}
 	for _, action := range []string{"agent.start", "agent.stop", "agent.destroy"} {
-		if n := tw.teamAudits(t, action, w.a.uid); n != 1 {
-			t.Errorf("audit: %d %q row(s) by manager A owned by the team; want 1", n, action)
+		if n := tw.teamAuditsWhere(t, action, w.a.uid, "succeeded"); n != 1 {
+			t.Errorf("audit: %d succeeded %q row(s) by manager A owned by the team; want 1", n, action)
 		}
 	}
 }

@@ -123,8 +123,8 @@ func TestRotatingCredentialsMintsNewOnesAndReappliesALiveInstance(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = a.RotateCredentials(context.Background(), row.ID); err != nil {
-				t.Fatal(err)
+			if rotated, err := a.RotateCredentials(context.Background(), row.ID); err != nil || !rotated {
+				t.Fatalf("rotated %v, %v; want rotated", rotated, err)
 			}
 			got := store.agent
 			if len(got.HooksToken) != 64 || got.HooksToken == oldTok {
@@ -144,5 +144,38 @@ func TestRotatingCredentialsMintsNewOnesAndReappliesALiveInstance(t *testing.T) 
 				t.Errorf("the re-applied spec does not carry the NEW hooks token")
 			}
 		})
+	}
+}
+
+// TestARotationWhoseWriteFailsChangesNeitherCredential: the rotation's store
+// write fails, and the agent keeps BOTH old credentials — RotateCredentials
+// reports not rotated, writes neither credential on its own (no SetHooksToken,
+// no SetGatewaySecret: the two go through the store's one transaction,
+// agents.CredentialsWriter) and re-applies nothing. The Postgres half — the
+// transaction itself rolling back — is internal/agents
+// TestARotationThatFailsHalfWayLeavesTheOldCredentials.
+//
+// 🔴 RED at 23eb2f32: the hooks token was written (SetHooksToken) before the
+// turn credential, so a failure of the second left the agent on a new token.
+func TestARotationWhoseWriteFailsChangesNeitherCredential(t *testing.T) {
+	row := ccRow("rot-fail")
+	row.Status = agents.StatusRunning
+	oldTok, oldTurn := row.HooksToken, row.GatewaySecret
+	store := &recordingStore{agent: row, credsErr: errors.New("injected: the turn credential write failed")}
+	driver := &updateSpy{Noop: provision.MustNewNoop()}
+	a, err := New(Config{Driver: driver, Store: store, Spec: ccSpecConfig()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := a.RotateCredentials(context.Background(), row.ID)
+	if err == nil || rotated {
+		t.Fatalf("rotated %v, %v; want not rotated, with the error", rotated, err)
+	}
+	if store.agent.HooksToken != oldTok || store.agent.GatewaySecret != oldTurn {
+		t.Errorf("after a failed rotation the hooks token changed %v and the turn credential %v; want neither (%s)",
+			store.agent.HooksToken != oldTok, store.agent.GatewaySecret != oldTurn, store.transcript())
+	}
+	if len(driver.specs) != 0 {
+		t.Errorf("a failed rotation re-applied the instance %d time(s)", len(driver.specs))
 	}
 }

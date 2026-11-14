@@ -336,7 +336,7 @@ func (s *Server) handleAccountChief(w http.ResponseWriter, r *http.Request) {
 			back("failed")
 			return
 		}
-		if _, _, err := s.provisionChief(ctx, owner, "", ""); err != nil {
+		if _, _, err := s.provisionChief(ctx, owner, "", "", nil); err != nil {
 			code := "failed"
 			if errors.Is(err, ErrDispatchRefused) || errors.Is(err, agents.ErrModelNotCredentialed) {
 				code = "refused"

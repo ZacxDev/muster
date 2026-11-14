@@ -107,6 +107,10 @@ const (
 	agentDispatchTeamHost    = "a team's agents run on the cluster only: a host target is not available to a team yet (team hosts are a later phase); use pod/claude-code"
 	agentDispatchTeamGateway = "a team's agents are Claude Code agents: use pod/claude-code (a Standard agent is not available to a team)"
 	agentDispatchTeamPool    = "worker_pool: a team's agents are not machine-job workers"
+	// AgentDispatchTeamLater is every other agent_dispatch from a TEAM's chief:
+	// team dispatch, with its step-up stamps and typed-turn gates, is slice 4.7.
+	AgentDispatchTeamLater = "a team's chief cannot start agents yet: team dispatch arrives in a later release. Nothing was started; " +
+		"tell the members who asked, and a team manager can start or stop the team's existing agents from their pages"
 	agentDispatchPoolName   = "worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'"
 )
 
@@ -615,10 +619,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// A HOST target — or "mirrored", which is host/?/? — is mirrored dispatch
 	// (host_dispatch.go): its own flow, the same guards in the same order.
 	//
-	// 🔴 A TEAM'S CHIEF STARTS POD AGENTS ONLY (team sharing phase 4, slice
-	// 4.5): a host target is refused for a team — team hosts are phase 2b — and
-	// so are the gateway kind and a worker pool (gateway and worker-pool agents
-	// are not team agents in phase 4), before anything is reserved.
+	// 🔴 A TEAM'S CHIEF STARTS NO AGENT YET (team sharing phase 4, slice 4.5;
+	// team dispatch is 4.7): a host target is refused for a team — team hosts
+	// are phase 2b — and so are the gateway kind and a worker pool (gateway and
+	// worker-pool agents are not team agents in phase 4), each with its own
+	// sentence, and then every other dispatch (AgentDispatchTeamLater), all
+	// before anything is reserved.
 	teamOwned := s.ownerIsTeam(ctx, owner)
 	if t, ok := parseHostTarget(in.Target); ok {
 		if teamOwned {
@@ -640,6 +646,15 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	if teamOwned && in.WorkerPool != "" {
 		return refuse(agentDispatchTeamPool)
+	}
+	// 🔴 AND EVERY OTHER DISPATCH FROM A TEAM'S CHIEF IS REFUSED, before
+	// anything is reserved: a member typing into the shared room could
+	// otherwise steer the chief into starting agents AS THE TEAM, with none of
+	// the step-up stamps and typed-turn gates slice 4.7 brings. The refusals
+	// above stay first, so each still names its own reason. NOT a boot refusal
+	// of team ids in MUSTER_CHIEF_DISPATCH_OWNERS: 4.7 uses that list.
+	if teamOwned {
+		return refuse(AgentDispatchTeamLater)
 	}
 	if in.RequestKey != "" && !requestKeyRE.MatchString(in.RequestKey) {
 		return refuse(agentDispatchKeyShape)

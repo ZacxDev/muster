@@ -1138,14 +1138,22 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 // spec so the instance holds them. The old token is refused by muster the
 // moment the store holds the new one (agents.Store.GetByHooksToken).
 //
+// rotated reports whether the NEW credentials were committed: true with a
+// non-nil err is a rotation whose re-apply failed (the old token is dead, the
+// instance does not hold the new one yet); false with err is a rotation that
+// changed nothing.
+//
 // It is the remedy for a credential printed where it should not be: a team's
 // agent is steered into printing its token into the team's chat (the team
 // trust model, docs/chief.md), and rotation is what makes that copy worthless.
 //
-// 🔴 THE WRITES GO THROUGH agents.Store.SetHooksToken / SetGatewaySecret, so
-// for a TEAM owner they land in agent_secrets ONLY: migration 0131's
-// agents_team_no_secret trigger blanks the shared row's legacy columns on
-// every write. A person's agent is still dual-written, as every mint is.
+// 🔴 BOTH CREDENTIALS ARE WRITTEN IN ONE TRANSACTION (agents.CredentialsWriter):
+// neither changes unless both do, so a failed write never leaves the agent on
+// a new token beside its old turn credential. A store without the method is
+// refused before anything is minted. For a TEAM owner the credentials land in
+// agent_secrets ONLY: migration 0131's agents_team_no_secret trigger blanks the
+// shared row's legacy columns on every write. A person's agent is still
+// dual-written, as every mint is.
 //
 // ⚠ A STOPPED AGENT IS NOT RE-APPLIED HERE: its next Start re-applies the spec
 // (always for claude-code, and for every kind once credentials resolve per
@@ -1153,49 +1161,50 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 // agent on a deployment with no credential resolver is the one case whose
 // Start only scales; it would come up on the old token, which muster now
 // refuses (a loud 401, not a silent one) until its next re-apply.
-func (a *Adapter) RotateCredentials(ctx context.Context, agentID int64) error {
+func (a *Adapter) RotateCredentials(ctx context.Context, agentID int64) (rotated bool, err error) {
 	ctx, cancel := a.opCtx(ctx)
 	defer cancel()
 	defer a.lockAgent(agentID)()
+	w, ok := a.store.(agents.CredentialsWriter)
+	if !ok {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: this store cannot write an agent's credentials together", agentID)
+	}
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
-		return fmt.Errorf("agentprovision: rotate agent %d: load row: %w", agentID, err)
+		return false, fmt.Errorf("agentprovision: rotate agent %d: load row: %w", agentID, err)
 	}
 	if err := refuseHostRow(ag, "rotate"); err != nil {
-		return err
+		return false, err
 	}
 	token, err := mintCredential()
 	if err != nil {
-		return fmt.Errorf("agentprovision: rotate agent %d: mint hooks token: %w", agentID, err)
+		return false, fmt.Errorf("agentprovision: rotate agent %d: mint hooks token: %w", agentID, err)
 	}
-	if err := a.store.SetHooksToken(ctx, ag.ID, token); err != nil {
-		return fmt.Errorf("agentprovision: rotate agent %d: store hooks token: %w", agentID, err)
-	}
+	secret := ""
 	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
-		secret, err := mintCredential()
-		if err != nil {
-			return fmt.Errorf("agentprovision: rotate agent %d: mint turn credential: %w", agentID, err)
+		if secret, err = mintCredential(); err != nil {
+			return false, fmt.Errorf("agentprovision: rotate agent %d: mint turn credential: %w", agentID, err)
 		}
-		if err := a.store.SetGatewaySecret(ctx, ag.ID, secret); err != nil {
-			return fmt.Errorf("agentprovision: rotate agent %d: store turn credential: %w", agentID, err)
-		}
+	}
+	if err := w.SetCredentials(ctx, ag.ID, token, secret); err != nil {
+		return false, fmt.Errorf("agentprovision: rotate agent %d: store the new credentials: %w", agentID, err)
 	}
 	if ag.Status != agents.StatusRunning && ag.Status != agents.StatusProvisioning {
-		return nil
+		return true, nil
 	}
 	// ensureHooksToken reads the credentials just written (agents.WithSecrets),
 	// so the spec is built from them and mints nothing.
 	if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
-		return err
+		return true, err
 	}
 	spec, err := a.buildSpec(ctx, ag)
 	if err != nil {
-		return a.fail(ctx, ag, "build spec after rotating credentials", err)
+		return true, a.fail(ctx, ag, "build spec after rotating credentials", err)
 	}
 	if err := a.driver.Update(ctx, spec); err != nil {
-		return a.fail(ctx, ag, "apply instance after rotating credentials", err)
+		return true, a.fail(ctx, ag, "apply instance after rotating credentials", err)
 	}
-	return nil
+	return true, nil
 }
 
 // mintCredential is one new random credential, hex, of the hooks token's size.

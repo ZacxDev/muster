@@ -928,20 +928,7 @@ func draftTextLead(st plugins.DraftStatus) string {
 // BY DELEGATION, on the document: the Asks page re-draws its drafts lists live
 // (asksPageScript), and a listener bound to each form at load would miss every
 // card that arrived later — its Approve would go straight to the server's 403.
-const draftPageScript = `<script>
-(function () {
-  if (window.musterDraftStepUp) return;
-  window.musterDraftStepUp = true;
-  document.addEventListener('submit', function (ev) {
-    var f = ev.target;
-    if (!f || !f.matches || !f.matches('form[data-step-up-form]')) return;
-    var su = window.musterStepUp;
-    if (!su || su.fresh()) return;
-    ev.preventDefault();
-    su.ask('', function () { f.submit(); });
-  });
-})();
-</script>`
+const draftPageScript = ui.StepUpFormScript
 
 // draftStepUpHTML is the confirm dialog, its script and the page's own, as HTML.
 func (s *Server) draftStepUpHTML(r *http.Request) string {

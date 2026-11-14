@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -124,33 +126,68 @@ func (s *Server) teamLifecycle(w http.ResponseWriter, r *http.Request) (*http.Re
 	return r, 0, a, false
 }
 
-// auditTeamLifecycle writes a manager's lifecycle action on team agent a to
-// the team's audit log (as the MANAGER: actorOf the original request).
-func (s *Server) auditTeamLifecycle(r *http.Request, team int64, action string, a agents.Agent) {
+// securityAudit is the manager actions whose audit row's failed write is
+// logged at ERROR: the ones that change who can act as the team's agent or
+// remove it.
+var securityAudit = map[string]bool{"agent.credentials.rotate": true, "agent.destroy": true}
+
+// auditManagerAction writes a manager's action on team agent a to the team's
+// audit log — as the MANAGER (by: actorOf the original request) — ONCE ITS
+// OUTCOME IS KNOWN: detail carries the agent's id, "outcome" ("succeeded", or
+// "failed" when outcome is not nil; the error itself is in the server log)
+// and extra. Nothing when the action was not a team's (team 0: an owner on
+// their own agent).
+func (s *Server) auditManagerAction(ctx context.Context, by users.Actor, team int64, action string, a agents.Agent, outcome error, extra map[string]any) {
 	if team <= 0 {
 		return
 	}
-	s.auditTeam(r.Context(), actorOf(r), team, action, "agent:"+a.Name, map[string]any{"agent_id": a.ID})
+	detail := map[string]any{"agent_id": a.ID, "outcome": "succeeded"}
+	if outcome != nil {
+		detail["outcome"] = "failed"
+	}
+	for k, v := range extra {
+		detail[k] = v
+	}
+	s.auditTeamLevel(ctx, by, team, action, "agent:"+a.Name, detail, securityAudit[action])
 }
 
 // CredentialRotator is the optional provisioner capability that rotates an
 // agent's credentials (agentprovision.Adapter.RotateCredentials): a new hooks
 // token and, for a claude-code agent, a new turn credential, written through
-// the agents store and re-applied to a live instance.
+// the agents store in one transaction and re-applied to a live instance.
+// rotated reports whether the new credentials were committed — true with an
+// error is a re-apply that failed after the commit.
 type CredentialRotator interface {
-	RotateCredentials(ctx context.Context, agentID int64) error
+	RotateCredentials(ctx context.Context, agentID int64) (rotated bool, err error)
 }
+
+// What a rotation is answered, one spelling each: the agent page's control
+// reads them (agentRotateOutcome).
+const (
+	RotateDone        = "The agent's credentials were rotated. The old token no longer works, and the agent is being re-applied with the new one."
+	RotateDoneStopped = "The agent's credentials were rotated. The old token no longer works; the agent is stopped and gets the new one when it next starts."
+	RotateReapplyFail = "The agent's credentials were rotated and the old token no longer works, but the agent could not be re-applied with the new one. Start it again from this page."
+	RotateFailed      = "The agent's credentials could not be rotated. Nothing was changed: the old token still works."
+	RotateStepUp      = "Rotating an agent's credentials needs a recent sign-in. Confirm it's you, then rotate again."
+)
 
 // handleAgentRotateCredentials is POST /agents/{id}/credentials/rotate: the
 // remedy for a credential printed where it should not be (the team trust
 // model: "team members have to trust each other", docs/chief.md). The owner
 // rotates their own agent; a MANAGER rotates a team agent, as the team. Both
-// need a fresh sign-in (stepup.Fresh).
+// need a fresh sign-in (stepup.Fresh). The agent page's ⋯ menu posts it as a
+// form (a document navigation), which is answered with a page saying what
+// happened; a script is answered 200 + agents:changed. No secret is ever in
+// either answer.
 //
 // 🔴 FOR A TEAM AGENT THE NEW CREDENTIALS LAND IN agent_secrets ONLY: migration
 // 0131's agents_team_no_secret trigger blanks the shared row's legacy columns
 // on every write, the rotation's included. It answers once the store holds the
 // new credentials, so the old token is refused from the moment this answers.
+//
+// The team's audit row is written once the credentials have committed — even
+// when the re-apply then fails, which it records ("reapplied": false) — and
+// for a rotation that failed before committing ("rotated": false).
 func (s *Server) handleAgentRotateCredentials(w http.ResponseWriter, r *http.Request) {
 	actor := r
 	r, team, a, ok := s.teamLifecycle(w, r)
@@ -168,29 +205,91 @@ func (s *Server) handleAgentRotateCredentials(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
+	doc := isDocumentNavigation(r)
+	answer := func(code int, msg string) {
+		if doc {
+			s.writeNavDocument(w, r, code, "Rotate credentials", "", false,
+				`<section class="`+adminCard+`" id="rotate-outcome" data-code="`+strconv.Itoa(code)+`"><h1 class="text-base font-semibold text-fg">Rotate credentials</h1>`+
+					`<p class="text-sm text-fg2">`+html.EscapeString(msg)+`</p>`+
+					`<p class="text-sm"><a class="text-accent underline" href="/agents/`+url.PathEscape(a.Name)+`">Back to the agent</a></p></section>`)
+			return
+		}
+		http.Error(w, msg, code)
+	}
 	// 🔴 A FRESH SIGN-IN, FOR THE OWNER AND THE MANAGER ALIKE. Plan §6 lists
 	// no step-up for start, stop or delete, and those take none; it is silent on
 	// rotation, so rotation takes the step-up the plan gives a manager's other
 	// credential decision (approving a team agent's grants): a new identity for
 	// an agent is worth more than an ordinary signed-in request.
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		if doc {
+			w.Header().Set("X-Muster-Step-Up", "required")
+			answer(http.StatusForbidden, RotateStepUp)
+			return
+		}
 		refuseStale(w)
 		return
 	}
 	rot, ok := s.ext.Provisioner.(CredentialRotator)
 	if !ok {
-		http.Error(w, "this deployment's provisioner cannot rotate an agent's credentials", http.StatusNotImplemented)
+		answer(http.StatusNotImplemented, "This deployment's provisioner cannot rotate an agent's credentials.")
 		return
 	}
-	if err := rot.RotateCredentials(r.Context(), a.ID); err != nil {
+	by := actorOf(actor)
+	rotated, err := rot.RotateCredentials(r.Context(), a.ID)
+	if !rotated {
 		s.logger.Printf("agents: rotate credentials of %d: %v", a.ID, err)
-		http.Error(w, "could not rotate the agent's credentials", http.StatusInternalServerError)
+		s.auditManagerAction(actor.Context(), by, team, "agent.credentials.rotate", a, errOr(err), map[string]any{"rotated": false})
+		answer(http.StatusInternalServerError, RotateFailed)
 		return
 	}
 	s.logger.Printf("agents: credentials of %s (%d) rotated by user %d", a.Name, a.ID, authz.MustFrom(actor.Context()).UserID)
-	s.auditTeamLifecycle(actor, team, "agent.credentials.rotate", a)
+	s.auditManagerAction(actor.Context(), by, team, "agent.credentials.rotate", a, err, map[string]any{"rotated": true, "reapplied": err == nil})
+	if err != nil {
+		s.logger.Printf("agents: rotate credentials of %d: rotated, re-apply failed: %v", a.ID, err)
+		answer(http.StatusInternalServerError, RotateReapplyFail)
+		return
+	}
 	w.Header().Set("HX-Trigger", "agents:changed")
+	if doc {
+		msg := RotateDone
+		if a.Status != agents.StatusRunning && a.Status != agents.StatusProvisioning {
+			msg = RotateDoneStopped
+		}
+		answer(http.StatusOK, msg)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// canRotateCredentials is whether ctx's principal is offered Rotate
+// credentials on agent a's page: the deployment can rotate
+// (CredentialRotator), a is a pod agent, and the viewer is its owner (a
+// person, on their own agent) or — on a session or a paired phone
+// (Principal.TeamScope) — a manager of the team that owns it. The route's own
+// gates (teamAgentManage, the handler's fresh read, the step-up) decide
+// regardless; this only keeps the page from offering what it would refuse.
+func (s *Server) canRotateCredentials(ctx context.Context, a agents.Agent) bool {
+	if _, ok := s.ext.Provisioner.(CredentialRotator); !ok || !a.Provisioned() || a.OwnerID <= 0 {
+		return false
+	}
+	p, ok := authz.From(ctx)
+	if !ok || p.Team {
+		return false
+	}
+	if p.UserID == a.OwnerID {
+		return true
+	}
+	role, in := p.TeamScope().RoleIn(a.OwnerID)
+	return in && role == authz.TeamManager
+}
+
+// errOr is err, or a stand-in when a failure came back without one.
+func errOr(err error) error {
+	if err == nil {
+		return errors.New("failed")
+	}
+	return err
 }
 
 // --- /teams/{id}/chief: the team's chief --------------------------------------
@@ -324,11 +423,19 @@ func (s *Server) renderTeamChief(w http.ResponseWriter, r *http.Request, team in
 			}
 			b.WriteString(`<form method="POST" action="/teams/` + id + `/chief/provision"><button type="submit" class="` + adminButton + `">` + label + `</button></form>`)
 		}
-		if has {
+		if has && refusal == "" {
 			b.WriteString(`<form method="POST" action="/teams/` + id + `/chief/restart"><button type="submit" class="` + adminQuiet + `">Restart</button></form>`)
+		}
+		if has {
 			b.WriteString(`<form method="POST" action="/teams/` + id + `/chief/stop"><button type="submit" class="` + adminQuiet + `">Turn off</button></form>`)
 		}
-		b.WriteString(`</div></section>`)
+		b.WriteString(`</div>`)
+		if refusal != "" {
+			// Why Start and Restart are not offered (the same sentence as the
+			// credentials line above, for the manager reading the controls).
+			b.WriteString(`<p class="text-sm text-fg2" id="team-chief-refusal">Start and Restart are not available: ` + html.EscapeString(refusal) + `</p>`)
+		}
+		b.WriteString(`</section>`)
 	}
 	s.writeNavDocument(w, r, code, "Team chief", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
 }
@@ -374,34 +481,57 @@ func (s *Server) handleTeamChiefProvision(w http.ResponseWriter, r *http.Request
 		s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusConflict, why)
 		return
 	}
-	rec, created, err := s.provisionChief(tctx, team, "", agents.KindClaudeCode)
+	// An EXISTING chief is started through THE agent lifecycle (the agent
+	// page's Start): its refusal, then the start, audited once it has ended.
+	existing, had, err := s.teamChief(tctx, team)
+	if err != nil {
+		s.logger.Printf("teams: provision team %d's chief: %v", team, err)
+		s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusInternalServerError, "Could not load the team's chief. Try again.")
+		return
+	}
+	if had {
+		if why := s.lifecycleRefusal(tctx, existing, team, lifecycleStart); why != "" {
+			s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusConflict, why)
+			return
+		}
+		s.goLifecycle(r, tctx, team, existing, lifecycleStart)
+		s.teamChiefDone(w, r, team)
+		return
+	}
+	// A NEW chief: created now, audited once its dispatch has ended.
+	by, auditCtx := actorOf(r), context.WithoutCancel(r.Context())
+	rec, _, err := s.provisionChief(tctx, team, "", agents.KindClaudeCode, func(a agents.Agent, err error) {
+		s.auditManagerAction(auditCtx, by, team, "chief.provision", a, err, nil)
+	})
 	if err != nil {
 		code, msg := http.StatusInternalServerError, "The team chief could not be provisioned. Try again."
 		if errors.Is(err, ErrDispatchRefused) {
+			// Refused before anything was created: no audit row.
 			code, msg = http.StatusConflict, err.Error()
+		} else {
+			s.auditManagerAction(auditCtx, by, team, "chief.provision", agents.Agent{Name: agents.ChiefNameFor(team)}, err, nil)
 		}
 		s.renderTeamChief(w, r, team, authz.TeamManager, code, msg)
 		return
 	}
-	action := "chief.start"
-	if created {
-		action = "chief.provision"
-	}
-	s.logger.Printf("teams: manager %d: %s team %d's chief %s (%d)", authz.MustFrom(r.Context()).UserID, action, team, rec.Name, rec.ID)
-	s.auditTeam(r.Context(), actorOf(r), team, action, "agent:"+rec.Name, map[string]any{"agent_id": rec.ID})
+	s.logger.Printf("teams: manager %d: provisioned team %d's chief %s (%d)", authz.MustFrom(r.Context()).UserID, team, rec.Name, rec.ID)
 	s.teamChiefDone(w, r, team)
 }
 
-// teamChiefLifecycle runs action on team's chief as the team, in the
-// background (as the agent page's Start and Stop do), and audits it.
-func (s *Server) teamChiefLifecycle(w http.ResponseWriter, r *http.Request, label string, action func(context.Context, int64) error) {
+// teamChiefLifecycle takes step (stop or restart) on team's chief as the
+// team, through THE agent lifecycle the agent page's Start and Stop take
+// (lifecycleRefusal, then goLifecycle): the refusal is checked BEFORE anything
+// is stopped — a restart that could not start again is refused, naming why,
+// with the chief left running and no audit row — and the manager's audit row
+// (chief.<step>) is written once the outcome is known.
+func (s *Server) teamChiefLifecycle(w http.ResponseWriter, r *http.Request, step lifecycleStep) {
 	team, tctx, ok := s.teamChiefWrite(w, r)
 	if !ok {
 		return
 	}
 	a, has, err := s.teamChief(tctx, team)
 	if err != nil {
-		s.logger.Printf("teams: %s team %d's chief: %v", label, team, err)
+		s.logger.Printf("teams: %s team %d's chief: %v", step, team, err)
 		s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusInternalServerError, "Could not load the team's chief. Try again.")
 		return
 	}
@@ -409,29 +539,18 @@ func (s *Server) teamChiefLifecycle(w http.ResponseWriter, r *http.Request, labe
 		s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusConflict, TeamChiefNone)
 		return
 	}
-	opCtx := context.WithoutCancel(tctx)
-	safeGo(s.logger, "team chief "+label, func() {
-		if err := action(opCtx, a.ID); err != nil {
-			s.logger.Printf("teams: %s team %d's chief: %v", label, team, err)
-		}
-	})
-	s.auditTeam(r.Context(), actorOf(r), team, "chief."+label, "agent:"+a.Name, map[string]any{"agent_id": a.ID})
+	if why := s.lifecycleRefusal(tctx, a, team, step); why != "" {
+		s.renderTeamChief(w, r, team, authz.TeamManager, http.StatusConflict, "The team chief was not restarted, and is left as it is: "+why)
+		return
+	}
+	s.goLifecycle(r, tctx, team, a, step)
 	s.teamChiefDone(w, r, team)
 }
 
 func (s *Server) handleTeamChiefStop(w http.ResponseWriter, r *http.Request) {
-	s.teamChiefLifecycle(w, r, "stop", func(ctx context.Context, id int64) error {
-		s.clearAgentWork(id)
-		return s.ext.Provisioner.Stop(ctx, id)
-	})
+	s.teamChiefLifecycle(w, r, lifecycleStop)
 }
 
 func (s *Server) handleTeamChiefRestart(w http.ResponseWriter, r *http.Request) {
-	s.teamChiefLifecycle(w, r, "restart", func(ctx context.Context, id int64) error {
-		s.clearAgentWork(id)
-		if err := s.ext.Provisioner.Stop(ctx, id); err != nil {
-			return err
-		}
-		return s.ext.Provisioner.Start(ctx, id)
-	})
+	s.teamChiefLifecycle(w, r, lifecycleRestart)
 }

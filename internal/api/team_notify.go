@@ -57,12 +57,23 @@ type teamAuditor interface {
 // §4: "its audit row names the manager"). The action has already happened;
 // a failed write is logged, never silent.
 func (s *Server) auditTeam(ctx context.Context, by users.Actor, team int64, action, object string, detail map[string]any) {
+	s.auditTeamLevel(ctx, by, team, action, object, detail, false)
+}
+
+// auditTeamLevel is auditTeam with a failed write logged at ERROR when
+// security is set (a manager's credential rotation or delete: a row an
+// auditor must be able to find).
+func (s *Server) auditTeamLevel(ctx context.Context, by users.Actor, team int64, action, object string, detail map[string]any, security bool) {
 	a, ok := s.ext.Users.(teamAuditor)
 	if !ok || team <= 0 {
 		return
 	}
 	if err := a.AuditTeam(ctx, by, team, action, object, detail); err != nil {
-		s.logger.Printf("audit: %s %s for team %d by user %d: %v", action, object, team, by.UserID, err)
+		level := ""
+		if security {
+			level = "ERROR "
+		}
+		s.logger.Printf("%saudit: %s %s for team %d by user %d: %v", level, action, object, team, by.UserID, err)
 	}
 }
 

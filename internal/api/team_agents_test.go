@@ -482,7 +482,7 @@ var agentReadCallers = map[string]string{
 	"Get Server.handleAgentStatusIcon":        "visible: GET /ui/agents/{id}/status (teamAgentRead)",
 	"Get Server.handleAgentModel":             "visible: POST /agents/{id}/model, refused to members (teamAgentRoutes)",
 	"Get Server.handleAgentName":              "visible: POST /agents/{id}/name, refused to members (teamAgentRoutes)",
-	"Get Server.handleAgentStart":             "visible: POST /agents/{id}/start, a manager's only (teamAgentRoutes), run as the team (teamLifecycle)",
+	"Get Server.agentLifecycleRoute":          "visible: POST /agents/{id}/start, a manager's only (teamAgentRoutes), run as the team (teamLifecycle)",
 	"Get Server.handleAgentRotateCredentials": "own: read only when the prologue did not (a principal with no team memberships: its own agent or nothing)",
 	"Get Server.lifecycleActingContext":       "visible: the lifecycle routes' prologue: a member on a team agent acts as the team after a fresh manager read (teamAdminContext), or not at all",
 	"Get Server.handleAgentSessionCreate":     "visible: POST /agents/{id}/sessions, refused to members (teamAgentRoutes)",
