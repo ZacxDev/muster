@@ -163,11 +163,13 @@ with their own release.
 - **Lending a host spawn.** A host officer's spawned session row
   (`officer_host_spawns`) is personal. Its owner may share it with one team
   they are an operator or manager of, and unshare it, on
-  **/officers/spawns**, or by asking their chief in muster's chat in the
-  browser (`officer_spawn_share`). The team's members then see it there,
-  read-only. A personal API token never shares one, not even by messaging the
-  chief: a turn started by a token, a machine message or an agent's own token
-  is refused. A person's shares to a team end when they leave it or drop to
+  **/officers/spawns**, or through their chief's `officer_spawn_share` tool.
+  The team's members then see it there, read-only.
+  - A personal API token never shares one directly.
+  - **Operator-approved exception** to "a personal API token carries no team
+    access": a token that messages the owner's chief can have it share or
+    unshare the owner's own spawns with a team the owner operates. Nothing
+    else: team drafts and charters stay session-only. A person's shares to a team end when they leave it or drop to
   viewer.
 
 ## Passkeys

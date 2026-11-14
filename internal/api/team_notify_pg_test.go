@@ -266,40 +266,44 @@ func TestEachTeamActionWritesItsAuditRow(t *testing.T) {
 	}
 }
 
-// TestATokenDrivenChiefTurnCannotLend (#668 round 1, Y1; operator decision 3:
-// a personal API token carries no team access): the chief's
-// officer_spawn_share, in a turn a token started — the machine-message door
-// (POST /api/agents/{name}/messages: a personal or the hook token), a gateway
-// agent's kickoff, or a claude-code chief's own agent token over MCP — is
-// refused with ErrLendDoor for a share AND an unshare, and the row is
-// unchanged. CONTROL: the same person's chief in a browser chat turn
-// (ViaSession) shares it.
-func TestATokenDrivenChiefTurnCannotLend(t *testing.T) {
+// TestATokenDrivenChiefTurnCanLendTheOwnersOwnSpawn (operator decision on
+// #668 after round 1: an approved exception to "a personal API token carries
+// no team access"): the chief's officer_spawn_share in a turn a token started
+// — the machine-message door (POST /api/agents/{name}/messages) and a
+// claude-code chief's own agent door over MCP — LENDS and UNLENDS the
+// owner's own spawn. The owner, role and team checks still hold there: a lend
+// to a team the owner only views is ErrLendRole, and the row is unchanged.
+func TestATokenDrivenChiefTurnCanLendTheOwnersOwnSpawn(t *testing.T) {
 	w := newIsoWorld(t)
 	w.srv.ext.Users = users.NewPG(w.pool)
 	spawn, team := w.objA.spawn, w.aTeam
-	share := `{"action":"share","id":` + strconv.FormatInt(spawn, 10) + `,"team_id":` + strconv.FormatInt(team, 10) + `}`
+	viewed, err := users.NewPG(w.pool).CreateTeam(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, "viewed-tok-"+w.suffix, w.b.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, viewed.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE team_id = $1 OR object = $2`, viewed.ID, users.TeamObject(viewed.ID))
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, viewed.ID)
+	})
+	w.setRole(t, viewed.ID, w.a.uid, authz.TeamViewer)
+	shareTo := func(team int64) string {
+		return `{"action":"share","id":` + strconv.FormatInt(spawn, 10) + `,"team_id":` + strconv.FormatInt(team, 10) + `}`
+	}
 	unshare := `{"action":"unshare","id":` + strconv.FormatInt(spawn, 10) + `}`
-	for _, via := range []authz.Via{authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaAgent} {
+	for _, via := range []authz.Via{authz.ViaAgentMessage, authz.ViaAgent} {
 		ctx := w.personAt(t, w.a.uid, via)
-		if out := w.srv.toolOfficerSpawnShare(ctx, share); !strings.Contains(out, ErrLendDoor.Error()) {
-			t.Errorf("a chief turn through %s sharing: %s; want ErrLendDoor", via, out)
+		if out := w.srv.toolOfficerSpawnShare(ctx, shareTo(team)); w.spawnTeam(t, spawn) != team {
+			t.Errorf("a chief turn through %s sharing with the owner's team: %s (lent to %d); want lent to %d", via, out, w.spawnTeam(t, spawn), team)
 		}
-		if got := w.spawnTeam(t, spawn); got != 0 {
-			t.Fatalf("a chief turn through %s left the spawn lent to %d", via, got)
+		if out := w.srv.toolOfficerSpawnShare(ctx, unshare); w.spawnTeam(t, spawn) != 0 {
+			t.Errorf("a chief turn through %s unsharing: %s (lent to %d); want unlent", via, out, w.spawnTeam(t, spawn))
 		}
-	}
-	// CONTROL, and the unshare leg: the browser chat turn lends it; no token
-	// door then takes it back.
-	if out := w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, authz.ViaSession), share); w.spawnTeam(t, spawn) != team {
-		t.Fatalf("control: the owner's browser chat turn sharing: %s (lent to %d)", out, w.spawnTeam(t, spawn))
-	}
-	for _, via := range []authz.Via{authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaAgent} {
-		if out := w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, via), unshare); !strings.Contains(out, ErrLendDoor.Error()) || w.spawnTeam(t, spawn) != team {
-			t.Errorf("a chief turn through %s unsharing: %s (lent to %d); want ErrLendDoor, still lent", via, out, w.spawnTeam(t, spawn))
+		if out := w.srv.toolOfficerSpawnShare(ctx, shareTo(viewed.ID)); !strings.Contains(out, ErrLendRole.Error()) || w.spawnTeam(t, spawn) != 0 {
+			t.Errorf("a chief turn through %s sharing with a team the owner only views: %s (lent to %d); want ErrLendRole, unlent", via, out, w.spawnTeam(t, spawn))
 		}
 	}
-	_ = w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, authz.ViaSession), unshare)
 }
 
 // TestMovingALendWritesTheOldTeamsUnshareRow (#668 round 1, G2): the chief

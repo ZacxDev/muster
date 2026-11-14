@@ -888,17 +888,23 @@ rule the later phases' rows will meet.
 >   new share class, `lentOwned`).
 >   - The owner lends one row to one team they operate, and unlends it.
 >     There are two ways in: `/officers/spawns` (the session tier) and the
->     chief's `officer_spawn_share` (chief-only, not on MCP).
->   - `lendHostSpawn` is the one gate. `spawnLendDoors` admits only the
->     owner's browser **session**. That covers the page's forms and a gateway
->     chief's chat turn, whose tools run under the owner's session principal.
->   - A turn a token started does not lend (#668 round 1, Y1). It arrives at
->     the machine-message door, the kickoff door, or a claude-code chief's
->     own agent token over MCP, which cannot tell who started the turn. So a
->     personal API token never lends, either directly or by asking the
->     chief. A claude-code chief cannot lend.
->   - The role is read from `Principal.Teams`. A lend shows the team the
->     person's own row and reads nothing of the team's.
+>     chief's `officer_spawn_share` (chief-only, and on MCP for a
+>     claude-code chief).
+>   - `lendHostSpawn` is the one gate. `spawnLendDoors` admits:
+>     - the owner's browser session;
+>     - the owner's own chief: its MCP door (`ViaAgent`), and a gateway
+>       chief's machine-message (`ViaAgentMessage`) and kickoff
+>       (`ViaKickoff`) turns.
+>   - A personal API token never lends **directly**.
+>   - 🔴 **This is an operator-approved exception to 2a's "a personal API
+>     token carries no team access"** (#668, after round 1). A token, or the
+>     hook token, that **messages the chief** can have it lend or unlend the
+>     **owner's own** spawn rows to a team the owner operates.
+>   - That is the whole exception. It reads nothing of the team's. It does
+>     not reach team drafts (the draft guard reads `TeamScope`, which is
+>     empty on every agent door) or team charters (session pages only).
+>   - The role is read from `Principal.Teams`, not `TeamScope`, which is
+>     empty on the chief's doors.
 >   - Moving a lend from one team to another writes an unshare audit row for
 >     the team it left.
 >   - `lend_target` enforces it again in Postgres from `team_members`.
