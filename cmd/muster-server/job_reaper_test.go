@@ -34,14 +34,11 @@ func (r *reapCounter) Heads(context.Context, int64, time.Time) ([]jobs.Head, err
 // replaced a one-shot sweep in buildApp that failed every unfinished job at
 // boot, which was wrong while the other pod of a rolling update still ran jobs.
 func TestTheBackgroundLoopsRunTheJobReaper(t *testing.T) {
-	old := jobReapEvery
-	jobReapEvery = 10 * time.Millisecond
-	defer func() { jobReapEvery = old }()
 	logger := log.New(io.Discard, "", 0)
 	srv := api.New(nil, api.AuthConfig{}, logger)
 	store := &reapCounter{passes: make(chan time.Time, 8)}
 	srv.UseExtensions(api.Extensions{Jobs: store})
-	a := &app{logger: logger, srv: srv}
+	a := &app{logger: logger, srv: srv, jobReapEvery: 10 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a.startBackgroundLoops(ctx)
