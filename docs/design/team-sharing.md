@@ -748,12 +748,18 @@ rule the later phases' rows will meet.
 - **The manager page adds no one without consent.**
   - The member-row form only re-roles an EXISTING member. A non-member and
     an id nobody has get the same refusal.
-  - Adding is by email only, and the form answers the same whether or not
-    anyone signs in with that email. A registered person is added; otherwise
-    nothing changes and no audit row is written.
-  - Both are one transaction; the add also inserts a row. They are not
-    constant-time.
-  - Consent-based team invites (the person accepts) are a later choice.
+  - Adding is by email only.
+  - What it claims, and only this: the POST's response does not reveal
+    whether the email is registered. A disabled account gets the same
+    response as an unregistered email (no row, no audit).
+  - What it does NOT claim:
+    - A successful add shows the person in the member list on the next page
+      view.
+    - The two paths are not constant-time: both are one transaction, but an
+      add also writes a row and an audit entry.
+    - The person is added **without their consent**.
+  - **Consent-based team invites** (the person sees the invitation and
+    accepts) are an open follow-up, listed under the later phases.
 - **Delta from §2's sketch:**
   - The audit column is `audit_log.team_id`, not `owner_id`. An `owner_id`
     column marks an OWNED table everywhere (`RLSStatus`, the ledgers), and
@@ -851,6 +857,15 @@ rule the later phases' rows will meet.
 - **Acceptance:** a team chief routes a team task to a team session and is
   refused a person's session; a personal chief's `sessions_overview` contains
   no team host; a moved task's children all carry the team owner.
+
+### Later: consent-based team invites
+
+A manager's email add (2a) puts a person in a team without asking them. A
+team invite would instead let the person see the invitation, which team it
+is for and its role, and accept it, before any membership row exists. It
+needs its own table (pending invites, expiry, revocation) and a page for the
+invitee, and it replaces the email add rather than sitting beside it. Not
+scheduled.
 
 ### Phase 5 (optional): a read-only share of one personal session
 

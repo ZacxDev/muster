@@ -97,10 +97,15 @@ tasks and team hosts each arrive with their own release.
 - **Who manages teams.** An admin, on **Admin → Teams** (`/admin/teams`),
   creates a team, naming its first manager, and adds, re-roles and removes
   members. A team's **manager** does the same for their own team on
-  `/teams/<id>`: add a person by the email they sign in with (the page
-  answers the same whether or not that email belongs to anyone), change an
+  `/teams/<id>`: add a person by the email they sign in with, change an
   existing member's role, remove a member, and read the team's recent
-  activity. A team always keeps
+  activity. Adding by email:
+  - The form's response does not reveal whether the email is registered, and
+    a disabled account is answered like an unregistered one.
+  - A successful add does show the person in the member list on the next
+    page view.
+  - The person is added **without their consent**. Consent-based team
+    invites are an open follow-up. A team always keeps
   at least one manager there. Anyone else gets the same "no such team" a team
   that does not exist gets. Being an admin gives no
   membership: an admin who is not a member sees nothing of a team either. Every

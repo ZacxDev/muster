@@ -272,6 +272,8 @@ CREATE TRIGGER actor_queued_by BEFORE INSERT OR UPDATE ON public.send_queue
 DROP TRIGGER IF EXISTS actor_author_id ON public.note_comments;
 CREATE TRIGGER actor_author_id BEFORE INSERT OR UPDATE ON public.note_comments
     FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('author_id', '');
+-- An answered -> answered_in_session move would re-stamp answered_by_user
+-- with the mover (NULL under the system scope); no code path makes that move.
 DROP TRIGGER IF EXISTS actor_answered_by_user ON public.attention_asks;
 CREATE TRIGGER actor_answered_by_user BEFORE INSERT OR UPDATE ON public.attention_asks
     FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('answered_by_user', 'answered,answered_in_session');

@@ -153,8 +153,9 @@ func (s *PGStore) ReroleTeamMemberAsManager(ctx context.Context, by Actor, team,
 
 // AddTeamMemberByEmailAsManager adds the person who signs in with email to
 // team as role, for the team's own manager, and records it as by. It reports
-// NOTHING about whether such a person exists: no person with that email, or
-// one already in the team, is a nil answer with no change and no audit row,
+// NOTHING about whether such a person exists: no person with that email, a
+// DISABLED one, or one already in the team, is a nil answer with no change
+// and no audit row,
 // in the same one transaction a real add takes. The caller has checked by
 // manages team.
 func (s *PGStore) AddTeamMemberByEmailAsManager(ctx context.Context, by Actor, team int64, email string, role authz.TeamRole) error {
@@ -168,7 +169,7 @@ func (s *PGStore) AddTeamMemberByEmailAsManager(ctx context.Context, by Actor, t
 		var user int64
 		var member bool
 		err := tx.QueryRow(ctx, `SELECT u.id, EXISTS (SELECT 1 FROM team_members m WHERE m.team_id = $2 AND m.user_id = u.id)
-			FROM users u WHERE lower(u.email) = lower($1) AND u.kind = 'person' FOR SHARE OF u`, strings.TrimSpace(email), team).Scan(&user, &member)
+			FROM users u WHERE lower(u.email) = lower($1) AND u.kind = 'person' AND u.disabled_at IS NULL FOR SHARE OF u`, strings.TrimSpace(email), team).Scan(&user, &member)
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && member {
 			return nil
 		}

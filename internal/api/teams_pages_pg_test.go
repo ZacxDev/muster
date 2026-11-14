@@ -148,7 +148,8 @@ func (w *isoWorld) doOrigin(h http.Handler, method, path, body string, user int6
 // one has — same status, same body — with no membership row, no audit row and
 // no trace of that person's email on the page. Adding is the email form's,
 // and its answer for an email someone signs in with is the same as for one
-// nobody does (the registered person is added; the other changes nothing).
+// nobody does (the registered person is added; the other changes nothing) —
+// and as for a DISABLED account's, which adds no one either.
 // RED at 75139c60: the id form added the non-member (303) and showed their
 // email. CONTROL: the same id form re-roles an existing member.
 func TestTheManagerPageAddsNoOneByIDAndItsEmailFormRevealsNothing(t *testing.T) {
@@ -168,10 +169,16 @@ func TestTheManagerPageAddsNoOneByIDAndItsEmailFormRevealsNothing(t *testing.T) 
 	if err := w.pool.QueryRow(sys, `INSERT INTO users (role, email, display_name) VALUES ('member', $1, 'outsider') RETURNING id`, outsiderEmail).Scan(&outsider); err != nil {
 		t.Fatal(err)
 	}
+	disabledEmail := "disabled-" + w.suffix + "@iso.test"
+	var disabled int64
+	if err := w.pool.QueryRow(sys, `INSERT INTO users (role, email, display_name, disabled_at) VALUES ('member', $1, 'disabled', now()) RETURNING id`,
+		disabledEmail).Scan(&disabled); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_, _ = w.pool.Exec(sys, `DELETE FROM team_members WHERE team_id = $1`, team.ID)
 		_, _ = w.pool.Exec(sys, `DELETE FROM audit_log WHERE team_id = $1`, team.ID)
-		_, _ = w.pool.Exec(sys, `DELETE FROM users WHERE id = $1 OR id = $2`, team.ID, outsider)
+		_, _ = w.pool.Exec(sys, `DELETE FROM users WHERE id IN ($1, $2, $3)`, team.ID, outsider, disabled)
 	})
 	page := "/teams/" + strconv.FormatInt(team.ID, 10)
 	manager := cred{sessionUser: w.a.uid}
@@ -209,6 +216,21 @@ func TestTheManagerPageAddsNoOneByIDAndItsEmailFormRevealsNothing(t *testing.T) 
 	// The email form: the same answer for a registered and an unregistered email.
 	byEmail := func(email string) *httptest.ResponseRecorder {
 		return w.do(w.h, "POST", page+"/members", url.Values{"email": {email}, "role": {"viewer"}}.Encode(), manager)
+	}
+	// A DISABLED account's email (#657 round 2): answered as an unregistered
+	// one, with no row and no audit entry.
+	auditsBefore := audits()
+	disabledRec, nobodyRec := byEmail(disabledEmail), byEmail("no-such-"+w.suffix+"@iso.test")
+	if disabledRec.Code != nobodyRec.Code || disabledRec.Header().Get("Location") != nobodyRec.Header().Get("Location") ||
+		disabledRec.Body.String() != nobodyRec.Body.String() {
+		t.Errorf("the email form answers a DISABLED account %d %q and an unregistered email %d %q; want the same answer",
+			disabledRec.Code, disabledRec.Header().Get("Location"), nobodyRec.Code, nobodyRec.Header().Get("Location"))
+	}
+	if r, in := membership(t, w, team.ID, disabled); in {
+		t.Errorf("the email form ADDED the disabled account (as %s)", r)
+	}
+	if audits() != auditsBefore {
+		t.Errorf("the disabled account's email wrote %d audit row(s)", audits()-auditsBefore)
 	}
 	registered, unregistered := byEmail(outsiderEmail), byEmail("no-such-"+w.suffix+"@iso.test")
 	if registered.Code != unregistered.Code || registered.Header().Get("Location") != unregistered.Header().Get("Location") ||
