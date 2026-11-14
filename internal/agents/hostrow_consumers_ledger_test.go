@@ -53,6 +53,7 @@ var hostRowConsumers = map[string]string{
 	"internal/api/agents.go:agentsListEntries":              "skips: the agent list and sidebar (the instance is its mirrored window)",
 	"internal/api/agents_list_tool.go:toolAgentsList":       "skips: the owner's agent list over MCP",
 	"internal/api/palette.go:paletteTargets":                "skips: the command palette's agents",
+	"internal/api/mentions.go:mentionIndex":                 "skips: the agents a chat reply's mention links to (the instance is its mirrored window)",
 	"internal/api/focus_tools.go:toolFleetList":             "skips: the chief's fleet list",
 	"internal/api/focus_tools.go:focusSearchHistory":        "skips: the live agents a focus search ranks",
 	"internal/api/sessions_overview.go:liveSessions":        "skips: the chief's live sessions overview",
