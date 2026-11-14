@@ -257,3 +257,111 @@ func TestARenewIsRefusedToANonHolderALapsedLeaseAndAnUnclaimedDraft(t *testing.T
 		t.Fatalf("a renewal of an unclaimed draft: %d %+v; want 409 not_claimed", code, r)
 	}
 }
+
+// TestALateFailureOfAnUnconfirmedDraftSettlesItsItemAndWithdrawsTheEscalation
+// is draft 363's shape (live, 2026-11-14): the plugin claimed the approved
+// post, the post did NOT go out ("something covers the submit button"), and
+// its ok:false arrived 18 s after the 2-minute lease lapsed — after the sweep
+// had made the draft unconfirmed and escalated its item to the owner asking
+// whether it was posted. The late failure: the draft is failed; the item is
+// settled no_action naming the draft.refused follow-up, which carries the
+// plugin's detail; the owner's "may have been posted" ask is withdrawn; and
+// the owner's push says it went back to the officer.
+func TestALateFailureOfAnUnconfirmedDraftSettlesItsItemAndWithdrawsTheEscalation(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	pushes := w.withPushes()
+	item, id := w.unconfirmedForItem("x:draft-363", "A post whose submit button was covered.")
+	if got := w.escalationAsks(item); len(got) != 1 || got[0] != "open" {
+		t.Fatalf("control: the owner's escalation asks before the result: %v; want one open", got)
+	}
+	const detail = "not sent (refused): something covers the submit button; nothing sent"
+	if rec := w.result(id, `{"ok":false,"detail":"`+detail+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("the late failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if d := w.draft(id); d.Status != plugins.DraftFailed {
+		t.Fatalf("the draft: %s; want failed", d.Status)
+	}
+	refused, p, ok := w.refusedItemOf(id)
+	if !ok {
+		t.Fatal("no draft.refused item for the late failure")
+	}
+	if p["status"] != "failed" || p["by"] != "plugin" || p["detail"] != detail || p["item_id"] != float64(item) {
+		t.Fatalf("the draft.refused payload: %v", p)
+	}
+	st, outcome, summary, _ := w.itemRow(item)
+	if want := "draft " + strconv.FormatInt(id, 10) + " was refused by the plugin, not posted. The work continues on item " +
+		strconv.FormatInt(refused, 10) + "."; st != officers.StatusDone || outcome != "no_action" || summary != want {
+		t.Fatalf("the item after the late failure: %s %s %q; want done no_action %q", st, outcome, summary, want)
+	}
+	if got := w.escalationAsks(item); len(got) != 1 || got[0] != "cancelled" {
+		t.Fatalf("the owner's escalation asks after the late failure: %v; want the one withdrawn", got)
+	}
+	w.srv.WaitForPushes()
+	var bodies []string
+	for _, x := range pushes.to(ep("outbound-owner")) {
+		if x.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) && x.Title == "A reply was not sent" {
+			bodies = append(bodies, x.Body)
+		}
+	}
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "It went back to the officer that wrote it.") {
+		t.Fatalf("the owner's refusal pushes: %q; want one saying it went back to the officer", bodies)
+	}
+	w.srv.SweepOfficerAttention(w.ctx)
+	if st, _, _, _ := w.itemRow(item); st != officers.StatusDone {
+		t.Fatalf("the next Attention sweep moved the item to %s", st)
+	}
+}
+
+// TestALateFailureLeavesAnEscalationThatIsNotItsDraftsOwn: the late-failure
+// caller honours escalatedByDraft's "not ours" answers. (a) The OWNER
+// escalated the waiting item by hand while the plugin held the draft's claim:
+// neither the lapse's sweep nor the ok:false that follows touches that
+// escalation (its summary is the owner's). (b) The unconfirmed draft's item
+// was sent back by the owner (an asks entry) and is escalated again: a late
+// ok:false leaves it, and its ask, alone. In both the officer still gets its
+// draft.refused item.
+func TestALateFailureLeavesAnEscalationThatIsNotItsDraftsOwn(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	const body = "A post the owner escalated mid-send."
+	item, id := w.fileForItem("x:hand", body)
+	if rec := w.approve(id, bindingForm(body)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := w.claim(); rec.Code != http.StatusOK {
+		t.Fatalf("the plugin's claim: %d %s", rec.Code, rec.Body.String())
+	}
+	const mine = "the owner holds this one: legal is reviewing the venue"
+	if _, err := w.store.ResolveItem(w.ctx, 1, builtinOfficerID, item, "escalated", mine, time.Now()); err != nil {
+		t.Fatalf("the owner's escalation by hand: %v", err)
+	}
+	w.draftSQL(id, `lease_until = now() - interval '1 minute'`)
+	w.sweepByClaim()
+	if st, _, summary, _ := w.itemRow(item); st != officers.StatusEscalated || summary != mine {
+		t.Fatalf("(a) after the lapse: %s %q; want the owner's own escalation left as it is", st, summary)
+	}
+	if rec := w.result(id, `{"ok":false,"detail":"not sent"}`); rec.Code != http.StatusOK {
+		t.Fatalf("(a) the late failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if st, _, summary, _ := w.itemRow(item); st != officers.StatusEscalated || summary != mine {
+		t.Fatalf("(a) after the late failure: %s %q; want the owner's own escalation left as it is", st, summary)
+	}
+	if _, _, ok := w.refusedItemOf(id); !ok {
+		t.Fatal("(a) no draft.refused item for the failure")
+	}
+
+	item2, id2 := w.unconfirmedForItem("x:sent-back", "An unconfirmed post sent back since.")
+	if _, err := w.f.pool.Exec(authz.System(w.ctx), `UPDATE officer_items SET asks = asks || jsonb_build_array(jsonb_build_object(
+		'ask_id', 1, 'question', 'escalation', 'asked_by', 'user 1', 'asked_at', now(), 'status', 'answered', 'answer', 'look again'))
+		WHERE id = $1`, item2); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.result(id2, `{"ok":false,"detail":"not sent"}`); rec.Code != http.StatusOK {
+		t.Fatalf("(b) the late failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if st, _, _, _ := w.itemRow(item2); st != officers.StatusEscalated {
+		t.Fatalf("(b) the late failure moved an item escalated again since to %s; want left escalated", st)
+	}
+	if got := w.escalationAsks(item2); len(got) != 1 || got[0] != "open" {
+		t.Fatalf("(b) the escalation asks: %v; want the open one left alone", got)
+	}
+}
