@@ -133,7 +133,7 @@ func (tw *teamTaskWalk) rows(t *testing.T) string {
 
 func (tw *teamTaskWalk) objs() isoObjs {
 	o := tw.w.ghost
-	o.task, o.comment, o.attach, o.team, o.tag = tw.task, tw.comment, tw.attach, tw.team, "isowrite"
+	o.task, o.comment, o.attach, o.team, o.tag, o.refTask = tw.task, tw.comment, tw.attach, tw.team, "isowrite", tw.task
 	return o
 }
 
@@ -177,6 +177,12 @@ func TestATeamTaskIsWalkedByEveryRole(t *testing.T) {
 		method, _, _ := strings.Cut(res.route, " ")
 		if method != http.MethodGet && is2xx(res.status) {
 			t.Errorf("V (viewer) %s → %d; want every write refused", res.route, res.status)
+		}
+		// A write naming the team's task in its path is refused by the
+		// HANDLER (403, the role gate), not only by Postgres below it (whose
+		// refusal reads as a 404 or a 500).
+		if method != http.MethodGet && strings.Contains(res.route, "/tasks/{id}") && res.status != http.StatusForbidden {
+			t.Errorf("V (viewer) %s → %d; want 403 from the team-task role gate", res.route, res.status)
 		}
 		switch res.route {
 		case "GET /tasks/{id}":
