@@ -1197,6 +1197,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
 		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
 	must(err, "an officer schedule")
+	// A's officer's people (0131): one the read and flag routes name (its
+	// display carries the canary) and one the erase route names.
+	for _, h := range []string{"isoperson", "isodelete"} {
+		_, err = pool.Exec(ua, `INSERT INTO officer_contacts (owner_id, officer, venue, handle, display) VALUES ($1, $2, 'iso', $3, $4)`,
+			w.a.uid, aOffType+":a", h, w.canary+" person")
+		must(err, "an officer contact")
+	}
 	w.officerStore = ost
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
@@ -1591,7 +1598,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The built-in officer store's admin API: its own path names, and a
 		// body each route accepts, so a refusal is about WHOSE row.
 		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
-			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly").Replace(path)
+			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly", "{venue}", "iso").Replace(path)
+		handle := "isoperson"
+		if method == http.MethodDelete {
+			handle = "isodelete"
+		}
+		path = strings.ReplaceAll(path, "{handle}", handle)
 		switch {
 		case method == http.MethodGet || method == http.MethodDelete:
 			return method, path, ""
@@ -1601,6 +1613,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
 		case strings.Contains(path, "/types/"):
 			return method, path, `{"name":"iso","charter":"iso-write"}`
+		case strings.HasSuffix(path, "/flags"):
+			return method, path, `{"bot":true}`
 		case strings.Contains(path, "/schedules/"):
 			return method, path, `{"cron":"0 6 * * *","kind":"iso","subject_key":"iso"}`
 		}
