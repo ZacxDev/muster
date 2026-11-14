@@ -508,6 +508,9 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 		if err != nil {
 			s.logger.Printf("chief nudges: owner %d: agents: %v", owner, err)
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		read.agentsRead = err == nil
 		isChief := chiefPredicate(list)
 		// 🔴 ONE PROVISIONER LIST PER READ, NOT ONE PER AGENT (live_status.go:
@@ -951,7 +954,9 @@ func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudg
 // mirror.SpawnPreface opens a host-spawned agent's first message (its spawn
 // prompt: the chief's relay and the task, never the owner's own words), so it
 // is never the owner's authority, however the transcript was read.
-var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface}
+// mirror.OfficerSpawnPreface opens a host officer instance's first message (its
+// kickoff), muster's text as well.
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface}
 
 // injectedBodyReader is the send queue's read of what muster itself queued
 // (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.

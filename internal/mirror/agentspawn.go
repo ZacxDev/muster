@@ -84,6 +84,22 @@ const (
 // subcommand name and never begins with '-'.
 const SpawnPreface = "muster: your owner's chief started you"
 
+// OfficerSpawnPreface is how the first message of a host-spawned OFFICER
+// instance begins (docs/design/officers-on-hosts.md): the same guard as
+// SpawnPreface — never a subcommand name, never beginning with '-' — with
+// words that do not tell an officer its owner's chief started it. A host
+// older than this constant refuses such a spawn (failed: "the prompt does not
+// begin with muster's preface"), so a host officer needs a current
+// muster-mirror.
+const OfficerSpawnPreface = "muster: your owner's officer runtime started you"
+
+// HasSpawnPreface reports whether prompt begins with one of muster's spawn
+// prefaces (SpawnPreface, OfficerSpawnPreface). THE rule the host applies to
+// every agent-spawn's prompt.
+func HasSpawnPreface(prompt string) bool {
+	return strings.HasPrefix(prompt, SpawnPreface) || strings.HasPrefix(prompt, OfficerSpawnPreface)
+}
+
 // THE MODEL OF AN opencode SPAWN (design 2.2, 3.6): an OpenRouter model id,
 // <vendor>/<model>, which travels on the wire as openrouter/<vendor>/<model>
 // and reaches opencode as Model.Ref {providerID: "openrouter", id:

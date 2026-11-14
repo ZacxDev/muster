@@ -7,20 +7,20 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// TestMigration0125Teams: a database at 0124 has no users.kind and no
-// team_members (the control); at 0125 every existing row is a person, a team
+// TestMigration0126Teams: a database at 0125 has no users.kind and no
+// team_members (the control); at 0126 every existing row is a person, a team
 // row can be made, a membership must join a team to a person with a known
 // role, and the team_members table is under forced row-level security. Then
 // the header's ROLLBACK block runs as written and leaves neither, and the file
 // applies again after it.
-func TestMigration0125Teams(t *testing.T) {
+func TestMigration0126Teams(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0125_teams", 124)
+	pool := freshAt(ctx, t, "ms_0126_teams", 125)
 	if _, err := pool.Exec(ctx, `SELECT kind FROM users`); err == nil {
-		t.Fatal("control: before 0125 users.kind exists")
+		t.Fatal("control: before 0126 users.kind exists")
 	}
 	person := scanID(ctx, t, pool, `INSERT INTO users (role, email) VALUES ('member', 'ana@example.test') RETURNING id`)
-	applyThroughFrom(ctx, t, pool, 125)
+	applyThroughFrom(ctx, t, pool, 126)
 
 	var kinds string
 	if err := pool.QueryRow(ctx, `SELECT string_agg(DISTINCT kind, ',') FROM users`).Scan(&kinds); err != nil || kinds != "person" {
@@ -59,7 +59,7 @@ func TestMigration0125Teams(t *testing.T) {
 		t.Fatalf("team_members row-level security enabled=%v forced=%v err=%v; want both", rls, forced, err)
 	}
 
-	for _, q := range asksRollbackSQL(t, "0125_teams.sql") {
+	for _, q := range asksRollbackSQL(t, "0126_teams.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}
@@ -70,7 +70,7 @@ func TestMigration0125Teams(t *testing.T) {
 	if _, err := pool.Exec(ctx, `SELECT kind FROM users`); err == nil {
 		t.Error("after the rollback users.kind still exists")
 	}
-	applyThroughFrom(ctx, t, pool, 125)
+	applyThroughFrom(ctx, t, pool, 126)
 	if n := countRows(ctx, t, pool, "team_members"); n != 0 {
 		t.Errorf("re-applied after the rollback: %d membership row(s)", n)
 	}
@@ -86,7 +86,7 @@ func TestMigration0125Teams(t *testing.T) {
 // that IS the team sees each row (so "none" is about the member, not an empty
 // table), and System sees each row.
 func TestATeamMemberSeesNoTeamRowInAnyOwnedTable(t *testing.T) {
-	f := newRLSFixture(t, "ms_0125_nothing_shared")
+	f := newRLSFixture(t, "ms_0126_nothing_shared")
 	sys := authz.System(f.base)
 	store := users.NewPG(f.pool)
 	team, err := store.CreateTeam(f.base, users.Actor{UserID: 1, Via: authz.ViaSession}, "Platform", f.two)

@@ -1,4 +1,4 @@
--- muster 0125 — TEAMS AND MEMBERSHIP, NOTHING SHARED YET
+-- muster 0126 — TEAMS AND MEMBERSHIP, NOTHING SHARED YET
 -- (docs/design/team-sharing.md, phase 1; internal/users teams.go).
 --   users.kind     'person' (every row before this migration, and every row
 --                  an invite or the claim creates) or 'team'. A team is an
@@ -45,7 +45,7 @@
 --   DROP INDEX IF EXISTS public.users_team_name_key;
 --   ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_team_no_login;
 --   ALTER TABLE public.users DROP COLUMN IF EXISTS kind;
---   DELETE FROM schema_migrations WHERE version = 125;
+--   DELETE FROM schema_migrations WHERE version = 126;
 
 SET LOCAL lock_timeout = '3s';
 

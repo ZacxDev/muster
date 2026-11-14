@@ -283,7 +283,9 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 		c.AgentsUnread = "the agent list could not be read"
 	} else {
 		idx := s.instanceIndex(ctx)
-		for _, a := range list {
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		for _, a := range agents.ProvisionedOnly(list) {
 			byAgent[a.ID] = a
 			running[a.ID] = liveStatusIndexed(a, idx) == agents.StatusRunning
 		}

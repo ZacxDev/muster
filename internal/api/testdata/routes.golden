@@ -29,6 +29,7 @@
 /llm/
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
+DELETE /api/agents/{name}
 DELETE /api/device
 DELETE /api/device/push
 DELETE /api/instance/branding/app-icon
@@ -303,6 +304,7 @@ POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check
 POST /plugin/v1/drafts/{id}/media
+POST /plugin/v1/drafts/{id}/renew
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages

@@ -9,18 +9,21 @@
 // `fullyParallel: false`, Playwright shards whole files balanced by TEST COUNT,
 // and count is a poor proxy here: claude-code-polish.spec.ts is 10 tests and
 // ~42 s, provisioning-indicator.spec.ts is 2 tests and ~20 s, sw.spec.ts is 2
-// tests and under 1 s. legs.json's `seconds` are per-file wall times read off
-// green CI runs' list reporter (the delta between successive completion
-// timestamps, so a file's own beforeAll server start is in its number), the
-// MEDIAN over the runs `measured_at` names — one run is not enough: cls.spec.ts
-// measured 67–110 s across six. They are a balancing input only — nothing
+// tests and under 1 s. legs.json's `seconds` are per-file times from green CI
+// runs, over the runs `measured_at` names (it says how they were read: the
+// list reporter's completion deltas, or the sum of the file's test durations
+// in the JSON report, whose hooks are inside them) — one run is not enough:
+// cls.spec.ts measured 67–110 s across six. They are a balancing input only — nothing
 // asserts them, so a spec added without a measured number unbalances the legs
 // silently; re-measure and re-split when the legs' times drift apart.
 //
-// ⚠ TWO LEGS, NOT THREE. Split, the e2e path is no longer the run's longest:
-// `test (postgres)` is, and three legs measured no faster than two at that job's
-// median while costing a runner slot on an account whose concurrency cap other
-// repositories already fill.
+// ⚠ FOUR LEGS. This said "two, not three" while `test (postgres)` was the run's
+// longest job, so a third leg bought nothing. By 2026-11-13 the suite had grown
+// to ~3,330 s of specs, each of two legs took 29-31 min, and the Go suite is now
+// sharded too (tests/goshard.py), so the legs were the run's longest path. Each
+// leg still costs a runner slot (and ~2 min of global-setup) on an account whose
+// concurrency cap other repositories also fill: add one only when the legs are
+// again the run's longest path.
 //
 // 🔴 THE SEAM — every spec in exactly one leg — IS GUARDED BY WHAT RAN, NOT BY
 // THIS FILE. `verdict.mjs --all` (the `e2e` job) sums every leg's report and

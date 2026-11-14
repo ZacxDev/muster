@@ -241,7 +241,7 @@ func (s *Store) ResolveAsk(ctx context.Context, owner, item, askID int64, status
 	}
 	out := Settled
 	if status == AskExpired {
-		notices, err := noticesFor(ctx, tx, owner, officer)
+		notices, err := noticesFor(ctx, tx, owner, officer, 0)
 		if err != nil {
 			return "", err
 		}
@@ -279,12 +279,17 @@ type noticeEntry struct {
 	Suppressed  bool   `json:"suppressed"`
 	AttentionID *int64 `json:"attention_id"`
 	Settled     bool   `json:"settled"`
+	// Draft is the outbound draft whose unconfirmed end raised this
+	// escalation (DraftEndedTx), 0 for any other: what lets that draft's
+	// late result recognise the escalation as its own (escalatedByDraft).
+	Draft int64 `json:"draft,omitempty"`
 }
 
 // noticesFor is who an escalation of officer's item notifies: its owner and
 // its escalate_to, once each, suppressed (recorded, never delivered) when the
-// officer is in shadow mode. Read inside the escalating transaction.
-func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string) (json.RawMessage, error) {
+// officer is in shadow mode. Read inside the escalating transaction. draft
+// names the outbound draft the escalation is about (DraftEndedTx), 0 for none.
+func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string, draft int64) (json.RawMessage, error) {
 	var mode string
 	var esc []int64
 	err := tx.QueryRow(ctx, `SELECT mode, escalate_to FROM officer_defs WHERE owner_id = $1 AND officer = $2`, owner, officer).Scan(&mode, &esc)
@@ -300,7 +305,7 @@ func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string) (js
 			continue
 		}
 		seen[r] = true
-		out = append(out, noticeEntry{Recipient: r, Suppressed: mode == "shadow", Settled: mode == "shadow"})
+		out = append(out, noticeEntry{Recipient: r, Suppressed: mode == "shadow", Settled: mode == "shadow", Draft: draft})
 	}
 	return json.Marshal(out)
 }

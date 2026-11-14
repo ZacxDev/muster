@@ -13,7 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// Teams (docs/design/team-sharing.md, phase 1; migration 0125).
+// Teams (docs/design/team-sharing.md, phase 1; migration 0126).
 //
 // A team is a users row of kind 'team': an OWNER that no one signs in as. A
 // person belongs to it through team_members with a role (viewer, operator,

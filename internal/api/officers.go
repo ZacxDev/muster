@@ -120,6 +120,10 @@ type officerRuntime struct {
 	// officer_complete summary. Guarded by shadowMu.
 	shadowMu sync.Mutex
 	shadow   map[string]*shadowLedger
+	// hostSpawns is OfficersConfig.HostSpawns; host is the host fleet's
+	// in-process state (officer_host.go).
+	hostSpawns officers.HostSpawnStore
+	host       officerHostState
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -278,6 +282,10 @@ type OfficersConfig struct {
 	PRLoops     officers.PRLoopStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
+	// HostSpawns keeps the host officers' spawned sessions
+	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
+	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
+	HostSpawns officers.HostSpawnStore
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
 	// officer pool's OWN runner image (`image`) is pulled with
 	// (agentspec.ClaudeCodeSession.ImagePullSecret, which reaches the pod spec
@@ -392,14 +400,40 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if len(cfg.Officers) == 0 {
 		return nil, errors.New("officers: none declared")
 	}
-	if s.ext.Agents == nil || s.ext.Provisioner == nil {
-		return nil, errors.New("officers: need the agents store and an agent provisioner")
+	// 🔴 WHAT EACH RUNTIME NEEDS, REFUSED AT BOOT BY RUNTIME
+	// (docs/design/officers-on-hosts.md): a pod officer needs the agents store,
+	// a provisioner and the claude-code kind; a host officer needs a mirror hub
+	// and the host spawn store, and none of the pod's — so a Compose stack
+	// with host officers only boots without a cluster.
+	var pods, hosts []string
+	for _, o := range cfg.Officers {
+		if o.OnHost() {
+			hosts = append(hosts, o.ID)
+		} else {
+			pods = append(pods, o.ID)
+		}
 	}
-	if cfg.InstallSession == nil {
-		return nil, errors.New("officers: no way to install the instances' session settings on the provisioner (every tool allowed, officer tools, model)")
+	if len(pods) > 0 {
+		if s.ext.Agents == nil || s.ext.Provisioner == nil {
+			return nil, fmt.Errorf("officers: %s run in pods, which need the agents store and an agent provisioner (or declare \"runtime\": \"host\")", strings.Join(pods, ", "))
+		}
+		if cfg.InstallSession == nil {
+			return nil, errors.New("officers: no way to install the instances' session settings on the provisioner (every tool allowed, officer tools, model)")
+		}
+		if !s.ext.kindEnabled(agents.KindClaudeCode) {
+			return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
+		}
 	}
-	if !s.ext.kindEnabled(agents.KindClaudeCode) {
-		return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
+	if len(hosts) > 0 {
+		if s.ext.Mirror == nil {
+			return nil, fmt.Errorf(officerHostNoMirror, strings.Join(hosts, ", "))
+		}
+		if cfg.HostSpawns == nil {
+			return nil, fmt.Errorf(officerHostNoStore, strings.Join(hosts, ", "))
+		}
+		if s.ext.Agents == nil {
+			return nil, fmt.Errorf(officerHostNoAgents, strings.Join(hosts, ", "))
+		}
 	}
 	reg := officers.NewRegistry(cfg.Officers)
 	build, err := s.officerBackendBuilder(cfg)
@@ -473,13 +507,16 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
+		hostSpawns:      cfg.HostSpawns,
 		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
 		imagePullSecret: cfg.ImagePullSecret}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
 	}
-	cfg.InstallSession(s.OfficerClaudeCodeSession)
+	if cfg.InstallSession != nil {
+		cfg.InstallSession(s.OfficerClaudeCodeSession)
+	}
 	if fwd != nil && !cfg.NoTranscriptRun {
 		// Ends with the server's streams (EndStreams, at shutdown).
 		ctx := s.streams.context()
@@ -491,6 +528,10 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		safeGo(s.logger, "officer usage collector", func() { uc.Run(ctx) })
 	}
 	for _, o := range reg.All() {
+		if o.OnHost() {
+			s.logger.Print(officerHostLine(o))
+			continue
+		}
 		repo := "none"
 		if o.Repo != "" {
 			repo = o.Repo + " (github connector, read through the proxy; no checkout)"
@@ -649,7 +690,7 @@ func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
 	if !ok || officers.MayRequestConnector(o, name) {
 		return nil
 	}
-	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name, declared: o.Connectors}
+	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name, declared: o.Connectors, onHost: o.OnHost()}
 }
 
 // errOfficerConnector is officerConnectorRefusal's refusal. It is
@@ -658,9 +699,16 @@ func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
 type errOfficerConnector struct {
 	agent, officer, connector string
 	declared                  []string
+	// onHost: a host officer, which may use only the connectors it declares
+	// (officers.MayRequestConnector refuses it github).
+	onHost bool
 }
 
 func (e errOfficerConnector) Error() string {
+	if e.onHost {
+		return fmt.Sprintf("%s is an instance of host officer %s, which may use only the connectors it declares (%s); %q was refused",
+			e.agent, e.officer, strings.Join(e.declared, ", "), e.connector)
+	}
 	if len(e.declared) == 0 {
 		return fmt.Sprintf("%s is an instance of officer %s, and an officer may use only the %q connector (to read its "+
 			"repository); %q was refused", e.agent, e.officer, officers.GitHubConnector, e.connector)
@@ -734,6 +782,9 @@ func (f officerFleet) byName(ctx context.Context, o officers.Officer) (map[strin
 // pool of a tiered one). It FAILS BLIND: an unreadable agent table or
 // provisioner is an error, never "nothing is up".
 func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
+	if o.OnHost() {
+		return f.hostInstances(ctx, o)
+	}
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	rows, err := f.byName(octx, o)
 	if err != nil {
@@ -758,6 +809,9 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 // Start implements officers.Fleet: create instance n with kickoff as its first
 // turn, or — when its agent exists — re-arm its first turn and start it.
 func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
+	if o.OnHost() {
+		return f.hostStart(ctx, o, n, kickoff)
+	}
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	name := o.InstanceName(n)
 	if o.FreshSessionPerItem() {
@@ -768,6 +822,12 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 		f.s.officerRT.forgetStale(name)
 	}
 	a, err := f.s.ext.Agents.GetByName(octx, name)
+	if err == nil && !a.Provisioned() {
+		// A host row left from when the officer ran on a host: never handed to
+		// the provisioner (which refuses it anyway) — say how to clear it.
+		return fmt.Errorf("officers: %s: an agent row of that name is host %s's (from when %s ran there); remove it with `muster agent rm %s` "+
+			"(or agent_destroy from one of your sessions) and %s starts in a pod at its next pass", name, a.RunsOnHost, o.ID, name, o.ID)
+	}
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
 			Name:              name,
@@ -881,6 +941,9 @@ const repromptSlack = 2 * time.Minute
 //     holding the claim until it returns, then releases it; the turn is
 //     recorded on the agent's session like any other.
 func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, text string) error {
+	if o.OnHost() {
+		return f.hostReprompt(ctx, o, n, text)
+	}
 	s := f.s
 	if s.ext.Gateway == nil {
 		return errors.New("officers: no agent gateway to send a re-prompt through")
@@ -995,6 +1058,9 @@ func failureKind(err error) string {
 // runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
 // whatever the push does.
 func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error {
+	if o.OnHost() {
+		return f.hostStop(ctx, o, n)
+	}
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	a, err := f.s.ext.Agents.GetByName(octx, o.InstanceName(n))
 	if err != nil {
@@ -1124,9 +1190,25 @@ func (s *Server) deleteProtection(list []agents.Agent) func(agents.Agent) bool {
 		if chief(a) {
 			return true
 		}
-		_, _, officer := s.officerOf(a)
-		return officer
+		return s.isDeclaredInstanceRow(a)
 	}
+}
+
+// isDeclaredInstanceRow reports whether a is a declared officer's instance row
+// FOR ITS CURRENT RUNTIME: a pod officer's provisioned row, or a host
+// officer's row on its declared host. Only such a row is delete-protected; a
+// row left from before the officer moved (a pod row of a host officer, a host
+// row of a pod officer or of another host) is not, so it can be removed
+// (destroyAgent's host-row branch) and the officer can run where it now is.
+func (s *Server) isDeclaredInstanceRow(a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	if !ok {
+		return false
+	}
+	if o.OnHost() {
+		return a.RunsOnHost == o.Host
+	}
+	return a.Provisioned()
 }
 
 // agentIsDeleteProtected reads the agent table and answers deleteProtection
@@ -1375,6 +1457,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	}
 	if !s.officerToolServed(o, name) {
 		return toolErr("%s is not one of officer %s's tools", name, o.ID), true
+	}
+	// 🔴 THE RUNTIME BINDS THE DOOR (officer_host.go): a host officer's tools
+	// are its host instances' (no agent row), a pod officer's its pods'.
+	if why := officerRuntimeRefusal(o, a, name); why != "" {
+		return toolErr("%s", why), true
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &raw); err != nil {

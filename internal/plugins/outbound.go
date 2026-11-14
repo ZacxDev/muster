@@ -190,6 +190,48 @@ type OfficerLink interface {
 	// otherwise) WAITING with no holder: it waits on the outbound draft filed
 	// for it, which settles it (internal/api outboundSettled). See FileOutbound.
 	WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, item int64, instance string) error
+	// DraftEndedTx, inside the transaction that ended outbound draft d
+	// unsent by muster's own hand (how: the sweep's expiry or lapsed lease,
+	// the claim's broken binding, Checks replies turned off), settles what d was filed for: its
+	// officer's follow-up and the item that waits on it (internal/api
+	// draftEndFor). An error rolls the end back with it, so the next sweep
+	// or claim tries again: a draft never ends while its item still waits.
+	DraftEndedTx(ctx context.Context, tx pgx.Tx, d Draft, how OutboundEnd) error
+}
+
+// OutboundEnd is how an outbound draft ended unsent by muster's own hand,
+// rather than by a decision or a result internal/api acts on itself.
+type OutboundEnd string
+
+const (
+	// OutboundExpired: not sent within DraftTTL (sweepDrafts).
+	OutboundExpired OutboundEnd = "expired"
+	// OutboundUnconfirmed: its plugin's claim lapsed with no result
+	// (sweepDrafts): it MAY have been posted.
+	OutboundUnconfirmed OutboundEnd = "unconfirmed"
+	// OutboundBindingBroken: the claim withdrew it, its body or media no
+	// longer what was approved (claimOne).
+	OutboundBindingBroken OutboundEnd = "binding_broken"
+	// OutboundChecksOff: its plugin's draft_checks was turned off while it
+	// awaited the check, so it was refused (SetDraftChecks).
+	OutboundChecksOff OutboundEnd = "checks_off"
+)
+
+// outboundEnded is OfficerLink.DraftEndedTx for drafts ds that ended how in
+// tx: those of an officer, while a link is wired.
+func (s *PGStore) outboundEnded(ctx context.Context, tx pgx.Tx, ds []Draft, how OutboundEnd) error {
+	if s.officers == nil {
+		return nil
+	}
+	for _, d := range ds {
+		if !d.IsOutbound() || d.Officer == nil {
+			continue
+		}
+		if err := s.officers.DraftEndedTx(ctx, tx, d, how); err != nil {
+			return fmt.Errorf("plugins: draft %d %s: settle its officer's item: %w", d.ID, how, err)
+		}
+	}
+	return nil
 }
 
 // WithOfficerLink wires the builtin officer store; without one, a bound

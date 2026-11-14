@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/podagent"
 )
 
@@ -161,6 +162,15 @@ type Officer struct {
 	// BackendBuiltin (muster's own Postgres, internal/officers/builtin).
 	// Parse sets it; "" reads as BackendHQ (Officer.BackendKind).
 	Backend string `json:"-"`
+	// Runtime is where the officer's instances run: RuntimePod (a pod per
+	// instance, through the provisioner: the default) or RuntimeHost (a
+	// host-spawned Claude Code window per instance on the mirror host Host,
+	// docs/design/officers-on-hosts.md). Parse sets it; "" reads as RuntimePod
+	// (Officer.OnHost).
+	Runtime string `json:"-"`
+	// Host is the mirror host (its token's name) a RuntimeHost officer's
+	// instances are spawned on; "" for a pod officer.
+	Host string `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -188,11 +198,28 @@ func (o Officer) BackendKind() string {
 // IsBuiltin reports whether muster's built-in backend serves o.
 func (o Officer) IsBuiltin() bool { return o.BackendKind() == BackendBuiltin }
 
+// OnHost reports whether o's instances run as host-spawned sessions
+// (RuntimeHost) rather than pods. THE one read of Officer.Runtime: the fleet,
+// the tool rule, the kickoff and the boot lines all ask it.
+func (o Officer) OnHost() bool { return o.Runtime == RuntimeHost }
+
+// RuntimeKind is o's runtime: RuntimeHost, or RuntimePod (also for an Officer
+// built outside Parse with no Runtime).
+func (o Officer) RuntimeKind() string {
+	if o.OnHost() {
+		return RuntimeHost
+	}
+	return RuntimePod
+}
+
 // String names the officer without its token.
 func (o Officer) String() string {
 	where := "hq " + o.HQURL
 	if o.IsBuiltin() {
 		where = "backend builtin"
+	}
+	if o.OnHost() {
+		where += ", runtime host on " + o.Host
 	}
 	if o.Tiers != nil {
 		return fmt.Sprintf("officer %s (%s, judgement max %d, routine max %d, idle %s, poll %s)", o.ID, where, o.Tiers.Judgement.MaxInstances, o.Tiers.Routine.MaxInstances, o.IdleAfter, o.PollInterval)
@@ -236,6 +263,85 @@ type declared struct {
 	// Backend is which officer backend serves the officer (BackendHQ, the
 	// default, or BackendBuiltin): parseBackend.
 	Backend string `json:"backend"`
+	// Runtime is where the instances run (RuntimePod, the default, or
+	// RuntimeHost) and Host the mirror host of a RuntimeHost officer:
+	// parseRuntime.
+	Runtime string `json:"runtime"`
+	Host    string `json:"host"`
+}
+
+// The runtimes a declaration may name (`runtime`).
+const (
+	// RuntimePod runs each instance as a pod through the provisioner: the
+	// default, and the only runtime before officers-on-hosts.
+	RuntimePod = "pod"
+	// RuntimeHost runs each instance as a host-spawned Claude Code window on
+	// the mirror host `host` (docs/design/officers-on-hosts.md).
+	RuntimeHost = "host"
+)
+
+// parseRuntime is the declaration's runtime and host: "" and "pod" are
+// RuntimePod (and `host` is refused beside it), "host" is RuntimeHost —
+// refused at boot, FAIL CLOSED and naming every field, when the officer
+// declares anything a host-spawned session cannot honour
+// (docs/design/officers-on-hosts.md, "What works on the host runtime"). It
+// runs after parseBackend, so backend is already known.
+func (d declared) parseRuntime(backend string) (runtime, host string, err error) {
+	host = strings.TrimSpace(d.Host)
+	switch strings.TrimSpace(d.Runtime) {
+	case "", RuntimePod:
+		if host != "" {
+			return "", "", fmt.Errorf("host %q is only for \"runtime\": %q (a pod officer runs in the cluster)", host, RuntimeHost)
+		}
+		return RuntimePod, "", nil
+	case RuntimeHost:
+	default:
+		return "", "", fmt.Errorf("runtime %q is not %q or %q", d.Runtime, RuntimePod, RuntimeHost)
+	}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	var refused []string
+	if backend != BackendBuiltin {
+		refused = append(refused, `backend "hq" (v1: an HQ officer's usage, transcript and pools ledgers read its instances' pods; use "backend": "builtin")`)
+	}
+	switch {
+	case host == "":
+		refused = append(refused, "no host (name the mirror host its instances start on)")
+	case mirror.ValidHost(host) != nil:
+		refused = append(refused, fmt.Sprintf("host %q (not a mirror host name: a lowercase DNS label)", host))
+	}
+	if strings.TrimSpace(d.Repo) == "" {
+		refused = append(refused, "no repo (the host cuts each instance's worktree from its clone of that repository)")
+	}
+	if present(d.Tiers) {
+		refused = append(refused, "tiers (each pool runs its own model, and a host spawn of Claude Code takes none)")
+	}
+	if strings.TrimSpace(d.Model) != "" {
+		refused = append(refused, "model (the host's Claude Code runs its own default)")
+	}
+	if strings.TrimSpace(d.Image) != "" {
+		refused = append(refused, "image (a pod setting)")
+	}
+	if strings.TrimSpace(d.CCAccount) != "" || d.CCFailover {
+		refused = append(refused, "cc_account/cc_failover (the host runs its own claude on its own login)")
+	}
+	// connectors are ALLOWED: a host instance has an agent row (migration
+	// 0125) its grants hang on, each decided by the owner per request, and
+	// they are used through MCP tools muster runs server-side
+	// (postgres_query) — no token reaches the session.
+	if len(d.ReadRepos) > 0 {
+		refused = append(refused, "read_repos (further repositories are read through the github connector's HTTP proxy, "+
+			"which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host)")
+	}
+	if present(d.LLM) {
+		refused = append(refused, "llm (the LLM proxy routes a pod's Claude Code through it, and needs tiers)")
+	}
+	if present(d.Kube) {
+		refused = append(refused, "kube (kube reads are the judgement pool's, and need tiers)")
+	}
+	if len(refused) > 0 {
+		return "", "", fmt.Errorf(`runtime "host" refuses %s`, strings.Join(refused, "; "))
+	}
+	return RuntimeHost, host, nil
 }
 
 // The officer backends a declaration may name (`backend`).
@@ -322,8 +428,12 @@ var connectorNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // MayRequestConnector is THE rule for which connectors officer o's instances
 // may request and use: `github`, plus the ones o declares in `connectors`.
 func MayRequestConnector(o Officer, name string) bool {
+	// 🔴 NOT github ON A HOST: the github connector is used through the HTTP
+	// proxy with the agent's own token, which never reaches a host session —
+	// a grant would be approved for nothing. A host instance reads its
+	// repository from its worktree.
 	if name == GitHubConnector {
-		return true
+		return !o.OnHost()
 	}
 	// kube-read: the judgement pool of an officer with a `kube` block only
 	// (kube.go). Never by declaring it in `connectors`, which is refused.
@@ -575,6 +685,14 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 	}
 	o.Backend = backend
+	// The runtime next, for the same reason: a host officer is refused naming
+	// everything a host-spawned session cannot honour, before any pod-only
+	// check reads as the reason.
+	runtime, host, err := d.parseRuntime(backend)
+	if err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+	}
+	o.Runtime, o.Host = runtime, host
 	// 🔴 hq_url and the token are HQ's: a builtin officer has neither
 	// (parseBackend refused both), and its backend is muster's own database.
 	if !o.IsBuiltin() {

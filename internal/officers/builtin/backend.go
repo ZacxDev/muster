@@ -349,7 +349,7 @@ func (b *Backend) Complete(ctx context.Context, item officers.ItemID, instance s
 			status = officers.StatusEscalated
 			// 🔴 WHO IS NOTIFIED IS WRITTEN IN THIS TRANSACTION: an escalation
 			// that commits has its notices, and one that does not has none.
-			if notices, err = noticesFor(ctx, tx, b.officer.Owner, b.officer.ID); err != nil {
+			if notices, err = noticesFor(ctx, tx, b.officer.Owner, b.officer.ID, 0); err != nil {
 				return nil, err
 			}
 		}
