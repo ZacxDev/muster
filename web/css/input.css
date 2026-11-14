@@ -820,9 +820,20 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
  * options, the mic — fits whole and the conversation's scroller shrinks
  * instead of the card being cut at the block's scroll edge (AskerAsksBlock).
  * The id outranks the utility by specificity.
+ *
+ * NOT ON AN AGENT'S PAGE ([data-asks-page], askerAsksSection): there the block
+ * is capped at 40dvh and shrinks, scrolling inside, so it can never push the
+ * composer under the session switcher (an operator report).
  */
-#asker-asks:has(> [data-asks-collapsed]),
-#asker-asks:has(> ul > [data-attention-item]:only-child) {
+#asker-asks:not([data-asks-page]):has(> [data-asks-collapsed]),
+#asker-asks:not([data-asks-page]):has(> ul > [data-attention-item]:only-child) {
   max-height: 65vh;
   max-height: 65dvh;
+}
+/*
+ * The heading's fold (AskerAsksHeading, more than one question): folded, the
+ * block is its heading row alone.
+ */
+#asker-asks[data-asks-folded] > :not(:first-child) {
+  display: none;
 }

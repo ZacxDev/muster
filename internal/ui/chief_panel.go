@@ -427,12 +427,23 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 	return Div(
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
-		Class("ml-auto flex items-center gap-0.5"),
-		// The new chat is the chat bar's labelled "New side chat" (chief_chats.go),
-		// over the transcript; the title bar keeps the thread list.
+		Class("ml-auto flex min-w-0 items-center gap-0.5"),
+		// A chief chat's context chip (chief_chats.go), where the page draws it
+		// in its header. Its new chat is "New side chat" under the thread list
+		// (chiefPanelChatActions); the title bar keeps the thread list.
+		g.If(v.Configured, chiefPanelContext(v.Chat.ChiefChat)),
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
+}
+
+// chiefPanelContext is the panel title bar's context chip slot; nothing off a
+// chief's chat.
+func chiefPanelContext(b *ChiefChatBar) g.Node {
+	if b == nil {
+		return nil
+	}
+	return Span(Class("mr-1 inline-flex min-w-0"), chiefContextSlot(b.AgentName, b.SessionID))
 }
 
 // chiefNewThreadButton opens a fresh thread WITHOUT leaving the grid.
@@ -818,6 +829,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				// this one got that rule wrong for a truncated read, and the next call site
 				// would have had the same chance to.
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
+				// The chief's chat actions — "+ New side chat", and Fresh primary /
+				// Archive / Unarchive for the chat the panel is on — under the list
+				// (chief_chats.go): what the chat bar over the transcript held.
+				chiefPanelChatActions(v.ChiefChat),
 			),
 		),
 	}

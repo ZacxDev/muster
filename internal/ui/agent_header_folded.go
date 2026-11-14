@@ -23,7 +23,10 @@ import (
 //
 //   - ONE header row: ☰, the status dot, the title, the asks badge, New chat,
 //     Chat history, Focus history, and the ⋯ — at the row's END, where a
-//     mirrored session's last control is;
+//     mirrored session's last control is. The CHIEF's row has the one list
+//     icon a mirrored session's has instead of the three (its sheet holds its
+//     chats: chief_chats.go) and its context chip under the title
+//     (foldedTitle);
 //   - the status row's other controls IN THE ⋯ MENU (foldedMenuItems): the Claude
 //     account, the failover ("Account switched" and its whole line — in the menu
 //     itself, no second popover), the worker pool, and Terminal (the same
@@ -73,7 +76,7 @@ func foldedHeader(v AgentDetailView) g.Node {
 			// The status dot (and any badge the strip carries), live: the same
 			// strip the second row drew, refreshing itself (agentStrip).
 			g.If(v.Card.ID != 0, agentStrip(v.Card)),
-			agentTitle(v),
+			foldedTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
 			g.If(v.AsksSrc != "", askerAsksBadge()),
 			agentHeaderToolsWith(v, true),
@@ -83,6 +86,40 @@ func foldedHeader(v AgentDetailView) g.Node {
 		// opens it in the kept frame travels with whatever draws such a link.
 		viewFrameScript(),
 		updatingChip("agent-updating", "right-3 top-full mt-1 z-10"),
+	)
+}
+
+// foldedTitle is the folded header's title: agentTitle — and, on a chief's
+// chat, the chat's context chip UNDER it (chiefHeaderContext), as a mirrored
+// session's header draws its chip under its title.
+//
+// 🔴 THE TWO LINES ARE THE ROW'S 44px, SO THE HEADER IS NOT TALLER FOR THEM:
+// the title's line is h-6 and the chip's h-5. The title's "…" (h-11, shown
+// only while the title is clipped) overflows its h-6 line rather than growing
+// it — so a title that starts or stops clipping moves nothing — and keeps its
+// 44px tap target.
+func foldedTitle(v AgentDetailView) g.Node {
+	if v.ChiefChat == nil || v.Surface != ChatSurfacePage {
+		return agentTitle(v)
+	}
+	return Div(
+		Class("flex min-w-0 flex-1 flex-col justify-center"),
+		Div(Class("flex h-6 min-w-0 items-center"), agentTitle(v)),
+		chiefHeaderContext(v.ChiefChat, "h-5"),
+	)
+}
+
+// chiefHeaderContext is the line holding a chief chat's context chip in a page
+// header (chiefContextSlot), height h (its height before the chip loads, so the
+// chip's arrival moves nothing). Nothing off a chief's chat.
+func chiefHeaderContext(b *ChiefChatBar, h string) g.Node {
+	if b == nil {
+		return nil
+	}
+	return Div(
+		g.Attr("data-chief-context-row", ""),
+		Class("flex min-w-0 items-center "+h),
+		chiefContextSlot(b.AgentName, b.SessionID),
 	)
 }
 

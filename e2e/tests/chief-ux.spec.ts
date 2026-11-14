@@ -570,7 +570,17 @@ test.describe('a dispatched agent', () => {
 
 const pageLog = (page: Page) => page.locator('#chat-log');
 const pageWorking = (page: Page) => page.locator('#chat-working');
-const bar = (page: Page) => page.locator('[data-chief-chat-bar]');
+// The chief page's chats: the header sheet's Chats tab (internal/ui
+// chief_chats.go), which names the chat the page is on (data-chief-chat-kind).
+const chats = (page: Page) => page.locator('#chat-index [data-chief-chats]');
+
+// openChats opens the header's sheet on its Chats tab.
+async function openChats(page: Page) {
+  await page.locator('header #chat-index-open').click();
+  await expect(page.locator('#chat-index')).toBeVisible();
+  await page.locator('#chat-index [role="tab"][data-tab="chats"]').click();
+  await expect(chats(page)).toBeVisible();
+}
 
 async function openChiefPage(page: Page) {
   await signIn(page, origin);
@@ -597,7 +607,7 @@ for (const vp of [
       test.setTimeout(90_000);
       const key = 'drop' + vp.name + stamp;
       await openChiefPage(page);
-      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
       await sendOnPage(page, `ping HOLD-ME-${key}`);
       await expect(pageWorking(page)).toBeVisible();
       await expect.poll(() => gate(key).entered, { timeout: 15_000 }).toBe(1);
@@ -627,7 +637,7 @@ for (const vp of [
       test.setTimeout(90_000);
       const key = 'ask' + vp.name + stamp;
       await openChiefPage(page);
-      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
       await expect(pageWorking(page)).toBeHidden();
       // The CLI's door, not this page: the turn runs in the primary chat.
       const asked = api('POST', `/api/agents/${chiefName}/messages`, { message: `from the CLI HOLD-ME-${key}` });
@@ -642,52 +652,63 @@ for (const vp of [
     test('side chats: a labelled New side chat, the switcher lists the primary first, the context chip', async ({ page }) => {
       test.setTimeout(90_000);
       await openChiefPage(page);
-      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
       const primaryURL = page.url();
       // The control has VISIBLE text; the header's icon-only ＋ is gone.
-      const newSide = bar(page).getByRole('button', { name: 'New side chat', exact: true });
-      await expect(newSide).toBeVisible();
-      await expect(newSide).toHaveText('New side chat');
+      // The header has ONE chat control, the mirrored session's list icon; no
+      // ＋, no clock (Chat history), no target (Focus history), and no chat bar.
+      await expect(page.locator('header #chat-index-open')).toBeVisible();
       await expect(page.getByRole('button', { name: 'New chat session' })).toHaveCount(0);
+      await expect(page.locator('header label[aria-label="Chat history"], header #focus-history-open')).toHaveCount(0);
+      await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
+      // The control has VISIBLE text, in the sheet's Chats tab.
+      await openChats(page);
+      const newSide = chats(page).getByRole('button', { name: 'New side chat', exact: true });
+      await expect(newSide).toBeVisible();
+      await expect(newSide).toHaveText('+New side chat');
       await newSide.click();
       await page.waitForURL((u) => u.toString() !== primaryURL);
-      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'side');
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'side');
       await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
-      // A turn in the side chat, which reports its tokens: the chip shows them
-      // when the turn ends, no reload.
+      // A turn in the side chat, which reports its tokens: the chip — in the
+      // header, under the title — shows them when the turn ends, no reload.
       await sendOnPage(page, `side question SIDE-USAGE (${vp.name})`);
       await expect(pageLog(page)).toContainText(`GOT: side question SIDE-USAGE (${vp.name})`, { timeout: 20_000 });
-      const chip = bar(page).locator('#chief-context-chip');
+      const chip = page.locator('header #chief-context-chip');
       await expect(chip).toBeVisible({ timeout: 10_000 });
       await expect(chip.locator('[data-ctx-count]')).toHaveText('152k');
       // A tap shows the exact count.
       await chip.click();
       await expect(page.locator('#chief-context-detail [data-ctx-detail]')).toContainText('152,000 tokens');
       await page.keyboard.press('Escape');
-      // No sideways scroll at the phone's width, with the bar's actions in it.
+      // No sideways scroll at the phone's width.
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      // The switcher: the primary first, with its badge, then this side chat.
-      await page.locator('label[for="session-drawer"]').first().click();
-      const drawer = page.getByRole('dialog', { name: 'Chat history' });
-      await expect(drawer).toBeVisible();
-      const rows = drawer.locator('a');
+      // The Chats tab: the primary first, with its badge, then this side chat,
+      // marked current.
+      await openChats(page);
+      const rows = chats(page).locator('[data-chief-chat-row]');
       await expect(rows.first()).toContainText('Primary');
-      // The drawer was drawn with the page, before the first line titled this
+      // The tab was drawn with the page, before the first line titled this
       // chat: the row is this chat by its link, not by its title.
       const here = new URL(page.url()).searchParams.get('session');
       await expect(rows.nth(1)).toHaveAttribute('href', new RegExp(`[?&]session=${here}(&|$)`));
+      await expect(rows.nth(1)).toHaveAttribute('aria-current', 'page');
       // Switch back to the primary.
       await rows.first().click();
-      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary', { timeout: 10_000 });
+      await expect(chats(page)).toHaveAttribute('data-chief-chat-kind', 'primary', { timeout: 10_000 });
       await expect(pageLog(page)).not.toContainText('side question SIDE-USAGE');
     });
 
-    test('the panel has the labelled New side chat too', async ({ page }) => {
+    test('the panel has the labelled New side chat too, under its thread list', async ({ page }) => {
       test.setTimeout(60_000);
       await openChief(page);
-      const newSide = panel(page).locator('[data-chief-chat-bar]').getByRole('button', { name: 'New side chat', exact: true });
+      // No chat bar over the panel's transcript.
+      await expect(panel(page).locator('[data-chief-chat-bar]')).toHaveCount(0);
+      await panel(page).locator('#chief-panel-actions label[for="chief-threads"]').click();
+      const newSide = panel(page).locator('[data-chief-chats]').getByRole('button', { name: 'New side chat', exact: true });
       await expect(newSide).toBeVisible();
-      await expect(newSide).toHaveText('New side chat');
+      await expect(newSide).toHaveText('+New side chat');
+      await expect(panel(page).locator('[data-chief-chats]')).toHaveAttribute('data-chief-chat-kind', /primary|side/);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     });
   });

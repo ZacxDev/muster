@@ -24,23 +24,38 @@ import (
 // the same id the index names it by. A bubble with none (an older host) is
 // given a page-unique one the first time the index sees it, never reused.
 //
-// It is on the mirrored Rendered view only.
+// It is on the mirrored Rendered view and the chief's agent page.
 //
 // 🔴 THE SHEET IS TABBED (tabs.go): "Your messages" and "Focus history" — the
 // session's past focus, newest first (focus_history.go). The tab chosen is
 // kept per session in localStorage (the Tabs key, which the page derives from
 // the window's address), and the sheet is a FIXED height, so neither switching
 // tabs nor a history page arriving moves anything outside the list.
+//
+// 🔴 ON THE CHIEF'S PAGE IT HAS A THIRD TAB, FIRST: "Chats" (chiefChatsPanel) —
+// its primary and side chats and the actions on them, the one place they are
+// managed (chief_chats.go). There "Your messages" lists the user bubbles the
+// page loaded (no host sends that page an index), and says so.
+
+// chatIndexLabel is the index control's and sheet's name; chatIndexChatsLabel
+// is it with the chief's Chats tab.
+const (
+	chatIndexLabel      = "Your messages and focus history"
+	chatIndexChatsLabel = "Chats, your messages and focus history"
+)
 
 // chatIndexButton is the header control that opens the index for the log with
 // id logID.
-func chatIndexButton(logID string) g.Node {
+func chatIndexButton(logID string) g.Node { return chatIndexButtonNamed(logID, chatIndexLabel) }
+
+// chatIndexButtonNamed is chatIndexButton named label.
+func chatIndexButtonNamed(logID, label string) g.Node {
 	return Button(
 		Type("button"),
 		ID("chat-index-open"),
 		g.Attr("data-chat-index-log", logID),
-		g.Attr("aria-label", "Your messages and focus history"),
-		g.Attr("title", "Your messages and focus history"),
+		g.Attr("aria-label", label),
+		g.Attr("title", label),
 		g.Attr("aria-haspopup", "dialog"),
 		g.Attr("aria-controls", "chat-index"),
 		g.Attr("aria-expanded", "false"),
@@ -55,16 +70,37 @@ func chatIndexButton(logID string) g.Node {
 // "" = the host reports no Claude session, so there is none). tabsKey is what
 // the tab choice is stored under.
 func chatIndexSheet(historyPath, tabsKey string) g.Node {
-	tabs := Tabs("chat-index-tabs", tabsKey, "Session index",
-		Tab{ID: "messages", Label: "Your messages", Panel: chatIndexMessages()},
-		Tab{ID: "focus", Label: "Focus history", Panel: focusHistoryList(historyPath)},
-	)
+	return chatIndexSheetWith(historyPath, tabsKey, nil, chatIndexPartialMirror)
+}
+
+// The "Your messages" tab's note when the list is only what the page loaded:
+// a mirrored host that sends no index, and the chief's page (which no host
+// indexes — it loads the chat's latest messages).
+const (
+	chatIndexPartialMirror = "Only loaded messages shown: this host's muster-mirror does not send the full list."
+	chatIndexPartialPage   = "Only the messages loaded on this page are listed."
+)
+
+// chatIndexSheetWith is chatIndexSheet with chats, when not nil, as a "Chats"
+// tab FIRST (the chief's page: chiefChatsPanel), and partial as the messages
+// tab's only-loaded note.
+func chatIndexSheetWith(historyPath, tabsKey string, chats g.Node, partial string) g.Node {
+	label := chatIndexLabel
+	tabList := []Tab{
+		{ID: "messages", Label: "Your messages", Panel: chatIndexMessages(partial)},
+		{ID: "focus", Label: "Focus history", Panel: focusHistoryList(historyPath)},
+	}
+	if chats != nil {
+		label = chatIndexChatsLabel
+		tabList = append([]Tab{{ID: "chats", Label: "Chats", Panel: chats}}, tabList...)
+	}
+	tabs := Tabs("chat-index-tabs", tabsKey, "Session index", tabList...)
 	return g.Group{Div(
 		ID("chat-index"),
 		g.Attr("hidden", ""),
 		g.Attr("role", "dialog"),
 		g.Attr("aria-modal", "true"),
-		g.Attr("aria-label", "Your messages and focus history"),
+		g.Attr("aria-label", label),
 		Class("fixed inset-0 z-50 flex items-end justify-center sm:items-center"),
 		Div(g.Attr("data-chat-index-close", ""), Class("absolute inset-0 bg-black/60")),
 		Div(
@@ -87,12 +123,13 @@ func chatIndexSheet(historyPath, tabsKey string) g.Node {
 
 // chatIndexMessages is the "Your messages" tab's panel: the rows
 // chatIndexScript builds, and its notes.
-func chatIndexMessages() g.Node {
+func chatIndexMessages(partial string) g.Node {
 	return g.Group{
 		// ⚠ Shown when the host sent no prompt index (it predates it, or its
-		// scan failed): the list is only what this page loaded.
+		// scan failed, or — the chief's page — there is no host): the list is
+		// only what this page loaded.
 		P(ID("chat-index-partial"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted"),
-			g.Text("Only loaded messages shown: this host's muster-mirror does not send the full list.")),
+			g.Text(partial)),
 		// The host's bound dropped the oldest prompts: how many.
 		P(ID("chat-index-more"), g.Attr("hidden", ""), Class("border-b border-line px-4 py-2 text-xs text-muted")),
 		Ol(ID("chat-index-list"), Class("py-1")),
@@ -191,7 +228,10 @@ func chatIndexScript() g.Node {
     build();
     s.hidden = false;
     if (b) b.setAttribute('aria-expanded', 'true');
-    // Keep the list current while it is open: new messages stream in.
+    // Keep the list current while it is open: new messages stream in. (A
+    // watch left from a sheet a boosted navigation replaced while open — the
+    // chief's Chats rows navigate — is dropped first.)
+    if (watch) { watch.disconnect(); watch = null; }
     var l = logEl();
     if (l && typeof MutationObserver !== 'undefined') {
       watch = new MutationObserver(build);
