@@ -446,6 +446,10 @@ type instanceState struct {
 	remote   map[string]toolsList
 	plan     *toolPlan
 	lastHash string // what the watcher last saw; "" before its first read
+	// remoteAt is when remote was read: a tools/list within remoteListTTL of
+	// it reuses it (remotesFor), so the re-reads every connected session
+	// makes on a list_changed cost the instances one read, not one each.
+	remoteAt time.Time
 	hub      listenHub
 }
 
@@ -546,11 +550,29 @@ func (p *MCPProxy) readRemotes(ctx context.Context) map[string]toolsList {
 	return out
 }
 
+// remoteListTTL is how long a read of the instances' remote lists is reused
+// by a session's tools/list (a var so a test can change it).
+var remoteListTTL = 2 * time.Second
+
+// remotesFor is the instances' remote lists for a session's tools/list: the
+// last read when it is younger than remoteListTTL (the watch's, which is
+// what sent list_changed), else a fresh one. The primary's own session list
+// is never reused: it is forwarded live, so an outage still fails loudly.
+func (p *MCPProxy) remotesFor(ctx context.Context) (map[string]toolsList, time.Time) {
+	p.state.mu.Lock()
+	cached, at := p.state.remote, p.state.remoteAt
+	p.state.mu.Unlock()
+	if cached != nil && time.Since(at) < remoteListTTL {
+		return cached, at
+	}
+	return p.readRemotes(ctx), time.Now()
+}
+
 // storePlan records a fresh read and the plan built from it.
-func (p *MCPProxy) storePlan(session toolsList, remote map[string]toolsList) toolPlan {
+func (p *MCPProxy) storePlan(session toolsList, remote map[string]toolsList, remoteAt time.Time) toolPlan {
 	pl := buildPlan(p.primaryName(), p.extraNames(), session, remote)
 	p.state.mu.Lock()
-	p.state.session, p.state.remote, p.state.plan = session, remote, &pl
+	p.state.session, p.state.remote, p.state.remoteAt, p.state.plan = session, remote, remoteAt, &pl
 	p.state.mu.Unlock()
 	return pl
 }
@@ -569,7 +591,7 @@ func (p *MCPProxy) planForCall(ctx context.Context) toolPlan {
 		return *pl
 	}
 	session := p.fetchList(ctx, p.URL, p.Token, p.AllowHTTP, false)
-	return p.storePlan(session, p.readRemotes(ctx))
+	return p.storePlan(session, p.readRemotes(ctx), time.Now())
 }
 
 // WatchTools re-reads the instances' lists every ToolsRefresh until ctx ends,
@@ -601,7 +623,7 @@ func (p *MCPProxy) pollTools(ctx context.Context) {
 		p.logf("muster-mirror: mcp: read the primary's tool list: %v", session.err)
 		return
 	}
-	pl := p.storePlan(session, p.readRemotes(ctx))
+	pl := p.storePlan(session, p.readRemotes(ctx), time.Now())
 	p.state.mu.Lock()
 	prev := p.state.lastHash
 	p.state.lastHash = pl.hash

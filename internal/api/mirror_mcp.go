@@ -140,9 +140,14 @@ var openCodeMirrorTools = map[string]bool{
 // and every audit row those tools write names the host and the claimed
 // session, as they do for a bound caller.
 //
-// 🔴 ONLY A HOST THIS MUSTER DOES NOT MIRROR. A host that is online here has
-// its calls bound to its listed sessions; a remote-marked call from it is
-// refused, so the narrower, unbound path is never a way around the binding.
+// 🔴 ONLY A HOST THIS MUSTER DOES NOT MIRROR. A host this hub knows, online or
+// offline, has its calls bound to its listed sessions; a remote-marked call
+// from it is refused, so the narrower, unbound path is never a way around the
+// binding.
+//
+// 🔴 AND ALWAYS BEHIND THE STEP-UP CARD for an owner-authority tool
+// (host_stepup.go): this muster cannot see whether the caller's machine runs
+// a host officer, so the owner confirms on their phone.
 // ---------------------------------------------------------------------------
 
 // mirrorClientRemote marks a remote caller (mirrorClientHeader);
@@ -594,8 +599,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 //   - its session is not a Claude session id;
 //   - the tool is not a remote caller's (serveMCP already refuses an unlisted
 //     name; this is the same rule again, at the call);
-//   - host is ONLINE on this muster: its sessions are mirrored here, so its
-//     calls are bound to them, never unbound.
+//   - host is KNOWN to this muster's hub, online or offline: its sessions are
+//     mirrored here, so its calls are bound to them, never unbound.
 //
 // The caller has no window (mirrorWindow ""): ownersOwnSession's per-window
 // dispatch check has no listing here to read, so the host's mirror applies it
@@ -611,7 +616,9 @@ func (s *Server) remoteMirrorCaller(ctx context.Context, host, sid, agentKey, re
 		return toolCaller{}, toolErr("%s", remoteToolRefusal(name))
 	}
 	for _, h := range s.ext.Mirror.Hosts(ctx) {
-		if h.Host == host && h.Online {
+		// Online OR offline: a host this hub knows is mirrored here, and its
+		// calls are bound to its sessions (an offline one's are refused there).
+		if h.Host == host {
 			return toolCaller{}, toolErr("host %s mirrors its sessions to this muster, so its calls are bound to them: send this call as a mirrored session (without %s: %s)",
 				host, mirrorClientHeader, mirrorClientRemote)
 		}
@@ -621,7 +628,7 @@ func (s *Server) remoteMirrorCaller(ctx context.Context, host, sid, agentKey, re
 		short = short[:8]
 	}
 	return toolCaller{asker: attention.Asker{MirrorHost: host, MirrorSession: remoteSID,
-		Label: "session " + short + " @ " + host + " (mirrored elsewhere)"}}, ""
+		Label: "session " + short + " @ " + host + " (mirrored elsewhere)"}, remote: true}, ""
 }
 
 // mirrorBindWait bounds how long a tools/call waits for its host's listing to

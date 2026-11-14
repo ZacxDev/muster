@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -272,6 +274,17 @@ func TestASpawnedWindowCannotReachAnotherInstance(t *testing.T) {
 	}
 	if n := len(la.calls()); n != 0 {
 		t.Fatalf("la ran %d calls", n)
+	}
+	// Every owner-authority tool la offers is refused the same way (the
+	// refusal is per window, not per tool).
+	text = toolErrorText(t, postBody(t, p, caller("%7"), callBody("dispatch_request", map[string]any{"prompt": "go", "instance": "la"})))
+	if !strings.Contains(text, "started by muster for the chief") || len(la.calls()) != 0 {
+		t.Fatalf("dispatch_request to la from a spawned window: %s, la calls %d", text, len(la.calls()))
+	}
+	// CONTROL: the same window still reaches the PRIMARY, which applies its
+	// own owner-authority rules to it from its listing.
+	if texts, isErr := callResult(t, postBody(t, p, caller("%7"), callBody("agents_list", nil))); isErr || texts[0] != "[muster instance: default]" {
+		t.Fatalf("control, the primary: %q", texts)
 	}
 }
 
@@ -545,5 +558,174 @@ func TestAToolsOwnInstanceArgumentIsLeftAlone(t *testing.T) {
 	}
 	if a, b := len(primary.calls()), len(la.calls()); a != 1 || b != 0 {
 		t.Fatalf("calls: primary %d, la %d", a, b)
+	}
+}
+
+// TestAnIgnoredTargetsFileStillRefusesOtherInstances: with a targets file
+// configured but ignored at start (ExtrasIgnored), a call naming an instance
+// other than the primary is refused saying the file was ignored and why — and
+// sent nowhere, not to the primary; naming the primary, or none, runs there
+// with the instance argument taken out.
+func TestAnIgnoredTargetsFileStillRefusesOtherInstances(t *testing.T) {
+	primary := newFakeInstance(t, []map[string]any{tool("agents_list")}, nil, true)
+	p := proxyFor(primary.srv.URL)
+	p.ExtrasIgnored = `MCP target #1 ("la"): token_file /x/la.token has mode -rw-r-----; it must be 0600 or tighter`
+	text := toolErrorText(t, postBody(t, p, caller("%7"), callBody("agents_list", map[string]any{"instance": "la"})))
+	if !strings.Contains(text, "targets file was ignored") || !strings.Contains(text, "0600 or tighter") || !strings.Contains(text, `\"la\"`) {
+		t.Fatalf("refusal: %s", text)
+	}
+	if n := len(primary.calls()); n != 0 {
+		t.Fatalf("the primary ran %d calls; a call naming la must not fall back to it", n)
+	}
+	for _, args := range []map[string]any{{"instance": "default"}, nil} {
+		w := postBody(t, p, caller("%7"), callBody("agents_list", args))
+		if texts, isErr := callResult(t, w); isErr || !strings.Contains(strings.Join(texts, " "), `"ran":"agents_list"`) {
+			t.Fatalf("%v: %q", args, texts)
+		}
+	}
+	c := primary.calls()
+	if len(c) != 2 || strings.Contains(c[0].Body, `"instance"`) {
+		t.Fatalf("the primary's calls: %d, first body %s", len(c), c[0].Body)
+	}
+	// CONTROL: with nothing ignored, the proxy is the single-instance one and
+	// relays the call unchanged.
+	p.ExtrasIgnored = ""
+	_ = postBody(t, p, caller("%7"), callBody("agents_list", map[string]any{"instance": "la"}))
+	if c := primary.calls(); len(c) != 3 || !strings.Contains(c[2].Body, `"instance":"la"`) {
+		t.Fatalf("control: %d calls", len(c))
+	}
+}
+
+// openStream opens GET /mcp as caller %7 on srv, answering the response.
+func openStream(t *testing.T, ctx context.Context, url string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url+"/mcp", nil)
+	for k, v := range caller("%7") {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// TestShutdownEndsAnOpenListStream: ServeMCP's shutdown ends an open GET
+// stream at once (its handler's context is cancelled first), instead of the
+// stream holding the connection past the shutdown's timeout.
+func TestShutdownEndsAnOpenListStream(t *testing.T) {
+	p, _, _ := twoInstances(t)
+	p.ToolsRefresh = time.Hour
+	l, err := ListenMCP("127.0.0.1:" + freePort(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan struct{})
+	go func() { _ = ServeMCP(ctx, l, p); close(served) }()
+	cctx, ccancel := context.WithCancel(context.Background())
+	t.Cleanup(ccancel)
+	resp := openStream(t, cctx, "http://"+l.Addr().String())
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET: %d", resp.StatusCode)
+	}
+	ended := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, resp.Body); close(ended) }()
+	start := time.Now()
+	cancel()
+	select {
+	case <-ended:
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("the stream ended %v after the shutdown began", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream was still open 3s after the shutdown began")
+	}
+	<-served
+}
+
+func freePort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+}
+
+// TestTheReReadsAfterAListChangeAreCoalesced: after the watch read the lists
+// (and would have sent list_changed), the sessions' re-reads within
+// remoteListTTL reuse that read — la is not asked again — while each still
+// forwards to the primary live. The control: with no reuse window, every
+// tools/list reads la.
+func TestTheReReadsAfterAListChangeAreCoalesced(t *testing.T) {
+	lists := func(f *fakeInstance) int {
+		n := 0
+		for _, r := range f.requests() {
+			if r.RPC == "tools/list" {
+				n++
+			}
+		}
+		return n
+	}
+	p, primary, la := twoInstances(t)
+	p.pollTools(context.Background())
+	laBefore, primaryBefore := lists(la), lists(primary)
+	for i := 0; i < 3; i++ {
+		_, _ = servedTools(t, p)
+	}
+	if got := lists(la) - laBefore; got != 0 {
+		t.Fatalf("la was read %d more time(s) by three re-reads right after the watch; want 0", got)
+	}
+	if got := lists(primary) - primaryBefore; got != 3 {
+		t.Fatalf("the primary was read %d time(s) by three tools/list; want 3 (live)", got)
+	}
+	prev := remoteListTTL
+	remoteListTTL = 0
+	t.Cleanup(func() { remoteListTTL = prev })
+	laBefore = lists(la)
+	for i := 0; i < 3; i++ {
+		_, _ = servedTools(t, p)
+	}
+	if got := lists(la) - laBefore; got != 3 {
+		t.Fatalf("CONTROL: with no reuse window la was read %d time(s); want 3", got)
+	}
+}
+
+// TestTheListenStreamsAreCapped: past maxListenStreams open streams a GET is
+// the transport's 405 (Allow: POST), which a client takes as "no stream"; once
+// one closes, a GET is a stream again.
+func TestTheListenStreamsAreCapped(t *testing.T) {
+	p, _, _ := twoInstances(t)
+	p.ToolsRefresh = time.Hour
+	var release []func()
+	for i := 0; i < maxListenStreams; i++ {
+		_, done, ok := p.state.hub.subscribe()
+		if !ok {
+			t.Fatalf("subscribe %d refused below the cap", i)
+		}
+		release = append(release, done)
+	}
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	resp := openStream(t, ctx, srv.URL)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != http.MethodPost {
+		t.Fatalf("GET at the cap: %d Allow=%q", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+	release[0]()
+	resp = openStream(t, ctx, srv.URL)
+	t.Cleanup(func() { resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("GET below the cap again: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	for _, done := range release[1:] {
+		done()
 	}
 }

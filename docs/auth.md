@@ -557,7 +557,12 @@ minted **on that instance** for that host (`muster-server mirror token create
 <host>` there). The host never connects there, so the instance can bind no call
 to a window. A call marked `X-Muster-Client: remote` is served unbound,
 restricted to the mirror door's admin tools (`remoteMirrorTools` in
-`internal/api/mirror_mcp.go`), and refused when that host is online there.
+`internal/api/mirror_mcp.go`), and refused when that instance's hub knows
+that host at all, online or offline. Every owner-authority tool such a call
+names (the step-up ledger, `hostStepUpTools`) files a step-up card and runs
+only once the owner confirms it from their paired phone. That instance
+cannot tell whether the calling machine runs a host officer, so it always
+asks.
 
 What such a token reaches is therefore **a subset** of what the same token
 reaches on an instance the host mirrors to. The difference is that no session

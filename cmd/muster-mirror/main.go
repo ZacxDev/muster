@@ -406,12 +406,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		toolsRefresh = mirrorhost.DefaultToolsRefresh
 	}
 	var mcpExtras []mirrorhost.MCPInstance
-	if *mcpTargetsFile != "" && !extrasOff {
+	extrasIgnored := "" // why a configured targets file was ignored (MCPProxy.ExtrasIgnored)
+	switch {
+	case *mcpTargetsFile != "" && extrasOff:
+		extrasIgnored = "-mcp-primary-name is invalid"
+	case *mcpTargetsFile != "":
 		var terr error
 		if mcpExtras, terr = mirrorhost.LoadMCPTargets(expandHome(*mcpTargetsFile), primaryName); terr != nil {
 			// The error names the entry and why, never a token (LoadMCPTargets).
 			logger.Printf("muster-mirror: the MCP targets file is IGNORED, MCP reaches the primary only: %v", terr)
-			mcpExtras = nil
+			mcpExtras, extrasIgnored = nil, strings.TrimPrefix(terr.Error(), "muster-mirror: ")
 		}
 	}
 
@@ -480,7 +484,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
 		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision,
-			Primary: primaryName, Extras: mcpExtras, ToolsRefresh: toolsRefresh}
+			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)

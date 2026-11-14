@@ -159,6 +159,12 @@ type MCPProxy struct {
 	// turns the watch, the GET stream and the listChanged capability off.
 	ToolsRefresh time.Duration
 
+	// ExtrasIgnored is why a configured targets file was ignored at start
+	// ("" when none was configured, or it loaded): a call naming an instance
+	// other than the primary is then refused saying so, never run on the
+	// primary instead.
+	ExtrasIgnored string
+
 	// state caches the lists and holds the open GET streams.
 	state instanceState
 
@@ -653,6 +659,19 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	case head.Method == "tools/call" && multi:
 		p.serveRoutedCall(w, r, head.ID, body)
 		return
+	case head.Method == "tools/call" && !openCode && p.ExtrasIgnored != "":
+		// A targets file was configured but ignored: an instance argument is
+		// still the caller's routing choice, so it is taken out, and any but
+		// the primary's name is refused — never run on the primary instead.
+		if call, ok := parseCall(body); ok {
+			inst, bad := call.takeInstance()
+			if bad || (inst != "" && inst != p.primaryName()) {
+				mcpToolError(w, head.ID, fmt.Sprintf("muster instance %q is not reachable: this host's MCP targets file was ignored when muster-mirror started (%s), "+
+					"so it reaches %s, its primary, only; fix the file and restart muster-mirror, or call without instance", inst, p.ExtrasIgnored, p.primaryName()))
+				return
+			}
+			body = call.body()
+		}
 	}
 	req, ok := p.primaryRequest(w, r, head.Method, head.ID, head.Params, body, "")
 	if !ok {
@@ -879,7 +898,8 @@ func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id js
 		return
 	}
 	session.at = time.Now()
-	pl := p.storePlan(session, p.readRemotes(r.Context()))
+	remote, at := p.remotesFor(r.Context())
+	pl := p.storePlan(session, remote, at)
 	tools := pl.merged
 	if tools == nil {
 		tools = []map[string]any{}
@@ -1015,10 +1035,18 @@ func MCPListenPort(addr string) (int, error) {
 }
 
 // ServeMCP serves h on l until ctx ends.
+//
+// Every request's context derives from one base context that is cancelled
+// BEFORE Shutdown, so a handler that never ends by itself — an open GET
+// stream (serveListen) — ends at once instead of holding the shutdown for its
+// whole timeout.
 func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	base, cancelBase := context.WithCancel(context.Background())
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: func(net.Listener) context.Context { return base }}
 	go func() {
 		<-ctx.Done()
+		cancelBase()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)

@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -71,12 +73,16 @@ func TestARemoteCallerIsOfferedTheAdminToolsOnly(t *testing.T) {
 	}
 }
 
-// TestARemoteCallerRunsAnAdminToolUnboundAndIsNamedOnTheRow: the MCP-only
-// host "far" (online nowhere here) answers the chief's ask through
-// attention_answer; the row's provenance names that host and the claimed
-// session. The same token sent as a BOUND caller is refused (the control: the
-// unbound path is what made it run).
-func TestARemoteCallerRunsAnAdminToolUnboundAndIsNamedOnTheRow(t *testing.T) {
+// TestARemoteOwnerAuthorityCallNeedsThePhone: the MCP-only host "far"
+// (mirrored to another muster, so this one cannot see whether its machine
+// runs a host officer) answering the chief's ask through attention_answer
+// files a step-up CARD and answers nothing — although no host officer is
+// declared here. The browser and another machine's MCP door cannot answer the
+// card; the owner's phone can, and then the answer runs once, its row naming
+// that host and the claimed session. Every owner-authority tool a remote
+// caller is listed files a card the same way. The same token sent as a BOUND
+// caller is refused (the control: the remote path is what reaches the tool).
+func TestARemoteOwnerAuthorityCallNeedsThePhone(t *testing.T) {
 	f := newAnswerFixture(t)
 	remote := mirrorTok('r')
 	f.tokens[remote] = mirror.Token{ID: 9, OwnerID: 1, Host: "far"}
@@ -96,11 +102,57 @@ func TestARemoteCallerRunsAnAdminToolUnboundAndIsNamedOnTheRow(t *testing.T) {
 	if r == nil {
 		t.Fatal(body)
 	}
-	if text, isErr := toolText(t, r); isErr || !strings.Contains(text, `"status":"answered"`) {
+	text, isErr := toolText(t, r)
+	if isErr {
 		t.Fatalf("remote attention_answer: %s", text)
+	}
+	card := stepUpCardOf(t, text)
+	if via, _, _ := f.provenance(t, id); via != "" {
+		t.Fatalf("the ask was answered (via %q) before the owner confirmed", via)
+	}
+	// Not the browser, not another machine's MCP door.
+	if _, err := f.srv.answerAskFrom(asUser(1), card, hostDecisionConfirm, attention.AnswerSource{}); !errors.Is(err, errHostDecisionNeedsPhone) {
+		t.Fatalf("a browser answer of the card: %v", err)
+	}
+	if text, _ := f.answerAs(t, f.laptop, laptopSID, card, hostDecisionConfirm); !strings.Contains(text, "paired phone") {
+		t.Fatalf("an MCP answer of the card: %s", text)
+	}
+	if via, _, _ := f.provenance(t, id); via != "" {
+		t.Fatalf("the ask was answered (via %q) by a refused confirmation", via)
+	}
+	// The phone: it runs once, as the remote session.
+	if _, err := f.srv.answerAskFrom(asDevice(1), card, hostDecisionConfirm, attention.AnswerSource{}); err != nil {
+		t.Fatalf("the phone's confirm: %v", err)
 	}
 	if via, host, sess := f.provenance(t, id); via != "mcp" || host != "far" || sess != remoteSID {
 		t.Fatalf("provenance (%q, %q, %q); want (mcp, far, %s)", via, host, sess, remoteSID)
+	}
+
+	// Every owner-authority tool a remote caller is LISTED here files a card
+	// (the tools whose feature this fixture has off are unlisted, so refused
+	// before they could run anything).
+	_, r, body = f.mirrorRPC(t, remoteAs(remote, ""), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if r == nil {
+		t.Fatal(body)
+	}
+	var listed struct {
+		Tools []struct{ Name string } `json:"tools"`
+	}
+	_ = json.Unmarshal(r.Result, &listed)
+	var gated []string
+	for _, tl := range listed.Tools {
+		if _, owner := hostStepUpTools[tl.Name]; owner {
+			gated = append(gated, tl.Name)
+		}
+	}
+	if len(gated) < 2 {
+		t.Fatalf("POSITIVE CONTROL: only %v of the listed tools are owner-authority", gated)
+	}
+	for _, name := range gated {
+		_, r, body := f.mirrorRPC(t, remoteAs(remote, remoteSID), mcpToolCall(name, map[string]any{"id": 1, "answer": "x", "decision": "approve"}))
+		if r == nil || !strings.Contains(body, "awaiting_owner_confirmation") {
+			t.Errorf("%s by a remote caller filed no step-up card: %s", name, body)
+		}
 	}
 }
 
@@ -112,6 +164,13 @@ func TestARemoteCallIsRefusedWhenItCouldBeBound(t *testing.T) {
 	f := newAnswerFixture(t)
 	remote := mirrorTok('r')
 	f.tokens[remote] = mirror.Token{ID: 9, OwnerID: 1, Host: "far"}
+	// "gone" is a host this hub knows but that is OFFLINE now: still mirrored
+	// here, so still never served unbound.
+	gone := mirrorTok('g')
+	f.tokens[gone] = mirror.Token{ID: 10, OwnerID: 1, Host: "gone"}
+	f.mirror.mu.Lock()
+	f.mirror.others = append(f.mirror.others, mirror.HostView{Host: "gone", Online: false})
+	f.mirror.mu.Unlock()
 	id := f.ask(t, f.chiefTok, "Dispatch task 10?", "dispatch it")
 	both := remoteAs(remote, remoteSID)
 	both[mirrorSessionHeader] = focusSID
@@ -119,10 +178,11 @@ func TestARemoteCallIsRefusedWhenItCouldBeBound(t *testing.T) {
 		hdr  map[string]string
 		want string
 	}{
-		"a host mirrored here": {remoteAs(f.ws, remoteSID), "mirrors its sessions to this muster"},
-		"a bound session too":  {both, "never beside"},
-		"no session":           {remoteAs(remote, ""), "not a Claude session id"},
-		"a malformed session":  {remoteAs(remote, "../etc"), "not a Claude session id"},
+		"a host mirrored here":          {remoteAs(f.ws, remoteSID), "mirrors its sessions to this muster"},
+		"a host mirrored here, offline": {remoteAs(gone, remoteSID), "mirrors its sessions to this muster"},
+		"a bound session too":           {both, "never beside"},
+		"no session":                    {remoteAs(remote, ""), "not a Claude session id"},
+		"a malformed session":           {remoteAs(remote, "../etc"), "not a Claude session id"},
 	} {
 		code, r, body := f.mirrorRPC(t, c.hdr, mcpToolCall(attentionAnswerTool, map[string]any{"id": id, "answer": "dispatch it"}))
 		if code != http.StatusOK || r == nil {

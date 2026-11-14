@@ -131,9 +131,10 @@ func TestABadTargetsFileLeavesTheMirrorRunning(t *testing.T) {
 		rc   int
 		errs string
 	}, 1)
+	secretFile := filepath.Join(t.TempDir(), "mcp-secret")
 	go func() {
 		rc, _, errs := runWith(t, map[string]string{envURL: primary.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
-			envAllowHTTP: "1", envMCPListen: listen, envMCPSecret: filepath.Join(t.TempDir(), "mcp-secret"),
+			envAllowHTTP: "1", envMCPListen: listen, envMCPSecret: secretFile,
 			envMCPTargets: writeExtraTarget(t, extra.URL, 0o640)})
 		done <- struct {
 			rc   int
@@ -148,6 +149,26 @@ func TestABadTargetsFileLeavesTheMirrorRunning(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatalf("the daemon did not %s within 10s", name)
 		}
+	}
+	// A call naming the ignored target is refused saying why — the wiring of
+	// the refusal into the proxy (MCPProxy.ExtrasIgnored), through the real
+	// endpoint. Refused before any pane is resolved, so this backend's lack
+	// of windows does not matter.
+	secret, err := os.ReadFile(secretFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://"+listen+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"agents_list","arguments":{"instance":"la"}}}`))
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(secret)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(reply), "targets file was ignored") || !strings.Contains(string(reply), "0600 or tighter") {
+		t.Fatalf("a call naming the ignored target: %s", reply)
 	}
 	cancel()
 	select {

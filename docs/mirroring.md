@@ -1766,6 +1766,10 @@ A refused call is a tool error the model reads, and nothing is sent anywhere:
   lacks the remote mark), or that could not be reached for its tool list;
 - a window muster started for the chief (a host dispatch). The other instance
   has no listing of this host to check that against, so the host refuses it.
+  The same window still reaches the primary, which checks it there;
+- an instance other than the primary's name while a configured targets file
+  was **ignored** at start. The refusal says the file was ignored and why. A
+  call naming the primary, or none, runs there with `instance` taken out.
 
 With extra targets configured, every answer to a call starts with a text item
 naming the instance that gave it: `[muster instance: <name>]`.
@@ -1786,7 +1790,13 @@ alone too.
 
 The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
 server, at most 64 at once. Everyone else gets the transport's 405: an outsider,
-an opencode caller, `/preview-mcp`, or anyone while the watch is off.
+an opencode caller, `/preview-mcp`, anyone while the watch is off, and anyone
+past the 64. Shutting the mirror down ends every open stream at once.
+
+After a change, each connected session re-reads `tools/list`. Within 2 seconds
+of the watch's read, those re-reads reuse it for the other instances' lists, so
+the instances are read once rather than once per session. The primary's own
+list is always forwarded live.
 
 **opencode callers are unchanged.** Their requests go to the primary exactly
 as before: no `instance`, no merged list and no stream.
@@ -1799,11 +1809,23 @@ session id is the caller's claim, as it is on the primary, where a host's
 listing is its own claim too. What changes is the tool set, which shrinks to
 the admin tools above. The call is also refused:
 
-- when the token's host is **online** on that instance. Its sessions are
-  mirrored there, so its calls are bound to them;
+- when the token's host is **known** to that instance's hub, online or offline.
+  Its sessions are mirrored there, so its calls are bound to them;
 - when it also names a bound caller's session (`X-Muster-Claude-Session`, or
   an opencode key);
 - when its session is not a Claude session id.
+
+**An owner-authority tool always needs the owner's phone.** These are
+`attention_answer`, `agent_destroy`, `chief_restart`, `connector_request_decide`,
+`plugin_draft_decide`, `plugin_request_decide` and `dispatch_approve` (the
+step-up ledger, `hostStepUpTools`). That instance cannot see whether the
+caller's machine runs a host officer, because officers are declared on the
+muster the host is mirrored to. So every such call from a remote caller files a
+step-up confirmation card and runs nothing until the owner confirms it from
+their paired phone. A browser or MCP answer to the card is refused. Then it runs
+once, as the session that asked. `dispatch_request` itself is not gated: it
+files a hold, so starting an agent there is `dispatch_request`, then
+`dispatch_approve`, then one confirmation on the phone.
 
 The rows those tools write name the host and the claimed session, as they do
 for a bound caller. For example, `attention_answer` records
