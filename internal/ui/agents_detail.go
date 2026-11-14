@@ -189,6 +189,9 @@ type AgentDetailView struct {
 	// Switcher is the session switcher below the chat form (switcher.go), on
 	// the page surface only; nil for none.
 	Switcher *Switcher
+	// Mentions links the sessions, agents and tasks an assistant's reply names
+	// (mentions.go); nil links none.
+	Mentions *MentionIndex
 	// Card is the agent as its card was composed (internal/api's
 	// cardViewIndexed, the one composer): what the page's status strip, its ⋯
 	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
@@ -1512,7 +1515,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 				items = append(items, logItem{node: relayRow(m)})
 				continue
 			}
-			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID)})
+			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
 		}
 	}
 	msgs := groupToolRuns(items)
@@ -1950,7 +1953,7 @@ func relayRow(m ChatLine) g.Node {
 	)
 }
 
-func chatBubble(role, content string, id int64) g.Node {
+func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
 	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
@@ -1959,7 +1962,7 @@ func chatBubble(role, content string, id int64) g.Node {
 		// runtime code reads it (nothing converts bubbles any more); the browser
 		// specs count bubbles by it, as they do the mirrored view's.
 		g.Attr("data-md-rendered", ""),
-		chatMessageBody(role, content),
+		chatMessageBody(role, content, mx, false),
 	)
 }
 
@@ -1977,11 +1980,15 @@ func chatBubble(role, content string, id int64) g.Node {
 // socket's delta "html", internal/api wsChatStream), and so is the echo of the
 // owner's own sent message. TestAgentChatHTMLComesOnlyFromTheServer holds the
 // page to that.
-func chatMessageBody(role, content string) g.Node {
+//
+// mx links the mentions in an assistant's reply (mentions.go); the owner's own
+// message is drawn as typed. nil links none. partial: content is a reply still
+// streaming, whose last token is not linked yet.
+func chatMessageBody(role, content string, mx *MentionIndex, partial bool) g.Node {
 	if role == "user" {
 		return promptBody(content)
 	}
-	return renderMarkdown(content)
+	return g.Raw(markdownRender(content, false, mentionFor(mx, content, partial)))
 }
 
 // ChatMessageHTML is chatMessageBody as an HTML string: what the chat socket
@@ -1990,7 +1997,16 @@ func chatMessageBody(role, content string) g.Node {
 // innerHTML.
 func ChatMessageHTML(role, content string) string {
 	var b strings.Builder
-	_ = chatMessageBody(role, content).Render(&b)
+	_ = chatMessageBody(role, content, nil, false).Render(&b)
+	return b.String()
+}
+
+// ChatStreamHTML is ChatMessageHTML for a reply STILL STREAMING (internal/api
+// wsChatStream), linking the mentions mx resolves — except its last token,
+// which may not have finished arriving ("#12" of "#1234").
+func ChatStreamHTML(role, content string, mx *MentionIndex) string {
+	var b strings.Builder
+	_ = chatMessageBody(role, content, mx, true).Render(&b)
 	return b.String()
 }
 
