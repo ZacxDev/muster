@@ -707,6 +707,8 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 		}
 	}
 
+	// (A host-runtime officer, #649, has no allowlist: MUSTER_OFFICERS refuses
+	// read_repos on "runtime": "host".)
 	noStanding := newOutboundWorldWith(t, true, outboundFixture{denyWords: words})
 	if id, out := post(noStanding, liveRepoBody("https://github.com/ZacxDev/muster")); id != 0 || !strings.Contains(out, "infrastructure name") {
 		t.Errorf("an officer that declares no standing read: filed %d, %s; want the infrastructure-name refusal", id, out)
