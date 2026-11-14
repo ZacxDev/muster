@@ -731,6 +731,29 @@ rule the later phases' rows will meet.
     policy's USING is DELETE's too.
   - A trigger keeps `owner_id` fixed outside the system scope, so no member
     moves a row into or out of a team.
+- **Usage tables are their own class** (`officer_llm_usage`,
+  `officer_judgement_sessions`, `chief_turn_usage`): members read them, but
+  no member writes them. Only the owner's own recording path or the system
+  scope does, because an operator deleting the day's row would reset a
+  manager's budget.
+- **The attribution columns cannot be forged** (`muster_actor_column`):
+  - The application role's insert is forced to the acting person, or to
+    nobody for an ask or a draft not born answered or decided.
+  - An update that rewrites the column without the stamping state change is
+    refused.
+  - The login role (a restore) is exempt, as it is from row-level security.
+- **The personal ledger is explicit** (`personalOwned`): a new `owner_id`
+  table fails the share ledger until someone classifies it. It is never
+  personal by default.
+- **The manager page adds no one without consent.**
+  - The member-row form only re-roles an EXISTING member. A non-member and
+    an id nobody has get the same refusal.
+  - Adding is by email only, and the form answers the same whether or not
+    anyone signs in with that email. A registered person is added; otherwise
+    nothing changes and no audit row is written.
+  - Both are one transaction; the add also inserts a row. They are not
+    constant-time.
+  - Consent-based team invites (the person accepts) are a later choice.
 - **Delta from §2's sketch:**
   - The audit column is `audit_log.team_id`, not `owner_id`. An `owner_id`
     column marks an OWNED table everywhere (`RLSStatus`, the ledgers), and
@@ -785,6 +808,12 @@ rule the later phases' rows will meet.
   `/teams/{id}/hosts`; the reduced MCP tool set for team tokens
   (`internal/api/mirror_mcp.go`); the device answer route's team check
   (`internal/api/device_actions.go`); the sidebar groups.
+- **Open streams keep the memberships they started with** (noted in 2a's
+  round 1, no code there). Every request reads memberships afresh, but an
+  SSE, terminal or chat stream opened before a removal or a downgrade keeps
+  the principal it was admitted with. 2b, the first phase whose streams show
+  team rows, must re-check membership on the timer that already ends a
+  disabled user's streams.
 - **Acceptance:** the extended isolation walk; two operators answering one ask
   yield one answer; a removed operator's queued send is cancelled and its open
   terminal closes within 10 s; a team token's MCP listing omits the refused

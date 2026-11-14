@@ -52,7 +52,10 @@ func (m *memAccounts) RemoveTeamMember(context.Context, users.Actor, int64, int6
 	return errMemAccounts
 }
 func (m *memAccounts) ListTeams(context.Context) ([]users.Team, error) { return nil, nil }
-func (m *memAccounts) SetTeamMemberAsManager(context.Context, users.Actor, int64, int64, authz.TeamRole) error {
+func (m *memAccounts) ReroleTeamMemberAsManager(context.Context, users.Actor, int64, int64, authz.TeamRole) error {
+	return errMemAccounts
+}
+func (m *memAccounts) AddTeamMemberByEmailAsManager(context.Context, users.Actor, int64, string, authz.TeamRole) error {
 	return errMemAccounts
 }
 func (m *memAccounts) RemoveTeamMemberAsManager(context.Context, users.Actor, int64, int64) error {

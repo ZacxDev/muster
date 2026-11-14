@@ -17,7 +17,8 @@ import (
 // (docs/design/team-sharing.md, phase 2a)
 //
 // A manager sees the team's members with their roles, adds a person by their
-// email, re-roles and removes members, and reads the team's audit rows. Every
+// email (the form answers alike whether or not the email is anyone's),
+// re-roles and removes EXISTING members, and reads the team's audit rows. Every
 // change is an audit_log row naming the acting manager and owned by the team
 // (internal/users teams.go), and a change that would leave the team with no
 // manager is refused (users.ErrLastManager; an admin can still make it on
@@ -147,30 +148,37 @@ func (s *Server) handleTeamMemberSet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	user, ok := formID(r, "user")
-	if !ok {
-		email := strings.TrimSpace(r.FormValue("email"))
-		if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
-			s.renderTeamPage(w, r, team, http.StatusBadRequest, "Enter the email the person signs in with.")
-			return
-		}
-		id, found, err := s.gt.Users.IDByEmail(r.Context(), email)
-		if err != nil {
-			s.teamPageDone(w, r, team, "find a person by email", err)
-			return
-		}
-		if !found {
-			s.renderTeamPage(w, r, team, http.StatusBadRequest, "No one signs in with that email.")
-			return
-		}
-		user = id
-	}
+	role := authz.TeamRole(r.FormValue("role"))
 	by := actorOf(r)
-	err := s.gt.Accounts.SetTeamMemberAsManager(r.Context(), by, team, user, authz.TeamRole(r.FormValue("role")))
-	if err == nil {
-		s.logger.Printf("teams: user %d is %s of team %d (by manager %d)", user, r.FormValue("role"), team, by.UserID)
+	// 🔴 TWO FORMS, TWO RULES (#657 round 1). The id form (a member's row)
+	// only RE-ROLES an existing member: a non-member and an id that names
+	// nobody get one answer, so it adds no one without consent and is no
+	// oracle for which ids exist. Adding is the email form only, and its
+	// answer is the same whether or not anyone signs in with that email.
+	if user, ok := formID(r, "user"); ok {
+		err := s.gt.Accounts.ReroleTeamMemberAsManager(r.Context(), by, team, user, role)
+		if err == nil {
+			s.logger.Printf("teams: user %d is now %s of team %d (by manager %d)", user, role, team, by.UserID)
+		}
+		s.teamPageDone(w, r, team, "re-role team member", err)
+		return
 	}
-	s.teamPageDone(w, r, team, "set team member", err)
+	email := strings.TrimSpace(r.FormValue("email"))
+	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
+		s.renderTeamPage(w, r, team, http.StatusBadRequest, "Enter the email the person signs in with.")
+		return
+	}
+	if !role.Valid() {
+		s.renderTeamPage(w, r, team, http.StatusBadRequest, "Choose viewer, operator or manager.")
+		return
+	}
+	if err := s.gt.Accounts.AddTeamMemberByEmailAsManager(r.Context(), by, team, email, role); err != nil {
+		s.teamPageDone(w, r, team, "add a team member by email", err)
+		return
+	}
+	// The same answer whether or not the email belongs to anyone (the audit
+	// row, written only for a real add, is the record of it).
+	http.Redirect(w, r, "/teams/"+strconv.FormatInt(team, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleTeamMemberRemove(w http.ResponseWriter, r *http.Request) {

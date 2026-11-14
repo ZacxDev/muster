@@ -34,6 +34,9 @@
 --   shared    the team policies: read at viewer, write at operator.
 --   managed   the team policies: read at viewer or operator (per table),
 --             write at manager.
+--   usage     read at viewer, written by NO member (the budgets: officer
+--             LLM usage, the judgement-session cap, the chief's turn usage),
+--             only by the owner's own recording path or the system scope.
 -- The team policies keep owner_isolation's two arms and add one:
 --   owner_id = muster.uid  OR  owner_id = ANY (coalesce((SELECT muster_team_ids(<role>)), '{}'))  OR  scope all
 -- as FOUR policies, one per command (team_read SELECT at the read role;
@@ -54,12 +57,12 @@
 --                                     everywhere — RLSStatus, the ledgers —
 --                                     and audit_log is user-keyed); self_read
 --                                     gains a manager arm for it.
---   send_queue.queued_by              DEFAULT muster.uid: the person who queued.
---   note_comments.author_id           DEFAULT muster.uid: the person who wrote.
---   attention_asks.answered_by_user   stamped by a trigger when an ask moves
+--   send_queue.queued_by              the person who queued.
+--   note_comments.author_id           the person who wrote.
+--   attention_asks.answered_by_user   the person whose update moved the ask
 --                                     to answered / answered_in_session.
 --   plugin_reply_drafts.decided_by_user
---                                     stamped by a trigger when a draft moves
+--                                     the person whose update moved the draft
 --                                     to approved / rejected.
 -- Each is the acting principal's muster.uid, so NULL for the system scope
 -- (a background loop) and every row written before this migration. The
@@ -146,9 +149,9 @@ BEGIN
         ('agent_focus', 1, 2), ('agent_focus_history', 1, 2),
         ('ask_attempts', 1, 2), ('asks', 1, 2), ('attention_asks', 1, 2),
         ('chat_messages', 1, 2), ('chat_sessions', 1, 2), ('chief_nudges', 1, 2),
-        ('chief_proposals', 1, 2), ('chief_turn_usage', 1, 2), ('note_attachments', 1, 2),
+        ('chief_proposals', 1, 2), ('note_attachments', 1, 2),
         ('note_comments', 1, 2), ('notes', 1, 2), ('officer_items', 1, 2),
-        ('officer_judgement_sessions', 1, 2), ('officer_llm_usage', 1, 2), ('officer_pr_loops', 1, 2),
+        ('officer_pr_loops', 1, 2),
         ('routing_rules', 1, 2), ('send_queue', 1, 2), ('session_episodes', 1, 2),
         ('session_prs', 1, 2), ('session_routes', 1, 2), ('task_ref_writes', 1, 2),
         ('task_sessions', 1, 2), ('uploads', 1, 2),
@@ -156,7 +159,12 @@ BEGIN
         ('mirror_tokens', 1, 3), ('officer_defs', 1, 3), ('officer_schedules', 1, 3),
         ('officer_types', 1, 3), ('plugin_handoffs', 2, 3), ('plugin_message_handling', 2, 3),
         ('plugin_messages', 2, 3), ('plugin_reply_drafts', 2, 3), ('plugin_threads', 2, 3),
-        ('plugins', 2, 3)
+        ('plugins', 2, 3),
+        -- usage: the budgets a team's spending is checked against. A member
+        -- reads them; NO member writes them (write role 4: no role reaches
+        -- it). Only the recording path writes, as the owner or the system
+        -- scope — an operator deleting the day's row would reset the cap.
+        ('chief_turn_usage', 1, 4), ('officer_judgement_sessions', 1, 4), ('officer_llm_usage', 1, 4)
     ) AS c(tbl, rd, wr) LOOP
         EXECUTE format('DROP POLICY IF EXISTS owner_isolation ON public.%I', r.tbl);
         -- One policy PER COMMAND, not one FOR ALL: a FOR ALL policy's USING
@@ -216,35 +224,60 @@ ALTER TABLE public.note_comments ALTER COLUMN author_id
 ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS answered_by_user BIGINT;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS decided_by_user BIGINT;
 
-CREATE OR REPLACE FUNCTION public.muster_stamp_answerer() RETURNS trigger
+-- 🔴 NOT FORGEABLE BY THE APPLICATION. muster_actor_column(column, states)
+-- runs BEFORE INSERT OR UPDATE for the application role (muster_app; the
+-- login role — migrations, psql, a restore — is left alone, as row-level
+-- security leaves it):
+--   states ''        (queued_by, author_id): an INSERT's value is FORCED to
+--                    muster.uid, whatever the statement wrote.
+--   states 'a,b'     (answered_by_user, decided_by_user): an INSERT's value is
+--                    muster.uid when the row is born in one of those states,
+--                    else NULL; an UPDATE that moves status INTO one of them
+--                    stamps muster.uid.
+--   any other UPDATE that changes the column is REFUSED (42501).
+-- So the column says who did it, never who the statement claimed did it.
+CREATE OR REPLACE FUNCTION public.muster_actor_column() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path = pg_catalog
 AS $$
+DECLARE
+    col    text := TG_ARGV[0];
+    states text[] := string_to_array(nullif(TG_ARGV[1], ''), ',');
+    actor  bigint := nullif(current_setting('muster.uid', true), '')::bigint;
+    stamp  boolean;
 BEGIN
-    IF NEW.status IN ('answered', 'answered_in_session') AND OLD.status IS DISTINCT FROM NEW.status THEN
-        NEW.answered_by_user := nullif(current_setting('muster.uid', true), '')::bigint;
+    IF current_user <> 'muster_app' THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        stamp := states IS NULL OR (to_jsonb(NEW)->>'status') = ANY (states);
+        NEW := jsonb_populate_record(NEW, jsonb_build_object(col, CASE WHEN stamp THEN actor END));
+        RETURN NEW;
+    END IF;
+    IF states IS NOT NULL AND (to_jsonb(NEW)->>'status') = ANY (states)
+       AND (to_jsonb(OLD)->>'status') IS DISTINCT FROM (to_jsonb(NEW)->>'status') THEN
+        NEW := jsonb_populate_record(NEW, jsonb_build_object(col, actor));
+        RETURN NEW;
+    END IF;
+    IF (to_jsonb(NEW)->col) IS DISTINCT FROM (to_jsonb(OLD)->col) THEN
+        RAISE EXCEPTION '%.% records who acted; it is not written by hand', TG_TABLE_NAME, col
+            USING ERRCODE = 'insufficient_privilege';
     END IF;
     RETURN NEW;
 END
 $$;
-DROP TRIGGER IF EXISTS stamp_answerer ON public.attention_asks;
-CREATE TRIGGER stamp_answerer BEFORE UPDATE OF status ON public.attention_asks
-    FOR EACH ROW EXECUTE FUNCTION public.muster_stamp_answerer();
-
-CREATE OR REPLACE FUNCTION public.muster_stamp_decider() RETURNS trigger
-    LANGUAGE plpgsql
-    SET search_path = pg_catalog
-AS $$
-BEGIN
-    IF NEW.status IN ('approved', 'rejected') AND OLD.status IS DISTINCT FROM NEW.status THEN
-        NEW.decided_by_user := nullif(current_setting('muster.uid', true), '')::bigint;
-    END IF;
-    RETURN NEW;
-END
-$$;
-DROP TRIGGER IF EXISTS stamp_decider ON public.plugin_reply_drafts;
-CREATE TRIGGER stamp_decider BEFORE UPDATE OF status ON public.plugin_reply_drafts
-    FOR EACH ROW EXECUTE FUNCTION public.muster_stamp_decider();
+DROP TRIGGER IF EXISTS actor_queued_by ON public.send_queue;
+CREATE TRIGGER actor_queued_by BEFORE INSERT OR UPDATE ON public.send_queue
+    FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('queued_by', '');
+DROP TRIGGER IF EXISTS actor_author_id ON public.note_comments;
+CREATE TRIGGER actor_author_id BEFORE INSERT OR UPDATE ON public.note_comments
+    FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('author_id', '');
+DROP TRIGGER IF EXISTS actor_answered_by_user ON public.attention_asks;
+CREATE TRIGGER actor_answered_by_user BEFORE INSERT OR UPDATE ON public.attention_asks
+    FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('answered_by_user', 'answered,answered_in_session');
+DROP TRIGGER IF EXISTS actor_decided_by_user ON public.plugin_reply_drafts;
+CREATE TRIGGER actor_decided_by_user BEFORE INSERT OR UPDATE ON public.plugin_reply_drafts
+    FOR EACH ROW EXECUTE FUNCTION public.muster_actor_column('decided_by_user', 'approved,rejected');
 
 -- ---------------------------------------------------------------------------
 -- 5. The rollback, as a function the header's block calls (one statement per
@@ -282,10 +315,11 @@ BEGIN
             user_id = nullif(current_setting('muster.uid', true), '')::bigint
             OR current_setting('muster.scope', true) = 'all'
         );
-    DROP TRIGGER IF EXISTS stamp_answerer ON public.attention_asks;
-    DROP TRIGGER IF EXISTS stamp_decider ON public.plugin_reply_drafts;
-    DROP FUNCTION IF EXISTS public.muster_stamp_answerer();
-    DROP FUNCTION IF EXISTS public.muster_stamp_decider();
+    DROP TRIGGER IF EXISTS actor_queued_by ON public.send_queue;
+    DROP TRIGGER IF EXISTS actor_author_id ON public.note_comments;
+    DROP TRIGGER IF EXISTS actor_answered_by_user ON public.attention_asks;
+    DROP TRIGGER IF EXISTS actor_decided_by_user ON public.plugin_reply_drafts;
+    DROP FUNCTION IF EXISTS public.muster_actor_column();
     DROP FUNCTION IF EXISTS public.muster_owner_fixed();
     DROP FUNCTION IF EXISTS public.muster_team_ids(integer);
     DROP INDEX IF EXISTS public.idx_audit_log_team;

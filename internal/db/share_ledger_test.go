@@ -33,10 +33,10 @@ var shareClasses = map[string]shareClass{
 	"agent_focus": {1, 2}, "agent_focus_history": {1, 2},
 	"ask_attempts": {1, 2}, "asks": {1, 2}, "attention_asks": {1, 2},
 	"chat_messages": {1, 2}, "chat_sessions": {1, 2}, "chief_nudges": {1, 2},
-	"chief_proposals": {1, 2}, "chief_turn_usage": {1, 2}, "note_attachments": {1, 2},
+	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
 	"note_comments": {1, 2}, "notes": {1, 2}, "officer_items": {1, 2},
-	"officer_judgement_sessions": {1, 2}, "officer_llm_usage": {1, 2}, "officer_pr_loops": {1, 2},
-	"routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
+	"officer_pr_loops": {1, 2},
+	"routing_rules":    {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
 	"session_prs": {1, 2}, "session_routes": {1, 2}, "task_ref_writes": {1, 2},
 	"task_sessions": {1, 2}, "uploads": {1, 2},
 	// managed: write manager
@@ -44,6 +44,28 @@ var shareClasses = map[string]shareClass{
 	"officer_types": {1, 3}, "plugin_handoffs": {2, 3}, "plugin_message_handling": {2, 3},
 	"plugin_messages": {2, 3}, "plugin_reply_drafts": {2, 3}, "plugin_threads": {2, 3},
 	"plugins": {2, 3},
+	// usage: the budgets a team's spending is checked against. Read at
+	// viewer; written by NO member (4: no role reaches it) — only by the
+	// owner's own recording path or the system scope, so an operator cannot
+	// delete the day's row and reset a cap.
+	"chief_turn_usage": {1, noMember}, "officer_judgement_sessions": {1, noMember}, "officer_llm_usage": {1, noMember},
+}
+
+// noMember is a write role no team role reaches (manager is 3).
+const noMember = 4
+
+// personalOwned is EVERY owned table that is personal — owner_isolation
+// only, no team access — listed explicitly, so a NEW owner_id table is in
+// neither ledger and fails TestEveryOwnedTableHasAShareClass until someone
+// decides its class (it is never personal by default).
+var personalOwned = []string{
+	"agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
+	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
+	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
+	"page_responses", "page_versions", "pages", "pins", "plugin_pair_requests",
+	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
+	"suggest_usage", "user_credentials",
 }
 
 // neverShared are the owned tables that must stay personal whatever a later
@@ -73,14 +95,29 @@ func sharedClassTables() []string {
 }
 
 func personalTables() []string {
-	var out []string
-	for _, t := range rlsTables() {
-		if _, ok := shareClasses[t]; !ok {
-			out = append(out, t)
-		}
-	}
+	out := append([]string(nil), personalOwned...)
 	sort.Strings(out)
 	return out
+}
+
+// unclassified is each of tables (the database's owner_id tables) in NEITHER
+// personalOwned nor shareClasses, and each table listed in both.
+func unclassified(tables []string) (missing, both []string) {
+	personal := map[string]bool{}
+	for _, t := range personalOwned {
+		personal[t] = true
+		if _, shared := shareClasses[t]; shared {
+			both = append(both, t)
+		}
+	}
+	for _, t := range tables {
+		if _, shared := shareClasses[t]; !shared && !personal[t] {
+			missing = append(missing, t)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(both)
+	return missing, both
 }
 
 // teamPolicyCmds is each team policy's command.
@@ -137,9 +174,18 @@ func checkTeamPolicy(t *testing.T, tbl, name, cmd, permissive, qual, check strin
 // are personal, and owner_id still defaults to the person on all of them.
 func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 	f := newRLSFixture(t, "ms_0126_ledger")
+	ownedTables := ownerIDTables(t, f)
+	if missing, both := unclassified(ownedTables); len(missing) > 0 || len(both) > 0 {
+		t.Errorf("owned tables with no share class (decide: personalOwned, or a class in shareClasses): %v; listed in both: %v", missing, both)
+	}
 	owned := map[string]bool{}
-	for _, tbl := range rlsTables() {
+	for _, tbl := range ownedTables {
 		owned[tbl] = true
+	}
+	for _, tbl := range personalOwned {
+		if !owned[tbl] {
+			t.Errorf("personalOwned lists %s, which is not an owned table", tbl)
+		}
 	}
 	for tbl := range shareClasses {
 		if !owned[tbl] {
@@ -549,6 +595,152 @@ func TestTheTeamIDsFunctionParsesTheSetting(t *testing.T) {
 		}
 		if i1 != c.ids1 || i2 != c.ids2 || i3 != c.ids3 || i0 != "{}" {
 			t.Errorf("setting %q: ids(1,2,3,0) = %s %s %s %s; want %s %s %s {}", c.setting, i1, i2, i3, i0, c.ids1, c.ids2, c.ids3)
+		}
+	}
+}
+
+// ownerIDTables is every public table with an owner_id column, read from the
+// database itself (not from a test ledger).
+func ownerIDTables(t *testing.T, f *rlsFixture) []string {
+	t.Helper()
+	rows, err := f.pool.Query(f.mig, `SELECT table_name::text FROM information_schema.columns
+		WHERE table_schema = 'public' AND column_name = 'owner_id' ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestANewOwnedTableIsUnclassifiedUntilDecided is the share ledger's
+// positive control: a NEW table with an owner_id column, created in the
+// fixture's database, is reported unclassified — it is not personal by
+// default — while every existing owned table is classified.
+func TestANewOwnedTableIsUnclassifiedUntilDecided(t *testing.T) {
+	f := newRLSFixture(t, "ms_0126_new_table")
+	if missing, _ := unclassified(ownerIDTables(t, f)); len(missing) != 0 {
+		t.Fatalf("control: owned tables already unclassified: %v", missing)
+	}
+	mustExec(f.mig, t, f.pool, `CREATE TABLE public.probe_new_owned (id bigint, owner_id bigint)`)
+	missing, _ := unclassified(ownerIDTables(t, f))
+	if len(missing) != 1 || missing[0] != "probe_new_owned" {
+		t.Errorf("a new owned table: unclassified = %v; want [probe_new_owned]", missing)
+	}
+}
+
+// TestTheActingPersonCannotBeForged: the attribution columns say who acted,
+// never who the statement claimed acted. The application role's INSERT that
+// names someone else is overwritten with the acting person (queued_by,
+// author_id) — or with nobody, for an ask or a draft not born answered or
+// decided — and an UPDATE that rewrites one without the state change that
+// stamps it is refused (42501). CONTROLS: the honest writes record the actor
+// (TestTheActingPersonIsRecordedOnEachSharedAction), and the login role (a
+// restore) may still write the column.
+func TestTheActingPersonCannotBeForged(t *testing.T) {
+	f := newRLSFixture(t, "ms_0126_forge")
+	store := users.NewPG(f.pool)
+	by := users.Actor{UserID: 1, Via: authz.ViaSession}
+	op := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'op') RETURNING id`)
+	team, err := store.CreateTeam(f.base, by, "Platform", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTeamMember(f.base, by, team.ID, op, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	opCtx, mgr := member(t, f, op, authz.ViaSession), member(t, f, 1, authz.ViaSession)
+	sys := authz.System(f.base)
+	asTeam := authz.WithPrincipal(f.base, authz.Principal{UserID: team.ID, Role: authz.RoleMember, Via: authz.ViaSession})
+	if err := writeEveryOwnedTable(asTeam, f.pool, "forge"); err != nil {
+		t.Fatal(err)
+	}
+	note := scanID(sys, t, f.pool, `SELECT id FROM notes WHERE owner_id = $1 LIMIT 1`, team.ID)
+	read := func(sql string, id int64) *int64 {
+		var v *int64
+		if err := f.pool.QueryRow(sys, sql, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	is := func(v *int64, want int64) bool { return v != nil && *v == want }
+
+	// INSERTs that name someone else.
+	queued := scanID(opCtx, t, f.pool, `INSERT INTO send_queue (owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, queued_by)
+		VALUES ($1, 'build-01', 'main', '', 'x', now(), 1) RETURNING id`, team.ID)
+	if v := read(`SELECT queued_by FROM send_queue WHERE id = $1`, queued); !is(v, op) {
+		t.Errorf("a forged queued_by on insert stored %v; want the acting person %d", v, op)
+	}
+	comment := scanID(opCtx, t, f.pool, `INSERT INTO note_comments (note_id, owner_id, author, body, author_id) VALUES ($1, $2, 'op', 'hi', 1) RETURNING id`, note, team.ID)
+	if v := read(`SELECT author_id FROM note_comments WHERE id = $1`, comment); !is(v, op) {
+		t.Errorf("a forged author_id on insert stored %v; want the acting person %d", v, op)
+	}
+	// A mirrored session's ask (an agent's is refused to a member until phase
+	// 4 shares agents: the ask's owner check reads the agent).
+	ask := scanID(opCtx, t, f.pool, `INSERT INTO attention_asks (owner_id, mirror_host, mirror_session, question, expires_at, answered_by_user)
+		VALUES ($1, 'build-01', 'sess-forge', 'which?', now() + interval '1 hour', 1) RETURNING id`, team.ID)
+	if v := read(`SELECT answered_by_user FROM attention_asks WHERE id = $1`, ask); v != nil {
+		t.Errorf("an open ask inserted with a forged answered_by_user stored %v; want none", *v)
+	}
+
+	// UPDATEs that rewrite the column without the state change.
+	for what, c := range map[string]struct {
+		ctx context.Context
+		sql string
+		id  int64
+	}{
+		"queued_by":        {opCtx, `UPDATE send_queue SET queued_by = 1 WHERE id = $1`, queued},
+		"author_id":        {opCtx, `UPDATE note_comments SET author_id = 1 WHERE id = $1`, comment},
+		"answered_by_user": {opCtx, `UPDATE attention_asks SET answered_by_user = 1 WHERE id = $1`, ask},
+	} {
+		_, err := f.pool.Exec(c.ctx, c.sql, c.id)
+		assertSQLState(t, "rewriting "+what, err, "42501")
+	}
+	draft := scanID(sys, t, f.pool, `SELECT id FROM plugin_reply_drafts WHERE owner_id = $1 LIMIT 1`, team.ID)
+	_, err = f.pool.Exec(mgr, `UPDATE plugin_reply_drafts SET decided_by_user = $2 WHERE id = $1`, draft, op)
+	assertSQLState(t, "rewriting decided_by_user", err, "42501")
+
+	// CONTROL: the login role (a migration, a restore) is not held to it.
+	if _, err := f.pool.Exec(f.mig, `UPDATE send_queue SET queued_by = 1 WHERE id = $1`, queued); err != nil {
+		t.Errorf("control: the login role rewriting queued_by: %v", err)
+	}
+	if v := read(`SELECT queued_by FROM send_queue WHERE id = $1`, queued); !is(v, 1) {
+		t.Errorf("control: the login role's write stored %v; want 1", v)
+	}
+}
+
+// TestNoMemberWritesATeamsUsage: the usage tables are a team's budgets; a
+// member reads them, and even the team's MANAGER can neither change nor
+// delete a row — that would reset a cap. CONTROL: the system scope (the
+// recording path's) changes one.
+func TestNoMemberWritesATeamsUsage(t *testing.T) {
+	f := newRLSFixture(t, "ms_0126_usage")
+	store := users.NewPG(f.pool)
+	team, err := store.CreateTeam(f.base, users.Actor{UserID: 1, Via: authz.ViaSession}, "Platform", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asTeam := authz.WithPrincipal(f.base, authz.Principal{UserID: team.ID, Role: authz.RoleMember, Via: authz.ViaSession})
+	if err := writeEveryOwnedTable(asTeam, f.pool, "usage"); err != nil {
+		t.Fatal(err)
+	}
+	mgr := member(t, f, 1, authz.ViaSession)
+	for _, tbl := range []string{"officer_llm_usage", "chief_turn_usage", "officer_judgement_sessions"} {
+		if c := shareClasses[tbl]; c.write != noMember {
+			t.Errorf("%s's write role is %d; want noMember", tbl, c.write)
+		}
+		if got := count(t, mgr, f.pool, tbl, "WHERE owner_id = $1", team.ID); got == 0 {
+			t.Errorf("control: the team's manager reads none of the team's %s", tbl)
+		}
+		for _, verb := range []string{"DELETE FROM " + tbl + " WHERE owner_id = $1", "UPDATE " + tbl + " SET owner_id = owner_id WHERE owner_id = $1"} {
+			if n, err := rolledBack(mgr, f, verb, team.ID); err != nil || n != 0 {
+				t.Errorf("the team's manager: %s → %d rows, %v; want 0", verb, n, err)
+			}
+		}
+		if n, err := rolledBack(authz.System(f.base), f, "DELETE FROM "+tbl+" WHERE owner_id = $1", team.ID); err != nil || n == 0 {
+			t.Errorf("control: the system scope deleting the team's %s: %d rows, %v", tbl, n, err)
 		}
 	}
 }

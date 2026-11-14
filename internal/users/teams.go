@@ -119,10 +119,14 @@ func (s *PGStore) SetTeamMember(ctx context.Context, by Actor, team, user int64,
 // cannot make it (an admin can, on /admin/teams).
 var ErrLastManager = errors.New("users: a team keeps at least one manager")
 
-// SetTeamMemberAsManager is SetTeamMember for a team's own MANAGER
-// (/teams/{id}): the same change and audit row, refused when it would leave
-// the team with no manager. The caller has checked by is team's manager.
-func (s *PGStore) SetTeamMemberAsManager(ctx context.Context, by Actor, team, user int64, role authz.TeamRole) error {
+// ReroleTeamMemberAsManager changes the role of an EXISTING member of team,
+// for the team's own MANAGER (/teams/{id}), and records it as by. It never
+// ADDS anyone: a person who is not a member, and an id that names no one,
+// both answer ErrNotAMember — one answer, so the id form is neither a way to
+// add a person without their consent nor an oracle for which ids exist. It
+// refuses a change that would leave the team with no manager. The caller has
+// checked by manages team.
+func (s *PGStore) ReroleTeamMemberAsManager(ctx context.Context, by Actor, team, user int64, role authz.TeamRole) error {
 	if !role.Valid() {
 		return ErrTeamRole
 	}
@@ -130,13 +134,46 @@ func (s *PGStore) SetTeamMemberAsManager(ctx context.Context, by Actor, team, us
 		if err := lockTeam(ctx, tx, team); err != nil {
 			return err
 		}
-		if err := lockPerson(ctx, tx, user); err != nil {
+		var cur string
+		err := tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE`, team, user).Scan(&cur)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotAMember
+		}
+		if err != nil {
 			return err
 		}
 		if role != authz.TeamManager {
 			if err := keepAManager(ctx, tx, team, user); err != nil {
 				return err
 			}
+		}
+		return setMemberTx(ctx, tx, by, team, user, role)
+	})
+}
+
+// AddTeamMemberByEmailAsManager adds the person who signs in with email to
+// team as role, for the team's own manager, and records it as by. It reports
+// NOTHING about whether such a person exists: no person with that email, or
+// one already in the team, is a nil answer with no change and no audit row,
+// in the same one transaction a real add takes. The caller has checked by
+// manages team.
+func (s *PGStore) AddTeamMemberByEmailAsManager(ctx context.Context, by Actor, team int64, email string, role authz.TeamRole) error {
+	if !role.Valid() {
+		return ErrTeamRole
+	}
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := lockTeam(ctx, tx, team); err != nil {
+			return err
+		}
+		var user int64
+		var member bool
+		err := tx.QueryRow(ctx, `SELECT u.id, EXISTS (SELECT 1 FROM team_members m WHERE m.team_id = $2 AND m.user_id = u.id)
+			FROM users u WHERE lower(u.email) = lower($1) AND u.kind = 'person' FOR SHARE OF u`, strings.TrimSpace(email), team).Scan(&user, &member)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && member {
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 		return setMemberTx(ctx, tx, by, team, user, role)
 	})

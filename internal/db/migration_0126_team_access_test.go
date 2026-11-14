@@ -37,11 +37,11 @@ func TestMigration0126TeamAccess(t *testing.T) {
 	var leftovers int
 	if err := pool.QueryRow(ctx, `SELECT
 			(SELECT count(*) FROM pg_proc WHERE proname IN ('muster_team_ids', 'muster_owner_fixed',
-				'muster_stamp_answerer', 'muster_stamp_decider', 'muster_team_access_rollback'))
+				'muster_actor_column', 'muster_team_access_rollback'))
 			+ (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND
 				(table_name, column_name) IN (('audit_log', 'team_id'), ('send_queue', 'queued_by'), ('note_comments', 'author_id'),
 					('attention_asks', 'answered_by_user'), ('plugin_reply_drafts', 'decided_by_user')))
-			+ (SELECT count(*) FROM pg_trigger WHERE tgname IN ('owner_fixed', 'stamp_answerer', 'stamp_decider'))`).Scan(&leftovers); err != nil {
+			+ (SELECT count(*) FROM pg_trigger WHERE tgname IN ('owner_fixed', 'actor_queued_by', 'actor_author_id', 'actor_answered_by_user', 'actor_decided_by_user'))`).Scan(&leftovers); err != nil {
 		t.Fatal(err)
 	}
 	if leftovers != 0 {
