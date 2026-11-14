@@ -70,45 +70,67 @@ const agentDispatchTeamCardAnswerer = "the member who approved that card is no l
 // err is why the answer is refused (nil: it may be recorded). An ask of the
 // caller's own, any ask of a team that is not a dispatch card (an ask_owner
 // question: an operator answers those, row-level security decides), and a
-// principal with no team memberships on its door are not handled here.
-//
-// 🔴 THE HOLD IS READ AS THE TEAM (attentionPrincipal: the team acting
-// principal through the attention door). host_dispatches is personal, so the
-// member's own principal sees no team hold — and a card that looked like no
-// dispatch card would slip past every check below. Only whether a hold names
-// this ask is used; nothing read is returned.
+// principal with no team memberships on its door are not handled here. The
+// phone's door has its own named refusal (refuseTeamDispatchCardOnPhone,
+// device_actions.go), which this calls.
 func (s *Server) teamCardRefusal(ctx context.Context, id int64) (bool, error) {
 	p, ok := authz.From(ctx)
-	st := s.hostDispatches()
-	if !ok || p.All() || p.Team || p.TeamScope() == "" || s.ext.Attention == nil || st == nil {
+	if !ok || p.All() || p.Team || p.TeamScope() == "" {
 		return false, nil
 	}
-	a, err := s.ext.Attention.Get(ctx, id)
-	if err != nil || a.Owner <= 0 || a.Owner == p.UserID || !a.OwnerCard {
-		return false, nil
+	if p.Via == authz.ViaDevice {
+		err := s.refuseTeamDispatchCardOnPhone(ctx, id)
+		return err != nil, err
 	}
-	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
-		return false, nil
-	}
-	_, err = st.CardHoldByAsk(s.attentionPrincipal(ctx, a.Owner), id)
+	team, card, err := s.teamDispatchCard(ctx, id)
 	switch {
-	case errors.Is(err, plugins.ErrHoldNotFound):
-		return false, nil
 	case err != nil:
-		s.logger.Printf("team dispatch: read the hold of team %d's card %d: %v", a.Owner, id, err)
-		return true, errReleaseRefused(teamCardUnreadable)
-	}
-	switch {
-	case p.Via == authz.ViaDevice:
-		return true, errReleaseRefused(TeamCardNotFromPhone)
+		return true, err
+	case !card:
+		return false, nil
 	case p.Via != authz.ViaSession:
 		return true, errReleaseRefused(TeamCardBrowserOnly)
-	case !s.teamOperatorNow(ctx, p.UserID, a.Owner):
+	case !s.teamOperatorNow(ctx, p.UserID, team):
 		return true, errReleaseRefused(TeamCardOperatorOnly)
 	case !stepup.Fresh(ctx, s.stepUpNow()):
 		return true, errReleaseRefused(TeamCardStepUp)
 	}
 	return true, nil
+}
+
+// teamDispatchCard reports whether ask id — read as ctx's person — is a
+// TEAM's dispatch card, and which team: an owner card of a team the person
+// is a member of, whose hold the team's chief filed. err (already the
+// answerer's refusal) is a hold that could not be read: the card is not
+// answered on a guess.
+//
+// 🔴 THE HOLD IS READ AS THE TEAM (attentionPrincipal: the team acting
+// principal through the attention door). host_dispatches is personal, so the
+// member's own principal sees no team hold — and a card that looked like no
+// dispatch card would slip past every check. Only whether a hold names this
+// ask is used; nothing read is returned.
+func (s *Server) teamDispatchCard(ctx context.Context, id int64) (int64, bool, error) {
+	p, ok := authz.From(ctx)
+	st := s.hostDispatches()
+	if !ok || p.All() || p.Team || p.TeamScope() == "" || s.ext.Attention == nil || st == nil {
+		return 0, false, nil
+	}
+	a, err := s.ext.Attention.Get(ctx, id)
+	if err != nil || a.Owner <= 0 || a.Owner == p.UserID || !a.OwnerCard {
+		return 0, false, nil
+	}
+	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
+		return 0, false, nil
+	}
+	_, err = st.CardHoldByAsk(s.attentionPrincipal(ctx, a.Owner), id)
+	switch {
+	case errors.Is(err, plugins.ErrHoldNotFound):
+		return 0, false, nil
+	case err != nil:
+		s.logger.Printf("team dispatch: read the hold of team %d's card %d: %v", a.Owner, id, err)
+		return a.Owner, false, errReleaseRefused(teamCardUnreadable)
+	}
+	return a.Owner, true, nil
 }
 
 // teamCardAnswerer is "" when ask — a card the chief's completing call binds

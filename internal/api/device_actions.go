@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -256,6 +257,26 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := s.answerAskFrom(r.Context(), id, body.Answer, attention.AnswerSource{})
 	s.askActionResult(w, r, c, a, err)
+}
+
+// refuseTeamDispatchCardOnPhone is THE phone-door refusal of a TEAM's
+// dispatch card (team sharing 4.7, plan §4): such a card is answered only in
+// muster in a browser, with a fresh sign-in, so a paired phone's answer to it
+// — this route's, handleDeviceAskAnswer, which reaches it through
+// answerAskFrom → approvalSurfaceRefusal → teamCardRefusal, before anything is
+// recorded — is refused by name (TeamCardNotFromPhone) and the card stays
+// open. A card whose hold cannot be read is refused too (fail closed). Any
+// other ask: nil. ONE function, so every phone door that answers a team's ask
+// (phase 2b.4's team phone answer route included) refuses alike.
+func (s *Server) refuseTeamDispatchCardOnPhone(ctx context.Context, id int64) error {
+	_, card, err := s.teamDispatchCard(ctx, id)
+	switch {
+	case err != nil:
+		return err
+	case card:
+		return errReleaseRefused(TeamCardNotFromPhone)
+	}
+	return nil
 }
 
 // handleDeviceAskCancel is POST /api/device/actions/attention/asks/{id}/cancel.

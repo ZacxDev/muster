@@ -414,6 +414,11 @@ func TestTheTeamCardGateReadsTheHoldAsTheTeam(t *testing.T) {
 	if handled, err := td.w.srv.teamCardRefusal(bctx, ask); !handled || err == nil || !strings.Contains(err.Error(), TeamCardNotFromPhone) {
 		t.Errorf("the gate on B's phone: handled %v, %v; want it handled and refused", handled, err)
 	}
+	// The named phone-door refusal itself (device_actions.go), which phase
+	// 2b.4's team phone answer route reuses.
+	if err := td.w.srv.refuseTeamDispatchCardOnPhone(bctx, ask); err == nil || !strings.Contains(err.Error(), TeamCardNotFromPhone) {
+		t.Errorf("refuseTeamDispatchCardOnPhone on the team's card: %v; want %q", err, TeamCardNotFromPhone)
+	}
 }
 
 // TestATeamMarkerMustNameItsRowsTyper: a member's marker on the team chief
