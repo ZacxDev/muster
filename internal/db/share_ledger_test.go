@@ -31,6 +31,10 @@ type shareClass struct{ read, write int }
 var shareClasses = map[string]shareClass{
 	// shared: read viewer, write operator
 	"agent_focus": {1, 2}, "agent_focus_history": {1, 2},
+	// agents: 0131 (team sharing phase 4, slice 4.4), once its credentials
+	// moved to agent_secrets (0128) and a team owner's row keeps none (0131's
+	// agents_team_no_secret).
+	"agents": {1, 2},
 	"ask_attempts": {1, 2}, "asks": {1, 2}, "attention_asks": {1, 2},
 	"chat_messages": {1, 2}, "chat_sessions": {1, 2}, "chief_nudges": {1, 2},
 	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
@@ -59,7 +63,7 @@ const noMember = 4
 // neither ledger and fails TestEveryOwnedTableHasAShareClass until someone
 // decides its class (it is never personal by default).
 var personalOwned = []string{
-	"agent_secrets", "agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
+	"agent_secrets", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
@@ -92,13 +96,9 @@ var neverShared = []string{
 }
 
 // notSharedUntil is an owned table that stays personal FOR NOW, with the
-// phase that may share it and what it must do first. agents rows carry an
-// agent's live secrets (hooks_token, gateway_secret: internal/agents
-// pgstore.go's agentCols), so phase 4 moves those into an owner-isolated table
-// before agents is shared (coordinated with the phase-4 builder).
-var notSharedUntil = map[string]string{
-	"agents": "phase 4: its secrets (hooks_token, gateway_secret) move to an owner-isolated table first",
-}
+// phase that may share it and what it must do first. Empty since 0131 shared
+// agents (its credentials moved to agent_secrets first, 0128).
+var notSharedUntil = map[string]string{}
 
 func sharedClassTables() []string {
 	out := make([]string, 0, len(shareClasses))

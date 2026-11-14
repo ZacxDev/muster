@@ -169,6 +169,20 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(_ *Server, ctx context.Context, team int64, a agents.Agent) context.Context {
 			return chiefWriteContext(authz.WithPrincipal(ctx, authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent}), a)
 		}},
+	// A turn of a team agent (team_agents.go): handed the team acting
+	// principal it stays the team. Its other arm — a MEMBER's turn re-minted
+	// as the team after a fresh role read — is walked against Postgres by
+	// TestAMembersTurnOnTheTeamChiefRunsAsTheTeam (the bearer the runtime
+	// receives is the team's) and TestARemovedMembersQueuedMessageIsDropped.
+	"turnActingContext": {actsAsTeam: true, via: authz.ViaAgent,
+		mint: func(s *Server, ctx context.Context, team int64, a agents.Agent) context.Context {
+			a.OwnerID = team
+			out, err := s.turnActingContext(authz.WithPrincipal(ctx, teamActingPrincipal(team, authz.ViaAgent)), a)
+			if err != nil {
+				return nil
+			}
+			return out
+		}},
 	"turnPrincipal": {refusal: refusedToolless,
 		mint: func(s *Server, ctx context.Context, _ int64, a agents.Agent) context.Context {
 			out, ok := s.turnPrincipal(ctx, a, authz.ViaKickoff)
@@ -356,8 +370,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 7 || refusing != 5 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 7 and 5", acting, refusing)
+	if acting != 8 || refusing != 5 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 8 and 5", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through

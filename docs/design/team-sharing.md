@@ -1007,6 +1007,78 @@ rule the later phases' rows will meet.
   - **Not yet:** dispatching an agent on a team task. Agents are not shared
     until 4.4. A person's agent naming a team task would meet the
     `agents (note_id, owner_id)` key; this slice does not test that path.
+- **Shipped, slice 4.4 (team agents visible):** migration `0131`
+  (`0130` is phase 3's).
+  - **`agents` is shared** (read at viewer, written at operator,
+    `owner_fixed`). 🔴 A team-owned agent keeps no credential in its row:
+    `agents_team_no_secret` forces `hooks_token` and `gateway_secret` to `''`
+    for a team owner on every write, so they live only in `agent_secrets`,
+    which stays personal. `agents.Store.Secrets` answers only the agent's
+    owner or the system scope; a member gets `pgx.ErrNoRows`.
+  - **Which doors see a team agent:** a member sees it only where a person is
+    present (the browser session, a paired phone: `Principal.TeamScope`). A
+    personal API token, an agent and a mirror host carry no team and see
+    none. This slice adds no sharing door. Phase 3's operator-approved
+    exception stays as it is: a token that messages the chief can have it lend
+    or unlend the owner's own `officer_host_spawns` rows to a team the owner
+    operates. Nothing else; team drafts and charters stay session-only.
+  - **A member's turn on a team agent runs as the team.** `chatTurn` (every
+    chat door) re-mints the team acting principal (`turnActingContext`,
+    through `ViaAgent`) after a fresh read of the member's role, on every
+    send attempt. A member removed or downgraded while their message is
+    queued is answered "not sent", and the message never reaches the runtime.
+  - **One shared room.** A member types into the team chief's one
+    conversation, behind the per-agent FIFO turn gate. The runtime is handed
+    `[muster] typed by <name> (<role>) in team <team>` before the text, in
+    memory only. The stored row is what was typed, with `typed_by`. The room
+    is the agent's delivery session (the chief's primary, any other agent's
+    latest). A member's send or chat socket naming any other session of it
+    (an archived thread, a side chat, a plugin thread) gets 403
+    (`resolveTurnSession`). Reading another thread is still allowed.
+  - **A member's message answers the agent's open asks only once it is
+    sent.** For the owner, the asks are still answered at the door. For a
+    member, they are answered after the fresh role check passes and the
+    runtime takes the text (ccd's 103 or the first stream event;
+    `addressAsker`). A removed member's dropped message answers nothing.
+  - **A member's task dismiss leaves a team's linked agent running.** The
+    task is dismissed. The agent's teardown is left to the managers' door of
+    4.5. The idle reaper and the team's own doors still tear it down.
+  - **Mark-read** (`POST /agents/sessions/{sid}/read`) is under the route
+    gate. A team session has one read state, which belongs to the team, so it
+    is written at operator. A viewer gets 403.
+  - 🔴 **The team trust model: team members have to trust each other**
+    (operator decision, 2026-11-14: accept and document). A team operator or
+    manager can steer a team agent that holds tools, a team officer included,
+    into printing its token or OAuth credential into the team's chat, an ask
+    or an escalation. Every member can read those, viewers included. That
+    credential acts **as the team**, not as the member, and it keeps working
+    after the member is removed. No code stops this. The remedy is to
+    **rotate the agent's credentials** (its hooks token, gateway secret and
+    any connector or OAuth credential it holds). Do it whenever a member who
+    could steer the agent leaves, and whenever a credential shows up where
+    members can read it. This slice has no door that rotates a team agent's
+    credentials: its lifecycle is 4.5's managers' door.
+  - **Route rules** (`teamAgentRoutes`, decided in `admit` for every route
+    naming an agent, ledgered against `routes.golden`): reads at viewer; the
+    chat socket and the send form at operator (a viewer gets 403); lifecycle,
+    settings, new threads and the terminal are refused to every member in
+    this slice. Lifecycle is the manager door of 4.5 (`ViaTeamAdmin`), and
+    the terminal needs the step-up of 4.7.
+  - **A team's gateway agent turns toolless from every chat door**, answer
+    delivery included (`teamGatewayToolless`). This closes the gap carried
+    from 4.1.
+  - **Owner filters:** `chiefAgent`, `homeTarget` and the sidebar's primary
+    chief resolve among the caller's own agents only. Every `Agents.List`
+    caller is classified own / visible / machine
+    (`TestEveryAgentsListCallerIsClassified`). So is every caller of
+    `Agents.Get`, `Agents.GetByName` and `Agents.AgentsByNoteIDs`
+    (`TestEveryAgentReadCallerIsClassified`). A "visible" caller does not act
+    on a team agent as the member.
+  - **`outcomeViewed`:** an operator of the owning team opening the agent's
+    page marks its wait seen. A viewer's look leaves the push owed.
+  - **Not yet:** the viewer's disabled composer and the team badge in the
+    sidebar (UI); home falling back to a team chief; stop and start by an
+    operator (4.5, so the team's credentials are used, not the member's).
 
 ### Later: consent-based team invites
 

@@ -77,11 +77,10 @@ func scanAgent(row interface {
 // HooksToken on a is stored as SetHooksToken stores one, in the same
 // statement; like every read, the returned row does not carry it.
 //
-// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
-// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
-// agents must stop writing the old column (or it must be dropped), with a test
-// that a member principal's SELECT … FROM agents on a team agent yields no
-// secret (docs/design/team-sharing.md, phase 4).
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
 		WITH a AS (
@@ -132,12 +131,24 @@ func (s *PGStore) GetByHooksToken(ctx context.Context, token string) (Agent, err
 // when this image comes back, and the agent would be re-minted a credential its
 // running pod does not hold. When the columns are dropped, this reads
 // agent_secrets alone.
+//
+// 🔴 ONLY THE AGENT'S OWNER (OR THE SYSTEM SCOPE) READS THEM, AND ANYONE ELSE
+// IS pgx.ErrNoRows — NOT EMPTY CREDENTIALS. Since 0131 a team's agents row is
+// readable by the team's members (agents is shared), while agent_secrets stays
+// owner-isolated; without the owner arm below, a member's read would join no
+// secrets row, fall back to the (blank, 0131) old columns and answer two empty
+// strings with no error — a turn would then go out with a derived bearer the
+// runtime rejects, read as "a rotated secret". A turn a member triggers on a
+// team agent reads this as the TEAM ACTING PRINCIPAL (internal/api
+// turnActingContext); a member's own principal fails closed here.
 func (s *PGStore) Secrets(ctx context.Context, id int64) (Secrets, error) {
 	var out Secrets
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(NULLIF(s.hooks_token, ''), a.hooks_token),
 			COALESCE(NULLIF(s.gateway_secret, ''), a.gateway_secret)
 		FROM agents a LEFT JOIN agent_secrets s ON s.agent_id = a.id
-		WHERE a.id = $1`, id).Scan(&out.HooksToken, &out.GatewaySecret)
+		WHERE a.id = $1
+		  AND (a.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		       OR current_setting('muster.scope', true) = 'all')`, id).Scan(&out.HooksToken, &out.GatewaySecret)
 	return out, err
 }
 
@@ -284,11 +295,10 @@ func (s *PGStore) SetDisplayName(ctx context.Context, id int64, name string) (Ag
 // release after 0128 — in agents.hooks_token, which an older image still reads.
 // One statement, so the two cannot disagree.
 //
-// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
-// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
-// agents must stop writing the old column (or it must be dropped), with a test
-// that a member principal's SELECT … FROM agents on a team agent yields no
-// secret (docs/design/team-sharing.md, phase 4).
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) error {
 	_, err := s.pool.Exec(ctx, `WITH a AS (
 			UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
@@ -365,11 +375,10 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 // SetGatewaySecret stores agent id's turn credential, dual-written as
 // SetHooksToken's is.
 //
-// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
-// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
-// agents must stop writing the old column (or it must be dropped), with a test
-// that a member principal's SELECT … FROM agents on a team agent yields no
-// secret (docs/design/team-sharing.md, phase 4).
+// 🔴 FOR A TEAM OWNER THE OLD COLUMN STAYS '' (migration 0131's
+// agents_team_no_secret trigger forces it, whatever this statement writes):
+// agents is shared with the team's members since 0131, so only a person's
+// agent is dual-written. pgstore_team_secrets_test.go pins it.
 func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
 	_, err := s.pool.Exec(ctx, `WITH a AS (
 			UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id

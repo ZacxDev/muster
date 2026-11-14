@@ -103,7 +103,12 @@ func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 	if err != nil {
 		return agents.Agent{}, err
 	}
-	found, ok := resolveChief(list)
+	// 🔴 AMONG THE CALLER'S OWN AGENTS ONLY (team sharing slice 4.4): since
+	// 0131 a member's list also holds the agents their teams own — the team
+	// chief among them — and "the lowest-id agent labelled chief" would make a
+	// member with no chief of their own talk to their team's. Under the team
+	// acting principal this resolves the team's chief.
+	found, ok := resolveChief(ownedBy(list, requestOwner(ctx)))
 	if !ok {
 		return agents.Agent{}, ErrNoChief
 	}
@@ -213,8 +218,9 @@ func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
 // `muster chief ask` talk to — and, with none labelled, the lowest-id reserved
 // slug (agents.IsChiefName), which is the chief by its name however it is
 // labelled. Lowest id is the tie-break each half already used: arbitrary but
-// stable. A list read under row-level security is one owner's, which is the
-// only list this is asked about.
+// stable. 🔴 IT TAKES ONE OWNER'S LIST: since 0131 a list read under row-level
+// security also holds the viewer's teams' agents, so every caller hands it
+// ownedBy(list, viewer) (homeTarget, agentsListEntries).
 func primaryChief(list []agents.Agent) (agents.Agent, bool) {
 	if c, ok := resolveChief(list); ok {
 		return c, true

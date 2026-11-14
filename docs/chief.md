@@ -240,6 +240,26 @@ them. Replacing the chief (below) is the one path that deletes one.
 
 Neither rule looks at the agent's **kind**. A chief can run on either kind.
 
+## A team's chief
+
+A team (see [design/team-sharing.md](design/team-sharing.md)) can own a chief.
+Its members see it. Operators and managers can type to it, and viewers can
+only read. It has one shared conversation: a member's message goes to the
+chief's primary chat and to no other thread. Each turn runs as the team, after
+muster re-reads the member's role.
+
+🔴 **Team members have to trust each other.** This is the team trust model,
+an accepted risk, and no code enforces it. A team operator or manager can steer
+a team agent that has tools, a team officer included, into printing its token
+or OAuth credential into the team's chat, an ask or an escalation. Every member
+can read those, viewers included. The credential acts **as the team**, not as
+the member who asked, and it keeps working after that member is removed from
+the team. The remedy is to **rotate the agent's credentials** (its hooks
+token, gateway secret and any connector or OAuth credential it holds). Do it
+when a member who could steer the agent leaves, and when a credential shows up
+where members can read it. This release has no control that rotates a team
+agent's credentials: its lifecycle is the managers' door of slice 4.5.
+
 ## The chief on each kind
 
 | | `gateway` | `claude-code` |

@@ -1370,6 +1370,14 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{id}); err == nil {
 			if a, ok := m[id]; ok {
 				linkedAgentID = a.ID
+				// 🔴 A MEMBER'S DISMISS NEVER TEARS DOWN A TEAM'S AGENT. Destroy
+				// would run under the member's principal — the lifecycle every
+				// direct door refuses a member (teamAgentRoutes). The task is
+				// dismissed; the agent is left running for its managers' door.
+				if memberOnTeamAgent(ctx, a) {
+					s.logger.Printf("dismiss task %d: linked agent %d is a team's (owner %d), dismissed by a member; leaving the agent running", id, a.ID, a.OwnerID)
+					linkedAgentID = 0
+				}
 			}
 		}
 	}

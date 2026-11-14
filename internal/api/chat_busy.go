@@ -149,7 +149,7 @@ func (s *Server) chatTurnWhenFree(ctx context.Context, a agents.Agent, sessionKe
 			return
 		}
 		told = notice
-		s.markAgentActive(requestOwner(ctx), a.Name, "queued")
+		s.markAgentActive(turnPanelOwner(ctx, a), a.Name, "queued")
 		if emit != nil {
 			emit(agents.StreamEvent{Kind: "queued", Text: notice})
 		}
@@ -210,7 +210,7 @@ func (s *Server) chatTurnWhenFree(ctx context.Context, a agents.Agent, sessionKe
 // turn's first stream event — emits "accepted" and puts the panel back on
 // "thinking", once.
 func (s *Server) acceptedAfterQueued(ctx context.Context, a agents.Agent, emit agents.StreamEmit) (context.Context, agents.StreamEmit) {
-	owner := requestOwner(ctx)
+	owner := turnPanelOwner(ctx, a)
 	var once sync.Once
 	accepted := func() {
 		once.Do(func() {
