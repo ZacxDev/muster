@@ -685,6 +685,40 @@ address, no internal host name (`.lan`, `.local`, `.internal`, `.svc`,
 one of the deployment's own names, no hidden character. A reply your chief
 drafts is screened as before, host names refused.
 
+##### Public links in an outbound draft
+
+A project's own repository link usually spells one of the deployment's own
+names (`MUSTER_FLOW_AGENT_DENY_WORDS`): `github.com/<owner>/muster` contains
+`muster`. So the outbound screen first takes the links on an **allowlist**
+out of the text, then screens what is left:
+
+- **The allowlist** is built for each draft: `github.com/<owner>/<repo>` for
+  each of the filing officer's **standing-read repositories** (`read_repos`
+  with `read_grant: "standing"`, [officers.md](officers.md#a-standing-public-read-read_grant-standing)
+  — the repositories the deployment itself declares public). To let an
+  officer link to another public repository, add it to that officer's
+  standing `read_repos`. `read_repos` under the ordinary per-instance
+  approval are not on it: they may be private. The allowlist trusts the
+  declaration; it does not ask GitHub whether the repository is still public.
+- **A link on it** is `[http[s]://][www.]host[/path…]` whose host is an entry's
+  host and whose first path segments are the entry's segments, compared
+  without case. A segment may end in `.git` or a sentence's `.`. The character
+  before the link may not continue a URL (a letter, digit, non-ASCII character,
+  `.`, `@`, `/`, `:` and the like), so `user@github.com/…`,
+  `x.github.com/…` and `…/https://github.com/…` are not on it.
+- **Only the allowlisted prefix is exempt.** A deeper path
+  (`github.com/<owner>/<repo>/tree/<name>`) is screened like every other word.
+  A link the allowlist does not name is not exempt at all, including another
+  repository of the same owner (`github.com/<owner>/muster-private`): it is
+  refused if it spells a deployment name.
+- **Everything else is unchanged.** A deployment name in the prose around the
+  link ("muster is out: …"), an internal host name, an IP address, a
+  credential- or token-shaped string or an infrastructure word is refused as
+  before.
+
+The allowlist only widens the outbound screen. A reply your chief drafts,
+and a browser flow's text, have none.
+
 #### `GET /plugin/v1/drafts/checks` for an outbound draft
 
 Every entry now says its `kind`. An outbound one carries its target and media
