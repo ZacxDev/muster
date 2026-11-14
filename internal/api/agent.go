@@ -821,7 +821,7 @@ func (s *Server) gatewayTurnTools(ctx context.Context, a agents.Agent, via authz
 	}
 	pctx, ok := s.turnPrincipal(ctx, a, via)
 	if !ok {
-		s.logger.Printf("agents: %s names no owner; its %s turn goes out WITHOUT tools (they act as the owner)", a.Name, via)
+		s.logger.Printf("agents: %s names no owner, or a team (no team gateway agents yet); its %s turn goes out WITHOUT tools (they act as the owner)", a.Name, via)
 		return ctx, agentkickoff.TurnTools{}, false
 	}
 	ctx, tt := s.turnTools(pctx, a)
@@ -847,6 +847,14 @@ func (s *Server) turnPrincipal(ctx context.Context, a agents.Agent, via authz.Vi
 	}
 	p, ok := s.agentPrincipal(ctx, a, via)
 	if !ok {
+		return ctx, false
+	}
+	// 🔴 A TEAM-OWNED GATEWAY AGENT TURNS TOOLLESS, NEVER A PANIC: gateway
+	// agents are not team agents in team sharing phase 4 (a team chief is
+	// claude-code, whose kickoff needs no principal), so no team acts through
+	// this door yet. False here keeps the kickoff deliverer, which has no
+	// recover, alive if such a row ever exists.
+	if p.Team {
 		return ctx, false
 	}
 	return authz.WithPrincipal(ctx, p), true

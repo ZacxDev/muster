@@ -176,6 +176,14 @@ const (
 	// page's OWNER for that one page only — the link's capability, never a
 	// session. internal/api's requirePageLink, on the /s/{token}/* routes.
 	ViaPageLink Via = "page-link"
+	// ViaTeamAdmin is a team MANAGER's lifecycle action on one of the team's
+	// agents (provision, switch on or off, restart, replace, stop, start,
+	// delete), run AS THE TEAM so credential selection, budget and the
+	// owner all resolve to the team (team sharing phase 4, slice 4.5). It is
+	// DECLARED before that handler exists so the team-acting set
+	// (teamActingVias) is written once; nothing outside this package's tests
+	// mints it yet.
+	ViaTeamAdmin Via = "team-admin"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -226,6 +234,39 @@ var requestVias = map[Via]bool{
 	ViaJobQueue: true,
 	// A page's share link (internal/api's requirePageLink).
 	ViaPageLink: true,
+	// A team manager's lifecycle action on a team agent, as the team (slice
+	// 4.5's /teams/{id}/* handlers; minted nowhere outside tests yet).
+	ViaTeamAdmin: true,
+}
+
+// teamActingVias is the closed set of doors through which a principal may
+// name a TEAM (Principal.Team): the TEAM ACTING PRINCIPAL of
+// docs/design/team-sharing.md — {UserID: team, Team: true, Role: member,
+// Teams: ""} — so muster.uid is the team, muster.teams is empty and the
+// scope is never "all". Nobody signs in as a team; these are the doors where
+// something the TEAM owns acts as its owner:
+//
+//   - a team-owned agent's own token (ViaAgent, ViaConnect, ViaRelay — the
+//     team is the agent row's owner, never a sign-in; internal/api's admit
+//     admits a team on exactly these three);
+//   - a team-owned gateway agent's turn (ViaKickoff, ViaAgentMessage —
+//     internal/api's turnPrincipal still refuses a team: gateway agents are
+//     not team agents in phase 4, so no site mints these for a team yet);
+//   - the per-owner background work that meets a team-owned row (ViaReap,
+//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue);
+//   - a team manager's lifecycle action (ViaTeamAdmin).
+//
+// 🔴 EVERY OTHER DOOR STILL REFUSES A TEAM (WithPrincipal panics). A person's
+// door (session, device, personal token), a shared machine token, a mirror
+// host (team hosts are phase 2b), an officer or plugin (phase 3), the focus,
+// question and send-queue loops (their owners are persons: users.PersonIDs)
+// — a team principal arriving there is a bug, not a team.
+// TestTheTeamActingViasAreExactlyTheListedDoors pins the set.
+var teamActingVias = map[Via]bool{
+	ViaAgent: true, ViaConnect: true, ViaRelay: true,
+	ViaKickoff: true, ViaAgentMessage: true,
+	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
+	ViaTeamAdmin: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
@@ -247,8 +288,9 @@ type Principal struct {
 	RoleUncertain bool
 	// Team is true when UserID names a TEAM (users.kind = 'team',
 	// docs/design/team-sharing.md). A team owns things; nobody signs in as
-	// one. WithPrincipal refuses such a principal, and internal/api's admit
-	// answers 403 before it gets there.
+	// one. WithPrincipal accepts such a principal only as the TEAM ACTING
+	// PRINCIPAL (role member, no Teams) through one of teamActingVias, and
+	// internal/api's admit answers 403 on every door but an agent's own token.
 	Team bool
 	// Teams is the acting person's team memberships, read with the role (one
 	// read per request, internal/users Account). Phase 1 of team sharing reads
@@ -280,9 +322,21 @@ type principalKey struct{}
 // row-level security a value that silently selects nobody (or, for a forged
 // ViaSystem, everybody). internal/api's recover middleware turns the panic into
 // a 500 for that one request.
+//
+// A TEAM principal (p.Team) is accepted only as the team acting principal:
+// through a door in teamActingVias, with role member and no Teams of its own
+// (a team is nobody's member, and muster.teams must stay empty for it).
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
 	if p.Team {
-		panic(fmt.Sprintf("authz: request principal names team %d; a team never signs in", p.UserID))
+		if !teamActingVias[p.Via] {
+			panic(fmt.Sprintf("authz: request principal names team %d at door %q; a team never signs in, and that door does not act as a team", p.UserID, p.Via))
+		}
+		if p.Role != RoleMember {
+			panic(fmt.Sprintf("authz: team acting principal %d with role %q; a team acts as a member", p.UserID, p.Role))
+		}
+		if p.Teams != "" {
+			panic(fmt.Sprintf("authz: team acting principal %d carries team memberships %q; it must carry none", p.UserID, p.Teams))
+		}
 	}
 	if p.UserID <= 0 {
 		panic(fmt.Sprintf("authz: request principal with no user (UserID %d)", p.UserID))

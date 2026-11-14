@@ -34,6 +34,7 @@ var carriesTeams = map[Via]bool{
 	ViaAgentMessage: false,
 	ViaHostDispatch: false,
 	ViaJobQueue:     false,
+	ViaTeamAdmin:    false, // a manager's action, run AS the team: the team acting principal carries no Teams
 }
 
 func TestEveryDoorSaysWhetherItCarriesTeams(t *testing.T) {
