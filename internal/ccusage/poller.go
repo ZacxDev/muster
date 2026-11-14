@@ -473,8 +473,10 @@ type StepConfig struct {
 //     live answer is what can clear the mark (it spends one output token) —
 //     unless the pool's cooldown could not be read (KindCooling, no probe this
 //     pass). Its rate-limit headers are the reading (SourceRateLimitHeaders);
-//     an overall status `rejected` waits until its reset. A 429 backs off
-//     (Backoff, at least Retry-After).
+//     an overall status `rejected` waits until its reset — except on a
+//     cooling account, which is read again at the ordinary cadence (a limit
+//     lifted before that reset is exactly what the reading is for). A 429
+//     backs off (Backoff, at least Retry-After).
 //
 // A failed attempt keeps the last good reading; a 429 whose headers carry a
 // reading stores it, since those numbers are current.
@@ -540,11 +542,15 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 		return r, true
 	}
 
+	// A `rejected` answer holds the account until its stated reset — but not
+	// one the pool marks cooling: its live state is read at the ordinary
+	// cadence, so a limit lifted early clears the mark within an interval.
+	holdForReset := !now.Before(cfg.CoolingUntil)
 	res := fetch.Probe(ctx, token)
 	switch {
 	case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
 		good(&r, res.Reading, SourceRateLimitHeaders, now, interval)
-		if res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
+		if holdForReset && res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
 			r.NextAt = *res.Reading.ResetsAt
 		}
 	case res.Status >= 200 && res.Status < 300 && res.Err == nil:
@@ -566,7 +572,7 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 			// The 429's own headers are current numbers: keep them.
 			r.Windows, r.Source, r.ReadAt = res.Reading.Windows, SourceRateLimitHeaders, now
 			r.Status, r.RepresentativeClaim = res.Reading.Status, res.Reading.RepresentativeClaim
-			if rs := res.Reading.ResetsAt; res.Reading.Status == "rejected" && rs != nil && rs.After(r.NextAt) {
+			if rs := res.Reading.ResetsAt; holdForReset && res.Reading.Status == "rejected" && rs != nil && rs.After(r.NextAt) {
 				r.NextAt = *rs // the account is out of quota: not probed until its window resets
 			}
 		}

@@ -709,9 +709,9 @@ bytes, logged or stored.
 
 | the probe answers | muster |
 |---|---|
-| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset |
+| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset — unless the pool marks it cooling, which is read again at the interval |
 | 401, 403 | records `unauthorized` / `forbidden`; the token cannot make an inference call, and the account is not read again until its token changes (the row keeps the token's 12-character fingerprint, never the token) |
-| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected`; the 429's own headers are kept as the reading |
+| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected` (not for an account the pool marks cooling); the 429's own headers are kept as the reading |
 | anything else, or a 2xx without the headers | records `error`; the next pass tries again |
 | (no token) | records `no_token` and calls nothing |
 

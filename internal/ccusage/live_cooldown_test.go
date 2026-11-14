@@ -290,3 +290,36 @@ func TestLiveUsableCountsOnlyAReadingTakenNow(t *testing.T) {
 		t.Fatal("a usage reading with no window counted as usable")
 	}
 }
+
+// TestACoolingAccountIsNotHeldUntilARejectedReset: a non-cooling account whose
+// probe says `rejected` is held until the answer's reset (it is out of quota),
+// but a COOLING one is read again at the ordinary cadence — 2xx: one interval
+// (less a tenth); 429: the backoff — so a limit lifted before that reset is
+// seen within an interval, not days later.
+func TestACoolingAccountIsNotHeldUntilARejectedReset(t *testing.T) {
+	reset := t0.Add(48 * time.Hour)
+	rejected := Reading{Status: "rejected", ResetsAt: &reset, Windows: map[string]Window{SevenDay: {Utilization: f(100), Status: "rejected"}}}
+	prev := Row{UsageAPI: UsageAPIRefused, TokenFP: ccpool.Fingerprint("tok")}
+	for _, tc := range []struct {
+		name    string
+		res     Result
+		cooling bool
+		want    time.Time
+	}{
+		{"200 rejected, not cooling", Result{Status: http.StatusOK, HasReading: true, Reading: rejected}, false, reset},
+		{"200 rejected, cooling", Result{Status: http.StatusOK, HasReading: true, Reading: rejected}, true, t0.Add(iv - iv/10)},
+		{"429 rejected, not cooling", Result{Status: http.StatusTooManyRequests, HasReading: true, Reading: rejected}, false, reset},
+		{"429 rejected, cooling", Result{Status: http.StatusTooManyRequests, HasReading: true, Reading: rejected}, true, t0.Add(2 * iv)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StepConfig{Interval: iv}
+			if tc.cooling {
+				sc.CoolingUntil = t0.Add(72 * time.Hour)
+			}
+			r, ok := Step(context.Background(), prev, "alpha", "tok", t0, sc, &scripted{probe: []Result{tc.res}})
+			if !ok || !r.NextAt.Equal(tc.want) {
+				t.Fatalf("NextAt = %s (ok=%v), want %s", r.NextAt.UTC().Format(time.RFC3339), ok, tc.want.UTC().Format(time.RFC3339))
+			}
+		})
+	}
+}
