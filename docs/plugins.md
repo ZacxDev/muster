@@ -698,7 +698,7 @@ transaction, records the person and the event and puts them on the officer's
 
 | answer | meaning |
 |---|---|
-| `202 {"id", "status": "delivered", "item_id"}` | stored and recorded; `item_id` is the person's item of the day, or `null` when none is due (a like from someone who has done nothing else, a do-not-contact, bot or hostile person) |
+| `202 {"id", "status": "delivered", "item_id"}` | stored and recorded; `item_id` is the person's item of the day, or `null` when none is due (a like that finds no open item of theirs that day, or a do-not-contact, bot or hostile person) |
 | `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: nothing new |
 | `400`, `409`, `429` | as above |
 

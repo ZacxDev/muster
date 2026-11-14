@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -144,7 +145,7 @@ func NormalizeHandle(handle string) (string, error) {
 		return "", fmt.Errorf("%w: a handle is 1-%d bytes", ErrInvalid, MaxHandleBytes)
 	}
 	for _, r := range h {
-		if r == ' ' || fence.Unsafe(r) {
+		if unicode.IsSpace(r) || fence.Unsafe(r) {
 			return "", fmt.Errorf("%w: a handle has no spaces, control or invisible characters", ErrInvalid)
 		}
 	}
@@ -183,11 +184,11 @@ type Engagement struct {
 	Text       string     `json:"text,omitempty"`
 }
 
-// cleanText is untrusted text as a contact stores it: valid UTF-8, no NUL,
-// at most n runes (cut, not refused: it is shown, never matched).
+// cleanText is untrusted text as a contact stores it: fence.Sanitize'd (no
+// control, bidi or invisible character; a line break shown as " ⏎ "), at
+// most n runes (cut, not refused: it is shown, never matched).
 func cleanText(s string, n int) string {
-	s = strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "�")
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(fence.Sanitize(s))
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
@@ -275,6 +276,10 @@ type Contact struct {
 	Notes     string    `json:"notes"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// BlockedUnreadable is ContactBlockedTx's answer for a contact the caller
+// cannot read: never contacted.
+const BlockedUnreadable = "unreadable"
 
 // Blocked is why c may not be contacted, or "": do-not-contact, a bot, or
 // hostile. THE ONE PREDICATE for it — the filing's guard, the approval's and
@@ -473,7 +478,9 @@ func (s *Store) engagementItemTx(ctx context.Context, tx pgx.Tx, owner int64, c 
 	}
 	var p engagementPayload
 	if id > 0 {
-		_ = json.Unmarshal(raw, &p)
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return 0, false, fmt.Errorf("builtin: engagement item %d's payload: %w", id, err)
+		}
 	} else {
 		if ev.Kind == EventLike {
 			return 0, false, nil
@@ -596,6 +603,30 @@ func renderPerson(c Contact, evs []engagementPayloadEvent, excerpts map[int64]st
 		Marker: personMarker, Count: len(evs), Lines: lines}.Render(fence.NewNonce())
 }
 
+// RenderPeople is contacts cs and events evs (by contact id) as a tool hands
+// them to an officer: ONE fenced untrusted block holding every free-text
+// field the person chose (display name, profile URL, bio, what they said),
+// so a tool's structured answer carries none of it outside the fence.
+func RenderPeople(cs []Contact, evs map[int64][]ContactEvent) string {
+	lines := append([]string(nil), personStanding...)
+	n := 0
+	for _, c := range cs {
+		n++
+		lines = append(lines, "",
+			"[contact "+strconv.FormatInt(c.ID, 10)+"] venue "+fence.Sanitize(c.Venue)+" · handle "+fence.Sanitize(c.Handle),
+			"  display: "+fence.Sanitize(c.Display),
+			"  profile: "+fence.Sanitize(c.ProfileURL),
+			"  bio: "+fence.Sanitize(c.Bio))
+		for _, e := range evs[c.ID] {
+			if e.Excerpt != "" {
+				lines = append(lines, "  [event "+strconv.FormatInt(e.ID, 10)+"] "+e.Kind+" · ref "+fence.Sanitize(e.Ref)+" · said: "+fence.Sanitize(e.Excerpt))
+			}
+		}
+	}
+	return fence.Block{Preface: "The people below engaged with your owner's posts, as a plugin reported it.",
+		Marker: personMarker, Count: n, Lines: lines}.Render(fence.NewNonce())
+}
+
 // --- reading and noting --------------------------------------------------------------
 
 // MaxContactEvents bounds the events ContactGet returns.
@@ -679,7 +710,7 @@ func (s *Store) ContactsList(ctx context.Context, owner int64, officer string, f
 		add("venue = ?", f.Venue)
 	}
 	if f.Label != "" {
-		add("? = ANY(labels)", f.Label)
+		add("? = ANY(labels)", strings.ToLower(strings.TrimSpace(f.Label)))
 	}
 	switch f.Flag {
 	case "":
@@ -805,6 +836,25 @@ func (s *Store) SetContactFlags(ctx context.Context, owner int64, officer, venue
 	return c, classify(err)
 }
 
+// DeleteContact removes owner's officer's contact (venue, handle) and its
+// whole history (the events cascade): the owner's erasure of a person. A
+// draft still naming it can then never be approved or sent
+// (ContactBlockedTx fails closed). ErrNotFound when there is none.
+func (s *Store) DeleteContact(ctx context.Context, owner int64, officer, venue, handle string) error {
+	h, err := NormalizeHandle(handle)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM officer_contacts WHERE owner_id = $1 AND officer = $2 AND venue = $3 AND handle = $4`, owner, officer, venue, h)
+	if err != nil {
+		return classify(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- the outreach guards -------------------------------------------------------------
 
 // Outreach is one outreach an officer files (internal/plugins FileOutbound),
@@ -827,7 +877,9 @@ type Outreach struct {
 // officer reads.
 type OutreachRefusal struct{ Code, Msg string }
 
-func (r *OutreachRefusal) Error() string { return "builtin: outreach refused (" + r.Code + "): " + r.Msg }
+func (r *OutreachRefusal) Error() string {
+	return "builtin: outreach refused (" + r.Code + "): " + r.Msg
+}
 
 // The guards' refusal codes.
 const (
@@ -850,9 +902,10 @@ func refused(code, format string, a ...any) error {
 
 // OutreachGuardTx is THE gate on an officer's outreach, inside the
 // transaction that files it (tx), under the person's row lock: it resolves
-// who o reaches and answers their contact id, or an *OutreachRefusal. A reply
-// that reaches no recorded person (its target is not a recorded engagement
-// and o names none) is not outreach to a person: 0, nil.
+// who o reaches and answers their contact, or an *OutreachRefusal. A reply
+// that reaches no recorded person (its target is not one of their recorded
+// engagements and o names none) is not outreach to a person: the zero
+// Contact, nil.
 //
 // The person: a dm's or a follow's handle; a like's or a reply's target, when
 // it is one of the officer's recorded engagements (its person), else the
@@ -864,26 +917,35 @@ func refused(code, format string, a ...any) error {
 //     something they said);
 //  3. no second outreach while one to them is pending, approved or in flight;
 //  4. never twice without an engagement from them in between: after an
-//     outreach (sent, or unconfirmed — it may have been) there must be a
-//     qualifying engagement of theirs since;
+//     outreach (sent, or unconfirmed — it may have been) there must be an
+//     engagement of theirs since that qualifies for THIS kind (qualifies: a
+//     dm needs something they said since);
 //  5. the cooldown (the type's outreach.cooldown_days, default 7): inside it,
 //     only an answer to an engagement NEWER than the last outreach — so a
 //     conversation they continue can be answered, and nothing else is sent.
-func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o Outreach, now time.Time) (int64, error) {
+func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o Outreach, now time.Time) (Contact, error) {
 	var c Contact
 	found := false
 	var target *ContactEvent
 	if o.TargetRef != "" && (o.Kind == TargetLike || o.Kind == TargetReply) {
-		var cid int64
-		err := tx.QueryRow(ctx, `SELECT e.contact_id FROM officer_contact_events e JOIN officer_contacts c ON c.id = e.contact_id
-			WHERE e.owner_id = $1 AND c.officer = $2 AND c.venue = $3 AND e.ref = $4 AND e.draft_id IS NULL
-			ORDER BY e.id DESC LIMIT 1`, owner, o.Officer, o.Venue, o.TargetRef).Scan(&cid)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return 0, err
+		// 🔴 ONLY A REF THAT IS THE PERSON'S OWN OBJECT names them: what they
+		// wrote (textKinds). A like's or a repost's ref is the OWNER's post,
+		// shared by everyone who liked it, so it names nobody; and a ref two
+		// people's events share is refused rather than guessed.
+		var cid, people int64
+		err := tx.QueryRow(ctx, `SELECT coalesce(max(e.contact_id), 0), count(DISTINCT e.contact_id) FROM officer_contact_events e
+			JOIN officer_contacts c ON c.id = e.contact_id
+			WHERE e.owner_id = $1 AND c.officer = $2 AND c.venue = $3 AND e.ref = $4 AND e.draft_id IS NULL AND e.kind = ANY($5)`,
+			owner, o.Officer, o.Venue, o.TargetRef, textKinds).Scan(&cid, &people)
+		if err != nil {
+			return Contact{}, err
+		}
+		if people > 1 {
+			return Contact{}, refused(RefusePersonMismatch, "%s on %s is the engagement of %d people: name the person (contact)", o.TargetRef, o.Venue, people)
 		}
 		if cid > 0 {
 			if c, err = scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts WHERE id = $1 FOR UPDATE`, cid)); err != nil {
-				return 0, err
+				return Contact{}, err
 			}
 			found = true
 		}
@@ -891,36 +953,36 @@ func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o O
 	if o.Handle != "" {
 		h, err := NormalizeHandle(o.Handle)
 		if err != nil {
-			return 0, err
+			return Contact{}, err
 		}
 		if found && c.Handle != h {
-			return 0, refused(RefusePersonMismatch, "%s on %s is %s's engagement, not %s's", o.TargetRef, o.Venue, c.Handle, h)
+			return Contact{}, refused(RefusePersonMismatch, "%s on %s is %s's engagement, not %s's", o.TargetRef, o.Venue, c.Handle, h)
 		}
 		if !found {
 			c, err = scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts
 				WHERE owner_id = $1 AND officer = $2 AND venue = $3 AND handle = $4 FOR UPDATE`, owner, o.Officer, o.Venue, h))
 			if errors.Is(err, pgx.ErrNoRows) {
-				return 0, refused(RefuseUnknownPerson, "muster has recorded no engagement from %s on %s: you can only reach a person who engaged with your owner's posts", h, o.Venue)
+				return Contact{}, refused(RefuseUnknownPerson, "muster has recorded no engagement from %s on %s: you can only reach a person who engaged with your owner's posts", h, o.Venue)
 			}
 			if err != nil {
-				return 0, err
+				return Contact{}, err
 			}
 			found = true
 		}
 	}
 	if !found {
 		if o.Kind == TargetReply {
-			return 0, nil
+			return Contact{}, nil
 		}
-		return 0, refused(RefuseUnresolvedPerson, "a like names its person: like one of their recorded engagements, or give contact (their handle)")
+		return Contact{}, refused(RefuseUnresolvedPerson, "a %s names its person: target one of their recorded engagements, or give their handle", o.Kind)
 	}
 	switch c.Blocked() {
 	case "do_not_contact":
-		return 0, refused(RefuseDNC, "%s on %s is on the do-not-contact list: never contact them", c.Handle, c.Venue)
+		return Contact{}, refused(RefuseDNC, "%s on %s is on the do-not-contact list: never contact them", c.Handle, c.Venue)
 	case "bot":
-		return 0, refused(RefuseBot, "%s on %s is marked a bot: never contact them", c.Handle, c.Venue)
+		return Contact{}, refused(RefuseBot, "%s on %s is marked a bot: never contact them", c.Handle, c.Venue)
 	case "hostile":
-		return 0, refused(RefuseHostile, "%s on %s is marked hostile: never contact them", c.Handle, c.Venue)
+		return Contact{}, refused(RefuseHostile, "%s on %s is marked hostile: never contact them", c.Handle, c.Venue)
 	}
 	// The engagement this answers: because_ref, else (a reply) its target.
 	ref := o.BecauseRef
@@ -928,7 +990,7 @@ func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o O
 		ref = o.TargetRef
 	}
 	if o.BecauseRef == "" && o.Kind != TargetReply {
-		return 0, refused(RefuseRequiresBecause, "a %s cites because_ref: the ref of the engagement of %s's that it answers", o.Kind, c.Handle)
+		return Contact{}, refused(RefuseRequiresBecause, "a %s cites because_ref: the ref of the engagement of %s's that it answers", o.Kind, c.Handle)
 	}
 	if ref != "" {
 		e, err := scanEvent(tx.QueryRow(ctx, `SELECT `+eventCols+` FROM officer_contact_events
@@ -936,12 +998,12 @@ func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o O
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			if o.BecauseRef != "" {
-				return 0, refused(RefuseNoBecause, "because_ref %s is not a recorded engagement of %s's on %s", o.BecauseRef, c.Handle, c.Venue)
+				return Contact{}, refused(RefuseNoBecause, "because_ref %s is not a recorded engagement of %s's on %s", o.BecauseRef, c.Handle, c.Venue)
 			}
 		case err != nil:
-			return 0, err
+			return Contact{}, err
 		case !qualifies(o.Kind, e.Kind):
-			return 0, refused(RefuseNoBecause, "%s's %s %s cannot motivate a %s: %s", c.Handle, e.Kind, e.Ref, o.Kind, qualifyRule(o.Kind))
+			return Contact{}, refused(RefuseNoBecause, "%s's %s %s cannot motivate a %s: %s", c.Handle, e.Kind, e.Ref, o.Kind, qualifyRule(o.Kind))
 		default:
 			target = &e
 		}
@@ -949,10 +1011,10 @@ func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o O
 	var outstanding int64
 	if err := tx.QueryRow(ctx, `SELECT coalesce(min(id), 0) FROM plugin_reply_drafts
 		WHERE owner_id = $1 AND contact_id = $2 AND status IN ('pending', 'approved')`, owner, c.ID).Scan(&outstanding); err != nil {
-		return 0, err
+		return Contact{}, err
 	}
 	if outstanding > 0 {
-		return 0, refused(RefuseOutstanding, "draft %d to %s is still awaiting a decision or its send: one outreach to a person at a time", outstanding, c.Handle)
+		return Contact{}, refused(RefuseOutstanding, "draft %d to %s is still awaiting a decision or its send: one outreach to a person at a time", outstanding, c.Handle)
 	}
 	// The last outreach: sent (an outreach event), or unconfirmed (its plugin
 	// collected it and never said — it may have been sent).
@@ -961,28 +1023,39 @@ func (s *Store) OutreachGuardTx(ctx context.Context, tx pgx.Tx, owner int64, o O
 			(SELECT max(at) FROM officer_contact_events WHERE contact_id = $2 AND draft_id IS NOT NULL),
 			(SELECT max(claimed_at) FROM plugin_reply_drafts WHERE owner_id = $1 AND contact_id = $2 AND status = 'unconfirmed'))`,
 		owner, c.ID).Scan(&last); err != nil {
-		return 0, err
+		return Contact{}, err
 	}
 	if last != nil {
 		var since bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_contact_events WHERE contact_id = $1 AND draft_id IS NULL
-			AND kind NOT IN ('like', 'block') AND at > $2)`, c.ID, *last).Scan(&since); err != nil {
-			return 0, err
+			AND kind = ANY($3) AND at > $2)`, c.ID, *last, qualifyingKinds(o.Kind)).Scan(&since); err != nil {
+			return Contact{}, err
 		}
 		if !since {
-			return 0, refused(RefuseTwiceNoEngage, "%s was last contacted %s and has not engaged since: never contact a person twice without an engagement from them in between",
+			return Contact{}, refused(RefuseTwiceNoEngage, "%s was last contacted %s and has not engaged since: never contact a person twice without an engagement from them in between",
 				c.Handle, last.UTC().Format(time.RFC3339))
 		}
 		cooldown, err := s.cooldownTx(ctx, tx, owner, o.Officer)
 		if err != nil {
-			return 0, err
+			return Contact{}, err
 		}
 		if now.Sub(*last) < cooldown && (target == nil || !target.At.After(*last)) {
-			return 0, refused(RefuseCooldown, "%s was last contacted %s, inside the %s cooldown: only an answer to an engagement of theirs newer than that may go now (cite it as because_ref)",
+			return Contact{}, refused(RefuseCooldown, "%s was last contacted %s, inside the %s cooldown: only an answer to an engagement of theirs newer than that may go now (cite it as because_ref)",
 				c.Handle, last.UTC().Format(time.RFC3339), cooldownText(cooldown))
 		}
 	}
-	return c.ID, nil
+	return c, nil
+}
+
+// qualifyingKinds is every engagement kind that qualifies for target kind.
+func qualifyingKinds(target string) []string {
+	var out []string
+	for _, k := range EngagementKinds {
+		if qualifies(target, k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func qualifyRule(target string) string {
@@ -1003,18 +1076,22 @@ func cooldownText(d time.Duration) string {
 // cooldownTx is owner's officer's type's outreach cooldown: policy
 // {"outreach": {"cooldown_days": n}}, 0-365, DefaultCooldown when unset.
 func (s *Store) cooldownTx(ctx context.Context, tx pgx.Tx, owner int64, officer string) (time.Duration, error) {
-	var days *float64
+	var raw *string
 	err := tx.QueryRow(ctx, `SELECT CASE WHEN jsonb_typeof(policy->'outreach'->'cooldown_days') = 'number'
-			THEN (policy->'outreach'->>'cooldown_days')::float8 END
-		FROM officer_types WHERE owner_id = $1 AND key = split_part($2, ':', 1)`, owner, officer).Scan(&days)
-	if errors.Is(err, pgx.ErrNoRows) || days == nil {
+			THEN policy->'outreach'->>'cooldown_days' END
+		FROM officer_types WHERE owner_id = $1 AND key = split_part($2, ':', 1)`, owner, officer).Scan(&raw)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return DefaultCooldown, nil
+	case err != nil:
+		return 0, err
+	case raw == nil:
 		return DefaultCooldown, nil
 	}
-	if err != nil {
-		return 0, err
-	}
-	d := int(*days)
-	if d < 0 || d > MaxCooldownDays {
+	// A whole number of days, 0-365; anything else is the default (never a
+	// shorter cooldown than intended: 0.5 is not 0).
+	d, err := strconv.Atoi(*raw)
+	if err != nil || d < 0 || d > MaxCooldownDays {
 		return DefaultCooldown, nil
 	}
 	return time.Duration(d) * 24 * time.Hour, nil
@@ -1027,7 +1104,9 @@ func (s *Store) cooldownTx(ctx context.Context, tx pgx.Tx, owner int64, officer 
 func (s *Store) ContactBlockedTx(ctx context.Context, tx pgx.Tx, owner, id int64) (string, error) {
 	c, err := scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts WHERE owner_id = $1 AND id = $2 FOR SHARE`, owner, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		// 🔴 FAILS CLOSED: a contact this principal cannot read (deleted by
+		// its owner, or hidden by row-level security) is never reached.
+		return BlockedUnreadable, nil
 	}
 	if err != nil {
 		return "", err
@@ -1060,4 +1139,3 @@ func (s *Store) OutreachSentTx(ctx context.Context, tx pgx.Tx, owner, contact, d
 		WHERE owner_id = $1 AND id = $2`, owner, contact, now)
 	return err
 }
-

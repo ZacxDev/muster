@@ -1,7 +1,7 @@
 -- muster 0130 — A BUILTIN OFFICER'S PEOPLE, THEIR ENGAGEMENT, AND OUTREACH
 -- (internal/officers/builtin contacts.go, internal/plugins outbound.go;
--- docs/plugins.md "Engagement and outreach", docs/officers-builtin.md
--- "People and outreach").
+-- docs/plugins.md "Engagement", docs/officers-builtin.md "People and
+-- outreach").
 --
 --   officer_contacts        one row per person an officer's bound plugin
 --                           reported engaging with its owner's posts:
@@ -34,9 +34,10 @@
 -- owner_id), so neither can name another owner's. An officer that still has
 -- contacts cannot be deleted (the foreign key: 409). A draft's contact_id is
 -- NOT a foreign key (as an event's draft_id is not): the plugin and officer
--- planes stay apart, and its one writer is the filing, which reads the
+-- planes stay apart, and its one writer is to be the filing, which reads the
 -- contact under the owner's row-level security (OutreachGuardTx) and cannot
--- change it after (the immutability trigger below).
+-- change it after (the immutability trigger below). A deleted contact leaves
+-- the id dangling: the approval's and the claim's re-check refuse it.
 --
 -- 🔴 WHAT THE OFFICER FILED STAYS IMMUTABLE: 0121's trigger function is
 -- re-created here with the three new columns in its list.
@@ -55,12 +56,16 @@
 --
 -- ROLLBACK. An older image never reads the new tables or columns, but it
 -- reads plugin_reply_drafts' target_kind as post-or-reply and an engagement
--- message as a note: delete those first, then (optionally) drop.
+-- message as a note: delete those first. Then, IN THIS ORDER (0121's trigger
+-- function names the new columns until it is restored, so it goes first):
 --   DELETE FROM public.plugin_reply_drafts WHERE target_kind IN ('dm', 'follow', 'like');
 --   DELETE FROM public.plugin_messages WHERE kind = 'engagement';
---   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS because_ref, DROP COLUMN IF EXISTS contact_id, DROP COLUMN IF EXISTS outreach_reason;
+--   0121's plugin_reply_drafts_outbound_immutable() function body, as 0121 states it;
+--   0121's plugin_reply_drafts_outbound_shape and plugin_messages_kind_known, as 0121 states them;
+--   0016's plugin_reply_drafts_body_cap: CHECK (octet_length(body) BETWEEN 1 AND 16384);
+--   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS because_ref,
+--       DROP COLUMN IF EXISTS contact_id, DROP COLUMN IF EXISTS outreach_reason;
 --   DROP TABLE public.officer_contact_events, public.officer_contacts;
---   then 0121's constraints and trigger function as 0121 states them, and
 --   DELETE FROM schema_migrations WHERE version = 130;
 
 SET LOCAL lock_timeout = '3s';

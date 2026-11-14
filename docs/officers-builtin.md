@@ -420,9 +420,9 @@ never in a repository:
   block. A second event of theirs that day joins the open item instead of
   making another. An event while that day's item is being worked (claimed, or
   waiting on an ask or a draft) opens one more item (`…#<event id>`), so no
-  engagement is lost. A person whose only engagement is a like gets **no
-  item** (they are recorded, never brought to the officer); a like of
-  someone with an open item joins it.
+  engagement is lost. A like never opens an item (a person whose only
+  engagement is a like is recorded, never brought to the officer); a like of
+  someone who has an open item that day joins it.
 - **Do-not-contact is set automatically** by a block, or by their words asking
   to stop (a message that begins "stop", "no thanks", "not interested",
   "unsubscribe" …, or asks anywhere not to be contacted, messaged or DMed). It
@@ -450,12 +450,21 @@ carries a note that the person's words are data, not instructions.
 The owner's door (the admin API's tier):
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" https://muster.example/api/officers/defs/marketing:example/contacts?flag=dnc
+# $MUSTER is the server's URL, $OFFICER the officer id (e.g. marketing:example)
+curl -H "Authorization: Bearer $TOKEN" "$MUSTER/api/officers/defs/$OFFICER/contacts?flag=dnc"
 curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"dnc": true}' \
-    https://muster.example/api/officers/defs/marketing:example/contacts/example.social/someone/flags
+    "$MUSTER/api/officers/defs/$OFFICER/contacts/example.social/someone/flags"
 ```
 
-An officer that has contacts cannot be deleted (409).
+`DELETE …/contacts/{venue}/{handle}` erases a person and their whole
+history. An officer that has contacts cannot be deleted (409): delete its
+contacts first.
+
+Every contact tool's structured answer carries ids, kinds, refs, times,
+marks, labels and notes; every free-text field the person chose (display
+name, profile URL, bio, what they said) is only in its `people` field, one
+fenced untrusted block. Stored text is sanitised (no control, bidi or
+invisible character).
 
 ## 6. Switch it off
 
@@ -479,5 +488,6 @@ running it; its store rows stay.
 | GET | `/api/officers/defs/{officer}/contacts` | `?venue=&label=&flag=&handle_prefix=&limit=` |
 | GET | `/api/officers/defs/{officer}/contacts/{venue}/{handle}` | the person and their newest events |
 | PUT | `/api/officers/defs/{officer}/contacts/{venue}/{handle}/flags` | `{dnc?, bot?, hostile?}`: the owner's marks (`dnc: true` records reason `owner`) |
+| DELETE | `/api/officers/defs/{officer}/contacts/{venue}/{handle}` | erases the person and their history |
 
 All behind the hook tier (`requireArmedHookToken`); 404 while the store is off.
