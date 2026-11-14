@@ -177,6 +177,9 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleNoteTagRemove → broadcast(r.Context())",
 		"(*Server).handleTaskMerge → broadcast(r.Context())",
 		"(*Server).handleTaskMerge → broadcast(r.Context())",
+		// Moving a task into a team (team_tasks.go): the mover's own tab. The
+		// team's other members' live refresh waits for team SSE (4.6 / 2b).
+		"(*Server).handleTaskMove → broadcast(ctx)",
 		"(*Server).onConnectorRequested → broadcast(ctx)",
 		"(*Server).softDeleteTaskComment → broadcast(ctx)",
 		"(*Server).createAndDispatchAgent → agentChangedFor(requestOwner(ctx))",
