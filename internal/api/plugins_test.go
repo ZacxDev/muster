@@ -103,6 +103,11 @@ func (c *countingPlugins) Retryable(ctx context.Context, _ int) ([]plugins.Messa
 	return nil, nil
 }
 
+func (c *countingPlugins) RenewDraft(ctx context.Context, _, _ int64) (plugins.Draft, error) {
+	c.note(ctx, "RenewDraft")
+	return plugins.Draft{}, plugins.ErrNotFound
+}
+
 func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Claim, bool, error) {
 	c.note(ctx, "ClaimDraft")
 	return plugins.Claim{}, false, nil
@@ -232,6 +237,7 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	{"/plugin/v1/messages", pgnMsg, "Submit", http.StatusAccepted, ""},
 	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent, ""},
 	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound, ""},
+	{"/plugin/v1/drafts/5/renew", "", "RenewDraft", http.StatusNotFound, ""},
 	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable, ""},
 	{"/plugin/v1/messages/5/owner-answered", `{}`, "", http.StatusNotFound, ""},
 	// Plugin task references (plugin_task_refs.go). They reach the task store,

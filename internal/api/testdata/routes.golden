@@ -299,6 +299,7 @@ POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check
 POST /plugin/v1/drafts/{id}/media
+POST /plugin/v1/drafts/{id}/renew
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages

@@ -542,6 +542,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /plugins/messages/{id}/retry":  classParam,
 	"POST /plugin/v1/drafts/claim":       classPlugin,
 	"POST /plugin/v1/drafts/{id}/result": classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":  classPlugin,
 	// The pre-approval check (draft_checks): the listing names nothing (the
 	// token owner's own plugin's drafts) and the verdict names A's draft — which
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).

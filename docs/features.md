@@ -82,7 +82,10 @@ required block (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`,
   check ([sending-and-step-up.md](sending-and-step-up.md));
 - the session switcher, sidebar and search, context badges, the task board
   ([tasks.md](tasks.md)) and the Asks page ([attention.md](attention.md));
-- the installable app, the `muster` CLI and `muster doctor` ([cli.md](cli.md)).
+- the installable app, the `muster` CLI and `muster doctor` ([cli.md](cli.md));
+- the server switcher, for moving between several muster servers in one
+  browser: no setting, the list is kept in the browser
+  ([push.md](push.md#several-servers-the-server-switcher)).
 
 Not in the core, and set up separately: [the agent ask tool](#agent-ask-tool)
 and [ask cards](#ask-cards).

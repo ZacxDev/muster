@@ -200,6 +200,7 @@
       "tests/passkeys.spec.ts",
       "tests/plugin-chip.spec.ts",
       "tests/preview-composer.spec.ts",
+      "tests/server-switcher.spec.ts",
       "tests/share.spec.ts",
       "tests/switcher-search.spec.ts",
       "tests/update.spec.ts",

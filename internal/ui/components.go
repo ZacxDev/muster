@@ -949,6 +949,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
+			// The server in view, and the other muster servers this browser
+			// knows (server_switcher.go; docs/design/web-server-switcher.md).
+			serverSwitcher(feat.Brand),
 			// The agents, like a chat app's channels (nav_agents.go): the chief,
 			// then whoever waits on the operator, then the rest by recency — a
 			// lazy partial in the panel's flex-1 middle.
@@ -1025,6 +1028,9 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// The switcher dock (switcher_dock.go): one per document, beside the
 		// palette and for its reason; closed and empty where no bar opens it.
 		switcherDock(),
+		// The server switcher's dialogs and script (server_switcher.go): in the
+		// root, beside the palette, for the palette's reason.
+		serverSwitcherDialogs(),
 		// The task sheet's dismiss and dirty guard (taskModalScript), on every
 		// document with the sidebar — DEFERRED: the sidebar is early in <body>,
 		// and a parser-blocking script there would hold every page's paint
