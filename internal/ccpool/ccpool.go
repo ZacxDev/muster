@@ -31,9 +31,9 @@
 //
 //  1. Drop every account whose CURRENT token is marked auth_failed (the mark's
 //     fingerprint equals [Fingerprint] of the token configured now). Replacing
-//     the token in the secret therefore clears the mark by itself; nothing else
-//     does. If that leaves nothing, refuse — dispatching onto a token that
-//     already failed authentication builds a pod that cannot answer one turn.
+//     the token in the secret therefore clears the mark by itself. If that
+//     leaves nothing, refuse — dispatching onto a token that already failed
+//     authentication builds a pod that cannot answer one turn.
 //  2. An account still COOLING DOWN after a rate_limited mark (see "The
 //     cooldown" below) ranks after every account that is not. It is NOT
 //     dropped: dispatch never refuses for a cooldown, because an agent keeps
@@ -50,7 +50,22 @@
 // reset time the CLI's message states ("resets 9:45pm (UTC)", "resets Oct 9,
 // 9am (UTC)") when one can be read, else the mark's time plus
 // [Limits.Cooldown] (default [DefaultCooldown]). It is over at exactly that
-// instant.
+// instant — or sooner, two ways:
+//
+//   - THE TOKEN CHANGED. A rate_limited mark records the [Fingerprint] of the
+//     token that hit the limit, exactly as an auth_failed mark does, and a mark
+//     whose fingerprint is not the token configured now does not apply
+//     ([forToken], the one place every reader of a mark goes through).
+//     Replacing the token in the secret therefore ends the cooldown by itself.
+//     A mark with NO fingerprint (written before the column existed) is still
+//     honoured until it is rewritten.
+//   - THE LIVE READING SAYS THE ACCOUNT IS USABLE. The usage poller
+//     (internal/ccusage) keeps reading a cooling account, and when what the
+//     account reports right now shows it usable it clears the mark
+//     ([Pool.ClearRateLimit]), guarded so a NEWER mark written while it was
+//     reading is never cleared. A stated reset is the CLI's estimate; the live
+//     reading is the account's own word. With the poller off only the token
+//     rule applies.
 //
 // 🔴 ONLY THE JOB API AND THE FAILOVER REFUSE FOR IT. The job API's
 // worker-pool choice (internal/api chooseWorker, reading
@@ -157,9 +172,9 @@ func EnvSuffix(name string) string {
 }
 
 // Fingerprint is a short, one-way identifier for a token: the first 12 hex
-// characters of its sha256. It is what an auth_failed mark records so the mark
-// can expire when the token is replaced, without the database holding anything
-// that authenticates.
+// characters of its sha256. It is what an auth_failed or rate_limited mark
+// records so the mark can expire when the token is replaced, without the
+// database holding anything that authenticates.
 func Fingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:6])
@@ -174,6 +189,9 @@ type Mark struct {
 	AuthFailedDetail  string
 	// AuthFailedToken is the [Fingerprint] of the token that failed.
 	AuthFailedToken string
+	// RateLimitedToken is the [Fingerprint] of the token that was rate-limited;
+	// "" on a mark written before it was recorded (honoured whatever the token).
+	RateLimitedToken string
 }
 
 // Store persists marks and counts live agents per account — PER OWNER.
@@ -187,8 +205,12 @@ type Mark struct {
 type Store interface {
 	Marks(ctx context.Context, owner int64) (map[string]Mark, error)
 	LiveCounts(ctx context.Context, owner int64) (map[string]int, error)
-	MarkRateLimited(ctx context.Context, owner int64, account, detail string, at time.Time) error
+	MarkRateLimited(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error
 	MarkAuthFailed(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error
+	// ClearRateLimited clears owner's account's rate_limited mark ONLY while
+	// its timestamp is still markedAt (a compare-and-clear), and reports
+	// whether it did. A newer mark, written after markedAt was read, stands.
+	ClearRateLimited(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error)
 }
 
 // Source answers which Claude accounts an OWNER's agents may run on: name →
@@ -414,7 +436,7 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 	now := p.now()
 	out := make(map[string]AccountState, len(names))
 	for _, n := range names {
-		m := marks[n]
+		m := forToken(marks[n], tokens[n])
 		out[n] = AccountState{
 			AuthFailed:        authFailedNow(m, tokens[n]),
 			RateLimitedAt:     m.RateLimitedAt,
@@ -429,6 +451,23 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 // as having failed authentication.
 func authFailedNow(m Mark, token string) bool {
 	return !m.AuthFailedAt.IsZero() && m.AuthFailedToken != "" && m.AuthFailedToken == Fingerprint(token)
+}
+
+// forToken is m as it applies to token, the account's CURRENT one: a
+// rate_limited mark recorded under a DIFFERENT token's fingerprint is dropped
+// (the token was replaced since; the cooldown, the ranking by when it was
+// limited, all of it is about a token that is gone). A mark with no
+// fingerprint — written before migration 0130 — is kept, so an old row keeps
+// meaning what it meant until the next mark rewrites it.
+//
+// 🔴 EVERY READER OF A MARK'S RATE-LIMIT GOES THROUGH HERE: [Choose],
+// [ChooseFailover], [Pool.States] and [Pool.Cooldown]. One rule, one place —
+// a reader that skipped it would bench a re-issued token the others accept.
+func forToken(m Mark, token string) Mark {
+	if !m.RateLimitedAt.IsZero() && m.RateLimitedToken != "" && m.RateLimitedToken != Fingerprint(token) {
+		m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	}
+	return m
 }
 
 // maxResetAhead bounds how far after its mark a stated reset time is believed.
@@ -562,7 +601,7 @@ func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[st
 	var cands []cand
 	var skipped []string
 	for _, n := range names {
-		m := marks[n]
+		m := forToken(marks[n], tokens[n])
 		if authFailedNow(m, tokens[n]) {
 			skipped = append(skipped, fmt.Sprintf("%s (auth failed %s: %s)", n, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail))
 			continue
@@ -620,7 +659,7 @@ func ChooseFailover(now time.Time, cooldown time.Duration, names []string, token
 		if n == from {
 			continue
 		}
-		m := marks[n]
+		m := forToken(marks[n], tokens[n])
 		if authFailedNow(m, tokens[n]) || !coolingUntil(m, cooldown, now).IsZero() {
 			continue
 		}
@@ -658,14 +697,58 @@ func (p *Pool) FailoverTarget(ctx context.Context, owner int64, from string) (st
 	return to, ok, nil
 }
 
-// CoolingUntil is when owner's account stops cooling down after its latest
-// rate_limited mark ([CooldownUntil]), or zero when it is not cooling now.
-func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+// Cooldown is one account's rate-limit cooldown as [Pool.Cooldown] read it.
+type Cooldown struct {
+	// Until is when the cooldown ends ([CooldownUntil]); zero when the account
+	// is not cooling now.
+	Until time.Time
+	// MarkedAt is the timestamp of the rate_limited mark Until was computed
+	// from (zero with Until). It is what [Pool.ClearRateLimit] compares
+	// against, so a clear decided on this reading can never erase a newer mark.
+	MarkedAt time.Time
+}
+
+// Cooldown is owner's account's rate-limit cooldown, under the same "current
+// token" rule as [Choose] ([forToken]).
+func (p *Pool) Cooldown(ctx context.Context, owner int64, account string) (Cooldown, error) {
+	tokens, _, err := p.accounts(ctx, owner)
+	if err != nil {
+		return Cooldown{}, err
+	}
 	marks, err := p.store.Marks(ctx, owner)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("ccpool: read account marks: %w", err)
+		return Cooldown{}, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
-	return coolingUntil(marks[account], p.limits.Cooldown, p.now()), nil
+	m := forToken(marks[account], tokens[account])
+	until := coolingUntil(m, p.limits.Cooldown, p.now())
+	if until.IsZero() {
+		return Cooldown{}, nil
+	}
+	return Cooldown{Until: until, MarkedAt: m.RateLimitedAt}, nil
+}
+
+// CoolingUntil is [Pool.Cooldown]'s Until: when owner's account stops cooling
+// down, or zero when it is not cooling now.
+func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+	c, err := p.Cooldown(ctx, owner, account)
+	return c.Until, err
+}
+
+// ClearRateLimit clears owner's account's rate_limited mark because a LIVE
+// reading of the account shows it usable (internal/ccusage), and reports
+// whether it did. markedAt is [Cooldown.MarkedAt] as read BEFORE that reading
+// was taken: the mark is cleared only while it is still that one, so a turn
+// that hits the limit again while the reading is in flight keeps its mark.
+// A zero markedAt clears nothing.
+func (p *Pool) ClearRateLimit(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error) {
+	if markedAt.IsZero() {
+		return false, nil
+	}
+	ok, err := p.store.ClearRateLimited(ctx, owner, account, markedAt)
+	if err != nil {
+		return false, fmt.Errorf("ccpool: clear the rate-limit mark of account %q: %w", account, err)
+	}
+	return ok, nil
 }
 
 // maxDetail bounds the stored detail. ccd's message carries the CLI's "resets …"
@@ -693,7 +776,7 @@ func (p *Pool) MarkFailure(ctx context.Context, owner int64, account, failure, d
 		detail = detail[:cut] + "…"
 	}
 	if failure == FailureRateLimited {
-		return p.store.MarkRateLimited(ctx, owner, account, detail, p.now())
+		return p.store.MarkRateLimited(ctx, owner, account, Fingerprint(tok), detail, p.now())
 	}
 	return p.store.MarkAuthFailed(ctx, owner, account, Fingerprint(tok), detail, p.now())
 }

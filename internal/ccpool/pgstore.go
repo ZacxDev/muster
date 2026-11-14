@@ -22,7 +22,7 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // two owners' marks for one account NAME.
 func (s *PGStore) Marks(ctx context.Context, owner int64) (map[string]Mark, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT account, rate_limited_at, rate_limited_detail, auth_failed_at, auth_failed_detail, auth_failed_token
+		SELECT account, rate_limited_at, rate_limited_detail, rate_limited_token, auth_failed_at, auth_failed_detail, auth_failed_token
 		FROM cc_account_marks WHERE owner_id = $1`, owner)
 	if err != nil {
 		return nil, err
@@ -32,7 +32,7 @@ func (s *PGStore) Marks(ctx context.Context, owner int64) (map[string]Mark, erro
 	for rows.Next() {
 		var m Mark
 		var rl, af *time.Time
-		if err := rows.Scan(&m.Account, &rl, &m.RateLimitedDetail, &af, &m.AuthFailedDetail, &m.AuthFailedToken); err != nil {
+		if err := rows.Scan(&m.Account, &rl, &m.RateLimitedDetail, &m.RateLimitedToken, &af, &m.AuthFailedDetail, &m.AuthFailedToken); err != nil {
 			return nil, err
 		}
 		if rl != nil {
@@ -80,13 +80,32 @@ func (s *PGStore) LiveCounts(ctx context.Context, owner int64) (map[string]int, 
 	return out, rows.Err()
 }
 
-// MarkRateLimited upserts the account's rate-limit timestamp and detail.
-func (s *PGStore) MarkRateLimited(ctx context.Context, owner int64, account, detail string, at time.Time) error {
+// MarkRateLimited upserts the account's rate-limit timestamp, detail and the
+// limited token's fingerprint.
+func (s *PGStore) MarkRateLimited(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO cc_account_marks (owner_id, account, rate_limited_at, rate_limited_detail) VALUES ($1, $2, $3, $4)
+		INSERT INTO cc_account_marks (owner_id, account, rate_limited_at, rate_limited_detail, rate_limited_token) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (owner_id, account) DO UPDATE SET rate_limited_at = EXCLUDED.rate_limited_at,
-			rate_limited_detail = EXCLUDED.rate_limited_detail`, owner, account, at, detail)
+			rate_limited_detail = EXCLUDED.rate_limited_detail, rate_limited_token = EXCLUDED.rate_limited_token`,
+		owner, account, at, detail, fingerprint)
 	return err
+}
+
+// ClearRateLimited clears the account's rate-limit mark (timestamp NULL,
+// detail and fingerprint empty) only while its timestamp is still markedAt.
+//
+// 🔴 THE rate_limited_at = $3 PREDICATE IS THE GUARD: it makes the clear a
+// compare-and-clear in ONE statement, so a mark a turn wrote after the caller
+// read markedAt (a newer timestamp) is left standing. markedAt is a value read
+// back from this column, so it compares exactly (microseconds both sides).
+func (s *PGStore) ClearRateLimited(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE cc_account_marks SET rate_limited_at = NULL, rate_limited_detail = '', rate_limited_token = ''
+		WHERE owner_id = $1 AND account = $2 AND rate_limited_at = $3`, owner, account, markedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // MarkAuthFailed upserts the account's auth-failure timestamp, detail and the

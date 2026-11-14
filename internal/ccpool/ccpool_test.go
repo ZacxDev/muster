@@ -131,9 +131,22 @@ func (f *fakeStore) LiveCounts(_ context.Context, owner int64) (map[string]int, 
 	f.asked = append(f.asked, owner)
 	return f.live, f.err
 }
-func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, d string, _ time.Time) error {
-	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+d)
+func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, fp, d string, _ time.Time) error {
+	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+fp+"|"+d)
 	return f.err
+}
+
+// ClearRateLimited is the compare-and-clear in memory: it clears only while the
+// mark's timestamp is still markedAt (PGStore's rate_limited_at = $3).
+func (f *fakeStore) ClearRateLimited(_ context.Context, owner int64, a string, markedAt time.Time) (bool, error) {
+	f.calls = append(f.calls, "clear_rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a)
+	m, ok := f.marks[a]
+	if f.err != nil || !ok || !m.RateLimitedAt.Equal(markedAt) {
+		return false, f.err
+	}
+	m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	f.marks[a] = m
+	return true, nil
 }
 func (f *fakeStore) MarkAuthFailed(_ context.Context, owner int64, a, fp, d string, _ time.Time) error {
 	f.calls = append(f.calls, "auth_failed|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+fp+"|"+d)
@@ -246,7 +259,7 @@ func TestMarkFailureRecordsRateLimitAndAuthFailureNeverTheToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"rate_limited|1|beta|You've hit your limit · resets 5pm",
+		"rate_limited|1|beta|" + Fingerprint(tokBeta) + "|You've hit your limit · resets 5pm",
 		"auth_failed|1|beta|" + Fingerprint(tokBeta) + "|OAuth token invalid",
 	}
 	if strings.Join(st.calls, "\n") != strings.Join(want, "\n") {
@@ -313,7 +326,7 @@ func TestALongDetailIsCutOnARuneBoundary(t *testing.T) {
 	if err := p.MarkFailure(context.Background(), opOwner, "alpha", FailureRateLimited, detail); err != nil {
 		t.Fatal(err)
 	}
-	stored := strings.TrimPrefix(st.calls[0], "rate_limited|1|alpha|")
+	stored := strings.TrimPrefix(st.calls[0], "rate_limited|1|alpha|"+Fingerprint(tokAlpha)+"|")
 	if !utf8.ValidString(stored) || !strings.HasSuffix(stored, "…") || len(stored) > maxDetail+len("…") {
 		t.Fatalf("stored detail is invalid or over-long: %q", stored)
 	}
@@ -360,7 +373,7 @@ func TestSelectChoosesOnlyAmongTheOwnersOwnAccounts(t *testing.T) {
 	if err := p.MarkFailure(ctx, 7, "zulu", FailureRateLimited, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.calls[len(st.calls)-1]; got != "rate_limited|7|zulu|x" {
+	if got := st.calls[len(st.calls)-1]; got != "rate_limited|7|zulu|"+Fingerprint("sk-ant-oat01-FAKE-zulu-member-token")+"|x" {
 		t.Fatalf("mark = %q, want it against owner 7", got)
 	}
 	if err := p.MarkFailure(ctx, 7, "alpha", FailureRateLimited, "x"); !errors.Is(err, ErrUnknownAccount) {

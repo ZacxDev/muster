@@ -154,23 +154,29 @@ func TestARejectedAccountIsNotProbedUntilItsReset(t *testing.T) {
 	}
 }
 
-// TestACoolingAccountIsNotProbed: the pool's rate-limit mark holds the probe
-// until its cooldown ends (the usage endpoint, which spends no quota, may
-// still be read); after it, the account is probed again.
-func TestACoolingAccountIsNotProbed(t *testing.T) {
+// TestACoolingAccountIsStillProbed: the pool's rate-limit mark no longer holds
+// the probe — the live reading is what can clear the mark — so a cooling
+// account is read at the ordinary cadence, one interval apart, like any other.
+// A row written while the cooldown DID hold the probe (KindCooling, NextAt the
+// cooldown's end) does not keep holding it.
+func TestACoolingAccountIsStillProbed(t *testing.T) {
 	until := t0.Add(2 * time.Hour)
 	fx := &scripted{}
 	prev := Row{UsageAPI: UsageAPIRefused, TokenFP: ccpool.Fingerprint("tok")}
-	r, ok := Step(context.Background(), prev, "alpha", "tok", t0, StepConfig{Interval: iv, CoolingUntil: until}, fx)
-	if !ok || fx.probN != 0 || r.ErrorKind != KindCooling || !r.NextAt.Equal(until) {
-		t.Fatalf("cooling: %+v ok=%v probes=%d", r, ok, fx.probN)
+	sc := StepConfig{Interval: iv, CoolingUntil: until}
+	r, ok := Step(context.Background(), prev, "alpha", "tok", t0, sc, fx)
+	if !ok || fx.probN != 1 || r.ErrorKind != "" || !r.NextAt.Equal(t0.Add(iv-iv/10)) {
+		t.Fatalf("cooling: %+v ok=%v probes=%d, want one probe and the next read one interval out", r, ok, fx.probN)
 	}
-	if _, ok := Step(context.Background(), r, "alpha", "tok", t0.Add(time.Hour), StepConfig{Interval: iv, CoolingUntil: until}, fx); ok || fx.probN != 0 {
-		t.Fatalf("probed while cooling (probes %d)", fx.probN)
+	if _, ok := Step(context.Background(), r, "alpha", "tok", t0.Add(iv/2), sc, fx); ok || fx.probN != 1 {
+		t.Fatalf("probed again inside the interval (probes %d)", fx.probN)
 	}
-	r, _ = Step(context.Background(), r, "alpha", "tok", until, StepConfig{Interval: iv}, fx)
-	if fx.probN != 1 || r.ErrorKind != "" {
-		t.Fatalf("after the cooldown: %+v probes=%d", r, fx.probN)
+	if _, ok := Step(context.Background(), r, "alpha", "tok", t0.Add(iv), sc, fx); !ok || fx.probN != 2 {
+		t.Fatalf("not probed one interval later (probes %d)", fx.probN)
+	}
+	held := Row{UsageAPI: UsageAPIRefused, TokenFP: ccpool.Fingerprint("tok"), ErrorKind: KindCooling, NextAt: until}
+	if r, ok := Step(context.Background(), held, "alpha", "tok", t0, sc, fx); !ok || fx.probN != 3 || r.ErrorKind != "" {
+		t.Fatalf("an old cooling-held row: %+v ok=%v probes=%d, want it probed now", r, ok, fx.probN)
 	}
 }
 
@@ -277,25 +283,27 @@ func TestPassReadsEveryAccountAndAsksThePoolAboutCooling(t *testing.T) {
 	}
 	fx := &scripted{}
 	st := &memStore{}
-	cooling := func(_ context.Context, owner int64, account string) (time.Time, error) {
+	cooling := func(_ context.Context, owner int64, account string) (ccpool.Cooldown, error) {
 		switch account {
 		case "beta":
-			return t0.Add(time.Hour), nil
+			return ccpool.Cooldown{Until: t0.Add(time.Hour), MarkedAt: t0.Add(-time.Hour)}, nil
 		case "gamma":
-			return time.Time{}, errors.New("store down")
+			return ccpool.Cooldown{}, errors.New("store down")
 		}
-		return time.Time{}, nil
+		return ccpool.Cooldown{}, nil
 	}
 	p := &Poller{Source: src, Store: st, Fetch: fx, Cooling: cooling, Owner: 1, Interval: iv, Logger: log.New(io.Discard, "", 0), Now: func() time.Time { return t0 }}
 	if err := p.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ := st.Latest(context.Background(), 1)
-	if fx.probN != 1 || rows["alpha"].ErrorKind != "" || rows["beta"].ErrorKind != KindCooling || rows["gamma"].ErrorKind != KindCooling {
+	// beta is cooling and still probed; gamma's cooldown could not be read, so
+	// it is not.
+	if fx.probN != 2 || rows["alpha"].ErrorKind != "" || rows["beta"].ErrorKind != "" || rows["gamma"].ErrorKind != KindCooling {
 		t.Fatalf("probes %d, rows %+v", fx.probN, rows)
 	}
-	if strings.Join(fx.toks, ",") != "tok-a,tok-a,tok-b,tok-c" {
-		t.Fatalf("tokens used: %v, want each account's own (alpha: discovery then probe)", fx.toks)
+	if strings.Join(fx.toks, ",") != "tok-a,tok-a,tok-b,tok-b,tok-c" {
+		t.Fatalf("tokens used: %v, want each account's own (alpha, beta: discovery then probe)", fx.toks)
 	}
 }
 

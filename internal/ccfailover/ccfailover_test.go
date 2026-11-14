@@ -45,13 +45,24 @@ func (s *memMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error)
 	return out, nil
 }
 func (s *memMarks) LiveCounts(context.Context, int64) (map[string]int, error) { return nil, nil }
-func (s *memMarks) MarkRateLimited(_ context.Context, _ int64, account, detail string, at time.Time) error {
+func (s *memMarks) MarkRateLimited(_ context.Context, _ int64, account, fp, detail string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.m[account]
-	m.Account, m.RateLimitedAt, m.RateLimitedDetail = account, at, detail
+	m.Account, m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = account, at, detail, fp
 	s.m[account] = m
 	return nil
+}
+func (s *memMarks) ClearRateLimited(_ context.Context, _ int64, account string, markedAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.m[account]
+	if !ok || !m.RateLimitedAt.Equal(markedAt) {
+		return false, nil
+	}
+	m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	s.m[account] = m
+	return true, nil
 }
 func (s *memMarks) MarkAuthFailed(_ context.Context, _ int64, account, fp, detail string, at time.Time) error {
 	s.mu.Lock()
