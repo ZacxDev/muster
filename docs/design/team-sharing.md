@@ -1,7 +1,7 @@
 # Design: team sharing on one muster server
 
 **Status: decided; phases 1, 2a, 3 and 4.1–4.4 are built (see each phase's "as built" note), and
-phase 2b is [designed, not built](#phase-2b-design-team-hosts-proposed-2026-11-14)
+phase 2b is [designed and decided, not built](#phase-2b-design-team-hosts-decided-2026-11-14)
 (build order 1 → 2a → 3 & 4 → 2b).** The
 operator accepted every recommendation ([operator decisions](#operator-decisions-2026-11-13)). The operator asked for
 muster as "multiplayer": a personal instance for your own work, plus shared
@@ -805,8 +805,8 @@ rule the later phases' rows will meet.
 
 ### Phase 2b: team hosts (built last)
 
-> **The full design is [Phase 2b design: team hosts](#phase-2b-design-team-hosts-proposed-2026-11-14)**
-> (proposed 2026-11-14), at the end of this page. The list below is the
+> **The full design is [Phase 2b design: team hosts](#phase-2b-design-team-hosts-decided-2026-11-14)**
+> (decided 2026-11-14), at the end of this page. The list below is the
 > original scope; where they differ, the design section is the newer word.
 
 - **Migration:** a team mirror token is admitted by the mirror token lookup
@@ -1124,9 +1124,11 @@ the next step. Each question below is decided as stated.
 | 13 | Who creates teams: admins only, or any user? | **Admins**, naming the first manager. A team grants access to machines, so creating one is an instance decision. |
 | 14 | Fix auth.md:56 to say the per-user chief is Kubernetes-only? | **Yes**, as a one-line docs PR, independent of this design. |
 
-## Phase 2b design: team hosts (proposed 2026-11-14)
+## Phase 2b design: team hosts (decided 2026-11-14)
 
-**Status: proposed, not built.** This section is the design for phase 2b. It
+**Status: decided, not built.** The operator accepted every recommendation in
+[G](#g-operator-decided-2026-11-14) on 2026-11-14. The build waits for phase
+4.5 (PR #680) to merge. This section is the design for phase 2b. It
 replaces the bullet list under [Phase 2b](#phase-2b-team-hosts-built-last),
 which stays as the original scope. It is written in the style of the "as
 built" notes above: where it says how muster works today, it cites
@@ -1138,7 +1140,7 @@ example is synthetic: team `platform` (id 12) with `ana` (7) as manager,
 2b has four parts: team hosts (A), team officers on team hosts (B), the rest
 of phase 3's deferred fan-out (C), and the schema and doors that carry them
 (D). Then come the tests that pin each one (E), the slice plan (F) and the
-forks left for the operator (G).
+operator's decisions on its forks (G).
 
 ### Rulings that bind this design
 
@@ -1238,7 +1240,7 @@ chief, which decision 10 forbids for a team's transcripts:
 
 The page shows no panel and no chips there, and the routes answer 403. A team
 chief's panel on a team session is later work, once a team chief can bind to a
-team host ([G](#g-operator-to-decide), item 4).
+team host ([G](#g-operator-decided-2026-11-14), item 4).
 
 #### Who can send, and the step-up
 
@@ -1320,9 +1322,9 @@ or page load. That is accepted, and stated.
   and her queued sends are held and then cancelled under the same rules. The
   team's view of the sessions starts empty. To keep history, `ana` runs two
   daemons on two tmux servers (multi-tenant.md's one process per tenant), one
-  personal and one team, so nothing has to move. Whether to offer a "move
-  this host's history to the team" operation is [G](#g-operator-to-decide),
-  item 5.
+  personal and one team, so nothing has to move. There is no "move this
+  host's history to the team" operation ([G](#g-operator-decided-2026-11-14),
+  item 5).
 - **Leaving.** A manager revokes the team token. `watchToken`
   (`service.go:314`) cuts the tunnel within the recheck, and the team's
   sessions on that host vanish from every member's listing. Team rows stay the
@@ -1364,8 +1366,10 @@ is the whole guard, and it must be a ledger, not a list in prose.
 - **`route_reply` is refused in 2b.** Decision 5 kept it "for a route to
   itself". But on a team host it relays text to an outside party as the team,
   with no manager's approval, and that is the role table's manager-only
-  "approve outbound text". [G](#g-operator-to-decide), item 2 covers how it
-  could be re-admitted.
+  "approve outbound text". The operator decided to refuse it
+  ([G](#g-operator-decided-2026-11-14), item 2). It is re-admitted only by
+  its own later decision, together with a team chief routing team plugin
+  messages to team hosts.
 - **Remote mode is refused for a team token.** A call marked
   `X-Muster-Client: remote` with a team token is refused (401, "a team host
   token is not served remotely"). Every `remoteMirrorTools` tool
@@ -1402,7 +1406,7 @@ is the whole guard, and it must be a ledger, not a list in prose.
   team chief binds to team hosts.
 - **Focus titles on team sessions.** The refresher iterates persons and
   spends each one's key (`internal/focus/pgstore.go:401-415`). A team session
-  has no focus title in 2b ([G](#g-operator-to-decide), item 4).
+  has no focus title in 2b ([G](#g-operator-decided-2026-11-14), item 4).
 - **A team chief dispatching onto a team host.** `host_dispatches` is
   personal, and the team acting principal can write its own rows, so nothing
   blocks it structurally. It is **UNVERIFIED** end to end, and it is
@@ -1420,7 +1424,7 @@ refusal.
   `connector_grants` rows owned by the team. Those are personal, and no
   member can read them, so nobody could decide one. **UNVERIFIED:** whether a
   team **pod** officer with `connectors` boots today. Nothing in phase 3
-  decides who decides its requests ([G](#g-operator-to-decide), item 3).
+  decides who decides its requests ([G](#g-operator-decided-2026-11-14), item 3).
 - **Which host it runs on.** The officer's `host` names a host connected
   **with the team's token**. The runtime acts as the team (`ViaOfficer`,
   already team-acting), so every spawn, close and listing goes through
@@ -1490,7 +1494,7 @@ Phase 3 shipped the minimal fan-out at three call sites, with no withdrawal
   would keep the notification, so `removeMemberTx` and a downgrade below
   operator send that person a withdrawal for each of the team's open asks and
   pending drafts. That is bounded by the open set, and it runs after the
-  transaction commits ([G](#g-operator-to-decide), item 1).
+  transaction commits ([G](#g-operator-decided-2026-11-14), item 1).
 - **Per-member notify switch.** `team_members.notify BOOLEAN NOT NULL
   DEFAULT true` (0133). It is the member's own setting. A manager does not
   set it for them. It is toggled on **Account → Teams**, a list of your
@@ -1510,11 +1514,19 @@ Phase 3 shipped the minimal fan-out at three call sites, with no withdrawal
 
 ### D. Schema and doors
 
-**Migration `0133_team_hosts`** (2b reserves **0133**; phase 4.5 may take
-**0132**, and open PR #669 also claims a number in this range, so 🔴 **re-check
-the next free number against `main` before building** and renumber the file and
-its version constant if it is taken). It is one migration, landed with the
-first slice, and every statement is idempotent for `db.RLSOn`.
+**Migration `0133_team_hosts`** (2b reserves **0133**). Re-checked on
+2026-11-14 against `main` at `069cb681`:
+
+- The newest migration on `main` is `0132_officer_contacts.sql`. It came from
+  #669, merged 2026-11-14.
+- Phase 4.5 (PR #680, head `23eb2f32`) adds no migration.
+- So **0133** is free.
+
+🔴 **Re-check the next free number against `main` again before building**,
+because the build waits for 4.5 and 4.5 may still gain a migration. If 0133
+is taken by then, renumber the file and its version constant. It is one
+migration, landed with the first slice, and every statement is idempotent
+for `db.RLSOn`.
 
 | change | what | rollback |
 |---|---|---|
@@ -1583,71 +1595,115 @@ neither's sessions appear under the other owner.
 
 ### F. Slice plan (ranked)
 
+🔴 **No slice starts before phase 4.5 (PR #680) merges.** Each slice begins
+by re-checking the migration number (D).
+
 1. **2b.1: the fan-out, and migration 0133.** Part C, plus the whole
-   migration. It needs no team host, it fixes phase 3's team officers today
-   (no withdrawal, no switch, no titles), and it is the smallest slice. It
-   adds the Account → Teams page.
-2. **2b.2: the team token and its door.** `Authenticate` admits a team;
-   `ViaMirrorHost` becomes team-acting; `teamHostTools` and remote-mode
-   refusal; the agent-read ledger seam; `/teams/{id}/hosts` and `--team`;
-   rotate marks. 🔴 `teamHostTools` lands in the **same** PR as admitting
-   the token. Admitting the token first would hand every team host session
-   the team's whole power for one release. After this slice a team host
-   connects, and no member sees it yet.
-3. **2b.3: viewers.** `access()`, team hosts in `Hosts`, the read routes and
-   `mirrorTeamRoutes`, SSE team subscriptions, the membership sweep on
-   streams, the sidebar groups, and the refused personal-model routes.
-4. **2b.4: operators.** Typing and step-up through `access`, the send queue's
-   `queued_by` checks, `CancelQueuedBy`, edit and cancel rules, the pane
-   answer, and the device route. It needs 2b.3's stream sweep, so that a
-   removed operator's terminal closes.
-5. **2b.5: team officers on team hosts.** The `CheckOwners` change, the
-   connectors refusal, `team_owner_read` in use on `/officers/spawns`, the
-   gate-ordering test, and docs: `officers-builtin.md`, `auth.md`'s "team
-   hosts come later" lines, and `mirroring.md`'s team host section.
+   migration. It needs no team host. It fixes phase 3's team officers today,
+   which get no withdrawal, no switch and no titles. It is the smallest slice.
+   - Withdrawal goes to the team's current operators and managers. A person
+     who is removed, or downgraded below operator, gets a withdrawal for each
+     of the team's open asks and pending drafts. There is no recipient table
+     (decision 1).
+   - There is one notify switch per team, `team_members.notify`, on
+     Account → Teams (decision 6).
+2. **2b.2: the team token and its door.**
+   - `Authenticate` admits a team.
+   - `ViaMirrorHost` becomes team-acting.
+   - `teamHostTools` refuses every owner-authority tool, **`route_reply`
+     included** (decision 2), plus the estate reads and the page tools.
+   - Remote mode is refused.
+   - The agent-read ledger seam.
+   - `/teams/{id}/hosts` and `--team`.
+   - Rotate marks.
 
-2b.1 is independent of the others and can ship in parallel with 2b.2. The rest
-are in order. Each slice rolls back alone: 2b.2 by refusing team tokens again
-(team rows stay intact, and a team host's sessions are shown to nobody), and
-2b.1 by `muster_team_hosts_rollback()`.
+   🔴 `teamHostTools` lands in the **same** PR as admitting the token.
+   Admitting the token first would hand every team host session the team's
+   whole power for one release. After this slice a team host connects, and no
+   member sees it yet.
+3. **2b.3: viewers.**
+   - `access()`, team hosts in `Hosts`, the read routes and
+     `mirrorTeamRoutes`.
+   - SSE team subscriptions, the membership sweep on streams, and the sidebar
+     groups.
+   - The model-backed extras are **off** on team sessions (decision 4):
+     - the chief panel, proposals, succession and suggested-reply routes
+       answer 403;
+     - the focus refresher and the nudge sweep stay persons-only.
+   - A personal host that reconnects with a team token starts the team's view
+     empty. Nothing of its history moves (decision 5). This slice's docs say
+     so, and recommend two daemons.
+4. **2b.4: operators.**
+   - Typing and step-up through `access`.
+   - The send queue's `queued_by` checks, `CancelQueuedBy`, and the edit and
+     cancel rules.
+   - The pane answer, and the device route.
 
-### G. Operator to decide
+   It needs 2b.3's stream sweep, so that a removed operator's terminal closes.
+5. **2b.5: team officers on team hosts.**
+   - The `CheckOwners` change, with a team host officer that declares
+     `connectors` refused at boot (decision 3).
+   - `team_owner_read` in use on `/officers/spawns`.
+   - The gate-ordering test.
+   - Docs: `officers-builtin.md`, `auth.md`'s "team hosts come later" lines,
+     and `mirroring.md`'s team host section.
 
-1. **Who a withdrawal reaches.** (a) The team's current operators and
-   managers, plus a withdrawal sweep to a person when they are removed or
-   downgraded (no new table). (b) The exact recipients of each push, recorded
-   in a new `push_fanout(team, tag, user)` table. **Recommend (a).** It is
-   correct for everyone who still holds the role. It reaches a removed member
-   through the sweep. A new member gets a withdrawal for a push they never
-   had, which is harmless. (b) costs a table that grows with every push for a
-   tighter guarantee no one has asked for.
-2. **`route_reply` on a team host.** (a) Refuse it in 2b. (b) Admit it, and
-   on a machine running a team host officer file the confirmation card as a
-   team-owned ask, answerable only from a **manager's** paired phone with a
-   fresh role read. **Recommend (a).** (b) widens `hostDecisionForAnswer`'s
-   one-owner check (`host_stepup.go:252`), the gate's core property, for a
-   flow that also needs a team chief routing team plugin messages, which is
-   Kubernetes-only and not yet bound to team hosts. Re-admit it with that
-   work.
-3. **A team host officer that declares `connectors`.** (a) Refuse it at boot
-   until team connector requests have a decider. (b) Let a team manager
-   decide them, which shares `connector_grants` for team owners and so breaks
-   the "connectors are never shared" ruling. **Recommend (a).** The ruling
-   is explicit. A team officer that needs a connector is its own design,
-   which should also settle the same open question for team pod officers.
+2b.1 is independent of the others and can ship in parallel with 2b.2, once 4.5
+has merged. The rest are in order. Each slice rolls back alone:
+
+- 2b.2 by refusing team tokens again. Team rows stay intact, and a team host's
+  sessions are shown to nobody.
+- 2b.1 by `muster_team_hosts_rollback()`.
+
+### G. Operator decided (2026-11-14)
+
+The operator accepted every recommendation, (a) in each case, on 2026-11-14.
+Each fork is kept with its rejected option, so that the reason survives.
+
+1. **Who a withdrawal reaches.** **Decided: (a).** Withdrawals go to the
+   team's current operators and managers. A withdrawal sweep goes to a person
+   when they are removed or downgraded. There is no new table.
+   - Rejected: (b), the exact recipients of each push recorded in a
+     `push_fanout(team, tag, user)` table.
+   - Why: (a) is correct for everyone who still holds the role, and it reaches
+     a removed member through the sweep. A new member gets a withdrawal for a
+     push they never had, which is harmless. (b) costs a table that grows with
+     every push, for a tighter guarantee no one has asked for.
+2. **`route_reply` on a team host.** **Decided: (a).** It is refused on team
+   hosts in 2b.
+   - Rejected: (b), a team-owned confirmation card answerable only from a
+     manager's paired phone.
+   - Why: (b) widens `hostDecisionForAnswer`'s one-owner check
+     (`host_stepup.go:252`), which is the gate's core property. It would do
+     so for a flow that also needs a team chief routing team plugin messages,
+     and that chief is Kubernetes-only and not yet bound to team hosts.
+     `route_reply` is re-admitted only by its own later decision, with that
+     work.
+3. **A team host officer that declares `connectors`.** **Decided: (a).** It
+   is refused at boot until team connector requests have a decider.
+   - Rejected: (b), a team manager deciding them. That would share
+     `connector_grants` for team owners, against the ruling that connectors
+     are never shared.
+   - Follow-up: a team officer that needs a connector is its own design. That
+     design should also settle the same open question for team **pod**
+     officers.
 4. **Model-backed extras on team sessions** (focus titles, suggested
-   replies, the chief panel). (a) Off on team sessions in 2b, and on later
-   only on the team's own credential and the team chief. (b) Run them on the
-   viewing member's own key and chief. **Recommend (a).** (b) puts the team's
-   transcript into a person's model calls, which decision 10 refuses for the
-   chief. The same reasoning applies to the others.
-5. **A personal host joining a team: its history.** (a) The history stays
-   personal, and the team starts empty. (b) A System "move host to team"
-   that rewrites `owner_id` on that host's rows, as the task move does.
-   **Recommend (a).** The host's rows hang off a dozen tables, some of which
-   (`session_tags`, `pins`, `recents`) are personal by class, so a move would
-   be partial by design. Two daemons are the supported way to have both.
-6. **The notify switch's scope.** (a) One switch per team. (b) Per team and
-   per kind (asks, drafts, session waits). **Recommend (a)** for 2b. It is
-   one column. A per-kind switch is a second table, and that can wait until a
-   member asks for it.
+   replies, the chief panel). **Decided: (a).** They are off on team sessions
+   in 2b. They come on later only on the team's own credential and the team
+   chief.
+   - Rejected: (b), running them on the viewing member's own key and chief.
+   - Why: (b) would put the team's transcript into a person's model calls,
+     which decision 10 refuses for the chief, and the same reasoning applies
+     to the others.
+5. **A personal host joining a team: its history.** **Decided: (a).** The
+   history stays personal, and the team starts empty.
+   - Rejected: (b), a System "move host to team" operation.
+   - Why: the host's rows hang off a dozen tables, some of them personal by
+     class (`session_tags`, `pins`, `recents`), so a move would be partial by
+     design. Two daemons are the supported way to have both.
+6. **The notify switch's scope.** **Decided: (a).** There is one switch per
+   team.
+   - Rejected: (b), one switch per team and per kind (asks, drafts, session
+     waits).
+   - Why: (a) is one column. A per-kind switch is a second table, and it waits
+     until a member asks for one.
