@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// Teams (docs/design/team-sharing.md, phase 1; migration 0125).
+// Teams (docs/design/team-sharing.md, phase 1; migration 0126).
 //
 // A team is a users row of kind 'team': an OWNER that no one signs in as. A
 // person belongs to it through team_members with a role (viewer, operator,
@@ -214,7 +214,7 @@ func keepAManager(ctx context.Context, tx pgx.Tx, team, user int64) error {
 
 // TeamAudit is the newest audit rows that name team as their owner, read AS
 // the caller: audit_log's self_read admits a team's MANAGERS to them
-// (migration 0126), and nobody else but the rows' own actors.
+// (migration 0127), and nobody else but the rows' own actors.
 func (s *PGStore) TeamAudit(ctx context.Context, team int64, limit int) ([]AuditEntry, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
 		FROM audit_log WHERE team_id = $1 ORDER BY at DESC, id DESC LIMIT $2`, team, limit)

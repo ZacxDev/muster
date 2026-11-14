@@ -24,7 +24,7 @@ import (
 //	muster.scope  'all' for authz.System (and the migration runner), else ''
 //	muster.teams  the principal's TEAM memberships, '<team>:<role>,…', for a
 //	              person's own request doors only (authz.Principal.TeamScope);
-//	              '' for everything else (migration 0126, team access)
+//	              '' for everything else (migration 0127, team access)
 //
 // 🔴 THEY ARE SET ON EVERY ACQUIRE — pgxpool's PrepareConn, which every pool
 // operation goes through (Exec, Query, QueryRow, SendBatch, CopyFrom, Begin and

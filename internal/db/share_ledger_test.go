@@ -16,7 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// Phase 2a of docs/design/team-sharing.md (migration 0126): the team access
+// Phase 2a of docs/design/team-sharing.md (migration 0127): the team access
 // core. Every owned table is in exactly ONE share class.
 
 // shareClass is a share-class table's minimum team role to read and to write
@@ -62,7 +62,7 @@ var personalOwned = []string{
 	"agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
+	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "officer_host_spawns", "page_links",
 	"page_responses", "page_versions", "pages", "pins", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
@@ -173,7 +173,7 @@ func checkTeamPolicy(t *testing.T, tbl, name, cmd, permissive, qual, check strin
 // four team policies at its roles, and owner_fixed), the never-shared tables
 // are personal, and owner_id still defaults to the person on all of them.
 func TestEveryOwnedTableHasAShareClass(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_ledger")
+	f := newRLSFixture(t, "ms_0127_ledger")
 	ownedTables := ownerIDTables(t, f)
 	if missing, both := unclassified(ownedTables); len(missing) > 0 || len(both) > 0 {
 		t.Errorf("owned tables with no share class (decide: personalOwned, or a class in shareClasses): %v; listed in both: %v", missing, both)
@@ -279,7 +279,7 @@ func member(t *testing.T, f *rlsFixture, uid int64, via authz.Via) context.Conte
 // background loop — sees nothing, while their web session (the role loop)
 // and their paired phone see the team's rows.
 func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_roles")
+	f := newRLSFixture(t, "ms_0127_roles")
 	store := users.NewPG(f.pool)
 	by := users.Actor{UserID: 1, Via: authz.ViaSession}
 	people := map[string]int64{}
@@ -416,7 +416,7 @@ func rolledBack(ctx context.Context, f *rlsFixture, sql string, args ...any) (in
 // AS the team is admitted only at the write role (notes: operator; officer
 // types: manager). CONTROL: System may move a row.
 func TestATeamRowCannotChangeHands(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_hands")
+	f := newRLSFixture(t, "ms_0127_hands")
 	store := users.NewPG(f.pool)
 	by := users.Actor{UserID: 1, Via: authz.ViaSession}
 	op := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'op') RETURNING id`)
@@ -462,7 +462,7 @@ func TestATeamRowCannotChangeHands(t *testing.T) {
 // person, and NULL when the system scope does it. CONTROL: the owner of each
 // row is the team, so the column is not just the owner again.
 func TestTheActingPersonIsRecordedOnEachSharedAction(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_attribution")
+	f := newRLSFixture(t, "ms_0127_attribution")
 	store := users.NewPG(f.pool)
 	by := users.Actor{UserID: 1, Via: authz.ViaSession}
 	op := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'op') RETURNING id`)
@@ -533,7 +533,7 @@ func TestTheActingPersonIsRecordedOnEachSharedAction(t *testing.T) {
 // audit_log's self_read — not by its other members, nor by an outsider. The
 // CONTROL is that the acting admin, the row's own actor, reads it too.
 func TestATeamsAuditIsItsManagersToRead(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_audit")
+	f := newRLSFixture(t, "ms_0127_audit")
 	store := users.NewPG(f.pool)
 	manager := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'mgr') RETURNING id`)
 	team, err := store.CreateTeam(f.base, users.Actor{UserID: 1, Via: authz.ViaSession}, "Platform", manager)
@@ -568,7 +568,7 @@ func TestATeamsAuditIsItsManagersToRead(t *testing.T) {
 // Read through the very connection setting the pool writes (set_config in
 // one transaction).
 func TestTheTeamIDsFunctionParsesTheSetting(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_parse")
+	f := newRLSFixture(t, "ms_0127_parse")
 	for _, c := range []struct {
 		setting          string
 		ids1, ids2, ids3 string // muster_team_ids(1|2|3), as text
@@ -620,7 +620,7 @@ func ownerIDTables(t *testing.T, f *rlsFixture) []string {
 // fixture's database, is reported unclassified — it is not personal by
 // default — while every existing owned table is classified.
 func TestANewOwnedTableIsUnclassifiedUntilDecided(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_new_table")
+	f := newRLSFixture(t, "ms_0127_new_table")
 	if missing, _ := unclassified(ownerIDTables(t, f)); len(missing) != 0 {
 		t.Fatalf("control: owned tables already unclassified: %v", missing)
 	}
@@ -640,7 +640,7 @@ func TestANewOwnedTableIsUnclassifiedUntilDecided(t *testing.T) {
 // (TestTheActingPersonIsRecordedOnEachSharedAction), and the login role (a
 // restore) may still write the column.
 func TestTheActingPersonCannotBeForged(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_forge")
+	f := newRLSFixture(t, "ms_0127_forge")
 	store := users.NewPG(f.pool)
 	by := users.Actor{UserID: 1, Via: authz.ViaSession}
 	op := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'op') RETURNING id`)
@@ -716,7 +716,7 @@ func TestTheActingPersonCannotBeForged(t *testing.T) {
 // delete a row — that would reset a cap. CONTROL: the system scope (the
 // recording path's) changes one.
 func TestNoMemberWritesATeamsUsage(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_usage")
+	f := newRLSFixture(t, "ms_0127_usage")
 	store := users.NewPG(f.pool)
 	team, err := store.CreateTeam(f.base, users.Actor{UserID: 1, Via: authz.ViaSession}, "Platform", 1)
 	if err != nil {

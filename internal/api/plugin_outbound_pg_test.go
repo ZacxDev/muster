@@ -61,6 +61,43 @@ type outboundWorld struct {
 	plugin  plugins.Plugin
 	outTok  string // user 2's own plugin token
 	other   int64  // user 2
+	// onHost: the officer is a host officer (newHostOutboundWorld): its
+	// instance's tools are called through the mirror door's binding (call).
+	onHost bool
+	mirror *hostOfficerMirror
+	spawn  officers.HostSpawn
+}
+
+// call runs an officer tool as the world's instance: through the agent door
+// for a pod instance, through the mirror door's binding for a host one (its
+// recorded session, in its recorded window).
+func (w *outboundWorld) call(tool, args string) string {
+	if !w.onHost {
+		return w.srv.dispatchAgentTool(w.ctx, w.agent, tool, args)
+	}
+	out, ok := w.srv.hostOfficerMirrorTool(w.mirrorCtx(), hostOffHost, w.instanceCaller(), tool, args)
+	if !ok {
+		w.t.Fatalf("%s from the host instance was not routed to it", tool)
+	}
+	return out
+}
+
+// mirrorCtx is the mirror door's principal: the host token's owner.
+func (w *outboundWorld) mirrorCtx() context.Context {
+	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
+}
+
+// instanceCaller is the host instance's own session, in its recorded window.
+func (w *outboundWorld) instanceCaller() toolCaller {
+	return toolCaller{asker: attention.Asker{MirrorHost: hostOffHost, MirrorSession: w.spawn.AgentSession}, mirrorWindow: w.spawn.Window}
+}
+
+// newHostOutboundWorld is newOutboundWorld with the officer declared
+// "runtime": "host" on hostOffHost, with the connector pg-example: its
+// instance started through the host fleet (an agent row nothing provisions)
+// and bound by the spawn's recorded session and window.
+func newHostOutboundWorld(t *testing.T, grant bool) *outboundWorld {
+	return newOutboundWorldOn(t, grant, true)
 }
 
 const outboundPluginName = "example-relay"
@@ -70,6 +107,10 @@ const outboundPluginName = "example-relay"
 // bound to it with messages + draft_checks, starts one instance, and mints a
 // plugin of user 2's (unbound).
 func newOutboundWorld(t *testing.T, grant bool) *outboundWorld {
+	return newOutboundWorldOn(t, grant, false)
+}
+
+func newOutboundWorldOn(t *testing.T, grant, onHost bool) *outboundWorld {
 	t.Helper()
 	f := newConnFixture(t)
 	dsn := dbtest.DSN(t)
@@ -98,7 +139,11 @@ func newOutboundWorld(t *testing.T, grant bool) *outboundWorld {
 		_, _ = f.pool.Exec(sys, `DELETE FROM audit_log WHERE user_id = $1`, other)
 		_, _ = f.pool.Exec(sys, `DELETE FROM users WHERE id = $1`, other)
 	})
-	list, err := officers.Parse(`[{"id":"`+builtinOfficerID+`","backend":"builtin"}]`, func(string) string { return "" }, "muster-agent-")
+	decl := `[{"id":"` + builtinOfficerID + `","backend":"builtin"}]`
+	if onHost {
+		decl = `[{"id":"` + builtinOfficerID + `","backend":"builtin","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `","connectors":["pg-example"]}]`
+	}
+	list, err := officers.Parse(decl, func(string) string { return "" }, "muster-agent-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +151,16 @@ func newOutboundWorld(t *testing.T, grant bool) *outboundWorld {
 	ps := plugins.NewPG(f.pool)
 	objs := &uploadstest.Objects{}
 	srv := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
-	srv.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
+	ext := Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
 		Attention: attention.NewPG(f.pool), Plugins: ps, Users: users.NewPG(f.pool),
-		Uploads: &uploads.Service{Objects: objs}, APITokens: apitokens.NewPG(f.pool)})
+		Uploads: &uploads.Service{Objects: objs}, APITokens: apitokens.NewPG(f.pool)}
+	var hm *hostOfficerMirror
+	if onHost {
+		// The Compose shape: no provisioner, no kinds; a mirror hub.
+		hm = newHostOfficerMirror()
+		ext.Provisioner, ext.Kinds, ext.Mirror = nil, nil, hm
+	}
+	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(store)
 	policy := json.RawMessage(`{}`)
 	if grant {
@@ -120,11 +172,19 @@ func newOutboundWorld(t *testing.T, grant bool) *outboundWorld {
 	if err := store.PutDef(ctx, 1, builtin.Def{Officer: builtinOfficerID, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := srv.EnableOfficers(OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}); err != nil {
+	ocfg := OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}
+	if onHost {
+		ocfg.InstallSession, ocfg.HostSpawns = nil, officers.NewMemHostSpawnStore()
+	}
+	if _, err := srv.EnableOfficers(ocfg); err != nil {
 		t.Fatal(err)
 	}
-	w := &outboundWorld{t: t, f: f, srv: srv, h: srv.Handler(), store: store, ps: ps, objects: objs, ctx: ctx, other: other}
-	w.agent = startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-outbound-hooks-token")
+	w := &outboundWorld{t: t, f: f, srv: srv, h: srv.Handler(), store: store, ps: ps, objects: objs, ctx: ctx, other: other, onHost: onHost, mirror: hm}
+	if onHost {
+		w.agent, w.spawn = startHostInstance(t, srv, hm, ocfg.HostSpawns.(*officers.MemHostSpawnStore), builtinOfficerID)
+	} else {
+		w.agent = startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-outbound-hooks-token")
+	}
 	sess1 := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
 	w.tok, w.plugin, err = ps.CreatePlugin(sess1, plugins.NewPlugin{Name: outboundPluginName, Label: "Example relay", DataScope: "example",
 		Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, DeliverTo: "officer:" + builtinOfficerID})
@@ -163,9 +223,47 @@ func (w *outboundWorld) operatorForm(r *http.Request) {
 	r.Header.Set("Sec-Fetch-Mode", "navigate")
 }
 
+// startHostInstance starts instance 1 of host officer id through the host
+// fleet, waits for its spawn's reply, lists its window on its host, and
+// returns its agent row and spawn.
+func startHostInstance(t *testing.T, srv *Server, hm *hostOfficerMirror, st *officers.MemHostSpawnStore, id string) (agents.Agent, officers.HostSpawn) {
+	t.Helper()
+	o, err := srv.officerRT.reg.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dbtest.AsOperator(context.Background())
+	if err := (officerFleet{s: srv}).Start(ctx, o, 1, officers.KickoffText(o, 1)); err != nil {
+		t.Fatalf("start the host instance: %v", err)
+	}
+	select {
+	case <-hm.spawned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no spawn reached the host")
+	}
+	var h officers.HostSpawn
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if all := st.All(); len(all) > 0 && all[len(all)-1].Window != "" {
+			h = all[len(all)-1]
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if h.Window == "" {
+		t.Fatal("the spawn's window was never recorded")
+	}
+	hm.list(hostOffHost, listed(h))
+	a, err := srv.ext.Agents.GetByName(srv.officerPrincipal(ctx, o.Owner), o.InstanceName(1))
+	if err != nil {
+		t.Fatalf("the host instance has no agent row: %v", err)
+	}
+	return a, h
+}
+
 // postDraft is the instance's officer_post_draft.
 func (w *outboundWorld) postDraft(args string) (int64, string) {
-	out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolPostDraft, args)
+	out := w.call(officers.ToolPostDraft, args)
 	var got struct {
 		DraftID int64 `json:"draft_id"`
 	}

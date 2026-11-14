@@ -325,6 +325,9 @@ func (r *Relay) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list agents: %w", err)
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	rows = agents.ProvisionedOnly(rows)
 	byScope := map[string][]agents.Agent{}
 	listed := map[int64]bool{}
 	for _, a := range rows {

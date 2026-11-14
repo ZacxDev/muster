@@ -17,8 +17,9 @@ import { openMore } from '../lib/nav';
 //     suggested replies Off ("needs MUSTER_AGENT_OPENROUTER_KEY" — off, not
 //     misconfigured, on a keyless install), dictation Off with the Compose
 //     profile line, the chief Off with its Compose .env block (the chief
-//     profile, MUSTER_CHIEF_RUNTIME=compose), officers Off with "needs
-//     Kubernetes" and no .env block,
+//     profile, MUSTER_CHIEF_RUNTIME=compose), agent chat Off with "needs
+//     Kubernetes" and no .env block, officers Off with their Compose .env
+//     line (MUSTER_OFFICERS: they run there as host-spawned sessions),
 //     and NOTHING misconfigured (the default install's doctor passes);
 //   - the nav's More carries a muted, labelled Connectors entry (linking to its
 //     row), and no /plugins or /flows link.
@@ -93,9 +94,21 @@ for (const size of [
       await expect(chief.locator('[data-feature-kubernetes]')).toHaveCount(0);
       await expect(chief.locator('[data-feature-enable]')).toContainText('COMPOSE_PROFILES=chief');
       await expect(chief.locator('[data-feature-enable]')).toContainText('MUSTER_CHIEF_RUNTIME=compose');
+      // A Kubernetes-only feature that is off here (no MUSTER_AGENT_GATEWAY;
+      // dispatch itself is on, over the rig's noop provisioner): the hint, and
+      // no .env block.
+      const gateway = row(page, 'agent-gateway');
+      await expect(gateway).toHaveAttribute('data-state', 'off');
+      await expect(gateway.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
+      await expect(gateway.locator('[data-feature-enable]')).toHaveCount(0);
+      // Officers run in the Compose stack too (as host-spawned sessions,
+      // docs/design/officers-on-hosts.md): an .env line, no Kubernetes hint.
       const officers = row(page, 'officers');
-      await expect(officers.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
-      await expect(officers.locator('[data-feature-enable]')).toHaveCount(0);
+      await expect(officers).toHaveAttribute('data-state', 'off');
+      await expect(officers.locator('[data-feature-kubernetes]')).toHaveCount(0);
+      await expect(officers.locator('[data-feature-reason]')).toHaveText('MUSTER_OFFICERS declares none');
+      await expect(officers.locator('[data-feature-enable]')).toHaveText('MUSTER_OFFICERS=<JSON array>');
+      await expect(officers).toContainText('as host-spawned sessions on one of your machines');
       await expect(row(page, 'attachments')).toHaveAttribute('data-state', 'off');
       await expect(row(page, 'connectors')).toHaveAttribute('data-state', 'off');
 

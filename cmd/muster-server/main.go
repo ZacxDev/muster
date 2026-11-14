@@ -860,6 +860,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A builtin officer's type, charter, switch and queue live here
 			// too (migration 0118); one declared with no database is refused.
 			ocfg.Builtin = officerStore
+			// A host officer's spawned sessions (migration 0125,
+			// docs/design/officers-on-hosts.md); one declared with no database
+			// is refused.
+			ocfg.HostSpawns = officers.NewPGHostSpawnStore(a.pool)
 		}
 		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
@@ -1534,15 +1538,19 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
 	// server could not enable refuses the boot (newApp), so the two agree.
 	if len(a.cfg.Officers) > 0 {
-		var hq, bi int
+		var hq, bi, onHost int
 		for _, o := range a.cfg.Officers {
 			if o.IsBuiltin() {
 				bi++
 			} else {
 				hq++
 			}
+			if o.OnHost() {
+				onHost++
+			}
 		}
-		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend); woken by polling their backends", len(a.cfg.Officers), envOfficers, hq, bi)
+		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend; %d in pods, %d on hosts); woken by polling their backends",
+			len(a.cfg.Officers), envOfficers, hq, bi, len(a.cfg.Officers)-onHost, onHost)
 	} else if a.cfg.OfficersSet {
 		l.Printf("officers: ON — empty roster (%s declares none)", envOfficers)
 	} else {

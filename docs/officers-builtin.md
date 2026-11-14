@@ -17,16 +17,39 @@ mention them.
 
 ## ⚠ Before you declare one on a real deployment
 
-Every outward action an officer takes passes an Attention approval that shows
-the exact content: the officer files an **outbound draft**
+Every outward action an officer takes **through muster** passes an Attention
+approval that shows the exact content: the officer files an **outbound draft**
 (`officer_post_draft`), its owner approves the exact text and media, and a
 plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
-Only an officer whose type grants `outbound_drafts` gets that tool. Its only
-other ways out of its pod are muster's tools, the connectors its owner
-approves one request at a time, and any PUBLIC repositories it is declared to
-read ([below](#letting-it-read-public-repositories-read_grant-standing)): do not approve a connector that can write to
-the outside world for one, and give it no `repo` with write access. The
-empty roster (no officer declared) exposes nothing.
+This holds for pod and host officers alike. On a host the machine's MCP door
+names its caller by a header the caller sets — any process of that user,
+the officer included, can call it as one of your sessions there — so while a
+host officer is declared on a machine, every owner-authority tool reached
+through that machine's door (`plugin_draft_decide`,
+`connector_request_decide`, `attention_answer`, `agent_destroy`,
+`chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
+`plugin_request_decide`) decides nothing: it files a **confirmation card**
+that you confirm on your **paired phone** (a signed action: a fresh step-up,
+single use, bound to that one decision); a browser or MCP answer of the card
+is refused. That step-up is what makes a decision from that machine provably
+yours. Deciding in muster's own web UI (Reply drafts, Connectors, Attention)
+is unchanged. Only an officer whose type grants `outbound_drafts` gets that
+tool.
+
+- **On a pod** that approval is also the only way out: its other ways out of
+  its pod are muster's tools, the connectors its owner approves one request
+  at a time, and any PUBLIC repositories it is declared to read
+  ([below](#letting-it-read-public-repositories-read_grant-standing)). Do not approve a connector that can write to the outside world for
+  one, and give it no `repo` with write access.
+- 🔴 **On a host** (`"runtime": "host"`) the approval is the **sanctioned
+  path, not an enforcement boundary.** The instance runs as the machine's
+  user, with that user's credentials and network: a host marketing officer
+  COULD post directly (a browser session, a CLI token, an API key in that
+  user's files), and its `repo` is a pushable checkout with that user's git
+  credentials. Its charter is what keeps it on the sanctioned path
+  ([below](#officers-in-the-compose-stack-host-sessions)).
+
+The empty roster (no officer declared) exposes nothing.
 
 ## 1. Turn the runtime on (the empty roster)
 
@@ -133,6 +156,107 @@ An officer declared here but not defined in the store answers 404 to the wake
 loop, which treats it as a configuration fault and keeps its instances at
 zero until you define it.
 
+## Officers in the Compose stack (host sessions)
+
+A builtin officer can run without Kubernetes: with `"runtime": "host"` each
+instance is a Claude Code window that muster asks ONE of your machines to
+start, through that machine's `muster-mirror` — the same host spawn the chief
+uses ([design/officers-on-hosts.md](design/officers-on-hosts.md)). This is how
+officers run in the Compose stack, which forwards `MUSTER_OFFICERS`.
+
+```sh
+# .env on the Compose install
+MUSTER_OFFICERS=[{"id":"marketing:example","backend":"builtin","runtime":"host","host":"laptop","repo":"example-org/example-site"}]
+```
+
+On the machine named by `host`, `muster-mirror` must run with `-interactive
+-agent-spawn` and the officer's `repo` on `-agent-spawn-repos` (one clone of it
+under `-agent-spawn-roots`), and be current enough to close windows and to
+accept an officer's first message (a muster-mirror from this version). Its
+user-scope `mcpServers.muster` entry ([attention.md](attention.md#mirrored-claude-code-sessions))
+is how an instance reaches its officer tools.
+
+What happens:
+
+- **Wake.** An item in its queue makes the wake loop start instance 1: muster
+  records the spawn and the host opens a window in its `agents` tmux session,
+  in a fresh worktree of `repo`, running Claude Code with the officer's first
+  message (behind the preface `muster: your owner's officer runtime started
+  you`), without permission prompts unless the host turned
+  `-agent-spawn-skip-permissions` off.
+- **Its agent row.** Each instance has an agent row of its own name that
+  nothing starts or stops (no provisioner, no reaper; it is not shown in the
+  agent list — the instance is its mirrored window). Its outbound drafts and
+  connector grants are filed against it. It is created by the first start and
+  kept when the window closes, so a draft or a grant outlives the window.
+- **Tools.** The instance is offered `officer_brief`, `officer_items`,
+  `officer_claim`, `officer_heartbeat`, `officer_complete`, `officer_release`,
+  `officer_ask_person` and `officer_post_draft` (with the type's
+  `outbound_drafts` grant), and — when the officer declares `connectors` —
+  `connectors_list`, `connector_request`, `connector_status` and
+  `postgres_query`, through the mirror door. Every call is bound to the Claude
+  session muster recorded for that spawn, in the window it recorded, and runs
+  as the instance's agent row; any other session gets a tool error. A bound
+  instance gets ONLY these (and `attention_ask`). While a host officer is
+  declared, every mirrored session's tool list shows these tools (a list
+  carries no session); only the instance can use them.
+- **The step-up gate.** The instance could still name ANOTHER of your windows
+  to the machine's MCP door (the header is the caller's to set) and arrive as
+  that session. So on this machine every owner-authority tool — deciding a
+  draft, a connector request or a plugin's pairing, answering an ask,
+  destroying an agent, restarting the chief, approving a held start,
+  answering or routing a plugin message — files a confirmation card instead
+  of deciding; it runs once, exactly as asked, when you answer **Confirm** on
+  your paired phone. Without a paired phone, decide in muster's web UI.
+- **Connectors.** Each `connector_request` is decided by its owner, per
+  request, never from a shared approval — as for a pod. Not `github`: it works
+  through an HTTP proxy with an agent token no host session holds; the
+  instance reads its repository from its worktree.
+- **More work while it is up.** muster pastes the re-prompt into its window,
+  only while the host reports it idle.
+- **Scale to zero.** After `idle_scale_to_zero_after` with nothing to do,
+  muster closes the window — and asks only while the host reports it **idle**
+  in the recorded conversation (an instance still finishing its last turn is
+  left for the next idle pass): the host types `/exit` at the empty idle
+  prompt and closes the window if Claude Code has not exited 30 s later; a
+  window that is NOT at an empty idle prompt when the close arrives (a turn
+  started, a person being asked, text in the box) is closed **at once**, with
+  no grace. The host then removes the worktree if it is clean. If the
+  recorded window starts another conversation (a `/clear` in it), muster
+  follows it at its next poll. muster
+  closes only the window it recorded for that instance — the one exception to
+  "muster never closes a host-spawned window", and declaring `"runtime":
+  "host"` is the consent to it ([decisions.md](decisions.md#a-host-officers-window-is-the-one-window-muster-closes-by-itself)).
+- **Moving it.** Changing an officer's `host`, or moving it between pods and
+  a host, leaves its instance rows on the old side; the officer's next start
+  is refused naming the command that clears each: `muster agent rm <instance>`
+  (a host row needs no provisioner; drafts and grants on it go with it).
+- **Host offline.** The officer changes nothing until the host is back: its
+  items wait.
+
+Refused at boot, each named: `backend` other than `builtin`, no `host` or `repo`,
+and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos` (so a
+[standing read](#letting-it-read-public-repositories-read_grant-standing) too:
+it is served through muster's proxy with the agent token a host session never
+holds), `llm`, `kube` (plus what every builtin officer refuses). `connectors` and
+[outbound drafts](#5b-outbound-drafts-through-a-bound-plugin) work on a host.
+
+🔴 **The security model is the machine's, not a pod's.** An instance runs as
+the user `muster-mirror` runs as: that user's files, git and SSH credentials,
+network and other tmux windows; no egress lock and no read-only GitHub token —
+its `repo` worktree is a pushable checkout with that user's credentials, and
+the first message telling it not to is prose, not a gate. muster's approval of
+its drafts is the sanctioned path, not a boundary: it could post directly with
+whatever that user can reach. The host's own allow-list, spawn rate
+limit (`-agent-spawn-rate`, default 3 per 10 minutes and 10 a day — it counts
+each wake, so raise it on that host if the officer wakes more often) and audit
+log still bound what muster can make it do. Declare one only on a machine whose
+user you would let run that charter unattended. The full list is in the
+[design](design/officers-on-hosts.md#security-what-changes-against-a-pod).
+
+**Check:** the boot log's `officers: <id> on: runtime host on <machine> …` line,
+and the ON line's `S on hosts` count.
+
 ### Letting it read public repositories (`read_grant: "standing"`)
 
 An officer that answers questions about a product needs its docs and source.
@@ -235,13 +359,16 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
    it, re-hashes its files, posts, reads the post back and reports the result.
 5. With `item_id`, the item **waits on the draft** (no holder; the instance
    cannot complete or release it). Posted: muster completes it with the
-   post's reference. Refused by the plugin, or rejected by the owner (with an
-   optional reason, on the card or `plugin_draft_decide`): muster queues a
+   post's reference. Refused by the plugin, rejected by the owner (with an
+   optional reason, on the card or `plugin_draft_decide`), expired, or
+   withdrawn at the claim for a broken binding: muster queues a
    `draft.refused` item whose `detail` says why, and finishes the waiting item
-   `no_action` naming it — at most 3 `draft.refused` items wait at once
-   ([plugins.md](plugins.md#the-result)). Put what the officer should do with a
-   `draft.refused` item (read `detail`, redraft with its own `item_id`) in its
-   charter.
+   `no_action` naming it — at most 3 `draft.refused` items wait at once; past
+   that the item is still settled and the owner told. Unconfirmed (it may
+   have been posted): nothing is queued and the item is escalated to the
+   owner ([plugins.md](plugins.md#the-result)). Put what the officer should do
+   with a `draft.refused` item (read `detail`, redraft with its own `item_id`)
+   in its charter.
 
 ## 6. Switch it off
 

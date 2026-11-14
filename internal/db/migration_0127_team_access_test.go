@@ -2,15 +2,15 @@ package db_test
 
 import "testing"
 
-// TestMigration0126TeamAccess: at 0125 every owned table has owner_isolation
-// and nothing reads muster.teams (the control); at 0126 the share-class
+// TestMigration0127TeamAccess: at 0126 every owned table has owner_isolation
+// and nothing reads muster.teams (the control); at 0127 the share-class
 // tables carry the four team policies instead; the header's ROLLBACK block
 // runs as written and puts owner_isolation back on every owned table with no
 // team policy, function or attribution column left; and the file applies
 // again after it.
-func TestMigration0126TeamAccess(t *testing.T) {
+func TestMigration0127TeamAccess(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0126_access", 125)
+	pool := freshAt(ctx, t, "ms_0127_access", 126)
 	countPolicies := func(name string) int {
 		var n int
 		if err := pool.QueryRow(ctx, `SELECT count(DISTINCT tablename) FROM pg_policies WHERE schemaname = 'public' AND policyname = $1`, name).Scan(&n); err != nil {
@@ -20,13 +20,13 @@ func TestMigration0126TeamAccess(t *testing.T) {
 	}
 	owned := len(rlsTables())
 	if n := countPolicies("owner_isolation"); n != owned || countPolicies("team_read") != 0 {
-		t.Fatalf("control: at 0125 %d tables have owner_isolation (want %d) and %d team_read", n, owned, countPolicies("team_read"))
+		t.Fatalf("control: at 0126 %d tables have owner_isolation (want %d) and %d team_read", n, owned, countPolicies("team_read"))
 	}
-	applyThroughFrom(ctx, t, pool, 126)
+	applyThroughFrom(ctx, t, pool, 127)
 	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-len(shareClasses) || s != len(shareClasses) {
-		t.Fatalf("at 0126: %d owner_isolation, %d team_read; want %d and %d", n, s, owned-len(shareClasses), len(shareClasses))
+		t.Fatalf("at 0127: %d owner_isolation, %d team_read; want %d and %d", n, s, owned-len(shareClasses), len(shareClasses))
 	}
-	for _, q := range asksRollbackSQL(t, "0126_team_access.sql") {
+	for _, q := range asksRollbackSQL(t, "0127_team_access.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}
@@ -45,9 +45,9 @@ func TestMigration0126TeamAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if leftovers != 0 {
-		t.Errorf("after the rollback %d functions, columns or triggers of 0126 remain", leftovers)
+		t.Errorf("after the rollback %d functions, columns or triggers of 0127 remain", leftovers)
 	}
-	applyThroughFrom(ctx, t, pool, 126)
+	applyThroughFrom(ctx, t, pool, 127)
 	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-len(shareClasses) || s != len(shareClasses) {
 		t.Errorf("re-applied after the rollback: %d owner_isolation, %d team_read", n, s)
 	}

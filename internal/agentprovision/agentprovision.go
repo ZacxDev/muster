@@ -658,6 +658,9 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 	if err != nil {
 		return fmt.Errorf("agentprovision: dispatch agent %d: load row: %w", agentID, err)
 	}
+	if err := refuseHostRow(ag, "dispatch"); err != nil {
+		return err
+	}
 	if !kickoff {
 		// ⚠ NO PRODUCTION CALLER REACHES THIS BRANCH ANY MORE: internal/api's
 		// createAndDispatchAgent inserts a save `stopped` and starts no background
@@ -708,6 +711,18 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 	// false statement the delivery then has to overwrite. The row stays owed
 	// (pending_note set, kicked_off false) and the deliverer pays it.
 	return a.setStatus(ctx, ag.ID, agents.StatusProvisioning)
+}
+
+// refuseHostRow is THE adapter's refusal of a host officer instance's row
+// (agents.Agent.Provisioned): every lifecycle method loads its row and asks it
+// before any driver call, so no caller — a route, a reaper, a loop — can
+// provision, stop, re-apply or tear down such a row through this adapter
+// (TestAHostRowIsNeverProvisioned).
+func refuseHostRow(ag agents.Agent, op string) error {
+	if ag.Provisioned() {
+		return nil
+	}
+	return fmt.Errorf("agentprovision: %s agent %d (%s): %w (host %s)", op, ag.ID, ag.Name, agents.ErrHostRow, ag.RunsOnHost)
 }
 
 // Start scales a stopped instance back up, creating it first when the backend
@@ -771,6 +786,9 @@ func (a *Adapter) startLocked(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "start"); err != nil {
+		return err
 	}
 	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
 	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
@@ -839,6 +857,9 @@ func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: stop agent %d: load row: %w", agentID, err)
 	}
+	if err := refuseHostRow(ag, "stop"); err != nil {
+		return err
+	}
 	if a.beforeStop != nil {
 		a.beforeStop(ctx, ag)
 	}
@@ -892,6 +913,9 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "destroy"); err != nil {
+		return err
 	}
 	if a.beforeStop != nil {
 		a.beforeStop(ctx, ag)
@@ -1077,6 +1101,9 @@ func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: reapply agent %d: load row: %w", agentID, err)
+	}
+	if err := refuseHostRow(ag, "reapply"); err != nil {
+		return err
 	}
 	ag, err = a.ensureHooksToken(ctx, ag)
 	if err != nil {

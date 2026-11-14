@@ -371,7 +371,7 @@ when it grows **or** shrinks:
 | `sharedTables` | `owner_or_team`, read ≥ viewer, write ≥ operator | phase 2: `send_queue`, `attention_asks`, `asks`, `ask_attempts`, `agent_focus`, `agent_focus_history`, `session_episodes`, `session_prs`, `uploads`; phase 3: `officer_items`, `officer_llm_usage`, `officer_judgement_sessions`, `officer_pr_loops`; phase 4: `notes`, `note_comments`, `note_attachments`, `task_sessions`, `task_ref_writes`, `agents`, `chat_sessions`, `chat_messages`, `session_routes`, `chief_nudges`, `chief_proposals`, `chief_turn_usage`, `routing_rules` |
 | `managedTables` | `owner_or_team`, read ≥ operator (viewer for the first two), write ≥ manager | phase 2: `mirror_tokens`; phase 3: `officer_types`, `officer_defs`, `officer_schedules`, `plugins`, `plugin_messages`, `plugin_reply_drafts`, `plugin_threads`, `plugin_handoffs`, `plugin_pair_requests`, `plugin_message_handling` |
 
-> **As built in phase 2a (0126):**
+> **As built in phase 2a (0127):**
 > - Every share-class table got its team policies at once, not table by table
 >   in each phase. Nothing writes a team row until its phase does.
 > - `agents` stays **personal until phase 4** (its secrets split first), and
@@ -714,7 +714,7 @@ The operator split phase 2 after phase 1: **2a is the access core only**, and
 team hosts move last, as 2b. 2a creates **no team-owned row**; it lands the
 rule the later phases' rows will meet.
 
-- **Migration `team_access`** (0126):
+- **Migration `team_access`** (0127):
   - `muster_team_ids(r)` (the ids of the teams held at role ≥ r) parses
     `muster.teams` by role NAME. §2's `muster_team_role()` was not kept: no
     policy or code path needed a per-owner role once the policies read a list.

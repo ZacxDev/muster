@@ -98,7 +98,7 @@ func scanToken(row pgx.Row) (Token, error) {
 // Authenticate looks the token up by hash among unrevoked tokens and stamps its
 // last use.
 //
-// 🔴 A TOKEN WHOSE OWNER IS A TEAM (users.kind = 'team', migration 0125) IS
+// 🔴 A TOKEN WHOSE OWNER IS A TEAM (users.kind = 'team', migration 0126) IS
 // REFUSED AS IF UNKNOWN: a team never signs in, and this door attaches no
 // request principal for internal/api's admit to refuse. Nothing mints such a
 // token today (muster-server mirror token create mints for user 1); this is

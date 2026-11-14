@@ -114,6 +114,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_llm_usage (0075, the officer LLM proxy's per-day usage).
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
 //   - officer_pr_loops (0119, a draft officer's review-loop announcements).
+//   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - session_tags (0086, the per-owner session tags).
 //   - asks (0089, the ask log: every question an agent put to its owner).
@@ -129,7 +130,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_types, officer_defs, officer_items, officer_schedules (0118, the
 //     built-in officer backend's store).
 var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "plugin_pair_requests", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_host_spawns", "plugin_pair_requests", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
 	"routing_rules", "chief_turn_usage", "plugin_message_handling",
 	"pages", "page_versions", "page_links", "page_responses",
@@ -201,6 +202,7 @@ var wantForeignKeys = []string{
 	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_judgement_sessions|officer_judgement_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
@@ -245,9 +247,9 @@ var wantForeignKeys = []string{
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0105: the instance's branding names the admin who changed it last.
 	"instance_branding|instance_branding_updated_by_fkey|FOREIGN KEY (updated_by) REFERENCES users(id)",
-	// 0125: a membership names its team, its person and who added it — all
+	// 0126: a membership names its team, its person and who added it — all
 	// users rows (a team is one); the KIND each must be is a trigger's job.
-	// 0126: an audit row names the team it acted on.
+	// 0127: an audit row names the team it acted on.
 	"audit_log|audit_log_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
 	"team_members|team_members_added_by_fkey|FOREIGN KEY (added_by) REFERENCES users(id)",
 	"team_members|team_members_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",

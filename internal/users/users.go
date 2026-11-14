@@ -174,7 +174,7 @@ func (s *PGStore) Account(ctx context.Context, id int64) (Account, error) {
 // class, and requires the person-only class to use this.
 const PersonIDs = `SELECT id FROM public.users WHERE kind = 'person'`
 
-// The two kinds of users row (migration 0125).
+// The two kinds of users row (migration 0126).
 const (
 	KindPerson = "person"
 	KindTeam   = "team"
@@ -206,7 +206,7 @@ func (s *PGStore) BySub(ctx context.Context, sub string) (User, error) {
 	return scanUser(s.pool.QueryRow(sys(ctx), `SELECT `+userCols+` FROM users WHERE gotrue_sub = $1::uuid AND kind = 'person'`, sub))
 }
 
-// ByID returns user id, a PERSON: a team row (migration 0125) is ErrNotFound
+// ByID returns user id, a PERSON: a team row (migration 0126) is ErrNotFound
 // here, as it is to BySub and IDByEmail, so no sign-in, session or admin
 // action can resolve to one. Teams are read through teams.go.
 func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {

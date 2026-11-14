@@ -57,6 +57,10 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// Registered here, BEFORE the provisioner gate, because it is a pure DB read —
 	// it never touches k8s, so it works in a provisioner-less deployment too.
 	mux.HandleFunc("GET /api/agents", s.requireHookToken(s.handleAPIAgentList))
+	// `muster agent rm`: remove an agent by name (agent_rm.go). Before the
+	// provisioner gate: a host officer instance's row is removed with no
+	// provisioner at all; any other agent still needs one (503 without).
+	mux.HandleFunc("DELETE /api/agents/{name}", s.requireArmedHookToken(s.handleAPIAgentRemove))
 	// 🔴 THE MACHINE READ OF AN AGENT'S CHAT, ON THE AGENT-IDENTIFIED TIER — SAID
 	// OUT LOUD RATHER THAN SLIPPED IN BESIDE THE ROSTER ABOVE. Before it, no
 	// machine credential could read an agent's messages at all: the chat-log route
@@ -211,6 +215,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	if err != nil {
 		return nil, nil, err
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	// A chief its owner turned off is left out of the list, the sidebar and the
 	// switcher (chief_toggle.go). It is not deleted: turning it on lists it again.
 	list = s.withoutOffChief(ctx, list)
@@ -1315,6 +1322,15 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	if protected {
 		return a, errDestroyChief{a: a, why: s.protectedRefusal(a)}
 	}
+	// 🔴 A HOST OFFICER INSTANCE'S ROW IS NEVER THE PROVISIONER'S
+	// (agents.Agent.RunsOnHost): its teardown is the row alone — whatever the
+	// door passed — so removing a row left from a moved or undeclared officer
+	// works without a provisioner, and never reaches one (which refuses it).
+	// Its drafts and grants go with it (ON DELETE CASCADE). The declared
+	// officer's own row was refused above (isDeclaredInstanceRow).
+	if !a.Provisioned() {
+		destroy = s.destroyHostRow
+	}
 	if h.claim != nil {
 		won, err := h.claim(ctx)
 		if err != nil {
@@ -2314,4 +2330,11 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// destroyHostRow is destroyAgent's teardown of a host officer instance's row:
+// the row, and nothing else — there is no instance to remove (its window is
+// its host's, and closing it is the officer runtime's).
+func (s *Server) destroyHostRow(ctx context.Context, id int64) error {
+	return s.ext.Agents.Delete(ctx, id)
 }

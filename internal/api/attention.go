@@ -1999,6 +1999,13 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 // first). The ONE answer path both doors take.
 func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
 	var a attention.Ask
+	// A host officer machine's confirmation card (host_stepup.go): answered
+	// only from the owner's paired phone, and on "Confirm" the owner-authority
+	// call it holds runs once — before the answer is recorded; any other door
+	// is refused and the card stays open.
+	if handled, err := s.hostDecisionForAnswer(ctx, id, answer); handled && err != nil {
+		return a, err
+	}
 	// A dispatch card whose hold lapsed (hold_lapse.go): nothing is recorded;
 	// the card is withdrawn, the chief told, and the owner reads why.
 	if err := s.lapsedCardRefusal(ctx, id); err != nil {

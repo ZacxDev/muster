@@ -42,7 +42,8 @@ import (
 //     empty by default: nothing spawns until the owner lists one), and must
 //     resolve to exactly one clone under this host's roots;
 //   - the RATE LIMIT is counted from the audit log, so a restart does not reset it;
-//   - the prompt must begin with muster's fixed preface (mirror.SpawnPreface):
+//   - the prompt must begin with one of muster's fixed prefaces
+//     (mirror.HasSpawnPreface: the chief's, or an officer instance's):
 //     Claude Code reads a first word equal to a subcommand name as that
 //     subcommand even after `--` (measured);
 //   - every argv word is a constant or a value built here and checked against
@@ -1096,7 +1097,7 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	}
 	// 🔴 THE PREFACE: a prompt that does not begin with it could be a claude
 	// subcommand name, which `--` does not stop (measured).
-	if !strings.HasPrefix(req.Prompt, mirror.SpawnPreface) {
+	if !mirror.HasSpawnPreface(req.Prompt) {
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "the prompt does not begin with muster's preface")
 	}
 	if !validRepoName(req.Repo) {

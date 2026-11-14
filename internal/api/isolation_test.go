@@ -380,6 +380,9 @@ var isolationClasses = map[string]routeClass{
 	// The built-in officer store's admin API (officer_admin.go): hook tier
 	// (personal token: its owner; shared hook token: the operator), every
 	// store call naming the caller's owner and under its principal.
+	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
+	// read and destroyed under the caller's principal.
+	"DELETE /api/agents/{name}":                            classAdmin,
 	"GET /api/officers/types":                              classAdmin,
 	"GET /api/officers/types/{key}":                        classAdmin,
 	"PUT /api/officers/types/{key}":                        classAdmin,
@@ -546,6 +549,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /plugins/messages/{id}/retry":  classParam,
 	"POST /plugin/v1/drafts/claim":       classPlugin,
 	"POST /plugin/v1/drafts/{id}/result": classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":  classPlugin,
 	// The pre-approval check (draft_checks): the listing names nothing (the
 	// token owner's own plugin's drafts) and the verdict names A's draft — which
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).

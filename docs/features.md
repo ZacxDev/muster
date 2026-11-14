@@ -82,7 +82,10 @@ required block (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`,
   check ([sending-and-step-up.md](sending-and-step-up.md));
 - the session switcher, sidebar and search, context badges, the task board
   ([tasks.md](tasks.md)) and the Asks page ([attention.md](attention.md));
-- the installable app, the `muster` CLI and `muster doctor` ([cli.md](cli.md)).
+- the installable app, the `muster` CLI and `muster doctor` ([cli.md](cli.md));
+- the server switcher, for moving between several muster servers in one
+  browser: no setting, the list is kept in the browser
+  ([push.md](push.md#several-servers-the-server-switcher)).
 
 Not in the core, and set up separately: [the agent ask tool](#agent-ask-tool)
 and [ask cards](#ask-cards).
@@ -743,11 +746,31 @@ permission prompts. [configuration.md](configuration.md#muster-server-permission
 ### Officers
 
 Standing Claude Code agents with a job description, woken by a queue kept in
-**HQ**, an external server. [officers.md](officers.md).
+**HQ**, an external server, or in muster's own database (the
+[built-in backend](officers-builtin.md)). [officers.md](officers.md).
 
-- **Needs HQ, [dispatch](#dispatch) with the `claude-code` kind, and the
-  connector store's agent door** (`MUSTER_CONNECT_PORT`,
-  `MUSTER_AGENT_CONNECT_URL`).
-- **Not available in the Compose stack**: `MUSTER_OFFICERS` and the
-  per-officer `MUSTER_OFFICER_*_<NAME>` variables are not forwarded.
-- **Check:** `officers: ON — N declared in MUSTER_OFFICERS (H on HQ, B on the built-in backend); …`, then one `officers: <id> backend …` line per officer.
+Each officer's instances run on one of two runtimes (`runtime` in its
+`MUSTER_OFFICERS` entry):
+
+- **Pods** (the default): **needs [dispatch](#dispatch) with the `claude-code`
+  kind, and the connector store's agent door** (`MUSTER_CONNECT_PORT`,
+  `MUSTER_AGENT_CONNECT_URL`); HQ or the built-in backend. Not available in the
+  Compose stack.
+- **Host-spawned sessions** (`"runtime": "host"`, `"host": "<machine>"`): each
+  instance is a Claude Code window on ONE of your machines, started by its
+  `muster-mirror`. **Works in the Compose stack**: needs the database, the
+  built-in backend, and a `muster-mirror` on that machine with `-interactive
+  -agent-spawn` and the officer's `repo` on `-agent-spawn-repos`. Outbound
+  drafts (`officer_post_draft`, approved by the owner) and `connectors`
+  (approved per request; not `github`) work. Not available there: HQ, tiers,
+  models, `read_repos`, the LLM proxy, kube reads, ship gates and transcripts
+  (each a boot refusal naming the field, or not offered). 🔴 The sessions run
+  as that machine's user with no pod isolation — muster's approval is the
+  sanctioned path for its posts, not a boundary:
+  [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions),
+  [design](design/officers-on-hosts.md).
+- In the Compose stack `MUSTER_OFFICERS` is forwarded; a pod officer in it
+  refuses the boot (there is no provisioner). The per-officer
+  `MUSTER_OFFICER_*_<NAME>` variables are not forwarded (a host officer needs
+  none).
+- **Check:** `officers: ON — N declared in MUSTER_OFFICERS (H on HQ, B on the built-in backend; P in pods, S on hosts); …`, then one `officers: <id> backend …` line per officer, and for a host officer `officers: <id> on: runtime host on <machine> …`.

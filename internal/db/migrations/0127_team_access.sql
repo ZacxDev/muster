@@ -1,4 +1,4 @@
--- muster 0126 — TEAM ACCESS CORE (docs/design/team-sharing.md, phase 2a).
+-- muster 0127 — TEAM ACCESS CORE (docs/design/team-sharing.md, phase 2a).
 --
 -- WHAT A TEAM MEMBER MAY READ AND WRITE, decided in the database. Nothing in
 -- this migration (or in phase 2a's code) CREATES a team-owned row: no request
@@ -75,13 +75,13 @@
 -- tables' security off and leaves these policies inert, as it does 0007's.
 --
 -- Must apply after its predecessor (the contiguity test refuses a gap); the
--- number follows phase 1's 0125 and moves with it.
+-- number follows phase 1's 0126 and moves with it.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- setting or the columns, and owner_isolation is restored on every table):
 --   SELECT public.muster_team_access_rollback();
 --   DROP FUNCTION IF EXISTS public.muster_team_access_rollback();
---   DELETE FROM schema_migrations WHERE version = 126;
+--   DELETE FROM schema_migrations WHERE version = 127;
 
 SET LOCAL lock_timeout = '3s';
 

@@ -98,7 +98,7 @@ func auditInsert(ctx context.Context, tx pgx.Tx, by Actor, action, object string
 }
 
 // auditInsertFor is auditInsert recording the TEAM acted on (audit_log.team_id,
-// migration 0126). 0 records none. A team's managers read the rows that name
+// migration 0127). 0 records none. A team's managers read the rows that name
 // it.
 func auditInsertFor(ctx context.Context, tx pgx.Tx, by Actor, owner int64, action, object string, detail map[string]any) error {
 	if detail == nil {
