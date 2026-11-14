@@ -247,11 +247,23 @@ var requestVias = map[Via]bool{
 // panic is the second guard behind it. A team manager's lifecycle door is
 // added with its one caller (slice 4.5).
 //
-// 🔴 EVERY OTHER DOOR STILL REFUSES A TEAM (WithPrincipal panics). A person's
-// door (session, device, personal token), a shared machine token, a mirror
-// host (team hosts are phase 2b), an officer or plugin (phase 3), the focus,
-// question and send-queue loops (their owners are persons: users.PersonIDs)
-// — a team principal arriving there is a bug, not a team.
+// 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
+// (WithPrincipal panics). A person's door (session, device, personal token),
+// a shared machine token, a mirror host (team hosts are phase 2b), an officer
+// or plugin (phase 3), the focus, question and send-queue loops — a team
+// principal arriving there is a bug, not a team.
+//
+// ⚠ THE PANIC KEYS ON THE FLAG, NOT ON THE OWNER ID. internal/api's
+// principalFor falls back, when the account cannot be read, to a principal
+// with RoleUncertain and Team = false — it cannot know the kind — and that
+// passes here at any request door. admit refuses it (a retryable 503), but a
+// BACKGROUND site hands it on: there the owner id acts as an ordinary member.
+// Today no team id reaches that fallback: no team-owned agent or task exists
+// before slice 4.5, and the owner reads behind the sites outside this set
+// (mirror tokens, focus) are person-only (users.PersonIDs). For a team id it would still be muster.uid = the
+// team with no memberships — the same rows the team acting principal sees —
+// but the panic above would not fire; a site that must refuse a team on an
+// unreadable account has to check RoleUncertain itself.
 // TestTheTeamActingViasAreExactlyTheListedDoors pins the set.
 var teamActingVias = map[Via]bool{
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
