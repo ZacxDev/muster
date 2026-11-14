@@ -22,6 +22,9 @@ import (
 //
 //	muster.uid    the acting user's id ('' = nobody)
 //	muster.scope  'all' for authz.System (and the migration runner), else ''
+//	muster.teams  the principal's TEAM memberships, '<team>:<role>,…', for a
+//	              person's own request doors only (authz.Principal.TeamScope);
+//	              '' for everything else (migration 0126, team access)
 //
 // 🔴 THEY ARE SET ON EVERY ACQUIRE — pgxpool's PrepareConn, which every pool
 // operation goes through (Exec, Query, QueryRow, SendBatch, CopyFrom, Begin and
@@ -51,6 +54,7 @@ const AppRole = "muster_app"
 const (
 	settingUID   = "muster.uid"
 	settingScope = "muster.scope"
+	settingTeams = "muster.teams"
 	scopeAll     = "all"
 )
 
@@ -110,7 +114,23 @@ func scopeSettings(ctx context.Context) (role, uid, scope string, scoped bool) {
 // for every statement until the next acquire overwrites it. (A
 // transaction-local value would vanish at the first COMMIT inside the
 // acquire.)
-const applyScopeSQL = `SELECT set_config('role', $1, false), set_config('` + settingUID + `', $2, false), set_config('` + settingScope + `', $3, false)`
+const applyScopeSQL = `SELECT set_config('role', $1, false), set_config('` + settingUID + `', $2, false), set_config('` + settingScope + `', $3, false), set_config('` + settingTeams + `', $4, false)`
+
+// teamsSetting is what one acquire under ctx sets muster.teams to: the
+// principal's team scope (authz.Principal.TeamScope), or ” with no principal,
+// for System and for the migration runner. Like the uid it is ALWAYS written,
+// so a pooled connection never carries one person's teams into another's
+// query.
+func teamsSetting(ctx context.Context) string {
+	if _, ok := ctx.Value(migratorKey{}).(string); ok {
+		return ""
+	}
+	p, ok := authz.From(ctx)
+	if !ok || p.All() {
+		return ""
+	}
+	return string(p.TeamScope())
+}
 
 // prepareConn is the pool's PrepareConn hook.
 //
@@ -123,7 +143,7 @@ func prepareConn(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	if !scoped {
 		reportUnscoped()
 	}
-	if _, err := conn.Exec(ctx, applyScopeSQL, role, uid, scope); err != nil {
+	if _, err := conn.Exec(ctx, applyScopeSQL, role, uid, scope, teamsSetting(ctx)); err != nil {
 		return false, fmt.Errorf("db: set connection scope (role %s): %w", role, err)
 	}
 	return true, nil
@@ -140,7 +160,7 @@ const releaseResetTimeout = 5 * time.Second
 func afterRelease(conn *pgx.Conn) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), releaseResetTimeout)
 	defer cancel()
-	_, err := conn.Exec(ctx, applyScopeSQL, AppRole, "", "")
+	_, err := conn.Exec(ctx, applyScopeSQL, AppRole, "", "", "")
 	return err == nil
 }
 

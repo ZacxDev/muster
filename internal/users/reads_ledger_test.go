@@ -45,6 +45,7 @@ var usersReads = map[string]string{
 	"internal/users guardLastAdmin":              readByID, // admins only; a team is never an admin (CHECK)
 	"internal/users PGStore.SetRole":             readByID,
 	"internal/users PGStore.ListTeams":           readTeam,
+	"internal/users PGStore.TeamMembers":         readByID, // the members of a team id the manager page was handed
 	"internal/users lockTeam":                    readTeam,
 	"internal/users lockPerson":                  readPerson,
 	"internal/users PGStore.Role":                readByID,

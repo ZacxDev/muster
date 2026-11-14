@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ func (s *PGStore) CreateTeam(ctx context.Context, by Actor, name string, firstMa
 		if err != nil {
 			return err
 		}
-		if err := auditInsert(ctx, tx, by, "team.create", TeamObject(t.ID), map[string]any{"name": t.Name}); err != nil {
+		if err := auditInsertFor(ctx, tx, by, t.ID, "team.create", TeamObject(t.ID), map[string]any{"name": t.Name}); err != nil {
 			return err
 		}
 		return setMemberTx(ctx, tx, by, t.ID, firstManager, authz.TeamManager)
@@ -114,22 +115,141 @@ func (s *PGStore) SetTeamMember(ctx context.Context, by Actor, team, user int64,
 	})
 }
 
+// ErrLastManager: the change would leave the team with no manager. A manager
+// cannot make it (an admin can, on /admin/teams).
+var ErrLastManager = errors.New("users: a team keeps at least one manager")
+
+// SetTeamMemberAsManager is SetTeamMember for a team's own MANAGER
+// (/teams/{id}): the same change and audit row, refused when it would leave
+// the team with no manager. The caller has checked by is team's manager.
+func (s *PGStore) SetTeamMemberAsManager(ctx context.Context, by Actor, team, user int64, role authz.TeamRole) error {
+	if !role.Valid() {
+		return ErrTeamRole
+	}
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := lockTeam(ctx, tx, team); err != nil {
+			return err
+		}
+		if err := lockPerson(ctx, tx, user); err != nil {
+			return err
+		}
+		if role != authz.TeamManager {
+			if err := keepAManager(ctx, tx, team, user); err != nil {
+				return err
+			}
+		}
+		return setMemberTx(ctx, tx, by, team, user, role)
+	})
+}
+
+// RemoveTeamMemberAsManager is RemoveTeamMember for a team's own manager,
+// refused when it would leave the team with no manager.
+func (s *PGStore) RemoveTeamMemberAsManager(ctx context.Context, by Actor, team, user int64) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := lockTeam(ctx, tx, team); err != nil {
+			return err
+		}
+		if err := keepAManager(ctx, tx, team, user); err != nil {
+			return err
+		}
+		return removeMemberTx(ctx, tx, by, team, user)
+	})
+}
+
+// keepAManager refuses a change to user that would leave team with no
+// manager: user is a manager and no other member is. The team row is locked
+// (lockTeam), so two managers demoting each other at once cannot both pass.
+func keepAManager(ctx context.Context, tx pgx.Tx, team, user int64) error {
+	var others int
+	var isManager bool
+	if err := tx.QueryRow(ctx, `SELECT
+			count(*) FILTER (WHERE user_id <> $2 AND role = 'manager'),
+			coalesce(bool_or(user_id = $2 AND role = 'manager'), false)
+		FROM team_members WHERE team_id = $1`, team, user).Scan(&others, &isManager); err != nil {
+		return err
+	}
+	if isManager && others == 0 {
+		return ErrLastManager
+	}
+	return nil
+}
+
+// TeamPeople is team's members' ids and display names, read AS the caller
+// (ctx's principal) through muster_team_people (migration 0126): empty for a
+// caller who is not a member. No email, no role.
+func (s *PGStore) TeamPeople(ctx context.Context, team int64) ([]TeamMember, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, display_name FROM muster_team_people($1)`, team)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TeamMember, error) {
+		var m TeamMember
+		err := r.Scan(&m.UserID, &m.DisplayName)
+		return m, err
+	})
+}
+
+// TeamAudit is the newest audit rows that name team as their owner, read AS
+// the caller: audit_log's self_read admits a team's MANAGERS to them
+// (migration 0126), and nobody else but the rows' own actors.
+func (s *PGStore) TeamAudit(ctx context.Context, team int64, limit int) ([]AuditEntry, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
+		FROM audit_log WHERE team_id = $1 ORDER BY at DESC, id DESC LIMIT $2`, team, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var raw []byte
+		if err := rows.Scan(&e.ID, &e.At, &e.UserID, &e.Via, &e.Action, &e.Object, &raw); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(raw, &e.Detail)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// TeamMembers is team's members with their roles, read under System: the
+// caller has checked the principal manages team (/teams/{id}) or is an admin.
+func (s *PGStore) TeamMembers(ctx context.Context, team int64) ([]TeamMember, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id, COALESCE(u.email, ''), u.display_name, m.role, m.added_by, m.added_at
+		FROM team_members m JOIN users u ON u.id = m.user_id WHERE m.team_id = $1 ORDER BY m.user_id`, team)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TeamMember, error) {
+		var m TeamMember
+		var role string
+		err := r.Scan(&m.UserID, &m.Email, &m.DisplayName, &role, &m.AddedBy, &m.AddedAt)
+		m.Role = authz.TeamRole(role)
+		return m, err
+	})
+}
+
 // RemoveTeamMember removes person user from team and records it as by.
 func (s *PGStore) RemoveTeamMember(ctx context.Context, by Actor, team, user int64) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockTeam(ctx, tx, team); err != nil {
 			return err
 		}
-		var role string
-		err := tx.QueryRow(ctx, `DELETE FROM team_members WHERE team_id = $1 AND user_id = $2 RETURNING role`, team, user).Scan(&role)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotAMember
-		}
-		if err != nil {
-			return err
-		}
-		return auditInsert(ctx, tx, by, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
+		return removeMemberTx(ctx, tx, by, team, user)
 	})
+}
+
+// removeMemberTx deletes one membership and audits it, inside tx.
+func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) error {
+	var role string
+	err := tx.QueryRow(ctx, `DELETE FROM team_members WHERE team_id = $1 AND user_id = $2 RETURNING role`, team, user).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotAMember
+	}
+	if err != nil {
+		return err
+	}
+	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
 }
 
 // ListTeams returns every team with its members, oldest team first.
@@ -194,7 +314,7 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	if before != nil {
 		detail["before"] = *before
 	}
-	return auditInsert(ctx, tx, by, "team.member.set", TeamObject(team), detail)
+	return auditInsertFor(ctx, tx, by, team, "team.member.set", TeamObject(team), detail)
 }
 
 // lockTeam locks team's users row, or answers ErrNotATeam.

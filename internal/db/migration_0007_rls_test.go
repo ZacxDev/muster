@@ -216,7 +216,9 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"RLS forced": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`), all},
 		"tables with an owner_isolation policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='owner_isolation'`), want},
+			WHERE schemaname='public' AND policyname='owner_isolation'`), personalTables()},
+		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -233,6 +235,12 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if c, shared := shareClasses[tbl]; shared {
+			// The team policies (0126): one per command, each with the user
+			// arm, the scope-all arm and the team arm at its role.
+			checkTeamPolicy(t, tbl, name, cmd, permissive, qual, check, c)
+			continue
 		}
 		if name != "owner_isolation" || cmd != "ALL" || permissive != "PERMISSIVE" {
 			t.Errorf("%s: policy %q cmd=%s %s; want owner_isolation, ALL, PERMISSIVE", tbl, name, cmd, permissive)
@@ -477,7 +485,9 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	// muster_team_people (0126): a team's members' names, to a member only
+	// (TestTeamPeopleAnswersOnlyAMember).
+	if want := []string{"muster_agent_name_taken", "muster_retire_agent_name", "muster_team_people"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
 	}
 }

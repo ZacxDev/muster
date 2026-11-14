@@ -81,3 +81,31 @@ func (m Memberships) RoleIn(team int64) (TeamRole, bool) {
 	}
 	return "", false
 }
+
+// teamVias are the doors whose principal carries its team memberships into
+// the database (Principal.TeamScope): a PERSON is present — the browser
+// session, a personal API token, a paired phone's signed action. NOT an
+// agent's door (a member's PERSONAL chief or agent must never read the
+// team's rows: a team's data reaches only the team's chief, decision 10),
+// a mirror host's (team hosts are phase 2b), a connect or relay door, or any
+// background loop. Every other door and every background
+// loop acts with none, so a per-owner sweep acting as a person never meets
+// that person's teams' rows (the users.PersonIDs lesson, #654 round 1), and a
+// machine credential an owner holds (an agent's token, a mirror host's, a
+// plugin's, a phone's) reaches only its owner's own rows until the phase that
+// shares through it decides otherwise. TestEveryDoorSaysWhetherItCarriesTeams
+// pins every Via to this set or its complement.
+var teamVias = map[Via]bool{
+	ViaSession: true,
+	ViaToken:   true,
+	ViaDevice:  true,
+}
+
+// TeamScope is the memberships this principal's database queries may use:
+// Teams for a person's own request doors (teamVias), none otherwise.
+func (p Principal) TeamScope() Memberships {
+	if teamVias[p.Via] {
+		return p.Teams
+	}
+	return ""
+}

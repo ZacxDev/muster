@@ -25,7 +25,8 @@ var wantUserKeyedPolicies = []string{
 	"api_tokens user_isolation ALL USING=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text)) CHECK=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text))",
 	"audit_log scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",
 	"audit_log self_append INSERT USING= CHECK=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text))",
-	"audit_log self_read SELECT USING=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text)) CHECK=",
+	// 0126: a team's managers also read the rows owned by the team.
+	"audit_log self_read SELECT USING=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (team_id = ANY (COALESCE(( SELECT muster_team_ids(3) AS muster_team_ids), '{}'::bigint[]))) OR (current_setting('muster.scope'::text, true) = 'all'::text)) CHECK=",
 	"invites scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",
 	// team_members (0125): a person reads the rows naming them; only scope all writes.
 	"team_members scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",

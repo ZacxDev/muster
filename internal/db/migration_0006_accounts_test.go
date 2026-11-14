@@ -247,6 +247,8 @@ var wantForeignKeys = []string{
 	"instance_branding|instance_branding_updated_by_fkey|FOREIGN KEY (updated_by) REFERENCES users(id)",
 	// 0125: a membership names its team, its person and who added it — all
 	// users rows (a team is one); the KIND each must be is a trigger's job.
+	// 0126: an audit row names the team it acted on.
+	"audit_log|audit_log_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
 	"team_members|team_members_added_by_fkey|FOREIGN KEY (added_by) REFERENCES users(id)",
 	"team_members|team_members_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
 	"team_members|team_members_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",

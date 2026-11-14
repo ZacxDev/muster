@@ -1,6 +1,6 @@
 # Design: team sharing on one muster server
 
-**Status: decided; phase 1 is next. Nothing here is built yet.** The
+**Status: decided. Phase 1 is in review; phase 2a is next (build order 1 → 2a → 3 & 4 → 2b).** The
 operator accepted every recommendation ([operator decisions](#operator-decisions-2026-11-13)). The operator asked for
 muster as "multiplayer": a personal instance for your own work, plus shared
 team instances where people share sessions and officers. The operator's
@@ -47,8 +47,10 @@ acceptance check in a phase below. Every example is synthetic: users `ana`
 - **Every action names a person.** Audit rows, sends, answers, approvals and
   comments record the acting user beside the team owner (the precedent is
   `chat_messages.typed_by`, 0081).
-- **Phases:** teams and membership with no shared data (1), shared sessions on
-  team hosts (2), team officers (3), team tasks and a team chief (4), and an
+- **Phases** (in build order, as the operator reordered them after phase 1):
+  teams and membership with no shared data (1); the access core, the rule
+  every team row meets (2a); team officers (3) and team tasks with a team
+  chief (4); team hosts, the shared mirrored sessions, last (2b); and an
   optional read-only share of a single personal session (5). Each ships and
   rolls back alone.
 
@@ -367,6 +369,18 @@ when it grows **or** shrinks:
 | `sharedTables` | `owner_or_team`, read ≥ viewer, write ≥ operator | phase 2: `send_queue`, `attention_asks`, `asks`, `ask_attempts`, `agent_focus`, `agent_focus_history`, `session_episodes`, `session_prs`, `uploads`; phase 3: `officer_items`, `officer_llm_usage`, `officer_judgement_sessions`, `officer_pr_loops`; phase 4: `notes`, `note_comments`, `note_attachments`, `task_sessions`, `task_ref_writes`, `agents`, `chat_sessions`, `chat_messages`, `session_routes`, `chief_nudges`, `chief_proposals`, `chief_turn_usage`, `routing_rules` |
 | `managedTables` | `owner_or_team`, read ≥ operator (viewer for the first two), write ≥ manager | phase 2: `mirror_tokens`; phase 3: `officer_types`, `officer_defs`, `officer_schedules`, `plugins`, `plugin_messages`, `plugin_reply_drafts`, `plugin_threads`, `plugin_handoffs`, `plugin_pair_requests`, `plugin_message_handling` |
 
+> **As built in phase 2a (0126):**
+> - Every share-class table got its team policies at once, not table by table
+>   in each phase. Nothing writes a team row until its phase does.
+> - `agents` stays **personal until phase 4** (its secrets split first), and
+>   `plugin_pair_requests` stays personal: an anonymous pairing names a
+>   person.
+> - Managed tables are read at viewer for `mirror_tokens` and the officer
+>   types, defs and schedules, and at operator for the plugin tables.
+> - The policy is four per-command policies, not one `owner_or_team` (see
+>   [phase 2a](#phase-2a-the-access-core-built-second)).
+> - The test ledger is `shareClasses` in `internal/db/share_ledger_test.go`.
+
 Credentials never enter a shared ledger. A team's model key is stored as a
 `user_credentials` row with `owner_id` = the team, written by one
 manager-gated handler under System (added to the System ledger in
@@ -684,21 +698,78 @@ series, ships alone, and rolls back alone.
   each change an `audit_log` row naming the acting admin.
 - **No table changes policy, and nothing is shared.** A test over every
   `owner_id` table proves a member cannot read a row the team owns.
-- **Moved to phase 2, where the first policy reads them:** the `muster.teams`
-  setting, `muster_team_role()`, `muster_team_people()`,
-  `audit_log.owner_id` with its manager read arm, and the managers' own
-  `/teams/{id}` pages.
+- **Moved to phase 2a, where the first policy reads them:** the `muster.teams`
+  setting, `muster_team_role()`, `muster_team_people()`, the audit column
+  with its manager read arm, and the managers' own `/teams/{id}` pages.
 - **Acceptance:** a team row cannot sign in by any entry point; a membership
   change is visible to the next request.
 - **Rollback:** an older image ignores the column and the table. To remove
   them: delete the team rows, drop `team_members` and `users.kind`.
 
-### Phase 2: shared sessions on team hosts
+### Phase 2a: the access core (built second)
 
-- **Migration:** `owner_or_team` on the phase-2 tables in `sharedTables` and
-  `mirror_tokens` in `managedTables`; `send_queue.queued_by`;
-  `attention_asks.answered_by_user`. The ledger test splits into the three
-  ledgers.
+The operator split phase 2 after phase 1: **2a is the access core only**, and
+team hosts move last, as 2b. 2a creates **no team-owned row**; it lands the
+rule the later phases' rows will meet.
+
+- **Migration `team_access`** (0126):
+  - `muster_team_role(o)` (0–3, by role NAME) and `muster_team_ids(r)` (the
+    ids of the teams held at role ≥ r) both parse `muster.teams`.
+  - The policies use `owner_id = ANY (coalesce((SELECT muster_team_ids(r)), '{}'))`.
+    Postgres plans it as an InitPlan, so the setting is parsed once per query.
+    Measured on 400k rows: ~22 ms, against ~26 ms under `owner_isolation`
+    alone and ~200 ms with a per-row `muster_team_role(owner_id)`.
+  - `muster_team_people(t)` is SECURITY DEFINER and answers `(id,
+    display_name)` to a member only.
+  - **Four policies per share-class table, one per command**
+    (`team_read` / `team_insert` / `team_update` / `team_delete`). §2's
+    single `owner_or_team FOR ALL` would have let a VIEWER delete: a FOR ALL
+    policy's USING is DELETE's too.
+  - A trigger keeps `owner_id` fixed outside the system scope, so no member
+    moves a row into or out of a team.
+- **Delta from §2's sketch:**
+  - The audit column is `audit_log.team_id`, not `owner_id`. An `owner_id`
+    column marks an OWNED table everywhere (`RLSStatus`, the ledgers), and
+    `audit_log` is user-keyed.
+  - `answered_by_user` and `decided_by_user` are stamped by triggers when an
+    ask or a draft changes state, so no code path can forget them.
+  - `queued_by` and `author_id` default to the acting person.
+- **Which doors carry the teams:** only doors where a PERSON is present:
+  `ViaSession`, `ViaToken` and `ViaDevice` (`authz.Principal.TeamScope`, a
+  closed set; `TestEveryDoorSaysWhetherItCarriesTeams` fails on a new `Via`).
+  Every agent door (a member's PERSONAL chief included, decision 10), the
+  mirror host, connect, relay and every background loop act with none, even
+  though the principal carries the memberships. **Phase 4 extends
+  `authz.WithPrincipal` to admit a team principal only for a closed set of
+  `Via` values. Phase 3 adds `ViaOfficer` and phase 2b adds `ViaMirrorHost`
+  to the team-carrying set.**
+- **`agents` is not shared until phase 4.** Its rows carry an agent's live
+  secrets (`hooks_token`, `gateway_secret`). Phase 4 first moves them into an
+  owner-isolated table, then shares `agents`. Credentials, connectors,
+  devices and push are never shared.
+- **`/teams/{id}`:** the manager's page.
+  - It lists the members and their roles, adds a person by email, re-roles
+    and removes members, and shows the team's audit rows.
+  - Only the team's manager reaches it. Everyone else gets the 404 a missing
+    team gets.
+  - Writes are same-origin, with no step-up: this is account management.
+  - The last manager cannot leave.
+- **Ledgers:**
+  - `TestEveryOwnedTableHasAShareClass` pins every `owner_id` table to its
+    class and roles, and fails on any change or on an unclassified new table.
+  - `TestTheShareLedgerHoldsForEveryRole` runs every role on every table,
+    plus every non-person door.
+  - The isolation walk now walks B as a non-member, viewer, operator and
+    manager of a team.
+- **Rollback:** the header's block calls `muster_team_access_rollback()`,
+  which puts `owner_isolation` back everywhere and drops the functions and
+  columns.
+
+### Phase 2b: team hosts (built last)
+
+- **Migration:** a team mirror token is admitted by the mirror token lookup
+  (today it refuses a team owner), and `ViaMirrorHost` joins the
+  team-carrying doors.
 - **Code:** `internal/mirror/service.go` `owner()` → `access()`;
   `Hosts` lists teams; every mirror page handler takes the owner
   (`internal/api/mirror.go`, `internal/api/mirror_view.go`); the send queue's
@@ -707,19 +778,12 @@ series, ships alone, and rolls back alone.
   `/teams/{id}/hosts`; the reduced MCP tool set for team tokens
   (`internal/api/mirror_mcp.go`); the device answer route's team check
   (`internal/api/device_actions.go`); the sidebar groups.
-- **Also in this phase** (moved from phase 1): the `muster.teams` setting,
-  `muster_team_role()`, `muster_team_people()`, `audit_log.owner_id` and its
-  manager read arm, `/teams/{id}`. Measure `muster_team_role()`'s per-row cost
-  on the largest owned table (**UNVERIFIED**: expected negligible next to the
-  existing `current_setting` calls).
 - **Acceptance:** the extended isolation walk; two operators answering one ask
   yield one answer; a removed operator's queued send is cancelled and its open
   terminal closes within 10 s; a team token's MCP listing omits the refused
   tools **and** a direct call to each is refused.
-- **Rollback:** re-create `owner_isolation` on those tables (the migration's
-  header carries the SQL). Team rows stay intact but are visible to no person
-  (their owner is a team, which never signs in); a team host keeps connecting
-  and is shown to nobody. Rolling forward restores them.
+- **Rollback:** refuse team mirror tokens again. Team rows stay intact, and a
+  team host's sessions are shown to nobody.
 
 ### Phase 3: team officers
 

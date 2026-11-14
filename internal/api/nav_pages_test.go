@@ -43,6 +43,7 @@ var apiNavWriters = []string{
 	"handleAnswersPage",     // /answers (how answering question cards went)
 	"writeAdminDocument",    // /admin/users, /admin/invites
 	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
+	"renderTeamPage",        // /teams/{id} (a team's manager page)
 }
 
 // apiBareWriters are the functions that write through writeAuthDocument — no
@@ -379,6 +380,7 @@ var apiNavSecret = map[string]bool{
 	"renderPageDetail":      true,  // shows each live share link: a bearer capability
 	"handleUsagePage":       false, // token counts and senders the owner already sees; no secret
 	"handleAnswersPage":     false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
+	"renderTeamPage":        false, // members, roles and activity; no secret shown or taken
 }
 
 // TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this

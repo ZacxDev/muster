@@ -50,6 +50,12 @@ type AccountStore interface {
 	SetTeamMember(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
 	RemoveTeamMember(ctx context.Context, by users.Actor, team, user int64) error
 	ListTeams(ctx context.Context) ([]users.Team, error)
+	// A team's own manager (teams_pages.go; phase 2a).
+	SetTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
+	RemoveTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64) error
+	TeamPeople(ctx context.Context, team int64) ([]users.TeamMember, error)
+	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
+	TeamAudit(ctx context.Context, team int64, limit int) ([]users.AuditEntry, error)
 }
 
 // InviteTTL is an invite link's default lifetime; inviteTTLChoices are the
