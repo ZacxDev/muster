@@ -293,7 +293,7 @@ type Ask struct {
 	// migration 0103), "" for none.
 	SubjectKey string `json:"-"`
 	// Context is the officer item the ask is about (New.Context, migration
-	// 0125), nil for none.
+	// 0129), nil for none.
 	Context *ItemContext `json:"-"`
 }
 
@@ -368,7 +368,7 @@ type New struct {
 	// asker's arguments: WithdrawAbout withdraws by it when the chief files a
 	// proposal about that session.
 	SubjectKey string
-	// Context is the officer item the ask is about (migration 0125), nil for
+	// Context is the officer item the ask is about (migration 0129), nil for
 	// none. Set ONLY by muster's builtin-officer path (internal/api
 	// officerItemContext), never from an asker's arguments; Clean sanitises
 	// and bounds it (item_context.go).

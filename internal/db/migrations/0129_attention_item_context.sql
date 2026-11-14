@@ -1,4 +1,4 @@
--- muster 0125 — WHAT AN OFFICER'S ASK IS ABOUT, BUILT BY MUSTER
+-- muster 0129 — WHAT AN OFFICER'S ASK IS ABOUT, BUILT BY MUSTER
 -- (internal/attention ItemContext; internal/api officer_ask_context.go;
 -- docs/officers-builtin.md "What the owner is shown").
 --
@@ -23,14 +23,14 @@
 -- No row-level security change: the column rides on 0025's table and policy.
 -- Every statement is idempotent.
 --
--- Must apply after 0124 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT at merge if another migration took 0125.
+-- Must apply after 0128 (the contiguity test refuses a gap).
+-- 🔴 RENUMBER IT at merge if another migration took 0129.
 --
 -- ROLLBACK. An older image never reads the column (its asks show the question
 -- alone, as before). To remove it (optionally):
 --   ALTER TABLE public.attention_asks DROP CONSTRAINT IF EXISTS attention_asks_item_context_shape;
 --   ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS item_context;
---   DELETE FROM schema_migrations WHERE version = 125;
+--   DELETE FROM schema_migrations WHERE version = 129;
 
 SET LOCAL lock_timeout = '3s';
 

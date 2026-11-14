@@ -347,7 +347,7 @@ The ask's question is the officer's own words, under muster's line naming the
 officer and the item, and the card labels it **The officer's note**. For an
 item a plugin message became (`plugin.*`), muster attaches the item's context
 itself, read from the item and the stored message when it raises the ask —
-never from the officer's prose (`attention_asks.item_context`, migration 0125):
+never from the officer's prose (`attention_asks.item_context`, migration 0129):
 
 - the officer, item id, kind and subject;
 - the source message in its own box, marked untrusted: plugin and message id,

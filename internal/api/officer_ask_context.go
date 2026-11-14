@@ -14,7 +14,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHAT A BUILTIN OFFICER'S ASK IS ABOUT (migration 0125; docs/officers-builtin.md
+// WHAT A BUILTIN OFFICER'S ASK IS ABOUT (migration 0129; docs/officers-builtin.md
 // "What the owner is shown").
 //
 // When a builtin officer asks its owner about an item (officer_ask_person) or

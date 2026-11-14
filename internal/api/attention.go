@@ -280,7 +280,7 @@ type attentionItem struct {
 	// draftPushBody); the page shows Text.
 	pushText string
 	// Context is what a builtin officer's ask is about (attention.Ask's,
-	// migration 0125), nil for none: drawn apart from the question on the
+	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
 	Context *attention.ItemContext `json:"context,omitempty"`
 	// choices are a held question's choice labels, listed in its push only
