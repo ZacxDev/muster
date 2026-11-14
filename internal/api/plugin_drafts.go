@@ -632,7 +632,12 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 		// reply draft's rejection goes nowhere, as before: its chief or
 		// session is not told (outboundSettled decides which, in one place).
 		// Past the bound the officer is NOT told: the owner is, here.
-		if s.outboundSettled(ctx, d.OwnerID, d, settledByOwner) {
+		switch {
+		case d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) && d.Status == plugins.DraftRejected:
+			// A follow or a like rejected on its own: as an unticked batch
+			// entry, its item is finished quietly — nothing to redraft.
+			s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was rejected by the owner, not sent.")
+		case s.outboundSettled(ctx, d.OwnerID, d, settledByOwner):
 			s.notifyOfficerNotTold(d.OwnerID, d)
 		}
 	}

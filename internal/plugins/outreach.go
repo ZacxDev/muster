@@ -125,8 +125,12 @@ func ContactBlockedDetail(why string) string {
 
 // contactBlockedTx is why draft d's person may not be contacted now, or "".
 func (s *PGStore) contactBlockedTx(ctx context.Context, tx pgx.Tx, d Draft) (string, error) {
-	if d.ContactID == nil || s.officers == nil {
+	if d.ContactID == nil {
 		return "", nil
+	}
+	if s.officers == nil {
+		// no officer store to read the person from: never reached
+		return "unreadable", nil
 	}
 	return s.officers.ContactBlockedTx(ctx, tx, d.OwnerID, *d.ContactID)
 }
@@ -147,7 +151,9 @@ type OutreachBatch struct {
 	Day     string  `json:"day"`
 	Entries []Draft `json:"-"`
 	Waiting int     `json:"waiting"`
-	SHA256  string  `json:"batch_sha256"`
+	// WaitingDrafts are the entries still awaiting their plugin's check.
+	WaitingDrafts []Draft `json:"-"`
+	SHA256        string  `json:"batch_sha256"`
 }
 
 var batchIDRE = regexp.MustCompile(`^([a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9]+(?:-[a-z0-9]+)*)@([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
@@ -203,6 +209,7 @@ func batchOf(ds []Draft) []OutreachBatch {
 		}
 		if d.AwaitingCheck() {
 			out[i].Waiting++
+			out[i].WaitingDrafts = append(out[i].WaitingDrafts, d)
 			continue
 		}
 		out[i].Entries = append(out[i].Entries, d)

@@ -342,3 +342,60 @@ func TestTheBatchToolsAreTheOwnersMirroredSessionsOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestOutreachAuditRoundOne: the card shows the PERSON's own words even when
+// someone else wrote in the same thread; a batch-approved follow to a person
+// who then blocks is withdrawn at the claim and its item finished quietly; a
+// follow rejected on its own queues no draft.refused; and a send whose
+// person was erased after the claim is still recorded sent.
+func TestOutreachAuditRoundOne(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	ids, items := w.followsFor("lia", "max", "ned")
+	if rec := w.do("POST", "/plugin/v1/messages", `{"external_id":"other-1","sender":"mallory","body":"EVIL WORDS","kind":"reply","venue":"`+outVenue+`","thread":"r-lia"}`,
+		bearerTok(w.tok)); rec.Code != http.StatusAccepted {
+		t.Fatalf("the other sender's message: %d %s", rec.Code, rec.Body)
+	}
+	page := w.do("GET", "/attention?tab=drafts", "", func(r *http.Request) { r.Header.Set("Cookie", sessionCookieFor(w.srv)) }).Body.String()
+	if strings.Contains(page, "EVIL WORDS") || !strings.Contains(page, "nice work") {
+		t.Fatalf("the batch card shows another sender's words as the person's engagement")
+	}
+	batch := plugins.BatchID(builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
+	// a single reject of a follow: quiet
+	if rec := w.rejectForm(ids[2], ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject ned: %d", rec.Code)
+	}
+	if _, _, ok := w.refusedItemOf(ids[2]); ok {
+		t.Fatal("a follow rejected on its own queued a draft.refused item")
+	}
+	if st, outcome, _, _ := w.itemRow(items[2]); st != "done" || outcome != "no_action" {
+		t.Fatalf("the rejected follow's item: %s %s", st, outcome)
+	}
+	if rec := w.decideBatchForm(batch, plugins.BatchSHA256(ids[:2]), ids[0], ids[1]); rec.Code != http.StatusSeeOther {
+		t.Fatalf("decide: %d %s", rec.Code, rec.Body)
+	}
+	w.engagement("lia", "block", "b-lia", "")
+	// max is claimed first or second; collect both claims
+	var got []string
+	for range 2 {
+		got = append(got, w.claim().Body.String())
+	}
+	if strings.Contains(strings.Join(got, ""), `"draft_id":`+strconv.FormatInt(ids[0], 10)) {
+		t.Fatalf("a follow to a person who blocked us was handed out")
+	}
+	if st, outcome, _, _ := w.itemRow(items[0]); st != "done" || outcome != "no_action" {
+		t.Fatalf("the withdrawn follow's item: %s %s; want done no_action", st, outcome)
+	}
+	// max was claimed: erase him, then the plugin reports the send.
+	rec := w.do("DELETE", "/api/officers/defs/"+builtinOfficerID+"/contacts/"+outVenue+"/max", "", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+connTestHookToken)
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("erase: %d %s", rec.Code, rec.Body)
+	}
+	if rec := w.result(ids[1], `{"ok":true,"external_ref":"f-1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("the result of a send to an erased person: %d %s", rec.Code, rec.Body)
+	}
+	if d := w.draft(ids[1]); d.Status != plugins.DraftSent {
+		t.Fatalf("the send to an erased person: %s", d.Status)
+	}
+}

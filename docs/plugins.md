@@ -973,8 +973,8 @@ reply or DM — never the owner's post a like or a repost names); else
 **Approved on its exact text**, as a post is: a DM through its card or
 `plugin_draft_decide` with its `body_sha256`. **A follow or a like has no
 text** and is approved only in its day's [outreach batch](#the-outreach-batch);
-an individual approval of one is refused (409; rejecting it alone is
-allowed). Its plugin's [check](#check-a-reply-before-it-can-be-approved) is
+an individual approval of one is refused (409); rejecting it alone is
+allowed, and finishes its item quietly, as an unticked batch entry. Its plugin's [check](#check-a-reply-before-it-can-be-approved) is
 where per-venue daily caps are refused.
 
 🔴 **The person is re-checked at the approval and at the claim.** A pending

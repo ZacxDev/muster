@@ -661,8 +661,9 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 	}
 	var out []attentionItem
 	now := time.Now()
-	// A follow or a like is on its outreach batch's ONE item (outreach_batch.go).
-	out = append(out, batchAttentionItems(cards, now)...)
+	// A follow or a like is on its outreach batch's ONE item (outreach_batch.go),
+	// counted from the whole batch, not from this cut.
+	out = append(out, batchAttentionItems(s.withBatches(ctx, nil), now)...)
 	for _, c := range cards {
 		if c.Draft.Status != plugins.DraftPending || !c.Draft.ExpiresAt.After(now) || c.Draft.AwaitingCheck() {
 			// An unchecked draft is not the owner's to decide yet.

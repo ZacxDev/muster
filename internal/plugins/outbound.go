@@ -775,8 +775,17 @@ func (s *PGStore) UploadDraftMedia(ctx context.Context, pluginID, draftID int64,
 // thread ref — the human reply an outbound reply draft answers — if any: the
 // newest.
 func (s *PGStore) OutboundReplyTo(ctx context.Context, pluginID int64, venue, ref string) (Message, bool, error) {
+	return s.outboundReplyTo(ctx, pluginID, venue, ref, nil)
+}
+
+// outboundReplyTo is OutboundReplyTo; with contact, only the engagement
+// message OF THAT PERSON (its sender is their handle, engagement.go), so an
+// outreach card never shows someone else's words in the same thread.
+func (s *PGStore) outboundReplyTo(ctx context.Context, pluginID int64, venue, ref string, contact *int64) (Message, bool, error) {
 	m, err := scanMessage(s.pool.QueryRow(ctx, `SELECT `+messageCols+` FROM plugin_messages
-		WHERE plugin_id = $1 AND venue = $2 AND thread = $3 ORDER BY id DESC LIMIT 1`, pluginID, venue, ref))
+		WHERE plugin_id = $1 AND venue = $2 AND thread = $3
+		  AND ($4::bigint IS NULL OR (kind = 'engagement' AND sender = (SELECT handle FROM officer_contacts WHERE id = $4)))
+		ORDER BY id DESC LIMIT 1`, pluginID, venue, ref, contact))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, false, nil
 	}

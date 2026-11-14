@@ -825,7 +825,7 @@ func (s *PGStore) outboundDraftCards(ctx context.Context, tail string, arg any) 
 			ref = *d.BecauseRef
 		}
 		if ref != "" {
-			m, ok, err := s.OutboundReplyTo(ctx, *d.PluginID, d.VenueText(), ref)
+			m, ok, err := s.outboundReplyTo(ctx, *d.PluginID, d.VenueText(), ref, d.ContactID)
 			if err != nil {
 				return nil, err
 			}

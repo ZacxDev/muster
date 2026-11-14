@@ -300,11 +300,16 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 // entry was filed for (builtin.DraftEnd.Quiet). Best effort: the draft's own
 // state is already recorded.
 func (s *Server) notSelectedSettled(ctx context.Context, d plugins.Draft, batch string) {
+	s.quietSettled(ctx, d, "draft "+strconv.FormatInt(d.ID, 10)+" was not selected in outreach batch "+batch+", not sent.")
+}
+
+// quietSettled finishes the item draft d was filed for no_action with summary
+// ended: no follow-up, no escalation (builtin.DraftEnd.Quiet).
+func (s *Server) quietSettled(ctx context.Context, d plugins.Draft, ended string) {
 	if s.officerStore == nil || d.Officer == nil || d.OfficerItemID == nil {
 		return
 	}
-	e := builtin.DraftEnd{Officer: *d.Officer, Draft: d.ID, Item: *d.OfficerItemID, Quiet: true,
-		Ended: "draft " + strconv.FormatInt(d.ID, 10) + " was not selected in outreach batch " + batch + ", not sent."}
+	e := builtin.DraftEnd{Officer: *d.Officer, Draft: d.ID, Item: *d.OfficerItemID, Quiet: true, Ended: ended}
 	if _, err := s.officerStore.DraftEnded(context.WithoutCancel(ctx), d.OwnerID, e, time.Now()); err != nil {
 		s.logger.Printf("plugins: draft %d not selected; %s item %d left as it is: %v", d.ID, *d.Officer, *d.OfficerItemID, err)
 	}
@@ -530,4 +535,30 @@ func (s *Server) handleOutreachBatchDecide(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	http.Redirect(w, r, attentionPath+"?"+asksTabParam+"="+asksTabArchived, http.StatusSeeOther)
+}
+
+// withBatches is pending (pending drafts without their follows and likes)
+// with EVERY entry of every open outreach batch appended — read from the
+// store's batches, not from a cut list, so a card always draws (and binds)
+// its whole batch. A batch that cannot be read is left out, logged.
+func (s *Server) withBatches(ctx context.Context, pending []plugins.DraftCard) []plugins.DraftCard {
+	ps, ok := s.ext.Plugins.(*plugins.PGStore)
+	if !ok {
+		return pending
+	}
+	bs, err := ps.OutreachBatches(ctx)
+	if err != nil {
+		s.logger.Printf("asks: outreach batches: %v", err)
+		return pending
+	}
+	for _, b := range bs {
+		for _, d := range append(append([]plugins.Draft{}, b.Entries...), b.WaitingDrafts...) {
+			c, err := s.ext.Plugins.DraftCard(ctx, d.ID)
+			if err != nil {
+				c = plugins.DraftCard{Draft: d}
+			}
+			pending = append(pending, c)
+		}
+	}
+	return pending
 }

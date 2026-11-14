@@ -1126,6 +1126,15 @@ func (s *Store) OutreachSentTx(ctx context.Context, tx pgx.Tx, owner, contact, d
 		ref = "draft:" + strconv.FormatInt(draftID, 10)
 	}
 	now = now.UTC()
+	// An erased contact (DeleteContact after the claim) has nothing to record
+	// on: the send itself is still the plugin's to report, so this is no error.
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_contacts WHERE owner_id = $1 AND id = $2 FOR UPDATE)`, owner, contact).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
 	tag, err := tx.Exec(ctx, `INSERT INTO officer_contact_events (owner_id, contact_id, kind, ref, at, recorded_at, draft_id)
 		VALUES ($1, $2, $3, $4, $5, $5, $6) ON CONFLICT (draft_id) WHERE draft_id IS NOT NULL DO NOTHING`,
 		owner, contact, kind, ref, now, draftID)

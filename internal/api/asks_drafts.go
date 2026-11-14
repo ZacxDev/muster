@@ -172,10 +172,12 @@ func askGroupOpen(key, label string, n int) string {
 func splitDraftCards(cards []plugins.DraftCard, now time.Time) (pending, archived []plugins.DraftCard) {
 	for _, c := range cards {
 		if c.Draft.Status == plugins.DraftPending && c.Draft.ExpiresAt.After(now) {
-			// A follow or a like is drawn on its batch's one card
-			// (draftListHTML), so it does not spend the cut: a batch drawn
-			// short would refuse its own decision (batch_sha256).
-			if len(pending) < pluginDraftsShown || (c.Draft.IsOutbound() && plugins.IsBatchKind(c.Draft.Target().Kind)) {
+			// A pending follow or like is not drawn from this list: its whole
+			// batch is (withBatches), so a cut can never draw one short.
+			if c.Draft.IsOutbound() && plugins.IsBatchKind(c.Draft.Target().Kind) {
+				continue
+			}
+			if len(pending) < pluginDraftsShown {
 				pending = append(pending, c)
 			}
 			continue
@@ -235,6 +237,7 @@ func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, arch
 	}
 	now := time.Now()
 	pending, archived = splitDraftCards(cards, now)
+	pending = s.withBatches(ctx, pending)
 	if focus <= 0 {
 		return pending, archived, true
 	}
