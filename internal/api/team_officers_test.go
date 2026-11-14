@@ -178,7 +178,7 @@ func TestATeamsDraftIsDecidedByAnotherManager(t *testing.T) {
 	}
 }
 
-// TestTheDatabaseApproverRefusalIsA403: a 42501 from 0129's draft_approver
+// TestTheDatabaseApproverRefusalIsA403: a 42501 from 0130's draft_approver
 // (its HINT) is the requester refusal, 403 — not a 500 — for a race past
 // draftDeciderRefusal. CONTROL: another 42501 stays a 500.
 func TestTheDatabaseApproverRefusalIsA403(t *testing.T) {

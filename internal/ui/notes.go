@@ -369,6 +369,86 @@ type TasksView struct {
 	// existed, and the tag filter had been silently resetting on the same channel
 	// for as long as it had shipped.
 	NextLimit int
+	// Groups is the board split by OWNER (team sharing phase 4): the viewer's
+	// own tasks, then each team's. Nil when every card is the viewer's own,
+	// and the board is then the one flat list it always was.
+	Groups []TaskOwnerGroup
+}
+
+// TaskOwnerGroup is one owner's cards on the task board: the viewer's own
+// (Team false) or one team's.
+type TaskOwnerGroup struct {
+	Owner int64
+	Team  bool
+	// Label is the group's heading: "Yours", or the team's name (author
+	// text: drawn through textplain.Title).
+	Label string
+	Cards []TaskCardView
+}
+
+// TaskOwnerOption is one owner a task may be filed under or moved to: a team
+// the viewer is at least an operator in. Label is the team's name.
+type TaskOwnerOption struct {
+	ID    int64
+	Label string
+}
+
+// taskOwnerGroups renders the board's owner groups, each its own heading and
+// grid; data-task-owner-group carries the owner's id.
+func taskOwnerGroups(groups []TaskOwnerGroup) g.Node {
+	nodes := make([]g.Node, 0, len(groups))
+	for _, gr := range groups {
+		nodes = append(nodes, Section(
+			g.Attr("data-task-owner-group", strconv.FormatInt(gr.Owner, 10)),
+			g.Attr("data-task-owner-team", boolAttr(gr.Team)),
+			Class("flex flex-col gap-2"),
+			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text(textplain.Title(gr.Label))),
+			Div(Class("grid grid-cols-1 gap-3 lg:grid-cols-2"), g.Map(gr.Cards, noteCard)),
+		))
+	}
+	return Div(g.Attr("data-tasks-flat", ""), Class("flex flex-col gap-4"), g.Group(nodes))
+}
+
+// taskOwnerSelect is the create form's Owner select: you (the default), or a
+// team you are at least an operator in. Nothing renders without such a team.
+func taskOwnerSelect(owners []TaskOwnerOption) g.Node {
+	if len(owners) == 0 {
+		return nil
+	}
+	opts := []g.Node{Option(Value(""), g.Attr("selected", ""), g.Text("You"))}
+	for _, o := range owners {
+		opts = append(opts, Option(Value(strconv.FormatInt(o.ID, 10)), g.Text(textplain.Title(o.Label))))
+	}
+	return labelledFieldFor("task-owner", "Owner", Select(ID("task-owner"), Name("owner"),
+		Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+		g.Group(opts)))
+}
+
+// taskMoveForm is the edit modal's "Move to a team": a separate form (a form
+// cannot nest), posting to /tasks/{id}/move. Rendered only when the viewer
+// owns the task and operates in a team.
+func taskMoveForm(id int64, teams []TaskOwnerOption) g.Node {
+	if len(teams) == 0 {
+		return nil
+	}
+	ids := strconv.FormatInt(id, 10)
+	opts := make([]g.Node, 0, len(teams))
+	for _, o := range teams {
+		opts = append(opts, Option(Value(strconv.FormatInt(o.ID, 10)), g.Text(textplain.Title(o.Label))))
+	}
+	return Form(
+		hx("hx-post", "/tasks/"+ids+"/move"),
+		hx("hx-target", "#task-"+ids),
+		hx("hx-swap", "outerHTML"),
+		g.Attr("data-task-move", ids),
+		Class("mt-4 flex flex-col gap-2 border-t border-line pt-4"),
+		labelledFieldFor("task-move-"+ids, "Move to a team", Select(ID("task-move-"+ids), Name("team"),
+			Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+			g.Group(opts))),
+		P(Class("text-xs text-muted"), g.Text("The team's members will see it, its comments and its attachments. It cannot be moved back.")),
+		Button(Type("submit"), Class("press inline-flex items-center justify-center rounded-xl bg-s2 px-4 py-2 text-sm font-medium text-fg ring-1 ring-inset ring-edge hover:bg-s3"),
+			g.Text("Move")),
+	)
 }
 
 // NotesCards is the /ui/tasks partial: the filter chip rows, then ONE flat list
@@ -428,11 +508,12 @@ func NotesCards(v TasksView) g.Node {
 		// "Select" over a queue with nothing selectable.
 		taskMergeToolbar(mergeableCards(v.Cards)),
 		taskMergeBar(mergeableCards(v.Cards)),
-		Div(
+		g.If(len(v.Groups) == 0, Div(
 			g.Attr("data-tasks-flat", ""),
 			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
 			g.Map(v.Cards, noteCard),
-		),
+		)),
+		g.If(len(v.Groups) > 0, taskOwnerGroups(v.Groups)),
 		tasksShowMore(v),
 	)
 }
@@ -1813,6 +1894,9 @@ type NoteEditView struct {
 	// Vocabulary backs the tag input's <datalist> suggestions, so the human reuses
 	// existing labels instead of minting near-duplicates.
 	Vocabulary []notes.TagCount
+	// MoveTeams are the teams the viewer may move this task into (they own
+	// it and operate in each); none renders no move control.
+	MoveTeams []TaskOwnerOption
 }
 
 // editTitleBodyFields is the edit form's title and body. On a plugin task
@@ -1940,6 +2024,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 				g.Text("Save changes"),
 			),
 		),
+		taskMoveForm(n.ID, v.MoveTeams),
 	}
 }
 
@@ -1954,6 +2039,12 @@ func NotesModalBody(directories []string, directoriesFailed bool) g.Node {
 // share or the "New task" shortcut opens (ComposePage). The text is a Textarea
 // CHILD, so gomponents escapes it: shared markup arrives as inert characters.
 func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill string) g.Node {
+	return NotesModalBodyFor(directories, directoriesFailed, prefill, nil)
+}
+
+// NotesModalBodyFor is NotesModalBodyWith with an Owner select over owners
+// (the teams the viewer may file in; none renders no select).
+func NotesModalBodyFor(directories []string, directoriesFailed bool, prefill string, owners []TaskOwnerOption) g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
@@ -1998,6 +2089,7 @@ func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill st
 			// handleNoteCreate parses. advancedDefaults JS
 			// pre-fills directory/model from localStorage recents (last-used) so a
 			// returning user's sane defaults ride along even while collapsed.
+			taskOwnerSelect(owners),
 			advancedDisclosure(
 				labelledField("Directory", directoryCombobox(directories, "", directoriesFailed)),
 				labelledField("Model", modelField()),

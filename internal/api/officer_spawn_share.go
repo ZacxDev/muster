@@ -18,7 +18,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // LENDING A HOST SPAWN TO A TEAM (docs/design/team-sharing.md, phase 3;
-// migration 0129).
+// migration 0130).
 //
 // officer_host_spawns (#649) stays PERSONAL BY DEFAULT: a row is its owner's,
 // under owner_isolation. Its owner may lend one row to ONE team they are an
@@ -44,7 +44,7 @@ import (
 //     lending reads nothing of the team's, it shows the team one of the
 //     person's own rows);
 //  4. the database: the UPDATE names the acting person as the owner, and
-//     0129's lend_target trigger refuses a lend to a team the person does not
+//     0130's lend_target trigger refuses a lend to a team the person does not
 //     operate (read from team_members itself), so 1-3 are not the only guard.
 //
 // Unlending (team 0) passes 1 and 2 and needs no role: the owner can always
@@ -128,29 +128,6 @@ func (s *Server) registerOfficerSpawnPages(mux Mux) {
 	mux.HandleFunc("POST "+officerSpawnsPath+"/{id}/unshare", s.requireOperatorWrite(s.handleOfficerSpawnUnshare))
 }
 
-// teamNames is the names of the teams in ms, read (ListTeams reads under
-// System itself: users is self-read) AFTER the membership is known; "team
-// <id>" when a name cannot be read.
-func (s *Server) teamNames(ctx context.Context, ms authz.Memberships) map[int64]string {
-	out := map[int64]string{}
-	for _, m := range ms.List() {
-		out[m.Team] = "team " + strconv.FormatInt(m.Team, 10)
-	}
-	if len(out) == 0 || s.gt == nil || s.gt.Accounts == nil {
-		return out
-	}
-	teams, err := s.gt.Accounts.ListTeams(ctx)
-	if err != nil {
-		return out
-	}
-	for _, t := range teams {
-		if _, mine := out[t.ID]; mine && strings.TrimSpace(t.Name) != "" {
-			out[t.ID] = t.Name
-		}
-	}
-	return out
-}
-
 func (s *Server) handleOfficerSpawnsPage(w http.ResponseWriter, r *http.Request) {
 	s.renderOfficerSpawns(w, r, http.StatusOK, "")
 }
@@ -168,7 +145,12 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load officer spawns", "Try again in a moment.")
 		return
 	}
-	names := s.teamNames(ctx, p.Teams)
+	var teamIDs []int64
+	for _, m := range p.Teams.List() {
+		teamIDs = append(teamIDs, m.Team)
+	}
+	// team_tasks.go's one team-name read (#664): "Team <id>" when unnamed.
+	names := s.teamNames(ctx, teamIDs)
 	var lendable []authz.Membership
 	for _, m := range p.Teams.List() {
 		if m.Role == authz.TeamOperator || m.Role == authz.TeamManager {

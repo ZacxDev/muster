@@ -843,7 +843,7 @@ rule the later phases' rows will meet.
 - **Rollback:** as phase 2; the officer keeps running under its owner and its
   asks become invisible to people until roll-forward.
 
-> **As built in phase 3 (0129):**
+> **As built in phase 3 (0130):**
 > - **The door.** `authz.ViaOfficer` joined `teamActingVias`
 >   (`TestTheTeamActingViasAreExactlyTheListedDoors`, now 9 doors). The
 >   runtime of an officer whose `MUSTER_OFFICERS` owner is a team acts as the
@@ -853,7 +853,7 @@ rule the later phases' rows will meet.
 >   refuses an owner that names nobody. It also refuses a team owning a
 >   `"runtime": "host"` officer, because team hosts are 2b and the hub never
 >   lists a team's host.
-> - **The tables were already classed by 2a.** 0129 adds no share-class
+> - **The tables were already classed by 2a.** 0130 adds no share-class
 >   change to them.
 > - **Charter edits are a session page, not the JSON admin API.** This is a
 >   delta from §4, which let "a personal token" set `owner` to a team it
@@ -950,6 +950,51 @@ rule the later phases' rows will meet.
     old column; `agents.Store.Secrets` finds it through the fallback, so
     `ensureHooksToken` sees a token and writes nothing to `agent_secrets`.
     Dropping the columns without the backfill would lose that token.
+- **Shipped, slice 4.3 (team tasks):** no migration. Phase 2a's `0127`
+  already shares `notes`, `note_comments`, `note_attachments`,
+  `task_sessions` and `task_ref_writes` (read at viewer, written at
+  operator) and adds `note_comments.author_id`, so slice 4.3 is code only.
+  - **Filing:** the create form's Owner select lists the teams you are at
+    least an operator in; `notes.Create` writes that owner explicitly, and
+    the handler (403) and Postgres (42501) both refuse a viewer or an
+    outsider. Comments take the task's owner and record `author_id`.
+  - **Thresholds.** This table is the one statement of them; the code
+    (`internal/api/team_tasks.go`) points here. A person's own task is
+    theirs at every threshold. Only the browser session and a paired phone
+    carry team memberships, so every other door meets no team task.
+
+    | action on a team task | viewer | operator | manager | enforced by |
+    |---|---|---|---|---|
+    | read (page, board, attachments) | ✓ | ✓ | ✓ | RLS (0127) |
+    | file in the team | | ✓ | ✓ | handler 403 + Postgres 42501 |
+    | comment, change status, complete, edit, tag, retry/dismiss a ref write | | ✓ | ✓ | handler 403 (`requireTaskOperator`) + RLS |
+    | retract a comment | | its author | ✓ | handler 403 (`softDeleteTaskComment`) + the store (`SoftDeleteComment`); RLS admits it at operator |
+    | dismiss | | | ✓ | handler 403 only (`requireTaskManager`); RLS admits it at operator |
+    | move one of **your own** tasks in | | ✓ | ✓ | handler only (the move is a System write) |
+
+    A comment with no `author_id` (written under the system scope, or before
+    0127) only a manager may retract. A merge needs both tasks to have one
+    owner. The role gate answers 500, not a pass-through, when it cannot
+    read the task; only "not found" passes through to the handler's own 404.
+  - **Board:** grouped by owner (yours, then each team, by name) whenever a
+    team task is on it; otherwise the flat list it always was.
+  - **Move to team:** `POST /tasks/{id}/move`, by the task's owner into a team
+    they operate in, one system-scope transaction (`notes.PGStore.MoveToTeam`,
+    in the System ledger through `handleTaskMove`). It moves the task,
+    its comments, attachments and session links. It is refused, naming the
+    link, when an agent, an ask, a host dispatch, a plugin message, a session
+    route or a queued plugin write points at the task, and for a plugin task
+    reference. `task_ref_writes` is a refusal, not a moved child: each row
+    has a composite key onto its personal plugin. Every foreign key onto
+    `notes` is classified (`TestEveryForeignKeyOntoNotesIsClassified`).
+  - **Known limitations:** a resolved ask, a finished session route or a
+    completed host dispatch still blocks a move, exactly as a live one does;
+    a link row inserted while a move is in flight (the racing-insert window)
+    is not closed by this slice; and a comment on a team task notifies no
+    other member.
+  - **Not yet:** dispatching an agent on a team task. Agents are not shared
+    until 4.4. A person's agent naming a team task would meet the
+    `agents (note_id, owner_id)` key; this slice does not test that path.
 
 ### Later: consent-based team invites
 

@@ -314,6 +314,8 @@ var routeVias = map[authz.Via][]string{
 		// requireOperatorWrite, the session tier only.
 		"POST /tasks/{id}/ref-writes/{wid}/retry",
 		"POST /tasks/{id}/ref-writes/{wid}/dismiss",
+		// Move a task into a team (team_tasks.go): requireOperatorWrite.
+		"POST /tasks/{id}/move",
 		"GET /agents",
 		"GET /agents/{name}",
 		"GET /agents/{name}/logs/stream",

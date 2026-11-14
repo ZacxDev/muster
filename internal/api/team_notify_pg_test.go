@@ -126,7 +126,7 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 
 	// 1. A team officer's ask.
 	o := officers.Officer{ID: "mk:a", Owner: team}
-	if _, err := (officerAsker{w.srv}).Raise(context.Background(), o, "Which launch date?", nil, time.Hour); err != nil {
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), o, builtin.AskAbout{}, "Which launch date?", nil, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	w.srv.WaitForPushes()
@@ -173,7 +173,7 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 
 	// 4. A PERSONAL officer's ask and draft: its owner alone, as before.
 	rec.reset()
-	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:own", Owner: mgr}, "Mine?", nil, time.Hour); err != nil {
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:own", Owner: mgr}, builtin.AskAbout{}, "Mine?", nil, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	w.srv.notifyDraftAwaitingNoting(context.Background(), mgr, plugins.Draft{ID: 990003, OwnerID: mgr, Officer: &officer}, plugins.Message{}, "")

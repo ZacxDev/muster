@@ -108,10 +108,12 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
 <p class="text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
-<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
+` + officerNoteLabelHTML(a.Context) + `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
 `)
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
+	// What a builtin officer's ask is about, apart from its note.
+	b.WriteString(officerContextHTML(a.Context))
 	// A closed ask has no answer box, where the notices show: an answer or a
 	// dismissal refused because the ask closed meanwhile (?notice=ask-closed)
 	// is said here instead.

@@ -248,7 +248,7 @@ func TestATeamOfficersRuntimeAndAskAreTheTeams(t *testing.T) {
 	}
 
 	o := officers.Officer{ID: "marketing:team", Owner: team}
-	id, err := officerAsker{w.srv}.Raise(context.Background(), o, "Which launch date?", []string{"Monday", "Friday"}, time.Hour)
+	id, err := officerAsker{w.srv}.Raise(context.Background(), o, builtin.AskAbout{}, "Which launch date?", []string{"Monday", "Friday"}, time.Hour)
 	if err != nil {
 		t.Fatalf("the team officer's ask: %v", err)
 	}

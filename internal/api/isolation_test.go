@@ -345,6 +345,9 @@ var isolationClasses = map[string]routeClass{
 	// reference, {wid} A's write on it (fill).
 	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
 	"POST /tasks/{id}/ref-writes/{wid}/dismiss": classParam,
+	// Move one of your own tasks into a team (team sharing 4.3): {id} is A's
+	// task, the form's team is A's team.
+	"POST /tasks/{id}/move": classParam,
 
 	"DELETE /api/tasks/{id}":                   classAdmin,
 	"DELETE /api/tasks/{id}/comments/{cid}":    classAdmin,
@@ -1784,6 +1787,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"note_id": {strconv.FormatInt(o.task, 10)},
 		// A page's rollback names a version of it.
 		"version": {"1"},
+		// The move-to-team form names o's team (team sharing 4.3).
+		"team": {strconv.FormatInt(o.team, 10)},
 	}
 	// The pin routes name o's agent. Only on them: `kind` is also the dispatch
 	// form's agent-kind field.

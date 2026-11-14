@@ -342,6 +342,11 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("invite: refused a redemption from %s: %v", ip, err)
 		bad()
 		return
+	case nameRefused(err):
+		// The store refused the name before creating anyone. The field is drawn
+		// empty: what was refused is invisible, so it would only be sent again.
+		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, "", nameCharSentence("Your name", err))
+		return
 	case err != nil && *createErr != nil:
 		s.logger.Printf("invite: GoTrue create failed: %v", *createErr)
 		s.renderInviteForm(w, http.StatusBadGateway, token, inv, email, name, "Sign-up is unavailable right now. Try again shortly.")

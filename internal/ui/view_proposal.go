@@ -46,6 +46,18 @@ const (
 	ProposalKickoffClass  = "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-s1 px-3 py-2 font-mono text-xs text-fg ring-1 ring-line"
 )
 
+// The classes of what a builtin officer's ask is about (attention.ItemContext)
+// on the Attention view and the ask page, which internal/api draws
+// (officerContextHTML): muster's record of the item, and the source message
+// in its own ringed box, apart from the officer's note. HERE for the same
+// reason as the proposal's.
+const (
+	OfficerContextClass     = "flex min-w-0 flex-col gap-2"
+	OfficerContextNoteClass = "break-words text-xs text-fg2"
+	OfficerSourceClass      = "flex min-w-0 flex-col gap-1 rounded-xl bg-s1 px-3 py-2 ring-1 ring-line"
+	OfficerSourceBodyClass  = "max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-fg"
+)
+
 // proposalButtonClass styles the card's buttons.
 const proposalButtonClass = "press inline-flex min-h-[44px] items-center rounded-lg px-3 text-sm font-semibold transition "
 

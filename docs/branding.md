@@ -26,7 +26,13 @@ the `muster` wordmark and muster's own icons.
 Open **Account** as an admin. The **Instance branding** section has:
 
 - **Display name**: optional, up to 64 characters. Surrounding spaces are
-  trimmed. Control characters and text-direction overrides are refused.
+  trimmed. Control characters, text-direction controls and invisible
+  formatting characters (the zero-width space, direction marks, the
+  byte-order mark) are refused. The zero-width joiners are allowed.
+  A name saved before this rule is kept as it is: the form sends it back
+  unchanged on every save, and an unchanged name is not checked again, so the
+  logo and the other settings still save. Any change to it is checked in full,
+  and a refusal names the character (`U+XXXX`).
   Save an empty name to clear it.
 - **Logo**: a PNG, JPEG or WebP file, up to 1 MiB, and at most 4096 pixels on
   each side and 4,194,304 pixels (2048 × 2048) in all, so a 4096 × 1024
@@ -133,7 +139,7 @@ million pixels a progressive CMYK JPEG of a few hundred KB took 560-580 MB.
 | over 4,194,304 pixels | `too_many_pixels` | 400 |
 | the name is not valid UTF-8 | `name_invalid` | 400 |
 | the name is over 64 characters | `name_too_long` | 400 |
-| the name has a control or text-direction character | `name_control` | 400 |
+| the name has a control, text-direction or invisible formatting character | `name_control` | 400 |
 | `logo_shows_name` is not `true` or `false` | `logo_shows_name_invalid` | 400 |
 | an app icon, and no logo is set or sent | `app_icon_needs_logo` | 400 |
 | nothing was sent: no logo, no app icon, no name, no `logo_shows_name` | `empty` | 400 |

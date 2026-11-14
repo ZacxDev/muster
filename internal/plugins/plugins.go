@@ -192,6 +192,12 @@ type MessageIn struct {
 	// Refused on any other plugin.
 	Kind  string `json:"kind"`
 	Venue string `json:"venue"`
+	// URL is where the message can be read upstream (a post's permalink),
+	// when the plugin knows one: an absolute http(s) URL (fence.WebURL), a
+	// bound plugin's alone. It rides in the officer item's payload and is
+	// shown to the owner AS TEXT on an ask about the item, never as a link.
+	// Optional; "" when absent. Not stored on the message row.
+	URL string `json:"url"`
 }
 
 // Message is one row of plugin_messages.
@@ -352,6 +358,9 @@ func (in MessageIn) Validate() error {
 	}
 	if in.Thread != "" && !ValidThread(in.Thread) {
 		return invalid("thread is 1-%d bytes with no spaces, control or invisible characters", MaxThreadLen)
+	}
+	if in.URL != "" && fence.WebURL(in.URL) == "" {
+		return invalid("url is an absolute http or https URL with a host, at most %d bytes, with no spaces, control or invisible characters", fence.MaxURLBytes)
 	}
 	return nil
 }

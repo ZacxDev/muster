@@ -657,7 +657,7 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 const (
 	// DraftTeamSelfDecide: the TEAM ACTING PRINCIPAL (a team officer's
 	// instance or runtime, a team-owned agent) deciding a draft. A team's
-	// drafts are its managers' to decide; 0129's draft_approver trigger
+	// drafts are its managers' to decide; 0130's draft_approver trigger
 	// refuses the approval again in Postgres.
 	DraftTeamSelfDecide = "A team never decides its own drafts: one of its managers does, signed in."
 	// DraftTeamNotManager: a member below manager deciding a team's draft (an
@@ -699,7 +699,7 @@ func draftDeciderRefusal(p authz.Principal, d plugins.Draft, approve bool) strin
 func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal {
 	switch {
 	case pgHint(err) == draftApproverHint:
-		// 0129's draft_approver: the database refused what
+		// 0130's draft_approver: the database refused what
 		// draftDeciderRefusal refuses first (a race past it, or a caller that
 		// skipped it).
 		return draftRefusal{http.StatusForbidden, DraftTeamOwnRequest, asksTabDrafts}
@@ -734,7 +734,7 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	return draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
 }
 
-// draftApproverHint is the HINT 0129's draft_approver trigger refuses with.
+// draftApproverHint is the HINT 0130's draft_approver trigger refuses with.
 const draftApproverHint = "muster:draft-approver"
 
 // pgHint is err's Postgres HINT, "" for none.
