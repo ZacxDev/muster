@@ -1245,7 +1245,7 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
 	defs := append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
-	return append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), postDraftToolDef())
+	return append(append(append(defs, itemAskToolDefs()...), prContextToolDef(), gapTaskToolDef(), postDraftToolDef()), contactToolDefs()...)
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -1501,6 +1501,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return officerGapTask(ctx, c, a.Name, arguments), true // officer_gap_tasks.go
 	case officers.ToolPostDraft:
 		return s.officerPostDraft(ctx, a, o, c, arguments), true // plugin_outbound.go
+	case officers.ToolContactGet, officers.ToolContactsList, officers.ToolContactNote:
+		return s.officerContactTool(ctx, a, o, name, arguments), true // officer_contacts.go
 	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
 	// ObsQueryArgs) — but for a judgement instance's item_id, which is

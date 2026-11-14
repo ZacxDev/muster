@@ -32,7 +32,7 @@ func standingReadServer(t *testing.T, f *connFixture, up *fakeGitHubUpstream, ra
 	t.Helper()
 	dsn := dbtest.DSN(t)
 	wipe := func() {
-		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
+		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_contact_events, officer_contacts, officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
 	}
 	wipe()
 	t.Cleanup(func() {

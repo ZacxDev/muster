@@ -550,6 +550,10 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 			if t.def.Name == officers.ToolPostDraft && !s.officerOutboundGranted(ctx, o) {
 				continue
 			}
+			// the contact tools: also its type's contacts grant, read now
+			if isContactTool(t.def.Name) && !s.officerContactsGranted(ctx, o) {
+				continue
+			}
 			// the definition as o's pool is offered it (officer_complete's
 			// outcomes and investigation differ per pool)
 			t.def = officerToolDefFor(o, t.def)

@@ -627,7 +627,7 @@ The same route and body, with four more fields:
 
 | field | required | rule |
 |---|---|---|
-| `kind` | no | `plan`, `reply`, `snapshot` or `note` (the default). |
+| `kind` | no | `plan`, `reply`, `snapshot`, `note` (the default) or `engagement` ([below](#engagement-kind-engagement)). |
 | `venue` | with `kind: "reply"` | Where it happened: 1 to 64 lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit (`reddit`, `x`, `example.forum`). |
 | `thread` | with `kind: "reply"` | The upstream reference of the human reply to answer (the field every message already has). |
 | `url` | no | Where the message can be read upstream (a post's permalink): an absolute `http` or `https` URL with a host and no userinfo, at most 2048 bytes, with no spaces, control or invisible characters. It rides in the item's `payload.url` (not on the message row) and is shown to the owner **as text, never as a link** on an ask about the item. |
@@ -662,6 +662,47 @@ apart from the officer's note ([officers-builtin.md](officers-builtin.md#what-th
 
 The wake loop starts an instance for the new item within the officer's poll
 interval.
+
+#### Engagement: `kind: "engagement"`
+
+A bound plugin reports **one event of a person's engagement** with its
+owner's posts as a message of kind `engagement`, with the person and the event
+in place of a subject and body:
+
+```json
+{"kind": "engagement", "venue": "example.social",
+ "person": {"handle": "someone", "display": "Some One", "profile_url": "https://example.social/someone", "bio": "builds things"},
+ "event": {"kind": "reply", "ref": "c_123", "parent_ref": "c_100", "our_post_ref": "p_42",
+           "at": "2000-01-02T03:04:05Z", "text": "Does it handle retries?"}}
+```
+
+| field | required | rule |
+|---|---|---|
+| `venue` | yes | as for a reply |
+| `person.handle` | yes | the person's stable id on the venue (a username, a profile slug): a leading `@` is dropped and it is compared without case; 1–100 bytes, no spaces |
+| `person.display`, `person.profile_url`, `person.bio` | no | at most 100, 300 and 300 characters; a value sent replaces the stored one, an absent one leaves it |
+| `event.kind` | yes | `reply`, `quote`, `mention`, `like`, `repost`, `follow`, `nested_reply`, `dm_in` or `block` |
+| `event.ref` | yes | the upstream reference of the event (1–200 bytes, no spaces): recorded once per person, kind and ref |
+| `event.parent_ref` | no | what a nested reply answers |
+| `event.our_post_ref` | for `reply`, `quote`, `like`, `repost`, `nested_reply` | the owner's post it is on |
+| `event.at` | no | when it happened; muster's own time when absent or later than now |
+| `event.text` | no | what they said (kept as a 500-character excerpt; the whole is the message body) |
+| `external_id` | no | default: a hash of venue, event kind, handle and ref, so a repeat of one event is one message |
+
+muster stores the message (the same hourly allowance; `body` defaults to the
+text, `sender` to the handle, `thread` to the event's ref) and, in the same
+transaction, records the person and the event and puts them on the officer's
+**one open item of the day for that person**
+([officers-builtin.md](officers-builtin.md#5c-people-and-outreach)). A
+`block`, or their words asking to stop, sets the person **do-not-contact**.
+
+| answer | meaning |
+|---|---|
+| `202 {"id", "status": "delivered", "item_id"}` | stored and recorded; `item_id` is the person's item of the day, or `null` when none is due (a like from someone who has done nothing else, a do-not-contact, bot or hostile person) |
+| `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: nothing new |
+| `400`, `409`, `429` | as above |
+
+`person` and `event` are refused (400) on any other kind.
 
 #### Outbound drafts: `officer_post_draft`
 

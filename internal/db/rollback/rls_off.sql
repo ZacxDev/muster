@@ -280,6 +280,16 @@ BEGIN
         ALTER TABLE public.agent_secrets DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.agent_secrets ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0130 (officer_contacts, officer_contact_events), when this schema has
+    -- them; same reason as 0011.
+    IF to_regclass('public.officer_contacts') IS NOT NULL THEN
+        ALTER TABLE public.officer_contacts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contacts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contacts ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_contact_events NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contact_events DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_contact_events ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN
         ALTER TABLE public.officer_pr_loops NO FORCE ROW LEVEL SECURITY;

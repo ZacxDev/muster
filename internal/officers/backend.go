@@ -236,6 +236,11 @@ func ToolCapability(tool string) (capability string, known bool) {
 	switch tool {
 	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolKubeRead:
 		return "", true
+	case ToolContactGet, ToolContactsList, ToolContactNote:
+		// muster serves them (the builtin store's contacts), never the
+		// backend: ToolOffered gives them to builtin officers only, and
+		// internal/api checks the type's contacts grant at call time.
+		return "", true
 	case ToolPostDraft:
 		// muster serves it (a plugin draft), never the backend: ToolOffered
 		// gives it to builtin officers only, and internal/api checks the

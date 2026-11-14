@@ -31,6 +31,9 @@ import (
 //	GET    /api/officers/defs/{officer}/schedules    the officer's cron schedules
 //	PUT    /api/officers/defs/{officer}/schedules/{name}   {cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}
 //	DELETE /api/officers/defs/{officer}/schedules/{name}
+//	GET    /api/officers/defs/{officer}/contacts     ?venue=&label=&flag=&handle_prefix=&limit=
+//	GET    /api/officers/defs/{officer}/contacts/{venue}/{handle}
+//	PUT    /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags   {dnc?, bot?, hostile?}
 //
 // 🔴 OWNER-SCOPED TWICE. Every call acts as the CALLER (a personal token: its
 // owner; the shared hook token: the operator, on an armed server only —
@@ -69,6 +72,7 @@ func (s *Server) registerOfficerAdminRoutes(mux Mux) {
 	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/schedules", h(s.handleOfficerSchedules))
 	mux.HandleFunc("PUT "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerSchedulePut))
 	mux.HandleFunc("DELETE "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerScheduleDelete))
+	s.registerOfficerContactRoutes(mux, h) // officer_contacts.go
 }
 
 // requireOfficerStore answers 404 while the store is off.

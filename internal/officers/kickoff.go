@@ -387,7 +387,18 @@ const (
 	// BUILTIN officer only, and only while its type grants outbound_drafts
 	// (checked at call time by internal/api); never to an HQ officer.
 	ToolPostDraft = "officer_post_draft"
+	// ToolContactGet, ToolContactsList and ToolContactNote read and annotate
+	// the people a builtin officer's bound plugin reported engaging with its
+	// owner's posts (internal/officers/builtin contacts.go). Offered to a
+	// BUILTIN officer only, and only while its type grants contacts (checked
+	// at call time by internal/api); never to an HQ officer.
+	ToolContactGet   = "officer_contact_get"
+	ToolContactsList = "officer_contacts_list"
+	ToolContactNote  = "officer_contact_note"
 )
+
+// ContactTools are the three contact tools (ToolContactGet …).
+var ContactTools = []string{ToolContactGet, ToolContactsList, ToolContactNote}
 
 // hostTools are the officer tools a host officer's instances are offered
 // (ToolOffered).
@@ -396,6 +407,9 @@ var hostTools = map[string]bool{
 	// officer_post_draft: filed against the instance's agent row (migration
 	// 0125), the type's outbound_drafts grant read at call time, as on pods.
 	ToolPostDraft: true,
+	// the contact tools: the store's rows, the type's contacts grant read at
+	// call time, as officer_post_draft.
+	ToolContactGet: true, ToolContactsList: true, ToolContactNote: true,
 }
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -465,6 +479,10 @@ func ToolOffered(o Officer, tool string) bool {
 	case ToolPostDraft:
 		// 🔴 A BUILTIN OFFICER'S ONLY. An HQ officer's outward actions are
 		// HQ's; the type grant (outbound_drafts) is read at call time.
+		return o.IsBuiltin()
+	case ToolContactGet, ToolContactsList, ToolContactNote:
+		// 🔴 A BUILTIN OFFICER'S ONLY: the people are in muster's store; the
+		// type grant (contacts) is read at call time.
 		return o.IsBuiltin()
 	}
 	return false

@@ -538,6 +538,12 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 // bucket. taskID links a task (a task event, or a notice route); routedTo, set
 // only with taskID, stores the row already delivered, routed around the chief.
 func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64, routedTo string) (Message, bool, error) {
+	// An engagement's shape first: its defaults (external_id, body) come from
+	// its person and event (engagement.go).
+	if err := engagementShape(in); err != nil {
+		return Message{}, false, err
+	}
+	in = in.withEngagementDefaults()
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
 	}
@@ -573,7 +579,7 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 			if officer, err = boundOfficer(p, in); err != nil {
 				return err
 			}
-		} else if in.Kind != "" || in.Venue != "" || in.URL != "" {
+		} else if in.Kind != "" || in.Venue != "" || in.URL != "" || in.Person != nil || in.Event != nil {
 			return invalid("kind, venue and url are a plugin bound to an officer's")
 		}
 		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
@@ -621,7 +627,12 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		if err != nil {
 			return err
 		}
-		if officer != "" {
+		switch {
+		case officer != "" && in.Kind == MessageKindEngagement:
+			if m, err = s.routeEngagement(ctx, tx, p, officer, m, in); err != nil {
+				return err
+			}
+		case officer != "":
 			if m, err = s.routeToOfficer(ctx, tx, p, officer, m, in.URL); err != nil {
 				return err
 			}

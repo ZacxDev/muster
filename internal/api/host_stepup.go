@@ -96,6 +96,9 @@ var hostStepUpExempt = map[string]string{
 	officers.ToolRelease:      "a host instance's own (hostOfficerMirrorTool)",
 	officers.ToolAskPerson:    "a host instance's own (hostOfficerMirrorTool)",
 	officers.ToolPostDraft:    "a host instance's own (hostOfficerMirrorTool); the draft itself waits for the owner",
+	officers.ToolContactGet:   "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolContactsList: "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolContactNote:  "a host instance's own (hostOfficerMirrorTool); it can only set a mark",
 }
 
 // hostDecisionLabel is the confirmation card's asker label: how a card whose

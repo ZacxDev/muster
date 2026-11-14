@@ -13,7 +13,8 @@ import "testing"
 // schema; a new owned table added after 0127 is listed here, or the control
 // below counts one table too many.
 var ownedAfter0127 = []string{
-	"agent_secrets", // 0128
+	"agent_secrets",                                // 0128
+	"officer_contacts", "officer_contact_events", // 0130
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {

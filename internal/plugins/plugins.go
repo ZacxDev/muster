@@ -198,6 +198,11 @@ type MessageIn struct {
 	// shown to the owner AS TEXT on an ask about the item, never as a link.
 	// Optional; "" when absent. Not stored on the message row.
 	URL string `json:"url"`
+	// Person and Event are an ENGAGEMENT message's (kind "engagement",
+	// engagement.go): who engaged with the owner's posts, and how. Refused on
+	// any other kind.
+	Person *EngagementPerson `json:"person,omitempty"`
+	Event  *EngagementEvent  `json:"event,omitempty"`
 }
 
 // Message is one row of plugin_messages.

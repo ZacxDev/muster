@@ -62,7 +62,7 @@ var personalOwned = []string{
 	"agent_secrets", "agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "officer_host_spawns", "page_links",
+	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "officer_contact_events", "officer_contacts", "officer_host_spawns", "page_links",
 	"page_responses", "page_versions", "pages", "pins", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
