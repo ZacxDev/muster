@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -386,6 +387,9 @@ type Server struct {
 	// officerStore is the built-in officer backend's store (EnableOfficerStore);
 	// nil while it is off.
 	officerStore *builtin.Store
+	// spawnLender is the host spawns' team lending (EnableHostSpawnLending,
+	// officer_spawn_share.go); nil with no database.
+	spawnLender officers.HostSpawnLender
 	// chiefLLM is the admin's chief's place on the LLM proxy (chief_llm.go).
 	// nil unless EnableChiefLLM was called; while nil, every chief is refused
 	// by POST /llm/v1/messages as any non-routine agent is. Once set, only the
@@ -677,6 +681,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
 	s.registerTeamPages(mux)
+	s.registerOfficerSpawnPages(mux)
+	s.registerTeamOfficerPages(mux)
 	// Instance branding (branding.go): the public instance document and
 	// logo images, and the admin's writes (requireAdminRole).
 	s.registerBrandingRoutes(mux)

@@ -843,6 +843,65 @@ rule the later phases' rows will meet.
 - **Rollback:** as phase 2; the officer keeps running under its owner and its
   asks become invisible to people until roll-forward.
 
+> **As built in phase 3 (0130):**
+> - **The door.** `authz.ViaOfficer` joined `teamActingVias`
+>   (`TestTheTeamActingViasAreExactlyTheListedDoors`, now 9 doors). The
+>   runtime of an officer whose `MUSTER_OFFICERS` owner is a team acts as the
+>   team acting principal. That covers its wake loop, its builtin store, its
+>   asks and its outbound drafts.
+> - **Boot.** `officers.CheckOwners`, called from `api.EnableOfficers`,
+>   refuses an owner that names nobody. It also refuses a team owning a
+>   `"runtime": "host"` officer, because team hosts are 2b and the hub never
+>   lists a team's host.
+> - **The tables were already classed by 2a.** 0130 adds no share-class
+>   change to them.
+> - **Charter edits are a session page, not the JSON admin API.** This is a
+>   delta from §4, which let "a personal token" set `owner` to a team it
+>   manages. 2a's operator decision is that a personal API token carries no
+>   team access, and `/api/officers/*` admits only a personal token or the
+>   hook token. So those routes stay the caller's own and never name a team.
+>   A manager edits a team's types and officers on `/teams/{id}/officers`,
+>   signed in. Every member reads that page; only a manager writes. Postgres
+>   refuses an operator too, because officer types and defs are managed.
+> - **Escalation to a team.** One team-owned ask. A team id is admitted as
+>   `escalate_to` only on that page, and only the page's team or a team the
+>   manager operates. The JSON API's check (`UsersExist`) still refuses a
+>   team.
+> - **Drafts.**
+>   - `plugin_reply_drafts.requested_by_user` is stamped by
+>     `muster_actor_column`: the person, or the team for a team officer's
+>     draft.
+>   - `draft_approver` (a trigger) refuses a team approving a draft it owns,
+>     including one filed born approved. It also refuses a person approving a
+>     team's draft they caused.
+>   - `decideDraftAs` refuses first (`draftDeciderRefusal`): the team
+>     itself; a member below manager; and the requester, for an approval. A
+>     door without the person's teams (token, agent, mirror host) is "not a
+>     manager".
+>   - The requester may still REJECT their own draft.
+>   - Step-up is the Asks page's existing approval step-up, unchanged.
+>   - `plugin_draft_decide` (the mirror door) carries no teams, so it never
+>     reaches a team's draft. This holds until 2b's reduced team-token tool
+>     set.
+> - **Host spawns are lendable, personal by default** (operator decision; a
+>   new share class, `lentOwned`).
+>   - The owner lends one row to one team they operate, and unlends it.
+>     There are two ways in: `/officers/spawns` (the session tier) and the
+>     chief's `officer_spawn_share` (chief-only, MCP).
+>   - `lendHostSpawn` is the one gate. It admits only the doors in
+>     `spawnLendDoors`: the session, and the owner's chief's agent, kickoff
+>     and machine-message doors. A personal API token is never admitted.
+>   - The role is read from `Principal.Teams`, not `TeamScope`, which is
+>     empty on the chief's door. A lend shows the team the person's own row
+>     and reads nothing of the team's.
+>   - `lend_target` enforces it again in Postgres from `team_members`.
+>   - `internal/users` ends a person's lends to a team when they leave it or
+>     drop to viewer.
+>   - A team-owned spawn (a team officer's) is not lendable. It is visible
+>     only to the team acting principal until 2b.
+> - **Not done here:** an `audit_log` row for a lend or a charter edit (both
+>   are logged).
+
 ### Phase 4: team tasks and a team chief
 
 - **Migration:** the phase-4 tables into `sharedTables`;

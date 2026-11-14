@@ -839,6 +839,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The built-in officer store (internal/officers/builtin): on whenever
 	// MUSTER_OFFICERS is set — `[]`, the empty roster, included — and there is
 	// a database: the admin API (`muster officer`) and the Attention sweep.
+	// A host officer spawn's team lending (team sharing phase 3:
+	// /officers/spawns, the chief's officer_spawn_share), wherever spawns can
+	// be kept.
+	if a.pool != nil {
+		srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(a.pool))
+	}
 	var officerStore *builtin.Store
 	if cfg.OfficersSet && a.pool != nil {
 		officerStore = builtin.NewStore(a.pool)

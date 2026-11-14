@@ -64,9 +64,9 @@ usable. That lets you bind the operator's login before you switch modes.
 
 A team is a group of people on one muster server who will share sessions,
 officers and tasks ([design/team-sharing.md](design/team-sharing.md)). **This
-version records teams and their members and enforces who may read and write a
-team's rows, but nothing creates a team's rows yet.** Team officers, team
-tasks and team hosts each arrive with their own release.
+version records teams and their members, enforces who may read and write a
+team's rows, and runs team officers.** Team tasks and team hosts each arrive
+with their own release.
 
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
@@ -76,7 +76,10 @@ tasks and team hosts each arrive with their own release.
   `muster.uid` is the team, with no team memberships and never every user's
   rows. The stopped-agent reaper, the attention queue, route timeouts, the
   host-dispatch reconciler and the job queue act as the team the same way
-  when they meet a team-owned row. Every other door refuses a credential that
+  when they meet a team-owned row, and so does a **team officer**'s runtime
+  (the officer door, `authz.ViaOfficer`): an officer whose `owner` in
+  `MUSTER_OFFICERS` is a team runs its instances, its store, its asks and its
+  outbound drafts as the team. Every other door refuses a credential that
   resolves to a team ("a team cannot sign in; sign in as a person"), and so
   does the mirror token lookup for a team-owned token; any other code that
   builds a team principal at a door outside that set fails. A plugin pairing
@@ -120,8 +123,35 @@ tasks and team hosts each arrive with their own release.
   transaction as the change. The rows are listed under **Recent account
   activity** on `/admin/users`, and a team's under its managers' page.
 - **Not a user.** A team is not listed on `/admin/users`, and every user action
-  there answers 404 for a team's id. An officer's `--escalate-to` refuses a
-  team's id for now.
+  there answers 404 for a team's id.
+- **Team officers.**
+  - `MUSTER_OFFICERS` accepts a team's id as an officer's `owner`. Boot
+    refuses an owner that names nobody, and a team owning a
+    `"runtime": "host"` officer: team hosts come later.
+  - Every member reads the team's officer types and charters on
+    `/teams/<id>/officers`. Only a **manager** changes them, there, signed
+    in. Postgres refuses an operator's write too.
+  - The JSON admin API (`/api/officers/*`, `muster officer`) takes a
+    personal API token or the hook token, so it acts on the caller's own
+    officers only and never names a team.
+  - A team officer's question to its owner, and an escalation to a team, is
+    **one** ask the team owns. Every member sees it, an operator answers it,
+    and the answer records who did.
+  - A team is named as an escalation target only on that officers page, and
+    only the page's own team or a team the manager operates. The JSON admin
+    API's `--escalate-to` still refuses a team's id.
+- **Who approves a team's draft.** A manager, on the Asks page, with a fresh
+  sign-in. The team itself never decides its own draft: a team officer's
+  instances and runtime are refused, and so is Postgres's write. A manager
+  never approves a draft they caused. A personal API token, an agent and a
+  mirror host carry no team, so none of them decides a team's draft.
+- **Lending a host spawn.** A host officer's spawned session row
+  (`officer_host_spawns`) is personal. Its owner may share it with one team
+  they are an operator or manager of, and unshare it, on
+  **/officers/spawns** or through their chief's `officer_spawn_share` tool.
+  The team's members then see it there, read-only. A personal API token never
+  shares one. A person's shares to a team end when they leave it or drop to
+  viewer.
 
 ## Passkeys
 

@@ -272,7 +272,19 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	if err != nil {
 		return err
 	}
+	if err := endLends(ctx, tx, team, user); err != nil {
+		return err
+	}
 	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
+}
+
+// endLends takes back every host spawn user LENT to team (migration 0130, team
+// sharing phase 3), inside tx: a lend is admitted only to a team the person
+// operates, so it ends when they leave the team or drop to viewer — their
+// rows stop showing to the team in the same transaction as the change.
+func endLends(ctx context.Context, tx pgx.Tx, team, user int64) error {
+	_, err := tx.Exec(ctx, `UPDATE officer_host_spawns SET shared_team_id = NULL WHERE owner_id = $1 AND shared_team_id = $2`, user, team)
+	return err
 }
 
 // ListTeams returns every team with its members, oldest team first.
@@ -332,6 +344,11 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	if _, err := tx.Exec(ctx, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role`, team, user, string(role), adder); err != nil {
 		return err
+	}
+	if role == authz.TeamViewer {
+		if err := endLends(ctx, tx, team, user); err != nil {
+			return err
+		}
 	}
 	detail := map[string]any{"user": user, "role": string(role)}
 	if before != nil {

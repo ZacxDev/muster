@@ -152,6 +152,7 @@ buys only a word.
 | `0126` | [Teams](auth.md#teams), phase 1 of [design/team-sharing.md](design/team-sharing.md): `users.kind` (`person`, every existing row, or `team`), with `users_team_no_login` (a team has no GoTrue subject, no email, role `member`, is never disabled and has a 1–64 character name, unique among teams case-insensitively), and a trigger that refuses any change of `kind`. `team_members` (`team_id`, `user_id`, `role` `viewer` \| `operator` \| `manager`, `added_by`, `added_at`): a trigger checks the team is a team and the member a person. User-keyed, under forced row-level security: a person reads the rows that name them; only the system scope writes. **No owned table's policy changes: nothing is shared.** Rollback: in the file's header. |
 | `0127` | [Team access](#team-access), phase 2a of [design/team-sharing.md](design/team-sharing.md): `muster_team_ids()` (the teams the caller holds at a role, from `muster.teams`); the share-class tables swap `owner_isolation` for four per-command team policies; `owner_fixed` keeps `owner_id` fixed outside the system scope; `audit_log.team_id` (managers read the team's rows), `send_queue.queued_by`, `note_comments.author_id`, `attention_asks.answered_by_user` and `plugin_reply_drafts.decided_by_user` record the acting person, forced by `muster_actor_column` for the application role (an insert naming someone else is overwritten; an update rewriting one is refused). Re-applied by `db.RLSOn`. Rollback: in the file's header. |
 | `0128` | `agent_secrets`: an agent's credentials, apart from its row — `hooks_token` (its muster identity) and `gateway_secret` (its turn credential, `0042`), one row per agent, keyed by `agent_id` with a composite foreign key to `agents (id, owner_id)` (`ON DELETE CASCADE`), owned and under forced row-level security (`owner_isolation`). Backfilled from `agents`; the backfill fills only what a row lacks, so `--rls-on`'s re-apply never overwrites a stored credential. The store's ordinary reads of an agent (`Get`, `List`, …) no longer select either credential; they are read only by agent id (`agents.Store.Secrets`), and `GetByHooksToken` looks the token up here first. Numbered `0128` by the team-sharing builder: `0125`–`0127` come from other pull requests. ⚠ The old `agents.hooks_token` and `agents.gateway_secret` columns stay and are still written on every create and mint (an older image reads them); the reads fall back to them when this table has nothing. A later migration drops them, one release after this ships. Rollback: an older image ignores the table, so no SQL is needed; to remove it, drop it and delete `schema_migrations` row 128 (only while the old columns exist). |
+| `0130` | Team officers, phase 3 of [design/team-sharing.md](design/team-sharing.md) (`0129` is phase 4's). `plugin_reply_drafts.requested_by_user`: who caused a draft (the acting principal's id when it is filed — a person, or for a team officer's draft the team), forced by `muster_actor_column`. `draft_approver` refuses, for the application role outside the system scope, a team approving a draft it owns (an update to `approved`, or a draft filed born approved) and a person approving a team's draft they caused (`42501`, hint `muster:draft-approver`). `officer_host_spawns.shared_team_id`: the one team the row's owner lent it to (`NULL`, personal, by default): `team_lent_read` lets that team's members read it at viewer, and `lend_target` refuses a lend to a team the acting person does not operate, or of a row that is not theirs, read from `team_members` itself (hint `muster:lend-target`). Re-applied by `db.RLSOn`. Rollback: in the file's header (`muster_team_officers_rollback()`). |
 
 To change the schema, add a new numbered file.
 
@@ -198,9 +199,16 @@ Phase 2a (`0127`) puts every owned table in one share class, pinned by
 
 - **Personal** (`owner_isolation` only): never shared. This covers
   credentials, connectors, devices, push, preferences, pins, recents, tags,
-  flows, pages, jobs, pairing requests, host spawns (`host_dispatches`,
-  `officer_host_spawns`), and `agents` until phase 4 splits off
+  flows, pages, jobs, pairing requests, chief host dispatches
+  (`host_dispatches`), and `agents` until phase 4 splits off
   its secrets.
+- **Lent** (`owner_isolation` plus `team_lent_read`, phase 3, `0130`):
+  personal, but the owner may lend one row to one team they are an operator
+  or manager of (`shared_team_id`). That team's members read it at viewer,
+  through the browser and a paired phone; only the owner writes it. This is
+  `officer_host_spawns`, pinned by `lentOwned` in
+  `internal/db/share_ledger_test.go`. A person's lends to a team end when they
+  leave it or drop to viewer (`internal/users`).
 - **Shared:** a member reads at viewer and writes at operator.
 - **Usage** (`officer_llm_usage`, `officer_judgement_sessions`,
   `chief_turn_usage`): a member reads them and no member writes them; only
