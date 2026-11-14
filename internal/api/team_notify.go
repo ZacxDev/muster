@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -63,6 +64,13 @@ func (s *Server) auditTeam(ctx context.Context, by users.Actor, team int64, acti
 	if err := a.AuditTeam(ctx, by, team, action, object, detail); err != nil {
 		s.logger.Printf("audit: %s %s for team %d by user %d: %v", action, object, team, by.UserID, err)
 	}
+}
+
+// isOfficerInstance is whether agent a is an instance of a declared officer
+// its owner owns (officerOf's binding, by name, held to the owner).
+func (s *Server) isOfficerInstance(a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	return ok && o.Owner == agentOwnerID(a)
 }
 
 // officerAskFiled is askFiled for an OFFICER's ask or escalation notice, plus

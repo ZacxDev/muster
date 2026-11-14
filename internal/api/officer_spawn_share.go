@@ -29,44 +29,54 @@ import (
 // Two ways in, ONE gate (lendHostSpawn):
 //   - the web page, /officers/spawns (the session tier; its writes are
 //     same-origin forms);
-//   - the chief's tool, officer_spawn_share (chief-only, its owner's chief).
+//   - the chief's tool, officer_spawn_share (chief-only): lends only in a turn
+//     the owner started from the browser, the gateway chief's chat turn, whose
+//     tools run under the owner's own SESSION principal (chatTurn: the chat
+//     socket and /agents/{name}/send are the session tier).
 //
 // 🔴 THE GATE, in order:
-//  1. the DOOR is one where the owner is present in person or through their
-//     own chief (spawnLendDoors). A PERSONAL API TOKEN NEVER LENDS (team
-//     sharing 2a: a personal token carries no team access), nor does a mirror
-//     host, a device, a plugin or any background loop;
-//  2. the principal is not a team (a team's own spawns are already the
-//     team's, and the team is nobody's member);
+//  1. the DOOR is the owner's own browser session (spawnLendDoors), where the
+//     owner is present in person. A PERSONAL API TOKEN NEVER LENDS (team
+//     sharing 2a: a personal token carries no team access) — not directly,
+//     and not by ASKING THE CHIEF (#668 round 1, Y1): a chief turn a token or
+//     the hook token started runs through the machine-message door
+//     (ViaAgentMessage), a gateway agent's first turn through the kickoff door
+//     (ViaKickoff), and a claude-code chief's MCP tool calls through its own
+//     agent token (ViaAgent), whichever message started its turn — none of
+//     them proves the owner is present, so none lends. Nor does a mirror host,
+//     a device, a plugin or any background loop;
+//  2. the principal is not a team: no check here, because none can arrive —
+//     a team acting principal is never a session (authz.WithPrincipal refuses
+//     it there), so step 1 refuses it; lend_target refuses it again in
+//     Postgres (a team is nobody's member);
 //  3. a lend names a team the person is an operator or manager of, read from
 //     the principal's memberships (Principal.Teams, read with the role on
-//     every request — not TeamScope, which is empty on the chief's door:
-//     lending reads nothing of the team's, it shows the team one of the
-//     person's own rows);
+//     every request: lending reads nothing of the team's, it shows the team
+//     one of the person's own rows);
 //  4. the database: the UPDATE names the acting person as the owner, and
 //     0130's lend_target trigger refuses a lend to a team the person does not
 //     operate (read from team_members itself), so 1-3 are not the only guard.
 //
-// Unlending (team 0) passes 1 and 2 and needs no role: the owner can always
+// Unlending (team 0) passes 1 and needs no role: the owner can always
 // take a row back, even from a team they have left (internal/users clears a
 // person's lends to a team when they leave it or drop to viewer).
 // ---------------------------------------------------------------------------
 
 // spawnLendDoors are the doors lendHostSpawn admits: the owner's browser
-// session, and the owner's own chief (its MCP door, and a gateway chief's
-// turns). TestTheSpawnLendDoorsAreExactlyTheListedDoors pins it against every
-// request door.
+// session ONLY — the page's forms and a gateway chief's chat turn the owner
+// started there. TestTheSpawnLendDoorsAreExactlyTheListedDoors pins it against
+// every request door; TestATokenDrivenChiefTurnCannotLend drives the chief's
+// tool through the machine-message, kickoff and agent doors.
 var spawnLendDoors = map[authz.Via]bool{
-	authz.ViaSession: true, authz.ViaAgent: true, authz.ViaKickoff: true, authz.ViaAgentMessage: true,
+	authz.ViaSession: true,
 }
 
 // The lend gate's refusals.
 var (
 	// ErrLendDoor: a door outside spawnLendDoors — a personal API token above all.
-	ErrLendDoor = errors.New("a host spawn is shared with a team only from the Officer spawns page or by your chief; " +
-		"a personal API token, a machine credential or a background loop never shares one")
-	// ErrLendTeamPrincipal: the principal is a team.
-	ErrLendTeamPrincipal = errors.New("a team's own host spawns are already the team's; only a person lends one")
+	ErrLendDoor = errors.New("a host spawn is shared with a team only by its owner in person: on the Officer spawns page, " +
+		"or by asking the chief in muster's chat in the browser; a turn a personal API token, a machine message, an agent's " +
+		"own token or a background job started never shares or unshares one")
 	// ErrLendRole: the person is not an operator or manager of the team.
 	ErrLendRole = errors.New("you can share a host spawn only with a team you are an operator or manager of")
 	// ErrLendOff: no database.
@@ -83,9 +93,6 @@ func (s *Server) lendHostSpawn(ctx context.Context, id, team int64) (officers.Ho
 	p := authz.MustFrom(ctx)
 	if !spawnLendDoors[p.Via] {
 		return officers.HostSpawn{}, ErrLendDoor
-	}
-	if p.Team {
-		return officers.HostSpawn{}, ErrLendTeamPrincipal
 	}
 	if team > 0 {
 		role, in := p.Teams.RoleIn(team)
@@ -106,12 +113,15 @@ func (s *Server) lendHostSpawn(ctx context.Context, id, team int64) (officers.Ho
 	s.logger.Printf("officers: user %d set host spawn %d's team to %d (via %s)", p.UserID, id, team, p.Via)
 	// 🔴 AN audit_log ROW, naming the person and the team (design §4; #668
 	// round 0 choice 12): the team's managers see it on /teams/{id}.
-	action, onTeam := "officer.spawn.share", team
-	if team == 0 {
-		action, onTeam = "officer.spawn.unshare", prior.SharedTeam
+	by, detail := users.Actor{UserID: p.UserID, Via: p.Via}, map[string]any{"officer": h.Officer, "instance": h.Instance, "host": h.Host}
+	// A lend MOVED from one team to another takes it from the first: that
+	// team's managers get the unshare row too (#668 round 1, G2).
+	if prior.SharedTeam > 0 && prior.SharedTeam != team {
+		s.auditTeam(ctx, by, prior.SharedTeam, "officer.spawn.unshare", hostSpawnObject(id), detail)
 	}
-	s.auditTeam(ctx, users.Actor{UserID: p.UserID, Via: p.Via}, onTeam, action, hostSpawnObject(id),
-		map[string]any{"officer": h.Officer, "instance": h.Instance, "host": h.Host})
+	if team > 0 && team != prior.SharedTeam {
+		s.auditTeam(ctx, by, team, "officer.spawn.share", hostSpawnObject(id), detail)
+	}
 	return h, err
 }
 
@@ -242,7 +252,7 @@ func lendRefusal(err error) (int, string) {
 		return http.StatusNotFound, "No officer spawn of yours has that id."
 	case errors.Is(err, ErrLendRole), errors.Is(err, officers.ErrLendRefused):
 		return http.StatusForbidden, ErrLendRole.Error() + "."
-	case errors.Is(err, ErrLendDoor), errors.Is(err, ErrLendTeamPrincipal):
+	case errors.Is(err, ErrLendDoor):
 		return http.StatusForbidden, err.Error() + "."
 	case errors.Is(err, ErrLendOff):
 		return http.StatusNotFound, err.Error() + "."

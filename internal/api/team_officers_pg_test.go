@@ -153,7 +153,7 @@ func TestTheSpawnsPageLendsToATeamAndTakesItBack(t *testing.T) {
 }
 
 // TestTheChiefLendsASpawnAndAPersonalTokenCannot: the lend gate against the
-// real store. The owner's CHIEF door (ViaAgent) lends and takes back through
+// real store. The owner's CHIEF, in a browser chat turn (ViaSession), lends and takes back through
 // officer_spawn_share; the SAME person's PERSONAL API TOKEN (ViaToken) is
 // refused with ErrLendDoor and the row is unchanged; a viewer's lend gets
 // ErrLendRole; another person's lend of the owner's row is "no such spawn".
@@ -182,7 +182,9 @@ func TestTheChiefLendsASpawnAndAPersonalTokenCannot(t *testing.T) {
 	if got := w.spawnTeam(t, spawn); got != 0 {
 		t.Fatalf("the personal token's refused lend left the spawn lent to %d", got)
 	}
-	chief := w.personAt(t, w.a.uid, authz.ViaAgent)
+	// The chief in a chat the owner started in the browser: its tools run
+	// under the owner's session principal (chatTurn).
+	chief := w.personAt(t, w.a.uid, authz.ViaSession)
 	if _, err := w.srv.lendHostSpawn(chief, spawn, viewerTeam.ID); !errors.Is(err, ErrLendRole) {
 		t.Errorf("lending to a team the owner only views: %v; want ErrLendRole", err)
 	}

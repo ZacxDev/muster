@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -107,8 +108,14 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 		})
 		return id
 	}
-	viewer, gone := mk("fanout-viewer-"), mk("fanout-gone-")
+	viewer, gone, disabled := mk("fanout-viewer-"), mk("fanout-gone-"), mk("fanout-disabled-")
 	w.setRole(t, team, op, authz.TeamOperator)
+	// An OPERATOR whose account is disabled (#668 round 1, Y2): a member
+	// still, but nobody's phone should ring for them.
+	w.setRole(t, team, disabled, authz.TeamOperator)
+	if _, err := w.pool.Exec(w.sys, `UPDATE users SET disabled_at = now() WHERE id = $1`, disabled); err != nil {
+		t.Fatal(err)
+	}
 	w.setRole(t, team, viewer, authz.TeamViewer)
 	w.setRole(t, team, gone, authz.TeamOperator)
 	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, team, gone); err != nil {
@@ -121,7 +128,7 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 		_, _ = w.pool.Exec(bg, `DELETE FROM officer_defs WHERE owner_id = $1`, team)
 		_, _ = w.pool.Exec(bg, `DELETE FROM officer_types WHERE owner_id = $1`, team)
 	})
-	people := []int64{mgr, op, viewer, gone}
+	people := []int64{mgr, op, viewer, gone, disabled}
 	want := ids(mgr, op)
 
 	// 1. A team officer's ask.
@@ -131,7 +138,7 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 	}
 	w.srv.WaitForPushes()
 	if got := rec.to("attention-", people...); !sameIDs(got, want) {
-		t.Errorf("a team officer's ask pushed to %v; want its operator and manager %v (never viewer %d or ex-member %d)", got, want, viewer, gone)
+		t.Errorf("a team officer's ask pushed to %v; want its operator and manager %v (never viewer %d, ex-member %d or disabled operator %d)", got, want, viewer, gone, disabled)
 	}
 
 	// 2. An escalation to the team.
@@ -230,7 +237,7 @@ func TestEachTeamActionWritesItsAuditRow(t *testing.T) {
 	if rec := w.do(w.h, "POST", path+"/unshare", "", cred{sessionUser: w.a.uid}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("unshare: %d", rec.Code)
 	}
-	chief := w.personAt(t, w.a.uid, authz.ViaAgent)
+	chief := w.personAt(t, w.a.uid, authz.ViaSession) // a browser chat turn's tools
 	_ = w.srv.toolOfficerSpawnShare(chief, `{"action":"share","id":`+strconv.FormatInt(w.objA.spawn, 10)+`,"team_id":`+strconv.FormatInt(team, 10)+`}`)
 	_ = w.srv.toolOfficerSpawnShare(chief, `{"action":"unshare","id":`+strconv.FormatInt(w.objA.spawn, 10)+`}`)
 	got := w.auditRows(t, team, "officer.spawn.share", "officer.spawn.unshare")
@@ -256,5 +263,120 @@ func TestEachTeamActionWritesItsAuditRow(t *testing.T) {
 	got = w.auditRows(t, team, "officer.type.put", "officer.def.put")
 	if want := []string{"officer.type.put by " + a, "officer.def.put by " + a}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("the charter edits' audit rows = %v; want %v", got, want)
+	}
+}
+
+// TestATokenDrivenChiefTurnCannotLend (#668 round 1, Y1; operator decision 3:
+// a personal API token carries no team access): the chief's
+// officer_spawn_share, in a turn a token started — the machine-message door
+// (POST /api/agents/{name}/messages: a personal or the hook token), a gateway
+// agent's kickoff, or a claude-code chief's own agent token over MCP — is
+// refused with ErrLendDoor for a share AND an unshare, and the row is
+// unchanged. CONTROL: the same person's chief in a browser chat turn
+// (ViaSession) shares it.
+func TestATokenDrivenChiefTurnCannotLend(t *testing.T) {
+	w := newIsoWorld(t)
+	w.srv.ext.Users = users.NewPG(w.pool)
+	spawn, team := w.objA.spawn, w.aTeam
+	share := `{"action":"share","id":` + strconv.FormatInt(spawn, 10) + `,"team_id":` + strconv.FormatInt(team, 10) + `}`
+	unshare := `{"action":"unshare","id":` + strconv.FormatInt(spawn, 10) + `}`
+	for _, via := range []authz.Via{authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaAgent} {
+		ctx := w.personAt(t, w.a.uid, via)
+		if out := w.srv.toolOfficerSpawnShare(ctx, share); !strings.Contains(out, ErrLendDoor.Error()) {
+			t.Errorf("a chief turn through %s sharing: %s; want ErrLendDoor", via, out)
+		}
+		if got := w.spawnTeam(t, spawn); got != 0 {
+			t.Fatalf("a chief turn through %s left the spawn lent to %d", via, got)
+		}
+	}
+	// CONTROL, and the unshare leg: the browser chat turn lends it; no token
+	// door then takes it back.
+	if out := w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, authz.ViaSession), share); w.spawnTeam(t, spawn) != team {
+		t.Fatalf("control: the owner's browser chat turn sharing: %s (lent to %d)", out, w.spawnTeam(t, spawn))
+	}
+	for _, via := range []authz.Via{authz.ViaAgentMessage, authz.ViaKickoff, authz.ViaAgent} {
+		if out := w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, via), unshare); !strings.Contains(out, ErrLendDoor.Error()) || w.spawnTeam(t, spawn) != team {
+			t.Errorf("a chief turn through %s unsharing: %s (lent to %d); want ErrLendDoor, still lent", via, out, w.spawnTeam(t, spawn))
+		}
+	}
+	_ = w.srv.toolOfficerSpawnShare(w.personAt(t, w.a.uid, authz.ViaSession), unshare)
+}
+
+// TestMovingALendWritesTheOldTeamsUnshareRow (#668 round 1, G2): the chief
+// moving a lend from one team straight to another writes an unshare row for
+// the team it left as well as a share row for the new one, so the first
+// team's managers see it go.
+func TestMovingALendWritesTheOldTeamsUnshareRow(t *testing.T) {
+	w := newIsoWorld(t)
+	w.srv.ext.Users = users.NewPG(w.pool)
+	other, err := users.NewPG(w.pool).CreateTeam(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, "second-"+w.suffix, w.a.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, other.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE team_id = $1 OR object = $2`, other.ID, users.TeamObject(other.ID))
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, other.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE team_id = $1 AND action LIKE 'officer.spawn.%'`, w.aTeam)
+	})
+	chief := w.personAt(t, w.a.uid, authz.ViaSession)
+	id := strconv.FormatInt(w.objA.spawn, 10)
+	_ = w.srv.toolOfficerSpawnShare(chief, `{"action":"share","id":`+id+`,"team_id":`+strconv.FormatInt(w.aTeam, 10)+`}`)
+	_ = w.srv.toolOfficerSpawnShare(chief, `{"action":"share","id":`+id+`,"team_id":`+strconv.FormatInt(other.ID, 10)+`}`)
+	if w.spawnTeam(t, w.objA.spawn) != other.ID {
+		t.Fatalf("the move left the spawn lent to %d; want %d", w.spawnTeam(t, w.objA.spawn), other.ID)
+	}
+	a := strconv.FormatInt(w.a.uid, 10)
+	if got, want := w.auditRows(t, w.aTeam, "officer.spawn.share", "officer.spawn.unshare"), []string{"officer.spawn.share by " + a, "officer.spawn.unshare by " + a}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("the first team's spawn audit rows = %v; want %v (it must see the lend leave)", got, want)
+	}
+	if got, want := w.auditRows(t, other.ID, "officer.spawn.share", "officer.spawn.unshare"), []string{"officer.spawn.share by " + a}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("the second team's spawn audit rows = %v; want %v", got, want)
+	}
+}
+
+// TestATeamOfficerInstancesOwnAskFansOut (#668 round 1, G1): a team
+// officer's INSTANCE calling attention_ask for itself is filed like the
+// officer's other asks — its push reaches the team's operators and managers.
+// CONTROL: the same tool from an agent that is no officer's instance pushes to
+// its owner only.
+func TestATeamOfficerInstancesOwnAskFansOut(t *testing.T) {
+	w := newIsoWorld(t)
+	w.srv.ext.Users = users.NewPG(w.pool)
+	rec := &ownerPush{}
+	w.srv.ext.Push = rec
+	team := w.aTeam
+	w.setRole(t, team, w.b.uid, authz.TeamOperator)
+	o := officers.Officer{ID: "mk:a", Owner: team, MaxInstances: 1}
+	w.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{o})}
+	t.Cleanup(func() {
+		w.srv.officerRT = nil
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM attention_asks WHERE owner_id = $1`, team)
+		_, _ = w.pool.Exec(bg, `DELETE FROM agents WHERE owner_id = $1`, team)
+	})
+	teamCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
+	inst, err := agents.NewPG(w.pool).Create(teamCtx, agents.Agent{Name: o.InstanceName(1), Namespace: "devpod-" + o.InstanceName(1),
+		Kind: agents.KindGateway, Status: agents.StatusRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound, _, ok := w.srv.officerOf(inst); !ok || bound.Owner != team {
+		t.Fatalf("fixture: %s is not read as the team officer's instance", inst.Name)
+	}
+	if out := w.srv.toolAttentionAsk(teamCtx, callerOfAgent(inst), `{"question":"Ship it?"}`); !strings.Contains(out, `"status":"pending"`) {
+		t.Fatalf("the instance's attention_ask: %s", out)
+	}
+	w.srv.WaitForPushes()
+	if got, want := rec.to("attention-", w.a.uid, w.b.uid), ids(w.a.uid, w.b.uid); !sameIDs(got, want) {
+		t.Errorf("a team officer instance's own ask pushed to %v; want the team's manager and operator %v", got, want)
+	}
+	// CONTROL: a person's own non-officer agent's ask goes to that person.
+	rec.reset()
+	out := w.srv.toolAttentionAsk(w.personAt(t, w.a.uid, authz.ViaAgent), callerOfAgent(w.a.agent), `{"question":"Mine?"}`)
+	w.srv.WaitForPushes()
+	if got := rec.to("attention-", w.a.uid, w.b.uid); !sameIDs(got, ids(w.a.uid)) {
+		t.Errorf("a non-officer agent's ask pushed to %v; want only its owner (%s)", got, out)
 	}
 }

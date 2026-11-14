@@ -888,13 +888,19 @@ rule the later phases' rows will meet.
 >   new share class, `lentOwned`).
 >   - The owner lends one row to one team they operate, and unlends it.
 >     There are two ways in: `/officers/spawns` (the session tier) and the
->     chief's `officer_spawn_share` (chief-only, MCP).
->   - `lendHostSpawn` is the one gate. It admits only the doors in
->     `spawnLendDoors`: the session, and the owner's chief's agent, kickoff
->     and machine-message doors. A personal API token is never admitted.
->   - The role is read from `Principal.Teams`, not `TeamScope`, which is
->     empty on the chief's door. A lend shows the team the person's own row
->     and reads nothing of the team's.
+>     chief's `officer_spawn_share` (chief-only, not on MCP).
+>   - `lendHostSpawn` is the one gate. `spawnLendDoors` admits only the
+>     owner's browser **session**. That covers the page's forms and a gateway
+>     chief's chat turn, whose tools run under the owner's session principal.
+>   - A turn a token started does not lend (#668 round 1, Y1). It arrives at
+>     the machine-message door, the kickoff door, or a claude-code chief's
+>     own agent token over MCP, which cannot tell who started the turn. So a
+>     personal API token never lends, either directly or by asking the
+>     chief. A claude-code chief cannot lend.
+>   - The role is read from `Principal.Teams`. A lend shows the team the
+>     person's own row and reads nothing of the team's.
+>   - Moving a lend from one team to another writes an unshare audit row for
+>     the team it left.
 >   - `lend_target` enforces it again in Postgres from `team_members`.
 >   - `internal/users` ends a person's lends to a team when they leave it or
 >     drop to viewer.

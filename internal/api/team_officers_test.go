@@ -24,7 +24,10 @@ import (
 // door spawnLendDoors grew is caught by behaviour, and the literal fails when
 // it names a door that is not one.
 var lendDoors = map[authz.Via]bool{
-	authz.ViaSession: true, authz.ViaAgent: true, authz.ViaKickoff: true, authz.ViaAgentMessage: true,
+	// Only the owner's own browser session: a chief turn a token started
+	// (machine message, kickoff) or a claude-code chief's own agent token
+	// never lends (#668 round 1, Y1).
+	authz.ViaSession: true, authz.ViaAgent: false, authz.ViaKickoff: false, authz.ViaAgentMessage: false,
 	authz.ViaToken: false, authz.ViaDevice: false, authz.ViaHook: false, authz.ViaService: false, authz.ViaConnect: false,
 	authz.ViaRelay: false, authz.ViaRunner: false, authz.ViaPlugin: false, authz.ViaQueue: false, authz.ViaFocus: false,
 	authz.ViaRoute: false, authz.ViaAttention: false, authz.ViaAsk: false, authz.ViaReap: false, authz.ViaOfficer: false,
@@ -73,15 +76,16 @@ func TestTheSpawnLendDoorsAreExactlyTheListedDoors(t *testing.T) {
 			admitted++
 		}
 	}
-	if admitted != 4 {
-		t.Fatalf("%d doors lend; the ledger names 4", admitted)
+	if admitted != 1 {
+		t.Fatalf("%d doors lend; the ledger names 1", admitted)
 	}
 }
 
 // TestTheLendGateNeedsAnOperatorAndAPerson: past the door, a lend needs the
 // person to be an operator or manager of the team (a viewer and a non-member
-// get ErrLendRole); the team acting principal gets ErrLendTeamPrincipal; an
-// UNLEND needs no role. Each refusal comes before the store (none is wired:
+// get ErrLendRole); the team acting principal never reaches the role check —
+// it is never a session, so the door refuses it (ErrLendDoor); an UNLEND
+// needs no role. Each refusal comes before the store (none is wired:
 // an admitted call reaches ErrLendOff, the control).
 func TestTheLendGateNeedsAnOperatorAndAPerson(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
@@ -98,8 +102,8 @@ func TestTheLendGateNeedsAnOperatorAndAPerson(t *testing.T) {
 	}
 	team := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 13, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
 	for _, to := range []int64{13, 0} {
-		if _, err := s.lendHostSpawn(team, 1, to); !errors.Is(err, ErrLendTeamPrincipal) {
-			t.Errorf("the team acting principal lending to %d: %v; want ErrLendTeamPrincipal", to, err)
+		if _, err := s.lendHostSpawn(team, 1, to); !errors.Is(err, ErrLendDoor) {
+			t.Errorf("the team acting principal lending to %d: %v; want ErrLendDoor", to, err)
 		}
 	}
 }
