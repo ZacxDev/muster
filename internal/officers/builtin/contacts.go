@@ -494,20 +494,18 @@ func (s *Store) engagementItemTx(ctx context.Context, tx pgx.Tx, owner int64, c 
 		if busy {
 			subject += "#" + strconv.FormatInt(ev.ID, 10)
 		}
-		p = engagementPayload{Plugin: src.PluginName, PluginID: src.PluginID, Venue: c.Venue, ContactID: c.ID, Handle: c.Handle, Day: day}
+		p = engagementPayload{Plugin: src.PluginName, PluginID: src.PluginID, Venue: c.Venue, ContactID: c.ID, Day: day}
 	}
 	p.Events = append(p.Events, engagementPayloadEvent{EventID: ev.ID, Kind: ev.Kind, Ref: ev.Ref, ParentRef: ev.ParentRef,
-		OurPostRef: ev.OurPostRef, At: ev.At, MessageID: src.MessageID, excerpt: ev.Excerpt})
+		OurPostRef: ev.OurPostRef, At: ev.At, MessageID: src.MessageID})
 	if len(p.Events) > MaxItemEvents {
 		p.Events = p.Events[len(p.Events)-MaxItemEvents:]
 	}
-	// The fenced block is rendered from the stored events each time (their
-	// excerpts are read back: the payload keeps no untrusted text outside it).
-	excerpts, err := eventExcerpts(ctx, tx, c.ID, p.Events)
-	if err != nil {
-		return 0, false, err
-	}
-	p.Person = renderPerson(c, p.Events, excerpts, src.PluginName)
+	// 🔴 THE STORED PAYLOAD NAMES THE PERSON BY ID ONLY: no handle, name, bio
+	// or words. officer_items is read more widely than the people are (a
+	// team's viewers read its items; only its operators read its people),
+	// so the person is rendered into the item when the OFFICER claims it
+	// (WithPerson), read under the officer's own principal.
 	body, err := json.Marshal(p)
 	if err != nil {
 		return 0, false, err
@@ -526,11 +524,11 @@ type engagementPayload struct {
 	PluginID  int64                    `json:"plugin_id"`
 	Venue     string                   `json:"venue"`
 	ContactID int64                    `json:"contact_id"`
-	Handle    string                   `json:"handle"`
 	Day       string                   `json:"day"`
 	Events    []engagementPayloadEvent `json:"events"`
-	// Person is the person and what they did, as a fenced UNTRUSTED block.
-	Person string `json:"person"`
+	// Person is the person and what they did, as a fenced UNTRUSTED block:
+	// NEVER STORED, set on the officer's own copy at its claim (WithPerson).
+	Person string `json:"person,omitempty"`
 }
 
 type engagementPayloadEvent struct {
@@ -541,7 +539,6 @@ type engagementPayloadEvent struct {
 	OurPostRef *string   `json:"our_post_ref,omitempty"`
 	At         time.Time `json:"at"`
 	MessageID  int64     `json:"message_id"`
-	excerpt    string
 }
 
 // eventExcerpts is each listed event's stored excerpt, by id.
@@ -565,6 +562,34 @@ func eventExcerpts(ctx context.Context, tx pgx.Tx, contact int64, evs []engageme
 		out[id] = ex
 	}
 	return out, rows.Err()
+}
+
+// WithPerson is engagement item payload raw with the person rendered in
+// (Person: the fenced untrusted block of who they are and what they said),
+// read in tx as the claiming officer: the officer's copy of the item. Any
+// other payload, or one whose person is gone, is returned as it is.
+func WithPerson(ctx context.Context, tx pgx.Tx, owner int64, kind string, raw json.RawMessage) json.RawMessage {
+	if kind != EngagementItemKind {
+		return raw
+	}
+	var p engagementPayload
+	if json.Unmarshal(raw, &p) != nil || p.ContactID == 0 {
+		return raw
+	}
+	c, err := scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts WHERE owner_id = $1 AND id = $2`, owner, p.ContactID))
+	if err != nil {
+		return raw
+	}
+	excerpts, err := eventExcerpts(ctx, tx, c.ID, p.Events)
+	if err != nil {
+		return raw
+	}
+	p.Person = renderPerson(c, p.Events, excerpts, p.Plugin)
+	out, err := json.Marshal(p)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // personMarker is the fence marker of a person in an engagement item.

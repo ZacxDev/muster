@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,6 +69,11 @@ func TestAnEngagementMessageRecordsThePersonAndOneItem(t *testing.T) {
 	}
 	if kind != builtin.EngagementItemKind || !strings.HasPrefix(subject, "contact:") {
 		t.Fatalf("the item is %s %s", kind, subject)
+	}
+	// The officer's claim renders the person (stored by id only), fenced.
+	got := w.call(officers.ToolClaim, `{"item_id":"`+strconv.FormatInt(int64(item.(float64)), 10)+`"}`)
+	if isToolErr(got) || !strings.Contains(got, "does it retry?") || !strings.Contains(got, "untrusted") {
+		t.Fatalf("the claimed engagement item does not carry the person fenced: %s", got)
 	}
 	// An engagement on an UNBOUND plugin, or without its person, is refused.
 	if rec := w.do("POST", "/plugin/v1/messages", `{"kind":"engagement","venue":"x","person":{"handle":"a"},"event":{"kind":"reply","ref":"r","our_post_ref":"p"}}`,

@@ -218,6 +218,7 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		if err != nil {
 			return nil, err
 		}
+		it.Payload = WithPerson(ctx, tx, b.officer.Owner, it.Kind, it.Payload)
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -248,6 +249,12 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 	}
 	if err != nil {
 		return nil, outage("claim-next", err)
+	}
+	if it.Kind == EngagementItemKind {
+		if tx, err := b.store.pool.Begin(b.scope(ctx)); err == nil {
+			it.Payload = WithPerson(b.scope(ctx), tx, b.officer.Owner, it.Kind, it.Payload)
+			_ = tx.Rollback(b.scope(ctx))
+		}
 	}
 	return answer(map[string]any{"item": it, "lease_expires_at": exp})
 }

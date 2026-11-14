@@ -95,8 +95,23 @@ func itemPayload(t *testing.T, w *pgWorld, id int64) (subject, status string, ev
 	if err := json.Unmarshal(raw, &p); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(p.Person, "untrusted") {
-		t.Fatalf("item %d's person is not fenced untrusted: %q", id, p.Person)
+	// 🔴 the STORED payload names the person by id only (no handle, name,
+	// bio or words: officer_items is read more widely than the people)…
+	if p.Person != "" || strings.Contains(string(raw), "Display ") || strings.Contains(string(raw), `"handle"`) {
+		t.Fatalf("item %d's stored payload carries the person: %s", id, raw)
+	}
+	// …and the officer's copy renders them, fenced untrusted.
+	tx, err := w.store.Pool().Begin(ctxOp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctxOp()) }()
+	var mine struct {
+		Person string `json:"person"`
+	}
+	_ = json.Unmarshal(builtin.WithPerson(ctxOp(), tx, 1, builtin.EngagementItemKind, raw), &mine)
+	if !strings.Contains(mine.Person, "untrusted") || !strings.Contains(mine.Person, "Display ") {
+		t.Fatalf("item %d's officer copy does not render the person fenced: %q", id, mine.Person)
 	}
 	return subject, status, len(p.Events)
 }
