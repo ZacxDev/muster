@@ -964,22 +964,28 @@ The chief has one **primary chat** and any number of **side chats**.
   they go to the primary instead; nothing is ever delivered into an archived
   chat.
 
-The chat bar over the transcript, on the chief page and in the panel, says
-which chat you are in and carries the actions:
+The chats are managed in one place. On the chief page, the header's list
+button (the same one a mirrored session has) opens a sheet whose first tab,
+**Chats**, lists them — tap one to switch to it — beside **Your messages** and
+**Focus history**. In the panel, the title bar's thread list holds them. The
+actions:
 
-| on | action | what it does |
-|---|---|---|
-| every chat | **New side chat** | opens a side chat (the newest one is reused while it is still empty) |
-| the primary | **Fresh primary** | after a confirm, starts a new primary chat (below) |
-| a side chat | **Archive** | hides it from the switcher, keeps its history, and leaves you on the primary |
-| an archived chat | **Unarchive** | puts it back among the side chats |
+| on | action | where | what it does |
+|---|---|---|---|
+| every chat | **+ New side chat** | under the list | opens a side chat (the newest one is reused while it is still empty) |
+| the primary | **Fresh primary** | under the list, while on the primary | after a confirm, starts a new primary chat (below) |
+| a side chat | **Archive** | the row's ⋯ menu (the panel: under the list, for the chat it is on) | hides it among the archived chats, keeps its history, and leaves you on the primary |
+| an archived chat | **Unarchive** | the row's ⋯ menu (the panel: under the list) | puts it back among the side chats |
+| a side chat | **Make primary** | the row's ⋯ menu (the panel: beside the row) | makes it the primary |
 
-The primary cannot be archived. The switcher (the page's chat history, the
-panel's thread list) lists the primary first, marked **Primary**, then the side
-chats by last activity, each with a dot when a reply arrived since you last
-opened it, and the archived chats last, under **Archived**.
+The primary cannot be archived. The list puts the primary first, marked
+**Primary**, then the side chats by last activity, each with a dot when a
+reply arrived since you last opened it, and the archived chats last, under
+**Archived** (a collapsed group on the page).
 
-**The context chip.** The chat bar shows how full the chat's context is: the
+**The context chip.** The chief page's header shows, under the title (where a
+mirrored session's header shows its own), how full the chat's context is; the
+panel shows it in its title bar. The chip shows the
 model, then `used/window` (`152k/200k`), amber from 70% of the window and red
 from 90%; tap it for the exact count. It reads the chat's latest turn's usage
 row (`chief_turn_usage`; migration 0115 adds the chat, the model and

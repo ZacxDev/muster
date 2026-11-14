@@ -701,9 +701,20 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if reply != "" {
-		_, _ = s.ext.Agents.AddChatMessage(dctx, agents.ChatMessage{
+		if _, err := s.ext.Agents.AddChatMessage(dctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply,
-		})
+		}); err == nil {
+			// 🔴 chat.reply AFTER THE REPLY IS STORED, as every other door's
+			// persisted turn says: the turn's own end (chat.turn) is broadcast
+			// when the turn closes, BEFORE this store, so an open chat that
+			// refetched on it drew "working…" gone and no reply — and nothing
+			// told it to look again. It was masked while the chief page's context
+			// chip sat inside the chat pane and re-dispatched every chat event,
+			// which refetched the transcript a second time a few ms later.
+			// To the AGENT's owner, as the turn count's event goes
+			// (session_turns.go): this door's principal is a machine token's.
+			s.broadcastTo(a.OwnerID, EventChatReply, a.Name)
+		}
 	}
 	// `agent`, `agentId` and `sessionId` are emitted alongside the reply — which
 	// the operator route did NOT carry. They are what lets a caller prove which

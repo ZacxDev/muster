@@ -229,14 +229,17 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   await openAgent(page, 'docs-sweeper');
 
   // Below the message input, inside the page's width.
-  // The bar sits in the room the chat form reserves at its bottom (it is
-  // absolute there, so its late arrival moves nothing): below the input row,
-  // inside the form's box.
+  // The bar sits in the room the chat PANE reserves at its bottom (its
+  // padding; the bar is absolute there, so its late arrival moves nothing):
+  // directly below the chat form, never inside the form's box — the composer
+  // is laid out above it (chief-header-chats-sheet: with questions waiting,
+  // the form had slid under the bar).
   const inputBox = (await page.locator('#chat-input').boundingBox())!;
   const form = (await page.locator('#chat-form').boundingBox())!;
   const b = (await bar(page).boundingBox())!;
   expect(b.y, 'the bar is below the input row').toBeGreaterThanOrEqual(inputBox.y + inputBox.height - 1);
-  expect(Math.abs(b.y + b.height - (form.y + form.height)), 'in the room the form reserves at its bottom').toBeLessThanOrEqual(1);
+  expect(b.y, 'the bar is below the chat form, not inside its box').toBeGreaterThanOrEqual(form.y + form.height - 1);
+  expect(b.y - (form.y + form.height), 'directly below it').toBeLessThanOrEqual(1);
   expect(b.y + b.height, 'and on screen').toBeLessThanOrEqual(page.viewportSize()!.height + 1);
 
   // Every control in the bar is a 44px target. (The ⋯ menu's item is in a

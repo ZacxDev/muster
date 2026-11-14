@@ -35,8 +35,13 @@ func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
 		`#` + AskerAsksID + ` [data-asks-collapsed] > [data-attention-item]:not(:first-child) {`,
 		`#` + AskerAsksID + ` [data-attention-item] [data-attention-text]:not([data-ask-open]) {`,
 		`-webkit-line-clamp: 4;`,
-		// One card shows: the cap rises so a real card fits whole (AskerAsksBlock).
-		`#` + AskerAsksID + `:has(> [data-asks-collapsed]),`, `#` + AskerAsksID + `:has(> ul > [data-attention-item]:only-child) {`, `max-height: 65dvh;`,
+		// One card shows: the cap rises so a real card fits whole (AskerAsksBlock)
+		// — except on an agent's page (askerAsksSection's data-asks-page), where
+		// the block stays inside its 40dvh cap and shrinks.
+		`#` + AskerAsksID + `:not([` + askerAsksPageAttr + `]):has(> [data-asks-collapsed]),`,
+		`#` + AskerAsksID + `:not([` + askerAsksPageAttr + `]):has(> ul > [data-attention-item]:only-child) {`, `max-height: 65dvh;`,
+		// The heading's fold: folded, the block is its heading row alone.
+		`#` + AskerAsksID + `[data-asks-folded] > :not(:first-child) {`,
 	} {
 		if !strings.Contains(string(css), want) {
 			t.Errorf("web/css/input.css lacks %q", want)
@@ -51,6 +56,10 @@ func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
 		`t.after(b)`, `'Show less' : 'Show more'`,
 		// apply() fits the block whenever it shows it: first parse, every refresh.
 		"else fit();",
+		// The fold: a tap on the heading's button flips it, and fit() — on every
+		// refresh — re-applies it to the block and the button's aria-expanded.
+		`closest('[data-asks-fold]')) { folded = !folded; fit(); return; }`,
+		`block.setAttribute('data-asks-folded', '')`, `f.setAttribute('aria-expanded', on ? 'false' : 'true')`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)
@@ -64,7 +73,7 @@ func TestTheAsksShowOneCardAtATimeEachClampedInPlace(t *testing.T) {
 // The chip that reopens the block follows the block, drawn hidden, and so does
 // the script; the script makes no request of any kind.
 func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
-	head := AskerAsksHeading("2 questions")
+	head := AskerAsksHeading("2 questions", 2)
 	btn := regexp.MustCompile(`<button type="button" data-asker-asks-hide class="[^"]*">` + askerAsksHideLabel + `</button>`).FindString(head)
 	if btn == "" {
 		t.Fatalf("no hide button in the heading:\n%s", head)
@@ -74,10 +83,10 @@ func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
 			t.Errorf("the heading carries %q", banned)
 		}
 	}
-	if !strings.Contains(head, `data-asker-asks-heading>2 questions waiting</h2>`) {
+	if !strings.Contains(head, `data-asker-asks-heading>2 questions waiting</span>`) {
 		t.Errorf("the count is not in the heading:\n%s", head)
 	}
-	if !strings.Contains(AskerAsksHeading("<b>"), "&lt;b&gt;") {
+	if !strings.Contains(AskerAsksHeading("<b>", 1), "&lt;b&gt;") {
 		t.Error("the count is not escaped")
 	}
 
@@ -112,5 +121,70 @@ func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
 				t.Errorf("viaHTMX=%v: the script lacks %q", viaHTMX, want)
 			}
 		}
+	}
+}
+
+// TestTheAsksHeadingFoldsOnlyWithMoreThanOneQuestion: with two or more
+// questions the heading's text is a fold button (aria-expanded, controlling
+// the block) that keeps the "N questions waiting" text; with one it is the
+// plain heading, nothing to fold.
+func TestTheAsksHeadingFoldsOnlyWithMoreThanOneQuestion(t *testing.T) {
+	fold := regexp.MustCompile(`<button type="button" data-asks-fold aria-expanded="true" aria-controls="` + AskerAsksID + `" class="[^"]*min-h-\[44px\][^"]*">.*<span[^>]*data-asker-asks-heading>3 questions waiting</span></button>`)
+	if three := AskerAsksHeading("3 questions", 3); !fold.MatchString(three) {
+		t.Errorf("three questions: no fold button carrying the count:\n%s", three)
+	}
+	one := AskerAsksHeading("1 question", 1)
+	if strings.Contains(one, "data-asks-fold") || !strings.Contains(one, `data-asker-asks-heading>1 question waiting</h2>`) {
+		t.Errorf("one question: the heading folds, or lost its count:\n%s", one)
+	}
+}
+
+// TestTheAgentPageAsksBlockShrinksInsideItsCap: on an agent's page (viaHTMX)
+// the asks block is capped at 40dvh and SHRINKS (flex-shrink, min-h-0,
+// scrolling inside), marked data-asks-page so the one-card raise skips it; the
+// mirrored view's block (viaHTMX false) keeps its flex-none 45vh. And the
+// transcript beside it keeps a floor (#chat-log's min-h), so what the asks
+// block can take is what is left after the composer and that floor.
+func TestTheAgentPageAsksBlockShrinksInsideItsCap(t *testing.T) {
+	section := func(viaHTMX bool) string {
+		html := renderString(t, askerAsksSection("x", "/attention/asker?agent=a", viaHTMX))
+		return html[:strings.Index(html, ">")]
+	}
+	classes := func(tag string) map[string]bool {
+		m := map[string]bool{}
+		mm := regexp.MustCompile(`class="([^"]*)"`).FindStringSubmatch(tag)
+		if mm == nil {
+			t.Fatalf("no class on %s", tag)
+		}
+		for _, c := range strings.Fields(mm[1]) {
+			m[c] = true
+		}
+		return m
+	}
+	page := section(true)
+	pc := classes(page)
+	for _, want := range []string{"max-h-[40dvh]", "min-h-0", "shrink", "overflow-y-auto"} {
+		if !pc[want] {
+			t.Errorf("the page's block lacks %s: %s", want, page)
+		}
+	}
+	if pc["flex-none"] || pc["max-h-[45vh]"] || !strings.Contains(page, askerAsksPageAttr+`=""`) {
+		t.Errorf("the page's block is still flex-none / 45vh, or unmarked: %s", page)
+	}
+	mirror := section(false)
+	mc := classes(mirror)
+	if !mc["flex-none"] || !mc["max-h-[45vh]"] || strings.Contains(mirror, askerAsksPageAttr) {
+		t.Errorf("the mirrored view's block changed: %s", mirror)
+	}
+
+	pane := renderString(t, agentChatPane(AgentDetailView{ID: 1, Name: "w", Kind: "claude-code", AsksSrc: "/attention/asker?agent=w", Asks: "x"}))
+	log := regexp.MustCompile(`<div id="chat-log"[^>]*>`).FindString(pane)
+	if lc := classes(log); !lc["min-h-[7.5rem]"] || lc["min-h-0"] || !lc["flex-1"] {
+		t.Errorf("#chat-log has no floor: %s", log)
+	}
+	// The order in the column: transcript, asks, composer.
+	l, a, f := strings.Index(pane, `id="chat-log"`), strings.Index(pane, `id="`+AskerAsksID+`"`), strings.Index(pane, `id="chat-form"`)
+	if !(l >= 0 && l < a && a < f) {
+		t.Errorf("the pane's order: log %d, asks %d, form %d", l, a, f)
 	}
 }

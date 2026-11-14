@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/sse"
 )
 
 // heldAnswerAttention is the attention store with its in-session answer HELD:
@@ -203,5 +204,62 @@ func TestATurnStartedElsewhereDrawsWorkingOnAnOpenChat(t *testing.T) {
 	}
 	if shown() {
 		t.Error("the turn ended and the chat still draws working")
+	}
+}
+
+// TestTheMachineDoorSaysChatReplyOnceTheReplyIsStored: POST
+// /api/agents/{name}/messages stores the turn's reply AFTER the turn's own end
+// (chat.turn) is broadcast, so an open chat that refetched on chat.turn drew no
+// reply. The door now broadcasts chat.reply to the agent's owner once the reply
+// is stored — and a render on that event shows the reply. Red before the fix:
+// the door published no chat.reply at all (an open chief page hid the race only
+// because its in-pane context chip re-dispatched every chat event, refetching
+// the transcript a second time).
+func TestTheMachineDoorSaysChatReplyOnceTheReplyIsStored(t *testing.T) {
+	gw := newHeldGateway("the stored answer")
+	f := newConnFixtureWith(t, func(ext *Extensions, _ *pgxpool.Pool) { ext.Gateway = gw })
+	bus := sse.New(512)
+	f.srv.bus = bus
+	_, stream := bus.Subscribe(1)
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	chief, err := agents.NewPG(f.pool).Create(asUser(1), agents.Agent{Name: "replychief-" + stamp, Namespace: "devpod-replychief-" + stamp,
+		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "reply-chief-token-" + stamp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, chief.ID)
+	})
+	primary, err := f.srv.primarySession(asUser(1), chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := "/ui/agents/" + chief.Name + "/chat-log?session=" + strconv.FormatInt(primary.ID, 10)
+	close(gw.release)
+	r := httptest.NewRequest(http.MethodPost, "/api/agents/"+chief.Name+"/messages", strings.NewReader(`{"message":"is it stored"}`))
+	r.Header.Set("Authorization", "Bearer "+connTestHookToken)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	f.h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("chief ask answered %d: %s", w.Code, w.Body.String())
+	}
+	want, _ := json.Marshal(map[string]any{"id": chief.Name})
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-stream:
+			if ev.Name != EventChatReply || ev.Data != string(want) {
+				continue
+			}
+			// What an open chat draws on that event: the reply.
+			lw := f.call(t, http.MethodGet, logPath, nil, f.operator())
+			if lw.Code != http.StatusOK || !strings.Contains(lw.Body.String(), "the stored answer") {
+				t.Fatalf("on chat.reply the chat draws %d without the reply:\n%.400s", lw.Code, lw.Body.String())
+			}
+			return
+		case <-deadline:
+			t.Fatal("the machine door stored its reply and never said chat.reply to the agent's owner")
+		}
 	}
 }

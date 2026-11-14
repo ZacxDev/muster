@@ -230,18 +230,44 @@ func askerAsksBlockBadged(inner, src string, viaHTMX bool) g.Node {
 }
 
 // askerAsksSection is the block's own element (AskerAsksBlock).
+//
+// 🔴 ON AN AGENT'S PAGE (viaHTMX: the agent page is the only caller in the
+// shell) THE BLOCK IS CAPPED AT 40dvh AND IT SHRINKS, AND THAT IS THE FIX FOR
+// AN OVERLAP, NOT A TASTE (an operator report: with questions waiting, the
+// chief's message bar was pushed down under the bottom bar). There the block
+// sits in a flex column with the transcript, the composer and — absolute, in
+// the room the composer's padding reserves — the session switcher. As a
+// flex-none box of up to 65dvh (the one-card raise below) beside the
+// composer and the transcript's floor, the column's in-flow content outgrew
+// the column; the composer, last in flow, was laid out past the column's end,
+// under the switcher pinned there. Now the block can only take what is left
+// (flex-shrink, min-h-0, scrolling inside), the transcript keeps its floor
+// (agentChatPane), and the composer is always laid out inside the column,
+// above the switcher. The one-card raise does not apply on the page
+// (data-asks-page, web/css/input.css): one real card scrolls inside the cap.
+//
+// The mirrored view (viaHTMX false) keeps its 45vh cap and the raise: its
+// composer is pinned to the viewport (pinnedShellClass), so the block cannot
+// push it anywhere.
 func askerAsksSection(inner, src string, viaHTMX bool) g.Node {
+	cls := "flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"
+	if viaHTMX {
+		cls = "flex max-h-[40dvh] min-h-0 shrink flex-col gap-2 overflow-y-auto overscroll-contain border-t border-line px-3 py-2 empty:hidden"
+	}
 	return Section(
 		ID(AskerAsksID),
 		g.Attr("aria-label", "Questions waiting on your answer"),
 		g.Attr("aria-live", "polite"),
 		g.Attr("data-src", src),
 		g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
-			hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
-		Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
+			hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy), g.Attr(askerAsksPageAttr, "")})),
+		Class(cls),
 		g.Raw(inner),
 	)
 }
+
+// askerAsksPageAttr marks the block on an agent's page (askerAsksSection).
+const askerAsksPageAttr = "data-asks-page"
 
 // HIDE UNTIL NEXT ASK (operator decision): the block's heading carries a
 // button that hides the block IN THIS VIEW and nothing else. The asks stay
@@ -272,14 +298,30 @@ const askerAsksHiddenKey = "muster.asks.hidden.v1"
 
 // AskerAsksHeading is the block's heading row: the count (n, "1 question"),
 // as "<n> waiting", and the hide button. internal/api's askerAsksHTML draws it
-// above the items.
+// above the items; count is how many there are.
 //
 // 🔴 ONE LINE: the heading truncates and the hide is a quiet nowrap text
 // button (a 44px tap target, no border). It was an uppercase "WAITING ON YOUR
 // ANSWER: 7 QUESTIONS" that wrapped to two lines beside a bordered button.
-func AskerAsksHeading(n string) string {
-	return `<div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-fg" data-asker-asks-heading>` +
-		html.EscapeString(n) + ` waiting</h2><button type="button" data-asker-asks-hide class="press -mr-2 inline-flex min-h-[44px] shrink-0 items-center whitespace-nowrap rounded-lg px-2 text-xs font-medium text-muted transition hover:bg-s2 hover:text-fg">` +
+//
+// 🔴 WITH MORE THAN ONE QUESTION THE HEADING FOLDS THE BLOCK (an operator ask:
+// a collapsible "N questions waiting" header). Its text is then a button
+// (data-asks-fold, aria-expanded) with a chevron: a tap folds the block to this
+// one row — the cards and "Show N more" are display:none (web/css/input.css,
+// [data-asks-folded]) — and a second tap opens it. Unlike "Hide until next
+// ask" it hides nothing for later: the count stays on screen, in the block's
+// own place. askerAsksHideScript keeps the choice across the block's refreshes
+// (not a reload).
+func AskerAsksHeading(n string, count int) string {
+	text := html.EscapeString(n) + ` waiting`
+	head := `<h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-fg" data-asker-asks-heading>` + text + `</h2>`
+	if count > 1 {
+		head = `<h2 class="flex min-w-0 flex-1 text-sm font-semibold text-fg"><button type="button" data-asks-fold aria-expanded="true" aria-controls="` + AskerAsksID + `" ` +
+			`class="press group -ml-1 inline-flex min-h-[44px] min-w-0 max-w-full items-center gap-1 rounded-lg px-1 text-left transition hover:bg-s2">` +
+			`<svg class="h-4 w-4 shrink-0 text-muted transition group-aria-[expanded=false]:-rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>` +
+			`<span class="min-w-0 truncate" data-asker-asks-heading>` + text + `</span></button></h2>`
+	}
+	return `<div class="flex min-w-0 items-center gap-2">` + head + `<button type="button" data-asker-asks-hide class="press -mr-2 inline-flex min-h-[44px] shrink-0 items-center whitespace-nowrap rounded-lg px-2 text-xs font-medium text-muted transition hover:bg-s2 hover:text-fg">` +
 		askerAsksHideLabel + `</button></div>`
 }
 
@@ -416,7 +458,17 @@ func askerAsksHideScript() g.Node {
   // ONE AT A TIME, CLAMPED: whether "Show N more" was used, and which cards'
   // text is open (by the card's id) — both outlive a refresh of the content.
   var all = false, opened = {};
+  // The heading's fold (AskerAsksHeading): kept across refreshes; a block
+  // whose heading has no fold (one question) is never folded.
+  var folded = false;
+  function fold() {
+    var f = block.querySelector('[data-asks-fold]');
+    var on = folded && !!f;
+    if (on) block.setAttribute('data-asks-folded', ''); else block.removeAttribute('data-asks-folded');
+    if (f) f.setAttribute('aria-expanded', on ? 'false' : 'true');
+  }
   function fit() {
+    fold();
     if (all) {
       var ul = block.querySelector('[data-asks-collapsed]');
       if (ul) ul.removeAttribute('data-asks-collapsed');
@@ -461,6 +513,7 @@ func askerAsksHideScript() g.Node {
     var t = e.target && e.target.closest ? e.target : null;
     var more = t && t.closest('[data-asks-more]');
     if (more) { all = true; fit(); return; }
+    if (t && t.closest('[data-asks-fold]')) { folded = !folded; fit(); return; }
     var mt = t && t.closest('[data-ask-more-text]');
     if (mt) {
       var txt = mt.previousElementSibling, li = mt.closest('[data-attention-item]');

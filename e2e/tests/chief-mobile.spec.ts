@@ -54,13 +54,15 @@ const question = (i: number) =>
   `right now (one rolling out node updates, one draining a pool). Should I cordon it and page the owner, or leave it for the rollout?`;
 // Every question offers two long options, as a real chief's does (a live card
 // with these is what clipped at 0.148.0: the fixture had none).
-// The conversation's floor while the asks block shows one REAL card. Operator
-// decision (fix/asks-block-real-card): the block grows to fit its one card and
-// the conversation's scroller shrinks — never the card cut by an inner scroll
-// edge. It was 200 for the fixture's smaller card; the real one leaves 158 at
-// 412×915 and 150 at 1280×800 — a strip of conversation, not none.
+// The conversation's floor while the asks block shows one REAL card: #chat-log's
+// own min-height (7.5rem, internal/ui agentChatPane). The block is capped at
+// 40dvh on an agent's page and scrolls inside (operator decision,
+// chief-header-chats-sheet, superseding fix/asks-block-real-card's "the block
+// grows to fit its one card"), so the conversation keeps more than this.
 const MIN_LOG = 120;
 const OPTIONS = ['agent_dispatch on pod/gateway: start a new agent on it', 'agent_dispatch on pod/claude-code: start a new agent on it'];
+// The chief: a claude-code agent displayed as "chief".
+const CHIEF = `e2e-ccm-chief-${stamp}`;
 
 let server: Running | undefined;
 
@@ -83,11 +85,15 @@ test.beforeAll(async () => {
   go('./e2e/ccfix', 'agent', OWNER, NAME, 'beta', `e2e-ccm-token-${stamp}`);
   go('./e2e/ccfix', 'failover', OWNER, NAME, 'alpha', 'rate_limited', '2026-11-06T22:00:00Z');
   for (let i = 0; i < ASKS; i++) go('./e2e/ccfix', 'ask', OWNER, NAME, question(i), ...OPTIONS);
+  // The CHIEF (a claude-code agent whose display name is "chief"): its page's
+  // sheet, header and layout (the describes at the end of this file).
+  go('./e2e/ccfix', 'agent', OWNER, CHIEF, 'beta', `e2e-ccm-chief-token-${stamp}`, 'chief');
 });
 
 test.afterAll(async () => {
   try {
     go('./e2e/ccfix', 'rmagent', OWNER, NAME);
+    go('./e2e/ccfix', 'rmagent', OWNER, CHIEF);
   } finally {
     await server?.stop();
   }
@@ -191,18 +197,19 @@ test.describe('on a phone', () => {
     expect.soft(Math.abs(hb.y + hb.height / 2 - (hide.y + hide.height / 2)), 'the hide sits on the heading\'s line').toBeLessThanOrEqual(4);
     await asksLeaveTheComposer(page, MIN_LOG);
 
-    // One card fits the block WHOLE: no scrolling inside the block, and the
-    // card's border and the "Show N more" under it are inside the block's box
-    // (the compact answer form: a one-line box, Answer and Dismiss on one row).
-    const [bsh, bch] = await block.evaluate((el) => [el.scrollHeight, el.clientHeight]);
-    expect.soft(bsh, 'the asks block does not scroll inside').toBeLessThanOrEqual(bch + 1);
+    // 🔴 THE BLOCK IS CAPPED AT 40dvh ON AN AGENT'S PAGE AND SCROLLS INSIDE
+    // (operator decision, chief-header-chats-sheet: with questions waiting the
+    // composer slid under the bottom bar). This replaced "one card fits the
+    // block whole" — the one-card raise to 65dvh is not applied on the page,
+    // so the real card scrolls inside the block, and Answer and Dismiss are
+    // reached by scrolling the block, never cut off from it.
+    const vh0 = page.viewportSize()!.height;
     const bb = (await block.boundingBox())!;
-    const card = (await block.locator('[data-attention-item]').first().boundingBox())!;
-    expect.soft(card.y + card.height, 'the card\'s bottom border is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
-    const moreBox = (await block.locator('[data-asks-more]').boundingBox())!;
-    expect.soft(moreBox.y + moreBox.height, '"Show N more" is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
+    expect.soft(bb.height, 'the asks block is within its 40dvh cap').toBeLessThanOrEqual(vh0 * 0.4 + 1);
     // Answer and Dismiss share one row (the card's footer).
     const first0 = block.locator('[data-attention-item]').first();
+    await first0.getByRole('button', { name: 'Answer', exact: true }).scrollIntoViewIfNeeded();
+    const card = (await first0.boundingBox())!;
     const ans = (await first0.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
     const dis = (await first0.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
     expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
@@ -211,12 +218,13 @@ test.describe('on a phone', () => {
     // mic are in it — the positive control that this card is production's size.
     await expect(first0.locator('[data-attention-option]')).toHaveCount(OPTIONS.length);
     await expect(first0.locator('[id^="answer-"][id$="-dictate"]')).toBeVisible();
-    // Answer and Dismiss are wholly on screen and nothing covers them (the
-    // block's own scroll edge, the conversation, the composer), and the card's
-    // bottom border is on screen too.
+    // Scrolled to, Answer and Dismiss are wholly on screen, inside the block's
+    // box, and nothing covers them (the block's own scroll edge, the
+    // conversation, the composer).
     const vp = page.viewportSize()!;
     for (const [name, b] of [['Answer', ans], ['Dismiss', dis]] as const) {
       expect.soft(b.y >= 0 && b.y + b.height <= vp.height && b.x >= 0 && b.x + b.width <= vp.width, `${name} is wholly inside the viewport`).toBe(true);
+      expect.soft(b.y >= bb.y - 0.5 && b.y + b.height <= bb.y + bb.height + 0.5, `${name} is inside the block's box`).toBe(true);
     }
     const hits = await first0.evaluate((li) => {
       const out: Record<string, boolean> = {};
@@ -236,6 +244,7 @@ test.describe('on a phone', () => {
     // a tap opens it in place.
     const items = block.locator('[data-attention-item]');
     const first = items.first();
+    await first.locator('[data-attention-text]').scrollIntoViewIfNeeded();
     const text = first.locator('[data-attention-text]');
     const more = first.getByRole('button', { name: 'Show more' });
     await expect(more).toBeVisible();
@@ -328,4 +337,193 @@ async function theQueueDrawsTheCompactForm(page: Page, name: string) {
   const box = (await card.locator('textarea[name="answer"]').boundingBox())!;
   expect.soft(box.height, 'the answer box starts one line').toBeLessThanOrEqual(46);
   await noSideScroll(page);
+}
+
+// --- THE CHIEF'S PAGE (operator ask, chief-header-chats-sheet) ------------------
+//
+//   header   the same single list icon a mirrored session has (no ＋, no clock,
+//            no target), and the chat's context chip under the title.
+//   chats    that icon's sheet has three tabs — Chats | Your messages | Focus
+//            history — and Chats is where the primary and side chats are
+//            switched, made and archived; no chat bar over the transcript.
+//   layout   with questions waiting, the composer stays above the bottom bar
+//            (the session switcher) and inside the viewport: it used to slide
+//            under the bar. Measured at 1 and 3 questions, at four sizes — a
+//            phone, the same phone's visible area under its browser's toolbars,
+//            the phone held sideways, and a desktop.
+
+// The chief's asks, by id, so a case can set how many wait.
+const chiefAsks: string[] = [];
+// (Not "Question N:", which the Asks-queue case finds its card by.)
+const chiefQuestion = (i: number) => `Chief ask #${i + 1} — ` + question(i).slice(question(i).indexOf(':') + 2);
+function setChiefAsks(n: number) {
+  while (chiefAsks.length < n) chiefAsks.push(go('./e2e/ccfix', 'ask', OWNER, CHIEF, chiefQuestion(chiefAsks.length), ...OPTIONS));
+  while (chiefAsks.length > n) go('./e2e/pluginfix', 'rmask', OWNER, chiefAsks.pop()!);
+}
+
+async function openChiefPage(page: Page, asks: number) {
+  await signIn(page, origin);
+  await page.goto(origin + '/agents/' + CHIEF);
+  await expect(page.locator('#chat-form')).toBeVisible();
+  await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(asks);
+  await expect(page.locator('#session-switcher')).toBeVisible();
+}
+
+// composerClearsTheBar: the composer is wholly on screen and wholly above the
+// session switcher (bounding boxes, and what a tap at the box's centre hits),
+// the asks block is inside its 40dvh cap, and the conversation keeps its floor.
+async function composerClearsTheBar(page: Page, label: string) {
+  const vp = page.viewportSize()!;
+  const form = (await page.locator('#chat-form').boundingBox())!;
+  const bar = (await page.locator('#session-switcher').boundingBox())!;
+  const asks = (await page.locator('#asker-asks').boundingBox())!;
+  const log = (await page.locator('#chat-log').boundingBox())!;
+  expect.soft(form.y + form.height, `${label}: the composer's bottom is at or above the bottom bar's top`).toBeLessThanOrEqual(bar.y + 0.5);
+  expect.soft(form.y >= 0 && form.y + form.height <= vp.height + 0.5, `${label}: the composer is wholly inside the viewport`).toBe(true);
+  expect.soft(bar.y + bar.height, `${label}: the bottom bar is inside the viewport`).toBeLessThanOrEqual(vp.height + 0.5);
+  expect.soft(asks.y + asks.height, `${label}: the asks block ends above the composer`).toBeLessThanOrEqual(form.y + 0.5);
+  expect.soft(asks.height, `${label}: the asks block is within its 40dvh cap`).toBeLessThanOrEqual(vp.height * 0.4 + 1);
+  expect.soft(log.height, `${label}: the conversation keeps its floor`).toBeGreaterThanOrEqual(MIN_LOG - 0.5);
+  const hit = await page.locator('#chat-input').evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !!at && (at === el || el.contains(at));
+  });
+  expect.soft(hit, `${label}: a tap on the message box lands on it (the bar does not cover it)`).toBe(true);
+}
+
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  // A phone's VISIBLE area under its browser's top and bottom toolbars.
+  { name: 'phone under its toolbars', use: { viewport: { width: 390, height: 664 }, hasTouch: true, isMobile: true } },
+  { name: 'phone held sideways', use: { viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the chief's page on a ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    test('with 1 and with 3 questions waiting, the composer stays above the bottom bar', async ({ page }) => {
+      test.setTimeout(120_000);
+      setChiefAsks(1);
+      await openChiefPage(page, 1);
+      await expect(page.locator('#asker-asks [data-asks-fold]'), 'one question: nothing to fold').toHaveCount(0);
+      await composerClearsTheBar(page, '1 question');
+      await shot(page, `chief-asks-1-${vp.name.replace(/ /g, '-')}.png`);
+
+      setChiefAsks(3);
+      await openChiefPage(page, 3);
+      await composerClearsTheBar(page, '3 questions');
+      await shot(page, `chief-asks-3-${vp.name.replace(/ /g, '-')}.png`);
+      // More than one: the "3 questions waiting" header folds the block to its
+      // own row, and opens it again.
+      const fold = page.locator('#asker-asks [data-asks-fold]');
+      await expect(fold).toHaveText('3 questions waiting');
+      await expect(fold).toHaveAttribute('aria-expanded', 'true');
+      await fold.click();
+      await expect(fold).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('#asker-asks')).toHaveAttribute('data-asks-folded', '');
+      await expect(page.locator('#asker-asks [data-attention-item]').first()).toBeHidden();
+      await composerClearsTheBar(page, '3 questions, folded');
+      await fold.click();
+      await expect(fold).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('#asker-asks [data-attention-item]').first()).toBeVisible();
+      await noSideScroll(page);
+    });
+  });
+}
+
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the chief's chats on a ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    test('one list icon opens Chats | Your messages | Focus history: switch, create and archive a chat', async ({ page }) => {
+      test.setTimeout(120_000);
+      setChiefAsks(0);
+      await signIn(page, origin);
+      await page.goto(origin + '/agents/' + CHIEF);
+      await expect(page.locator('#chat-form')).toBeVisible();
+      const sheet = page.locator('#chat-index');
+      const chats = sheet.locator('[data-chief-chats]');
+      const open = async () => {
+        await page.locator('header #chat-index-open').click();
+        await expect(sheet).toBeVisible();
+        await sheet.locator('[role="tab"][data-tab="chats"]').click();
+        await expect(chats).toBeVisible();
+      };
+      const sessionOf = (u: string) => new URL(u).searchParams.get('session');
+
+      // The header: the one list icon, no ＋ / clock / target; the context
+      // row under the title; no chat bar over the transcript.
+      await expect(page.locator('header #chat-index-open')).toBeVisible();
+      await expect(page.locator('header').getByRole('button', { name: 'New chat session' })).toHaveCount(0);
+      await expect(page.locator('header label[aria-label="Chat history"], header #focus-history-open')).toHaveCount(0);
+      await expect(page.locator('header [data-chief-context-row] #chief-context')).toHaveCount(1);
+      await expect(page.locator('[data-chief-chat-bar]')).toHaveCount(0);
+      expect.soft((await page.locator('header').boundingBox())!.height, 'the header is the one row (+1px border)').toBeLessThanOrEqual(57);
+
+      // The sheet: three tabs, in order.
+      await open();
+      await expect(sheet.locator('[role="tab"]')).toHaveText(['Chats', 'Your messages', 'Focus history']);
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'Fresh primary on the primary').toBeVisible();
+      // Fresh primary keeps its confirm: dismissed, nothing happens.
+      const here0 = page.url();
+      page.once('dialog', (d) => d.dismiss());
+      await chats.getByRole('button', { name: 'Fresh primary' }).click();
+      await page.waitForTimeout(300);
+      expect(page.url(), 'a dismissed confirm leaves the page where it was').toBe(here0);
+      await noSideScroll(page);
+
+      // Create a side chat.
+      await chats.getByRole('button', { name: 'New side chat', exact: true }).click();
+      await page.waitForURL((u) => u.toString() !== here0);
+      const side = sessionOf(page.url())!;
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'side');
+      await open();
+      await expect(chats.getByRole('button', { name: 'Fresh primary' }), 'no Fresh primary off the primary').toHaveCount(0);
+      const sideRow = chats.locator(`[data-chief-chat-row="${side}"]`);
+      await expect(sideRow).toHaveAttribute('aria-current', 'page');
+      await expect(sideRow.locator('[data-chief-chat-current]')).toHaveText('Current');
+
+      // Switch to the primary: its row, first, with its badge.
+      const primaryRow = chats.locator('[data-chief-chat-row]').first();
+      await expect(primaryRow).toContainText('Primary');
+      await primaryRow.click();
+      await page.waitForURL((u) => sessionOf(u.toString()) !== side);
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+
+      // Archive the side chat from its row's ⋯ menu: it moves into the
+      // collapsed Archived group, and the page is on the primary.
+      await open();
+      const archivedBefore = await chats.locator('[data-chief-archived] [data-chief-chat-row]').count();
+      await chats.locator(`button[popovertarget="chief-chat-menu-${side}"]`).click();
+      const menu = page.locator(`#chief-chat-menu-${side}`);
+      await expect(menu).toBeVisible();
+      // The answer is HX-Redirect to the primary — this page — so htmx loads it
+      // again.
+      const reloaded = page.waitForEvent('load');
+      await menu.getByRole('menuitem', { name: 'Archive' }).click();
+      await reloaded;
+      await expect(page.locator(`#chat-index [data-chief-archived] [data-chief-chat-row="${side}"]`)).toHaveCount(1);
+      await expect(chats).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await open();
+      const group = chats.locator('[data-chief-archived]');
+      await expect(group).not.toHaveAttribute('open', '');
+      await expect(chats.locator(`[data-chief-chat-row="${side}"]`)).toBeHidden();
+      await group.locator('summary').click();
+      await expect(chats.locator(`[data-chief-chat-row="${side}"]`)).toBeVisible();
+      expect(await chats.locator('[data-chief-archived] [data-chief-chat-row]').count()).toBe(archivedBefore + 1);
+
+      // The other two tabs are the mirrored session's.
+      await sheet.locator('[role="tab"][data-tab="messages"]').click();
+      await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeVisible();
+      await sheet.locator('[role="tab"][data-tab="focus"]').click();
+      await expect(sheet.locator('#chat-index-tabs-panel-focus [data-focus-history-list]')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+    });
+  });
 }

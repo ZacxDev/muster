@@ -154,7 +154,7 @@ func askerAsksHTML(items []attentionItem, returnTo string, now time.Time) string
 	// The heading row carries "Hide until next ask" (ui.AskerAsksHeading); the
 	// list shows the first ask and keeps the rest behind "Show N more"
 	// (ui.AskerAsksList).
-	return ui.AskerAsksHeading(n) + ui.AskerAsksList(attentionItemsHTMLTo(items, now, returnTo), len(items))
+	return ui.AskerAsksHeading(n, len(items)) + ui.AskerAsksList(attentionItemsHTMLTo(items, now, returnTo), len(items))
 }
 
 // askerAsksBlock is ctx's principal's block for r: its content and its
