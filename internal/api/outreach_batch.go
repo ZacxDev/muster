@@ -266,7 +266,15 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 	// draft decision takes (draftDeciderRefusal), for every entry, read as
 	// the decider. A team's batch is its managers' to decide; a team never
 	// decides its own; nobody approves an entry they caused.
-	if b, err := ps.OutreachBatch(ctx, id); err == nil {
+	b, err := ps.OutreachBatch(ctx, id)
+	switch {
+	case errors.Is(err, plugins.ErrNotFound), errors.Is(err, plugins.ErrInvalid):
+		// the store's own refusal below says so
+	case err != nil:
+		// 🔴 FAILS CLOSED: the decider rule is never skipped for a read error.
+		s.logger.Printf("plugins: outreach batch %s: read before the decision: %v", id, err)
+		return plugins.BatchDecided{}, &draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
+	default:
 		p := authz.MustFrom(ctx)
 		for _, d := range b.Entries {
 			if msg := draftDeciderRefusal(p, d, slices.Contains(dec.Approve, d.ID)); msg != "" {
