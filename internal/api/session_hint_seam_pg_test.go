@@ -75,7 +75,10 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 		}
 		return a
 	}
-	chief := newAgent("hintchief", "chief")
+	chief, err := agents.WithSecrets(asOwner, as, newAgent("hintchief", "chief")) // Create returns no credentials
+	if err != nil {
+		t.Fatal(err)
+	}
 	sA, sB, sC, sD := newAgent("hint-a", "upgrade runner"), newAgent("hint-b", "notes writer"),
 		newAgent("hint-c", "billing"), newAgent("hint-d", "old runner")
 
