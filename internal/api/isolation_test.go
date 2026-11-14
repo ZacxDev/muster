@@ -1797,7 +1797,7 @@ func (w *isoWorld) leaks(body string, withIdentities bool) []string {
 func (w *isoWorld) snapshot() map[string]string {
 	w.t.Helper()
 	out := map[string]string{}
-	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
+	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents", "agent_secrets",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "session_tags", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",

@@ -61,6 +61,18 @@ func (f *fakeAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
 	return agents.Agent{}, errors.New("no such agent")
 }
 
+// Secrets is the listed row's stored credentials.
+func (f *fakeAgents) Secrets(_ context.Context, id int64) (agents.Secrets, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.rows {
+		if a.ID == id {
+			return agents.Secrets{HooksToken: a.HooksToken, GatewaySecret: a.GatewaySecret}, nil
+		}
+	}
+	return agents.Secrets{}, errors.New("no such agent")
+}
+
 // ClaimKickoff wins iff the claim is unheld, exactly as the real conditional UPDATE does.
 //
 // ⚠ It does not model EXPIRY: the real claim is also winnable once its ttl has passed, so a ttl
@@ -120,7 +132,13 @@ func (f *fakeAgents) List(ctx context.Context) ([]agents.Agent, error) {
 	if p, ok := authz.From(ctx); ok {
 		f.principals = append(f.principals, p)
 	}
-	return append([]agents.Agent(nil), f.rows...), nil
+	// As the real store lists them: with no credentials (agents.Secrets).
+	out := make([]agents.Agent, 0, len(f.rows))
+	for _, a := range f.rows {
+		a.HooksToken, a.GatewaySecret = "", ""
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 func (f *fakeAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {

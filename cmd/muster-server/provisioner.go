@@ -406,8 +406,9 @@ func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gatew
 // a method on a nil *Pool.
 //
 // store is the agents store, wired as the gateway's Kickoff so a completed turn
-// clears a stale "kickoff failed" record (agentgateway.Gateway.noteSuccess). A
-// nil store leaves Kickoff nil for the same typed-nil reason.
+// clears a stale "kickoff failed" record (agentgateway.Gateway.noteSuccess), and
+// as its Secrets, the one read of an agent's credentials (an ordinary read
+// carries none). A nil store leaves both nil for the same typed-nil reason.
 func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool, store agents.Store) (*agentgateway.Gateway, error) {
 	rt, err := agentRuntime(cfg)
 	if err != nil {
@@ -426,6 +427,7 @@ func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Poo
 	}
 	if store != nil {
 		gc.Kickoff = store
+		gc.Secrets = store
 	}
 	return agentgateway.New(gc)
 }

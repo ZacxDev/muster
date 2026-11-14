@@ -443,7 +443,7 @@ func (r *Relay) classify(ctx context.Context, a agents.Agent) (scopes []string, 
 		// while the CLI starts, and through all of that the row reads as kicked off. What
 		// keeps a memo out of THAT window is the session claim deliver takes.
 		return nil, ResultKickoffOwed
-	case a.HooksToken == "":
+	case !r.hasToken(ctx, a):
 		return nil, ResultNoToken
 	}
 	if s := r.scopes.scopesFor(a.Repo); len(s) > 0 {
@@ -472,6 +472,14 @@ func (r *Relay) say(a agents.Agent, result string) {
 		return
 	}
 	r.log.Printf("memorelay: agent %d (%s) is sent no memos: %s", a.ID, a.Name, result)
+}
+
+// hasToken reports whether a has a stored hooks token. a came from a list,
+// which carries no credentials (agents.Secrets), so it is read by id; a read
+// that fails counts as none, and the agent is counted, not sent.
+func (r *Relay) hasToken(ctx context.Context, a agents.Agent) bool {
+	s, err := r.agents.Secrets(ctx, a.ID)
+	return err == nil && s.HooksToken != ""
 }
 
 // forget drops per-agent memory of agents that are no longer listed.

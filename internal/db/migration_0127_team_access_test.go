@@ -8,6 +8,14 @@ import "testing"
 // runs as written and puts owner_isolation back on every owned table with no
 // team policy, function or attribution column left; and the file applies
 // again after it.
+// ownedAfter0127 is every owned table a migration AFTER 0127 creates. This
+// test stops at 0127, so those tables are in rlsTables() but not in its
+// schema; a new owned table added after 0127 is listed here, or the control
+// below counts one table too many.
+var ownedAfter0127 = []string{
+	"agent_secrets", // 0128
+}
+
 func TestMigration0127TeamAccess(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0127_access", 126)
@@ -18,7 +26,7 @@ func TestMigration0127TeamAccess(t *testing.T) {
 		}
 		return n
 	}
-	owned := len(rlsTables())
+	owned := len(rlsTables()) - len(ownedAfter0127)
 	if n := countPolicies("owner_isolation"); n != owned || countPolicies("team_read") != 0 {
 		t.Fatalf("control: at 0126 %d tables have owner_isolation (want %d) and %d team_read", n, owned, countPolicies("team_read"))
 	}

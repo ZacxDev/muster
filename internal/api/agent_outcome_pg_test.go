@@ -196,7 +196,7 @@ func kickoffOnce(t *testing.T, srv *Server, pool *pgxpool.Pool, prefix string, r
 	host, port, _ := net.SplitHostPort(u.Host)
 	p, _ := strconv.Atoi(port)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: outcomeEndpoint{provision.Endpoint{Scheme: "http", Host: host, Port: p}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel"})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: srv.ext.Agents})
 	if err != nil {
 		t.Fatal(err)
 	}

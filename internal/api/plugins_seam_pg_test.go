@@ -54,6 +54,9 @@ func (f *pluginRuntime) hold() (arrived <-chan struct{}, release func()) {
 // expect sets the credential the fake accepts: the one the production runtime
 // derives from a's token, through the gateway's own derivation.
 func (f *pluginRuntime) expect(a agents.Agent) {
+	if a.HooksToken == "" {
+		panic("pluginRuntime.expect: the agent carries no hooks token (an ordinary read returns none; use agents.WithSecrets)")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.want = agentgateway.HooksSHA256().Bearer(a.HooksToken)
@@ -129,6 +132,9 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	as := agents.NewPG(pool)
 	chief, err := as.Create(asUser(a), agents.Agent{Name: "plgchief-" + suffix, Namespace: "devpod-plgchief-" + suffix,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "plg-hooks-" + suffix})
+	if err == nil {
+		chief, err = agents.WithSecrets(asUser(a), as, chief) // Create returns no credentials
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +153,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +449,7 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 			host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(rt.srv.URL, "http://"))
 			port, _ := strconv.Atoi(portStr)
 			gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-				Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: rt.srv.Client()})
+				Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: rt.srv.Client()})
 			if err != nil {
 				t.Fatal(err)
 			}

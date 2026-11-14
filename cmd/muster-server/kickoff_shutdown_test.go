@@ -38,6 +38,9 @@ func (s *shutdownStore) List(context.Context) ([]agents.Agent, error) {
 	return []agents.Agent{s.row}, nil
 }
 func (s *shutdownStore) Get(context.Context, int64) (agents.Agent, error) { return s.row, nil }
+func (s *shutdownStore) Secrets(context.Context, int64) (agents.Secrets, error) {
+	return agents.Secrets{HooksToken: s.row.HooksToken, GatewaySecret: s.row.GatewaySecret}, nil
+}
 
 // GetByName serves api.Server.agentOwner: an agent.changed nudge reaches its
 // agent's OWNER only (accounts PR 3b), so the server reads the row by name.

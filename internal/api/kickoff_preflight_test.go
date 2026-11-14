@@ -404,6 +404,10 @@ func (s *seamStore) Get(context.Context, int64) (agents.Agent, error) { return s
 
 func (s *seamStore) UpdateStatus(context.Context, int64, string, string, string) error { return nil }
 
+func (s *seamStore) Secrets(context.Context, int64) (agents.Secrets, error) {
+	return agents.Secrets{HooksToken: s.agent.HooksToken, GatewaySecret: s.agent.GatewaySecret}, nil
+}
+
 func (s *seamStore) SetHooksToken(_ context.Context, _ int64, token string) error {
 	s.agent.HooksToken = token
 	return nil

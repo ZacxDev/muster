@@ -86,6 +86,13 @@ func (s *dispatchRecorder) UpdateStatus(_ context.Context, _ int64, status, _, e
 	return nil
 }
 
+// Secrets is the row's stored credentials; a read, so not recorded.
+func (s *dispatchRecorder) Secrets(context.Context, int64) (agents.Secrets, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return agents.Secrets{HooksToken: s.agent.HooksToken, GatewaySecret: s.agent.GatewaySecret}, nil
+}
+
 func (s *dispatchRecorder) SetHooksToken(_ context.Context, _ int64, _ string) error {
 	s.record("SetHooksToken")
 	return nil
