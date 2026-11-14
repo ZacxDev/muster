@@ -418,7 +418,10 @@ never in a repository. A [team](auth.md#teams) officer's people are its team's: 
   item (subject `contact:<id>:<UTC day>`) whose payload names the person and
   the day's events, with the person and their words as a fenced untrusted
   block. A second event of theirs that day joins the open item instead of
-  making another. An event while that day's item is being worked (claimed, or
+  making another. 🔴 The stored item names the person by id only (a
+  team's viewers read its items, only its operators its people); the person
+  and their words are rendered into the officer's copy when it claims the
+  item. An event while that day's item is being worked (claimed, or
   waiting on an ask or a draft) opens one more item (`…#<event id>`), so no
   engagement is lost. A like never opens an item (a person whose only
   engagement is a like is recorded, never brought to the officer); a like of

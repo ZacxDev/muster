@@ -2,6 +2,7 @@ package builtin_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func TestATeamOfficersPeopleAreItsTeamsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := w.store.RecordEngagementTx(asTeam, tx, team.ID, officer, "example.social", builtin.Person{Handle: "zed"},
+	res, err := w.store.RecordEngagementTx(asTeam, tx, team.ID, officer, "example.social", builtin.Person{Handle: "zed", Display: "Zed Person"},
 		builtin.Engagement{Kind: builtin.EventReply, Ref: "r1", OurPostRef: "p1", Text: "hi"}, builtin.EngagementSource{PluginID: 1}, w.clock())
 	if err != nil {
 		t.Fatalf("the team officer's engagement: %v", err)
@@ -112,6 +113,18 @@ func TestATeamOfficersPeopleAreItsTeamsOnly(t *testing.T) {
 		if _, _, err := w.store.ContactGet(as(uid), team.ID, officer, "example.social", "zed", 0); err == nil {
 			t.Errorf("%s read the team's person", name)
 		}
+	}
+	// The team's ITEMS are read at viewer (0127): the engagement item names
+	// the person by id only, so a viewer reading it reads no person.
+	if res.Item == 0 {
+		t.Fatal("control: the engagement opened no item")
+	}
+	var raw string
+	if err := pool.QueryRow(as(viewer), `SELECT payload::text FROM officer_items WHERE id = $1`, res.Item).Scan(&raw); err != nil {
+		t.Fatalf("control: the team's viewer cannot read the team's items at all: %v", err)
+	}
+	if strings.Contains(raw, "zed") || strings.Contains(raw, `"hi"`) {
+		t.Fatalf("the team's viewer reads the person in the item: %s", raw)
 	}
 	yes := true
 	if _, err := w.store.SetContactFlags(as(op), team.ID, officer, "example.social", "zed", builtin.FlagsSet{DNC: &yes}, w.clock()); err == nil {
