@@ -431,6 +431,9 @@ export const pagesPort = port + 400;
 export const pagesFakeS3Port = port + 401;
 export const pagesRouterPort = port + 402;
 export const pagesMirrorMCPPort = port + 403;
+// tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
+// 127.0.0.1) whose instance document and icon the spec controls.
+export const serverSwitcherStubPort = port + 404;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

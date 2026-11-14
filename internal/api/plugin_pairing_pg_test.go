@@ -217,3 +217,56 @@ func TestPluginRequestDecideMustEchoTheCode(t *testing.T) {
 		t.Fatalf("approving with the code: %s", text)
 	}
 }
+
+// TestAPairingRequestNamingATeamIsADecoy (#654 round 1 🟡): the unauthenticated
+// pairing request finds its owner by email or display name, and a team's name
+// is a display name. A request naming a team, in any case, is answered exactly
+// as one for no account — the 202 and a pending poll — and leaves a DECOY: no
+// request row, no audit row, nothing to notify (pairRequested is only for a
+// filed request). The CONTROL is the same body naming a person, which files.
+func TestAPairingRequestNamingATeamIsADecoy(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	sys := authz.System(w.ctx)
+	const team = 900654
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE
+		VALUES (900654, 'team', 'member', 'Pair Probe Team') ON CONFLICT (id) DO NOTHING`)
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM plugin_pair_requests WHERE owner_id = 900654`)
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE user_id = 900654`)
+		dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM users WHERE id = 900654`)
+	})
+	count := func(q string, args ...any) int {
+		var n int
+		if err := w.f.pool.QueryRow(sys, q, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, name := range []string{"Pair Probe Team", "PAIR PROBE TEAM", "pair probe team"} {
+		body := strings.Replace(strings.Replace(pairBody, `"owner":"operator"`, `"owner":"`+name+`"`, 1), "example-paired", "team-probe", 1)
+		c, rec := w.pair(body)
+		if rec.Code != http.StatusAccepted || len(c.RequestID) != 22 {
+			t.Fatalf("a request naming the team as %q: %d %s; want the decoy's 202", name, rec.Code, rec.Body.String())
+		}
+		if got, code := w.poll(c.RequestID, c.PollSecret); code != http.StatusOK || got["status"] != "pending" {
+			t.Fatalf("polling it: %d %v; want pending, as a real one", code, got)
+		}
+		if n := count(`SELECT count(*) FROM plugin_pair_requests WHERE public_id = $1`, c.RequestID); n != 0 {
+			t.Errorf("naming the team as %q FILED a request", name)
+		}
+		if n := count(`SELECT count(*) FROM plugin_pair_decoys WHERE public_id = $1`, c.RequestID); n != 1 {
+			t.Errorf("naming the team as %q left %d decoy rows; want 1", name, n)
+		}
+	}
+	if n := count(`SELECT count(*) FROM plugin_pair_requests WHERE owner_id = $1`, team); n != 0 {
+		t.Errorf("%d pairing requests are owned by the team", n)
+	}
+	if n := count(`SELECT count(*) FROM audit_log WHERE user_id = $1`, team); n != 0 {
+		t.Errorf("%d audit rows name the team as their actor", n)
+	}
+	// Control: a person's name files a request.
+	c, _ := w.pair(pairBody)
+	if n := count(`SELECT count(*) FROM plugin_pair_requests WHERE public_id = $1`, c.RequestID); n != 1 {
+		t.Fatalf("control: naming the operator filed %d requests; want 1", n)
+	}
+}

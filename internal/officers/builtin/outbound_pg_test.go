@@ -3,10 +3,12 @@ package builtin_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,12 +20,12 @@ import (
 // The item an outbound draft is filed for, and the bounded draft.refused
 // queue (outbound.go), against the package's real Postgres.
 
-// TestEnqueueBoundedHoldsItsBoundUnderConcurrency (regression guard for the
-// #636 audit's open race): many refusals settling AT ONCE, each a distinct
-// subject, leave exactly max live items — the count and the insert are one
-// transaction under one lock. Every caller past the bound gets ErrAtBound and
+// TestDraftEndedHoldsItsBoundUnderConcurrency (regression guard for the
+// #636 audit's open race): many drafts ending AT ONCE, each a distinct
+// subject, leave exactly max live follow-ups — the count and the insert are
+// one transaction under one lock. Every caller past the bound is AtBound and
 // writes nothing.
-func TestEnqueueBoundedHoldsItsBoundUnderConcurrency(t *testing.T) {
+func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 	w := newPGWorld(t, false)
 	const max, callers = 3, 24
 	for round := 0; round < 4; round++ {
@@ -38,17 +40,19 @@ func TestEnqueueBoundedHoldsItsBoundUnderConcurrency(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				_, c, err := w.store.EnqueueBounded(ctxOp(), 1, builtin.NewItem{Officer: backendtest.OfficerA, Kind: kind,
-					SubjectKey: "draft:" + strconv.Itoa(i)}, max, nil, "", w.clock())
+				res, err := w.store.DraftEnded(ctxOp(), 1, builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(i + 1), Max: max,
+					FollowUp: &builtin.NewItem{Officer: backendtest.OfficerA, Kind: kind, SubjectKey: "draft:" + strconv.Itoa(i)}}, w.clock())
 				mu.Lock()
 				defer mu.Unlock()
 				switch {
-				case err == nil && c:
-					created++
-				case errors.Is(err, builtin.ErrAtBound):
-					atBound++
-				default:
+				case err != nil:
 					other = append(other, err)
+				case res.AtBound && res.FollowUp == 0:
+					atBound++
+				case res.FollowUp > 0 && !res.AtBound:
+					created++
+				default:
+					other = append(other, fmt.Errorf("%+v", res))
 				}
 			}(i)
 		}
@@ -59,67 +63,128 @@ func TestEnqueueBoundedHoldsItsBoundUnderConcurrency(t *testing.T) {
 			t.Fatal(err)
 		}
 		if live != max || created != max || atBound != callers-max || len(other) != 0 {
-			t.Fatalf("round %d: %d live, %d created, %d at the bound, other errors %v; want %d, %d, %d, none",
+			t.Fatalf("round %d: %d live, %d created, %d at the bound, other %v; want %d, %d, %d, none",
 				round, live, created, atBound, other, max, max, callers-max)
 		}
 	}
 }
 
-// TestEnqueueBoundedSettlesOnlyAWaitingItem: the settle item is finished
-// no_action naming the new item only while it is WAITING with no open ask;
-// a claimed one is left as it is. At the bound nothing is written — neither
-// the new item nor the settle.
-func TestEnqueueBoundedSettlesOnlyAWaitingItem(t *testing.T) {
-	w := newPGWorld(t, false)
+// TestDraftEndedSettlesTheItemThatWaitsOnIt is every way DraftEnded settles
+// the item, and the items it must leave alone:
+//   - waiting, with a follow-up: done no_action naming the follow-up;
+//   - claimed under a LIVE lease (an instance works it): left claimed;
+//   - claimed under a LAPSED lease (filed for before items waited on their
+//     drafts): settled like a waiting one;
+//   - past the bound: done no_action saying the officer was not told, and
+//     nothing written — or escalated with its owner's notice when asked;
+//   - no follow-up (an unconfirmed draft): escalated, notices for the owner;
+//   - waiting with an OPEN ASK: left waiting (the ask settles it).
+func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
+	w, b, _ := asksWorld(t)
 	ctx := ctxOp()
-	b := w.b[backendtest.OfficerA]
-	hold := func(subject string) int64 {
+	hold := func(subject string, lease int) int64 {
 		t.Helper()
 		id := w.AddItem(backendtest.OfficerA, "plugin.reply", subject, "", "")
-		if _, err := b.Claim(ctx, id, "inst-1", 600, ""); err != nil {
+		if _, err := b.Claim(ctx, id, "inst-1", lease, ""); err != nil {
 			t.Fatal(err)
 		}
 		n, _ := strconv.ParseInt(string(id), 10, 64)
 		return n
 	}
-	wait := func(id int64) {
+	waiting := func(subject string) int64 {
 		t.Helper()
+		id := hold(subject, 600)
 		if err := w.waitOnDraft(id, "inst-1"); err != nil {
 			t.Fatalf("wait on draft: %v", err)
 		}
+		return id
 	}
-	waiting := hold("s-1")
-	wait(waiting)
-	newID, created, err := w.store.EnqueueBounded(ctx, 1, builtin.NewItem{Officer: backendtest.OfficerA, Kind: "draft.refused", SubjectKey: "draft:1"},
-		3, &waiting, "draft 1 was rejected by the owner, not posted.", w.clock())
-	if err != nil || !created {
-		t.Fatalf("enqueue: %v %v", created, err)
+	end := func(item int64, draft int, max int, follow, escalate bool) builtin.DraftSettled {
+		t.Helper()
+		e := builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(draft), Item: item, Max: max, EscalateAtBound: escalate,
+			Ended: "draft " + strconv.Itoa(draft) + " ended, not posted."}
+		if follow {
+			e.FollowUp = &builtin.NewItem{Officer: backendtest.OfficerA, Kind: "draft.refused", SubjectKey: "draft:" + strconv.Itoa(draft)}
+		}
+		res, err := w.store.DraftEnded(ctx, 1, e, w.clock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
 	}
-	st, outcome, summary := w.itemState(waiting)
-	if st != officers.StatusDone || outcome != "no_action" || summary != "draft 1 was rejected by the owner, not posted. The work continues on item "+strconv.FormatInt(newID, 10)+"." {
-		t.Fatalf("the waiting item: %s %s %q", st, outcome, summary)
+
+	it := waiting("s-1")
+	res := end(it, 1, 3, true, false)
+	st, outcome, summary := w.itemState(it)
+	if res.FollowUp == 0 || res.AtBound || res.Item != officers.StatusDone || st != officers.StatusDone || outcome != "no_action" ||
+		summary != "draft 1 ended, not posted. The work continues on item "+strconv.FormatInt(res.FollowUp, 10)+"." {
+		t.Fatalf("a waiting item: %+v, %s %s %q", res, st, outcome, summary)
 	}
-	claimed := hold("s-2")
-	if _, _, err := w.store.EnqueueBounded(ctx, 1, builtin.NewItem{Officer: backendtest.OfficerA, Kind: "draft.refused", SubjectKey: "draft:2"},
-		3, &claimed, "x", w.clock()); err != nil {
-		t.Fatal(err)
+
+	held := hold("s-2", 600)
+	if res := end(held, 2, 3, true, false); res.Item != "" || res.FollowUp == 0 {
+		t.Fatalf("an item held under a live lease: %+v; want a follow-up and the item left", res)
 	}
-	if st, _, _ := w.itemState(claimed); st != officers.StatusClaimed {
-		t.Fatalf("a CLAIMED settle item became %s; want left claimed", st)
+	if st, _, _ := w.itemState(held); st != officers.StatusClaimed {
+		t.Fatalf("an item held under a live lease became %s", st)
 	}
-	atBound := hold("s-3")
-	wait(atBound)
-	if _, _, err := w.store.EnqueueBounded(ctx, 1, builtin.NewItem{Officer: backendtest.OfficerA, Kind: "draft.refused", SubjectKey: "draft:3"},
-		2, &atBound, "x", w.clock()); !errors.Is(err, builtin.ErrAtBound) {
-		t.Fatalf("past the bound: %v; want ErrAtBound", err)
+
+	lapsed := hold("s-3", 60)
+	w.Advance(2 * time.Minute)
+	if res := end(lapsed, 3, 9, true, false); res.Item != officers.StatusDone {
+		t.Fatalf("an item claimed under a LAPSED lease: %+v; want it settled", res)
 	}
-	if st, _, _ := w.itemState(atBound); st != officers.StatusWaiting {
-		t.Fatalf("the settle item past the bound became %s; want left waiting", st)
+	if st, outcome, _ := w.itemState(lapsed); st != officers.StatusDone || outcome != "no_action" {
+		t.Fatalf("an item claimed under a lapsed lease: %s %s", st, outcome)
+	}
+
+	// Three draft.refused items are live now: the bound is 3.
+	full := waiting("s-4")
+	res = end(full, 4, 3, true, false)
+	st, outcome, summary = w.itemState(full)
+	if !res.AtBound || res.FollowUp != 0 || st != officers.StatusDone || outcome != "no_action" ||
+		summary != "draft 4 ended, not posted. Its officer was not told: it already has 3 open draft.refused items." {
+		t.Fatalf("past the bound: %+v, %s %s %q", res, st, outcome, summary)
 	}
 	var n int
-	_ = w.store.Pool().QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE subject_key = 'draft:3'`).Scan(&n)
+	_ = w.store.Pool().QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE subject_key = 'draft:4'`).Scan(&n)
 	if n != 0 {
-		t.Fatalf("past the bound %d items were written; want none", n)
+		t.Fatalf("past the bound %d follow-ups were written; want none", n)
+	}
+	fullEsc := waiting("s-5")
+	if res := end(fullEsc, 5, 3, true, true); !res.AtBound || res.Item != officers.StatusEscalated {
+		t.Fatalf("past the bound, escalating: %+v", res)
+	}
+	w.wantEscalatedToOwner(fullEsc, "draft 5 ended, not posted. Its officer was not told: it already has 3 open draft.refused items.")
+
+	unconfirmed := waiting("s-6")
+	if res := end(unconfirmed, 6, 3, false, false); res.FollowUp != 0 || res.AtBound || res.Item != officers.StatusEscalated {
+		t.Fatalf("no follow-up: %+v; want the item escalated", res)
+	}
+	w.wantEscalatedToOwner(unconfirmed, "draft 6 ended, not posted.")
+
+	asked := hold("s-7", 600)
+	if _, err := b.CreateAsk(ctx, officers.ItemID(strconv.FormatInt(asked, 10)), "inst-1", officers.Ask{Question: "which?"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := end(asked, 7, 99, true, false); res.Item != "" {
+		t.Fatalf("an item waiting on an open ask: %+v; want left", res)
+	}
+	if st, _, _ := w.itemState(asked); st != officers.StatusWaiting {
+		t.Fatalf("an item waiting on an open ask became %s", st)
+	}
+}
+
+// wantEscalatedToOwner: item id is escalated with summary and one notice,
+// to the owner (user 1), not yet raised.
+func (w *pgWorld) wantEscalatedToOwner(id int64, summary string) {
+	w.t.Helper()
+	st, outcome, got := w.itemState(id)
+	var notices string
+	_ = w.store.Pool().QueryRow(ctxOp(), `SELECT notices::text FROM officer_items WHERE id = $1`, id).Scan(&notices)
+	if st != officers.StatusEscalated || outcome != "escalated" || got != summary ||
+		!strings.Contains(notices, `"recipient": 1`) || !strings.Contains(notices, `"attention_id": null`) {
+		w.t.Fatalf("item %d: %s %s %q notices %s; want escalated %q with a notice to user 1", id, st, outcome, got, notices, summary)
 	}
 }
 

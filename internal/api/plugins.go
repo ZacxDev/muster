@@ -104,6 +104,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage, plugins.CapMessages))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim, plugins.CapMessages))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult, plugins.CapMessages))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/renew", s.requirePluginToken(s.handlePluginDraftRenew, plugins.CapMessages))
 	// The plugin's check of a pending draft before its owner may approve it
 	// (plugin_drafts.go): only a plugin minted with draft_checks.
 	mux.HandleFunc("GET "+pluginAPIPrefix+"/drafts/checks", s.requirePluginToken(s.handlePluginDraftChecks, plugins.CapDraftChecks))

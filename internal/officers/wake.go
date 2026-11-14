@@ -553,6 +553,8 @@ type Reconciler struct {
 	mu    sync.Mutex
 	state map[string]*officerState
 	done  chan struct{}
+	// doneOnce closes done once, on Run's ctx-ended return (see Run).
+	doneOnce sync.Once
 }
 
 // Config is NewReconciler's input.
@@ -1189,12 +1191,23 @@ func (r *Reconciler) Done() <-chan struct{} { return r.done }
 
 // Run drives the loop until ctx ends. Call it at most once.
 func (r *Reconciler) Run(ctx context.Context) {
-	defer close(r.done)
+	// 🔴 Done closes only when Run stops because its ctx ended. A Run that
+	// PANICS is restarted by its supervisor (api.Supervise): closing on that
+	// unwind would tell shutdown "stopped" while the restarted Run still works,
+	// and the restarted Run's own close would then panic on a closed channel
+	// (TestAPanickedReconcilerRunNeitherSaysDoneNorClosesTwice).
+	stopped := false
+	defer func() {
+		if stopped {
+			r.doneOnce.Do(func() { close(r.done) })
+		}
+	}()
 	t := time.NewTicker(RunTick)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			stopped = true
 			return
 		case <-t.C:
 			now := r.now()

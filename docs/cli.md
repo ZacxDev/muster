@@ -15,7 +15,7 @@ The verb set is pinned in two places:
 |---|---|
 | tasks | `task ls`, `task get`, `task create`, `task comment`, `task status` |
 | an agent's own task | `agent task get`, `agent task comment`, `agent task status` |
-| agents | `agent ls`, `agent messages`, `agent resolve`, `agent create` ([creating an agent without the chief](provisioner.md#creating-an-agent-without-the-chief)), `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
+| agents | `agent ls`, `agent messages`, `agent resolve`, `agent rm` (remove an agent; a [host officer instance](officers-builtin.md#officers-in-the-compose-stack-host-sessions)'s left-over row needs no provisioner), `agent create` ([creating an agent without the chief](provisioner.md#creating-an-agent-without-the-chief)), `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |

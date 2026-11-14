@@ -256,8 +256,14 @@ services:
       MUSTER_CHIEF_CLAUDE_TOKEN: ${MUSTER_CHIEF_CLAUDE_TOKEN:-}
       MUSTER_CHIEF_LLM_MODEL: ${MUSTER_CHIEF_LLM_MODEL:-}
 
+      # Officers (docs/features.md#officers): in this stack a builtin officer
+      # with "runtime": "host" runs each instance as a host-spawned Claude Code
+      # window on one of your machines (docs/officers-builtin.md#officers-in-the-compose-stack-host-sessions).
+      # A pod officer in the list refuses the boot here: there is no provisioner.
+      MUSTER_OFFICERS: ${MUSTER_OFFICERS:-}
+
       # NOT FORWARDED, ON PURPOSE: agent dispatch and what needs it (the chief's
-      # stall nudges, officers, the memo relay: MUSTER_AGENT_PROVISIONER,
+      # stall nudges, pod officers, the memo relay: MUSTER_AGENT_PROVISIONER,
       # MUSTER_CHIEF_NUDGES, …). Their provisioner uses Kubernetes in-cluster
       # credentials only, so they cannot run in this stack
       # (docs/features.md#dispatch). Nor the reserved MUSTER_TAG_AUTODISPATCH.

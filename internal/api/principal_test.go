@@ -220,7 +220,17 @@ var routeVias = map[authz.Via][]string{
 		// The admin pages (accounts PR 5): requireAdmin is requireSession plus
 		// a role check AFTER the principal is attached.
 		"GET /admin/invites",
+		"GET /admin/teams",
 		"GET /admin/users",
+		"POST /admin/teams",
+		"POST /admin/teams/{id}/members",
+		"POST /admin/teams/{id}/members/{user}/remove",
+		// A team's manager pages (teams_pages.go): requireSession, and
+		// requireOperatorWrite for the writes; the manager check is AFTER the
+		// principal is attached.
+		"GET /teams/{id}",
+		"POST /teams/{id}/members",
+		"POST /teams/{id}/members/{user}/remove",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",
@@ -421,6 +431,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
 		"PUT /api/plugins/{id}/deliver-to",
+		// `muster agent rm` (agent_rm.go): requireArmedHookToken.
+		"DELETE /api/agents/{name}",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
 		"GET /api/officers/types",
 		"GET /api/officers/types/{key}",
@@ -476,6 +488,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
 		"PUT /api/plugins/{id}/deliver-to",
+		// `muster agent rm` (agent_rm.go): requireArmedHookToken.
+		"DELETE /api/agents/{name}",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
 		"GET /api/officers/types",
 		"GET /api/officers/types/{key}",
@@ -538,6 +552,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/messages",
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
+		"POST /plugin/v1/drafts/{id}/renew",
 		"GET /plugin/v1/drafts/checks",
 		"POST /plugin/v1/drafts/{id}/check",
 		"POST /plugin/v1/drafts/{id}/media",
@@ -860,6 +875,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"GET /api/pr-sessions":                                 true,
 		"POST /api/plugins/messages/{id}/retry":                true,
 		"PUT /api/plugins/{id}/deliver-to":                     true,
+		"DELETE /api/agents/{name}":                            true,
 		"GET /api/officers/types":                              true,
 		"GET /api/officers/types/{key}":                        true,
 		"PUT /api/officers/types/{key}":                        true,

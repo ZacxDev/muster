@@ -29,7 +29,12 @@ func TestTheSuccessionWritersAreALedger(t *testing.T) {
 	// tap reaches.
 	assertCallers(t, ".", "StartEnd", []string{"end_session.go:acceptEndSession"})
 	assertCallers(t, ".", "RecordEnd", []string{"end_session.go:settleEnd"})
-	assertCallers(t, ".", "CloseAgent", []string{"end_session.go:closeEndedWindow"})
+	// 🔴 And ONE more, not on a tap: a host officer's scale-to-zero closes the
+	// window muster recorded for that instance (officer_host.go hostStop,
+	// reached only from the wake loop's officerFleet.Stop:
+	// TestTheHostOfficerSeamsAreALedger; docs/design/officers-on-hosts.md,
+	// open question 1).
+	assertCallers(t, ".", "CloseAgent", []string{"end_session.go:closeEndedWindow", "officer_host.go:hostStop"})
 	assertCallers(t, ".", "closeEndedWindow", []string{"end_session.go:acceptEndSession"})
 	assertCallers(t, ".", "acceptEndSession", []string{"chief_proposal.go:acceptProposal"})
 	assertCallers(t, ".", "DeclineProposal", []string{"chief_proposal.go:proposalForAnswer"})

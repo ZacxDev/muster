@@ -236,7 +236,7 @@ func (s *PGStore) CreatePairRequest(ctx context.Context, in PairIn, source strin
 			return ErrRateLimited
 		}
 		var owner int64
-		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE disabled_at IS NULL
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE disabled_at IS NULL AND id IN (`+users.PersonIDs+`)
 			AND lower(coalesce(nullif(email, ''), display_name)) = lower($1) ORDER BY id LIMIT 1`, strings.TrimSpace(in.Owner)).Scan(&owner)
 		if errors.Is(err, pgx.ErrNoRows) {
 			_, err = tx.Exec(ctx, `INSERT INTO plugin_pair_decoys (public_id, poll_secret_hash, created_at, expires_at) VALUES ($1, $2, $3, $4)`,

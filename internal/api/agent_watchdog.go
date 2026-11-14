@@ -80,6 +80,9 @@ func (s *Server) AgentWatchdogPass(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	var open, untold []agents.Agent
 	for _, a := range list {
 		switch {

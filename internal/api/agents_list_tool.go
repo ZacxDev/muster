@@ -92,6 +92,9 @@ func (s *Server) toolAgentsList(ctx context.Context, c toolCaller, arguments str
 		s.logger.Printf("agents_list: list: %v", err)
 		return toolErr("your owner's agents could not be read; try again later")
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	out := make([]agentsListItem, 0, len(list))
 	for _, a := range list {
 		// Row-level security already hides another owner's agents; the owner

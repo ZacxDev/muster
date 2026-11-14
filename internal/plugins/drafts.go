@@ -69,8 +69,12 @@ const (
 	// DraftTTL: a draft not sent within this of being written expires, whether
 	// it was still pending or approved and never claimed.
 	DraftTTL = 7 * 24 * time.Hour
-	// LeaseDuration: how long a claiming plugin has to report a result.
+	// LeaseDuration: how long a claiming plugin has to report a result, or
+	// to renew its lease (RenewDraft) for another LeaseDuration.
 	LeaseDuration = 2 * time.Minute
+	// MaxLeaseTotal bounds a claim's renewals: a lease never runs past
+	// claimed_at + MaxLeaseTotal, so a plugin cannot hold a draft for ever.
+	MaxLeaseTotal = 10 * time.Minute
 	// MaxClaimWait bounds one long-poll of the claim route.
 	MaxClaimWait = 25 * time.Second
 	// MaxExternalRefRunes and MaxDetailBytes cap what a result may carry.
@@ -284,6 +288,12 @@ var (
 	// ErrDraftUnchecked: an approval of a draft its plugin has not checked yet
 	// (Draft.AwaitingCheck).
 	ErrDraftUnchecked = errors.New("plugins: the plugin has not checked this draft yet")
+	// ErrLeaseLapsed: the claim's lease already lapsed, so the draft is (or
+	// is about to be swept) unconfirmed and can no longer be renewed (409).
+	ErrLeaseLapsed = errors.New("plugins: the claim's lease has already lapsed")
+	// ErrLeaseAtMax: the lease already runs to claimed_at + MaxLeaseTotal
+	// (409).
+	ErrLeaseAtMax = errors.New("plugins: the claim's lease is already as long as it may be")
 	// ErrCheckConflict: the draft already has the OTHER verdict (409).
 	ErrCheckConflict = errors.New("plugins: the draft already has a different verdict")
 )
@@ -511,41 +521,48 @@ func scanDraft(row pgx.Row) (Draft, error) {
 // holds nothing it waits for; and its rows are taken in id order
 // (sweepDrafts), so two sweeps cannot deadlock each other either.
 func (s *PGStore) sweep(ctx context.Context) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error { return sweepDrafts(ctx, tx) })
+	return s.inTx(ctx, func(tx pgx.Tx) error { return s.sweepDrafts(ctx, tx) })
 }
 
 // sweepDrafts settles what time has decided, for the principal's rows: a draft
 // pending or approved-but-unclaimed past its expiry is `expired`, and a claim
 // whose lease lapsed without a result is `unconfirmed` — the at-most-once rule
 // acting. Each is audited, one row per draft, as whichever principal's request
-// ran the sweep.
-func sweepDrafts(ctx context.Context, tx pgx.Tx) error {
-	for _, step := range []struct{ q, action, why string }{
+// ran the sweep; and an OUTBOUND draft's officer item is settled in the same
+// transaction (outboundEnded: its item never waits on a draft that ended).
+func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) error {
+	for _, step := range []struct {
+		q, action, why string
+		how            OutboundEnd
+	}{
 		{`UPDATE plugin_reply_drafts SET status = 'expired', decided_at = coalesce(decided_at, now())
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
 			              WHERE status IN ('pending', 'approved') AND claimed_at IS NULL AND expires_at <= now()
 			              ORDER BY id FOR UPDATE)
-			RETURNING id`,
-			"plugin.draft.expired", "not sent within 7 days of being written"},
+			RETURNING ` + draftCols,
+			"plugin.draft.expired", "not sent within 7 days of being written", OutboundExpired},
 		{`UPDATE plugin_reply_drafts SET status = 'unconfirmed'
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
 			              WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now()
 			              ORDER BY id FOR UPDATE)
-			RETURNING id`,
-			"plugin.draft.unconfirmed", "lease lapsed without a result"},
+			RETURNING ` + draftCols,
+			"plugin.draft.unconfirmed", "lease lapsed without a result", OutboundUnconfirmed},
 	} {
 		rows, err := tx.Query(ctx, step.q)
 		if err != nil {
 			return err
 		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		ds, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) })
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if err := audit(ctx, tx, step.action, DraftObject(id), map[string]any{"why": step.why}); err != nil {
+		for _, d := range ds {
+			if err := audit(ctx, tx, step.action, DraftObject(d.ID), map[string]any{"why": step.why}); err != nil {
 				return err
 			}
+		}
+		if err := s.outboundEnded(ctx, tx, ds, step.how); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1019,12 +1036,17 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 			return err
 		}
 		if d.IsOutbound() && !d.BindingHolds() {
-			if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
-				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1`, d.ID, BindingBrokenDetail); err != nil {
+			withdrawn, err := scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
+				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1 RETURNING `+draftCols, d.ID, BindingBrokenDetail))
+			if err != nil {
 				return err
 			}
 			retry = true
-			return audit(ctx, tx, "plugin.draft.binding_broken", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": BindingBrokenDetail})
+			if err := audit(ctx, tx, "plugin.draft.binding_broken", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": BindingBrokenDetail}); err != nil {
+				return err
+			}
+			// Its officer's item is settled with it (outboundEnded).
+			return s.outboundEnded(ctx, tx, []Draft{withdrawn}, OutboundBindingBroken)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts
 			SET claimed_at = now(), lease_until = now() + make_interval(secs => $2) WHERE id = $1`,
@@ -1042,6 +1064,63 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 		return Claim{}, false, false, err
 	}
 	return c, found, retry, nil
+}
+
+// RenewDraft extends plugin pluginID's lease on a draft IT claimed: to
+// LeaseDuration from now, but never past claimed_at + MaxLeaseTotal. For a
+// plugin whose send legitimately takes longer than one lease (a post through
+// a browser), so a slow success is not swept unconfirmed under it.
+//
+// 🔴 ONLY A LIVE LEASE IS RENEWED, under the draft's row lock: a lapsed one
+// is unconfirmed — the at-most-once rule (file header) — whether or not the
+// sweep has said so yet, and renewing it would revive a claim muster has
+// given up on (ErrLeaseLapsed, also once the sweep has made it
+// unconfirmed). Refused: another plugin's draft or none
+// (ErrNotFound); one not claimed, or already settled (ErrDraftState); one
+// whose lease already runs to the bound (ErrLeaseAtMax). Audited.
+func (s *PGStore) RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error) {
+	var d Draft
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+prefixed("d", draftCols)+`
+			  FROM plugin_reply_drafts d
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND coalesce(m.plugin_id, d.plugin_id) = $2
+			   FOR UPDATE OF d`, draftID, pluginID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		d = cur
+		if cur.Status == DraftUnconfirmed {
+			// Lapsed and already swept: the same answer as lapsed and not yet.
+			return ErrLeaseLapsed
+		}
+		if cur.Status != DraftApproved || cur.ClaimedAt == nil || cur.LeaseUntil == nil {
+			return ErrDraftState
+		}
+		// clock_timestamp(), not now(): the transaction's start time would let
+		// a renewal that waited on the row lock past lease_until revive it.
+		var lapsed, atMax bool
+		if err := tx.QueryRow(ctx, `SELECT lease_until <= clock_timestamp(), lease_until >= claimed_at + make_interval(secs => $2)
+			FROM plugin_reply_drafts WHERE id = $1`, draftID, MaxLeaseTotal.Seconds()).Scan(&lapsed, &atMax); err != nil {
+			return err
+		}
+		switch {
+		case lapsed:
+			return ErrLeaseLapsed
+		case atMax:
+			return ErrLeaseAtMax
+		}
+		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
+			SET lease_until = least(clock_timestamp() + make_interval(secs => $2), claimed_at + make_interval(secs => $3))
+			WHERE id = $1 RETURNING `+draftCols, draftID, LeaseDuration.Seconds(), MaxLeaseTotal.Seconds())); err != nil {
+			return err
+		}
+		return audit(ctx, tx, "plugin.draft.renewed", DraftObject(draftID), map[string]any{"plugin_id": pluginID, "lease_until": d.LeaseUntil})
+	})
+	return d, err
 }
 
 // BindingBrokenDetail is an outbound draft's detail when the claim withdrew

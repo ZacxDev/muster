@@ -407,6 +407,15 @@ func TestAnUnraisableEscalationIsGivenUp(t *testing.T) {
 	if err != nil || len(missing) != 1 || missing[0] != 987654 {
 		t.Fatalf("UsersExist: %v (%v), want [987654]", missing, err)
 	}
+	// A TEAM (users.kind = 'team', 0126) is not an escalation target until
+	// phase 3 of docs/design/team-sharing.md: no person could see the ask.
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO users (id, kind, role, display_name) OVERRIDING SYSTEM VALUE
+		VALUES (987125, 'team', 'member', 'escalation-team-probe') ON CONFLICT DO NOTHING`)
+	t.Cleanup(func() { dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM users WHERE id = 987125`) })
+	missing, err = w.store.UsersExist(sys, []int64{1, 987125})
+	if err != nil || len(missing) != 1 || missing[0] != 987125 {
+		t.Fatalf("UsersExist with a team: %v (%v), want the team reported missing [987125]", missing, err)
+	}
 }
 
 // TestEscalationPagingAndTheFullItem: a page of OpenEscalations holds only

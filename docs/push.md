@@ -209,3 +209,67 @@ as **payload v2**:
 - **Shortcuts:** New task, Tasks, Agents.
 - **The badge:** the app icon shows the ready-for-review count, kept current over
   the page's event stream.
+
+## Several servers (the server switcher)
+
+If you use more than one muster server (a separate deployment at its own
+address, with its own account), the sidebar's top row switches between them.
+It is the web app's counterpart of the Android app's switcher; the design and
+what it cannot match is [design/web-server-switcher.md](design/web-server-switcher.md).
+
+- **The row** shows the server you are on: its colour and its label. On a
+  phone it is in the menu (the button at the top left). Tap it, or press Enter
+  on it, for the list of servers; the one you are on is marked **In view**.
+  Escape closes the list.
+- **Add server** asks for the other server's address
+  (`https://muster.example.com`; `http://` only for `localhost` or
+  `127.0.0.1`). Only the address's origin is kept: a path or anything after
+  `?` is dropped. An address with a user name or password in it is refused.
+  At most 8 servers, this one included.
+- **Switching** opens the other server in this window. You sign in there as
+  usual; each server keeps its own sign-in, and its own installed app if you
+  installed it.
+- **The way back:** a switch tells the other server where it came from (in
+  the address after `#`, never sent to the server), and that server offers to
+  add it to its own list, also after you sign in there. It asks; it never adds
+  it by itself. Because any link can carry the same request, the offer says
+  "A link asked", shows the server's full address, and starts on **Not now**.
+  Add it only if it is a muster server you use.
+- **Labels and logos:** another server is labelled by its address until you
+  give it a label of your own. Its display name is not shown, because this
+  page never reads another server's data. Its [logo](branding.md) is drawn
+  straight from that server (an image of its `/brand/icon-192.png`, with no
+  referrer), and only while the list is open. A server with no logo, or one
+  that is down or behind a sign-in proxy that does not let `/brand/` through
+  ([branding.md](branding.md#behind-an-edge-that-signs-people-in)), shows its
+  colour and label. The server you are on shows its own name.
+- **Manage servers** renames a server's label (empty: its address again) and
+  removes a server from the list. Removing does not sign you out
+  of it or turn off its notifications: do that on that server.
+- **Notifications:** turn them on on each server (Web Push belongs to one
+  address). Each server's notifications then arrive with its own icon, and a
+  tap opens that server.
+- **Where the list is kept:** in this browser, for this server's address
+  (`localStorage`, key `muster-servers`): the addresses and your labels,
+  nothing else. It is not synced to other browsers or
+  devices, each server has its own list, and anyone who uses this browser
+  profile on this server sees it. On iOS an app added to the Home Screen keeps
+  a list separate from Safari's.
+- **What another server receives** from this one: nothing but the image
+  request for its public `/brand/icon-192.png`, with no referrer, and the
+  navigation when you switch, which carries no referrer and no path of this
+  server. No script on this page reads anything from another server.
+  muster's pages may *draw* exactly that one path from another address (the
+  CSP's `img-src`). `connect-src` stays `'self'`, and `/api/instance` and
+  `/brand/` send no CORS header. muster's sign-in cookie is
+  `SameSite=Lax`, so a cross-site image request carries none. Between two
+  servers on sibling subdomains of one site, it may carry the other server's
+  own cookie, to that same server's public image route.
+- **Use a separate host name for each server.** Cookies are not port-scoped,
+  so two muster servers on different ports of one host share one
+  `muster_session` cookie jar and see each other's sign-in cookie on every
+  request, with or without the switcher (it adds nothing beyond ordinary
+  navigation between them).
+- **A server addressed by IP** may show no logo, only its colour and label:
+  the CSP's wildcard host does not match IP addresses in browsers that follow
+  the spec (`localhost` and `127.0.0.1` are listed explicitly).

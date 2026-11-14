@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -69,6 +70,21 @@ func newFakeStore(log *recorder, rows ...agents.Agent) *fakeStore {
 	return s
 }
 
+// Secrets is the stored credentials of the row Get would return (getOverride
+// first), so a row changed between the list and the claim is seen the same way
+// through both reads.
+func (s *fakeStore) Secrets(_ context.Context, id int64) (agents.Secrets, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a, ok := s.getOverride[id]; ok {
+		return agents.Secrets{HooksToken: a.HooksToken, GatewaySecret: a.GatewaySecret}, nil
+	}
+	if r, ok := s.rows[id]; ok {
+		return agents.Secrets{HooksToken: r.HooksToken, GatewaySecret: r.GatewaySecret}, nil
+	}
+	return agents.Secrets{}, errors.New("no such agent")
+}
+
 func (s *fakeStore) rec(format string, args ...any) {
 	s.log.add(fmt.Sprintf(format, args...))
 }
@@ -80,7 +96,7 @@ func (s *fakeStore) List(context.Context) ([]agents.Agent, error) {
 	for _, r := range s.rows {
 		c := *r
 		c.UpdatedAt = c.UpdatedAt.Add(-s.listSkew)
-		out = append(out, c)
+		out = append(out, withoutSecrets(c))
 	}
 	return out, nil
 }
@@ -90,13 +106,21 @@ func (s *fakeStore) Get(_ context.Context, id int64) (agents.Agent, error) {
 	defer s.mu.Unlock()
 	s.rec("Get(%d)", id)
 	if o, ok := s.getOverride[id]; ok {
-		return o, nil
+		return withoutSecrets(o), nil
 	}
 	r, ok := s.rows[id]
 	if !ok {
 		return agents.Agent{}, errors.New("no such row")
 	}
-	return *r, nil
+	return withoutSecrets(*r), nil
+}
+
+// withoutSecrets is a as the real store's List and Get return it: with no
+// credentials (agents.Secrets). Serving them here would let the deliverer
+// pass while deciding "no token" from a row that never carries one.
+func withoutSecrets(a agents.Agent) agents.Agent {
+	a.HooksToken, a.GatewaySecret = "", ""
+	return a
 }
 
 func (s *fakeStore) ClaimKickoff(_ context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
@@ -291,9 +315,15 @@ type fakeInstances struct {
 	insts []provision.Instance
 	err   error
 	calls int
+	// panics, while above zero, makes Instances panic (and counts down): a
+	// pass that panics, for the supervised-restart test.
+	panics atomic.Int32
 }
 
 func (f *fakeInstances) Instances(context.Context) ([]provision.Instance, error) {
+	if f.panics.Add(-1) >= 0 {
+		panic("fakeInstances: a pass panics")
+	}
 	f.calls++
 	return f.insts, f.err
 }

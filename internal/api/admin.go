@@ -45,6 +45,17 @@ type AccountStore interface {
 	Audit(ctx context.Context, by users.Actor, action, object string, detail map[string]any) error
 	Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error
 	RecentAudit(ctx context.Context, limit int) ([]users.AuditEntry, error)
+	// Teams (admin_teams.go; docs/design/team-sharing.md phase 1).
+	CreateTeam(ctx context.Context, by users.Actor, name string, firstManager int64) (users.Team, error)
+	SetTeamMember(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
+	RemoveTeamMember(ctx context.Context, by users.Actor, team, user int64) error
+	ListTeams(ctx context.Context) ([]users.Team, error)
+	// A team's own manager (teams_pages.go; phase 2a).
+	ReroleTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
+	AddTeamMemberByEmailAsManager(ctx context.Context, by users.Actor, team int64, email string, role authz.TeamRole) error
+	RemoveTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64) error
+	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
+	TeamAudit(ctx context.Context, team int64, limit int) ([]users.AuditEntry, error)
 }
 
 // InviteTTL is an invite link's default lifetime; inviteTTLChoices are the
@@ -72,6 +83,7 @@ func (s *Server) registerAdminRoutes(mux Mux) {
 	mux.HandleFunc("GET /admin/invites", s.requireAdmin(s.handleAdminInvites))
 	mux.HandleFunc("POST /admin/invites", s.requireAdmin(s.handleAdminInviteCreate))
 	mux.HandleFunc("POST /admin/invites/{id}/revoke", s.requireAdmin(s.handleAdminInviteRevoke))
+	s.registerAdminTeamRoutes(mux)
 }
 
 // adminPagesServed reports whether this server has what the admin pages need.
@@ -166,7 +178,7 @@ func (s *Server) writeAdminDocument(w http.ResponseWriter, r *http.Request, code
 	}
 	s.writeNavDocument(w, r, code, title, ui.NavAdmin, true, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
 <a href="/" class="inline-flex min-h-[44px] items-center px-2 text-sm text-accent underline">← muster</a>
-`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/account", "Account")+`
+`+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/admin/teams", "Teams")+tab("/account", "Account")+`
 </nav>
 <div class="flex flex-col gap-4">`+inner+`</div>`)
 }

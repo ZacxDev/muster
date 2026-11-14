@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ErrBadToken is the refusal for a mirror token that is unknown or revoked.
@@ -96,6 +98,12 @@ func scanToken(row pgx.Row) (Token, error) {
 // Authenticate looks the token up by hash among unrevoked tokens and stamps its
 // last use.
 //
+// 🔴 A TOKEN WHOSE OWNER IS A TEAM (users.kind = 'team', migration 0126) IS
+// REFUSED AS IF UNKNOWN: a team never signs in, and this door attaches no
+// request principal for internal/api's admit to refuse. Nothing mints such a
+// token today (muster-server mirror token create mints for user 1); this is
+// the guard for when something does (docs/design/team-sharing.md phase 2).
+//
 // ⚠ A STRING WITHOUT THE PREFIX IS REFUSED BEFORE THE QUERY. That is not the
 // security property — the hash lookup is, and no other credential's hash is in
 // this table — it only keeps a hook token pasted into the wrong config from
@@ -107,6 +115,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	t, err := scanToken(s.pool.QueryRow(ctx, `
 		UPDATE mirror_tokens SET last_used_at = now()
 		WHERE token_hash = $1 AND revoked_at IS NULL
+			AND owner_id IN (`+users.PersonIDs+`)
 		RETURNING `+tokenCols, HashToken(token)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken

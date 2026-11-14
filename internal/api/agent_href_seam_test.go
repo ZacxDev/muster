@@ -302,6 +302,12 @@ var agentHrefCallLedger = map[string]int{
 	// the agent's BARE page, which opens its latest session — as the push
 	// targets above.
 	"AgentPath ← internal/api/agents.go:Server.handleAgentName": 1,
+	// A mention of an agent in a chat reply (ui/mentions.go) links the BARE
+	// page, which opens the session that is right at CLICK time (the chief's
+	// primary chat, else the latest): the index is built on every #chat-log
+	// render, and naming a session would cost it a sessions read per render
+	// for a link that is rarely followed.
+	"AgentPath ← internal/ui/mentions.go:MentionIndex.name": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the
@@ -312,14 +318,16 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
-	// The views: the session drawer, a task card's Open chat, the notification
-	// panel's two row kinds, the terminal page's back link.
+	// The views: the session drawer, the chief page's Chats tab (its rows name
+	// their session, like the drawer's), a task card's Open chat, the
+	// notification panel's two row kinds, the terminal page's back link.
 	// A list's links (the sidebar's rows and the switcher's pills via
 	// PageHref; a task card's Open chat) carry the from=list marker that moves a stale one to the latest.
 	"AgentSessionHref ← internal/ui/agent_href.go:AgentListHref":    1,
 	"AgentListHref ← internal/ui/agents.go:AgentCardView.PageHref":  1,
 	"AgentListHref ← internal/ui/notes.go:taskActionTrailing":       1,
 	"AgentSessionHref ← internal/ui/agents_detail.go:sessionDrawer": 1,
+	"AgentSessionHref ← internal/ui/chief_chats.go:chiefChatRow":    1,
 	"AgentSessionHref ← internal/ui/notifications.go:activeRow":     1,
 	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
 	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,

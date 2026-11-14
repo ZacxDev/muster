@@ -554,6 +554,11 @@ you typed is lost while the dialog is open. You can confirm in two ways:
 
 Both are same-origin only and throttled like sign-in.
 
+**A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
+an owner-authority tool reached through that machine's MCP door is confirmed
+on the owner's paired phone, one decision per signed action — not by this
+window.
+
 The Interactive choice is remembered per host for the browser session. Adding a
 passkey has its own fixed window of five minutes, separate from the step-up
 window, because a new credential outlives the session that creates it.

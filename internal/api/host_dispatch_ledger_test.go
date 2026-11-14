@@ -73,7 +73,11 @@ func assertCallers(t *testing.T, dir, name string, want []string) {
 // agent_dispatch's host path (spawnReserved, from toolHostDispatch). No HTTP
 // route, token or CLI verb reaches it.
 func TestHostSpawnHasOneDoor(t *testing.T) {
-	assertCallers(t, ".", "SpawnAgent", []string{"host_dispatch.go:spawnReserved"})
+	// 🔴 The second door is the officer runtime's: a host officer's instance
+	// (officer_host.go hostStart), reached only from the wake loop's
+	// officerFleet.Start (TestTheHostOfficerSeamsAreALedger) — never a route,
+	// token or tool.
+	assertCallers(t, ".", "SpawnAgent", []string{"host_dispatch.go:spawnReserved", "officer_host.go:hostStart"})
 	// 🔴 The second caller is the owner's TAP on a succession's card (operator
 	// decision, chief-in-agent-view phase 2): an HTTP route reaches a host
 	// spawn there, but only through the owner's own door (answerAskFrom's

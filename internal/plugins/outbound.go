@@ -190,6 +190,48 @@ type OfficerLink interface {
 	// otherwise) WAITING with no holder: it waits on the outbound draft filed
 	// for it, which settles it (internal/api outboundSettled). See FileOutbound.
 	WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, item int64, instance string) error
+	// DraftEndedTx, inside the transaction that ended outbound draft d
+	// unsent by muster's own hand (how: the sweep's expiry or lapsed lease,
+	// the claim's broken binding, Checks replies turned off), settles what d was filed for: its
+	// officer's follow-up and the item that waits on it (internal/api
+	// draftEndFor). An error rolls the end back with it, so the next sweep
+	// or claim tries again: a draft never ends while its item still waits.
+	DraftEndedTx(ctx context.Context, tx pgx.Tx, d Draft, how OutboundEnd) error
+}
+
+// OutboundEnd is how an outbound draft ended unsent by muster's own hand,
+// rather than by a decision or a result internal/api acts on itself.
+type OutboundEnd string
+
+const (
+	// OutboundExpired: not sent within DraftTTL (sweepDrafts).
+	OutboundExpired OutboundEnd = "expired"
+	// OutboundUnconfirmed: its plugin's claim lapsed with no result
+	// (sweepDrafts): it MAY have been posted.
+	OutboundUnconfirmed OutboundEnd = "unconfirmed"
+	// OutboundBindingBroken: the claim withdrew it, its body or media no
+	// longer what was approved (claimOne).
+	OutboundBindingBroken OutboundEnd = "binding_broken"
+	// OutboundChecksOff: its plugin's draft_checks was turned off while it
+	// awaited the check, so it was refused (SetDraftChecks).
+	OutboundChecksOff OutboundEnd = "checks_off"
+)
+
+// outboundEnded is OfficerLink.DraftEndedTx for drafts ds that ended how in
+// tx: those of an officer, while a link is wired.
+func (s *PGStore) outboundEnded(ctx context.Context, tx pgx.Tx, ds []Draft, how OutboundEnd) error {
+	if s.officers == nil {
+		return nil
+	}
+	for _, d := range ds {
+		if !d.IsOutbound() || d.Officer == nil {
+			continue
+		}
+		if err := s.officers.DraftEndedTx(ctx, tx, d, how); err != nil {
+			return fmt.Errorf("plugins: draft %d %s: settle its officer's item: %w", d.ID, how, err)
+		}
+	}
+	return nil
 }
 
 // WithOfficerLink wires the builtin officer store; without one, a bound
@@ -429,6 +471,10 @@ type NewOutbound struct {
 	Media  []string
 	// ItemID is the officer item the draft is for, when it names one.
 	ItemID *int64
+	// PublicLinks are the filing officer's public links (host/path entries,
+	// flows.StripPublicLinks): internal/api sets them from the officer's
+	// standing-read repositories, never from the agent's arguments.
+	PublicLinks []string
 }
 
 // validate checks every field but the body (ScreenOutbound's).
@@ -462,10 +508,15 @@ func (in NewOutbound) validate() error {
 
 // ScreenOutbound is ScreenDraft for an OUTBOUND draft: the same screen, except
 // that public host names and URLs are allowed (flows.OutboundTextRefusal) so
-// a post can link to the project. Internal host names, IP addresses, secrets,
-// infrastructure words and the deployment's own names are refused as ever.
-func ScreenOutbound(body string, denyWords []string) (string, error) {
-	return screenDraft(body, denyWords, flows.OutboundTextRefusal)
+// a post can link to the project, and a link on publicLinks (the officer's
+// standing-read repositories: flows.StripPublicLinks) may spell one of the
+// deployment's own names. Internal
+// host names, IP addresses, secrets, infrastructure words and the deployment's
+// own names anywhere else are refused as ever.
+func ScreenOutbound(body string, denyWords, publicLinks []string) (string, error) {
+	return screenDraft(body, denyWords, func(text string, words []string) string {
+		return flows.OutboundTextRefusal(text, words, publicLinks)
+	})
 }
 
 // FileOutbound stores officer in.Officer's outbound draft, written by its
@@ -484,7 +535,7 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 	if err := in.validate(); err != nil {
 		return Draft{}, err
 	}
-	body, err := ScreenOutbound(in.Body, s.denyWords)
+	body, err := ScreenOutbound(in.Body, s.denyWords, in.PublicLinks)
 	if err != nil {
 		return Draft{}, err
 	}

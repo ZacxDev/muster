@@ -51,7 +51,7 @@ func (o *outcomeFixture) useRuntime(t *testing.T, runtime *httptest.Server, list
 	host, port, _ := net.SplitHostPort(u.Host)
 	pn, _ := strconv.Atoi(port)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: outcomeEndpoint{provision.Endpoint{Scheme: "http", Host: host, Port: pn}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel"})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: o.srv.ext.Agents})
 	if err != nil {
 		t.Fatal(err)
 	}

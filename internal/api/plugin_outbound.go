@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -390,10 +392,12 @@ func postDraftToolDef() agents.ToolDef {
 		Description: "Ask to post something outside — a new post, or a reply on an upstream thread — through the plugin bound to your officer. " +
 			"NOTHING IS SENT by this call: it files a draft. The plugin checks it and uploads the media, your owner reads the exact text and sees every image and video, " +
 			"and only an approval lets the plugin post exactly that, once. Write the body exactly as it should appear. " +
-			"Public links (for example the project's repository) are allowed; internal host names, IP addresses and secrets are refused. " +
+			"Public links are allowed, and a link to one of your officer's standing-read repositories (github.com/<owner>/<repo>) may name the project; " +
+			"anywhere else the deployment's own names are refused, as are internal host names, IP addresses and secrets. " +
 			"Give item_id when the draft is for an item you hold: the item then WAITS ON THE DRAFT and leaves your hands (no holder), so do not complete or release it. " +
-			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft or your owner rejects it, muster closes it and " +
-			"queues a draft.refused item saying why (your owner's reason, or the plugin's), which is where you redraft.",
+			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft, your owner rejects it, or it expires, muster closes it and " +
+			"queues a draft.refused item saying why (your owner's reason, the plugin's, or muster's), which is where you redraft. " +
+			"If the plugin took it and never reported a result, it may have been posted: muster escalates the item to your owner and you must not redraft it.",
 		Parameters: objSchema(map[string]any{
 			"plugin": strProp("The name of the plugin bound to your officer."),
 			"venue":  strProp("Where it goes, as the plugin names it: 1-64 lower-case letters, digits, '.', '_' and '-'."),
@@ -423,6 +427,19 @@ func (s *Server) officerOutboundGranted(ctx context.Context, o officers.Officer)
 	return ok
 }
 
+// officerPublicLinks are the links officer o's outbound drafts may carry even
+// when they spell one of the deployment's own names (flows.StripPublicLinks):
+// `github.com/<owner>/<repo>` for each of its standing-read repositories —
+// the repositories the deployment itself declares public
+// (officers.Officer.StandingReadRepos, THE rule for that).
+func officerPublicLinks(o officers.Officer) []string {
+	var out []string
+	for _, r := range o.StandingReadRepos() {
+		out = append(out, connectors.GitHubGitHost+"/"+r)
+	}
+	return out
+}
+
 // officerPostDraft is officer_post_draft for instance a of officer o.
 func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officers.Officer, c officers.Backend, arguments string) string {
 	if !s.officerOutboundGranted(ctx, o) {
@@ -439,7 +456,8 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("arguments are {plugin, venue, target: {kind, ref?}, body, media?, item_id?}: %v", err)
 	}
-	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media}
+	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media,
+		PublicLinks: officerPublicLinks(o)}
 	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
 		// Whether this instance holds it is decided in the filing's
 		// transaction, under the item's row lock (plugins.FileOutbound).
@@ -468,7 +486,7 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		"note": "filed, NOT sent: the plugin checks it and uploads its media, then your owner decides. Do not say it was posted."}
 	if n.ItemID != nil {
 		out["item"] = fmt.Sprintf("item %d now waits on this draft with no holder: do not complete or release it. muster completes it when the post goes out, "+
-			"or closes it and queues a draft.refused item if the draft is refused or rejected.", *n.ItemID)
+			"or closes it and queues a draft.refused item if the draft is refused, rejected or expires.", *n.ItemID)
 	}
 	return toolJSON(out)
 }
@@ -490,6 +508,64 @@ const (
 // rejection that gave no reason.
 const OwnerRejectedNoReason = "rejected by the owner, no reason given"
 
+// settledByMuster: muster ended it by its own rules — it expired, or the
+// claim withdrew it for a broken binding (plugins.OutboundEnd).
+const settledByMuster = "muster"
+
+// ExpiredDetail is the detail of the draft.refused item for an outbound
+// draft that EXPIRED: nobody approved and sent it within plugins.DraftTTL.
+const ExpiredDetail = "not sent within 7 days of being written: it expired undecided, or approved but never collected by its plugin"
+
+// draftEndFor is builtin.DraftEnd for OUTBOUND draft d of officer, ended
+// unsent — how: plugins.OutboundEnd's values, or "" for a decision (by:
+// settledByPlugin or settledByOwner, with detail). THE ONE PLACE an
+// outbound draft's unsent end is worded and the officer's follow-up built,
+// for every path that ends one: outboundSettled (a plugin's refusal or
+// failed send, the owner's rejection) and officerPluginLink.DraftEndedTx
+// (the sweep's expiry and lapsed lease, the claim's broken binding, Checks
+// replies turned off).
+//
+//   - a REFUSED, REJECTED, EXPIRED, BINDING-BROKEN or CHECKS-OFF draft can
+//     be redrafted:
+//     a draft.refused item for the officer, bounded by maxOpenRefusedItems;
+//   - an UNCONFIRMED draft cannot: its plugin collected it and never said
+//     whether it posted it, so it MAY be live. No follow-up is queued (a
+//     redraft would be a blind re-post) and the item is escalated to the
+//     officer's owner, who checks the venue and answers.
+func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, detail string) builtin.DraftEnd {
+	id := strconv.FormatInt(d.ID, 10)
+	e := builtin.DraftEnd{Officer: officer, Draft: d.ID, Max: maxOpenRefusedItems, ClaimedAt: d.ClaimedAt}
+	if d.OfficerItemID != nil {
+		e.Item = *d.OfficerItemID
+	}
+	switch how {
+	case plugins.OutboundUnconfirmed:
+		e.Ended = "Draft " + id + " may have been posted: its plugin collected it and reported no result before its lease lapsed, " +
+			"so it is unconfirmed. muster will not offer it again and the officer is not asked to redraft it, which could post it twice. " +
+			"Check " + d.VenueText() + " for it."
+		return e
+	case plugins.OutboundExpired:
+		e.Ended, by, detail = "draft "+id+" expired, not posted.", settledByMuster, ExpiredDetail
+	case plugins.OutboundBindingBroken:
+		e.Ended, by, detail = "draft "+id+" was withdrawn at its claim, not posted: "+plugins.BindingBrokenDetail+".", settledByMuster, plugins.BindingBrokenDetail
+	case plugins.OutboundChecksOff:
+		e.Ended, by, detail = "draft "+id+" was refused unchecked, not posted: "+plugins.ChecksOffDetail+".", settledByMuster, plugins.ChecksOffDetail
+	case "":
+		ended := "rejected by the owner"
+		if by == settledByPlugin {
+			ended = "refused by the plugin"
+		}
+		e.Ended = "draft " + id + " was " + ended + ", not posted."
+	}
+	// The sweep and the claim have no push to tell the owner with: past the
+	// bound their item is escalated to the owner instead.
+	e.EscalateAtBound = how != ""
+	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
+		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
+	e.FollowUp = &builtin.NewItem{Officer: officer, Kind: draftRefusedKind, SubjectKey: "draft:" + id, Payload: payload}
+	return e
+}
+
 // outboundSettled is what follows a fresh result, refusal or rejection of
 // OUTBOUND draft d, for its officer: a send reported ok completes the item it
 // was filed for (done, with the post's reference — the item waits on the
@@ -497,60 +573,88 @@ const OwnerRejectedNoReason = "rejected by the owner, no reason given"
 // plugin's failed send or refused check, or the owner's rejection) queues a
 // draft.refused item saying why — the plugin's detail, or the owner's reason
 // — so the officer can write a better one, and closes the item the draft was
-// for, naming that follow-up. Best effort: the draft's own state is already
-// recorded.
-func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) {
+// for, naming that follow-up (draftEndFor, builtin.DraftEnded). notTold:
+// the bound kept the officer from being told, so the CALLER tells the owner.
+// Best effort: the draft's own state is already recorded.
+func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) (notTold bool) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
-		return
+		return false
 	}
 	officer, now := *d.Officer, time.Now()
 	ctx = context.WithoutCancel(ctx)
 	if d.Status == plugins.DraftSent {
 		if d.OfficerItemID != nil {
+			// A LATE result (the draft was unconfirmed, its item escalated to
+			// the owner asking whether it was posted) settles it too, and the
+			// owner's now-answered escalation asks are withdrawn.
 			summary := "posted " + d.ExternalRef + " (draft " + strconv.FormatInt(d.ID, 10) + ")"
-			if _, err := s.officerStore.ResolveItem(ctx, owner, officer, *d.OfficerItemID, "done", summary, now); err != nil {
-				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is: %v", d.ID, *d.OfficerItemID, officer, err)
+			var claimed time.Time
+			if d.ClaimedAt != nil {
+				claimed = *d.ClaimedAt
 			}
+			settled, withdraw, err := s.officerStore.DraftPosted(ctx, owner, officer, *d.OfficerItemID, d.ID, claimed, summary, now)
+			if err != nil || !settled {
+				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is (%v)", d.ID, *d.OfficerItemID, officer, err)
+			}
+			s.withdrawEscalation(ctx, d.ID, withdraw)
 		}
-		return
+		return false
 	}
-	var detail, ended string
+	var detail string
 	switch by {
 	case settledByOwner:
 		if d.Status != plugins.DraftRejected {
-			return
+			return false
 		}
-		detail, ended = OwnerRejectedNoReason, "rejected by the owner"
+		detail = OwnerRejectedNoReason
 		if d.DecisionReason != nil && strings.TrimSpace(*d.DecisionReason) != "" {
 			detail = *d.DecisionReason
 		}
 	case settledByPlugin:
 		if d.Status != plugins.DraftFailed && !d.RefusedByCheck() {
-			return
+			return false
 		}
-		detail, ended = plugins.RefusalText(d.Detail), "refused by the plugin"
+		detail = plugins.RefusalText(d.Detail)
 	default:
-		return
+		return false
 	}
-	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
-		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
-	// 🔴 BOUNDED, IN ONE TRANSACTION (builtin.EnqueueBounded): a plugin that
+	// 🔴 BOUNDED, IN ONE TRANSACTION (builtin.DraftEndedTx): a plugin that
 	// refuses every draft would otherwise turn each refusal into a new item
 	// and each item into a new draft, with no human in the loop. At most
 	// maxOpenRefusedItems wait at once, counted and inserted under one lock so
 	// two settling at once cannot both pass the count. Past it nothing is
-	// queued and the item the draft was for stays waiting for the owner to
-	// resolve by hand: for a plugin's refusal the owner's push (draftRefused)
-	// says so; for the owner's own rejection NOTHING does (an open gap, PR
-	// #643's audit, recorded there).
-	prefix := "draft " + strconv.FormatInt(d.ID, 10) + " was " + ended + ", not posted."
-	id, _, err := s.officerStore.EnqueueBounded(ctx, owner, builtin.NewItem{Officer: officer, Kind: draftRefusedKind,
-		SubjectKey: "draft:" + strconv.FormatInt(d.ID, 10), Payload: payload}, maxOpenRefusedItems, d.OfficerItemID, prefix, now)
+	// queued, the item the draft was for is STILL finished (saying the
+	// officer was not told), and the caller pushes the owner saying so.
+	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail), now)
 	if err != nil {
-		s.logger.Printf("plugins: draft %d %s; no %s item for %s: %v", d.ID, ended, draftRefusedKind, officer, err)
-		return
+		s.logger.Printf("plugins: draft %d ended unsent (by %s); %s and its item left as they are: %v", d.ID, by, officer, err)
+		return false
 	}
-	s.logger.Printf("plugins: draft %d %s; %s item %d for %s", d.ID, ended, draftRefusedKind, id, officer)
+	s.logger.Printf("plugins: draft %d ended unsent (by %s); %s item %d for %s (at the bound: %v), its item %q",
+		d.ID, by, draftRefusedKind, res.FollowUp, officer, res.AtBound, res.Item)
+	s.withdrawEscalation(ctx, d.ID, res.Withdraw)
+	return res.AtBound
+}
+
+// withdrawEscalation withdraws the raised escalation asks of an item draft
+// d's LATE result settled (its unconfirmed end had escalated it to the
+// owner, asking whether it was posted; now muster knows).
+func (s *Server) withdrawEscalation(ctx context.Context, d int64, asks []builtin.OpenEscalation) {
+	for _, w := range asks {
+		if _, err := s.cancelAsk(s.attentionPrincipal(ctx, w.Recipient), w.AttentionID); err != nil && !errors.Is(err, attention.ErrNotOpen) {
+			s.logger.Printf("plugins: draft %d's late result: withdraw user %d's escalation ask %d: %v", d, w.Recipient, w.AttentionID, err)
+		}
+	}
+}
+
+// DraftEndedTx implements plugins.OfficerLink: outbound draft d ended unsent
+// by muster's own hand (how), inside the transaction that ended it.
+func (l officerPluginLink) DraftEndedTx(ctx context.Context, tx pgx.Tx, d plugins.Draft, how plugins.OutboundEnd) error {
+	if d.Officer == nil || !d.IsOutbound() {
+		return nil
+	}
+	_, err := l.store.DraftEndedTx(ctx, tx, d.OwnerID, draftEndFor(d, *d.Officer, how, "", ""), l.now())
+	return err
 }
 
 // draftRefusedKind is the kind of the item an officer gets for its outbound
@@ -558,7 +662,7 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 const draftRefusedKind = "draft.refused"
 
 // maxOpenRefusedItems bounds the draft.refused items one officer may have
-// waiting (outboundSettled).
+// waiting (draftEndFor).
 const maxOpenRefusedItems = 3
 
 // outboundAttentionText is an outbound draft's Attention line.

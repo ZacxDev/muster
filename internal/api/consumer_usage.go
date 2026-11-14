@@ -126,6 +126,9 @@ func (s *Server) consumerUsageInstances(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read agents: %w", err)
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	idx := s.instanceIndexWithin(octx, officerInstancesWithin)
 	if idx == nil {
 		return nil, errors.New("the provisioner's instances could not be read")

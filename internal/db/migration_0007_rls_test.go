@@ -77,6 +77,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO note_attachments (note_id, filename, size_bytes, data) VALUES ($1, 'a.txt', 1, '\x61')`, func() []any { return []any{note} }, nil},
 		{`INSERT INTO task_sessions (note_id, session_id, role) VALUES ($1, $2, 'created')`, func() []any { return []any{note, "sess-" + tag} }, nil},
 		{`INSERT INTO agents (name, namespace, note_id) VALUES ($1, $2, $3) RETURNING id`, func() []any { return []any{"agent-" + tag, "ns-" + tag, note} }, &agent},
+		{`INSERT INTO agent_secrets (agent_id, hooks_token) VALUES ($1, $2)`, func() []any { return []any{agent, "hooks-" + tag} }, nil},
 		{`INSERT INTO chat_sessions (agent_id, session_key) VALUES ($1, $2) RETURNING id`, func() []any { return []any{agent, "key-" + tag} }, &session},
 		{`INSERT INTO chat_messages (agent_id, session_id, role, content) VALUES ($1, $2, 'user', 'hello')`, func() []any { return []any{agent, session} }, nil},
 		{`INSERT INTO connectors (name, hosts, auth_scheme, secret_ciphertext) VALUES ($1, ARRAY['api.example.test'], 'bearer', '\x00')`, func() []any { return []any{"conn-" + tag} }, nil},
@@ -100,6 +101,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_judgement_sessions (officer, day, items) VALUES ('triage:example-' || lower($1), '2000-01-01', '{a}')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_pr_loops (officer, repo, pr, state) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'pending')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_host_spawns (officer, instance, host) VALUES ('marketing:example-' || lower($1), 'officer-marketing-example-1', 'host-a')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_pair_requests (public_id, name, label, data_scope, capabilities, code_hash, poll_secret_hash, expires_at)
 			VALUES (left(md5($1) || md5($1), 22), 'example-pair', 'Pair', 'example', '{messages}', repeat('a', 64), repeat('b', 64), now() + interval '10 minutes')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
@@ -168,7 +170,7 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 // security: keyed by a USER column (users.id, api_tokens.user_id,
 // audit_log.user_id) or admin-only (invites), not by owner_id. Their policies
 // are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
-var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
+var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "team_members", "users"}
 
 // instanceTables are tables that belong to the SERVER, not to a user: no
 // owner_id, under forced row-level security with a scope_all policy only (the
@@ -216,7 +218,9 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"RLS forced": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`), all},
 		"tables with an owner_isolation policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='owner_isolation'`), want},
+			WHERE schemaname='public' AND policyname='owner_isolation'`), personalTables()},
+		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
 	} {
 		if !slices.Equal(c.got, c.want) {
@@ -233,6 +237,12 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		var tbl, name, cmd, permissive, qual, check string
 		if err := rows.Scan(&tbl, &name, &cmd, &permissive, &qual, &check); err != nil {
 			t.Fatal(err)
+		}
+		if c, shared := shareClasses[tbl]; shared {
+			// The team policies (0127): one per command, each with the user
+			// arm, the scope-all arm and the team arm at its role.
+			checkTeamPolicy(t, tbl, name, cmd, permissive, qual, check, c)
+			continue
 		}
 		if name != "owner_isolation" || cmd != "ALL" || permissive != "PERMISSIVE" {
 			t.Errorf("%s: policy %q cmd=%s %s; want owner_isolation, ALL, PERMISSIVE", tbl, name, cmd, permissive)

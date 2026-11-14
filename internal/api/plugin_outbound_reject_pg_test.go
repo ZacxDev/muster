@@ -168,7 +168,8 @@ func TestAnOwnerRejectionWithNoReasonSaysSo(t *testing.T) {
 
 // TestAnOwnerRejectionIsBounded: with maxOpenRefusedItems draft.refused items
 // already live, another rejection queues none, and the item the draft was for
-// is left waiting (nothing moved it). CONTROL: below the bound one is queued.
+// still settles (TestAnOwnerRejectionPastTheBoundSettlesAndTellsTheOwner has
+// what it says). CONTROL: below the bound one is queued.
 func TestAnOwnerRejectionIsBounded(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	for i := 0; i < maxOpenRefusedItems-1; i++ {
@@ -196,8 +197,8 @@ func TestAnOwnerRejectionIsBounded(t *testing.T) {
 	if live != maxOpenRefusedItems {
 		t.Fatalf("%d live draft.refused items; want %d", live, maxOpenRefusedItems)
 	}
-	if st, _, _, _ := w.itemRow(item); st != officers.StatusWaiting {
-		t.Fatalf("past the bound the item the draft was for is %s; want left waiting", st)
+	if st, outcome, _, _ := w.itemRow(item); st != officers.StatusDone || outcome != "no_action" {
+		t.Fatalf("past the bound the item the draft was for is %s %s; want settled no_action, never left waiting", st, outcome)
 	}
 }
 

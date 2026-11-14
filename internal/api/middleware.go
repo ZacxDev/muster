@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/url"
@@ -111,6 +112,77 @@ func safeGo(logger *log.Logger, what string, fn func()) {
 	}()
 }
 
+// SuperviseBackoff is how long Supervise waits before restarting a loop that
+// panicked; it doubles per consecutive panic, up to SuperviseBackoffMax. A run
+// that stayed up at least SuperviseHealthy before it panicked counts as
+// healthy, and the wait starts again from SuperviseBackoff. Vars so a test
+// need not wait.
+var (
+	SuperviseBackoff    = 5 * time.Second
+	SuperviseBackoffMax = 5 * time.Minute
+	SuperviseHealthy    = 5 * time.Minute
+)
+
+// superviseExited, when set (tests only), is called with a supervised loop's
+// name as its supervisor goroutine returns.
+var superviseExited func(name string)
+
+// Supervise runs a background loop in a goroutine and keeps it alive across a
+// PANIC: the panic is logged and counted (as safeGo's are), and the loop is
+// started again after SuperviseBackoff, doubling per consecutive panic and
+// starting again from SuperviseBackoff after a run that stayed up
+// SuperviseHealthy. A loop that RETURNS (its ctx ended, or it is switched off)
+// is not restarted, and a ctx that ends during the backoff ends the
+// supervisor without another run.
+//
+// 🔴 EVERY LOOP cmd/muster-server STARTS GOES THROUGH IT. A bare `go` has no
+// recover, so one panicking pass of one sweep killed the whole process — and,
+// started again, the same sweep panicked again: a crash loop (a team row met
+// by a per-owner sweep, #654 round 1). Restarting the LOOP rather than
+// recovering once and returning keeps the rest of that loop's work running.
+// A loop with a "finished" signal for shutdown must raise it only when it
+// RETURNS, never on a panic's unwind (agentkickoff.Deliverer.Done,
+// officers.Reconciler.Done): a restarted run is still working.
+func Supervise(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) {
+	safeGo(logger, "supervise "+name, func() {
+		if superviseExited != nil {
+			defer superviseExited(name)
+		}
+		wait := SuperviseBackoff
+		for {
+			started := time.Now()
+			if !runRecovered(ctx, logger, name, run) {
+				return
+			}
+			if time.Since(started) >= SuperviseHealthy {
+				wait = SuperviseBackoff
+			}
+			logger.Printf("supervise: %s panicked; restarting it in %s", name, wait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if wait *= 2; wait > SuperviseBackoffMax {
+				wait = SuperviseBackoffMax
+			}
+		}
+	})
+}
+
+// runRecovered runs run once and reports whether it panicked.
+func runRecovered(ctx context.Context, logger *log.Logger, name string, run func(context.Context)) (panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+			metrics.Panics.WithLabelValues("goroutine").Inc()
+			logger.Printf("PANIC in background loop %s: %v\n%s", name, rec, debug.Stack())
+		}
+	}()
+	run(ctx)
+	return false
+}
+
 // recoverGoroutine is safeGo's recover: deferred DIRECTLY (recover only works
 // in the deferred function itself), it counts and logs a panic of the
 // goroutine named what. safeGo defers it outside fn; a goroutine that needs a
@@ -138,10 +210,15 @@ const permissionsPolicy = "microphone=(self)"
 // is server-rendered HTML + vendored htmx/idiomorph + inline <script> blocks and
 // `hx-on:` attributes. htmx compiles `hx-on:` handlers via `new Function`, so the
 // script-src needs BOTH 'unsafe-inline' (inline scripts + hx-on attrs) AND
-// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break. The
-// CSP still earns its keep by blocking external origins, framing (clickjacking),
-// base-uri and form-action hijacking; Referrer-Policy:no-referrer keeps the
-// magic-link token out of the Referer header.
+// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break.
+// ⚠ So the CSP is NOT an exfiltration barrier: an injected inline script can
+// always navigate (location = …), which no CSP directive governs. What it does
+// earn: framing (frame-ancestors, clickjacking), base-uri and form-action
+// hijacking, external SCRIPTS and styles (script-src/style-src 'self'), and
+// keeping the pages' own fetches same-origin (connect-src 'self', plus a Faro
+// collector when telemetry is on). img-src also admits other origins' brand
+// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
+// keeps the magic-link token out of the Referer header.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -153,6 +230,25 @@ func securityHeaders(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// serverSwitcherImgSrc is what the web app's server switcher may DRAW from
+// another origin (docs/design/web-server-switcher.md): another muster's
+// current logo icon, as a plain <img>, at the one path every muster serves it
+// on. The operator's decision on review ("Logo via <img>, no CORS"): nothing on
+// another origin is READ — connect-src stays 'self', and /api/instance and
+// /brand/* send no Access-Control-Allow-Origin.
+//
+// 🔴 ONE EXACT PATH, NOT AN ORIGIN AND NOT A PREFIX. The servers are the
+// person's own list, kept in their browser, so no origin can be named here; a
+// path source with no trailing slash matches that path only. http only for the
+// two loopback hosts the switcher accepts (development). ⚠ A source's path is
+// not checked after a redirect, and an image URL can carry a query: neither
+// matters for exfiltration, which a navigation already allows (above).
+// ⚠ A host wildcard does not match an IP address in a browser that follows the
+// CSP spec, so a server addressed by IP (other than 127.0.0.1) may show no
+// logo; the switcher then draws its colour and label.
+const serverSwitcherImgSrc = "https://*:*/brand/icon-192.png " +
+	"http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
 
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
 // source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
@@ -167,7 +263,7 @@ func contentSecurityPolicy(frameAncestors, frameSrc string) string {
 	csp := "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: " + serverSwitcherImgSrc + "; " +
 		"connect-src " + connectSrc + "; " +
 		"frame-ancestors " + frameAncestors + "; "
 	if frameSrc != "" {

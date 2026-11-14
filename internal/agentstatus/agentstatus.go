@@ -128,6 +128,9 @@ func (p *Promoter) Tick(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list agents: %w", err)
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	rows = agents.ProvisionedOnly(rows)
 	var waiting []agents.Agent
 	for _, a := range rows {
 		if a.Status == agents.StatusProvisioning && a.Namespace == agents.NamespaceFor(p.prefix, a.Name) {

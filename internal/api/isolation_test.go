@@ -240,15 +240,19 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/reset":  classPublic,
 	"POST /auth/reset": classPublic,
 
-	"GET /admin/invites":                     classAdminOnly,
-	"GET /admin/users":                       classAdminOnly,
-	"POST /admin/invites":                    classAdminOnly,
-	"POST /admin/invites/{id}/revoke":        classAdminOnly,
-	"POST /admin/users/{id}/disable":         classAdminOnly,
-	"POST /admin/users/{id}/enable":          classAdminOnly,
-	"POST /admin/users/{id}/reset-link":      classAdminOnly,
-	"POST /admin/users/{id}/role":            classAdminOnly,
-	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
+	"GET /admin/invites":                           classAdminOnly,
+	"GET /admin/teams":                             classAdminOnly,
+	"POST /admin/teams":                            classAdminOnly,
+	"POST /admin/teams/{id}/members":               classAdminOnly,
+	"POST /admin/teams/{id}/members/{user}/remove": classAdminOnly,
+	"GET /admin/users":                             classAdminOnly,
+	"POST /admin/invites":                          classAdminOnly,
+	"POST /admin/invites/{id}/revoke":              classAdminOnly,
+	"POST /admin/users/{id}/disable":               classAdminOnly,
+	"POST /admin/users/{id}/enable":                classAdminOnly,
+	"POST /admin/users/{id}/reset-link":            classAdminOnly,
+	"POST /admin/users/{id}/role":                  classAdminOnly,
+	"POST /admin/users/{id}/passkeys/delete":       classAdminOnly,
 	// Instance branding's writes (branding.go, requireAdminRole): an admin's
 	// session only, in either sign-in mode.
 	"PUT /api/instance/branding":             classAdminOnly,
@@ -376,6 +380,9 @@ var isolationClasses = map[string]routeClass{
 	// The built-in officer store's admin API (officer_admin.go): hook tier
 	// (personal token: its owner; shared hook token: the operator), every
 	// store call naming the caller's owner and under its principal.
+	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
+	// read and destroyed under the caller's principal.
+	"DELETE /api/agents/{name}":                            classAdmin,
 	"GET /api/officers/types":                              classAdmin,
 	"GET /api/officers/types/{key}":                        classAdmin,
 	"PUT /api/officers/types/{key}":                        classAdmin,
@@ -542,6 +549,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /plugins/messages/{id}/retry":  classParam,
 	"POST /plugin/v1/drafts/claim":       classPlugin,
 	"POST /plugin/v1/drafts/{id}/result": classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":  classPlugin,
 	// The pre-approval check (draft_checks): the listing names nothing (the
 	// token owner's own plugin's drafts) and the verdict names A's draft — which
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
@@ -668,6 +676,10 @@ var isolationClasses = map[string]routeClass{
 	// (sideEffectControlled).
 	"GET /pages":                           classList,
 	"GET /pages/{id}":                      classParam,
+	// A team's manager pages (phase 2a): {id} is a team A manages.
+	"GET /teams/{id}":                         classParam,
+	"POST /teams/{id}/members":                classParam,
+	"POST /teams/{id}/members/{user}/remove": classParam,
 	"GET /pages/{id}/preview":              classParam,
 	"GET /pages/{id}/versions/{v}/content": classParam,
 	"POST /pages/{id}/links":               classParam,
@@ -798,6 +810,7 @@ type isoWorld struct {
 	aTag         string
 	aChatSession agents.ChatSession
 	aConnName    string
+	aTeam        int64 // a team A manages (phase 2a), its name carrying the canary
 	aGrantID     int64
 	aSessionLink string
 	aChief       agents.Agent
@@ -1148,6 +1161,20 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a page response")
 	// …and a second page of A's, the one POST /pages/{id}/delete names, so A's
 	// own delete (the control) leaves the first for every other route.
+	{
+		tm, err := users.NewPG(pool).CreateTeam(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
+			"iso-a-team "+w.canary, w.a.uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.aTeam = tm.ID
+		t.Cleanup(func() {
+			bg := authz.System(context.Background())
+			_, _ = pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, tm.ID)
+			_, _ = pool.Exec(bg, `DELETE FROM audit_log WHERE team_id = $1 OR object = $2`, tm.ID, users.TeamObject(tm.ID))
+			_, _ = pool.Exec(bg, `DELETE FROM users WHERE id = $1`, tm.ID)
+		})
+	}
 	aPageDel, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page to delete", pgBlocks, pgSize)
 	must(err, "a page to delete")
 
@@ -1175,12 +1202,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
-		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID,
+		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, team: w.aTeam,
 		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{team: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
@@ -1542,6 +1569,8 @@ type isoObjs struct {
 	// Shareable pages (0116): a page's id and one of its links', and the
 	// page the delete route names (its own, for ruleDel's reason).
 	page, pageLink, pageDel int64
+	// A team (phase 2a): one A manages, whose name carries the canary.
+	team int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1648,6 +1677,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.pageDel, 10)
 	case strings.HasPrefix(path, "/pages/{id}"):
 		id = strconv.FormatInt(o.page, 10)
+	case strings.HasPrefix(path, "/teams/{id}"):
+		id = strconv.FormatInt(o.team, 10)
 	}
 	if path == "/attention/asker" {
 		// The asks block of A's agent (the agent page's), by name.
@@ -1666,6 +1697,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
+		"{user}", strconv.FormatInt(o.user, 10),
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
@@ -1765,7 +1797,7 @@ func (w *isoWorld) leaks(body string, withIdentities bool) []string {
 func (w *isoWorld) snapshot() map[string]string {
 	w.t.Helper()
 	out := map[string]string{}
-	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
+	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents", "agent_secrets",
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "session_tags", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
@@ -2034,6 +2066,27 @@ func is2xx(code int) bool { return code >= 200 && code < 300 }
 // TestNoRouteLetsOneUserReachAnothersData is the walk. See the file header.
 func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	w := newIsoWorld(t)
+	// Teams (docs/design/team-sharing.md): A and B are TEAMMATES — A manages
+	// a team in which B is an operator — and the team itself owns a task
+	// carrying the TEAM's canary. Membership never gives B any of A's
+	// PERSONAL rows (every assertion below holds unchanged), and after the
+	// main walk B walks again as a non-member, a viewer, an operator and a
+	// manager of the team (teamRoleWalks, phase 2a).
+	team, teamCanary := w.addTeamOf(t, w.a.uid, w.b.uid)
+	// Every principal in this walk reads its role AND memberships from the
+	// database, as production does, so B walks AS a member of A's team.
+	w.srv.ext.Users = users.NewPG(w.pool)
+	if p := w.srv.principalFor(w.sys, w.b.uid, authz.ViaSession); p.Team || p.Role != authz.RoleMember {
+		t.Fatalf("control: B's principal = %v", p)
+	} else if r, ok := p.Teams.RoleIn(team); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: B's request principal carries memberships %q; want operator of team %d", p.Teams, team)
+	}
+	teamTask := func() string {
+		var js string
+		_ = w.pool.QueryRow(w.sys, `SELECT COALESCE(json_agg(n ORDER BY n.id)::text, '') FROM notes n WHERE owner_id = $1`, team).Scan(&js)
+		return js
+	}
+	teamBefore := teamTask()
 	routes := sortedRoutes()
 	before := w.snapshot()
 	w.router.reset()
@@ -2125,6 +2178,10 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	// --- the mutation leg ---
 	w.sameRows(t, "B's walk", before)
+	if after := teamTask(); after != teamBefore || !strings.Contains(after, teamCanary) {
+		t.Errorf("B's walk changed the TEAM's task (or the fixture has none):\n before %s\n after  %s", teamBefore, after)
+	}
+	w.teamRoleWalks(t, team, teamCanary, routes, teamTask)
 	// --- the connect leg ---
 	if got := w.up.sawSecret(w.canary + "-SECRET"); got != 0 {
 		t.Errorf("A's connector secret was injected upstream %d time(s) during B's walk", got)
@@ -2690,4 +2747,84 @@ type isoNoSuggestions struct{}
 
 func (isoNoSuggestions) Generate(context.Context, int64, string) (suggest.Generation, error) {
 	return suggest.Generation{}, nil
+}
+
+// addTeamOf makes a team managed by manager with operator as an operator, and
+// a task the TEAM owns that carries the world's canary (written as System:
+// nothing in phase 1 writes a team-owned row). The positive control is that
+// B's membership is what a request principal reads (users.Account), so the
+// walk runs with it.
+func (w *isoWorld) addTeamOf(t *testing.T, manager, operator int64) (int64, string) {
+	t.Helper()
+	store := users.NewPG(w.pool)
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	team, err := store.CreateTeam(w.sys, by, "iso-team-"+w.suffix, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTeamMember(w.sys, by, team.ID, operator, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	var note int64
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO notes (owner_id, title) VALUES ($1, $2) RETURNING id`,
+		team.ID, "team task cnryt"+w.suffix).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM notes WHERE owner_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.TeamObject(team.ID))
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, team.ID)
+	})
+	acct, err := store.Account(w.sys, operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := acct.Teams.RoleIn(team.ID); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: the member's account reads %q; want operator of team %d", acct.Teams, team.ID)
+	}
+	return team.ID, "cnryt" + w.suffix
+}
+
+// teamRoleWalks walks B's browser session over every route once per role B
+// can hold in team — none, viewer, operator, manager (phase 2a). In EVERY
+// role B sees none of A's personal rows (checkOutsider, A's canary). As a
+// non-member B sees nothing of the team (no route carries the team's canary)
+// and changes nothing of it; as a viewer B changes nothing of it; as a
+// viewer, an operator and a manager B DOES see the team's task through a real
+// route — the positive control that the team arm is live end to end, so the
+// non-member's clean bodies are a fact about membership.
+func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, routes []string, teamTask func() string) {
+	t.Helper()
+	store := users.NewPG(w.pool)
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	for _, role := range []string{"none", "viewer", "operator", "manager"} {
+		if role == "none" {
+			if err := store.RemoveTeamMember(w.sys, by, team, w.b.uid); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := store.SetTeamMember(w.sys, by, team, w.b.uid, authz.TeamRole(role)); err != nil {
+			t.Fatal(err)
+		}
+		before, aBefore := teamTask(), w.snapshot()
+		results := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}}, routes)
+		w.checkOutsider(t, "B as the team's "+role, results)
+		w.sameRows(t, "B's walk as the team's "+role, aBefore)
+		saw := 0
+		for _, res := range results {
+			if strings.Contains(res.body, teamCanary) {
+				saw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && saw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's task on no route: the team arm is not reaching a real route", role)
+		}
+		if (role == "none" || role == "viewer") && teamTask() != before {
+			t.Errorf("MUTATION: B as the team's %s changed the team's task:\n before %s\n after  %s", role, before, teamTask())
+		}
+	}
 }

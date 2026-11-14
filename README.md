@@ -163,7 +163,8 @@ turned on with a few lines in `.env` (and, for some, a Compose profile).
 | [Agent ask tool](docs/features.md#agent-ask-tool) and [ask cards](docs/features.md#ask-cards) | a one-time setup on each machine | off |
 | [Accounts](docs/features.md#accounts) (per-user sign-in, passkeys) | a GoTrue server you run | off (one shared password) |
 | [Chief](docs/features.md#chief) | `--profile chief` (amd64 hosts), the connector store's key, and a Claude subscription token or an OpenRouter key; routing work to sessions also needs `MUSTER_SESSION_ROUTING=1` | off (routing too) |
-| [Dispatch](docs/features.md#dispatch) and [officers](docs/features.md#officers) | **Kubernetes** | off; not in the Compose stack |
+| [Dispatch](docs/features.md#dispatch) | **Kubernetes** | off; not in the Compose stack |
+| [Officers](docs/features.md#officers) | **Kubernetes** (pods), **or** in the Compose stack as host-spawned sessions on one opted-in machine (built-in backend only; outbound drafts and connectors work, HQ, ship gates, tiers, transcripts and the LLM proxy do not; the sessions run as that machine's user with no pod isolation, so muster's approval of their posts is the sanctioned path, not a boundary) | off |
 | [Approval router](docs/features.md#approval-router) | an external permission router you run (advanced) | off |
 
 Every other optional feature, what it needs and the `.env` lines that turn it

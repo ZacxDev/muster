@@ -255,6 +255,9 @@ type Server struct {
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow
+	// hostDecisions are the owner-authority calls from a host officer's
+	// machine waiting for the owner's phone (host_stepup.go).
+	hostDecisions hostDecisions
 	// features is the evaluated feature registry (features.go; UseFeatures).
 	features features.Set
 
@@ -673,6 +676,7 @@ func (s *Server) registerAll(mux Mux) {
 	// login), and the admin pages (requireAdmin).
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
+	s.registerTeamPages(mux)
 	// Instance branding (branding.go): the public instance document and
 	// logo images, and the admin's writes (requireAdminRole).
 	s.registerBrandingRoutes(mux)

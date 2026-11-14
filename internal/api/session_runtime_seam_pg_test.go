@@ -163,7 +163,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

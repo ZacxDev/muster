@@ -96,6 +96,9 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		if err != nil {
 			return toolErr("could not list agents")
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		idx := s.instanceIndex(ctx)
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
@@ -323,6 +326,9 @@ func (s *Server) focusSearchHistory(ctx context.Context, query string, liveMirro
 			s.logger.Printf("focus: search history: list agents: %v", err)
 			return toolErr("the search failed")
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		for _, a := range list {
 			live.Agents = append(live.Agents, a.ID)
 		}

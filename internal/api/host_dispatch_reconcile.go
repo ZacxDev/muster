@@ -61,9 +61,14 @@ func (s *Server) hostDispatchPrincipal(ctx context.Context, owner int64) context
 }
 
 // HostDispatchSpawnReply is the hub's late-reply hook (mirror.Hub.SetSpawnReplyNotify).
+// A frame for a host OFFICER's spawn (officer_host.go) is applied there and
+// never reaches the chief's rows.
 func (s *Server) HostDispatchSpawnReply(owner int64, host string, m mirror.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if s.applyOfficerSpawnReply(ctx, owner, host, m) {
+		return
+	}
 	s.applySpawnReply(ctx, owner, host, m)
 }
 
@@ -179,6 +184,17 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 			// (succession.go).
 			s.successionDispatchMoved(pctx, owner, r.ID, true)
 		}
+	}
+	// A host officer's spawn carries a dispatch id from the same sequence
+	// (officer_host.go): known, not forged.
+	var unknown []int64
+	for id := range tagged {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	for id := range s.officerSpawnIDs(s.officerPrincipal(ctx, owner), host, unknown) {
+		known[id] = true
 	}
 	for id := range tagged {
 		if !known[id] {

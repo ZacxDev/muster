@@ -141,11 +141,15 @@ func AgentTextRefusal(text string, words []string) string {
 // OutboundTextRefusal is AgentTextRefusal for an officer's OUTBOUND draft
 // (internal/plugins outbound.go): public host names and URLs pass, so a post
 // can link to the project; internal host names, IP addresses, secrets,
-// infrastructure words and the deployment's own names are refused as ever.
+// infrastructure words and the deployment's own names are refused as ever —
+// except INSIDE a link on publicLinks, whose allowlisted prefix is taken out
+// before the screen runs (StripPublicLinks, public_links.go), so
+// `github.com/<owner>/<repo>` may spell a deployment name when the deployment
+// declared that repository public.
 // 🔴 Only an outbound draft of a plugin bound to an officer is screened by
-// this; every other agent text keeps AgentTextRefusal.
-func OutboundTextRefusal(text string, words []string) string {
-	return textRefusal(outboundTextDeny, text, words)
+// this; every other agent text keeps AgentTextRefusal, with no allowlist.
+func OutboundTextRefusal(text string, words, publicLinks []string) string {
+	return textRefusal(outboundTextDeny, StripPublicLinks(text, publicLinks), words)
 }
 
 func textRefusal(deny []textDeny, text string, words []string) string {

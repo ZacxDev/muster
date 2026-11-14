@@ -29,6 +29,7 @@
 /llm/
 DELETE /agent/approvals/{id}
 DELETE /agents/{id}
+DELETE /api/agents/{name}
 DELETE /api/device
 DELETE /api/device/push
 DELETE /api/instance/branding/app-icon
@@ -53,6 +54,7 @@ GET /account/features
 GET /account/passkeys
 GET /account/tokens
 GET /admin/invites
+GET /admin/teams
 GET /admin/users
 GET /agent/approvals/{id}
 GET /agent/connectors
@@ -157,6 +159,7 @@ GET /sw.js
 GET /tasks
 GET /tasks/{id}
 GET /tasks/{id}/attachments/{aid}
+GET /teams/{id}
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
@@ -209,6 +212,9 @@ POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites
 POST /admin/invites/{id}/revoke
+POST /admin/teams
+POST /admin/teams/{id}/members
+POST /admin/teams/{id}/members/{user}/remove
 POST /admin/users/{id}/disable
 POST /admin/users/{id}/enable
 POST /admin/users/{id}/passkeys/delete
@@ -299,6 +305,7 @@ POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check
 POST /plugin/v1/drafts/{id}/media
+POST /plugin/v1/drafts/{id}/renew
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages
@@ -349,6 +356,8 @@ POST /tasks/{id}/edit
 POST /tasks/{id}/ref-writes/{wid}/dismiss
 POST /tasks/{id}/ref-writes/{wid}/retry
 POST /tasks/{id}/tags
+POST /teams/{id}/members
+POST /teams/{id}/members/{user}/remove
 POST /telemetry/faro
 POST /transcribe
 POST /ui/connector-requests/{id}/approve

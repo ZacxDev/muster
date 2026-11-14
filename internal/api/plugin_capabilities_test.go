@@ -20,6 +20,7 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/messages":                     "messages",
 	"POST /plugin/v1/drafts/claim":                 "messages",
 	"POST /plugin/v1/drafts/{id}/result":           "messages",
+	"POST /plugin/v1/drafts/{id}/renew":            "messages",
 	"POST /plugin/v1/tasks":                        "messages",
 	"GET /plugin/v1/tasks":                         "messages",
 	"POST /plugin/v1/task-writes/claim":            "messages",

@@ -30,6 +30,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // THE GITHUB APP AT ITS SEAMS — synthetic throughout: a fake GitHub on loopback
@@ -691,6 +692,11 @@ func TestAStrangersInstallationConnectsNothing(t *testing.T) {
 
 // failingUsers is a users store whose role read fails (a database blip).
 type failingUsers struct{ fail *atomic.Bool }
+
+func (u failingUsers) Account(ctx context.Context, id int64) (users.Account, error) {
+	r, err := u.Role(ctx, id)
+	return users.Account{Role: r}, err
+}
 
 func (u failingUsers) Role(_ context.Context, id int64) (authz.Role, error) {
 	if u.fail.Load() {

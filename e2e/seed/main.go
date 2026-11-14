@@ -72,6 +72,10 @@ var accountsReset = []string{
 	// otherwise block the member's delete (push_subscriptions_owner_id_fkey).
 	`DELETE FROM push_subscriptions`,
 	`DELETE FROM push_preferences`,
+	// Teams (0126): a team is a users row, and its memberships reference it and
+	// its members (team_members_team_id_fkey) — cls.spec makes one for the team
+	// page, and it must go before the users do.
+	`DELETE FROM team_members`,
 	`DELETE FROM users WHERE id <> 1`,
 	`UPDATE users SET gotrue_sub = NULL, email = NULL, disabled_at = NULL, role = 'admin' WHERE id = 1`,
 }

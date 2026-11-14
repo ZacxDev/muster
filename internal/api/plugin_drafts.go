@@ -200,6 +200,39 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// handlePluginDraftRenew is POST /plugin/v1/drafts/{id}/renew (no body): a
+// plugin still sending a draft it claimed extends its lease
+// (plugins.PGStore.RenewDraft) to plugins.LeaseDuration from now, never past
+// plugins.MaxLeaseTotal after the claim. 200 {draft_id, lease_until,
+// lease_max}; another plugin's draft or none is 404; one not claimed or
+// already settled, a lapsed lease, or one already at the bound is 409, each
+// saying which.
+func (s *Server) handlePluginDraftRenew(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft claimed by this plugin"})
+		return
+	}
+	p := pluginFromContext(r.Context())
+	d, err := s.ext.Plugins.RenewDraft(r.Context(), p.ID, id)
+	switch {
+	case err == nil:
+		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "lease_until": d.LeaseUntil.UTC(),
+			"lease_max": d.ClaimedAt.Add(plugins.MaxLeaseTotal).UTC()})
+	case errors.Is(err, plugins.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft claimed by this plugin"})
+	case errors.Is(err, plugins.ErrLeaseLapsed):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the lease already lapsed: the draft is unconfirmed and cannot be renewed; report its result", "draft_id": id, "code": "lease_lapsed"})
+	case errors.Is(err, plugins.ErrLeaseAtMax):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the lease already runs to its bound, " + plugins.MaxLeaseTotal.String() + " after the claim; report the result before then", "draft_id": id, "code": "lease_at_max"})
+	case errors.Is(err, plugins.ErrDraftState):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft is not claimed, or already settled", "draft_id": id, "status": string(d.Status), "code": "not_claimed"})
+	default:
+		s.logger.Printf("plugins: plugin %d renew draft %d: %v", p.ID, id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the lease could not be renewed"})
+	}
+}
+
 // handlePluginDraftChecks is GET /plugin/v1/drafts/checks (CapDraftChecks):
 // 200 {drafts: [{draft_id, message_external_id, body, created_at}]}, this
 // plugin's pending drafts awaiting its verdict, oldest first, at most
@@ -312,10 +345,14 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v): %s", p.ID, d.ID, sending, outcome)
 	switch outcome {
 	case plugins.RefusalOutbound:
-		// An officer's outbound draft: the owner is told, and its officer
-		// gets a draft.refused item (plugin_outbound.go).
-		s.notifyDraftRefused(p, d, refusalToOfficer)
-		s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin)
+		// An officer's outbound draft: its officer gets a draft.refused item
+		// (plugin_outbound.go) — or, past the bound, is NOT told — and the
+		// owner's push says which.
+		where := refusalToOfficer
+		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin) {
+			where = refusalOfficerNotTold
+		}
+		s.notifyDraftRefused(p, d, where)
 	case plugins.RefusalAnsweredElsewhere:
 		// Another reply went, or is on its way: nothing goes back anywhere.
 		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
@@ -347,6 +384,10 @@ const (
 	refusalAnsweredElsewhere
 	// refusalToOfficer: an outbound draft's officer, as a draft.refused item.
 	refusalToOfficer
+	// refusalOfficerNotTold: nowhere — the outbound draft's officer already
+	// has maxOpenRefusedItems draft.refused items, so it was not told, and
+	// the item the draft was for is closed.
+	refusalOfficerNotTold
 )
 
 // The refused draft push's title (muster's), and its body's bound.
@@ -390,9 +431,35 @@ func draftRefusedPushBody(label, detail string, where int) string {
 		tail = " Another reply to this message was already sent or is on its way, so nothing more is done."
 	case refusalToOfficer:
 		tail = " It went back to the officer that wrote it."
+	case refusalOfficerNotTold:
+		tail = officerNotToldTail
 	}
 	// Where it goes first: a long reason is what the bound cuts, never that.
 	return truncate(body+" refused it."+tail+" It said: "+plugins.RefusalText(detail), draftRefusedPushBodyMax)
+}
+
+// officerNotToldTail is what a push about an outbound draft that ended
+// unsent says when its officer was NOT told (draftEndFor's bound).
+var officerNotToldTail = " Its officer was NOT told: it already has " + strconv.Itoa(maxOpenRefusedItems) + " open " + draftRefusedKind +
+	" items. The item the draft was for is closed."
+
+// OfficerNotToldPushTitle is the push to an owner whose rejection of an
+// outbound draft did not reach its officer (notifyOfficerNotTold).
+const OfficerNotToldPushTitle = "A rejection did not reach the officer"
+
+// notifyOfficerNotTold pushes owner that their rejection of outbound draft d
+// did not reach its officer (past the bound), on a tag of its own: the
+// draft's tag is cleared as the decision settles it (draftSettled), and
+// two pushes on one tag race.
+func (s *Server) notifyOfficerNotTold(owner int64, d plugins.Draft) {
+	s.goNotify(owner, push.EventPlugin, RouterNotification{
+		Type:  "plugin",
+		ID:    strconv.FormatInt(d.ID, 10),
+		Title: OfficerNotToldPushTitle,
+		Body:  truncate("You rejected an outbound draft on "+d.VenueText()+"."+officerNotToldTail, draftRefusedPushBodyMax),
+		Tag:   draftTag(d.ID) + "-officer",
+		Data:  map[string]string{"url": draftLink(d.ID)},
+	}, nil)
 }
 
 // noteDraftRefusedToChief tells the chief that filed refused draft d (no
@@ -564,7 +631,10 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 		// like a plugin's refusal), and closes the item it was filed for. A
 		// reply draft's rejection goes nowhere, as before: its chief or
 		// session is not told (outboundSettled decides which, in one place).
-		s.outboundSettled(ctx, d.OwnerID, d, settledByOwner)
+		// Past the bound the officer is NOT told: the owner is, here.
+		if s.outboundSettled(ctx, d.OwnerID, d, settledByOwner) {
+			s.notifyOfficerNotTold(d.OwnerID, d)
+		}
 	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).

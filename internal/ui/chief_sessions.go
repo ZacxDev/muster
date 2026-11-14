@@ -60,14 +60,20 @@ func sessionDefaultBadge(sess SessionView) g.Node {
 	)
 }
 
-// makeDefaultControl makes a thread the default, re-rendering the panel on it.
-// Nothing for the default thread itself, or where defaults are not offered.
-func makeDefaultControl(sess SessionView) g.Node {
+// makeDefaultControl makes a thread the default, re-rendering the panel on the
+// thread it is on (current, ChiefCurrentParam; 0 = not known: on the thread
+// made default). Nothing for the default thread itself, or where defaults are
+// not offered.
+func makeDefaultControl(sess SessionView, current int64) g.Node {
 	if sess.IsDefault || sess.DefaultPath == "" {
 		return nil
 	}
+	path := sess.DefaultPath + "?" + ChatSurfaceQueryParam + "=" + string(ChatSurfaceChiefPanel)
+	if current > 0 {
+		path = withCurrent(path, current)
+	}
 	return Form(
-		hx("hx-post", sess.DefaultPath+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
+		hx("hx-post", path),
 		hx("hx-target", "#"+chiefPanelBodyID),
 		hx("hx-swap", "innerHTML"),
 		Class("contents"),
