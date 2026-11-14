@@ -152,6 +152,17 @@ func (s *PGStore) Audit(ctx context.Context, by Actor, action, object string, de
 	})
 }
 
+// AuditTeam appends one audit_log row naming the TEAM acted on
+// (audit_log.team_id, 0127), for an action on a team's object taken outside
+// this package's transactions — a host spawn lent to or taken back from a
+// team, a team officer's charter edit (team sharing phase 3, design §4). The
+// team's managers read it on /teams/{id}.
+func (s *PGStore) AuditTeam(ctx context.Context, by Actor, team int64, action, object string, detail map[string]any) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return auditInsertFor(ctx, tx, by, team, action, object, detail)
+	})
+}
+
 // Audited runs action fn with its audit row ALREADY WRITTEN in an open
 // transaction, and commits the row only if fn succeeded — for an action that
 // happens outside the database (a GoTrue call), so the log holds a row for it

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -47,6 +48,13 @@ type HostSpawn struct {
 	// Refusal is the host's refusal ("code: detail"), "" for none.
 	Refusal   string
 	CreatedAt time.Time
+	// OwnerID is the row's owner: the officer's owner (a person, or a team
+	// for a team officer).
+	OwnerID int64
+	// SharedTeam is the team its owner LENT it to (migration 0130, team
+	// sharing phase 3), 0 for none: that team's members read the row, and
+	// only its owner writes it. Personal by default.
+	SharedTeam int64
 }
 
 // ErrHostSpawnNotFound: no row of the principal's matches.
@@ -87,11 +95,11 @@ type PGHostSpawnStore struct{ pool *pgxpool.Pool }
 // NewPGHostSpawnStore is the store over pool.
 func NewPGHostSpawnStore(pool *pgxpool.Pool) *PGHostSpawnStore { return &PGHostSpawnStore{pool: pool} }
 
-const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at`
+const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at, owner_id, coalesce(shared_team_id, 0)`
 
 func scanHostSpawn(row pgx.Row) (HostSpawn, error) {
 	var h HostSpawn
-	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt)
+	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt, &h.OwnerID, &h.SharedTeam)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HostSpawn{}, ErrHostSpawnNotFound
 	}
@@ -180,6 +188,84 @@ func (s *PGHostSpawnStore) HostSpawnIDs(ctx context.Context, host string, ids []
 		out[id] = true
 	}
 	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// LENDING A SPAWN TO A TEAM (migration 0130; docs/design/team-sharing.md,
+// phase 3). 🔴 PERSONAL BY DEFAULT: a row is its owner's alone until the owner
+// lends it to ONE team they operate. The team's members then READ it (the
+// team_lent_read policy, at viewer, through the doors that carry
+// muster.teams); nobody but the owner ever writes it. Unlending is setting it
+// back to none.
+//
+// The ONE caller is internal/api's lendHostSpawn, which decides which doors
+// may lend (a personal API token never may) and checks the team role; the
+// database's lend_target trigger refuses a lend to a team the acting person
+// does not operate, or of a row that is not theirs, again.
+// ---------------------------------------------------------------------------
+
+// ErrLendRefused: the database refused the lend (0130's lend_target): the row
+// is not the acting person's, or they do not operate the team.
+var ErrLendRefused = errors.New("officers: only a spawn's owner lends it, and only to a team they operate")
+
+// lendTargetHint is the HINT lend_target refuses with.
+const lendTargetHint = "muster:lend-target"
+
+// HostSpawnLender lends and lists host spawns for a person.
+type HostSpawnLender interface {
+	// VisibleHostSpawns is the newest limit rows the principal reads: its
+	// own, and those lent to a team it is a member of (a person's own doors
+	// only: the others carry no teams).
+	VisibleHostSpawns(ctx context.Context, limit int) ([]HostSpawn, error)
+	// LendHostSpawn lends row id of the principal's own to team (0: unlends
+	// it) and returns the row. ErrHostSpawnNotFound when no row of the
+	// principal's OWN has that id (a row only lent to them included);
+	// ErrLendRefused when the database refuses the team.
+	LendHostSpawn(ctx context.Context, id, team int64) (HostSpawn, error)
+	// HostSpawnByID is row id, as the principal reads it (the team a lend is
+	// taken back from, for its audit row).
+	HostSpawnByID(ctx context.Context, id int64) (HostSpawn, error)
+}
+
+var _ HostSpawnLender = (*PGHostSpawnStore)(nil)
+
+// VisibleHostSpawns implements HostSpawnLender.
+func (s *PGHostSpawnStore) VisibleHostSpawns(ctx context.Context, limit int) ([]HostSpawn, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns ORDER BY id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HostSpawn
+	for rows.Next() {
+		h, err := scanHostSpawn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// LendHostSpawn implements HostSpawnLender. The WHERE names the acting person
+// as the owner, so a row only LENT to them is not theirs to re-lend (the
+// UPDATE would be refused by owner_isolation anyway; this says "no such row").
+func (s *PGHostSpawnStore) LendHostSpawn(ctx context.Context, id, team int64) (HostSpawn, error) {
+	var to any
+	if team > 0 {
+		to = team
+	}
+	h, err := scanHostSpawn(s.pool.QueryRow(ctx, `UPDATE officer_host_spawns SET shared_team_id = $2
+		WHERE id = $1 AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		RETURNING `+hostSpawnCols, id, to))
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Hint == lendTargetHint {
+		return HostSpawn{}, ErrLendRefused
+	}
+	return h, err
 }
 
 // MemHostSpawnStore is HostSpawnStore in memory, for tests (one owner).

@@ -40,6 +40,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -683,6 +684,16 @@ var isolationClasses = map[string]routeClass{
 	"GET /teams/{id}":                         classParam,
 	"POST /teams/{id}/members":                classParam,
 	"POST /teams/{id}/members/{user}/remove": classParam,
+	// A team's officers (phase 3): {id} is a team A manages, {key} and
+	// {officer} A's team's type and officer.
+	"GET /teams/{id}/officers":                  classParam,
+	"POST /teams/{id}/officers/types/{key}":     classParam,
+	"POST /teams/{id}/officers/defs/{officer}":  classParam,
+	// Host officer spawns and their team lend (phase 3): the list shows the
+	// caller's own (and those lent to their teams); {id} is A's spawn.
+	"GET /officers/spawns":                      classList,
+	"POST /officers/spawns/{id}/share":          classParam,
+	"POST /officers/spawns/{id}/unshare":        classParam,
 	"GET /pages/{id}/preview":              classParam,
 	"GET /pages/{id}/versions/{v}/content": classParam,
 	"POST /pages/{id}/links":               classParam,
@@ -699,6 +710,8 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
+	// Host officer spawns (phase 3): A's spawn's host is the canary.
+	"GET /officers/spawns",
 	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
 	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
@@ -1194,6 +1207,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
 	must(err, "an officer schedule")
 	w.officerStore = ost
+	// A's host officer spawn (0125): its host carries the canary, so the
+	// spawns page shows it to A and to nobody else.
+	aSpawn, err := officers.NewPGHostSpawnStore(pool).InsertHostSpawn(ua, aOffType+":a", "officer-iso-1", w.canary)
+	must(err, "a host spawn")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -1206,11 +1223,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
 		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID, team: w.aTeam,
-		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem}
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem, spawn: aSpawn.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
-	w.ghost = isoObjs{team: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
+	w.ghost = isoObjs{team: ghostID, spawn: ghostID, user: ghostID, invite: ghostID, task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
@@ -1306,6 +1323,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.NotifyPrefs = notifypref.NewPG(pool)
 	srv.UseExtensions(ext)
 	srv.EnableOfficerStore(w.officerStore)
+	srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
@@ -1325,6 +1343,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		log.New(io.Discard, "", 0))
 	gtSrv.UseExtensions(ext)
 	gtSrv.EnableOfficerStore(w.officerStore)
+	gtSrv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(pool))
 	gtSrv.UseRouter(w.router)
 	gtSrv.UseApprovalGate(&isoGate{})
 	// Accounts too, so the twin SERVES the admin pages (accounts PR 5): a
@@ -1574,6 +1593,9 @@ type isoObjs struct {
 	page, pageLink, pageDel int64
 	// A team (phase 2a): one A manages, whose name carries the canary.
 	team int64
+	// A host officer spawn of A's (0125), its host the canary (phase 3's
+	// lend routes).
+	spawn int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1682,6 +1704,9 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.page, 10)
 	case strings.HasPrefix(path, "/teams/{id}"):
 		id = strconv.FormatInt(o.team, 10)
+		path = strings.NewReplacer("/types/{key}", "/types/"+o.officerType, "/defs/{officer}", "/defs/"+url.PathEscape(o.officer)).Replace(path)
+	case strings.HasPrefix(path, "/officers/spawns/{id}"):
+		id = strconv.FormatInt(o.spawn, 10)
 	}
 	if path == "/attention/asker" {
 		// The asks block of A's agent (the agent page's), by name.
@@ -1736,6 +1761,16 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
 			`"status":"in_progress","message":"iso-write","answer":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
 			`"instances":["isoinst"],"waitSeconds":1,"outcome":"done"}`
+	}
+	if strings.HasPrefix(path, "/officers/spawns/") {
+		// A share names a team the ACTOR operates where it has one (A
+		// manages its team), so a refusal is about whose spawn, not a
+		// missing field.
+		team := w.aTeam
+		if actor.uid != w.a.uid {
+			team = w.ghost.team
+		}
+		return method, path, url.Values{"team": {strconv.FormatInt(team, 10)}}.Encode()
 	}
 	winner := actor.task.ID
 	if actor.uid == w.a.uid {
