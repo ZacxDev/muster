@@ -460,6 +460,10 @@ func (s *Server) approvalSurfaceRefusal(ctx context.Context, id int64) error {
 	if st == nil {
 		return nil
 	}
+	// A TEAM's dispatch card has its own, stricter door (team_dispatch.go).
+	if handled, err := s.teamCardRefusal(ctx, id); handled {
+		return err
+	}
 	p, ok := authz.From(ctx)
 	if !ok || p.Via != authz.ViaDevice {
 		return nil

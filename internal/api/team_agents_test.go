@@ -517,7 +517,7 @@ var agentReadCallers = map[string]string{
 	"GetByName Server.handleAgentTaskModal":      "visible: GET /ui/agents/{name}/task (teamAgentRead)",
 	"GetByName Server.handleAgentTerminalPage":   "visible: GET /agents/{name}/terminal, the page (teamAgentRead)",
 	"GetByName Server.handleChiefChatContext":    "visible: GET /ui/agents/{name}/chat-context (teamAgentRead)",
-	"GetByName Server.handleAgentTerminalWS":     "visible: GET /agents/{name}/terminal/ws, refused to members (teamAgentRoutes)",
+	"GetByName Server.handleAgentTerminalWS":     "visible: GET /agents/{name}/terminal/ws, a fresh operator or above only (teamAgentRoutes)",
 	"GetByName Server.handleAgentSend":           "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.handleAgentWS":             "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
 	"GetByName Server.activeNotificationRows":    "visible: the panel's link to an active agent (read)",

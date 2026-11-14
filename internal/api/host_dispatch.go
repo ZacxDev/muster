@@ -517,6 +517,9 @@ type heldCompletion struct {
 	// changeRepo: the owner tapped "Change repo" on an approval card; the
 	// caller re-files the hold as a repo card (blankRepo).
 	changeRepo bool
+	// answeredBy is the person whose answer filled the blank (the card's
+	// answered_by_user): the owner, or on a team's card the member.
+	answeredBy int64
 }
 
 // completeHeld judges a call against the newest open card hold for its key —
@@ -660,6 +663,14 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 		c.refusal = agentDispatchHeldPushAction
 		return c
 	}
+	// 🔴 A TEAM'S CARD (team sharing 4.7): answered in a browser by a member
+	// who is STILL an operator of the team (teamCardAnswerer; the step-up was
+	// the answer path's, teamCardRefusal). The person is the start's say-so.
+	if why := s.teamCardAnswerer(ctx, ask); why != "" {
+		c.refusal = why
+		return c
+	}
+	c.answeredBy = ask.AnsweredByUser
 	chosen, label := "", ""
 	if i, ok := ask.ChosenOption(); ok {
 		if chosen, ok = d.Options[ask.Options[i]]; !ok {

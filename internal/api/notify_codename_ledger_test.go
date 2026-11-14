@@ -37,6 +37,7 @@ var noCodenameFirst = map[string]string{
 	"server.go Server.goNotify":                            "the sink: it sends a declared CodenameTitle in place of Title (and plains the title), never declares one",
 	"agent_outcome.go Server.pushOutcome":                  "an agent's outcome: an agent has no tmux window",
 	"chief_owner_release.go Server.applyGateRelease":       "a task's gate: names a task, not a session",
+	"team_dispatch.go Server.pushTeamDispatch":             "a team's agent start: names a person, a team and an agent; an agent has no tmux window",
 	"connectors.go Server.onConnectorRequested":            "a connector request: names a connector",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "an officer's pool: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",

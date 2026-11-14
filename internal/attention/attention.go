@@ -274,6 +274,11 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// AnsweredByUser is the PERSON whose update answered the ask (migration
+	// 0127's answered_by_user, stamped by the database from muster.uid, never
+	// by the statement): on a team's ask, the member who answered it. 0 for an
+	// ask that is not answered, or was answered before 0127.
+	AnsweredByUser int64 `json:"-"`
 	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
 	// migration 0050) — the chief may answer it (AnswerByChief), and the owner's
 	// Attention queue does not list it.
@@ -616,7 +621,7 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, ''), item_context`
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0)`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -627,7 +632,7 @@ func scan(row pgx.Row) (Ask, error) {
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey, &ictx); err != nil {
+		&a.SubjectKey, &ictx, &a.AnsweredByUser); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {

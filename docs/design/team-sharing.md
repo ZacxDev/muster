@@ -1132,6 +1132,38 @@ rule the later phases' rows will meet.
     agent's start/stop, with no `chief_preferences` row for the team. No
     "replace".
 
+- **Slice 4.7: team dispatch.** A team's chief starts team-owned
+  `pod/claude-code` agents (owner: the team; only on a team task, by the
+  composite key onto notes). The blanket refusal of 4.5 is gone; the host,
+  gateway and worker-pool refusals stay.
+  - **Typed turn (`owner_asked`):** `markOwnerTurn` marks a member's turn on a
+    team agent when the typer is a person who is an operator or above on a
+    fresh read and their sign-in is fresh **at typing** (`stepup.Fresh` on the
+    typing request). The marker *is* the step-up stamp: it exists only for a
+    fresh typer, so no column records the time. `ownerTurnFor` re-reads the
+    typer's role when the chief calls, and the lane checks are unchanged (one
+    room). Anything failing falls back to the approval card (with a
+    `request_key`).
+  - **Approval card:** answering a team's dispatch card needs a browser
+    session, an operator or above on a fresh read, and a fresh sign-in at the
+    answer (`teamCardRefusal`, before anything is recorded; it reads the hold
+    as the team, because `host_dispatches` is personal). The phone's door is
+    refused by name. The completing call re-reads `answered_by_user` and
+    refuses a removed answerer.
+  - **Verbatim attention answer as instructions:** no `answered_stepup_at`
+    column was added, so on a team's task the path is closed (fail closed):
+    the chief's brief goes on an approval card instead.
+  - **Audit and push:** `task.chief_dispatch` detail carries
+    `requested_by_user`; the push names the person. Fan-out is 2b's.
+  - **Terminal:** open to an operator or above with a fresh sign-in
+    (`teamAgentTerminal`). The shell holds the team's credentials; accepted
+    under the trust model (docs/chief.md).
+  - **Move to a team (4.3 limitation (a)):** a finished link no longer
+    refuses: an ask that is answered (delivery settled), cancelled or
+    expired; a session route that is finished; a host dispatch that ended.
+    Those rows stay their owner's. Agents (a composite key) and a plugin's
+    queue still refuse.
+
 ### Later: consent-based team invites
 
 A manager's email add (2a) puts a person in a team without asking them. A

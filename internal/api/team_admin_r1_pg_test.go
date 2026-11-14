@@ -12,7 +12,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -88,15 +87,15 @@ func TestARefusedTeamChiefRestartLeavesTheChiefRunning(t *testing.T) {
 	}
 }
 
-// TestATeamsChiefCannotDispatchYet: agent_dispatch from a TEAM's chief is
-// refused whatever it asks for — a plain pod/claude-code start included —
-// saying team dispatch arrives in a later release, and nothing is created.
-// The CONTROL is a person's chief with the same arguments: not refused so.
+// TestATeamsChiefsUntypedDispatchAsksTheTeam: agent_dispatch from a TEAM's
+// chief with no member's typed turn in flight (the slice-4.5 refusal is gone,
+// slice 4.7) puts an approval card in front of the team instead of starting,
+// and nothing is created. This test replaced 4.5's
+// TestATeamsChiefCannotDispatchYet, which pinned the blanket refusal.
 //
-// 🔴 RED at 23eb2f32: a team chief whose team was listed in
-// MUSTER_CHIEF_DISPATCH_OWNERS (and on the server pool) went on into the
-// dispatch flow as the team (an approval ask to the team, then the start).
-func TestATeamsChiefCannotDispatchYet(t *testing.T) {
+// 🔴 RED at origin/main dc2fba34: refused ("team dispatch arrives in a later
+// release"), no card.
+func TestATeamsChiefsUntypedDispatchAsksTheTeam(t *testing.T) {
 	tw := newTeamAgentWalk(t)
 	w := tw.w
 	w.srv.ext.TaskRouting = &TaskRouting{DispatchOwners: map[int64]bool{tw.team: true, w.a.uid: true}}
@@ -105,6 +104,7 @@ func TestATeamsChiefCannotDispatchYet(t *testing.T) {
 	plane := poolPlane(t, w)
 	plane.TeamsOnServerPool = map[int64]bool{tw.team: true}
 	t.Cleanup(func() { plane.TeamsOnServerPool = nil })
+	t.Cleanup(func() { _, _ = w.pool.Exec(w.sys, `DELETE FROM attention_asks WHERE owner_id = $1`, tw.team) })
 	count := func() int {
 		var n int
 		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM agents WHERE owner_id = $1`, tw.team).Scan(&n); err != nil {
@@ -113,19 +113,13 @@ func TestATeamsChiefCannotDispatchYet(t *testing.T) {
 		return n
 	}
 	before := count()
-	in := agentDispatchIn{Target: "pod/" + agents.KindClaudeCode, Prompt: "write the release notes", RequestKey: "team-later-1", OwnerAsked: true}
-	const later = "team dispatch arrives in a later release"
-	if got := w.srv.toolAgentDispatch(tw.teamCtx, tw.chief, in); !strings.Contains(got, later) {
-		t.Errorf("a team chief's pod/claude-code dispatch: %s; want it refused (%q)", truncate(got, 300), later)
+	in := agentDispatchIn{Target: "pod/" + agents.KindClaudeCode, Prompt: "write the release notes", RequestKey: "team-card-1", OwnerAsked: true}
+	got := w.srv.toolAgentDispatch(tw.teamCtx, tw.chief, in)
+	if heldCard(got) <= 0 {
+		t.Errorf("a team chief's untyped pod/claude-code dispatch: %s; want an approval card", truncate(got, 300))
 	}
 	if n := count(); n != before {
-		t.Errorf("the refused dispatch created %d team agent(s)", n-before)
-	}
-	personCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: w.a.uid, Role: authz.RoleMember, Via: authz.ViaAgent})
-	personChief := agents.Agent{ID: tw.chief.ID + 1000000, Name: agents.ChiefNameFor(w.a.uid), OwnerID: w.a.uid, Kind: agents.KindClaudeCode}
-	in.RequestKey = "team-later-2"
-	if got := w.srv.toolAgentDispatch(personCtx, personChief, in); strings.Contains(got, later) {
-		t.Errorf("control: a person's chief got the team refusal: %s", truncate(got, 300))
+		t.Errorf("the carded dispatch created %d team agent(s)", n-before)
 	}
 }
 
