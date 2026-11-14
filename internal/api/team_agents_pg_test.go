@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/users"
@@ -167,7 +168,7 @@ func (tw *teamAgentWalk) path(r string) (method, path string) {
 // agent's routes (§6), written out LITERALLY — not read from teamAgentRoutes,
 // so a rule loosened there is caught here rather than walked past.
 var (
-	teamChatRoutes    = []string{"GET /agents/{name}/ws", "POST /agents/{name}/send"}
+	teamChatRoutes    = []string{"GET /agents/{name}/ws", "POST /agents/{name}/send", "POST /agents/sessions/{sid}/read"}
 	teamRefusedRoutes = []string{
 		"GET /agents/{name}/terminal/ws",
 		"POST /agents/{id}/start", "POST /agents/{id}/stop", "DELETE /agents/{id}",
@@ -365,6 +366,157 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	for _, a := range answered {
 		if strings.HasSuffix(a, fromB) {
 			t.Errorf("the removed member's queued message was sent to the team chief: %q", a)
+		}
+	}
+}
+
+// TestAMemberWritesOnlyInTheTeamRoom ("one shared room", operator decision 4):
+// a team chief has a second thread (a side chat). B (operator) naming it —
+// the composer's session field, the chat socket's ?session= — is refused 403,
+// and nothing is stored in it. CONTROL: B's send and socket on the room (the
+// chief's primary) are not refused.
+//
+// 🔴 RED at 30a995ac: resolveSession took any session of the agent's, so B's
+// send to the side chat was accepted (204) and its socket opened on it.
+func TestAMemberWritesOnlyInTheTeamRoom(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	side, err := agents.NewPG(w.pool).CreateSession(tw.teamCtx, tw.chief.ID, tw.chief.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if side.ID == tw.session.ID {
+		t.Fatalf("fixture: the side chat is the room")
+	}
+	sendIn := func(sid int64, text string) *httptest.ResponseRecorder {
+		return w.do(w.h, "POST", "/agents/"+tw.chief.Name+"/send",
+			url.Values{"text": {text}, "session": {strconv.FormatInt(sid, 10)}}.Encode(), cred{sessionUser: w.b.uid})
+	}
+	if rec := sendIn(side.ID, "into the side chat "+tw.canary); rec.Code != http.StatusForbidden {
+		t.Errorf("B sending into the team chief's side chat: %d %s; want 403", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	ws := func(sid int64) int {
+		return w.do(w.h, "GET", "/agents/"+tw.chief.Name+"/ws?session="+strconv.FormatInt(sid, 10), "", cred{sessionUser: w.b.uid}).Code
+	}
+	if code := ws(side.ID); code != http.StatusForbidden {
+		t.Errorf("B opening the chat socket on the side chat: %d; want 403", code)
+	}
+	if code := ws(tw.session.ID); code == http.StatusForbidden {
+		t.Errorf("control: B opening the chat socket on the room is refused 403")
+	}
+	if rec := sendIn(tw.session.ID, "into the room"); rec.Code != http.StatusNoContent {
+		t.Errorf("control: B sending into the room: %d %s; want 204", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	var n int
+	if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE session_id = $1`, side.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d message(s) were stored in the side chat; want none", n)
+	}
+}
+
+// TestAMarkReadOnATeamSessionIsTheRoomsWriters: mark-read writes the team
+// session's one read state. B (operator) marks it (204, read_at moves); V
+// (viewer) is refused 403 by the team-agent gate and read_at does not move.
+// (The walk's role legs, through teamChatRoutes, pin V's 403 too.)
+//
+// 🔴 RED at 30a995ac: the route was outside teamAgentRoutes, so V's call
+// passed to the handler (204, a silent no-op under 0127's operator write).
+func TestAMarkReadOnATeamSessionIsTheRoomsWriters(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	readAt := func() time.Time {
+		var at time.Time
+		if err := w.pool.QueryRow(w.sys, `SELECT read_at FROM chat_sessions WHERE id = $1`, tw.session.ID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	path := "/agents/sessions/" + strconv.FormatInt(tw.session.ID, 10) + "/read"
+	before := readAt()
+	if rec := w.do(w.h, "POST", path, "", cred{sessionUser: tw.v.uid}); rec.Code != http.StatusForbidden {
+		t.Errorf("V (viewer) marking the team session read: %d %s; want 403", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	if !readAt().Equal(before) {
+		t.Errorf("V's mark-read moved the team session's read state")
+	}
+	if rec := w.do(w.h, "POST", path, "", cred{sessionUser: w.b.uid}); rec.Code != http.StatusNoContent {
+		t.Errorf("control: B (operator) marking the team session read: %d %s; want 204", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	if readAt().Equal(before) {
+		t.Errorf("control: B's mark-read did not move read_at")
+	}
+}
+
+// teamChiefAsk is an open ask the team chief raised, owned by the team.
+func (tw *teamAgentWalk) teamChiefAsk(t *testing.T) attention.Ask {
+	t.Helper()
+	ask, err := attention.NewPG(tw.w.pool).Create(tw.teamCtx, attention.New{Asker: attention.Asker{AgentID: tw.chief.ID}, Question: "ship it? " + tw.canary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = tw.w.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = $1`, tw.team)
+	})
+	return ask
+}
+
+func (tw *teamAgentWalk) askStatus(t *testing.T, id int64) string {
+	t.Helper()
+	var st string
+	if err := tw.w.pool.QueryRow(tw.w.sys, `SELECT status FROM attention_asks WHERE id = $1`, id).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// TestARemovedMembersDroppedMessageClosesNoAsks: the team chief has an open
+// ask. B's message waits behind a busy session; B is removed while it waits;
+// the message is dropped (TestARemovedMembersQueuedMessageIsDropped) — and
+// the ask is still OPEN: a member's message answers the agent's asks only
+// after the fresh role check passes and the runtime takes it.
+// CONTROL: the same message from a B who is NOT removed is answered and
+// answers the ask (answered_in_session) — the deferred answer does fire.
+//
+// 🔴 RED at 30a995ac: askerAddressed ran at the door, before the turn, so the
+// dropped message had already answered the ask.
+func TestARemovedMembersDroppedMessageClosesNoAsks(t *testing.T) {
+	for _, removed := range []bool{true, false} {
+		tw := newTeamAgentWalk(t)
+		w := tw.w
+		ask := tw.teamChiefAsk(t)
+		tw.ccd.mu.Lock()
+		tw.ccd.busy = true
+		tw.ccd.mu.Unlock()
+		fromB := "from B " + tw.canary
+		if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+			t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+		}
+		waitRefusals(t, tw.ccd.busyCCD, 1)
+		if removed {
+			if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tw.ccd.free()
+		eventuallyAPI(t, "B's message to be settled", func() bool { return !w.srv.sessionTurns.inFlight(tw.session.SessionKey) })
+		_, answered := tw.ccd.counts()
+		got := tw.askStatus(t, ask.ID)
+		if removed {
+			if len(answered) != 0 {
+				t.Fatalf("instrument: the removed member's message was sent: %v", answered)
+			}
+			if got != "open" {
+				t.Errorf("the team chief's ask is %q after the removed member's DROPPED message; want open", got)
+			}
+			continue
+		}
+		if len(answered) != 1 {
+			t.Fatalf("control: B's message was not answered: %v", answered)
+		}
+		if got != "answered_in_session" {
+			t.Errorf("control: the team chief's ask is %q after B's answered message; want answered_in_session", got)
 		}
 	}
 }

@@ -6,10 +6,11 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"net/http/httptest"
 	"log"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -280,7 +281,8 @@ func TestAnAnswerDeliveredToATeamGatewayAgentCarriesNoTools(t *testing.T) {
 }
 
 // TestEveryAgentRouteHasATeamRule is teamAgentRoutes' ledger: every route in
-// routes.golden whose pattern names an agent ("agents/{") has a rule, and
+// routes.golden whose pattern names an agent ("agents/{") or one of its chat
+// sessions ("agents/sessions/{": mark-read) has a rule, and
 // every rule is a registered route. A new agent route fails here until someone
 // decides what a team member may do through it.
 func TestEveryAgentRouteHasATeamRule(t *testing.T) {
@@ -296,7 +298,7 @@ func TestEveryAgentRouteHasATeamRule(t *testing.T) {
 			continue
 		}
 		registered[l] = true
-		if strings.Contains(l, "agents/{") {
+		if strings.Contains(l, "agents/{") || strings.Contains(l, "agents/sessions/{") {
 			named = append(named, l)
 		}
 	}
@@ -428,5 +430,253 @@ func TestEveryAgentsListCallerIsClassified(t *testing.T) {
 	}
 	if len(gone) > 0 {
 		t.Errorf("agentsListCallers lists %v, which no longer call Agents.List: remove them", gone)
+	}
+}
+
+// agentReadCallers is EVERY call in internal/api (outside tests) of the other
+// agent reads that can return a TEAM'S agent to a member since 0131 —
+// Agents.Get, Agents.GetByName and Agents.AgentsByNoteIDs — keyed
+// "<method> <function>", with what the caller does with what it reads.
+// agentsListCallers is the same ledger for Agents.List. It fails when the set
+// grows OR shrinks.
+//
+//   - own:     the agent it acts on is checked, or bound, to one owner — the
+//     caller's (OwnerID == owner, the owner's reserved slug), or a row that is
+//     itself owner-isolated (connector_grants is not in 0127's shared class, so
+//     a grant's agent is its owner's), or a ledger read keyed on the caller.
+//   - visible: it reads a team agent for a member, on purpose — and does NOT
+//     act on it as the member: a read, a route teamAgentRoutes gates (admit), a
+//     turn (chatTurn runs it as the team after the fresh role check,
+//     turnActingContext), or an explicit memberOnTeamAgent refusal.
+//   - machine: it runs only under a principal that carries NO team memberships
+//     (an agent's, a hook/API/service token's, an officer's, a background loop,
+//     System): a team agent is visible to it only when the principal IS the team.
+var agentReadCallers = map[string]string{
+	"AgentsByNoteIDs Server.dismissTask":     "visible: a member's dismiss leaves a team's linked agent running (memberOnTeamAgent)",
+	"AgentsByNoteIDs Server.taskCardView":    "visible: the task card names its agent (read)",
+	"AgentsByNoteIDs Server.taskCardViews":   "visible: the task cards name their agents (read)",
+	"AgentsByNoteIDs Server.outcomeTaskDone": "machine: acts only when actor (refOriginFrom: an agent's own door) IS the task's agent",
+	"AgentsByNoteIDs Server.apiAgentsByNote": "machine: GET /api/tasks, hook and API tokens",
+
+	"Get Server.acceptEndSession":            "own: ag.OwnerID == requestOwner(ctx)",
+	"Get Server.askingAgentHref":             "own: a.OwnerID == owner",
+	"Get Server.approveFromStanding":         "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.decideConnectorGrant":        "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.kubeGrantsDescription":       "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.refuseGrantApproval":         "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.refusePoolWorkerGitHubGrant": "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.requestCardGrants":           "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.requestShares":               "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.shareApproval":               "own: the grant is owner-isolated (connector_grants)",
+	"Get Server.stopChiefAgentOnComplete": "own: ChiefStartedAgent reads the start ledger for p.UserID (a member " +
+		"never finds a team's start), and a.OwnerID == n.OwnerID",
+	"Get Server.awaitChiefRunning":          "own: the chief toolChiefRestart resolved (ownedBy)",
+	"Get Server.replaceChief":               "own: the owner's reserved slug; hook-token door",
+	"Get Server.deliverAnswer":              "machine: attentionPrincipal (the ask's owner); ag.OwnerID == a.Owner",
+	"Get Server.agentTail":                  "visible: a conversation's last messages (read)",
+	"Get Server.askLogAttentionOpened":      "visible: the asking agent's repo for the ask log (read)",
+	"Get Server.dispatchCardFor":            "visible: a dispatched agent's card (read)",
+	"Get Server.focusHistoryVisible":        "visible: whether the subject is readable (read)",
+	"Get Server.subjectNameOf":              "visible: names a visible agent (read)",
+	"Get Server.handleAgentHeader":          "visible: GET /ui/agents/{id}/header (teamAgentRead)",
+	"Get Server.handleAgentStatusIcon":      "visible: GET /ui/agents/{id}/status (teamAgentRead)",
+	"Get Server.handleAgentModel":           "visible: POST /agents/{id}/model, refused to members (teamAgentRoutes)",
+	"Get Server.handleAgentName":            "visible: POST /agents/{id}/name, refused to members (teamAgentRoutes)",
+	"Get Server.handleAgentStart":           "visible: POST /agents/{id}/start|stop, refused to members (teamAgentRoutes)",
+	"Get Server.handleAgentSessionCreate":   "visible: POST /agents/{id}/sessions, refused to members (teamAgentRoutes)",
+	"Get Server.handleAgentSessionDefault":  "visible: POST /agents/{id}/sessions/{sid}/default, refused to members (teamAgentRoutes)",
+	"Get Server.chiefFor":                   "visible: the chief chats' writes (side, fresh-primary, archive), refused to members (teamAgentRoutes)",
+	"Get Server.handleDriftDismiss":         "visible: dismisses a name-drift notice (focus state, shared at operator); no lifecycle",
+	"Get Server.refuseTeamAgentRoute":       "visible: the team-agent route gate itself",
+	"Get Server.deliverRouteAnswer":         "visible: a turn (chatTurn: as the team after the fresh role check)",
+	"Get Server.handBackRoute":              "visible: a turn or a chief note (chatTurn: as the team after the fresh role check)",
+	"Get Server.relayRoute":                 "visible: the chief's name for a reply draft (read)",
+	"Get Server.chiefPrimaryID":             "visible: the chief's primary session id (read)",
+	"Get Server.episodeWho":                 "machine: session push, as the episode's owner",
+	"Get Server.failoverJob":                "machine: jobs (service token, jobPrincipal)",
+	"Get Server.runJob":                     "machine: jobs (service token, jobPrincipal)",
+	"Get Server.noteOutcomeToChief":         "machine: the outcome watchdog; chief.OwnerID == a.OwnerID",
+	"Get Server.noteProposalToChief":        "machine: as the card's owner",
+	"Get Server.outcomeWorkReported":        "machine: a pod's work report",
+	"Get Server.replayAnswer":               "machine: agent_dispatch, an agent's tool",
+	"Get Server.sendNudgeTurn":              "machine: the chief nudge sweep",
+	"Get Server.toolAgentDestroy":           "machine: an agent's tool",
+	"Get Server.toolAgentReportDone":        "machine: an agent's tool",
+	"Get Server.toolConnectorRequestDecide": "machine: a mirrored session's tool (no team memberships)",
+	"Get Server.toolConnectorRequestsList":  "machine: a mirrored session's tool (no team memberships)",
+	"Get Server.withdrawLapsedCard":         "machine: the hold-lapse sweep, as the card's owner; chief.OwnerID == a.Owner",
+	"Get focusSessions.Visible":             "visible: whether a focus subject is readable (read)",
+	"Get officerFleet.Reprompt":             "machine: an officer's door",
+
+	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
+	"GetByName Server.handleAgentDetail":         "visible: GET /agents/{name} (teamAgentRead)",
+	"GetByName Server.handleAgentLogsStream":     "visible: GET /agents/{name}/logs/stream (teamAgentRead)",
+	"GetByName Server.handleAgentSendAgain":      "visible: GET /agents/{name}/send, a redirect (teamAgentRead)",
+	"GetByName Server.handleAgentTaskModal":      "visible: GET /ui/agents/{name}/task (teamAgentRead)",
+	"GetByName Server.handleAgentTerminalPage":   "visible: GET /agents/{name}/terminal, the page (teamAgentRead)",
+	"GetByName Server.handleChiefChatContext":    "visible: GET /ui/agents/{name}/chat-context (teamAgentRead)",
+	"GetByName Server.handleAgentTerminalWS":     "visible: GET /agents/{name}/terminal/ws, refused to members (teamAgentRoutes)",
+	"GetByName Server.handleAgentSend":           "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
+	"GetByName Server.handleAgentWS":             "visible: chat at operator (teamAgentRoutes), the one room (resolveTurnSession), a turn as the team",
+	"GetByName Server.activeNotificationRows":    "visible: the panel's link to an active agent (read)",
+	"GetByName Server.askerAsks":                 "visible: an agent's open asks (read)",
+	"GetByName Server.leaving":                   "visible: the page home leaves out (read)",
+	"GetByName Server.refuseTeamAgentRoute":      "visible: the team-agent route gate itself",
+	"GetByName Server.provisionChief":            "own: the owner's reserved slug ChiefNameFor(owner)",
+	"GetByName Server.agentOwner":                "machine: System, an owner id for a nudge",
+	"GetByName Server.notifyAgentRunning":        "machine: System, the status hook's push",
+	"GetByName Server.namedJobAgent":             "machine: POST /api/jobs (service token)",
+	"GetByName Server.handleAPIAgentFailovers":   "machine: GET /api/agents/{name}/account-failovers",
+	"GetByName Server.handleAPIAgentMessages":    "machine: GET /api/agents/{name}/messages",
+	"GetByName Server.handleAPIAgentRemove":      "machine: DELETE /api/agents/{name}",
+	"GetByName Server.handleAPIAgentSendMessage": "machine: POST /api/agents/{name}/messages",
+	"GetByName Server.ensureHostInstanceRow":     "machine: an officer's host",
+	"GetByName Server.officerHostCaller":         "machine: an officer's host",
+	"GetByName Server.toolAgentDestroy":          "machine: an agent's tool",
+	"GetByName Server.toolEndSessionPropose":     "machine: an agent's tool",
+	"GetByName consumerGatewayUsage.Read":        "machine: consumer usage principal",
+	"GetByName gatewayTranscripts.Read":          "machine: an officer's door",
+	"GetByName gatewayUsage.Read":                "machine: an officer's door",
+	"GetByName officerFleet.Reprompt":            "machine: an officer's door",
+	"GetByName officerFleet.Start":               "machine: an officer's door",
+	"GetByName officerFleet.Stop":                "machine: an officer's door",
+}
+
+// TestEveryAgentReadCallerIsClassified is agentReadCallers' walk: every
+// function calling Agents.Get, Agents.GetByName or Agents.AgentsByNoteIDs.
+func TestEveryAgentReadCallerIsClassified(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]int{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			name := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				rt := fn.Recv.List[0].Type
+				if st, ok := rt.(*ast.StarExpr); ok {
+					rt = st.X
+				}
+				if id, ok := rt.(*ast.Ident); ok {
+					name = id.Name + "." + name
+				}
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "Get", "GetByName", "AgentsByNoteIDs":
+				default:
+					return true
+				}
+				if x, ok := sel.X.(*ast.SelectorExpr); ok && x.Sel.Name == "Agents" {
+					found[sel.Sel.Name+" "+name]++
+				}
+				return true
+			})
+		}
+	}
+	if len(found) < 80 {
+		t.Fatalf("instrument check FAILED: the walk found %d agent-read callers: %v", len(found), found)
+	}
+	var unclassified, gone []string
+	for k := range found {
+		if _, ok := agentReadCallers[k]; !ok {
+			unclassified = append(unclassified, k)
+		}
+	}
+	for k, why := range agentReadCallers {
+		if found[k] == 0 {
+			gone = append(gone, k)
+		}
+		if c, _, _ := strings.Cut(why, ":"); c != "own" && c != "visible" && c != "machine" {
+			t.Errorf("agentReadCallers[%q] is classed %q; want own, visible or machine", k, c)
+		}
+	}
+	sort.Strings(unclassified)
+	sort.Strings(gone)
+	if len(unclassified) > 0 {
+		t.Errorf("UNCLASSIFIED agent reads %v: since 0131 they can return a member's TEAM agent; classify each in "+
+			"agentReadCallers (own / visible / machine), and a visible one must not act on it as the member", unclassified)
+	}
+	if len(gone) > 0 {
+		t.Errorf("agentReadCallers lists %v, which no longer make that read: remove them", gone)
+	}
+}
+
+// TestAMembersDismissLeavesTheTeamsAgentRunning: dismissTask tears down a
+// task's linked agent (Provisioner.Destroy, under the caller's principal). A
+// team MANAGER dismissing a team task must not: lifecycle on a team agent is
+// refused to every member on every direct door (teamAgentRoutes), and the
+// dismiss is not a side door to it. The task is still dismissed.
+// CONTROLS: the member's own linked agent is torn down as before, and so is
+// the team's agent when the TEAM ACTING PRINCIPAL (its own door: the idle
+// reaper, an agent's token) dismisses the task — the guard is about who acts.
+//
+// 🔴 RED at 30a995ac: the manager's dismiss destroyed the team's worker.
+func TestAMembersDismissLeavesTheTeamsAgentRunning(t *testing.T) {
+	const (
+		tsManager  int64 = 904
+		teamWorker int64 = 70
+		ownWorker  int64 = 71
+		teamTask   int64 = 170
+		ownTask    int64 = 171
+	)
+	u := newTSUsers()
+	u[tsManager] = users.Account{Role: authz.RoleMember, Teams: tsIn(authz.TeamManager)}
+	for who, c := range map[string]struct {
+		ctx         context.Context
+		task        int64
+		wantDestroy int64 // 0: nothing torn down
+	}{
+		"a team manager, the team's task":   {personCtx(u, tsManager), teamTask, 0},
+		"control: a person, their own task": {personCtx(u, tsManager), ownTask, ownWorker},
+		"control: the team acting principal, the team's task": {
+			authz.WithPrincipal(context.Background(), teamActingPrincipal(tsTeam, authz.ViaAgent)), teamTask, teamWorker},
+	} {
+		as := &chiefFixtureAgents{
+			rows: []agents.Agent{
+				{ID: teamWorker, Name: "team-otter", DisplayName: "worker", OwnerID: tsTeam, Status: agents.StatusRunning},
+				{ID: ownWorker, Name: "own-otter", DisplayName: "worker", OwnerID: tsManager, Status: agents.StatusRunning},
+			},
+			links: map[int64]int64{teamTask: teamWorker, ownTask: ownWorker},
+		}
+		ns := &chiefFixtureNotes{}
+		prov := &destroyRecorder{ch: make(chan int64, 8)}
+		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
+		s.UseExtensions(Extensions{Agents: as, Notes: ns, Provisioner: prov, Users: u, SessionLiveness: stubLiveness{}})
+		if err := s.dismissTask(c.ctx, c.task); err != nil {
+			t.Fatalf("%s: dismiss: %v", who, err)
+		}
+		if got := ns.dismissed(); len(got) != 1 || got[0] != c.task {
+			t.Errorf("%s: the task was not dismissed: %v", who, got)
+		}
+		got := destroyedWithin(prov, destroyWindow)
+		var want []int64
+		if c.wantDestroy != 0 {
+			want = []int64{c.wantDestroy}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: Destroy(%v); want %v", who, got, want)
+		}
 	}
 }

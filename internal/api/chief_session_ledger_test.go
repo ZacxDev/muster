@@ -73,6 +73,7 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		"internal/api/agents.go (*Server).resolveSessions → primarySession":                 "OWNER (the chief page opens on the primary)",
 		"internal/api/agents.go (*Server).resolveSessions → LatestOrCreateSession":          "OWNER (any other agent's page)",
 		"internal/api/agents.go (*Server).resolveSession → LatestOrCreateSession":           "OWNER (no ?session on the socket or the composer)",
+		"internal/api/team_agents.go (*Server).resolveTurnSession → deliverySession":       "PRIMARY (a member's message to a team agent: its one shared room)",
 		"internal/api/agents.go (*Server).handleAgentSessionCreate → LatestOrCreateSession": "OWNER (New chat on a page)",
 		"internal/api/agents.go (*Server).handleAgentSessionCreate → CreateSession":         "OWNER (New chat on a page)",
 		"internal/api/agents.go (*Server).activeNotificationRows → LatestOrCreateSession":   "NOT-A-DELIVERY (a deep link)",

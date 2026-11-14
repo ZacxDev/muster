@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/users"
@@ -60,25 +62,29 @@ const (
 	teamAgentRefused
 )
 
-// teamAgentRoutes is EVERY route whose pattern names an agent ("agents/{"),
-// with its rule. TestEveryAgentRouteHasATeamRule fails when routes.golden
+// teamAgentRoutes is EVERY route whose pattern names an agent ("agents/{") or
+// one of its chat sessions ("agents/sessions/{"), with its rule. TestEveryAgentRouteHasATeamRule fails when routes.golden
 // gains or loses one that is not here, so a new agent route is a decision,
 // not a default.
 var teamAgentRoutes = map[string]teamAgentRule{
-	"GET /agents/{name}":                         teamAgentRead,
-	"GET /agents/{name}/logs/stream":             teamAgentRead,
-	"GET /agents/{name}/send":                    teamAgentRead, // the redirect back after a send
-	"GET /agents/{name}/terminal":                teamAgentRead, // the page; its shell is the /ws below
-	"GET /ui/agents/{id}/header":                 teamAgentRead,
-	"GET /ui/agents/{id}/status":                 teamAgentRead,
-	"GET /ui/agents/{name}/chat-context":         teamAgentRead,
-	"GET /ui/agents/{name}/chat-log":             teamAgentRead,
-	"GET /ui/agents/{name}/task":                 teamAgentRead,
-	"GET /api/agents/{name}/account-failovers":   teamAgentRead, // machine door
-	"GET /api/agents/{name}/messages":            teamAgentRead, // machine door
-	"POST /api/agents/{name}/messages":           teamAgentRead, // machine door
-	"DELETE /api/agents/{name}":                  teamAgentRead, // machine door
-	"GET /agents/{name}/ws":                      teamAgentChat,
+	"GET /agents/{name}":                       teamAgentRead,
+	"GET /agents/{name}/logs/stream":           teamAgentRead,
+	"GET /agents/{name}/send":                  teamAgentRead, // the redirect back after a send
+	"GET /agents/{name}/terminal":              teamAgentRead, // the page; its shell is the /ws below
+	"GET /ui/agents/{id}/header":               teamAgentRead,
+	"GET /ui/agents/{id}/status":               teamAgentRead,
+	"GET /ui/agents/{name}/chat-context":       teamAgentRead,
+	"GET /ui/agents/{name}/chat-log":           teamAgentRead,
+	"GET /ui/agents/{name}/task":               teamAgentRead,
+	"GET /api/agents/{name}/account-failovers": teamAgentRead, // machine door
+	"GET /api/agents/{name}/messages":          teamAgentRead, // machine door
+	"POST /api/agents/{name}/messages":         teamAgentRead, // machine door
+	"DELETE /api/agents/{name}":                teamAgentRead, // machine door
+	"GET /agents/{name}/ws":                    teamAgentChat,
+	// Mark-read writes the session's ONE read state (chat_sessions.read_at), which
+	// in the shared room is the team's, not the reader's: written by those who
+	// write the room. A viewer is refused (their page's call is fire-and-forget).
+	"POST /agents/sessions/{sid}/read":           teamAgentChat,
 	"POST /agents/{name}/send":                   teamAgentChat,
 	"GET /agents/{name}/terminal/ws":             teamAgentRefused,
 	"POST /agents/{id}/start":                    teamAgentRefused,
@@ -128,6 +134,12 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 		a, err = s.ext.Agents.GetByName(ctx, name)
 	} else if id, perr := strconv.ParseInt(r.PathValue("id"), 10, 64); perr == nil {
 		a, err = s.ext.Agents.Get(ctx, id)
+	} else if sid, perr := strconv.ParseInt(r.PathValue("sid"), 10, 64); perr == nil {
+		// A route naming only a chat session (mark-read): its agent's rule.
+		var sess agents.ChatSession
+		if sess, err = s.ext.Agents.GetSession(ctx, sid); err == nil {
+			a, err = s.ext.Agents.Get(ctx, sess.AgentID)
+		}
 	} else {
 		return false
 	}
@@ -157,6 +169,99 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 	return true
 }
 
+// memberOnTeamAgent reports whether ctx is a PERSON acting on agent a, which
+// they do not own. Under row-level security (0131) the only agent a person can
+// see and not own is one of their teams' agents. A row that carries no owner
+// (a store that does not read the column), the owner's own principal, the
+// team acting principal and System all answer false.
+//
+// 🔴 ONE PREDICATE for every place a member's request must not act on a team
+// agent as if it were theirs: the turn's principal (turnActingContext), the
+// one shared room (resolveTurnSession), the asks a message closes
+// (addressAskerOnAccept) and a task dismiss's teardown (dismissTask).
+func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
+	p, ok := authz.From(ctx)
+	return ok && !p.All() && !p.Team && a.OwnerID > 0 && p.UserID != a.OwnerID
+}
+
+// ErrNotTheTeamRoom answers a member's message to a team agent that names a
+// session other than the agent's one shared room.
+var ErrNotTheTeamRoom = errors.New("this is a team agent: it has one shared conversation, and a message goes there, not to another of its threads")
+
+// resolveTurnSession is the session a message typed to a (the composer's POST,
+// the chat socket) is sent in. For the owner it is resolveSession's answer, as
+// it always was. For a MEMBER on a team agent it is the agent's ONE SHARED
+// ROOM (operator decision 4) — deliverySession: the chief's primary, any other
+// agent's latest — and a session parameter naming any other session (an
+// archived thread, a side chat, a plugin thread) is ErrNotTheTeamRoom. No
+// parameter, or the room's own id, is the room.
+//
+// Reading another thread is not this: chat-log and the page read any session
+// of a visible agent (teamAgentRead).
+func (s *Server) resolveTurnSession(ctx context.Context, a agents.Agent, sessionParam string) (agents.ChatSession, error) {
+	if !memberOnTeamAgent(ctx, a) {
+		return s.resolveSession(ctx, a, sessionParam)
+	}
+	room, err := s.deliverySession(ctx, a)
+	if err != nil {
+		return agents.ChatSession{}, err
+	}
+	if id, perr := strconv.ParseInt(sessionParam, 10, 64); perr == nil && id > 0 && id != room.ID {
+		return agents.ChatSession{}, ErrNotTheTeamRoom
+	}
+	return room, nil
+}
+
+// addressOnAcceptKey carries a member's deferred askerAddressed to chatTurn.
+type addressOnAcceptKey struct{}
+
+// addressAsker is "the person wrote to agent a: its open asks are answered"
+// (askerAddressed) for the two chat doors, returning the ctx the turn runs on.
+//
+// For the owner it answers them NOW, exactly as before. For a MEMBER on a team
+// agent it answers nothing here: the member's role is read again, fresh, when
+// the turn is sent (turnActingContext), and a member removed — or made a
+// viewer — while the message waited has it dropped. So the asks are answered
+// only once that check has passed AND the runtime has taken the text
+// (addressAskerOnAccept): a dropped message closes no asks. Once per message.
+func (s *Server) addressAsker(ctx context.Context, a agents.Agent, text string) context.Context {
+	if !memberOnTeamAgent(ctx, a) {
+		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, text)
+		return ctx
+	}
+	door := ctx
+	var once sync.Once
+	return context.WithValue(ctx, addressOnAcceptKey{}, func() {
+		once.Do(func() { s.askerAddressed(door, attention.Asker{AgentID: a.ID}, text) })
+	})
+}
+
+// addressAskerOnAccept is chatTurn's half of addressAsker, called AFTER the
+// fresh role check: when ctx carries a member's deferred address, it runs on
+// the first sign the runtime took the text — ccd's 103 (agents.WithTurnAccepted,
+// chained to any callback ctx already carries) or the turn's first stream
+// event. A busy refusal is neither, so an attempt that is refused and then
+// dropped answers nothing; and it runs before any tool the turn calls, so an
+// ask the turn itself raises is not answered by the message that started it
+// (AnswerInSession closes only asks created before its statement).
+func addressAskerOnAccept(ctx context.Context, emit agents.StreamEmit) (context.Context, agents.StreamEmit) {
+	fire, ok := ctx.Value(addressOnAcceptKey{}).(func())
+	if !ok {
+		return ctx, emit
+	}
+	parent := ctx
+	ctx = agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) {
+		agents.MarkTurnAccepted(parent, acc)
+		fire()
+	})
+	return ctx, func(ev agents.StreamEvent) {
+		fire()
+		if emit != nil {
+			emit(ev)
+		}
+	}
+}
+
 // ErrNoLongerTeamOperator is a turn a member started on a team agent that is
 // not sent because, when it came to be sent, the member was no longer an
 // operator (or above) of the team: removed, or downgraded to viewer.
@@ -177,10 +282,10 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // team — or made a viewer — while it waited gets ErrNoLongerTeamOperator and
 // the message is not sent (plan §6). An unreadable account fails closed.
 func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, error) {
-	p, ok := authz.From(ctx)
-	if !ok || p.All() || p.Team || a.OwnerID <= 0 || p.UserID == a.OwnerID {
+	if !memberOnTeamAgent(ctx, a) {
 		return ctx, nil
 	}
+	p, _ := authz.From(ctx)
 	acct, err := s.accountOfChecked(ctx, p.UserID)
 	if err != nil {
 		return ctx, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
