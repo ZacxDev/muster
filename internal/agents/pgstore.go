@@ -88,10 +88,10 @@ func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 			INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
 				cc_account_pinned, cc_failover, display_name_source, runs_on_host)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-			RETURNING *
+			RETURNING `+agentCols+`
 		), s AS (
 			INSERT INTO agent_secrets (agent_id, owner_id, hooks_token)
-			SELECT id, owner_id, hooks_token FROM a WHERE hooks_token <> ''
+			SELECT id, owner_id, $11 FROM a WHERE $11 <> ''
 		)
 		SELECT `+agentCols+` FROM a`,
 		a.Name, a.Namespace, a.DisplayName, a.Repo, a.RepoBranch, a.NoteID, a.NoteText,

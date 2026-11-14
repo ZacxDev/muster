@@ -78,7 +78,9 @@ func TestMigration0128AgentSecrets(t *testing.T) {
 	// The re-apply: one value changed in agent_secrets (it must survive), one
 	// token written only to the old column, as an older image would (it must
 	// be picked up).
-	mustExec(ctx, t, pool, `UPDATE agent_secrets SET gateway_secret='gw-rotated' WHERE agent_id=$1`, both)
+	// Both credentials now differ between agent_secrets and the old columns,
+	// so a backfill that preferred the old column for EITHER would show here.
+	mustExec(ctx, t, pool, `UPDATE agent_secrets SET gateway_secret='gw-rotated', hooks_token='tok-rotated' WHERE agent_id=$1`, both)
 	mustExec(ctx, t, pool, `UPDATE agents SET hooks_token='tok-old-image' WHERE id=$1`, none)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -91,7 +93,7 @@ func TestMigration0128AgentSecrets(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := read(both); got.gw != "gw-rotated" || got.tok != "tok-both" {
+	if got, _ := read(both); got.gw != "gw-rotated" || got.tok != "tok-rotated" {
 		t.Errorf("re-applying 0128 overwrote a credential agent_secrets held: %+v", got)
 	}
 	if got, ok := read(none); !ok || got.tok != "tok-old-image" {
@@ -115,7 +117,7 @@ func TestMigration0128AgentSecrets(t *testing.T) {
 		Scan(&on, &forced); err != nil || !on || !forced {
 		t.Fatalf("after RLSOn agent_secrets has rls=%v forced=%v (err %v), want both on", on, forced, err)
 	}
-	if got, _ := read(both); got.gw != "gw-rotated" {
+	if got, _ := read(both); got.gw != "gw-rotated" || got.tok != "tok-rotated" {
 		t.Errorf("RLSOn's re-apply overwrote a credential agent_secrets held: %+v", got)
 	}
 }

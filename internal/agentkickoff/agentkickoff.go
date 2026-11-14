@@ -582,10 +582,15 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// A token-less row derives a well-formed WRONG bearer (agentgateway.reach), so
 	// it is refused here, before the stamp, and retried until the dwell bound. a
 	// came from a list, which carries no credentials (agents.Secrets), so the
-	// stored token is read by id; a failed read is retried as a token-less row is.
+	// stored token is read by id; a failed read is retried as a token-less row is,
+	// and recorded as what it is.
 	if sec, err := d.store.Secrets(ctx, a.ID); err != nil || sec.HooksToken == "" {
-		if stuck := d.preStampFailure(parent, a, inst, "kickoff not sent: the agent has no hooks token yet, so no gateway "+
-			"credential can be derived (it is minted when the instance is created)"); stuck != nil {
+		msg := "kickoff not sent: the agent has no hooks token yet, so no gateway " +
+			"credential can be derived (it is minted when the instance is created)"
+		if err != nil {
+			msg = "kickoff not sent: could not read the agent's credentials: " + err.Error()
+		}
+		if stuck := d.preStampFailure(parent, a, inst, msg); stuck != nil {
 			stuck() // no claim is held yet
 		}
 		return

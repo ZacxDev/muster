@@ -873,6 +873,11 @@ rule the later phases' rows will meet.
   - 🔴 **So slice 4.4, which shares `agents`, must first** make team-owned agents
     never write those columns (or drop them), with a test that a member
     principal's `SELECT … FROM agents` on a team agent yields no secret.
+  - ⚠ **Dropping the old columns must re-run the 0128 backfill first.** An
+    agent minted by an older image after a rollback keeps its token only in the
+    old column; `agents.Store.Secrets` finds it through the fallback, so
+    `ensureHooksToken` sees a token and writes nothing to `agent_secrets`.
+    Dropping the columns without the backfill would lose that token.
 
 ### Later: consent-based team invites
 
