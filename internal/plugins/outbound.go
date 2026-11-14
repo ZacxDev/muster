@@ -466,9 +466,9 @@ type NewOutbound struct {
 	Media  []string
 	// ItemID is the officer item the draft is for, when it names one.
 	ItemID *int64
-	// PublicLinks are the filing officer's own public links
-	// (flows.ParsePublicLink entries): internal/api sets them from the
-	// officer's standing-read repositories, never from the agent's arguments.
+	// PublicLinks are the filing officer's public links (host/path entries,
+	// flows.StripPublicLinks): internal/api sets them from the officer's
+	// standing-read repositories, never from the agent's arguments.
 	PublicLinks []string
 }
 
@@ -504,22 +504,14 @@ func (in NewOutbound) validate() error {
 // ScreenOutbound is ScreenDraft for an OUTBOUND draft: the same screen, except
 // that public host names and URLs are allowed (flows.OutboundTextRefusal) so
 // a post can link to the project, and a link on publicLinks (the officer's
-// standing-read repositories and MUSTER_OUTBOUND_PUBLIC_LINKS:
-// flows.StripPublicLinks) may spell one of the deployment's own names. Internal
+// standing-read repositories: flows.StripPublicLinks) may spell one of the
+// deployment's own names. Internal
 // host names, IP addresses, secrets, infrastructure words and the deployment's
 // own names anywhere else are refused as ever.
 func ScreenOutbound(body string, denyWords, publicLinks []string) (string, error) {
 	return screenDraft(body, denyWords, func(text string, words []string) string {
 		return flows.OutboundTextRefusal(text, words, publicLinks)
 	})
-}
-
-// WithOutboundPublicLinks sets the operator's extra public links an outbound
-// draft may carry (MUSTER_OUTBOUND_PUBLIC_LINKS, already parsed by
-// flows.ParsePublicLinks), beside each officer's own (NewOutbound.PublicLinks).
-func (s *PGStore) WithOutboundPublicLinks(links []string) *PGStore {
-	s.outboundLinks = append([]string(nil), links...)
-	return s
 }
 
 // FileOutbound stores officer in.Officer's outbound draft, written by its
@@ -538,7 +530,7 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 	if err := in.validate(); err != nil {
 		return Draft{}, err
 	}
-	body, err := ScreenOutbound(in.Body, s.denyWords, append(append([]string(nil), in.PublicLinks...), s.outboundLinks...))
+	body, err := ScreenOutbound(in.Body, s.denyWords, in.PublicLinks)
 	if err != nil {
 		return Draft{}, err
 	}

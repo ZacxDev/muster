@@ -89,6 +89,7 @@ func TestOutboundUndeclaredRepoIsNotExempt(t *testing.T) {
 		"example.org/https://github.com/ZacxDev/muster",
 		"xgithub.com/ZacxDev/muster",
 		"gitlab.com/ZacxDev/muster",
+		"x\u00e9github.com/ZacxDev/muster",
 	} {
 		if why := OutboundTextRefusal(text, liveWords, []string{liveRepo}); why != nameRefusal {
 			t.Errorf("%q: %q; want %q", text, why, nameRefusal)
@@ -122,34 +123,20 @@ func TestReplyScreenHasNoAllowlist(t *testing.T) {
 	}
 }
 
-func TestParsePublicLink(t *testing.T) {
+func TestParsePublicLinkEntry(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://GitHub.com/ZacxDev/muster/": "github.com/ZacxDev/muster",
 		" www.example.org ":                  "example.org",
 		"github.com/a/b":                     "github.com/a/b",
 	} {
-		if got, err := ParsePublicLink(in); err != nil || got != want {
-			t.Errorf("ParsePublicLink(%q) = %q, %v; want %q", in, got, err, want)
+		if got, err := parsePublicLink(in); err != nil || got != want {
+			t.Errorf("parsePublicLink(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
 	for _, bad := range []string{"", "muster", "10.0.0." + "1", "store.example." + "lan", "a.svc." + "cluster", "x." + "local/a",
 		"example.org/a b", "ftp://example.org", "example.org?x=1"} {
-		if got, err := ParsePublicLink(bad); err == nil {
-			t.Errorf("ParsePublicLink(%q) = %q; want refused", bad, got)
+		if got, err := parsePublicLink(bad); err == nil {
+			t.Errorf("parsePublicLink(%q) = %q; want refused", bad, got)
 		}
-	}
-	// Valid entries, so only the cap can refuse: MaxPublicLinks pass, one more does not.
-	valid := func(n int) []string {
-		out := make([]string, n)
-		for i := range out {
-			out[i] = "example.org"
-		}
-		return out
-	}
-	if got, err := ParsePublicLinks(valid(MaxPublicLinks)); err != nil || len(got) != MaxPublicLinks {
-		t.Errorf("MaxPublicLinks entries: %d, %v; want all accepted", len(got), err)
-	}
-	if _, err := ParsePublicLinks(valid(MaxPublicLinks + 1)); err == nil || !strings.Contains(err.Error(), "at most") {
-		t.Errorf("over MaxPublicLinks: %v; want refused for the cap", err)
 	}
 }

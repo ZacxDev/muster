@@ -25,7 +25,6 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
-	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
@@ -317,11 +316,6 @@ const (
 	// that an AGENT's browser-flow text may not carry (internal/flows
 	// AgentTextRefusal). Configuration, not source: this repository is public.
 	envFlowAgentDenyWords = "MUSTER_FLOW_AGENT_DENY_WORDS"
-	// Officers' outbound drafts: extra public links (comma-separated
-	// host[/path], flows.ParsePublicLink) an outbound draft may carry even when
-	// they spell a deployment name, beside each officer's standing-read
-	// repositories (internal/flows public_links.go). Off unless set.
-	envOutboundPublicLinks = "MUSTER_OUTBOUND_PUBLIC_LINKS"
 	// The cairn memo relay (internal/memorelay): the memo listener's base URL
 	// and the ONE read-only credential muster reads live memos with. The token
 	// alone decides whether the relay runs — see config.validate.
@@ -887,10 +881,6 @@ type config struct {
 
 	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
 	FlowAgentDenyWords []string
-	// OutboundPublicLinks is MUSTER_OUTBOUND_PUBLIC_LINKS, each entry checked
-	// by flows.ParsePublicLinks (loadConfig refuses one that is not a public
-	// host[/path]).
-	OutboundPublicLinks []string
 	// MemoURL and MemoToken are the cairn memo listener the relay reads
 	// (internal/memorelay). The relay runs iff MemoToken is set; MemoURL alone
 	// is the state a deployment sits in before its credential is issued.
@@ -1700,11 +1690,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.AgentCCMaxJobs = n
 	}
 
-	if links, err := flows.ParsePublicLinks(splitList(getenv(envOutboundPublicLinks))); err != nil {
-		return config{}, fmt.Errorf("invalid %s: %w", envOutboundPublicLinks, err)
-	} else {
-		c.OutboundPublicLinks = links
-	}
 	if v := strings.TrimSpace(getenv(envPort)); v != "" {
 		p, err := strconv.Atoi(v)
 		if err != nil || p < 1 || p > 65535 {

@@ -1,7 +1,6 @@
 package flows
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -16,12 +15,11 @@ import (
 // the screen first takes out every link on the outbound ALLOWLIST and screens
 // what is left:
 //
-//   - An allowlist entry is `host[/segment…]` (ParsePublicLink): a public host
+//   - An allowlist entry is `host[/segment…]` (parsePublicLink): a public host
 //     and an optional path prefix. muster builds the list per draft: each of
 //     the filing officer's standing-read repositories as
 //     `github.com/<owner>/<repo>` (officers.Officer.StandingReadRepos — the
-//     repositories the deployment itself declares public), plus the
-//     operator's MUSTER_OUTBOUND_PUBLIC_LINKS.
+//     repositories the deployment itself declares public).
 //   - A link in the text is a run `[http[s]://][www.]host[/path…]`. It is on
 //     the allowlist when its host equals an entry's host and its first path
 //     segments equal the entry's segments (both compared without case; a
@@ -35,11 +33,8 @@ import (
 //     host name, a credential- or token-shaped string, an infrastructure word
 //     or a deployment name anywhere OUTSIDE an allowlisted link is refused.
 
-// MaxPublicLinks bounds MUSTER_OUTBOUND_PUBLIC_LINKS.
-const MaxPublicLinks = 20
-
 var (
-	// publicLinkRE is an allowlist entry, after ParsePublicLink took off a
+	// publicLinkRE is an allowlist entry, after parsePublicLink took off a
 	// scheme and a trailing slash: a host of two or more labels and optional
 	// path segments.
 	publicLinkRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[A-Za-z0-9._~-]+)*$`)
@@ -50,11 +45,11 @@ var (
 	linkPrefixRE = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?`)
 )
 
-// ParsePublicLink is entry as an allowlist entry — lower-case host, path
+// parsePublicLink is entry as an allowlist entry — lower-case host, path
 // segments as given, no scheme, no trailing slash — or why it is refused: not
 // host[/path] shaped, or a host the screen would refuse anyway (an IP address,
 // an internal host name), which no allowlist may exempt.
-func ParsePublicLink(entry string) (string, error) {
+func parsePublicLink(entry string) (string, error) {
 	e := strings.TrimSpace(entry)
 	e = linkPrefixRE.ReplaceAllString(e, "")
 	e = strings.TrimRight(e, "/")
@@ -74,25 +69,7 @@ func ParsePublicLink(entry string) (string, error) {
 	return e, nil
 }
 
-// ParsePublicLinks is ParsePublicLink over a list, at most MaxPublicLinks.
-func ParsePublicLinks(entries []string) ([]string, error) {
-	if len(entries) > MaxPublicLinks {
-		return nil, fmt.Errorf("at most %d public links", MaxPublicLinks)
-	}
-	var out []string
-	var errs []error
-	for _, e := range entries {
-		p, err := ParsePublicLink(e)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		out = append(out, p)
-	}
-	return out, errors.Join(errs...)
-}
-
-// StripPublicLinks is text with every link on allow (ParsePublicLink entries;
+// StripPublicLinks is text with every link on allow (parsePublicLink entries;
 // an entry that does not parse is ignored) cut down to what follows its
 // allowlisted prefix: the prefix becomes a space, the rest of the link stays.
 func StripPublicLinks(text string, allow []string) string {
@@ -102,7 +79,7 @@ func StripPublicLinks(text string, allow []string) string {
 	}
 	var es []entry
 	for _, a := range allow {
-		p, err := ParsePublicLink(a)
+		p, err := parsePublicLink(a)
 		if err != nil {
 			continue
 		}
@@ -172,11 +149,12 @@ func segmentIs(got, want string) bool {
 }
 
 // continuesURL reports whether c, just before a link-shaped run, would make
-// that run part of something else: a longer host (x.host), a userinfo
-// (user@host), a path (…/host) or a scheme or port (…:host).
+// that run part of something else: a longer host (x.host, or a non-ASCII
+// letter: xé.host), a userinfo (user@host), a path (…/host) or a scheme or
+// port (…:host).
 func continuesURL(c byte) bool {
 	switch {
-	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c >= 0x80:
 		return true
 	}
 	return strings.IndexByte("._-~%+@/:\\", c) >= 0

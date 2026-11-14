@@ -462,10 +462,6 @@ var bannerLedger = []string{
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
 	envFlowAgentDenyWords,
-	// THE OUTBOUND PUBLIC LINKS ARE LEDGERED: ON, they widen what an officer's
-	// outbound draft may send to a third party — so the log must say whether
-	// they do.
-	envOutboundPublicLinks,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -847,8 +843,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The mirror plugin: the banner branches on ext.Mirror, as for connectors.
 		Mirror: true,
 
-		FlowAgentDenyWords:  []string{"examplecluster"},
-		OutboundPublicLinks: []string{"github.com/example/project"},
+		FlowAgentDenyWords: []string{"examplecluster"},
 		// The memo relay: ON needs the credential, a pool and ext.Gateway (both
 		// supplied below), which is memoRelayEnabled's whole predicate.
 		MemoURL:   "http://memos.example.invalid:8125",

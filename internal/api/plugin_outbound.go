@@ -431,8 +431,7 @@ func (s *Server) officerOutboundGranted(ctx context.Context, o officers.Officer)
 // when they spell one of the deployment's own names (flows.StripPublicLinks):
 // `github.com/<owner>/<repo>` for each of its standing-read repositories —
 // the repositories the deployment itself declares public
-// (officers.Officer.StandingReadRepos, THE rule for that). The operator's
-// MUSTER_OUTBOUND_PUBLIC_LINKS are added by the plugin store.
+// (officers.Officer.StandingReadRepos, THE rule for that).
 func officerPublicLinks(o officers.Officer) []string {
 	var out []string
 	for _, r := range o.StandingReadRepos() {

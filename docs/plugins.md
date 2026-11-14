@@ -695,14 +695,16 @@ out of the text, then screens what is left:
 - **The allowlist** is built for each draft: `github.com/<owner>/<repo>` for
   each of the filing officer's **standing-read repositories** (`read_repos`
   with `read_grant: "standing"`, [officers.md](officers.md#a-standing-public-read-read_grant-standing)
-  — the repositories the deployment itself declares public), plus the
-  operator's `MUSTER_OUTBOUND_PUBLIC_LINKS`
-  ([configuration.md](configuration.md)). `read_repos` under the ordinary
-  per-instance approval are not on it: they may be private.
+  — the repositories the deployment itself declares public). To let an
+  officer link to another public repository, add it to that officer's
+  standing `read_repos`. `read_repos` under the ordinary per-instance
+  approval are not on it: they may be private. The allowlist trusts the
+  declaration; it does not ask GitHub whether the repository is still public.
 - **A link on it** is `[http[s]://][www.]host[/path…]` whose host is an entry's
   host and whose first path segments are the entry's segments, compared
   without case. A segment may end in `.git` or a sentence's `.`. The character
-  before the link may not continue a URL, so `user@github.com/…`,
+  before the link may not continue a URL (a letter, digit, non-ASCII character,
+  `.`, `@`, `/`, `:` and the like), so `user@github.com/…`,
   `x.github.com/…` and `…/https://github.com/…` are not on it.
 - **Only the allowlisted prefix is exempt.** A deeper path
   (`github.com/<owner>/<repo>/tree/<name>`) is screened like every other word.

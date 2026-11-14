@@ -117,13 +117,11 @@ func newOutboundWorldOn(t *testing.T, grant, onHost bool) *outboundWorld {
 
 // outboundFixture varies newOutboundWorld: the host runtime
 // (newHostOutboundWorld), extra officer fields (a JSON fragment after the
-// declaration's own), and the plugin store's deny words and operator public
-// links.
+// declaration's own), and the plugin store's deny words.
 type outboundFixture struct {
 	onHost       bool
 	officerExtra string
 	denyWords    []string
-	publicLinks  []string
 }
 
 func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboundWorld {
@@ -165,7 +163,7 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 		t.Fatal(err)
 	}
 	store := builtin.NewStore(f.pool)
-	ps := plugins.NewPG(f.pool).WithAgentDenyWords(fx.denyWords).WithOutboundPublicLinks(fx.publicLinks)
+	ps := plugins.NewPG(f.pool).WithAgentDenyWords(fx.denyWords)
 	objs := &uploadstest.Objects{}
 	srv := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
 	ext := Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
@@ -662,8 +660,7 @@ func liveRepoBody(link string) string {
 // passes the plugin's check, the owner's approval and the claim with its body
 // byte-for-byte. The same officer WITHOUT the standing declaration is refused
 // by the deny-word layer; a deployment name outside the link, an internal
-// host beside it, and an undeclared repository are still refused; the
-// operator's MUSTER_OUTBOUND_PUBLIC_LINKS exempt a link the same way.
+// host beside it, and an undeclared repository are still refused.
 func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	const standing = `,"read_repos":["ZacxDev/muster"],"read_grant":"standing"`
 	words := []string{"muster", "examplecluster"}
@@ -719,10 +716,6 @@ func TestAnOfficersStandingReadRepoLinkPassesEveryOutboundLayer(t *testing.T) {
 	approval := newOutboundWorldWith(t, true, outboundFixture{officerExtra: `,"repo":"example/own","read_repos":["ZacxDev/muster"]`, denyWords: words})
 	if id, out := post(approval, liveRepoBody("github.com/ZacxDev/muster")); id != 0 || !strings.Contains(out, "infrastructure name") {
 		t.Errorf("an officer whose read_repos are approval-granted: filed %d, %s; want the infrastructure-name refusal", id, out)
-	}
-	operator := newOutboundWorldWith(t, true, outboundFixture{denyWords: words, publicLinks: []string{"github.com/ZacxDev/muster"}})
-	if id, out := post(operator, liveRepoBody("github.com/ZacxDev/muster")); id == 0 {
-		t.Errorf("an operator public link: %s", out)
 	}
 	// A chief's reply draft keeps its screen: the link is a host name there.
 	if _, err := plugins.ScreenDraft(liveRepoBody("github.com/ZacxDev/muster"), words); err == nil || !strings.Contains(err.Error(), "host name") {
