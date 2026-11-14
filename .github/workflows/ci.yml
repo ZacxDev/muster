@@ -19,8 +19,9 @@ name: ci
 # check-runs on the head commit. Trade-off: a branch pushed WITHOUT an open PR
 # gets no CI — run the `make` targets locally (see above).
 #
-# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
-# publishes the muster and claude-code-agent images under that release version
+# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too — UNLESS the
+# same commit's main run concluded success, when the test jobs are skipped
+# (the `main-verdict` job; fail-closed) — and then publishes the muster and claude-code-agent images under that release version
 # (the `image-*` jobs at the end). A downstream release tool may version its own releases outside
 # this repository and push the matching vX.Y.Z tag here on each of them, so a
 # tag usually lands on a commit `main` already built: every
@@ -64,6 +65,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Local: python3 .github/scripts/tag_gate.py decide --repo ZacxDev/muster \
+  #          --workflow ci.yml --sha <sha> --ref-type tag     (needs `gh` auth)
+  #
+  # 🔴 ON A vX.Y.Z TAG, THE TEST JOBS RUN ONLY IF THE SAME COMMIT'S MAIN RUN DID
+  # NOT SUCCEED. 110 of 110 tag runs (2026-10-30 → 11-13) landed on a commit
+  # whose main run had concluded success; re-testing it cost 72 runner-hours
+  # and turned 10 of them red on flakes, each holding a release back (the
+  # downstream release tool takes only a sha whose CI runs ALL succeeded).
+  # Operator decision, PR #655. Every test job below `needs` this one and runs
+  # unless it answered retest=false; the image and release jobs always run.
+  # FAIL-CLOSED: a lookup error, no completed main run, or one that did not
+  # succeed answers retest=true (.github/scripts/tag_gate.py; its tests are
+  # tests/tag_gate_test.py). Skipped on every non-tag run, where its skip is
+  # what lets the suite start at once.
+  main-verdict:
+    name: tag on a commit main already passed? (tags only)
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      retest: ${{ steps.decide.outputs.retest }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: decide from main's run for this commit
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/tag_gate.py decide --repo "$GITHUB_REPOSITORY" --workflow ci.yml --sha "$GITHUB_SHA" --ref-type "$GITHUB_REF_TYPE" >> "$GITHUB_OUTPUT"
+
   # Local: make build && make vet
   #
   # ⚠ THIS JOB NEEDS NO CSS STEP, AND THE REASON CHANGED. It used to read "muster
@@ -75,6 +107,8 @@ jobs:
   # "stale", which is what the `css` job below exists to catch.
   build:
     name: build + vet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -117,6 +151,8 @@ jobs:
   # shard is one more matrix entry and nothing else.
   test:
     name: test (postgres, shard ${{ strategy.job-index }} of ${{ strategy.job-total }})
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       # Every shard always finishes, so one red shard never hides another's.
@@ -182,10 +218,11 @@ jobs:
       # package, unreadable input). Milliseconds, and no database. So is the
       # shard planner: its partition (every test in exactly one shard) and its
       # refusals, on synthetic lists. Both in EVERY shard, before either is used.
-      - name: verdict.py can refuse, and goshard.py partitions totally
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed
         run: |
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
+          python3 tests/tag_gate_test.py
 
       # The repository-level checks below run once, in shard 0.
       # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
@@ -319,6 +356,8 @@ jobs:
   # run on `main` after merge has the key). See tests/leakscan.py.
   leakscan:
     name: leak gate
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     env:
       MUSTER_LEAKSCAN_KEY: ${{ secrets.MUSTER_LEAKSCAN_KEY }}
@@ -370,6 +409,8 @@ jobs:
   # named attributes would reach.
   nix:
     name: nix outputs
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -405,6 +446,8 @@ jobs:
   # the only thing that can see that.
   css:
     name: stylesheet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -450,6 +493,8 @@ jobs:
   # suite is the `mirror-tmux` job below.
   ccd-tmux:
     name: ccd (real tmux)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -506,6 +551,8 @@ jobs:
   # ships — asserted to be older than 3.7.
   mirror-tmux:
     name: muster-mirror (real tmux, the hosts' version)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -565,6 +612,8 @@ jobs:
   # never sees it).
   mirror-tmux-pre37:
     name: muster-mirror (real tmux 3.4, before paste-buffer -S)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -615,6 +664,8 @@ jobs:
   # and no database: neither package needs one outside its tmuxit tests.
   mirror-macos:
     name: muster-mirror (macOS, real ps/sysctl/lsof)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -639,6 +690,8 @@ jobs:
   # supplies a deliberately invalid token) and sends no turn.
   ccd-image:
     name: claude-code-agent image smoke
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -733,6 +786,8 @@ jobs:
   # this step exists to refuse.
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       # Every leg always finishes, so one red leg never hides another's verdict.
@@ -847,8 +902,9 @@ jobs:
   # took a runner slot to do it.
   e2e:
     name: e2e (playwright, chromium)
-    needs: e2e-leg
-    if: ${{ !cancelled() }}
+    needs: [main-verdict, e2e-leg]
+    # Skipped with the legs on a tag whose main run vouched for it (main-verdict).
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -905,6 +961,8 @@ jobs:
   # release, which takes only a sha whose CI runs are ALL success.
   docshots:
     name: docshots (screenshot spec, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -974,6 +1032,8 @@ jobs:
   # builds, and must answer /readyz, the sign-in page and a password sign-in.
   release-dry-run:
     name: release dry run (assets + compose + stt-cohere contract)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1086,10 +1146,20 @@ jobs:
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run]
+    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run]
+    # 🔴 `!cancelled()`, AND THE VERDICT IS THE STEP BELOW, NOT `success()`: a
+    # test job SKIPPED because main-verdict answered retest=false must not skip
+    # this gate (and every publish behind it). tag_gate.py gate passes a job
+    # only if it SUCCEEDED, or was skipped on a run whose main-verdict succeeded
+    # with retest=false; any failure, cancellation or undecided skip refuses.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "every test job succeeded for $GITHUB_SHA"
+      - uses: actions/checkout@v6
+      - name: every test job succeeded, or was skipped behind a green main run
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/tag_gate.py gate
 
   # Local: docker buildx build --platform linux/amd64,linux/arm64 .
   #
