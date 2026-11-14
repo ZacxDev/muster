@@ -75,12 +75,17 @@ func relayOf(m agents.ChatMessage) *ui.ChatRelay {
 }
 
 // withChatLogLive fills v's live fields for session: TurnInFlight from the
-// session's turn count, and DispatchCards for the agent_dispatch calls in
-// v.Messages.
+// session's turn count, DispatchCards for the agent_dispatch calls in
+// v.Messages, and — when a reply is there to link in — the mentions index
+// (mentions.go). Every renderer of #chat-log calls it, so the page, the chief
+// panel, the chat-log refetch and the view strip all link mentions alike.
 func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, session agents.ChatSession) {
 	v.TurnInFlight = s.sessionTurns.inFlight(session.SessionKey)
 	v.DispatchCards = s.dispatchCardsFor(ctx, v.Messages)
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
+	if hasAssistantText(v.Messages) {
+		v.Mentions = s.mentionIndex(ctx)
+	}
 }
 
 // ownerCardsFor reads the stored ask of every ask_owner call in lines whose

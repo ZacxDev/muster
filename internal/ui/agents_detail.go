@@ -189,6 +189,9 @@ type AgentDetailView struct {
 	// Switcher is the session switcher below the chat form (switcher.go), on
 	// the page surface only; nil for none.
 	Switcher *Switcher
+	// Mentions links the sessions, agents and tasks an assistant's reply names
+	// (mentions.go); nil links none.
+	Mentions *MentionIndex
 	// Card is the agent as its card was composed (internal/api's
 	// cardViewIndexed, the one composer): what the page's status strip, its ⋯
 	// menu and its notices draw (agent_actions.go). Zero (Card.ID 0) draws
@@ -1474,7 +1477,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 				items = append(items, logItem{node: relayRow(m)})
 				continue
 			}
-			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID)})
+			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID, v.Mentions)})
 		}
 	}
 	msgs := groupToolRuns(items)
@@ -1912,7 +1915,7 @@ func relayRow(m ChatLine) g.Node {
 	)
 }
 
-func chatBubble(role, content string, id int64) g.Node {
+func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
 	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
@@ -1921,7 +1924,7 @@ func chatBubble(role, content string, id int64) g.Node {
 		// runtime code reads it (nothing converts bubbles any more); the browser
 		// specs count bubbles by it, as they do the mirrored view's.
 		g.Attr("data-md-rendered", ""),
-		chatMessageBody(role, content),
+		chatMessageBody(role, content, mx),
 	)
 }
 
@@ -1939,20 +1942,28 @@ func chatBubble(role, content string, id int64) g.Node {
 // socket's delta "html", internal/api wsChatStream), and so is the echo of the
 // owner's own sent message. TestAgentChatHTMLComesOnlyFromTheServer holds the
 // page to that.
-func chatMessageBody(role, content string) g.Node {
+//
+// mx links the mentions in an assistant's reply (mentions.go); the owner's own
+// message is drawn as typed. nil links none.
+func chatMessageBody(role, content string, mx *MentionIndex) g.Node {
 	if role == "user" {
 		return promptBody(content)
 	}
-	return renderMarkdown(content)
+	return renderMarkdownWith(content, mx)
 }
 
 // ChatMessageHTML is chatMessageBody as an HTML string: what the chat socket
 // sends the page for a streamed reply's text so far and for the echo of a
 // sent message. Escape-first (markdownHTML), so it is safe to assign to
 // innerHTML.
-func ChatMessageHTML(role, content string) string {
+func ChatMessageHTML(role, content string) string { return ChatMessageHTMLWith(role, content, nil) }
+
+// ChatMessageHTMLWith is ChatMessageHTML, linking the mentions mx resolves:
+// the streamed reply's renderer (internal/api wsChatStream), so a reply's links
+// are there while it streams, as they are once it is stored.
+func ChatMessageHTMLWith(role, content string, mx *MentionIndex) string {
 	var b strings.Builder
-	_ = chatMessageBody(role, content).Render(&b)
+	_ = chatMessageBody(role, content, mx).Render(&b)
 	return b.String()
 }
 

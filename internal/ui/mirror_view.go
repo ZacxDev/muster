@@ -623,6 +623,11 @@ type MirrorOp struct {
 // reset with the view, and holds at most maxDrawnCalls calls (the oldest are
 // forgotten; a result for one draws as its own row).
 type MirrorTranscript struct {
+	// Mentions links the sessions, agents and tasks an assistant's text names
+	// (mentions.go), as the agent chat does; nil links none. It is the index
+	// as it stood when the socket opened (internal/api handleMirrorViewWS).
+	Mentions *MentionIndex
+
 	calls map[string]ChatLine
 	order []string
 	// The tool-call grouping (tool_groups.go): each drawn row's state, the
@@ -1047,7 +1052,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				g.Attr("data-prompt", promptHead(ev.Text)), promptBody(ev.Text)))})
 		case cctranscript.KindText:
 			t.endRun()
-			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdown(ev.Text)))})
+			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("assistant", g.Attr("data-md-rendered", ""), renderMarkdownWith(ev.Text, t.Mentions)))})
 		case cctranscript.KindError:
 			t.endRun()
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(Div(
