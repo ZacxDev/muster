@@ -245,7 +245,7 @@ var requestVias = map[Via]bool{
 //   - a TEAM OFFICER's runtime (ViaOfficer, team sharing phase 3): an officer
 //     whose MUSTER_OFFICERS owner is a team runs its wake loop, its builtin
 //     store and its outbound drafts as the team. It approves none of them —
-//     plugin_reply_drafts' draft_approver trigger (0130) refuses a team
+//     plugin_reply_drafts' draft_approver trigger (0129) refuses a team
 //     approving its own draft, and internal/api's draftDeciderRefusal says
 //     so first.
 //

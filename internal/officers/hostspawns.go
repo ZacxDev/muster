@@ -51,7 +51,7 @@ type HostSpawn struct {
 	// OwnerID is the row's owner: the officer's owner (a person, or a team
 	// for a team officer).
 	OwnerID int64
-	// SharedTeam is the team its owner LENT it to (migration 0130, team
+	// SharedTeam is the team its owner LENT it to (migration 0129, team
 	// sharing phase 3), 0 for none: that team's members read the row, and
 	// only its owner writes it. Personal by default.
 	SharedTeam int64
@@ -191,7 +191,7 @@ func (s *PGHostSpawnStore) HostSpawnIDs(ctx context.Context, host string, ids []
 }
 
 // ---------------------------------------------------------------------------
-// LENDING A SPAWN TO A TEAM (migration 0130; docs/design/team-sharing.md,
+// LENDING A SPAWN TO A TEAM (migration 0129; docs/design/team-sharing.md,
 // phase 3). 🔴 PERSONAL BY DEFAULT: a row is its owner's alone until the owner
 // lends it to ONE team they operate. The team's members then READ it (the
 // team_lent_read policy, at viewer, through the doors that carry
@@ -204,7 +204,7 @@ func (s *PGHostSpawnStore) HostSpawnIDs(ctx context.Context, host string, ids []
 // does not operate, or of a row that is not theirs, again.
 // ---------------------------------------------------------------------------
 
-// ErrLendRefused: the database refused the lend (0130's lend_target): the row
+// ErrLendRefused: the database refused the lend (0129's lend_target): the row
 // is not the acting person's, or they do not operate the team.
 var ErrLendRefused = errors.New("officers: only a spawn's owner lends it, and only to a team they operate")
 

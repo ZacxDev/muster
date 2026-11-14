@@ -143,13 +143,13 @@ type Draft struct {
 	// shown on the card's history, and an outbound draft's officer is told it
 	// (internal/api outboundSettled). nil otherwise.
 	DecisionReason *string `json:"-"`
-	// RequestedByUser is who CAUSED the draft (migration 0130, team sharing
+	// RequestedByUser is who CAUSED the draft (migration 0129, team sharing
 	// phase 3): the acting principal's id when it was filed — a person's
 	// routed session or chief, or for a TEAM officer's draft the team itself
 	// — stamped by the database, never by hand. nil for a draft the system
-	// scope filed and every draft filed before 0130. internal/api's
+	// scope filed and every draft filed before 0129. internal/api's
 	// draftDeciderRefusal refuses a person approving a team draft they
-	// caused; 0130's draft_approver trigger refuses it again.
+	// caused; 0129's draft_approver trigger refuses it again.
 	RequestedByUser *int64 `json:"-"`
 }
 

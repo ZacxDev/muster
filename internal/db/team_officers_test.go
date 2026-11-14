@@ -11,7 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// Phase 3 of docs/design/team-sharing.md (migration 0130): team officers.
+// Phase 3 of docs/design/team-sharing.md (migration 0129): team officers.
 
 // hintOf is err's Postgres SQLSTATE and HINT.
 func hintOf(err error) (code, hint string) {
@@ -88,7 +88,7 @@ func (l *lendFixture) lend(ctx context.Context, team any) (int64, error) {
 // the owner writes it; unlent, it is the owner's alone again. CONTROLS: the
 // owner reads it throughout, and System sees it.
 func TestALentSpawnIsReadByItsTeamOnly(t *testing.T) {
-	l := newLendFixture(t, "ms_0130_lent_read")
+	l := newLendFixture(t, "ms_0129_lent_read")
 	opCtx, vCtx, mCtx, oCtx := l.as(t, l.op), l.as(t, l.viewer), l.as(t, l.mgr), l.as(t, l.out)
 	check := func(stage string, want map[string]int) {
 		t.Helper()
@@ -137,7 +137,7 @@ func TestALentSpawnIsReadByItsTeamOnly(t *testing.T) {
 // MANAGER cannot lend the operator's row at all (it is not theirs). CONTROLS:
 // the owner's lend to the team they operate succeeds, and System may set any.
 func TestOnlyTheOwnerLendsAndOnlyToATeamTheyOperate(t *testing.T) {
-	l := newLendFixture(t, "ms_0130_lend_target")
+	l := newLendFixture(t, "ms_0129_lend_target")
 	opCtx := l.as(t, l.op)
 	other, err := l.store.CreateTeam(l.f.base, users.Actor{UserID: 1, Via: authz.ViaSession}, "Elsewhere", l.mgr)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestLeavingOrDroppingToViewerEndsALend(t *testing.T) {
 			func(l *lendFixture) int64 { return l.team }},
 	} {
 		t.Run(what, func(t *testing.T) {
-			l := newLendFixture(t, "ms_0130_end_lend")
+			l := newLendFixture(t, "ms_0129_end_lend")
 			if n, err := l.lend(l.as(t, l.op), l.team); err != nil || n != 1 {
 				t.Fatalf("fixture: lend: %d, %v", n, err)
 			}
@@ -224,7 +224,7 @@ func TestLeavingOrDroppingToViewerEndsALend(t *testing.T) {
 // draft the team's officer filed, and a person approves their own personal
 // draft as today.
 func TestNobodyApprovesTheirOwnTeamDraft(t *testing.T) {
-	f := newRLSFixture(t, "ms_0130_approver")
+	f := newRLSFixture(t, "ms_0129_approver")
 	store := users.NewPG(f.pool)
 	by := users.Actor{UserID: 1, Via: authz.ViaSession}
 	m2 := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'm2') RETURNING id`)
@@ -288,7 +288,7 @@ func TestNobodyApprovesTheirOwnTeamDraft(t *testing.T) {
 // rewrites it is refused (0127's muster_actor_column). CONTROL: the login role
 // may write it (a restore).
 func TestRequestedByUserCannotBeForged(t *testing.T) {
-	f := newRLSFixture(t, "ms_0130_forge")
+	f := newRLSFixture(t, "ms_0129_forge")
 	own := member(t, f, f.two, authz.ViaSession)
 	if err := writeEveryOwnedTable(own, f.pool, "forge-req"); err != nil {
 		t.Fatal(err)

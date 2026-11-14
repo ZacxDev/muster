@@ -278,7 +278,7 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
 }
 
-// endLends takes back every host spawn user LENT to team (migration 0130, team
+// endLends takes back every host spawn user LENT to team (migration 0129, team
 // sharing phase 3), inside tx: a lend is admitted only to a team the person
 // operates, so it ends when they leave the team or drop to viewer — their
 // rows stop showing to the team in the same transaction as the change.

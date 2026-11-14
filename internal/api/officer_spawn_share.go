@@ -17,7 +17,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // LENDING A HOST SPAWN TO A TEAM (docs/design/team-sharing.md, phase 3;
-// migration 0130).
+// migration 0129).
 //
 // officer_host_spawns (#649) stays PERSONAL BY DEFAULT: a row is its owner's,
 // under owner_isolation. Its owner may lend one row to ONE team they are an
@@ -43,7 +43,7 @@ import (
 //     lending reads nothing of the team's, it shows the team one of the
 //     person's own rows);
 //  4. the database: the UPDATE names the acting person as the owner, and
-//     0130's lend_target trigger refuses a lend to a team the person does not
+//     0129's lend_target trigger refuses a lend to a team the person does not
 //     operate (read from team_members itself), so 1-3 are not the only guard.
 //
 // Unlending (team 0) passes 1 and 2 and needs no role: the owner can always

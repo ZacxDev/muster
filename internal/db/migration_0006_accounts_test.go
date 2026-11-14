@@ -255,7 +255,7 @@ var wantForeignKeys = []string{
 	// users rows (a team is one); the KIND each must be is a trigger's job.
 	// 0127: an audit row names the team it acted on.
 	"audit_log|audit_log_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
-	// 0130: a host spawn names the team its owner lent it to (the KIND is
+	// 0129: a host spawn names the team its owner lent it to (the KIND is
 	// lend_target's job: it admits only a team the owner operates).
 	"officer_host_spawns|officer_host_spawns_shared_team_id_fkey|FOREIGN KEY (shared_team_id) REFERENCES users(id)",
 	"team_members|team_members_added_by_fkey|FOREIGN KEY (added_by) REFERENCES users(id)",

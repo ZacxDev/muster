@@ -1,4 +1,4 @@
--- muster 0130 — TEAM OFFICERS (docs/design/team-sharing.md, phase 3).
+-- muster 0129 — TEAM OFFICERS (docs/design/team-sharing.md, phase 3).
 --
 -- Phase 2a (0127) already put every officer table in its share class
 -- (officer_items, officer_pr_loops shared; officer_types, officer_defs,
@@ -43,15 +43,15 @@
 -- db.RLSOn re-applies this file (after 0125, which re-creates
 -- owner_isolation and does not touch team_lent_read). Idempotent.
 --
--- Must apply after its predecessor (the contiguity test refuses a gap); 0129
--- is phase 4's. 🔴 RENUMBER IT (and db.teamOfficersMigrationVersion) if
--- another migration takes 0130 first.
+-- Must apply after its predecessor, 0128 (the contiguity test refuses a gap).
+-- 🔴 RENUMBER IT (and db.teamOfficersMigrationVersion) if another migration
+-- takes 0129 first.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- columns):
 --   SELECT public.muster_team_officers_rollback();
 --   DROP FUNCTION IF EXISTS public.muster_team_officers_rollback();
---   DELETE FROM schema_migrations WHERE version = 130;
+--   DELETE FROM schema_migrations WHERE version = 129;
 
 SET LOCAL lock_timeout = '3s';
 

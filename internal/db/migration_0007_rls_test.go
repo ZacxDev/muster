@@ -247,7 +247,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			continue
 		}
 		if r, lent := lentOwned[tbl]; lent && name == "team_lent_read" {
-			// A lent table's read arm (0130), pinned whole by the share
+			// A lent table's read arm (0129), pinned whole by the share
 			// ledger; here only that it reads and admits nothing else.
 			if cmd != "SELECT" || permissive != "PERMISSIVE" || qual != lentArm(r) || check != "" {
 				t.Errorf("%s: team_lent_read %s %s USING %q CHECK %q; want SELECT, PERMISSIVE, %q", tbl, cmd, permissive, qual, check, lentArm(r))

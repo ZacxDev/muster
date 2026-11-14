@@ -843,7 +843,7 @@ rule the later phases' rows will meet.
 - **Rollback:** as phase 2; the officer keeps running under its owner and its
   asks become invisible to people until roll-forward.
 
-> **As built in phase 3 (0130):**
+> **As built in phase 3 (0129):**
 > - **The door.** `authz.ViaOfficer` joined `teamActingVias`
 >   (`TestTheTeamActingViasAreExactlyTheListedDoors`, now 9 doors). The
 >   runtime of an officer whose `MUSTER_OFFICERS` owner is a team acts as the
@@ -853,7 +853,7 @@ rule the later phases' rows will meet.
 >   refuses an owner that names nobody. It also refuses a team owning a
 >   `"runtime": "host"` officer, because team hosts are 2b and the hub never
 >   lists a team's host.
-> - **The tables were already classed by 2a.** 0130 adds no share-class
+> - **The tables were already classed by 2a.** 0129 adds no share-class
 >   change to them.
 > - **Charter edits are a session page, not the JSON admin API.** This is a
 >   delta from §4, which let "a personal token" set `owner` to a team it

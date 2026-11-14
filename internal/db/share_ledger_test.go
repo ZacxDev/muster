@@ -70,7 +70,7 @@ var personalOwned = []string{
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
 // owner writes a row — but whose owner may LEND one row to ONE team
-// (shared_team_id, migration 0130): that team's members then read it, at the
+// (shared_team_id, migration 0129): that team's members then read it, at the
 // role given (1 viewer), through the doors that carry muster.teams, and never
 // write it. Its policies are exactly owner_isolation and team_lent_read.
 // officer_host_spawns is personal BY DEFAULT (operator decision, phase 3).

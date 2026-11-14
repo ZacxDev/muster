@@ -302,14 +302,14 @@ const teamAccessMigrationVersion = 127
 // 🔴 RENUMBER IT WITH THE FILE when the migration is renumbered at merge.
 const agentSecretsMigrationVersion = 128
 
-// teamOfficersMigrationVersion is 0130: team officers (phase 3 of team
+// teamOfficersMigrationVersion is 0129: team officers (phase 3 of team
 // sharing) — a host spawn's team lend (officer_host_spawns.shared_team_id,
 // its team_lent_read policy and lend_target trigger) and who caused a draft.
 // Re-applied after 0125 (which re-creates owner_isolation on
 // officer_host_spawns and leaves team_lent_read alone), keyed on the column it
 // adds. Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const teamOfficersMigrationVersion = 130
+const teamOfficersMigrationVersion = 129
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
