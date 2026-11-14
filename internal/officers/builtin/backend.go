@@ -218,6 +218,9 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		if err != nil {
 			return nil, err
 		}
+		if it.Payload, err = withPersonTx(ctx, tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
+			return nil, err
+		}
 		return answer(map[string]any{"item": it, "lease_expires_at": exp})
 	})
 }
@@ -239,17 +242,25 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 	}
 	now := b.now()
 	exp := now.Add(time.Duration(officers.ClampLease(leaseSeconds)) * time.Second)
-	it, err := scanItem(b.store.pool.QueryRow(b.scope(ctx), `UPDATE officer_items SET status = 'claimed', claimed_by = $5, claimed_at = $3,
-		lease_expires_at = $6, attempts = attempts + 1, updated_at = $3
-		WHERE id = (SELECT id FROM officer_items WHERE `+claimable+` ORDER BY `+queueOrder+` FOR UPDATE SKIP LOCKED LIMIT 1)
-		RETURNING `+itemCols, b.officer.Owner, b.officer.ID, now, tier, instance, exp))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return answer(map[string]any{"item": nil, "lease_expires_at": nil})
-	}
-	if err != nil {
-		return nil, outage("claim-next", err)
-	}
-	return answer(map[string]any{"item": it, "lease_expires_at": exp})
+	// ONE transaction: the claim and the person rendered into the officer's
+	// copy (withPersonTx) — a read that fails rolls the claim back as an
+	// outage, never hands over an item without its person.
+	return b.tx(ctx, "claim-next", func(tx pgx.Tx) ([]byte, error) {
+		it, err := scanItem(tx.QueryRow(b.scope(ctx), `UPDATE officer_items SET status = 'claimed', claimed_by = $5, claimed_at = $3,
+			lease_expires_at = $6, attempts = attempts + 1, updated_at = $3
+			WHERE id = (SELECT id FROM officer_items WHERE `+claimable+` ORDER BY `+queueOrder+` FOR UPDATE SKIP LOCKED LIMIT 1)
+			RETURNING `+itemCols, b.officer.Owner, b.officer.ID, now, tier, instance, exp))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return answer(map[string]any{"item": nil, "lease_expires_at": nil})
+		}
+		if err != nil {
+			return nil, err
+		}
+		if it.Payload, err = withPersonTx(b.scope(ctx), tx, b.officer.Owner, it.Kind, it.Payload); err != nil {
+			return nil, err
+		}
+		return answer(map[string]any{"item": it, "lease_expires_at": exp})
+	})
 }
 
 // Heartbeat implements officers.Backend: only the holder of a live lease

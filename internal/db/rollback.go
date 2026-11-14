@@ -319,6 +319,16 @@ const teamAgentsMigrationVersion = 131
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const teamOfficersMigrationVersion = 130
 
+// officerContactsMigrationVersion is 0132: officer_contacts and
+// officer_contact_events (a builtin officer's people and their engagement,
+// internal/officers/builtin contacts.go), owned and under the same row-level
+// security; same treatment again. It also widens 0121's outbound-draft
+// constraints and re-creates 0121's conditional replyable trigger, so once it
+// is applied RLSOn re-applies IT instead of 0121 (whose narrower constraints
+// would refuse the widened rows). Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const officerContactsMigrationVersion = 132
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -329,7 +339,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -381,8 +391,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.agent_secrets') IS NOT NULL,
 		to_regprocedure('public.muster_agents_team_no_secret()') IS NOT NULL,
 		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
-			AND table_name = 'officer_host_spawns' AND column_name = 'shared_team_id')`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers); err != nil {
+			AND table_name = 'officer_host_spawns' AND column_name = 'shared_team_id'),
+		to_regclass('public.officer_contacts') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -430,13 +441,14 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == pagesMigrationVersion && hasPages) &&
 			!(m.version == officerBackendMigrationVersion && hasOfficerBackend) &&
 			!(m.version == officerPRLoopsMigrationVersion && hasOfficerPRLoops) &&
-			!(m.version == outboundDraftsMigrationVersion && hasOutboundDrafts) &&
+			!(m.version == outboundDraftsMigrationVersion && hasOutboundDrafts && !hasOfficerContacts) &&
 			!(m.version == pairRequestsMigrationVersion && hasPairRequests) &&
 			!(m.version == officerHostSpawnsMigrationVersion && hasOfficerHostSpawns) &&
 			!(m.version == teamAccessMigrationVersion && hasTeamAccess) &&
 			!(m.version == agentSecretsMigrationVersion && hasAgentSecrets) &&
 			!(m.version == teamAgentsMigrationVersion && hasTeamAgents) &&
-			!(m.version == teamOfficersMigrationVersion && hasTeamOfficers) {
+			!(m.version == teamOfficersMigrationVersion && hasTeamOfficers) &&
+			!(m.version == officerContactsMigrationVersion && hasOfficerContacts) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

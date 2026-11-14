@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message, device, page, link int64
+	var note, agent, session, plugin, message, device, page, link, contact int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -142,6 +142,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO officer_defs (officer, type_key) VALUES ('conf-' || lower($1) || ':a', 'conf-' || lower($1))`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_items (officer, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'k', 's')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_schedules (officer, name, cron, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'nightly', '0 6 * * *', 'k', 's')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_contacts (officer, venue, handle) VALUES ('conf-' || lower($1) || ':a', 'example', 'someone') RETURNING id`, func() []any { return []any{tag} }, &contact},
+		{`INSERT INTO officer_contact_events (contact_id, kind, ref, at) VALUES ($1, 'reply', 'r1', now())`, func() []any { return []any{contact} }, nil},
 	}
 	for _, s := range steps {
 		var err error

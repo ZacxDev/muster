@@ -45,7 +45,7 @@ const RoutedToOfficer = "officer"
 const DeliverToOfficerPrefix = "officer:"
 
 // MessageKinds are a bound plugin's message kinds; "" is MessageKindNote.
-var MessageKinds = []string{"plan", "reply", "snapshot", "note"}
+var MessageKinds = []string{"plan", "reply", "snapshot", "note", MessageKindEngagement}
 
 // MessageKindNote is the kind a bound plugin's message without one takes.
 const MessageKindNote = "note"
@@ -141,10 +141,13 @@ func ValidMediaRef(r string) bool { return mediaRefRE.MatchString(r) }
 // plugin's alone, and a reply names where and what it answers.
 func boundOfficer(p Plugin, in MessageIn) (string, error) {
 	if p.DeliverTo == nil {
-		if in.Kind != "" || in.Venue != "" || in.URL != "" {
-			return "", invalid("kind, venue and url are taken only by a plugin bound to an officer (deliver_to)")
+		if in.Kind != "" || in.Venue != "" || in.URL != "" || in.Person != nil || in.Event != nil {
+			return "", invalid("kind, venue, url, person and event are taken only by a plugin bound to an officer (deliver_to)")
 		}
 		return "", nil
+	}
+	if err := engagementShape(in); err != nil {
+		return "", err
 	}
 	kind := officerKind("x", in.Kind)
 	switch {
@@ -197,6 +200,12 @@ type OfficerLink interface {
 	// draftEndFor). An error rolls the end back with it, so the next sweep
 	// or claim tries again: a draft never ends while its item still waits.
 	DraftEndedTx(ctx context.Context, tx pgx.Tx, d Draft, how OutboundEnd) error
+	// EngagementTx, inside the transaction that stores engagement message
+	// e.MessageID, records the person and the event with the officer store
+	// and puts them on the officer's item for that person (engagement.go).
+	// ErrOfficerUnavailable when the officer is not owner's; ErrInvalid for a
+	// person or event the store refuses.
+	EngagementTx(ctx context.Context, tx pgx.Tx, owner int64, e Engagement) (EngagementRecorded, error)
 }
 
 // OutboundEnd is how an outbound draft ended unsent by muster's own hand,

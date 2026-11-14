@@ -28,7 +28,7 @@ func builtinOfficerServer(t *testing.T, f *connFixture, raw string, logs *bytes.
 	t.Helper()
 	dsn := dbtest.DSN(t)
 	wipe := func() {
-		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
+		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_contact_events, officer_contacts, officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
 		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label LIKE 'officer %'`)
 	}
 	wipe()

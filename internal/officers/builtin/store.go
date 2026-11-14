@@ -193,6 +193,12 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 // policy (docs/officers.md "Outbound drafts").
 const CapOutboundDrafts = "outbound_drafts"
 
+// CapContacts is the type capability that offers a builtin officer the
+// contact tools (officer_contact_get, officer_contacts_list,
+// officer_contact_note): "capabilities": ["contacts"] in its type's policy.
+// The outreach guards (OutreachGuardTx) hold whether or not it is granted.
+const CapContacts = "contacts"
+
 // TypeGrants reports whether officer's TYPE (the id's part before the colon),
 // as owner defines it, lists capability in its policy's "capabilities". A
 // type that is missing, or whose policy has no such array, grants nothing.
