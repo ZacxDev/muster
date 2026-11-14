@@ -302,6 +302,12 @@ var agentHrefCallLedger = map[string]int{
 	// the agent's BARE page, which opens its latest session — as the push
 	// targets above.
 	"AgentPath ← internal/api/agents.go:Server.handleAgentName": 1,
+	// A mention of an agent in a chat reply (ui/mentions.go) links the BARE
+	// page, which opens the session that is right at CLICK time (the chief's
+	// primary chat, else the latest): the index is built on every #chat-log
+	// render, and naming a session would cost it a sessions read per render
+	// for a link that is rarely followed.
+	"AgentPath ← internal/ui/mentions.go:NewMentionIndex": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the

@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,21 @@ func TestTheChatStreamRendersEachBubbleWithTheGoRenderer(t *testing.T) {
 		jsonOf(map[string]any{"type": "delta", "content": "ld** and _x_", "html": `<p class="my-1">see <strong>bold</strong> and <em>x</em></p>`}),
 		jsonOf(map[string]any{"type": "tool_call", "id": "c1", "name": "Bash", "args": `{"command":"ls"}`, "target": "ls"}),
 		jsonOf(map[string]any{"type": "delta", "content": "file_path ok", "html": `<p class="my-1">file_path ok</p>`}),
+	})
+}
+
+// TestTheChatStreamLinksMentions: a reply's mentions are links WHILE it
+// streams (ui/mentions.go), as the stored transcript draws them; a name the
+// index does not hold stays text.
+func TestTheChatStreamLinksMentions(t *testing.T) {
+	withHTMLEvery(t, 0)
+	r := &recorder{}
+	st := newWSChatStream(r.write)
+	st.mentions = ui.NewMentionIndex([]string{"fix-login"}, nil, nil)
+	st.emit(agents.StreamEvent{Kind: "text", Text: "ask fix-login, not fix-logout"})
+	st.end()
+	sameMsgs(t, r.all(), []string{
+		jsonOf(map[string]any{"type": "delta", "content": "ask fix-login, not fix-logout", "html": `<p class="my-1">ask <a href="/agents/fix-login" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">fix-login</a>, not fix-logout</p>`}),
 	})
 }
 

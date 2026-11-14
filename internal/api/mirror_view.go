@@ -241,6 +241,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	defer socketHeartbeat(live, s.logger, c)()
 
 	var drawn ui.MirrorTranscript
+	// The mentions an assistant's text names are linked (ui/mentions.go),
+	// against the sessions and agents that exist as the socket opens.
+	drawn.Mentions = s.mentionIndex(live)
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0

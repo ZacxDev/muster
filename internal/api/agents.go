@@ -2301,6 +2301,10 @@ func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKe
 func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) (agents.StreamEmit, *wsChatStream) {
 	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
 	st := newWSChatStream(wsWriter(ctx, c))
+	if srv != nil {
+		// The reply's mentions are linked while it streams (ui/mentions.go).
+		st.mentions = srv.mentionIndex(ctx)
+	}
 	return func(ev agents.StreamEvent) {
 		if srv != nil {
 			switch ev.Kind {

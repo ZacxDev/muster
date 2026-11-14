@@ -174,8 +174,8 @@ func htmlSinks(src string) []string {
 //     other scripts (htmx, the shell, restore, toasts) draw no message and are
 //     deliberately not listed, so their changes cannot break this test.
 //  3. THE SERVER (a ledger): the socket's "html" is made only by
-//     ChatMessageHTML, and ChatMessageHTML and chatBubble are the only users
-//     of chatMessageBody — enumerated over the non-test Go of internal/ui and
+//     ChatMessageHTML(With), and ChatMessageHTMLWith and chatBubble are the
+//     only users of chatMessageBody — enumerated over the non-test Go of internal/ui and
 //     internal/api, both directions.
 //
 // 🔴 REGRESSION: red at 1b029ed9 on (1) — the bubble was
@@ -233,11 +233,14 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	}
 
 	// 3. The server.
-	got := goCallers(t, []string{".", "../api"}, "ChatMessageHTML", "chatMessageBody")
+	// ChatMessageHTMLWith is ChatMessageHTML with a mentions index
+	// (mentions.go): the streamed reply links what the stored one will.
+	got := goCallers(t, []string{".", "../api"}, "ChatMessageHTML", "ChatMessageHTMLWith", "chatMessageBody")
 	want := []string{ // sorted
-		"ChatMessageHTML <- api.wsChatStream.sendHTMLLocked",
 		"ChatMessageHTML <- api.wsSentEcho",
-		"chatMessageBody <- ui.ChatMessageHTML",
+		"ChatMessageHTMLWith <- api.wsChatStream.sendHTMLLocked",
+		"ChatMessageHTMLWith <- ui.ChatMessageHTML",
+		"chatMessageBody <- ui.ChatMessageHTMLWith",
 		"chatMessageBody <- ui.chatBubble",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
