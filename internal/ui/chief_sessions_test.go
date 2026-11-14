@@ -43,8 +43,9 @@ func TestThePanelPicksARuntimeAndModelAndMarksTheDefault(t *testing.T) {
 		`<option value="opus">opus</option>`,
 		`data-session-runtime="claude-code" class="text-[11px] leading-snug text-muted">Claude Code · opus</span>`,
 		`data-session-runtime="claude-code" class="text-[11px] leading-snug text-muted">Claude Code · claude-haiku-4-5</span>`,
-		`hx-post="/agents/105/sessions/95/default?surface=chief-panel"`,
-		`hx-post="/agents/105/sessions/96/default?surface=chief-panel"`,
+		// The panel stays on the thread it is on (92): ChiefCurrentParam.
+		`hx-post="/agents/105/sessions/95/default?surface=chief-panel&amp;current=92"`,
+		`hx-post="/agents/105/sessions/96/default?surface=chief-panel&amp;current=92"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the panel lacks %s", want)

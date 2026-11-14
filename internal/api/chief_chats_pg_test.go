@@ -339,6 +339,87 @@ func TestASideChatIsAClaudeSessionOfItsOwn(t *testing.T) {
 	}
 }
 
+// TestARowActionOnAnotherChatStaysOnTheOpenOne: the Chats tab's row menu acts
+// on a chat that may not be the one on screen. Archive, Unarchive and Make
+// primary of ANOTHER chat (?current= names the open one) answer with the open
+// chat — on the page (HX-Redirect) and in the panel (its body re-rendered on
+// it) — instead of moving the operator; archiving the open chat itself still
+// lands on the primary, and a ?current= that is not this chief's chat is
+// ignored. Red before stayOnCurrent: every one of these moved the operator.
+func TestARowActionOnAnotherChatStaysOnTheOpenOne(t *testing.T) {
+	f := newChatsFixture(t, "")
+	ctx := asUser(1)
+	primary, err := f.srv.primarySession(ctx, f.chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := f.sideChat(t)
+	// A side chat is reused while it is empty: give A a line so B is new.
+	if _, err := f.srv.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: f.chief.ID, SessionID: a.ID, Role: "user", Content: "A", TypedBy: 1}); err != nil {
+		t.Fatal(err)
+	}
+	b := f.sideChat(t)
+	if a.ID == b.ID {
+		t.Fatal("the fixture made one side chat, want two")
+	}
+	on := func(sid int64) string { return "?" + ui.ChiefCurrentParam + "=" + strconv.FormatInt(sid, 10) }
+	redirect := func(path string) string {
+		t.Helper()
+		w := f.post(t, path)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST %s: %d %s", path, w.Code, w.Body)
+		}
+		return w.Header().Get("HX-Redirect")
+	}
+	href := func(sid int64) string { return ui.AgentSessionHref(f.chief.Name, sid) }
+
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, true) + on(a.ID)); got != href(a.ID) {
+		t.Errorf("on A, archive B → %q, want A %q", got, href(a.ID))
+	}
+	if s := f.sessions(t)[b.ID]; s.ArchivedAt == nil {
+		t.Fatal("B is not archived")
+	}
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, false) + on(a.ID)); got != href(a.ID) {
+		t.Errorf("on A, unarchive B → %q, want A %q", got, href(a.ID))
+	}
+	// A ?current= that is not this chief's chat is ignored: the action's own answer.
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, true) + on(1<<40)); got != href(primary.ID) {
+		t.Errorf("archive B with a foreign current → %q, want the primary %q", got, href(primary.ID))
+	}
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, false) + on(1<<40)); got != href(b.ID) {
+		t.Errorf("unarchive B with a foreign current → %q, want B %q", got, href(b.ID))
+	}
+	// Archiving the open chat itself: the primary, as before.
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, true) + on(b.ID)); got != href(primary.ID) {
+		t.Errorf("on B, archive B → %q, want the primary %q", got, href(primary.ID))
+	}
+	if got := redirect(ui.ChiefArchivePath(f.chief.ID, b.ID, false)); got != href(b.ID) {
+		t.Fatalf("unarchive B (no current) → %q, want B", got)
+	}
+	// Make primary, the page: on A, B made primary leaves you on A.
+	defaultPath := "/agents/" + strconv.FormatInt(f.chief.ID, 10) + "/sessions/" + strconv.FormatInt(b.ID, 10) + "/default"
+	if got := redirect(defaultPath + on(a.ID)); got != href(a.ID) {
+		t.Errorf("on A, make B primary → %q, want A %q", got, href(a.ID))
+	}
+	if s := f.sessions(t)[b.ID]; !s.IsDefault {
+		t.Fatal("B is not the primary")
+	}
+	// …and the panel re-renders on the thread it is on (A), not on B.
+	panelPath := "/agents/" + strconv.FormatInt(f.chief.ID, 10) + "/sessions/" + strconv.FormatInt(primary.ID, 10) + "/default?" +
+		ui.ChatSurfaceQueryParam + "=" + string(ui.ChatSurfaceChiefPanel) + "&" + ui.ChiefCurrentParam + "=" + strconv.FormatInt(a.ID, 10)
+	w := f.post(t, panelPath)
+	if w.Code != http.StatusOK || w.Header().Get("HX-Redirect") != "" {
+		t.Fatalf("panel make primary: %d, redirect %q", w.Code, w.Header().Get("HX-Redirect"))
+	}
+	if want := `data-chief-active-session="` + strconv.FormatInt(a.ID, 10) + `"`; !strings.Contains(w.Body.String(), want) {
+		t.Errorf("the panel re-rendered on another thread than A; want %s", want)
+	}
+	// Without current, the made-primary chat itself (the old answer).
+	if got := redirect(defaultPath); got != href(b.ID) {
+		t.Errorf("make B primary (no current) → %q, want B %q", got, href(b.ID))
+	}
+}
+
 // TestASideChatArchivesAndUnarchives: Archive hides a side chat from the
 // switcher (listed under Archived, after every other chat) and keeps its
 // history; Unarchive brings it back among the side chats. The primary cannot

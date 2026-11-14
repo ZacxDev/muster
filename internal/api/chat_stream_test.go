@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,56 @@ func TestTheChatStreamRendersEachBubbleWithTheGoRenderer(t *testing.T) {
 		jsonOf(map[string]any{"type": "tool_call", "id": "c1", "name": "Bash", "args": `{"command":"ls"}`, "target": "ls"}),
 		jsonOf(map[string]any{"type": "delta", "content": "file_path ok", "html": `<p class="my-1">file_path ok</p>`}),
 	})
+}
+
+// TestTheChatStreamLinksMentions: a reply's mentions are links WHILE it
+// streams (ui/mentions.go), as the stored transcript draws them; a name the
+// index does not hold stays text.
+func TestTheChatStreamLinksMentions(t *testing.T) {
+	withHTMLEvery(t, 0)
+	r := &recorder{}
+	st := newWSChatStream(r.write)
+	st.mentions = ui.NewMentionIndex(func() ui.MentionNames { return ui.MentionNames{Agents: []string{"fix-login"}} }, nil)
+	st.emit(agents.StreamEvent{Kind: "text", Text: "ask fix-login, not fix-logout"})
+	st.end()
+	sameMsgs(t, r.all(), []string{
+		jsonOf(map[string]any{"type": "delta", "content": "ask fix-login, not fix-logout", "html": `<p class="my-1">ask <a href="/agents/fix-login" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">fix-login</a>, not fix-logout</p>`}),
+	})
+}
+
+// TestWithChatLogLiveGivesTheLogAMentionsIndex is the wiring for #chat-log:
+// every renderer of it (the page, the chief panel, the refetch, the view
+// strip) fills its view through withChatLogLive, and the log it draws links a
+// mention of an agent the server's own store lists.
+func TestWithChatLogLiveGivesTheLogAMentionsIndex(t *testing.T) {
+	srv, _ := viewServer(t, nil)
+	v := ui.AgentDetailView{Name: "agent-under-test", Status: "running",
+		Messages: []ui.ChatLine{{Role: "assistant", Content: "ask " + plainName + " now", ID: 1}}}
+	srv.withChatLogLive(context.Background(), &v, agents.ChatSession{})
+	body, _, err := ui.ChatLogBody(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `href="/agents/` + plainName + `" data-mention="agent"`; !strings.Contains(string(body), want) {
+		t.Errorf("the log does not link %s:\n%s", plainName, body)
+	}
+}
+
+// TestWSStreamEmitGivesTheTurnAMentionsIndex is the wiring: the stream the
+// chat socket's turn writes through (wsStreamEmit) links a mention of an
+// agent the server's own store lists.
+func TestWSStreamEmitGivesTheTurnAMentionsIndex(t *testing.T) {
+	withHTMLEvery(t, 0)
+	srv, _ := viewServer(t, nil)
+	emit, st := wsStreamEmit(context.Background(), nil, srv, "agent-under-test")
+	r := &recorder{}
+	st.write = r.write
+	emit(agents.StreamEvent{Kind: "text", Text: "ask " + plainName + " now"})
+	st.end()
+	got := strings.Join(r.all(), "\n")
+	if want := `href=\"/agents/` + plainName + `\" data-mention=\"agent\"`; !strings.Contains(got, want) {
+		t.Errorf("the streamed reply does not link %s:\n%s", plainName, got)
+	}
 }
 
 // TestTheChatStreamRendersAtMostOncePerWindow: inside the window a delta

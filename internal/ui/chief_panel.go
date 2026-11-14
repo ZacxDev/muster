@@ -427,12 +427,23 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 	return Div(
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
-		Class("ml-auto flex items-center gap-0.5"),
-		// The new chat is the chat bar's labelled "New side chat" (chief_chats.go),
-		// over the transcript; the title bar keeps the thread list.
+		Class("ml-auto flex min-w-0 items-center gap-0.5"),
+		// A chief chat's context chip (chief_chats.go), where the page draws it
+		// in its header. Its new chat is "New side chat" under the thread list
+		// (chiefPanelChatActions); the title bar keeps the thread list.
+		g.If(v.Configured, chiefPanelContext(v.Chat.ChiefChat)),
 		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
+}
+
+// chiefPanelContext is the panel title bar's context chip slot; nothing off a
+// chief's chat.
+func chiefPanelContext(b *ChiefChatBar) g.Node {
+	if b == nil {
+		return nil
+	}
+	return Span(Class("mr-1 inline-flex min-w-0"), chiefContextSlot(b.AgentName, b.SessionID))
 }
 
 // chiefNewThreadButton opens a fresh thread WITHOUT leaving the grid.
@@ -643,6 +654,13 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 	}
 	rows := make([]g.Node, 0, len(v.Threads)+1)
 	archivedShown := false
+	// The thread the panel is on: a row's Make primary keeps the panel on it.
+	var current int64
+	for _, sess := range v.Threads {
+		if sess.Active {
+			current = sess.ID
+		}
+	}
 	for _, sess := range v.Threads {
 		// The archived chats come last (agents.SwitcherOrder), under their heading.
 		if sess.Archived && !archivedShown {
@@ -687,7 +705,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		)
 		// "Make default" sits BESIDE the row, never inside it: a form in a button is
 		// not valid HTML, and a tap meant to open the thread must not move the default.
-		if mk := makeDefaultControl(sess); mk != nil {
+		if mk := makeDefaultControl(sess, current); mk != nil {
 			rows = append(rows, Div(Class("flex items-stretch gap-1"), row, mk))
 		} else {
 			rows = append(rows, row)
@@ -818,6 +836,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				// this one got that rule wrong for a truncated read, and the next call site
 				// would have had the same chance to.
 				chiefThreadRows(ChiefThreadsView{Threads: v.Sessions, Failed: p.ThreadsFailed}),
+				// The chief's chat actions — "+ New side chat", and Fresh primary /
+				// Archive / Unarchive for the chat the panel is on — under the list
+				// (chief_chats.go): what the chat bar over the transcript held.
+				chiefPanelChatActions(v.ChiefChat),
 			),
 		),
 	}
