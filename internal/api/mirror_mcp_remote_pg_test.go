@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -131,5 +134,55 @@ func TestARemoteCallIsRefusedWhenItCouldBeBound(t *testing.T) {
 	}
 	if via, _, _ := f.provenance(t, id); via != "" {
 		t.Fatalf("the ask was answered (via %q) by a refused call", via)
+	}
+}
+
+// TestARemoteSessionWorksTheTasksItCreatedOnThatInstance: why the task tools
+// are on a remote caller's list. `muster task create`, pointed at THIS
+// instance (MUSTER_API_URL) from inside a session mirrored elsewhere, sends
+// that session's id (X-Muster-Session-Id, from CLAUDE_CODE_SESSION_ID); the
+// task's `created` link names it — so the remote caller's task scope here is
+// that task, not empty. Another remote session (the control) sees none.
+func TestARemoteSessionWorksTheTasksItCreatedOnThatInstance(t *testing.T) {
+	f, _, _, _ := newMirrorMCPFixture(t)
+	remote := mirrorTok('r')
+	f.tokens[remote] = mirror.Token{ID: 9, OwnerID: 1, Host: "far"}
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"title":"remote-created","body":"made from a session mirrored elsewhere"}`))
+	req.Header.Set("X-Muster-Session-Id", remoteSID)
+	req = req.WithContext(asUser(1))
+	rec := httptest.NewRecorder()
+	f.srv.handleAPITaskCreate(rec, req)
+	var created struct{ ID int64 }
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &created) != nil || created.ID == 0 {
+		t.Fatalf("task create: %d %s", rec.Code, rec.Body)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, created.ID)
+	})
+	list := func(sid string) []int64 {
+		_, r, body := f.mirrorRPC(t, remoteAs(remote, sid), mcpToolCall(tasksListTool, map[string]any{}))
+		if r == nil {
+			t.Fatal(body)
+		}
+		text, isErr := toolText(t, r)
+		var out struct{ Tasks []struct{ ID int64 } }
+		if isErr || json.Unmarshal([]byte(text), &out) != nil {
+			t.Fatalf("tasks_list as %s: %s", sid, text)
+		}
+		var ids []int64
+		for _, tk := range out.Tasks {
+			ids = append(ids, tk.ID)
+		}
+		return ids
+	}
+	if ids := list(remoteSID); len(ids) != 1 || ids[0] != created.ID {
+		t.Fatalf("the creating session's remote tasks_list = %v, want [%d]", ids, created.ID)
+	}
+	if ids := list(secondSID); len(ids) != 0 {
+		t.Fatalf("CONTROL: another remote session's tasks_list = %v, want none", ids)
+	}
+	_, r, _ := f.mirrorRPC(t, remoteAs(remote, remoteSID), mcpToolCall(taskCommentTool, map[string]any{"id": created.ID, "body": "from far"}))
+	if text, isErr := toolText(t, r); isErr || !strings.Contains(text, `"body":"from far"`) {
+		t.Fatalf("task_comment: %s", text)
 	}
 }

@@ -164,6 +164,12 @@ const (
 // muster lists; "self" is the caller), agent_report_done and the host-officer
 // tools (bound to a spawn muster recorded for the caller's window), and the
 // page tools (the calling session's own pages). muster_help is serveMCP's own.
+//
+// The task tools stay ON, over the same scope as a bound caller's
+// (taskScopeOf): the tasks that session created HERE. That is not empty by
+// construction: `muster task create` pointed at this instance (MUSTER_API_URL)
+// from inside the session sends its id (X-Muster-Session-Id), and the task's
+// `created` link names it (TestARemoteSessionWorksTheTasksItCreatedOnThatInstance).
 var remoteMirrorTools = map[string]bool{
 	attentionAnswerTool: true, agentDestroyTool: true, agentsListTool: true, chiefRestartTool: true,
 	connectorRequestsListTool: true, connectorRequestDecideTool: true,

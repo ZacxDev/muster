@@ -1697,8 +1697,9 @@ receives this host's sessions**: the mirror connection dials the primary only.
    ```
 
    The primary is named `default` unless `-mcp-primary-name` says otherwise.
-   The file is checked when the daemon starts, and any failure stops it (exit
-   2), naming the entry and never the token. The rules are in
+   The file is checked when the daemon starts. A failure is logged, naming the entry
+   and never the token, and the file is ignored: MCP then reaches the primary
+   only. Like every MCP setting, it is never fatal, so mirroring goes on. The rules are in
    [configuration.md](configuration.md#muster-mirror-host-agent).
 
 The startup log names each target and its URL, never its token.
@@ -1731,7 +1732,9 @@ caller exactly these tools, when its features have them on (`internal/api`'s
 `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`,
 `plugin_draft_decide`, `plugin_requests_list`, `plugin_request_decide`,
 `dispatch_request`, `dispatch_approve`, the task tools (over the tasks that
-session created on that instance) and `muster_help`.
+session created on that instance: `muster task create` run from the session
+with `MUSTER_API_URL` pointing at that instance records the session's id on
+the task, so the scope is real, not empty) and `muster_help`.
 
 Everything else is **session-bound** and runs on the primary only. That covers
 `attention_ask`, `attention_wait` and `attention_cancel`, and `chief_ask`,
