@@ -58,8 +58,9 @@ func (m *memAccounts) SetTeamMemberAsManager(context.Context, users.Actor, int64
 func (m *memAccounts) RemoveTeamMemberAsManager(context.Context, users.Actor, int64, int64) error {
 	return errMemAccounts
 }
-func (m *memAccounts) TeamPeople(context.Context, int64) ([]users.TeamMember, error)  { return nil, nil }
-func (m *memAccounts) TeamMembers(context.Context, int64) ([]users.TeamMember, error) { return nil, nil }
+func (m *memAccounts) TeamMembers(context.Context, int64) ([]users.TeamMember, error) {
+	return nil, nil
+}
 func (m *memAccounts) TeamAudit(context.Context, int64, int) ([]users.AuditEntry, error) {
 	return nil, nil
 }

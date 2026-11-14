@@ -174,21 +174,6 @@ func keepAManager(ctx context.Context, tx pgx.Tx, team, user int64) error {
 	return nil
 }
 
-// TeamPeople is team's members' ids and display names, read AS the caller
-// (ctx's principal) through muster_team_people (migration 0126): empty for a
-// caller who is not a member. No email, no role.
-func (s *PGStore) TeamPeople(ctx context.Context, team int64) ([]TeamMember, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, display_name FROM muster_team_people($1)`, team)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TeamMember, error) {
-		var m TeamMember
-		err := r.Scan(&m.UserID, &m.DisplayName)
-		return m, err
-	})
-}
-
 // TeamAudit is the newest audit rows that name team as their owner, read AS
 // the caller: audit_log's self_read admits a team's MANAGERS to them
 // (migration 0126), and nobody else but the rows' own actors.

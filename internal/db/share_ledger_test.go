@@ -228,9 +228,10 @@ func member(t *testing.T, f *rlsFixture, uid int64, via authz.Via) context.Conte
 // manager — reads, updates and deletes it as its class says (each write in a
 // transaction rolled back, so every role meets every row). CONTROLS: the team
 // itself and System see every row, so a zero is about the role; and the SAME
-// manager through every door where no person is present — their agents and
-// personal chief, their mirror host, every background loop — sees nothing,
-// while their web session (the role loop) sees the team's rows.
+// manager through every door where no person is present — their personal
+// API token, their agents and personal chief, their mirror host, every
+// background loop — sees nothing, while their web session (the role loop)
+// and their paired phone see the team's rows.
 func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 	f := newRLSFixture(t, "ms_0126_roles")
 	store := users.NewPG(f.pool)
@@ -253,11 +254,13 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		t.Fatalf("the team's writes: %v", err)
 	}
 	level := map[string]int{"none": 0, "viewer": 1, "operator": 2, "manager": 3}
-	// Every door that is NOT a person's own (authz TeamScope): the manager's
-	// agents — their PERSONAL chief included — their mirror host's MCP door,
-	// and every background loop acting as them.
+	// Every door where no PERSON is present (authz TeamScope): the manager's
+	// personal API token, their agents — their PERSONAL chief included —
+	// their mirror host's MCP door, and every background loop acting as them.
+	// Their paired phone (ViaDevice) is a person's door, like the session.
+	device := member(t, f, people["manager"], authz.ViaDevice)
 	var machineDoors []context.Context
-	for _, via := range []authz.Via{authz.ViaAgent, authz.ViaMirrorHost, authz.ViaConnect, authz.ViaRelay, authz.ViaKickoff,
+	for _, via := range []authz.Via{authz.ViaToken, authz.ViaAgent, authz.ViaMirrorHost, authz.ViaConnect, authz.ViaRelay, authz.ViaKickoff,
 		authz.ViaAgentMessage, authz.ViaReap, authz.ViaAttention, authz.ViaAsk, authz.ViaJobQueue, authz.ViaFocus, authz.ViaRoute,
 		authz.ViaOfficer, authz.ViaHostDispatch, authz.ViaQueue, authz.ViaRunner, authz.ViaPlugin, authz.ViaPageLink,
 		authz.ViaHook, authz.ViaService} {
@@ -279,6 +282,13 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 			}
 		}
 		c, shared := shareClasses[tbl]
+		wantDevice := 0
+		if shared && level["manager"] >= c.read {
+			wantDevice = owned
+		}
+		if got := count(t, device, f.pool, tbl, "WHERE owner_id = $1", team.ID); got != wantDevice {
+			t.Errorf("the team's manager through their paired phone (device) sees %d of the team's rows in %s; want %d", got, tbl, wantDevice)
+		}
 		for role, lvl := range level {
 			ctx := member(t, f, people[role], authz.ViaSession)
 			wantRead, wantWrite := 0, 0
@@ -399,36 +409,6 @@ func TestATeamRowCannotChangeHands(t *testing.T) {
 	}
 }
 
-// TestTeamPeopleAnswersOnlyAMember: muster_team_people names a team's members
-// (id and display name, nothing else) to a member, and to nobody else.
-func TestTeamPeopleAnswersOnlyAMember(t *testing.T) {
-	f := newRLSFixture(t, "ms_0126_people")
-	store := users.NewPG(f.pool)
-	by := users.Actor{UserID: 1, Via: authz.ViaSession}
-	outsider := scanID(f.mig, t, f.pool, `INSERT INTO users (role, display_name) VALUES ('member', 'outsider') RETURNING id`)
-	team, err := store.CreateTeam(f.base, by, "Platform", f.two)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = store.SetTeamMember(f.base, by, team.ID, 1, authz.TeamViewer)
-	got, err := store.TeamPeople(member(t, f, 1, authz.ViaSession), team.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].UserID != 1 || got[1].UserID != f.two || got[0].Email != "" {
-		t.Errorf("a member's TeamPeople = %+v; want both members, no email", got)
-	}
-	if got, err := store.TeamPeople(member(t, f, outsider, authz.ViaSession), team.ID); err != nil || len(got) != 0 {
-		t.Errorf("an outsider's TeamPeople = %+v, %v; want none", got, err)
-	}
-	var cols string
-	if err := f.pool.QueryRow(f.mig, `SELECT string_agg(attname, ',' ORDER BY attnum) FROM (
-			SELECT unnest(proargnames) AS attname, generate_subscripts(proargnames, 1) AS attnum
-			FROM pg_proc WHERE proname = 'muster_team_people') x WHERE attname <> 'team'`).Scan(&cols); err != nil || cols != "id,display_name" {
-		t.Errorf("muster_team_people returns %q (%v); want exactly id,display_name", cols, err)
-	}
-}
-
 // TestTheActingPersonIsRecordedOnEachSharedAction: on a team's row, each
 // shared action records WHO did it beside the owner it was done to — a queued
 // send (queued_by), a comment (author_id), an answered ask
@@ -536,45 +516,39 @@ func TestATeamsAuditIsItsManagersToRead(t *testing.T) {
 	}
 }
 
-// TestTheTeamRoleFunctionsParseTheSetting: muster_team_role and
-// muster_team_ids read muster.teams in phase 1's canonical form,
-// '<team>:<role>,…', by role NAME — an unknown role, a malformed id or an
-// empty setting grants nothing. Read through the very connection setting the
-// pool writes (set_config in one transaction).
-func TestTheTeamRoleFunctionsParseTheSetting(t *testing.T) {
+// TestTheTeamIDsFunctionParsesTheSetting: muster_team_ids reads muster.teams
+// in phase 1's canonical form, '<team>:<role>,…', by role NAME — an unknown
+// role, a numeric role, a malformed id or an empty setting grants nothing.
+// Read through the very connection setting the pool writes (set_config in
+// one transaction).
+func TestTheTeamIDsFunctionParsesTheSetting(t *testing.T) {
 	f := newRLSFixture(t, "ms_0126_parse")
 	for _, c := range []struct {
-		setting string
-		owner   int64
-		role    int
-		ids2    string // muster_team_ids(2), as text
+		setting          string
+		ids1, ids2, ids3 string // muster_team_ids(1|2|3), as text
 	}{
-		{"12:operator,15:viewer,18:manager", 12, 2, "{12,18}"},
-		{"12:operator,15:viewer,18:manager", 15, 1, "{12,18}"},
-		{"12:operator,15:viewer,18:manager", 18, 3, "{12,18}"},
-		{"12:operator,15:viewer,18:manager", 1, 0, "{12,18}"},
-		{"", 12, 0, "{}"},
-		{"12:owner", 12, 0, "{}"},
-		{"12:2", 12, 0, "{}"},
-		{"x:manager,12:viewer", 12, 1, "{}"},
-		{"112:manager", 12, 0, "{112}"},
+		{"12:operator,15:viewer,18:manager", "{12,15,18}", "{12,18}", "{18}"},
+		{"", "{}", "{}", "{}"},
+		{"12:owner", "{}", "{}", "{}"},
+		{"12:2", "{}", "{}", "{}"},
+		{"x:manager,12:viewer", "{12}", "{}", "{}"},
+		{"112:manager", "{112}", "{112}", "{112}"},
 	} {
 		tx, err := f.pool.Begin(f.mig)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var role int
-		var ids string
-		err = tx.QueryRow(f.mig, `SELECT set_config('muster.teams', $1, true) IS NOT NULL`, c.setting).Scan(new(bool))
+		var i1, i2, i3, i0 string
+		_, err = tx.Exec(f.mig, `SELECT set_config('muster.teams', $1, true)`, c.setting)
 		if err == nil {
-			err = tx.QueryRow(f.mig, `SELECT muster_team_role($1), muster_team_ids(2)::text`, c.owner).Scan(&role, &ids)
+			err = tx.QueryRow(f.mig, `SELECT muster_team_ids(1)::text, muster_team_ids(2)::text, muster_team_ids(3)::text, muster_team_ids(0)::text`).Scan(&i1, &i2, &i3, &i0)
 		}
 		_ = tx.Rollback(f.mig)
 		if err != nil {
 			t.Fatalf("%q: %v", c.setting, err)
 		}
-		if role != c.role || ids != c.ids2 {
-			t.Errorf("setting %q: role(%d) = %d, ids(operator) = %s; want %d, %s", c.setting, c.owner, role, ids, c.role, c.ids2)
+		if i1 != c.ids1 || i2 != c.ids2 || i3 != c.ids3 || i0 != "{}" {
+			t.Errorf("setting %q: ids(1,2,3,0) = %s %s %s %s; want %s %s %s {}", c.setting, i1, i2, i3, i0, c.ids1, c.ids2, c.ids3)
 		}
 	}
 }

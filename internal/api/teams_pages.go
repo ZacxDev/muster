@@ -32,9 +32,8 @@ import (
 // step-up: membership is account management, like /admin/users, not typing
 // into a session (docs/sending-and-step-up.md).
 //
-// The member list's NAMES are read as the manager through
-// muster_team_people (it answers only a member); roles and emails come from
-// a System read after the manager check, as the admin pages read users.
+// The member list (names, emails, roles) is a System read AFTER the manager
+// check, as the admin pages read users.
 
 func (s *Server) registerTeamPages(mux Mux) {
 	mux.HandleFunc("GET /teams/{id}", s.requireSession(s.handleTeamPage))
@@ -69,21 +68,11 @@ func (s *Server) handleTeamPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderTeamPage(w http.ResponseWriter, r *http.Request, team int64, code int, problem string) {
 	ctx := r.Context()
-	people, err := s.gt.Accounts.TeamPeople(ctx, team)
-	if err != nil {
-		s.logger.Printf("teams: read team %d's people: %v", team, err)
-		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load the team", "Try again in a moment.")
-		return
-	}
 	members, err := s.gt.Accounts.TeamMembers(ctx, team)
 	if err != nil {
 		s.logger.Printf("teams: read team %d's members: %v", team, err)
 		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load the team", "Try again in a moment.")
 		return
-	}
-	names := map[int64]string{}
-	for _, p := range people {
-		names[p.UserID] = p.DisplayName
 	}
 	me := authz.MustFrom(ctx).UserID
 	id := strconv.FormatInt(team, 10)
@@ -94,10 +83,7 @@ func (s *Server) renderTeamPage(w http.ResponseWriter, r *http.Request, team int
 <ul class="flex flex-col gap-2" id="team-members">`)
 	for _, m := range members {
 		uid := strconv.FormatInt(m.UserID, 10)
-		name := names[m.UserID]
-		if name == "" {
-			name = personLabel(m.Email, m.DisplayName, m.UserID)
-		}
+		name := personLabel(m.Email, m.DisplayName, m.UserID)
 		if m.UserID == me {
 			name += " (you)"
 		}

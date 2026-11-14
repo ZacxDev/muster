@@ -89,9 +89,10 @@ tasks and team hosts each arrive with their own release.
     charters, plugins and their drafts).
   - Credentials, connectors, devices, push and agents (until their secrets are
     split off) are never shared.
-  - A person reaches a team's rows only from the browser, a personal API token
-    or a paired phone. Their agents (their own chief included), their mirror
-    hosts and every background job act on their personal rows only.
+  - A person reaches a team's rows only from the browser or a paired phone.
+    A personal API token, their agents (their own chief included), their
+    mirror hosts and every background job act on their personal rows only. A
+    team-scoped token may come later.
   - No one moves a row into or out of a team.
 - **Who manages teams.** An admin, on **Admin → Teams** (`/admin/teams`),
   creates a team, naming its first manager, and adds, re-roles and removes

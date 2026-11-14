@@ -36,7 +36,7 @@ func TestMigration0126TeamAccess(t *testing.T) {
 	}
 	var leftovers int
 	if err := pool.QueryRow(ctx, `SELECT
-			(SELECT count(*) FROM pg_proc WHERE proname IN ('muster_team_role', 'muster_team_ids', 'muster_team_people', 'muster_owner_fixed',
+			(SELECT count(*) FROM pg_proc WHERE proname IN ('muster_team_ids', 'muster_owner_fixed',
 				'muster_stamp_answerer', 'muster_stamp_decider', 'muster_team_access_rollback'))
 			+ (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND
 				(table_name, column_name) IN (('audit_log', 'team_id'), ('send_queue', 'queued_by'), ('note_comments', 'author_id'),

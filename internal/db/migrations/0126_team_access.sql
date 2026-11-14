@@ -10,22 +10,17 @@
 --                           muster.uid (internal/db/scope.go), from the
 --                           request principal's memberships in phase 1's
 --                           canonical form '<team>:<role>,…', e.g.
---                           '12:operator,15:viewer'. ONLY a person's own
---                           request doors carry it (authz.Principal.TeamScope:
---                           the browser session and a personal API token);
---                           every background loop and machine door acts with
---                           none, so a per-owner sweep never meets team rows.
---   muster_team_role(o)     0 none, 1 viewer, 2 operator, 3 manager: the
---                           caller's role in owner o, parsed from the setting
---                           by NAME (a role is never cast ::int). For code
---                           that asks about ONE owner; the policies use
---   muster_team_ids(r)      the ids of the teams held at role >= r, as one
---                           InitPlan per query (see below).
---   muster_team_people(t)   SECURITY DEFINER: (id, display_name) of team t's
---                           members, only for a caller who is a member of t.
---                           users is self_read, so without it a manager could
---                           not name their own teammates. No email, no role,
---                           no disabled flag.
+--                           '12:operator,15:viewer'. ONLY doors where a
+--                           person is present carry it (authz.Principal.
+--                           TeamScope: the browser session and a paired
+--                           phone, ViaSession and ViaDevice); a personal API
+--                           token, every agent door, the mirror host and
+--                           every background loop act with none, so a
+--                           per-owner sweep never meets team rows.
+--   muster_team_ids(r)      the ids of the teams the caller holds at role
+--                           >= r (1 viewer, 2 operator, 3 manager), parsed
+--                           from the setting by role NAME (never cast ::int),
+--                           evaluated once per query (an InitPlan, below).
 --
 -- THE SHARE CLASSES. Every owned table is in exactly one (pinned by
 -- TestEveryOwnedTableHasAShareClass in internal/db, which fails when a class
@@ -88,31 +83,16 @@
 SET LOCAL lock_timeout = '3s';
 
 -- ---------------------------------------------------------------------------
--- 1. The role function and the teammates' names.
+-- 1. The team-ids function.
 -- ---------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION public.muster_team_role(o bigint) RETURNS integer
-    LANGUAGE sql
-    STABLE
-    PARALLEL SAFE
-    SET search_path = pg_catalog
-AS $$
-    SELECT coalesce(max(CASE split_part(x, ':', 2)
-                            WHEN 'viewer'   THEN 1
-                            WHEN 'operator' THEN 2
-                            WHEN 'manager'  THEN 3
-                            ELSE 0 END), 0)
-    FROM unnest(string_to_array(nullif(current_setting('muster.teams', true), ''), ',')) AS x
-    WHERE split_part(x, ':', 1) = o::text
-$$;
 
 -- muster_team_ids(r): the ids of the teams the caller holds at least role r
 -- in (1 viewer, 2 operator, 3 manager), from the same setting. The policies
 -- call it as a SCALAR SUBQUERY, `owner_id = ANY (coalesce((SELECT muster_team_ids(r)), '{}'))`,
 -- which Postgres plans as an InitPlan: ONE parse per query, not one per row
 -- Measured on 400k rows (phase 2a PR): count(*) ~22 ms with this InitPlan,
--- ~26 ms under owner_isolation alone, ~200 ms with a per-row
--- muster_team_role(owner_id) call instead.
+-- ~26 ms under owner_isolation alone, ~200 ms with a per-row function call
+-- (a muster_team_role(owner_id), since removed) instead.
 CREATE OR REPLACE FUNCTION public.muster_team_ids(min_role integer) RETURNS bigint[]
     LANGUAGE sql
     STABLE
@@ -128,23 +108,6 @@ AS $$
               WHEN 'manager'  THEN 3
               ELSE 0 END >= min_role
       AND min_role >= 1
-$$;
-
-CREATE OR REPLACE FUNCTION public.muster_team_people(team bigint)
-    RETURNS TABLE (id bigint, display_name text)
-    LANGUAGE sql
-    STABLE
-    SECURITY DEFINER
-    SET search_path = pg_catalog
-    SET muster.scope = 'all'
-AS $$
-    SELECT u.id, u.display_name
-    FROM public.team_members m JOIN public.users u ON u.id = m.user_id
-    WHERE m.team_id = team
-      AND EXISTS (SELECT 1 FROM public.team_members me
-                  WHERE me.team_id = team
-                    AND me.user_id = nullif(current_setting('muster.uid', true), '')::bigint)
-    ORDER BY u.id
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -324,8 +287,6 @@ BEGIN
     DROP FUNCTION IF EXISTS public.muster_stamp_answerer();
     DROP FUNCTION IF EXISTS public.muster_stamp_decider();
     DROP FUNCTION IF EXISTS public.muster_owner_fixed();
-    DROP FUNCTION IF EXISTS public.muster_team_people(bigint);
-    DROP FUNCTION IF EXISTS public.muster_team_role(bigint);
     DROP FUNCTION IF EXISTS public.muster_team_ids(integer);
     DROP INDEX IF EXISTS public.idx_audit_log_team;
     ALTER TABLE public.audit_log DROP COLUMN IF EXISTS team_id;

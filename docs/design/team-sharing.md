@@ -308,9 +308,11 @@ team (a team mirror token, a team officer's instance, the team chief) carries
 > reason is that `Principal` must stay comparable with `==`, which a map
 > would break, and many tests and call sites compare principals by value.
 > Phase 2's `muster.teams` setting carries that same string, so
-> `muster_team_role()` must parse the role **name** (for example, by mapping
-> `viewer`/`operator`/`manager` to 1/2/3), never cast it `::int`. The
-> function below is the phase-2 sketch and has not been updated for this.
+> the function that reads it must parse the role **name** (for example, by
+> mapping `viewer`/`operator`/`manager` to 1/2/3), never cast it `::int`. The
+> function below is the phase-2 sketch. As built in 2a it is
+> `muster_team_ids(r)`, a list of team ids; see
+> [phase 2a](#phase-2a-the-access-core-built-second).
 > `team_members.notify` (§1) was **not** created in phase 1. It arrives with
 > phase 2's push fan-out.
 
@@ -699,8 +701,8 @@ series, ships alone, and rolls back alone.
 - **No table changes policy, and nothing is shared.** A test over every
   `owner_id` table proves a member cannot read a row the team owns.
 - **Moved to phase 2a, where the first policy reads them:** the `muster.teams`
-  setting, `muster_team_role()`, `muster_team_people()`, the audit column
-  with its manager read arm, and the managers' own `/teams/{id}` pages.
+  setting and its function, the audit column with its manager read arm, and
+  the managers' own `/teams/{id}` pages.
 - **Acceptance:** a team row cannot sign in by any entry point; a membership
   change is visible to the next request.
 - **Rollback:** an older image ignores the column and the table. To remove
@@ -713,14 +715,16 @@ team hosts move last, as 2b. 2a creates **no team-owned row**; it lands the
 rule the later phases' rows will meet.
 
 - **Migration `team_access`** (0126):
-  - `muster_team_role(o)` (0–3, by role NAME) and `muster_team_ids(r)` (the
-    ids of the teams held at role ≥ r) both parse `muster.teams`.
+  - `muster_team_ids(r)` (the ids of the teams held at role ≥ r) parses
+    `muster.teams` by role NAME. §2's `muster_team_role()` was not kept: no
+    policy or code path needed a per-owner role once the policies read a list.
   - The policies use `owner_id = ANY (coalesce((SELECT muster_team_ids(r)), '{}'))`.
     Postgres plans it as an InitPlan, so the setting is parsed once per query.
     Measured on 400k rows: ~22 ms, against ~26 ms under `owner_isolation`
-    alone and ~200 ms with a per-row `muster_team_role(owner_id)`.
-  - `muster_team_people(t)` is SECURITY DEFINER and answers `(id,
-    display_name)` to a member only.
+    alone and ~200 ms with a per-row role function.
+  - `muster_team_people()` is **deferred** to the phase that shows a member
+    their teammates' names. The manager page reads its members after its own
+    manager check, as the admin pages do.
   - **Four policies per share-class table, one per command**
     (`team_read` / `team_insert` / `team_update` / `team_delete`). §2's
     single `owner_or_team FOR ALL` would have let a VIEWER delete: a FOR ALL
@@ -735,8 +739,11 @@ rule the later phases' rows will meet.
     ask or a draft changes state, so no code path can forget them.
   - `queued_by` and `author_id` default to the acting person.
 - **Which doors carry the teams:** only doors where a PERSON is present:
-  `ViaSession`, `ViaToken` and `ViaDevice` (`authz.Principal.TeamScope`, a
-  closed set; `TestEveryDoorSaysWhetherItCarriesTeams` fails on a new `Via`).
+  `ViaSession` and `ViaDevice` (`authz.Principal.TeamScope`, a closed set;
+  `TestEveryDoorSaysWhetherItCarriesTeams` fails on a new `Via`). A personal
+  API token (`ViaToken`, `mst_…`) carries **no** team access, by the
+  operator's decision: scripts and agents hold such tokens as often as people
+  do. A team-scoped token may come later.
   Every agent door (a member's PERSONAL chief included, decision 10), the
   mirror host, connect, relay and every background loop act with none, even
   though the principal carries the memberships. **Phase 4 extends
@@ -808,6 +815,10 @@ rule the later phases' rows will meet.
 - **Code:** the task board's owner groups and Owner select; the move-to-team
   handler (System ledger); `POST /chief/provision` for a team by a manager;
   team model credentials (write-only); the team chief's chat page.
+- **Team writes are phase 4's.** After 2a, existing routes do not write team
+  rows yet: a member commenting on a team task fails closed on a database
+  constraint (the comment's owner must be its task's). Phase 4 owns those
+  writes.
 - **Acceptance:** a team chief routes a team task to a team session and is
   refused a person's session; a personal chief's `sessions_overview` contains
   no team host; a moved task's children all carry the team owner.

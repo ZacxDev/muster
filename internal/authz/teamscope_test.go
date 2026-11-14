@@ -12,7 +12,7 @@ import (
 // team's rows reach it (phase 2a of docs/design/team-sharing.md).
 var carriesTeams = map[Via]bool{
 	ViaSession:      true,  // the person, in the browser
-	ViaToken:        true,  // the person's own API token
+	ViaToken:        false, // a personal API token: no team access (a team-scoped token may come later)
 	ViaHook:         false, // the shared machine token (acts as user 1)
 	ViaService:      false, // the service token (acts as user 1)
 	ViaAgent:        false, // an agent of the person (their PERSONAL chief included): never the team's rows (decision 10)

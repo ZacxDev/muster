@@ -53,7 +53,6 @@ type AccountStore interface {
 	// A team's own manager (teams_pages.go; phase 2a).
 	SetTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64, role authz.TeamRole) error
 	RemoveTeamMemberAsManager(ctx context.Context, by users.Actor, team, user int64) error
-	TeamPeople(ctx context.Context, team int64) ([]users.TeamMember, error)
 	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
 	TeamAudit(ctx context.Context, team int64, limit int) ([]users.AuditEntry, error)
 }
