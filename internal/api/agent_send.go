@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -134,7 +133,12 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusConflict, AgentNotRunningNotice, noticeNotRunning)
 		return
 	}
-	session, err := s.resolveSession(ctx, a, sessionParam)
+	// A member on a team agent sends only in its one shared room.
+	session, err := s.resolveTurnSession(ctx, a, sessionParam)
+	if errors.Is(err, ErrNotTheTeamRoom) {
+		refuse(http.StatusForbidden, err.Error(), noticeFailed)
+		return
+	}
 	if err != nil {
 		s.logger.Printf("agents: send session for %q: %v", a.Name, err)
 		refuse(http.StatusInternalServerError, "could not open a chat session for that agent", noticeFailed)
@@ -158,8 +162,10 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 	// Accepted: from here the message is the turn's. The claim is kept whatever
 	// the turn then does — a repeat of this post must not start a second turn.
 	finish(true)
-	// The operator wrote to the agent: its open asks are answered here.
-	s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, text)
+	// The operator wrote to the agent: its open asks are answered here — or,
+	// for a member on a team agent, once the turn passes its fresh role check
+	// and the runtime takes it (addressAsker).
+	ctx = s.addressAsker(ctx, a, text)
 	s.startAgentTurn(ctx, a, session, text, ownerTypedBy(ctx), nil)
 	s.logger.Printf("agents: sent a message to %s (session %d)", a.Name, session.ID)
 	sent()

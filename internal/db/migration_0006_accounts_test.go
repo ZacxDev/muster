@@ -130,7 +130,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - pages, page_versions, page_links, page_responses (0116, shareable pages).
 //   - officer_types, officer_defs, officer_items, officer_schedules (0118, the
 //     built-in officer backend's store).
-//   - officer_contacts, officer_contact_events (0131, a builtin officer's
+//   - officer_contacts, officer_contact_events (0132, a builtin officer's
 //     people and their engagement).
 var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_host_spawns", "plugin_pair_requests", "agent_secrets", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
@@ -245,7 +245,7 @@ var wantForeignKeys = []string{
 	"officer_items|officer_items_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
 	"officer_schedules|officer_schedules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_schedules|officer_schedules_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
-	// 0131: a contact names its officer, and an event its contact, by the
+	// 0132: a contact names its officer, and an event its contact, by the
 	// composite key, so neither can name another owner's.
 	"officer_contacts|officer_contacts_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_contacts|officer_contacts_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
@@ -264,6 +264,9 @@ var wantForeignKeys = []string{
 	// users rows (a team is one); the KIND each must be is a trigger's job.
 	// 0127: an audit row names the team it acted on.
 	"audit_log|audit_log_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
+	// 0130: a host spawn names the team its owner lent it to (the KIND is
+	// lend_target's job: it admits only a team the owner operates).
+	"officer_host_spawns|officer_host_spawns_shared_team_id_fkey|FOREIGN KEY (shared_team_id) REFERENCES users(id)",
 	"team_members|team_members_added_by_fkey|FOREIGN KEY (added_by) REFERENCES users(id)",
 	"team_members|team_members_team_id_fkey|FOREIGN KEY (team_id) REFERENCES users(id)",
 	"team_members|team_members_user_id_fkey|FOREIGN KEY (user_id) REFERENCES users(id)",

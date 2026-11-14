@@ -1,4 +1,4 @@
--- muster 0131 — A BUILTIN OFFICER'S PEOPLE, THEIR ENGAGEMENT, AND OUTREACH
+-- muster 0132 — A BUILTIN OFFICER'S PEOPLE, THEIR ENGAGEMENT, AND OUTREACH
 -- (internal/officers/builtin contacts.go, internal/plugins outbound.go;
 -- docs/plugins.md "Engagement", docs/officers-builtin.md "People and
 -- outreach").
@@ -28,8 +28,9 @@
 --                           one-line reason, shown on the outreach batch). A
 --                           follow or a like carries no body and no media.
 --
--- 🔴 THE PEOPLE DATA IS THE OFFICER'S OWNER'S, UNDER FORCED ROW-LEVEL SECURITY
--- (0118's shape, owner_isolation only: personal, never team-shared). A contact
+-- 🔴 THE PEOPLE DATA IS THE OFFICER'S OWNER'S, UNDER FORCED ROW-LEVEL SECURITY,
+-- in 0127's MANAGED share class (below): a team officer's people are its
+-- team's (read at operator, written at manager), nobody else's. A contact
 -- names its officer by (owner_id, officer) and an event its contact by (id,
 -- owner_id), so neither can name another owner's. An officer that still has
 -- contacts cannot be deleted (the foreign key: 409). A draft's contact_id is
@@ -50,8 +51,8 @@
 -- exists, and this file re-creates the conditional replyable trigger itself.
 -- Every statement is idempotent.
 --
--- Must apply after 0130 (the contiguity test refuses a gap: #668 takes 0130); 🔴 RENUMBER IT
--- (and db.officerContactsMigrationVersion) if another migration takes 0131
+-- Must apply after 0131 (the contiguity test refuses a gap); 🔴 RENUMBER IT
+-- (and db.officerContactsMigrationVersion) if another migration takes 0132
 -- first.
 --
 -- ROLLBACK. An older image never reads the new tables or columns, but it
@@ -65,8 +66,8 @@
 --   0016's plugin_reply_drafts_body_cap: CHECK (octet_length(body) BETWEEN 1 AND 16384);
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS because_ref,
 --       DROP COLUMN IF EXISTS contact_id, DROP COLUMN IF EXISTS outreach_reason;
---   DROP TABLE public.officer_contact_events, public.officer_contacts;
---   DELETE FROM schema_migrations WHERE version = 131;
+--   DROP TABLE public.officer_contact_events, public.officer_contacts;   (their policies and owner_fixed triggers go with them)
+--   DELETE FROM schema_migrations WHERE version = 132;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -144,6 +145,12 @@ CREATE INDEX IF NOT EXISTS officer_contact_events_by_ref
 ALTER TABLE public.officer_contacts       ALTER COLUMN owner_id SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 ALTER TABLE public.officer_contact_events ALTER COLUMN owner_id SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 
+-- 🔴 THE MANAGED SHARE CLASS OF 0127 (plugin_messages' and plugin_reply_drafts'
+-- roles): a person reads their own rows; a TEAM's contacts — a team officer's
+-- people — are read by the team's operators and managers (who already read
+-- the same words in the team's plugin messages and decide its drafts) and
+-- written only by its managers. Nobody else, of any other owner or team.
+-- One policy per command, in 0127's exact shape; owner_id is fixed.
 DO $rls$
 DECLARE t TEXT;
 BEGIN
@@ -151,16 +158,32 @@ BEGIN
         EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS owner_isolation ON public.%I', t);
-        EXECUTE format($p$CREATE POLICY owner_isolation ON public.%I
-            AS PERMISSIVE FOR ALL TO PUBLIC
-            USING (
-                owner_id = nullif(current_setting('muster.uid', true), '')::bigint
-                OR current_setting('muster.scope', true) = 'all'
-            )
-            WITH CHECK (
-                owner_id = nullif(current_setting('muster.uid', true), '')::bigint
-                OR current_setting('muster.scope', true) = 'all'
-            )$p$, t);
+        EXECUTE format('DROP POLICY IF EXISTS team_read ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS team_insert ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS team_update ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS team_delete ON public.%I', t);
+        EXECUTE format($p$CREATE POLICY team_read ON public.%I AS PERMISSIVE FOR SELECT TO PUBLIC
+                USING (owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+                    OR owner_id = ANY (coalesce((SELECT public.muster_team_ids(2)), '{}'))
+                    OR current_setting('muster.scope', true) = 'all')$p$, t);
+        EXECUTE format($p$CREATE POLICY team_insert ON public.%I AS PERMISSIVE FOR INSERT TO PUBLIC
+                WITH CHECK (owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+                    OR owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+                    OR current_setting('muster.scope', true) = 'all')$p$, t);
+        EXECUTE format($p$CREATE POLICY team_update ON public.%I AS PERMISSIVE FOR UPDATE TO PUBLIC
+                USING (owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+                    OR owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+                    OR current_setting('muster.scope', true) = 'all')
+                WITH CHECK (owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+                    OR owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+                    OR current_setting('muster.scope', true) = 'all')$p$, t);
+        EXECUTE format($p$CREATE POLICY team_delete ON public.%I AS PERMISSIVE FOR DELETE TO PUBLIC
+                USING (owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+                    OR owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+                    OR current_setting('muster.scope', true) = 'all')$p$, t);
+        EXECUTE format('DROP TRIGGER IF EXISTS owner_fixed ON public.%I', t);
+        EXECUTE format('CREATE TRIGGER owner_fixed BEFORE UPDATE OF owner_id ON public.%I
+            FOR EACH ROW EXECUTE FUNCTION public.muster_owner_fixed()', t);
         EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO muster_app', t);
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE public.%I TO muster_app', t || '_id_seq');
     END LOOP;

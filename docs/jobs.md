@@ -534,9 +534,43 @@ account rests: no pool job is placed on any worker while it uses that account,
 until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
 9am (UTC)`), or, when the message states none muster can read (no zone, for
 one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
-is usable again at exactly that time. While another account is usable a pool
-does not wait for that: a submission that finds no worker it can use moves one
-off the resting account (see [Account failover](#account-failover)).
+is usable again at exactly that time — or sooner, when the account's **live
+state** says so. With `MUSTER_CC_USAGE_POLL=1` the
+[usage poller](#claude-account-usage) keeps reading a cooling account at its
+ordinary interval, and when that reading shows the account usable it clears
+the mark (one log line: `ccusage: account <name>: cleared its rate-limit mark
+of <time> (cooldown was until <time>): <reason>`). Usable means:
+
+- **From the usage endpoint:** every window that carries a utilization is
+  below 100% (or past its own reset).
+- **From the probe:** the overall `anthropic-ratelimit-unified-status` is
+  `allowed` or `allowed_warning`, **and** the mark's own text names the
+  session limit (`You've hit your session limit`, or the earlier CLI's
+  `5-hour limit reached`) or the weekly limit (`You've hit your weekly
+  limit`), **and** that limit's window in the probe's headers — `5h` for the
+  session limit, `7d` for the weekly one — is present and under its limit (or
+  past its reset). The probe runs on a small model, so its overall status
+  says nothing about a per-model limit: a mark set by any other limit text
+  (`You've hit your Opus limit`, or a message naming no window) is never
+  cleared by the probe and ends at its stated reset.
+
+A 429, a `rejected` status, a window at 100% that has not reset, or a failed
+read keeps the mark. The clear is conditional on the mark it read before the
+reading: a turn that hits the limit again while the reading is in flight
+writes a newer mark, and that one stands. ⚠ Reading a cooling account whose
+token the usage endpoint refuses (a `setup-token`) is the one-token probe, so
+it **spends one output token of that account's quota per interval while it
+cools**. With the poller off, nothing reads the live state and nothing ends a
+cooldown early.
+
+A rate limit is counted per subscription, not per token, so replacing an
+account's token does **not** end its cooldown: a re-issued token on the same
+subscription is still limited. A changed token on a cooling account is read by
+the live probe on the poller's next pass, and that reading decides.
+
+While another account is usable a pool does not wait for any of that: a
+submission that finds no worker it can use moves one off the resting account
+(see [Account failover](#account-failover)).
 
 **The per-account cap** is opt-in (`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS`;
 unset, there is none). Jobs on one worker run one after another, so the jobs
@@ -566,7 +600,7 @@ owner's accounts**:
   ago, then the account name. When there is none — every other account is
   cooling down or failed — nothing moves and everything behaves as before
   (the job fails `rate_limited`; a pool submission whose every worker is
-  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works.
+  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works. An account's cooldown also ends before its stated reset when its live reading shows it usable ([The cooldown](#worker-pools)); from then it is a failover target again.
 - **How.** The agent's row is moved to the new account (only if it is still on
   the old one), and its spec is re-applied with the new account's setup-token,
   which **restarts its pod**: the running CLI session and every job lane's CLI
@@ -673,21 +707,26 @@ follow the CLI bundle's map (`5h` → `five_hour`, `7d` → `seven_day`, `7d_oi`
 absent: a measured answer carried 7d headers and no 5h ones. ⚠ **The probe
 spends one output token of the account's quota per read**, which is why the
 default interval is 15 minutes. An account the pool marks **rate-limited**
-(cooling down after a turn hit its limit) is **not probed until its cooldown
-ends** (`error_kind` `cooling`). The response body is never read past its
+(cooling down after a turn hit its limit) **is still read**, at the same
+interval and by the same path: its live reading is what clears the mark early
+when the account is usable again (see [The cooldown](#worker-pools)), so a
+cooling account read by the probe spends one output token per interval too.
+Only when the pool's cooldown cannot be read at all is an account not probed
+that pass (`error_kind` `cooling`). The response body is never read past its
 bytes, logged or stored.
 
 | the probe answers | muster |
 |---|---|
-| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset |
+| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset — unless the pool marks it cooling, which is read again at the interval |
 | 401, 403 | records `unauthorized` / `forbidden`; the token cannot make an inference call, and the account is not read again until its token changes (the row keeps the token's 12-character fingerprint, never the token) |
-| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected`; the 429's own headers are kept as the reading |
+| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected` (not for an account the pool marks cooling); the 429's own headers are kept as the reading |
 | anything else, or a 2xx without the headers | records `error`; the next pass tries again |
 | (no token) | records `no_token` and calls nothing |
 
 A failed read keeps the last good numbers and their `read_at`. A usage refusal
 does **not** mark the account in the pool: selection and the failover read only
-what an agent's own turns report.
+what an agent's own turns report. The one thing a reading does to the pool is
+**clear** a `rate_limited` mark when it shows the account usable (above).
 
 ### `GET /api/cc-accounts/usage`
 

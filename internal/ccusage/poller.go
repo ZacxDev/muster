@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,9 +33,10 @@ const (
 	// KindRateLimited: the probe answered 429. The account backs off
 	// (Row.NextAt), doubling per consecutive 429, at least Retry-After.
 	KindRateLimited = "rate_limited"
-	// KindCooling: the account pool marks the account rate-limited (a turn on
-	// it hit its limit) and its cooldown has not ended, so it is not probed
-	// until then (Row.NextAt).
+	// KindCooling: the account pool's cooldown for the account could not be
+	// read, so it is not probed this pass (the probe spends quota; this fails
+	// toward not probing). An account the pool DOES read as cooling is read
+	// like any other — that is how its mark gets cleared (LiveUsable).
 	KindCooling = "cooling"
 	// KindError: anything else (a 5xx, a network error, an answer with no
 	// rate-limit headers). The next pass tries again.
@@ -249,11 +251,16 @@ type Poller struct {
 	Source ccpool.Source
 	Store  Store
 	Fetch  Fetcher
-	// Cooling is when the account pool's rate-limit cooldown for an account
-	// ends (ccpool.Pool.CoolingUntil; zero when it is not cooling). nil: no
-	// account is ever cooling. A read error is logged and treated as cooling
-	// for one interval: the probe spends quota, so it fails toward not probing.
-	Cooling func(ctx context.Context, owner int64, account string) (time.Time, error)
+	// Cooling is the account pool's rate-limit cooldown for an account
+	// (ccpool.Pool.Cooldown; zero Until when it is not cooling). A read error
+	// is logged and the account is not probed this pass: the probe spends
+	// quota, so it fails toward not probing.
+	Cooling func(ctx context.Context, owner int64, account string) (ccpool.Cooldown, error)
+	// ClearCooling clears the pool's rate-limit mark of an account whose LIVE
+	// reading shows it usable (LiveUsable) — only while the mark is still the
+	// one read before the reading (markedAt), so a newer one stands
+	// (ccpool.Pool.ClearRateLimit). nil: no mark is ever cleared here.
+	ClearCooling func(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error)
 	// Owner is the user whose accounts are read: the operator (user 1), whose
 	// environment pool this is. Members' own accounts are not polled.
 	Owner    int64
@@ -329,18 +336,24 @@ func (p *Poller) Pass(ctx context.Context) error {
 		}
 		now := p.now()
 		sc := StepConfig{Interval: p.Interval}
+		// 🔴 cd IS READ BEFORE THE READING IS TAKEN: its MarkedAt is what the
+		// clear below compares against, so a mark a turn writes while the
+		// probe is in flight (newer) is never the one cleared.
+		var cd ccpool.Cooldown
 		switch c, err := p.cooling(ctx, n); {
 		case err != nil:
 			p.logf("ccusage: account %s: read the pool's cooldown (not probing it this pass): %v", n, err)
 			sc.CoolingUntil, sc.CoolingUnknown = now.Add(p.interval()), true
 		default:
-			sc.CoolingUntil = c
+			cd = c
+			sc.CoolingUntil = c.Until
 		}
 		before := prev[n]
 		row, changed := Step(ctx, before, n, acc[n], now, sc, p.Fetch)
 		if !changed {
 			continue
 		}
+		p.clearIfUsable(ctx, n, cd, row, now)
 		if row.ErrorKind != before.ErrorKind || row.Error != before.Error {
 			if row.ErrorKind == "" {
 				p.logf("ccusage: account %s: reading again (%s)", n, row.Source)
@@ -358,11 +371,132 @@ func (p *Poller) Pass(ctx context.Context) error {
 // cooling is the pool's cooldown for account. 🔴 WITH NO Cooling SOURCE IT IS
 // AN ERROR, so the account is not probed: the probe spends quota, and without
 // the pool muster cannot tell an account that is out of it.
-func (p *Poller) cooling(ctx context.Context, account string) (time.Time, error) {
+func (p *Poller) cooling(ctx context.Context, account string) (ccpool.Cooldown, error) {
 	if p.Cooling == nil {
-		return time.Time{}, errors.New("no account pool to read the cooldown from")
+		return ccpool.Cooldown{}, errors.New("no account pool to read the cooldown from")
 	}
 	return p.Cooling(ctx, p.Owner, account)
+}
+
+// clearIfUsable clears the pool's rate-limit mark of an account that was
+// cooling (cd, read before this step) when row — this step's reading — shows
+// it usable (LiveUsable). It logs one line when it clears.
+func (p *Poller) clearIfUsable(ctx context.Context, account string, cd ccpool.Cooldown, row Row, now time.Time) {
+	if cd.Until.IsZero() || cd.MarkedAt.IsZero() || p.ClearCooling == nil {
+		return
+	}
+	reason, ok := LiveUsable(row, cd.Detail, now)
+	if !ok {
+		return
+	}
+	cleared, err := p.ClearCooling(ctx, p.Owner, account, cd.MarkedAt)
+	switch {
+	case err != nil:
+		p.logf("ccusage: account %s: clear its rate-limit mark: %v", account, err)
+	case cleared:
+		p.logf("ccusage: account %s: cleared its rate-limit mark of %s (cooldown was until %s): %s",
+			account, cd.MarkedAt.UTC().Format(time.RFC3339), cd.Until.UTC().Format(time.RFC3339), reason)
+	}
+}
+
+// LiveUsable reports whether r — a reading taken at now — shows the account
+// usable right now for the limit its rate-limit mark names (markDetail, the
+// mark's stored detail: the CLI's limit message), and says why. Only a GOOD
+// reading taken at now counts (no ErrorKind, ReadAt equal to now): a kept
+// older reading, a 429 or a refusal is not live evidence of anything.
+//
+//   - From the probe's headers (SourceRateLimitHeaders), ALL of: the overall
+//     `anthropic-ratelimit-unified-status` is "allowed" or "allowed_warning";
+//     the mark names the session or the weekly limit ([MarkedLimitWindow]);
+//     and that limit's own window in the headers — 5h for the session limit,
+//     7d for the weekly one — is present and under its limit (or past its
+//     reset; [headerWindowUnder]). 🔴 The probe runs on [ProbeModel], and its
+//     overall status speaks for that model only: a mark set by any OTHER limit
+//     (a per-model one, "You've hit your Opus limit", or a message that names
+//     no window) is never cleared here, or the account would be put back,
+//     re-fail, and be marked again every interval. Such a mark ends at its
+//     stated reset.
+//   - From the usage endpoint (SourceUsageAPI): at least one window carries a
+//     utilization, and every window that does is below 100% — or its stated
+//     reset is not after now. One window at 100% that has not reset (a
+//     per-model weekly one included) keeps the account limited: this reads
+//     conservatively, and a mark it keeps still ends at its stated reset.
+func LiveUsable(r Row, markDetail string, now time.Time) (string, bool) {
+	if r.ErrorKind != "" || r.ReadAt.IsZero() || !r.ReadAt.Equal(now) {
+		return "", false
+	}
+	switch r.Source {
+	case SourceRateLimitHeaders:
+		if r.Status != "allowed" && r.Status != "allowed_warning" {
+			return "", false
+		}
+		name, abbr := MarkedLimitWindow(markDetail)
+		if name == "" {
+			return "", false
+		}
+		if w, ok := r.Windows[name]; !ok || !headerWindowUnder(w, now) {
+			return "", false
+		}
+		return "the live probe's rate-limit status is " + r.Status + " and its " + abbr + " window is under its limit", true
+	case SourceUsageAPI:
+		n := 0
+		for _, w := range r.Windows {
+			if w.Utilization == nil {
+				continue
+			}
+			if *w.Utilization >= 100 && (w.ResetsAt == nil || w.ResetsAt.After(now)) {
+				return "", false
+			}
+			n++
+		}
+		if n > 0 {
+			return "the usage endpoint reports every window below 100% (or past its reset)", true
+		}
+	}
+	return "", false
+}
+
+// The limit messages the CLI writes that name ONE subscription window
+// (internal/cctranscript limit.go and its pinned samples): "You've hit your
+// session limit · …" and the earlier CLI's "5-hour limit reached ∙ …" are the
+// 5-hour window; "You've hit your weekly limit · …" is the 7-day one. The
+// earlier "Claude usage limit reached" names no window, and "You've hit your
+// <model> limit" is a per-model one: neither matches.
+var (
+	sessionLimitText = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your session limit\b|\b5-hour limit reached\b`)
+	weeklyLimitText  = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your weekly limit\b`)
+)
+
+// MarkedLimitWindow is the subscription window a rate-limit mark's detail
+// names — FiveHour ("5h") for the session limit, SevenDay ("7d") for the
+// weekly one — and "" for any other text (a per-model limit, a message naming
+// no window, or one naming both).
+func MarkedLimitWindow(detail string) (name, abbr string) {
+	session, weekly := sessionLimitText.MatchString(detail), weeklyLimitText.MatchString(detail)
+	switch {
+	case session && !weekly:
+		return FiveHour, "5h"
+	case weekly && !session:
+		return SevenDay, "7d"
+	}
+	return "", ""
+}
+
+// headerWindowUnder reports whether w, one window from the probe's headers,
+// is under its limit at now: its reset has passed, or it is not `rejected`
+// and either carries a utilization below 100% or, carrying none, says
+// "allowed" / "allowed_warning". A window with nothing to say is not under.
+func headerWindowUnder(w Window, now time.Time) bool {
+	if w.ResetsAt != nil && !w.ResetsAt.After(now) {
+		return true
+	}
+	if w.Status == "rejected" {
+		return false
+	}
+	if w.Utilization != nil {
+		return *w.Utilization < 100
+	}
+	return w.Status == "allowed" || w.Status == "allowed_warning"
 }
 
 func (p *Poller) interval() time.Duration {
@@ -375,10 +509,13 @@ func (p *Poller) interval() time.Duration {
 // StepConfig is what Step needs beside the row: the poll interval, and when
 // the account pool's cooldown for the account ends (zero: not cooling).
 type StepConfig struct {
-	Interval     time.Duration
+	Interval time.Duration
+	// CoolingUntil is when the pool's cooldown ends (zero: not cooling). A
+	// cooling account is READ like any other — the live reading is what clears
+	// its mark (LiveUsable) — so on its own this changes nothing in Step.
 	CoolingUntil time.Time
 	// CoolingUnknown: the pool's cooldown could not be read, and CoolingUntil
-	// is a stand-in one interval ahead (only the message differs).
+	// is a stand-in one interval ahead. The account is not probed this pass.
 	CoolingUnknown bool
 }
 
@@ -393,10 +530,14 @@ type StepConfig struct {
 //     (one discovery call) or a call with it succeeded. A 2xx is the reading
 //     (SourceUsageAPI). A 401/403 retires the endpoint for this token and a
 //     429 rests it until Retry-After; both fall through to the probe.
-//   - The probe, unless the pool marks the account cooling (KindCooling, no
-//     call until the cooldown ends). Its rate-limit headers are the reading
-//     (SourceRateLimitHeaders); an overall status `rejected` waits until its
-//     reset. A 429 backs off (Backoff, at least Retry-After).
+//   - The probe — also when the pool marks the account cooling, since its
+//     live answer is what can clear the mark (it spends one output token) —
+//     unless the pool's cooldown could not be read (KindCooling, no probe this
+//     pass). Its rate-limit headers are the reading (SourceRateLimitHeaders);
+//     an overall status `rejected` waits until its reset — except on a
+//     cooling account, which is read again at the ordinary cadence (a limit
+//     lifted before that reset is exactly what the reading is for). A 429
+//     backs off (Backoff, at least Retry-After).
 //
 // A failed attempt keeps the last good reading; a 429 whose headers carry a
 // reading stores it, since those numbers are current.
@@ -422,7 +563,10 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 		if prev.ErrorKind == KindUnauthorized || prev.ErrorKind == KindForbidden {
 			return prev, false
 		}
-		if now.Before(prev.NextAt) {
+		// A KindCooling row's NextAt was the pool's stand-in, not a wait of
+		// the account's own (and before the pool's cooldown stopped holding the
+		// probe, it was the whole cooldown): the pool is asked again each pass.
+		if now.Before(prev.NextAt) && prev.ErrorKind != KindCooling {
 			return prev, false
 		}
 	} else {
@@ -449,12 +593,9 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 		}
 	}
 
-	if now.Before(cfg.CoolingUntil) {
+	if cfg.CoolingUnknown {
 		r.ErrorKind = KindCooling
-		r.Error = "the account pool marks the account rate-limited until " + cfg.CoolingUntil.UTC().Format(time.RFC3339) + "; it is not probed until then"
-		if cfg.CoolingUnknown {
-			r.Error = "the account pool's cooldown for the account could not be read; it is not probed this pass"
-		}
+		r.Error = "the account pool's cooldown for the account could not be read; it is not probed this pass"
 		r.NextAt = cfg.CoolingUntil
 		if !tried && prev.ErrorKind == KindCooling && prev.NextAt.Equal(r.NextAt) && prev.TokenFP == fp {
 			return prev, false
@@ -462,11 +603,15 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 		return r, true
 	}
 
+	// A `rejected` answer holds the account until its stated reset — but not
+	// one the pool marks cooling: its live state is read at the ordinary
+	// cadence, so a limit lifted early clears the mark within an interval.
+	holdForReset := !now.Before(cfg.CoolingUntil)
 	res := fetch.Probe(ctx, token)
 	switch {
 	case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
 		good(&r, res.Reading, SourceRateLimitHeaders, now, interval)
-		if res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
+		if holdForReset && res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
 			r.NextAt = *res.Reading.ResetsAt
 		}
 	case res.Status >= 200 && res.Status < 300 && res.Err == nil:
@@ -488,7 +633,7 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 			// The 429's own headers are current numbers: keep them.
 			r.Windows, r.Source, r.ReadAt = res.Reading.Windows, SourceRateLimitHeaders, now
 			r.Status, r.RepresentativeClaim = res.Reading.Status, res.Reading.RepresentativeClaim
-			if rs := res.Reading.ResetsAt; res.Reading.Status == "rejected" && rs != nil && rs.After(r.NextAt) {
+			if rs := res.Reading.ResetsAt; holdForReset && res.Reading.Status == "rejected" && rs != nil && rs.After(r.NextAt) {
 				r.NextAt = *rs // the account is out of quota: not probed until its window resets
 			}
 		}

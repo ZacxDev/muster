@@ -201,6 +201,9 @@ func (memMarks) LiveCounts(context.Context, int64) (map[string]int, error)    { 
 func (memMarks) MarkRateLimited(context.Context, int64, string, string, time.Time) error {
 	return nil
 }
+func (memMarks) ClearRateLimited(context.Context, int64, string, time.Time) (bool, error) {
+	return false, nil
+}
 func (memMarks) MarkAuthFailed(context.Context, int64, string, string, string, time.Time) error {
 	return nil
 }

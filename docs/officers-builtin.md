@@ -404,10 +404,10 @@ posts — replies (nested ones too), quotes, mentions, likes, reposts, new
 followers, inbound DMs and blocks — one event per message
 ([plugins.md](plugins.md#engagement-kind-engagement)). muster keeps the
 **people** in its own Postgres, scoped to the officer (owner and officer),
-never in a repository:
+never in a repository. A [team](auth.md#teams) officer's people are its team's: its operators and managers read them, its managers write them, nobody else:
 
 - **One row per person** per venue and handle (`officer_contacts`, migration
-  0131): what the plugin said of them (display name, profile URL, a short bio —
+  0132): what the plugin said of them (display name, profile URL, a short bio —
   the person's own words, untrusted), first seen, last engaged, last
   contacted, the marks **do-not-contact**, **bot** and **hostile**, and the
   officer's labels and notes.
@@ -455,6 +455,8 @@ curl -H "Authorization: Bearer $TOKEN" "$MUSTER/api/officers/defs/$OFFICER/conta
 curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"dnc": true}' \
     "$MUSTER/api/officers/defs/$OFFICER/contacts/example.social/someone/flags"
 ```
+
+⚠ A team officer's people have no owner's door yet: the admin API's tokens carry no team scope, so it reaches only your own officers' contacts. Their marks come from the officer (bot, hostile) and from their own words (do-not-contact).
 
 `DELETE …/contacts/{venue}/{handle}` erases a person and their whole
 history. An officer that has contacts cannot be deleted (409): delete its

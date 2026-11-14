@@ -1,6 +1,7 @@
 package mirrorhost
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -145,6 +146,27 @@ type MCPProxy struct {
 	// session finds the window showing its root. nil: only a session a
 	// window shows itself is found.
 	OpenCodeAncestors func(id string) []string
+
+	// Primary is the primary instance's name (URL, Token): what a call naming
+	// no instance runs on; "" reads DefaultPrimaryName (mcpinstances.go).
+	Primary string
+	// Extras are the other muster instances whose admin tools this host's
+	// Claude Code sessions may call by name (LoadMCPTargets). 🔴 They receive
+	// tools/list and tools/call requests only, never this host's sessions.
+	Extras []MCPInstance
+	// ToolsRefresh is how often the instances' tool lists are re-read, and a
+	// change announced with notifications/tools/list_changed (WatchTools); 0
+	// turns the watch, the GET stream and the listChanged capability off.
+	ToolsRefresh time.Duration
+
+	// ExtrasIgnored is why a configured targets file was ignored at start
+	// ("" when none was configured, or it loaded): a call naming an instance
+	// other than the primary is then refused saying so, never run on the
+	// primary instead.
+	ExtrasIgnored string
+
+	// state caches the lists and holds the open GET streams.
+	state instanceState
 
 	// outsiderLogged: the first caller from another tmux server is logged,
 	// the rest are not (every Claude Code session on another tenant's server
@@ -330,18 +352,24 @@ func mcpRefuse(w http.ResponseWriter, code int, msg string) {
 // checking the caller's tmux server is the one this host mirrors (pane ids are
 // per server: %3 on another server is another pane).
 func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error) {
+	sid, _, err := p.callerSession(ctx, r)
+	return sid, err
+}
+
+// callerSession is session, and the window the caller's pane is in.
+func (p *MCPProxy) callerSession(ctx context.Context, r *http.Request) (string, WindowInfo, error) {
 	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
 	if pane == "" {
-		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+		return "", WindowInfo{}, fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
 	}
 	if p.Windows == nil {
-		return "", errors.New("this host cannot resolve a tmux pane")
+		return "", WindowInfo{}, errors.New("this host cannot resolve a tmux pane")
 	}
 	// A FRESH read, not the last refresh's: a session that started since then
 	// is found now.
 	ws, err := p.Windows.Windows(ctx)
 	if err != nil {
-		return "", fmt.Errorf("list windows: %w", err)
+		return "", WindowInfo{}, fmt.Errorf("list windows: %w", err)
 	}
 	// What muster will be told, bounds applied (WireWindows: at most
 	// MaxOtherClaudePerWindow other panes per window, MaxOtherClaude in all):
@@ -358,14 +386,14 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 		for _, c := range append([]ClaudePane{derefClaude(w.Claude)}, w.Others...) {
 			if c.Pane == pane && c.Gen != "" {
 				if !listed[c.Gen] {
-					return "", fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
+					return "", WindowInfo{}, fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
 						pane, mirror.MaxOtherClaudePerWindow, mirror.MaxOtherClaude)
 				}
-				return c.Gen, nil
+				return c.Gen, w, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
+	return "", WindowInfo{}, fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
 }
 
 // describePane is a pane header's value as received — quoted, so an odd byte
@@ -572,7 +600,15 @@ func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, 
 		return
 	}
 	if r.Method != http.MethodPost {
-		// The transport's "no server-initiated stream" answer, as muster gives it.
+		// A Claude Code caller of this host's tmux server, with the tool watch
+		// on, may hold the transport's server-to-client stream open: it carries
+		// notifications/tools/list_changed (serveListen). Every other GET —
+		// an outsider's, opencode's, /preview-mcp's, or with the watch off —
+		// gets the transport's "no server-initiated stream", as muster gives it.
+		if r.Method == http.MethodGet && name == "muster" && p.listChangedOn() && wantsListen(r) && !OpenCodeCaller(r) && p.checkServer(r.Context(), r) == nil {
+			p.serveListen(w, r)
+			return
+		}
 		w.Header().Set("Allow", http.MethodPost)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -586,13 +622,12 @@ func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, 
 	serve(w, r)
 }
 
-// serveMuster is /mcp past the guard: the request forwarded to muster.
+// serveMuster is /mcp past the guard: the request forwarded to muster — the
+// primary, or (a tools/call naming another instance, with Extras) that
+// instance (serveRoutedCall). A Claude Code caller's initialize, tools/list
+// and tools/call are rebuilt as mcpinstances.go says; an opencode caller's are
+// forwarded exactly as before, to the primary.
 func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
-	target, err := MCPTarget(p.URL, p.AllowHTTP)
-	if err != nil {
-		mcpRefuse(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
 	if err != nil {
 		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
@@ -612,26 +647,76 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 		Params json.RawMessage `json:"params"`
 	}
 	_ = json.Unmarshal(body, &head)
+	openCode := OpenCodeCaller(r)
+	multi := len(p.Extras) > 0 && !openCode
+	switch {
+	case head.Method == "initialize" && !openCode && (p.listChangedOn() || multi):
+		p.serveInitialize(w, r, body)
+		return
+	case head.Method == "tools/list" && multi:
+		p.serveMergedList(w, r, head.ID, body)
+		return
+	case head.Method == "tools/call" && multi:
+		p.serveRoutedCall(w, r, head.ID, body)
+		return
+	case head.Method == "tools/call" && !openCode && p.ExtrasIgnored != "":
+		// A targets file was configured but ignored: an instance argument is
+		// still the caller's routing choice, so it is taken out, and any but
+		// the primary's name is refused — never run on the primary instead.
+		if call, ok := parseCall(body); ok {
+			inst, bad := call.takeInstance()
+			if bad || (inst != "" && inst != p.primaryName()) {
+				mcpToolError(w, head.ID, fmt.Sprintf("muster instance %q is not reachable: this host's MCP targets file was ignored when muster-mirror started (%s), "+
+					"so it reaches %s, its primary, only; fix the file and restart muster-mirror, or call without instance", inst, p.ExtrasIgnored, p.primaryName()))
+				return
+			}
+			body = call.body()
+		}
+	}
+	req, ok := p.primaryRequest(w, r, head.Method, head.ID, head.Params, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	relayStream(w, resp)
+}
+
+// primaryRequest is the request to the primary for body: on a tools/call, bound
+// to the caller's session (its pane's, or an opencode caller's), refreshed
+// first. A tools/call whose caller is already resolved (sid != "") is not
+// resolved again. ok false: the refusal has been written.
+func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method string, id, params json.RawMessage, body []byte, sid string) (*http.Request, bool) {
+	target, err := MCPTarget(p.URL, p.AllowHTTP)
+	if err != nil {
+		mcpRefuse(w, http.StatusInternalServerError, err.Error())
+		return nil, false
+	}
 	// An opencode caller (OpenCodeCaller) is named by the session its call
 	// carries, bound by openCodeBinding — its pane headers are never read —
 	// and is forwarded with that session's KEY instead of a Claude session.
 	openCode := OpenCodeCaller(r)
-	sid, agentKey := "", ""
-	if head.Method == "tools/call" {
+	agentKey := ""
+	if method == "tools/call" {
 		if openCode {
-			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(head.Params))
+			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
 			if berr == nil {
 				if agentKey = mirror.OpenCodeCallerKey(bound); agentKey == "" {
 					berr = fmt.Errorf("opencode session %s is not a session id muster accepts", strconv.Quote(bound))
 				}
 			}
 			if berr != nil {
-				mcpToolError(w, head.ID, berr.Error())
-				return
+				mcpToolError(w, id, berr.Error())
+				return nil, false
 			}
-		} else if sid, err = p.session(r.Context(), r); err != nil {
-			mcpToolError(w, head.ID, err.Error())
-			return
+		} else if sid == "" {
+			if sid, err = p.session(r.Context(), r); err != nil {
+				mcpToolError(w, id, err.Error())
+				return nil, false
+			}
 		}
 		if p.Refresh != nil {
 			rctx, cancel := context.WithTimeout(r.Context(), mcpRefreshWait)
@@ -641,13 +726,13 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 			cancel()
 		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, false
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Token)
-	if sid != "" {
+	if sid != "" && !openCode {
 		req.Header.Set(MCPSessionHeader, sid)
 	}
 	if openCode {
@@ -660,26 +745,61 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	// 🔴 NO REDIRECTS, whatever client was configured: the request carries
-	// this host's mirror token (internal/noredirect).
-	resp, err := noredirect.Client(p.Client).Do(req)
+	return req, true
+}
+
+// extraRequest is a tools/call to extra instance e, as a REMOTE caller: that
+// instance's own mirror token for this host, the remote marker and the calling
+// Claude session — nothing else of this host's (no listing, no pane, no
+// window).
+func (p *MCPProxy) extraRequest(ctx context.Context, e MCPInstance, sid string, body []byte) (*http.Request, error) {
+	target, err := MCPTarget(e.URL, true)
 	if err != nil {
-		p.logf("muster-mirror: mcp: forward: %v", err)
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+e.Token)
+	req.Header.Set(MCPClientHeader, MCPClientRemote)
+	req.Header.Set(MCPRemoteSessionHeader, sid)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	return req, nil
+}
+
+// send sends req; ok false: the 502 has been written.
+func (p *MCPProxy) send(w http.ResponseWriter, req *http.Request) (*http.Response, bool) {
+	resp, err := p.do(req)
+	if err != nil {
+		p.logf("muster-mirror: mcp: forward to %s: %v", req.URL.Host, err)
 		var refused *noredirect.Error
 		if errors.As(err, &refused) {
 			mcpRefuse(w, http.StatusBadGateway, "muster answered with a redirect to "+refused.Host+", which is not followed")
-			return
+			return nil, false
 		}
 		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
-		return
+		return nil, false
 	}
-	defer resp.Body.Close()
+	return resp, true
+}
+
+// do is THE one way this proxy sends a request upstream — to the primary or an
+// extra instance, a call or a tool-list read. 🔴 NO REDIRECTS, whatever client
+// was configured: every such request carries a mirror token
+// (internal/noredirect).
+func (p *MCPProxy) do(req *http.Request) (*http.Response, error) {
+	return noredirect.Client(p.Client).Do(req)
+}
+
+// relayStream copies resp to w as it arrives: muster keeps a long call alive
+// with whitespace, and the caller's connection must see it to stay open too.
+func relayStream(w http.ResponseWriter, resp *http.Response) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	// Copy as it arrives: muster keeps a long call alive with whitespace, and
-	// the caller's connection must see it to stay open too.
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 32<<10)
 	for {
@@ -694,6 +814,193 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// serveInitialize forwards initialize to the primary — so an outage still
+// fails the connection loudly — and, on a result, sets
+// capabilities.tools.listChanged when the watch is on (without it Claude Code
+// ignores list_changed) and, with extra instances, says in the instructions
+// how to reach them.
+func (p *MCPProxy) serveInitialize(w http.ResponseWriter, r *http.Request, body []byte) {
+	req, ok := p.primaryRequest(w, r, "initialize", nil, nil, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		rest = p.rewriteInitialize(rest)
+	}
+	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+}
+
+// rewriteInitialize is serveInitialize's edit of the result; body unchanged when it
+// is not an initialize result.
+func (p *MCPProxy) rewriteInitialize(body []byte) []byte {
+	var rep map[string]any
+	if json.Unmarshal(body, &rep) != nil {
+		return body
+	}
+	result, ok := rep["result"].(map[string]any)
+	if !ok {
+		return body
+	}
+	caps, _ := result["capabilities"].(map[string]any)
+	if caps == nil {
+		caps = map[string]any{}
+	}
+	tools, _ := caps["tools"].(map[string]any)
+	if tools == nil {
+		tools = map[string]any{}
+	}
+	if p.listChangedOn() {
+		tools["listChanged"] = true
+	}
+	caps["tools"] = tools
+	result["capabilities"] = caps
+	if len(p.Extras) > 0 {
+		ins, _ := result["instructions"].(string)
+		result["instructions"] = strings.TrimSpace(ins + " This host's mirror also reaches the muster instances " + strings.Join(p.extraNames(), ", ") +
+			": an admin tool that takes an instance argument runs there when you pass it; without it, it runs on " + p.primaryName() + ".")
+	}
+	out, err := json.Marshal(rep)
+	if err != nil {
+		return body
+	}
+	return append(out, '\n')
+}
+
+// serveMergedList is a Claude Code caller's tools/list with extra instances:
+// the primary's answer — forwarded as before, and relayed unchanged when it is
+// not a list — merged with every instance's remote list (buildPlan).
+func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+	seq, readAt := p.beginRead(), time.Now()
+	req, ok := p.primaryRequest(w, r, "tools/list", id, nil, body, "")
+	if !ok {
+		return
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+		return
+	}
+	session, perr := parseToolsResult(rest)
+	if perr != nil {
+		writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+		return
+	}
+	session.at = readAt
+	remote, at := p.remotesFor(r.Context())
+	pl, _ := p.storePlan(seq, session, remote, at)
+	tools := pl.merged
+	if tools == nil {
+		tools = []map[string]any{}
+	}
+	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rawOrNull(id), "result": map[string]any{"tools": tools}})
+	writeBuffered(w, http.StatusOK, "application/json", started, append(out, '\n'))
+}
+
+func rawOrNull(id json.RawMessage) json.RawMessage {
+	if len(id) == 0 {
+		return json.RawMessage("null")
+	}
+	return id
+}
+
+// serveRoutedCall is a Claude Code caller's tools/call with extra instances:
+// its instance argument removed and routed (toolPlan.route), and the answer
+// named with the instance that gave it (annotateResult).
+func (p *MCPProxy) serveRoutedCall(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+	call, ok := parseCall(body)
+	if !ok {
+		// Not a call this proxy can take apart: the primary refuses it.
+		req, ok := p.primaryRequest(w, r, "tools/call", id, nil, body, "")
+		if !ok {
+			return
+		}
+		if resp, ok := p.send(w, req); ok {
+			defer resp.Body.Close()
+			relayStream(w, resp)
+		}
+		return
+	}
+	pl := p.planForCall(r.Context())
+	// A tool of the primary's whose OWN argument is named instance is sent
+	// there as it is: that argument is the tool's, not a routing choice.
+	if def, ok := pl.session.find(call.name); ok && def.props[instanceArg] != nil {
+		if req, ok := p.primaryRequest(w, r, "tools/call", id, call.params["arguments"], body, ""); ok {
+			if resp, ok := p.send(w, req); ok {
+				defer resp.Body.Close()
+				relayStream(w, resp)
+			}
+		}
+		return
+	}
+	inst, bad := call.takeInstance()
+	if bad {
+		mcpToolError(w, id, "instance must be a string: the name of a muster instance ("+p.describeInstances()+")")
+		return
+	}
+	// The caller first, as for any call: a pane that runs no session here is
+	// refused before anything is read or sent.
+	sid, win, err := p.callerSession(r.Context(), r)
+	if err != nil {
+		mcpToolError(w, id, err.Error())
+		return
+	}
+	target, refused := pl.route(call.name, inst, call.args)
+	if refused != "" {
+		mcpToolError(w, id, refused)
+		return
+	}
+	var req *http.Request
+	if target == p.primaryName() {
+		if req, ok = p.primaryRequest(w, r, "tools/call", id, call.params["arguments"], call.body(), sid); !ok {
+			return
+		}
+	} else {
+		// 🔴 A SESSION MUSTER STARTED FOR THE CHIEF IS REFUSED HERE: the
+		// instance has no listing of this host to find its window's dispatch
+		// tag in (internal/api's ownersOwnSession), so this host applies it.
+		if win.Dispatch > 0 {
+			mcpToolError(w, id, "this session was started by muster for the chief (host dispatch "+strconv.FormatInt(win.Dispatch, 10)+
+				"), and a tool on another muster instance acts with your owner's authority; ask your owner")
+			return
+		}
+		e, _ := p.extra(target)
+		if req, err = p.extraRequest(r.Context(), e, sid, call.body()); err != nil {
+			mcpToolError(w, id, err.Error())
+			return
+		}
+	}
+	resp, ok := p.send(w, req)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	rest, started, err := readReply(w, resp)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		rest = annotateResult(rest, target)
+	}
+	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
+}
+
+// CloseStreams ends every open GET stream and refuses new ones: ServeMCP's
+// shutdown hook.
+func (p *MCPProxy) CloseStreams() { p.state.hub.closeAll() }
+
+// describeInstances names the configured instances, the primary first.
+func (p *MCPProxy) describeInstances() string {
+	return toolPlan{primary: p.primaryName(), order: append([]string{p.primaryName()}, p.extraNames()...)}.describeInstances()
 }
 
 // ListenMCP listens on addr, which must be a literal loopback IP and a numeric
@@ -733,8 +1040,16 @@ func MCPListenPort(addr string) (int, error) {
 }
 
 // ServeMCP serves h on l until ctx ends.
+//
+// A handler that never ends by itself — an open GET stream (serveListen) — is
+// ended when the shutdown begins (RegisterOnShutdown: MCPProxy.CloseStreams),
+// so it does not hold the shutdown for its whole timeout; a POST in flight is
+// NOT cancelled and drains within it.
 func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	if c, ok := h.(interface{ CloseStreams() }); ok {
+		srv.RegisterOnShutdown(c.CloseStreams)
+	}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

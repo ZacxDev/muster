@@ -258,6 +258,23 @@ func (s *PGStore) TeamMembers(ctx context.Context, team int64) ([]TeamMember, er
 	})
 }
 
+// TeamNotifyMembers is who a TEAM OFFICER's notification reaches (team
+// sharing phase 3, the minimal fan-out): team's members with role operator or
+// manager, read NOW from team_members — a viewer, someone who has left and a
+// disabled person get nothing — persons only, by id. An id that is not a team
+// has no members, so a personal owner's list is empty. Read under System:
+// team_members and users are self-read, and the caller is a background push
+// naming the team, not a person.
+func (s *PGStore) TeamNotifyMembers(ctx context.Context, team int64) ([]int64, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id FROM team_members m JOIN users u ON u.id = m.user_id
+		WHERE m.team_id = $1 AND m.role IN ('operator', 'manager') AND u.kind = 'person' AND u.disabled_at IS NULL
+		ORDER BY m.user_id`, team)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
 // RemoveTeamMember removes person user from team and records it as by.
 func (s *PGStore) RemoveTeamMember(ctx context.Context, by Actor, team, user int64) error {
 	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -278,7 +295,19 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	if err != nil {
 		return err
 	}
+	if err := endLends(ctx, tx, team, user); err != nil {
+		return err
+	}
 	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
+}
+
+// endLends takes back every host spawn user LENT to team (migration 0130, team
+// sharing phase 3), inside tx: a lend is admitted only to a team the person
+// operates, so it ends when they leave the team or drop to viewer — their
+// rows stop showing to the team in the same transaction as the change.
+func endLends(ctx context.Context, tx pgx.Tx, team, user int64) error {
+	_, err := tx.Exec(ctx, `UPDATE officer_host_spawns SET shared_team_id = NULL WHERE owner_id = $1 AND shared_team_id = $2`, user, team)
+	return err
 }
 
 // ListTeams returns every team with its members, oldest team first.
@@ -363,6 +392,11 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	if _, err := tx.Exec(ctx, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role`, team, user, string(role), adder); err != nil {
 		return err
+	}
+	if role == authz.TeamViewer {
+		if err := endLends(ctx, tx, team, user); err != nil {
+			return err
+		}
 	}
 	detail := map[string]any{"user": user, "role": string(role)}
 	if before != nil {

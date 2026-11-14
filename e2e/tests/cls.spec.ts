@@ -77,6 +77,13 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // A team's own page, for its manager (teams_pages.go; TEAM: a team made for
   // the measurement on /admin/teams, the signed-in admin its first manager).
   'GET /teams/{id}': { where: 'signed-in', url: 'TEAM', ready: '#team-members [data-member-role="manager"]' },
+  // The same team's officers, for its manager (team_officers_pages.go, team
+  // sharing phase 3; the server's MUSTER_OFFICERS='[]' turns the store on):
+  // the manager's new-type form is what the page is for.
+  'GET /teams/{id}/officers': { where: 'signed-in', url: 'TEAM_OFFICERS', ready: '#type-key-new' },
+  // The admin's host officer spawns and their team lend (officer_spawn_share.go):
+  // a fresh admin has none, so the empty state is what it draws.
+  'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
@@ -776,6 +783,8 @@ test.describe('signed-in pages in gotrue mode', () => {
       MUSTER_BROWSER_PORT: String(clsSignedBrowserPort),
       MUSTER_PUBLIC_URL: signedURL,
       MUSTER_PLUGINS: '1',
+      // The built-in officer store, with no officer declared: /teams/{id}/officers.
+      MUSTER_OFFICERS: '[]',
       MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x2e).toString('base64'),
       MUSTER_CONNECT_PORT: String(clsSignedConnectPort),
       MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsSignedConnectPort}`,
@@ -831,7 +840,7 @@ test.describe('signed-in pages in gotrue mode', () => {
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;
-          const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url;
+          const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers` : p.url;
           const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));

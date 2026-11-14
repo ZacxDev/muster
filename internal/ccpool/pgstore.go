@@ -89,6 +89,23 @@ func (s *PGStore) MarkRateLimited(ctx context.Context, owner int64, account, det
 	return err
 }
 
+// ClearRateLimited clears the account's rate-limit mark (timestamp NULL,
+// detail empty) only while its timestamp is still markedAt.
+//
+// 🔴 THE rate_limited_at = $3 PREDICATE IS THE GUARD: it makes the clear a
+// compare-and-clear in ONE statement, so a mark a turn wrote after the caller
+// read markedAt (a newer timestamp) is left standing. markedAt is a value read
+// back from this column, so it compares exactly (microseconds both sides).
+func (s *PGStore) ClearRateLimited(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE cc_account_marks SET rate_limited_at = NULL, rate_limited_detail = ''
+		WHERE owner_id = $1 AND account = $2 AND rate_limited_at = $3`, owner, account, markedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // MarkAuthFailed upserts the account's auth-failure timestamp, detail and the
 // failing token's fingerprint.
 func (s *PGStore) MarkAuthFailed(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error {

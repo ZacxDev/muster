@@ -147,6 +147,11 @@ type toolCaller struct {
 	// that is not a mirrored session): what ownersOwnSession reads its
 	// dispatch tag from.
 	mirrorWindow string
+	// remote: a REMOTE caller (mirror_mcp.go's remoteMirrorCaller) — a
+	// session mirrored to another muster, whose host this one cannot see.
+	// hostStepUpGate gates its owner-authority tools whatever this muster's
+	// own officer registry says.
+	remote bool
 }
 
 // callerOfAgent is agent a as a tool caller.
@@ -484,7 +489,14 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 		s.logger.Printf("attention: ask by %s: %v", c.asker.Label, err)
 		return toolErr("the question could not be filed")
 	}
-	s.askFiled(a)
+	// A declared officer's instance asking for itself: the same filing (and
+	// team fan-out) as the officer's other asks (team_notify.go; #668 round 1,
+	// G1). Every other caller's ask is filed as before.
+	if c.agent != nil && s.isOfficerInstance(*c.agent) {
+		s.officerAskFiled(a)
+	} else {
+		s.askFiled(a)
+	}
 	return toolJSON(map[string]any{"id": a.ID, "status": "pending", "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339),
 		"next": askNext(c, a.ID)})
 }

@@ -18,7 +18,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -260,7 +259,7 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	// THE chief — where `/` opens — is marked from the same rule homeTarget
 	// reads (primaryChief), so the sidebar pins exactly the agent home opens.
-	if pc, ok := primaryChief(list); ok {
+	if pc, ok := primaryChief(ownedBy(list, requestOwner(ctx))); ok {
 		for i := range cards {
 			cards[i].PrimaryChief = cards[i].ID == pc.ID
 		}
@@ -1884,8 +1883,13 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolve the chat session this socket talks to: the ?session=<id> one when
 	// valid + owned by this agent, else the agent's latest (created if none). The
-	// session's key is the gateway context; messages persist under its id.
-	session, _ := s.resolveSession(r.Context(), a, r.URL.Query().Get("session"))
+	// session's key is the gateway context; messages persist under its id. A
+	// member on a team agent talks only in its one shared room (resolveTurnSession).
+	session, err := s.resolveTurnSession(r.Context(), a, r.URL.Query().Get("session"))
+	if errors.Is(err, ErrNotTheTeamRoom) {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 	// Same-origin only: previously OriginPatterns:["*"] let ANY website open an
 	// authenticated agent-control socket in a logged-in user's browser. Allow the
 	// host the browser connected to (r.Host) plus any configured public host (for
@@ -1946,8 +1950,10 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": ErrAgentBeingReplaced.Error()})
 			continue
 		}
-		// The operator wrote to the agent: its open asks are answered here.
-		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
+		// The operator wrote to the agent: its open asks are answered here — or,
+		// for a member on a team agent, once the turn passes its fresh role check
+		// and the runtime takes it (addressAsker).
+		mctx := s.addressAsker(ctx, a, in.Text)
 		// 🔴 THE TURN RUNS ON ITS OWN CONTEXT, NOT THE SOCKET'S. Closing the tab or
 		// reloading the page closes this socket; the turn the operator started must
 		// still run to its end and be stored, so a reload shows the reply (and, while
@@ -1960,7 +1966,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// side effect. TestAChiefTurnSurvivesTheSocketClosing is therefore an
 		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
 		// (c.CloseRead's context, measured), not for the line this replaced.
-		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
+		tctx, tcancel := context.WithTimeout(context.WithoutCancel(mctx), agentTurnBudget(a.Kind))
 		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
 		parts, err := func() ([]agents.TurnPart, error) {
 			defer endCount() // a panic must not leave the count up (end is idempotent)
@@ -2092,7 +2098,9 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
 	// event lands; the emit refines the phase as events arrive.
-	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
+	// The AGENT'S owner, not the request's: on a team agent the typer is a
+	// member and the entry is the team's.
+	s.markAgentActive(turnPanelOwner(ctx, a), a.Name, "thinking")
 	pc := &agents.PartCollector{}
 	collect := func(ev agents.StreamEvent) {
 		pc.Observe(ev)
@@ -2102,7 +2110,9 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	}
 	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
 	// waits for that turn and sends again, rather than failing (chat_busy.go).
-	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, viewChiefTurnText(about, text), collect)
+	// On a team agent, the runtime is told who typed (teamTurnHeader): its one
+	// shared room has several people in it. In memory only, like the view's.
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, s.teamTurnHeader(ctx, a, typedBy)+viewChiefTurnText(about, text), collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)
@@ -2230,6 +2240,17 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// and its end, an answer or a failure, is recorded, pushed once when it
 	// changes the outcome, and told to the chief that started it. Wrapped here,
 	// the one function every chat door's turn passes.
+	// 🔴 A MEMBER'S TURN ON A TEAM AGENT RUNS AS THE TEAM (team_agents.go):
+	// its credentials, usage row, tools and reply are the team's, and the
+	// member's role is re-read now — every attempt, so a removed member's
+	// queued message is not sent. FIRST, so nothing below runs as the member.
+	ctx, err = s.turnActingContext(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	// A member's message answers the agent's asks only now that the role check
+	// passed, and once the runtime takes it (team_agents.go addressAsker).
+	ctx, emit = addressAskerOnAccept(ctx, emit)
 	ctx, turn := s.outcomeTurn(ctx, a)
 	defer turn.close(&reply, &err)
 	// "working…" for any page that opens this conversation while the turn runs.
@@ -2258,6 +2279,18 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// card it raises (dispatch_approval.go): ctx, and the registry for a CLI.
 	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
 	defer endRecord()
+	// 🔴 A TEAM-OWNED GATEWAY AGENT TURNS TOOLLESS FROM EVERY CHAT DOOR, the
+	// answer-delivery one included (deliverAnswer → runDeliveredTurn → here,
+	// under the team acting principal), which turnPrincipal's refusal never
+	// sees (team_agents.go teamGatewayToolless).
+	if s.teamGatewayToolless(ctx, a) {
+		s.logger.Printf("agents: %s is a team's gateway agent; its turn goes out WITHOUT tools (no team gateway agents in phase 4)", a.Name)
+		var textEmit func(string)
+		if emit != nil {
+			textEmit = func(delta string) { emit(agents.StreamEvent{Kind: "text", Text: delta}) }
+		}
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, textEmit)
+	}
 	ctx, tt := s.turnTools(ctx, a)
 	return s.runTurnWithTools(ctx, a, sessionKey, text, tt, emit)
 }

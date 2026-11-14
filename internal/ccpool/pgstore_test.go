@@ -141,3 +141,77 @@ func TestPGStoreMarksUpsertAndLiveCountsByKindAndStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestPGStoreClearRateLimitedIsACompareAndClear: the clear erases the
+// rate-limit mark (timestamp and detail) only while its timestamp
+// is still the one the caller read; a mark rewritten since — a turn hit the
+// limit again while the live reading was in flight — stands. The auth mark on
+// the same row is never touched, and another owner's same-named account is
+// not reached.
+func TestPGStoreClearRateLimitedIsACompareAndClear(t *testing.T) {
+	dsn := dbtest.DSN(t)
+	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), 30*time.Second)
+	defer cancel()
+	pool, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool, nil); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := pool.Exec(authz.System(ctx), `DELETE FROM cc_account_marks`); err != nil {
+		t.Fatal(err)
+	}
+	st := NewPG(pool)
+	sys := authz.System(context.Background())
+	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member') ON CONFLICT (id) DO NOTHING`)
+	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
+	if err := st.MarkRateLimited(member, 2, "alpha", "member limit", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkAuthFailed(ctx, 1, "alpha", "abc123abc123", "401", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 5pm", t0); err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.Marks(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markedAt := read["alpha"].RateLimitedAt
+	// A NEWER mark lands after markedAt was read.
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 9pm", t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClearRateLimited(ctx, 1, "alpha", markedAt); err != nil || ok {
+		t.Fatalf("clear against the older mark's time: cleared=%v err=%v, want the newer mark kept", ok, err)
+	}
+	m := mustMark(t, st, ctx, 1)
+	if !m.RateLimitedAt.Equal(t0.Add(time.Minute)) || m.RateLimitedDetail != "resets 9pm" {
+		t.Fatalf("after a refused clear alpha = %+v, want the newer mark", m)
+	}
+	// The clear with the CURRENT mark's time succeeds and leaves the auth mark.
+	if ok, err := st.ClearRateLimited(ctx, 1, "alpha", m.RateLimitedAt); err != nil || !ok {
+		t.Fatalf("clear against the current mark's time: cleared=%v err=%v", ok, err)
+	}
+	m = mustMark(t, st, ctx, 1)
+	if !m.RateLimitedAt.IsZero() || m.RateLimitedDetail != "" ||
+		!m.AuthFailedAt.Equal(t0) || m.AuthFailedToken != "abc123abc123" || m.AuthFailedDetail != "401" {
+		t.Fatalf("after the clear alpha = %+v, want no rate-limit mark and the auth mark intact", m)
+	}
+	mm, err := st.Marks(sys, 2)
+	if err != nil || !mm["alpha"].RateLimitedAt.Equal(t0) || mm["alpha"].RateLimitedDetail != "member limit" {
+		t.Fatalf("owner 2's alpha = %+v, %v; the clear reached another owner's account", mm["alpha"], err)
+	}
+}
+
+func mustMark(t *testing.T, st *PGStore, ctx context.Context, owner int64) Mark {
+	t.Helper()
+	marks, err := st.Marks(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marks["alpha"]
+}

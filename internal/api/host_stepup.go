@@ -38,9 +38,17 @@ import (
 // refused, and the card stays open (or is withdrawn). The decision runs
 // once: it is taken out of the pending set before it runs.
 //
+// 🔴 A REMOTE CALLER IS ALWAYS GATED (mirror_mcp.go, "A remote caller"): a
+// session mirrored to ANOTHER muster, calling this one's admin tools. Its host
+// officers are declared on the muster it is mirrored to, not here, so this
+// registry cannot say whether its machine runs one — an officer there could
+// name the owner's pane and decide as them. So every owner-authority tool from
+// a remote caller files the card, whatever this registry says.
+//
 // What is NOT gated: the owner deciding in muster's own web UI (the Reply
 // drafts tab, Connectors, Attention), which is the owner's signed-in browser;
-// any machine with no host officer declared on it; the read tools.
+// any machine with no host officer declared on it and mirrored HERE; the read
+// tools.
 // ---------------------------------------------------------------------------
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
@@ -178,18 +186,25 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	}
 	p, _ := authz.From(ctx)
 	ids := s.hostOfficersOnMachine(p.UserID, host)
-	if len(ids) == 0 {
+	if len(ids) == 0 && !c.remote {
 		return "", false
 	}
+	// why is the reason the card gives: this machine's officers, or — a remote
+	// caller — that this muster cannot see its machine at all.
+	why := "This machine runs host officer " + strings.Join(ids, ", ")
+	if len(ids) == 0 {
+		why = "This call came from a host that is mirrored to another muster, so this one cannot tell whether that machine runs a host officer"
+		ids = []string{"unknown: mirrored elsewhere"}
+	}
 	if s.ext.Attention == nil {
-		return toolErr("%s from %s needs your owner's confirmation on their phone (this machine runs host officer %s), and this server has no "+
-			"attention store to ask through; decide it in muster's web UI", name, host, strings.Join(ids, ", ")), true
+		return toolErr("%s from %s needs your owner's confirmation on their phone (%s), and this server has no "+
+			"attention store to ask through; decide it in muster's web UI", name, host, strings.ToLower(why[:1])+why[1:]), true
 	}
 	sum := sha256.Sum256([]byte(name + "\x00" + args))
-	question := fmt.Sprintf("A session on %s (%s) asks to %s: %s %s\n\nThis machine runs host officer %s, and its sessions are named by a header "+
+	question := fmt.Sprintf("A session on %s (%s) asks to %s: %s %s\n\n%s, and its sessions are named by a header "+
 		"any process there can set — so this needs you. Confirm on your paired phone to let it happen (a signed action; a browser answer is refused), "+
 		"or decide it in muster's web UI instead. [%s]",
-		host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, mirror.OneLine(strings.TrimSpace(args), 600), strings.Join(ids, ", "), hex.EncodeToString(sum[:6]))
+		host, firstNonBlank(c.asker.Label, c.asker.MirrorSession), what, name, mirror.OneLine(strings.TrimSpace(args), 600), why, hex.EncodeToString(sum[:6]))
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, p.UserID), attention.New{
 		Asker:    attention.Asker{System: true, Label: hostDecisionLabel},
 		Question: question, Options: []string{hostDecisionConfirm, hostDecisionRefuse},

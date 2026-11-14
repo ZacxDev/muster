@@ -231,6 +231,16 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}",
 		"POST /teams/{id}/members",
 		"POST /teams/{id}/members/{user}/remove",
+		// A team's officers page and the host spawns' team lend (team sharing
+		// phase 3): requireSession, and requireOperatorWrite for the writes;
+		// the member/manager check and lendHostSpawn's gate are AFTER the
+		// principal is attached.
+		"GET /teams/{id}/officers",
+		"POST /teams/{id}/officers/types/{key}",
+		"POST /teams/{id}/officers/defs/{officer}",
+		"GET /officers/spawns",
+		"POST /officers/spawns/{id}/share",
+		"POST /officers/spawns/{id}/unshare",
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",

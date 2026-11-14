@@ -19,6 +19,9 @@ var actsAsTeam = map[Via]bool{
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
 	// Per-owner background work meeting a team-owned row.
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
+	// A team officer's runtime (phase 3): an officer whose MUSTER_OFFICERS
+	// owner is a team runs as the team.
+	ViaOfficer: true,
 	// A team-owned gateway agent's turn: NOT a team door in phase 4.
 	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
@@ -26,7 +29,7 @@ var actsAsTeam = map[Via]bool{
 	// Never a team.
 	ViaSession: false, ViaDevice: false, ViaToken: false, ViaHook: false, ViaService: false,
 	ViaRunner: false, ViaPlugin: false, ViaMirrorHost: false, ViaPageLink: false,
-	ViaQueue: false, ViaFocus: false, ViaAsk: false, ViaOfficer: false,
+	ViaQueue: false, ViaFocus: false, ViaAsk: false,
 }
 
 // panicOf runs f and returns its panic message ("" when it did not panic).
@@ -87,8 +90,8 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 8 {
-		t.Fatalf("accepted a team at %d doors; the ledger names 8", accepted)
+	if accepted != 9 {
+		t.Fatalf("accepted a team at %d doors; the ledger names 9", accepted)
 	}
 }
 

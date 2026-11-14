@@ -14,7 +14,14 @@ import "testing"
 // below counts one table too many.
 var ownedAfter0127 = []string{
 	"agent_secrets",                                // 0128
-	"officer_contacts", "officer_contact_events", // 0131
+	"officer_contacts", "officer_contact_events", // 0132
+}
+
+// sharedAfter0127 is every share-class table a migration AFTER 0127 shares
+// (it was personal at 0127), so the counts at 0127 leave it out.
+var sharedAfter0127 = []string{
+	"agents",                                     // 0131
+	"officer_contacts", "officer_contact_events", // 0132
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {
@@ -28,12 +35,13 @@ func TestMigration0127TeamAccess(t *testing.T) {
 		return n
 	}
 	owned := len(rlsTables()) - len(ownedAfter0127)
+	shared := len(shareClasses) - len(sharedAfter0127)
 	if n := countPolicies("owner_isolation"); n != owned || countPolicies("team_read") != 0 {
 		t.Fatalf("control: at 0126 %d tables have owner_isolation (want %d) and %d team_read", n, owned, countPolicies("team_read"))
 	}
 	applyThroughFrom(ctx, t, pool, 127)
-	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-len(shareClasses) || s != len(shareClasses) {
-		t.Fatalf("at 0127: %d owner_isolation, %d team_read; want %d and %d", n, s, owned-len(shareClasses), len(shareClasses))
+	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-shared || s != shared {
+		t.Fatalf("at 0127: %d owner_isolation, %d team_read; want %d and %d", n, s, owned-shared, shared)
 	}
 	for _, q := range asksRollbackSQL(t, "0127_team_access.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
@@ -57,7 +65,7 @@ func TestMigration0127TeamAccess(t *testing.T) {
 		t.Errorf("after the rollback %d functions, columns or triggers of 0127 remain", leftovers)
 	}
 	applyThroughFrom(ctx, t, pool, 127)
-	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-len(shareClasses) || s != len(shareClasses) {
+	if n, s := countPolicies("owner_isolation"), countPolicies("team_read"); n != owned-shared || s != shared {
 		t.Errorf("re-applied after the rollback: %d owner_isolation, %d team_read", n, s)
 	}
 }

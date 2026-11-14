@@ -53,6 +53,17 @@ func (s *memMarks) MarkRateLimited(_ context.Context, _ int64, account, detail s
 	s.m[account] = m
 	return nil
 }
+func (s *memMarks) ClearRateLimited(_ context.Context, _ int64, account string, markedAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.m[account]
+	if !ok || !m.RateLimitedAt.Equal(markedAt) {
+		return false, nil
+	}
+	m.RateLimitedAt, m.RateLimitedDetail = time.Time{}, ""
+	s.m[account] = m
+	return true, nil
+}
 func (s *memMarks) MarkAuthFailed(_ context.Context, _ int64, account, fp, detail string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

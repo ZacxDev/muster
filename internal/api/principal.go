@@ -217,5 +217,11 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if s.principalProbe != nil {
 		s.principalProbe(r)
 	}
+	// A route naming an agent the principal's TEAM owns is decided by the
+	// route's team rule (team_agents.go teamAgentRoutes): one place for every
+	// agent route, so a new one cannot forget it.
+	if s.refuseTeamAgentRoute(w, r) {
+		return
+	}
 	next(w, r)
 }
