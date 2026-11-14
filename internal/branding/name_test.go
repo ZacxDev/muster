@@ -33,6 +33,10 @@ func TestNormalizeNameEdges(t *testing.T) {
 		{"Team؜Example", "", ErrNameControl},
 		{"Team\u200bExample", "", ErrNameControl},
 		{"Team\u200eExample", "", ErrNameControl},
+		{"Team\u200fExample", "", ErrNameControl},
+		// The joiners are allowed (#666): ZWJ in an emoji sequence, ZWNJ in Persian.
+		{"Team \U0001F9D1\u200D\U0001F4BB", "Team \U0001F9D1\u200D\U0001F4BB", nil},
+		{"\u0639\u0644\u06CC\u200C\u0631\u0636\u0627", "\u0639\u0644\u06CC\u200C\u0631\u0636\u0627", nil},
 		{"Team\ufeffExample", "", ErrNameControl},
 		{"Team\xffExample", "", ErrNameInvalid},
 	}

@@ -51,7 +51,8 @@ func TestADisplayNameWithAControlOrFormatCharacterIsRefusedAtEveryDoor(t *testin
 		}},
 	}
 	refused := []rune{0x07, 0x1B, 0x85, 0x061C, 0x200B, 0x200F, 0x202E, 0x2067, 0xFEFF}
-	accepted := []string{"Tamsin Okafor", "Tamsin 李小龍", "Tamsin محمد", "Tamsin Ленка", "Tamsin 🦊"}
+	accepted := []string{"Tamsin Okafor", "Tamsin 李小龍", "Tamsin محمد", "Tamsin Ленка", "Tamsin 🦊",
+		"Tamsin \U0001F468\u200D\U0001F469\u200D\U0001F467", "Tamsin \u0639\u0644\u06CC\u200C\u0631\u0636\u0627"}
 	i := 0
 	for _, d := range doors {
 		for _, r := range refused {

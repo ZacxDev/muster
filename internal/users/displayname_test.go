@@ -67,7 +67,6 @@ var displayNameRefused = []struct {
 	{"C1 last", 0x9F},
 	{"Arabic letter mark", 0x061C},
 	{"zero-width space", 0x200B},
-	{"zero-width joiner", 0x200D},
 	{"left-to-right mark", 0x200E},
 	{"right-to-left mark", 0x200F},
 	{"LRE (first embedding)", 0x202A},
@@ -78,7 +77,8 @@ var displayNameRefused = []struct {
 }
 
 // displayNameAccepted are ordinary names, kept as written: non-Latin
-// scripts, combining marks, and single emoji.
+// scripts, combining marks, single emoji, and the two joiners (ZWJ in an
+// emoji sequence, ZWNJ in Persian), which are allowed.
 var displayNameAccepted = []string{
 	"Wren Halvorsen",
 	"Zofia Wąsowska-Krol",
@@ -92,6 +92,11 @@ var displayNameAccepted = []string{
 	"दीपिका राव",
 	"Kai 🦊",
 	"🌻",
+	// The joiners are allowed (#666): a ZWJ emoji sequence and a Persian
+	// name spelled with ZWNJ, written as code points so they can be seen.
+	"Rui \U0001F468\u200D\U0001F469\u200D\U0001F467",                                              // family: man, woman, girl
+	"Rui \U0001F9D1\u200D\U0001F4BB",                                                              // technologist
+	"\u0639\u0644\u06CC\u200C\u0631\u0636\u0627 \u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645", // Alireza, with ZWNJ
 }
 
 func TestEveryDisplayNameWriterRefusesControlAndFormatCharacters(t *testing.T) {

@@ -77,18 +77,19 @@ func CheckNameText(s string) error {
 }
 
 // nameFormatChar reports the invisible and text-direction formatting
-// characters a name may not hold: the zero-width space, non-joiner, joiner
-// and the two direction marks (U+200B–U+200F), the Arabic letter mark
+// characters a name may not hold: the zero-width space (U+200B), the two
+// direction marks LRM and RLM (U+200E, U+200F), the Arabic letter mark
 // (U+061C), the bidi embeddings and overrides (U+202A–U+202E), the bidi
 // isolates (U+2066–U+2069) and the zero-width no-break space / BOM (U+FEFF).
 // Each either reorders the text around it or draws nothing, so two names that
 // look identical can differ.
 //
-// ⚠ ZWJ (U+200D) AND ZWNJ (U+200C) ARE REFUSED TOO. That refuses an emoji
-// sequence joined by ZWJ (a family, a profession) and a Persian or Indic
-// spelling that needs ZWNJ. A single emoji, and every script written without
-// them, is accepted.
+// ⚠ THE JOINERS ARE ALLOWED: ZWNJ (U+200C) and ZWJ (U+200D). They are part
+// of how real names are written: ZWJ joins an emoji sequence (a family, a
+// person at a laptop) and ZWNJ is required in Persian and in Indic scripts.
+// Allowing them is a decision (#666), so don't "complete" the 200B–200F
+// range.
 func nameFormatChar(r rune) bool {
-	return r == 0x061C || (r >= 0x200B && r <= 0x200F) || (r >= 0x202A && r <= 0x202E) ||
+	return r == 0x061C || r == 0x200B || r == 0x200E || r == 0x200F || (r >= 0x202A && r <= 0x202E) ||
 		(r >= 0x2066 && r <= 0x2069) || r == 0xFEFF
 }

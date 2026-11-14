@@ -27,8 +27,8 @@ Open **Account** as an admin. The **Instance branding** section has:
 
 - **Display name**: optional, up to 64 characters. Surrounding spaces are
   trimmed. Control characters, text-direction controls and invisible
-  formatting characters (zero-width spaces and joiners, direction marks, the
-  byte-order mark) are refused.
+  formatting characters (the zero-width space, direction marks, the
+  byte-order mark) are refused. The zero-width joiners are allowed.
   Save an empty name to clear it.
 - **Logo**: a PNG, JPEG or WebP file, up to 1 MiB, and at most 4096 pixels on
   each side and 4,194,304 pixels (2048 × 2048) in all, so a 4096 × 1024
