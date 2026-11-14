@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// OUTREACH (migration 0131; docs/plugins.md "Outreach drafts", docs/
+// OUTREACH (migration 0132; docs/plugins.md "Outreach drafts", docs/
 // officers-builtin.md "People and outreach"): an officer's outbound draft
 // that reaches a PERSON — a DM {handle}, a follow {handle}, a like {ref}, or
 // a reply on one of a person's recorded engagements.
@@ -60,7 +60,7 @@ type OutreachResolved struct {
 	Handle  string
 }
 
-// Bounds of an outreach draft (0131's CHECKs say the same).
+// Bounds of an outreach draft (0132's CHECKs say the same).
 const (
 	// MaxHandleBytes bounds a person's handle.
 	MaxHandleBytes = 100
@@ -147,6 +147,7 @@ const NotSelectedReason = "not selected"
 // the Entries' ids a decision must name.
 type OutreachBatch struct {
 	ID      string  `json:"batch_id"`
+	Owner   int64   `json:"owner"`
 	Officer string  `json:"officer"`
 	Day     string  `json:"day"`
 	Entries []Draft `json:"-"`
@@ -156,26 +157,35 @@ type OutreachBatch struct {
 	SHA256        string  `json:"batch_sha256"`
 }
 
-var batchIDRE = regexp.MustCompile(`^([a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9]+(?:-[a-z0-9]+)*)@([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+var batchIDRE = regexp.MustCompile(`^([1-9][0-9]{0,18}):([a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9]+(?:-[a-z0-9]+)*)@([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
 
-// BatchID is officer's batch of UTC day ("2006-01-02"): "<officer>@<day>".
-func BatchID(officer, day string) string { return officer + "@" + day }
+// BatchID is owner's officer's batch of UTC day ("2006-01-02"):
+// "<owner>:<officer>@<day>". 🔴 THE OWNER IS PART OF IT: an officer id is
+// unique per owner only, so a person's officer and their team's officer of
+// the same id are two batches, never one card.
+func BatchID(owner int64, officer, day string) string {
+	return strconv.FormatInt(owner, 10) + ":" + officer + "@" + day
+}
 
 // ParseBatchID splits a BatchID.
-func ParseBatchID(id string) (officer, day string, ok bool) {
+func ParseBatchID(id string) (owner int64, officer, day string, ok bool) {
 	m := batchIDRE.FindStringSubmatch(id)
 	if m == nil {
-		return "", "", false
+		return 0, "", "", false
 	}
-	if _, err := time.Parse("2006-01-02", m[2]); err != nil {
-		return "", "", false
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, "", "", false
 	}
-	return m[1], m[2], true
+	if _, err := time.Parse("2006-01-02", m[3]); err != nil {
+		return 0, "", "", false
+	}
+	return n, m[2], m[3], true
 }
 
 // BatchSHA256 is the binding of a batch's decidable draft ids: the SHA-256 of
 // the ids in ascending order, comma-separated. Every entry is immutable
-// (0121/0131's trigger), so its id names what the card showed.
+// (0121/0132's trigger), so its id names what the card showed.
 func BatchSHA256(ids []int64) string {
 	sorted := append([]int64(nil), ids...)
 	slices.Sort(sorted)
@@ -200,12 +210,12 @@ func batchOf(ds []Draft) []OutreachBatch {
 			continue
 		}
 		day := d.CreatedAt.UTC().Format("2006-01-02")
-		id := BatchID(*d.Officer, day)
+		id := BatchID(d.OwnerID, *d.Officer, day)
 		i, ok := at[id]
 		if !ok {
 			i = len(out)
 			at[id] = i
-			out = append(out, OutreachBatch{ID: id, Officer: *d.Officer, Day: day})
+			out = append(out, OutreachBatch{ID: id, Owner: d.OwnerID, Officer: *d.Officer, Day: day})
 		}
 		if d.AwaitingCheck() {
 			out[i].Waiting++
@@ -244,15 +254,15 @@ func (s *PGStore) OutreachBatches(ctx context.Context) ([]OutreachBatch, error) 
 // OutreachBatch is the principal's batch id (ErrNotFound when it holds no
 // pending follow or like).
 func (s *PGStore) OutreachBatch(ctx context.Context, id string) (OutreachBatch, error) {
-	officer, day, ok := ParseBatchID(id)
+	owner, officer, day, ok := ParseBatchID(id)
 	if !ok {
-		return OutreachBatch{}, invalid("batch_id is <officer>@<YYYY-MM-DD>")
+		return OutreachBatch{}, invalid("batch_id is <owner>:<officer>@<YYYY-MM-DD>")
 	}
 	if err := s.sweep(ctx); err != nil {
 		return OutreachBatch{}, err
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE `+batchWhere+`
-		AND officer = $1 AND (created_at AT TIME ZONE 'UTC')::date = $2::date ORDER BY created_at, id`, officer, day)
+		AND owner_id = $3 AND officer = $1 AND (created_at AT TIME ZONE 'UTC')::date = $2::date ORDER BY created_at, id`, officer, day, owner)
 	if err != nil {
 		return OutreachBatch{}, err
 	}
@@ -294,9 +304,9 @@ type BatchDecided struct {
 // entries are approved (the binding: an empty body and no media) and every
 // other entry rejected NotSelectedReason, each audited with the batch.
 func (s *PGStore) DecideOutreachBatch(ctx context.Context, id string, dec BatchDecision) (BatchDecided, error) {
-	officer, day, ok := ParseBatchID(id)
+	owner, officer, day, ok := ParseBatchID(id)
 	if !ok {
-		return BatchDecided{}, invalid("batch_id is <officer>@<YYYY-MM-DD>")
+		return BatchDecided{}, invalid("batch_id is <owner>:<officer>@<YYYY-MM-DD>")
 	}
 	if !sha256RE.MatchString(dec.BatchSHA256) {
 		return BatchDecided{}, invalid("batch_sha256 is the batch's, 64 lower-case hex digits, as the card or plugin_outbound_batch_get showed it")
@@ -326,7 +336,7 @@ func (s *PGStore) DecideOutreachBatch(ctx context.Context, id string, dec BatchD
 	out := BatchDecided{Batch: id}
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE `+batchWhere+`
-			AND officer = $1 AND (created_at AT TIME ZONE 'UTC')::date = $2::date ORDER BY id FOR UPDATE`, officer, day)
+			AND owner_id = $3 AND officer = $1 AND (created_at AT TIME ZONE 'UTC')::date = $2::date ORDER BY id FOR UPDATE`, officer, day, owner)
 		if err != nil {
 			return err
 		}
@@ -372,7 +382,7 @@ func (s *PGStore) DecideOutreachBatch(ctx context.Context, id string, dec BatchD
 			args := []any{d.ID, NotSelectedReason}
 			if seen[d.ID] {
 				if d.Body != "" || len(d.MediaRefs) > 0 {
-					// a follow or a like is never text (0131's shape): a second check
+					// a follow or a like is never text (0132's shape): a second check
 					return invalid("draft %d carries text or media; it cannot be approved in a batch", d.ID)
 				}
 				q, action = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now(),

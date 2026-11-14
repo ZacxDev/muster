@@ -50,7 +50,19 @@
 // reset time the CLI's message states ("resets 9:45pm (UTC)", "resets Oct 9,
 // 9am (UTC)") when one can be read, else the mark's time plus
 // [Limits.Cooldown] (default [DefaultCooldown]). It is over at exactly that
-// instant.
+// instant — or sooner, when THE LIVE READING SAYS THE ACCOUNT IS USABLE: the
+// usage poller (internal/ccusage) keeps reading a cooling account, and when
+// what the account reports right now shows it usable it clears the mark
+// ([Pool.ClearRateLimit]), guarded so a NEWER mark written while it was
+// reading is never cleared. A stated reset is the CLI's estimate; the live
+// reading is the account's own word. With the poller off nothing ends a
+// cooldown early.
+//
+// A rate_limited mark is about the SUBSCRIPTION, not the token: limits are
+// counted per subscription, so a re-issued token on the same one is still
+// limited, and replacing the token does NOT end the cooldown. A changed token
+// on a cooling account is read by the live probe on the poller's next pass,
+// and that reading decides.
 //
 // 🔴 ONLY THE JOB API AND THE FAILOVER REFUSE FOR IT. The job API's
 // worker-pool choice (internal/api chooseWorker, reading
@@ -189,6 +201,10 @@ type Store interface {
 	LiveCounts(ctx context.Context, owner int64) (map[string]int, error)
 	MarkRateLimited(ctx context.Context, owner int64, account, detail string, at time.Time) error
 	MarkAuthFailed(ctx context.Context, owner int64, account, fingerprint, detail string, at time.Time) error
+	// ClearRateLimited clears owner's account's rate_limited mark ONLY while
+	// its timestamp is still markedAt (a compare-and-clear), and reports
+	// whether it did. A newer mark, written after markedAt was read, stands.
+	ClearRateLimited(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error)
 }
 
 // Source answers which Claude accounts an OWNER's agents may run on: name →
@@ -658,14 +674,57 @@ func (p *Pool) FailoverTarget(ctx context.Context, owner int64, from string) (st
 	return to, ok, nil
 }
 
-// CoolingUntil is when owner's account stops cooling down after its latest
-// rate_limited mark ([CooldownUntil]), or zero when it is not cooling now.
-func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+// Cooldown is one account's rate-limit cooldown as [Pool.Cooldown] read it.
+type Cooldown struct {
+	// Until is when the cooldown ends ([CooldownUntil]); zero when the account
+	// is not cooling now.
+	Until time.Time
+	// MarkedAt is the timestamp of the rate_limited mark Until was computed
+	// from (zero with Until). It is what [Pool.ClearRateLimit] compares
+	// against, so a clear decided on this reading can never erase a newer mark.
+	MarkedAt time.Time
+	// Detail is that mark's stored detail (the CLI's limit message; "" with
+	// Until). It names WHICH limit was hit, which the live reading must answer
+	// for before the mark is cleared (internal/ccusage LiveUsable).
+	Detail string
+}
+
+// Cooldown is owner's account's rate-limit cooldown.
+func (p *Pool) Cooldown(ctx context.Context, owner int64, account string) (Cooldown, error) {
 	marks, err := p.store.Marks(ctx, owner)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("ccpool: read account marks: %w", err)
+		return Cooldown{}, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
-	return coolingUntil(marks[account], p.limits.Cooldown, p.now()), nil
+	m := marks[account]
+	until := coolingUntil(m, p.limits.Cooldown, p.now())
+	if until.IsZero() {
+		return Cooldown{}, nil
+	}
+	return Cooldown{Until: until, MarkedAt: m.RateLimitedAt, Detail: m.RateLimitedDetail}, nil
+}
+
+// CoolingUntil is [Pool.Cooldown]'s Until: when owner's account stops cooling
+// down, or zero when it is not cooling now.
+func (p *Pool) CoolingUntil(ctx context.Context, owner int64, account string) (time.Time, error) {
+	c, err := p.Cooldown(ctx, owner, account)
+	return c.Until, err
+}
+
+// ClearRateLimit clears owner's account's rate_limited mark because a LIVE
+// reading of the account shows it usable (internal/ccusage), and reports
+// whether it did. markedAt is [Cooldown.MarkedAt] as read BEFORE that reading
+// was taken: the mark is cleared only while it is still that one, so a turn
+// that hits the limit again while the reading is in flight keeps its mark.
+// A zero markedAt clears nothing.
+func (p *Pool) ClearRateLimit(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error) {
+	if markedAt.IsZero() {
+		return false, nil
+	}
+	ok, err := p.store.ClearRateLimited(ctx, owner, account, markedAt)
+	if err != nil {
+		return false, fmt.Errorf("ccpool: clear the rate-limit mark of account %q: %w", account, err)
+	}
+	return ok, nil
 }
 
 // maxDetail bounds the stored detail. ccd's message carries the CLI's "resets …"

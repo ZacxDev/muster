@@ -121,7 +121,7 @@ const (
 	// refusedByWithPrincipal: the site's door is outside authz's
 	// teamActingVias, so WithPrincipal panics on a team. Its owners are
 	// persons by construction (users.PersonIDs) or the phase that shares
-	// through it (2b, 3) has not landed; the panic is the backstop.
+	// through it (2b) has not landed; the panic is the backstop.
 	refusedByWithPrincipal = "panics: a team never signs in, and that door does not act as a team"
 	// refusedToolless: turnPrincipal answers false — the turn goes toolless.
 	refusedToolless = "false: a team's gateway turn goes toolless (no team gateway agents in phase 4)"
@@ -156,12 +156,32 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.jobPrincipal(ctx, team)
 		}},
+	// A team officer's runtime (team sharing phase 3): an officer whose
+	// MUSTER_OFFICERS owner is a team acts as the team.
+	"officerPrincipal": {actsAsTeam: true, via: authz.ViaOfficer,
+		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
+			return s.officerPrincipal(ctx, team)
+		}},
 	// The chief's own write from a turn: the SAME owner, its door narrowed to
 	// the agent's. Handed the team acting principal of a team chief's tool
 	// call, it stays the team.
 	"chiefWriteContext": {actsAsTeam: true, via: authz.ViaAgent,
 		mint: func(_ *Server, ctx context.Context, team int64, a agents.Agent) context.Context {
 			return chiefWriteContext(authz.WithPrincipal(ctx, authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent}), a)
+		}},
+	// A turn of a team agent (team_agents.go): handed the team acting
+	// principal it stays the team. Its other arm — a MEMBER's turn re-minted
+	// as the team after a fresh role read — is walked against Postgres by
+	// TestAMembersTurnOnTheTeamChiefRunsAsTheTeam (the bearer the runtime
+	// receives is the team's) and TestARemovedMembersQueuedMessageIsDropped.
+	"turnActingContext": {actsAsTeam: true, via: authz.ViaAgent,
+		mint: func(s *Server, ctx context.Context, team int64, a agents.Agent) context.Context {
+			a.OwnerID = team
+			out, err := s.turnActingContext(authz.WithPrincipal(ctx, teamActingPrincipal(team, authz.ViaAgent)), a)
+			if err != nil {
+				return nil
+			}
+			return out
 		}},
 	"turnPrincipal": {refusal: refusedToolless,
 		mint: func(s *Server, ctx context.Context, _ int64, a agents.Agent) context.Context {
@@ -178,10 +198,6 @@ var perOwnerSites = map[string]perOwnerSite{
 	"askPrincipal": {refusal: refusedByWithPrincipal,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.askPrincipal(ctx, team)
-		}},
-	"officerPrincipal": {refusal: refusedByWithPrincipal,
-		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
-			return s.officerPrincipal(ctx, team)
 		}},
 	"queuedPrincipal": {refusal: refusedByWithPrincipal,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
@@ -354,8 +370,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 6 || refusing != 6 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 6 and 6", acting, refusing)
+	if acting != 8 || refusing != 5 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 8 and 5", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through

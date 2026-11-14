@@ -601,6 +601,13 @@ too, through its host's `muster-mirror`:
    same address (hosts behind one NAT or Cloudflare edge share one) is checked
    as usual, so a host with a stale token never locks out another host.
 
+With `-mcp-targets-file`, the same endpoint also reaches **other muster
+instances**: the admin tools on this list take an optional `instance`
+argument, and the session-bound ones (the attention tools, `chief_ask`,
+`route_reply`, …) run on the primary only. Another instance serves such a call
+as a **remote caller**, unbound, with the admin tools alone
+([mirroring.md](mirroring.md#several-muster-instances)).
+
 An ask made this way is shown under the window's title and host, and only that
 session can wait on or cancel it. The task tools act on **the tasks that
 session created** (its `created` link, which `muster task create` records from
@@ -890,6 +897,13 @@ sessions) add two things. Every other tool's description, and the
   crashed) carries the tool's current definition under `current_definition`. Past 8 KiB, it carries a pointer to `muster_help`
   instead. This is what a model holding an old definition recovers from: its
   call is refused, it reads the current definition, and it calls again.
+
+A host's `muster-mirror` (`-mcp-tools-refresh`, on by default) also re-reads
+the tool list every minute and sends `notifications/tools/list_changed` to its
+connected Claude Code sessions when the list changes, so they re-read it without
+reconnecting ([mirroring.md](mirroring.md#the-tool-list-stays-current)). That
+refreshes the tool LIST. A definition already saved in a conversation is still
+recovered the way described above.
 
 A session does not need a new conversation. A refused call carries the
 definition as soon as muster is released. `muster_help` reaches a session the

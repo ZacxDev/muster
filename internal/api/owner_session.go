@@ -48,7 +48,11 @@ func (s *Server) ownersOwnSession(ctx context.Context, c toolCaller) string {
 	}
 	if c.mirrorWindow == "" {
 		// A per-session host lists no windows, so it can carry no tag: no host
-		// spawns on one (spawning needs a per-window, v2 host).
+		// spawns on one (spawning needs a per-window, v2 host). A remote caller
+		// (remoteMirrorCaller) has no window here either: its host is not
+		// mirrored to this muster, and its own mirror refuses a window that
+		// carries a dispatch before it sends (mirrorhost's MCPProxy) — the same
+		// host-reported fact this loop reads from a listing.
 		return ""
 	}
 	if s.ext.Mirror == nil {

@@ -168,6 +168,7 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents/{id}/sessions/fresh-primary",
 		},
 		callers: []string{
+			"(*Server).chatTurn",         // Chat for a team's gateway agent (teamGatewayToolless); reached from every chat door, as runTurnWithTools is
 			"(*Server).gatewayTurn",      // Chat (or runTurnWithTools); reached only from handleAPIAgentSendMessage (POST /api/agents/{name}/messages)
 			"(*Server).runJobTurn",       // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
 			"(*Server).runTurnWithTools", // ChatWithTools + Chat; reached from chatTurn (runUserTurn: handleAgentWS, handleAgentSend) and gatewayTurn

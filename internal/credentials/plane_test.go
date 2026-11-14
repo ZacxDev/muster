@@ -71,6 +71,9 @@ func (noMarks) LiveCounts(context.Context, int64) (map[string]int, error)    { r
 func (noMarks) MarkRateLimited(context.Context, int64, string, string, time.Time) error {
 	return nil
 }
+func (noMarks) ClearRateLimited(context.Context, int64, string, time.Time) (bool, error) {
+	return false, nil
+}
 func (noMarks) MarkAuthFailed(context.Context, int64, string, string, string, time.Time) error {
 	return nil
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,10 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Outreach drafts through muster's doors (plugins outreach.go,
@@ -260,7 +264,7 @@ func (w *outboundWorld) decideBatchForm(batch, sha string, approve ...int64) *ht
 func TestTheOutreachBatchBindsTheTickedSet(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	ids, items := w.followsFor("gil", "hal")
-	batch := plugins.BatchID(builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
+	batch := plugins.BatchID(1, builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
 	page := w.do("GET", "/attention?tab=drafts", "", func(r *http.Request) { r.Header.Set("Cookie", sessionCookieFor(w.srv)) }).Body.String()
 	if !strings.Contains(page, `data-outreach-batch="`+batch+`"`) || strings.Contains(page, `data-draft-id="`+strconv.FormatInt(ids[0], 10)+`"`) {
 		t.Fatalf("the drafts tab does not draw the follows as one batch card")
@@ -311,7 +315,7 @@ func TestTheOutreachBatchBindsTheTickedSet(t *testing.T) {
 	// decision of a later batch.
 	nids, _ := w.followsFor("jan", "kay")
 	w.engagement("kay", "block", "b-kay", "")
-	nbatch := plugins.BatchID(builtinOfficerID, w.draft(nids[0]).CreatedAt.UTC().Format("2006-01-02"))
+	nbatch := plugins.BatchID(1, builtinOfficerID, w.draft(nids[0]).CreatedAt.UTC().Format("2006-01-02"))
 	// (the same UTC day: the batch is the decided one's remainder)
 	if rec := w.decideBatchForm(nbatch, plugins.BatchSHA256(nids), nids[0], nids[1]); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "untick it") {
 		t.Fatalf("ticking a person who blocked us: %d", rec.Code)
@@ -359,7 +363,7 @@ func TestOutreachAuditRoundOne(t *testing.T) {
 	if strings.Contains(page, "EVIL WORDS") || !strings.Contains(page, "nice work") {
 		t.Fatalf("the batch card shows another sender's words as the person's engagement")
 	}
-	batch := plugins.BatchID(builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
+	batch := plugins.BatchID(1, builtinOfficerID, w.draft(ids[0]).CreatedAt.UTC().Format("2006-01-02"))
 	// a single reject of a follow: quiet
 	if rec := w.rejectForm(ids[2], ""); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject ned: %d", rec.Code)
@@ -397,5 +401,88 @@ func TestOutreachAuditRoundOne(t *testing.T) {
 	}
 	if d := w.draft(ids[1]); d.Status != plugins.DraftSent {
 		t.Fatalf("the send to an erased person: %s", d.Status)
+	}
+}
+
+// TestATeamsOutreachBatchIsItsManagersToDecide: a team officer's follows are
+// their own batch (the owner is in its id, so a person's officer of the same
+// id never shares the card); the team's MANAGER decides it from their signed-in
+// session; the team itself, its operator, and the manager through a door
+// that carries no team (their mirrored session) are refused 403 before
+// anything is decided.
+func TestATeamsOutreachBatchIsItsManagersToDecide(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	sys := authz.System(w.ctx)
+	pool := w.f.pool
+	if _, err := pool.Exec(sys, `SELECT setval(pg_get_serial_sequence('users', 'id'), (SELECT max(id) FROM users))`); err != nil {
+		t.Fatal(err)
+	}
+	person := func(n string) int64 {
+		var id int64
+		if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, n+strconv.FormatInt(time.Now().UnixNano(), 10)).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	mgr, op := person("ob-mgr"), person("ob-op")
+	us := users.NewPG(pool)
+	team, err := us.CreateTeam(sys, users.Actor{UserID: 1, Via: authz.ViaSession}, "ob-team-"+strconv.FormatInt(time.Now().UnixNano(), 10), mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := us.SetTeamMember(sys, users.Actor{UserID: 1, Via: authz.ViaSession}, team.ID, op, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM plugin_reply_drafts WHERE owner_id = $1`, `DELETE FROM officer_contacts WHERE owner_id = $1`,
+			`DELETE FROM officer_defs WHERE owner_id = $1`, `DELETE FROM officer_types WHERE owner_id = $1`,
+			`DELETE FROM plugins WHERE owner_id = $1`, `DELETE FROM agents WHERE owner_id = $1`} {
+			_, _ = pool.Exec(sys, q, team.ID)
+		}
+	})
+	var agent, plugin, contact int64
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pool.QueryRow(sys, `INSERT INTO agents (owner_id, name, namespace) VALUES ($1, $2, $2) RETURNING id`, team.ID, "ob-team-agent-"+strconv.FormatInt(team.ID, 10)).Scan(&agent))
+	must(pool.QueryRow(sys, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, capabilities) VALUES ($1, 'ob-team-relay', 'r', md5($2) || md5($2), 'r', '{messages,draft_checks}') RETURNING id`,
+		team.ID, strconv.FormatInt(team.ID, 10)).Scan(&plugin))
+	must(w.store.PutType(sys, team.ID, builtin.Type{Key: "marketing", Name: "Team"}))
+	must(w.store.PutDef(sys, team.ID, builtin.Def{Officer: builtinOfficerID, Enabled: true}))
+	must(pool.QueryRow(sys, `INSERT INTO officer_contacts (owner_id, officer, venue, handle) VALUES ($1, $2, $3, 'tzed') RETURNING id`, team.ID, builtinOfficerID, outVenue).Scan(&contact))
+	var draft int64
+	must(pool.QueryRow(sys, `INSERT INTO plugin_reply_drafts (owner_id, agent_id, agent_name, body, expires_at, check_state, checked_at, plugin_id, venue, target_kind, target_ref,
+			officer, because_ref, contact_id, outreach_reason, requested_by_user)
+		VALUES ($1, $2, 'a', '', now() + interval '1 day', 'sendable', now(), $3, $4, 'follow', 'tzed', $5, 'r1', $6, 'r', $1) RETURNING id`,
+		team.ID, agent, plugin, outVenue, builtinOfficerID, contact).Scan(&draft))
+	d, err := w.ps.Draft(sys, draft)
+	must(err)
+	batch := plugins.BatchID(team.ID, builtinOfficerID, d.CreatedAt.UTC().Format("2006-01-02"))
+	if mine := plugins.BatchID(1, builtinOfficerID, d.CreatedAt.UTC().Format("2006-01-02")); mine == batch {
+		t.Fatal("a person's and a team's officer of one id share a batch id")
+	}
+	member := func(uid int64, via authz.Via) context.Context {
+		a, err := us.Account(sys, uid)
+		must(err)
+		return authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: a.Role, Via: via, Teams: a.Teams})
+	}
+	teamActing := authz.WithPrincipal(context.Background(), authz.Principal{UserID: team.ID, Team: true, Role: authz.RoleMember, Via: authz.ViaAgent})
+	dec := plugins.BatchDecision{BatchSHA256: plugins.BatchSHA256([]int64{draft}), Approve: []int64{draft}}
+	for what, ctx := range map[string]context.Context{"the team itself": teamActing, "the team's operator": member(op, authz.ViaSession)} {
+		if _, refused := w.srv.decideBatchAs(ctx, batch, dec); refused == nil || refused.code != http.StatusForbidden {
+			t.Errorf("%s decided the team's batch: %+v", what, refused)
+		}
+	}
+	if got, _ := w.ps.Draft(sys, draft); got.Status != plugins.DraftPending {
+		t.Fatalf("a refused decision decided the draft: %s", got.Status)
+	}
+	if _, refused := w.srv.decideBatchAs(member(mgr, authz.ViaSession), batch, dec); refused != nil {
+		t.Fatalf("the team's manager deciding the team's batch: %+v", refused)
+	}
+	if got, _ := w.ps.Draft(sys, draft); got.Status != plugins.DraftApproved {
+		t.Fatalf("the manager's decision: %s", got.Status)
 	}
 }

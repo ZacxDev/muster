@@ -288,7 +288,7 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 					return true
 				}
 				switch sel.Sel.Name {
-				case "askerAddressed", "askerAddressedBy", "AnswerInSession":
+				case "askerAddressed", "askerAddressedBy", "AnswerInSession", "addressAsker":
 					calls[sel.Sel.Name] = append(calls[sel.Sel.Name], site{fn.Name.Name, ""})
 				case "mirrorAddressed":
 					calls[sel.Sel.Name] = append(calls[sel.Sel.Name], site{fn.Name.Name, expr(call.Args[3])})
@@ -311,7 +311,10 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		// The chief chat's form and socket only. 🔴 NOT the view's chief door
 		// (handleViewChief): a line typed from a session's view answers none of
 		// the chief's asks (operator decision, PR #537 round 1).
-		"askerAddressed": {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
+		"addressAsker": {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
+		// addressAsker's two arms: the owner's message now, a member's on a
+		// team agent once its turn passes the fresh role check (team_agents.go).
+		"askerAddressed": {{"addressAsker", ""}, {"addressAsker", ""}},
 		// enqueueSend: a queue post (sendQueueAdd) and a failed question
 		// card's "Send as a message" (handleMirrorAskMessage) both queue through it.
 		"mirrorAddressed": {{"enqueueSend", "mirror.PasteClaude"}, {"mirrorDeliver", "p.target"}, {"sendQueueRetry", "mirror.PasteClaude"}},

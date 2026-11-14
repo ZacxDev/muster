@@ -843,6 +843,90 @@ rule the later phases' rows will meet.
 - **Rollback:** as phase 2; the officer keeps running under its owner and its
   asks become invisible to people until roll-forward.
 
+> **As built in phase 3 (0130):**
+> - **The door.** `authz.ViaOfficer` joined `teamActingVias`
+>   (`TestTheTeamActingViasAreExactlyTheListedDoors`, now 9 doors). The
+>   runtime of an officer whose `MUSTER_OFFICERS` owner is a team acts as the
+>   team acting principal. That covers its wake loop, its builtin store, its
+>   asks and its outbound drafts.
+> - **Boot.** `officers.CheckOwners`, called from `api.EnableOfficers`,
+>   refuses an owner that names nobody. It also refuses a team owning a
+>   `"runtime": "host"` officer, because team hosts are 2b and the hub never
+>   lists a team's host.
+> - **The tables were already classed by 2a.** 0130 adds no share-class
+>   change to them.
+> - **Charter edits are a session page, not the JSON admin API.** This is a
+>   delta from §4, which let "a personal token" set `owner` to a team it
+>   manages. 2a's operator decision is that a personal API token carries no
+>   team access, and `/api/officers/*` admits only a personal token or the
+>   hook token. So those routes stay the caller's own and never name a team.
+>   A manager edits a team's types and officers on `/teams/{id}/officers`,
+>   signed in. Every member reads that page; only a manager writes. Postgres
+>   refuses an operator too, because officer types and defs are managed.
+> - **Escalation to a team.** One team-owned ask. A team id is admitted as
+>   `escalate_to` only on that page, and only the page's team or a team the
+>   manager operates. The JSON API's check (`UsersExist`) still refuses a
+>   team.
+> - **Drafts.**
+>   - `plugin_reply_drafts.requested_by_user` is stamped by
+>     `muster_actor_column`: the person, or the team for a team officer's
+>     draft.
+>   - `draft_approver` (a trigger, on a decision: an update) refuses a team
+>     approving a draft it owns, and a person approving a team's draft they
+>     caused. A draft FILED approved is a standing approval (a route's
+>     allowlist) and is not refused (#668 round 0, D2).
+>   - `decideDraftAs` refuses first (`draftDeciderRefusal`): the team
+>     itself; a member below manager; and the requester, for an approval. A
+>     door without the person's teams (token, agent, mirror host) is "not a
+>     manager".
+>   - The requester may still REJECT their own draft.
+>   - Step-up is the Asks page's existing approval step-up, unchanged.
+>   - `plugin_draft_decide` (the mirror door) carries no teams, so it never
+>     reaches a team's draft. This holds until 2b's reduced team-token tool
+>     set.
+> - **Host spawns are lendable, personal by default** (operator decision; a
+>   new share class, `lentOwned`).
+>   - The owner lends one row to one team they operate, and unlends it.
+>     There are two ways in: `/officers/spawns` (the session tier) and the
+>     chief's `officer_spawn_share` (chief-only, and on MCP for a
+>     claude-code chief).
+>   - `lendHostSpawn` is the one gate. `spawnLendDoors` admits:
+>     - the owner's browser session;
+>     - the owner's own chief: its MCP door (`ViaAgent`), and a gateway
+>       chief's machine-message (`ViaAgentMessage`) and kickoff
+>       (`ViaKickoff`) turns.
+>   - A personal API token never lends **directly**.
+>   - 🔴 **This is an operator-approved exception to 2a's "a personal API
+>     token carries no team access"** (#668, after round 1). A token, or the
+>     hook token, that **messages the chief** can have it lend or unlend the
+>     **owner's own** spawn rows to a team the owner operates.
+>   - That is the whole exception. It reads nothing of the team's. It does
+>     not reach team drafts (the draft guard reads `TeamScope`, which is
+>     empty on every agent door) or team charters (session pages only).
+>   - The role is read from `Principal.Teams`, not `TeamScope`, which is
+>     empty on the chief's doors.
+>   - Moving a lend from one team to another writes an unshare audit row for
+>     the team it left.
+>   - `lend_target` enforces it again in Postgres from `team_members`.
+>   - `internal/users` ends a person's lends to a team when they leave it or
+>     drop to viewer.
+>   - A team-owned spawn (a team officer's) is not lendable. It is visible
+>     only to the team acting principal until 2b.
+> - **Audit rows** (#668 round 0, choice 12): sharing and unsharing a spawn
+>   (`officer.spawn.share` / `.unshare`) and a team charter edit
+>   (`officer.type.put`, `officer.def.put`) each write an `audit_log` row
+>   naming the person and the team (`team_id`), read by its managers. The row
+>   is written after the change, not in its transaction; a failed write is
+>   logged.
+> - **The minimal team fan-out** (#668 round 0, Q1, operator decision): a
+>   team officer's asks, its escalations to the team and its outbound drafts
+>   push to the team's current operators and managers, read from
+>   `team_members` at send time (`users.PGStore.TeamNotifyMembers`). Viewers,
+>   people who have left and disabled people get nothing; a personal item is
+>   unchanged. Everything else is 2b's: other team-owned pushes, withdrawing
+>   these from members' devices once answered or decided, the per-member
+>   `notify` switch and team-labelled titles.
+
 ### Phase 4: team tasks and a team chief
 
 - **Migration:** the phase-4 tables into `sharedTables`;
@@ -923,6 +1007,78 @@ rule the later phases' rows will meet.
   - **Not yet:** dispatching an agent on a team task. Agents are not shared
     until 4.4. A person's agent naming a team task would meet the
     `agents (note_id, owner_id)` key; this slice does not test that path.
+- **Shipped, slice 4.4 (team agents visible):** migration `0131`
+  (`0130` is phase 3's).
+  - **`agents` is shared** (read at viewer, written at operator,
+    `owner_fixed`). 🔴 A team-owned agent keeps no credential in its row:
+    `agents_team_no_secret` forces `hooks_token` and `gateway_secret` to `''`
+    for a team owner on every write, so they live only in `agent_secrets`,
+    which stays personal. `agents.Store.Secrets` answers only the agent's
+    owner or the system scope; a member gets `pgx.ErrNoRows`.
+  - **Which doors see a team agent:** a member sees it only where a person is
+    present (the browser session, a paired phone: `Principal.TeamScope`). A
+    personal API token, an agent and a mirror host carry no team and see
+    none. This slice adds no sharing door. Phase 3's operator-approved
+    exception stays as it is: a token that messages the chief can have it lend
+    or unlend the owner's own `officer_host_spawns` rows to a team the owner
+    operates. Nothing else; team drafts and charters stay session-only.
+  - **A member's turn on a team agent runs as the team.** `chatTurn` (every
+    chat door) re-mints the team acting principal (`turnActingContext`,
+    through `ViaAgent`) after a fresh read of the member's role, on every
+    send attempt. A member removed or downgraded while their message is
+    queued is answered "not sent", and the message never reaches the runtime.
+  - **One shared room.** A member types into the team chief's one
+    conversation, behind the per-agent FIFO turn gate. The runtime is handed
+    `[muster] typed by <name> (<role>) in team <team>` before the text, in
+    memory only. The stored row is what was typed, with `typed_by`. The room
+    is the agent's delivery session (the chief's primary, any other agent's
+    latest). A member's send or chat socket naming any other session of it
+    (an archived thread, a side chat, a plugin thread) gets 403
+    (`resolveTurnSession`). Reading another thread is still allowed.
+  - **A member's message answers the agent's open asks only once it is
+    sent.** For the owner, the asks are still answered at the door. For a
+    member, they are answered after the fresh role check passes and the
+    runtime takes the text (ccd's 103 or the first stream event;
+    `addressAsker`). A removed member's dropped message answers nothing.
+  - **A member's task dismiss leaves a team's linked agent running.** The
+    task is dismissed. The agent's teardown is left to the managers' door of
+    4.5. The idle reaper and the team's own doors still tear it down.
+  - **Mark-read** (`POST /agents/sessions/{sid}/read`) is under the route
+    gate. A team session has one read state, which belongs to the team, so it
+    is written at operator. A viewer gets 403.
+  - 🔴 **The team trust model: team members have to trust each other**
+    (operator decision, 2026-11-14: accept and document). A team operator or
+    manager can steer a team agent that holds tools, a team officer included,
+    into printing its token or OAuth credential into the team's chat, an ask
+    or an escalation. Every member can read those, viewers included. That
+    credential acts **as the team**, not as the member, and it keeps working
+    after the member is removed. No code stops this. The remedy is to
+    **rotate the agent's credentials** (its hooks token, gateway secret and
+    any connector or OAuth credential it holds). Do it whenever a member who
+    could steer the agent leaves, and whenever a credential shows up where
+    members can read it. This slice has no door that rotates a team agent's
+    credentials: its lifecycle is 4.5's managers' door.
+  - **Route rules** (`teamAgentRoutes`, decided in `admit` for every route
+    naming an agent, ledgered against `routes.golden`): reads at viewer; the
+    chat socket and the send form at operator (a viewer gets 403); lifecycle,
+    settings, new threads and the terminal are refused to every member in
+    this slice. Lifecycle is the manager door of 4.5 (`ViaTeamAdmin`), and
+    the terminal needs the step-up of 4.7.
+  - **A team's gateway agent turns toolless from every chat door**, answer
+    delivery included (`teamGatewayToolless`). This closes the gap carried
+    from 4.1.
+  - **Owner filters:** `chiefAgent`, `homeTarget` and the sidebar's primary
+    chief resolve among the caller's own agents only. Every `Agents.List`
+    caller is classified own / visible / machine
+    (`TestEveryAgentsListCallerIsClassified`). So is every caller of
+    `Agents.Get`, `Agents.GetByName` and `Agents.AgentsByNoteIDs`
+    (`TestEveryAgentReadCallerIsClassified`). A "visible" caller does not act
+    on a team agent as the member.
+  - **`outcomeViewed`:** an operator of the owning team opening the agent's
+    page marks its wait seen. A viewer's look leaves the push owed.
+  - **Not yet:** the viewer's disabled composer and the team badge in the
+    sidebar (UI); home falling back to a team chief; stop and start by an
+    operator (4.5, so the team's credentials are used, not the member's).
 
 ### Later: consent-based team invites
 

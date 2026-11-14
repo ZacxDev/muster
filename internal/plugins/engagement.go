@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ENGAGEMENT (migration 0131; docs/plugins.md "Engagement"): a plugin bound
+// ENGAGEMENT (migration 0132; docs/plugins.md "Engagement"): a plugin bound
 // to an officer reports one event of a person's engagement with its owner's
 // posts as a message of kind "engagement", with the person and the event:
 //

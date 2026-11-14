@@ -1001,7 +1001,7 @@ transaction, so the guards see it at once.
 #### The outreach batch
 
 An officer's follows and likes of one UTC day are **one batch**, id
-`<officer>@<YYYY-MM-DD>`: one card on the Reply drafts tab, one Attention item
+`<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Reply drafts tab, one Attention item
 and one notification (each new entry replaces the batch's last notification),
 never one each. Each entry shows the person, the venue, the action, the
 engagement of theirs that motivated it (untrusted, escaped) and the officer's
@@ -1014,7 +1014,9 @@ listed entry's id); muster, in one transaction under every entry's row lock,
 refuses it unless the batch's decidable entries are exactly that set (an entry
 that joined, expired or was decided since: 409, look again), refuses a ticked
 id that is not one of them (400) and a ticked person who may no longer be
-contacted (409, nothing decided). Then exactly the ticked entries are approved
+contacted (409, nothing decided). A team officer's batch is decided by the
+team's managers only, never by the team itself, and nobody approves an entry
+they caused (403), as for every team draft. Then exactly the ticked entries are approved
 and **every other entry is rejected, reason `not selected`**: its item is
 finished `no_action` saying so, with no `draft.refused` item. The 12-hour
 sign-in rule is as for every approval.

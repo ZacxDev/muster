@@ -425,10 +425,12 @@ func (s *Server) outcomeTellWaiting(octx context.Context, a agents.Agent, now ti
 	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(lines, "\n"))
 }
 
-// outcomeViewed: the agent's owner opened its page. A wait not yet told is
+// outcomeViewed: the agent's owner opened its page — or, for an agent a TEAM
+// owns, any member who may act on it (an operator or above; a viewer cannot
+// answer it, so a viewer's look leaves the push owed). A wait not yet told is
 // seen, and is never told (the push would be for something they looked at).
 func (s *Server) outcomeViewed(ctx context.Context, a agents.Agent) {
-	if !s.outcomesOn() || a.Outcome != agentoutcome.Waiting || requestOwner(ctx) != agentOwnerID(a) {
+	if !s.outcomesOn() || a.Outcome != agentoutcome.Waiting || !outcomeViewerActs(ctx, a) {
 		return
 	}
 	octx, cancel := outcomeCtx(ctx)
@@ -436,6 +438,22 @@ func (s *Server) outcomeViewed(ctx context.Context, a agents.Agent) {
 	if _, err := s.ext.Outcomes.Told(octx, a.ID, nil, s.now()); err != nil {
 		s.logger.Printf("outcomes: agent %d: seen: %v", a.ID, err)
 	}
+}
+
+// outcomeViewerActs reports whether ctx's viewer is someone a's waiting
+// outcome is for: its owner, or an operator (or above) of the team that owns
+// it, through a door that carries teams.
+func outcomeViewerActs(ctx context.Context, a agents.Agent) bool {
+	owner := agentOwnerID(a)
+	if requestOwner(ctx) == owner {
+		return true
+	}
+	p, ok := authz.From(ctx)
+	if !ok || owner <= 0 {
+		return false
+	}
+	role, in := p.TeamScope().RoleIn(owner)
+	return in && role.AtLeast(authz.TeamOperator)
 }
 
 // outcomeDone moves a running (or stuck) agent to done, and — once — says so.

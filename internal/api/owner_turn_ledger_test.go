@@ -62,6 +62,11 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		// officerConversationAccepted) and writes no owner_turn_ field. Listed
 		// because every WithTurnAccepted is, so a new one is looked at.
 		"internal/api/officers.go (*Server).OfficerTurnContext → WithTurnAccepted(ctx)",
+		// Not a marker setter: a member's message to a team agent answers the
+		// agent's open asks once the runtime takes it (team_agents.go
+		// addressAskerOnAccept). It writes no owner_turn_ field and CHAINS to the
+		// callback ctx already carries, as acceptedAfterQueued does.
+		"internal/api/team_agents.go addressAskerOnAccept → WithTurnAccepted(ctx)",
 		// The one caller of markOwnerTurn: the turn's own user row, its typer.
 		// 🔴 Through ownerTurnTyper: a line with a subject (the view's chief
 		// door) marks NOTHING — no owner release from a view (PR #537 round 1).

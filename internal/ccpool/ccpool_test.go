@@ -135,6 +135,19 @@ func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, d string,
 	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+d)
 	return f.err
 }
+
+// ClearRateLimited is the compare-and-clear in memory: it clears only while the
+// mark's timestamp is still markedAt (PGStore's rate_limited_at = $3).
+func (f *fakeStore) ClearRateLimited(_ context.Context, owner int64, a string, markedAt time.Time) (bool, error) {
+	f.calls = append(f.calls, "clear_rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a)
+	m, ok := f.marks[a]
+	if f.err != nil || !ok || !m.RateLimitedAt.Equal(markedAt) {
+		return false, f.err
+	}
+	m.RateLimitedAt, m.RateLimitedDetail = time.Time{}, ""
+	f.marks[a] = m
+	return true, nil
+}
 func (f *fakeStore) MarkAuthFailed(_ context.Context, owner int64, a, fp, d string, _ time.Time) error {
 	f.calls = append(f.calls, "auth_failed|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+fp+"|"+d)
 	return f.err
@@ -390,5 +403,23 @@ func TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken(t *testing.T) {
 	}
 	if _, err := p.AuthFailure(context.Background(), opOwner, "delta"); !errors.Is(err, ErrUnknownAccount) {
 		t.Fatalf("delta: %v", err)
+	}
+}
+
+// TestClearRateLimitIsACompareAndClear: the pool hands the store the mark's
+// time it was given and clears only that mark; a zero time clears nothing and
+// never reaches the store.
+func TestClearRateLimitIsACompareAndClear(t *testing.T) {
+	st := &fakeStore{marks: map[string]Mark{"alpha": {RateLimitedAt: t0, RateLimitedDetail: "You've hit your weekly limit · resets Jan 3, 9am (UTC)"}}}
+	p := newPool(t, st)
+	ctx := context.Background()
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", time.Time{}); ok || err != nil || len(st.calls) != 0 {
+		t.Fatalf("zero markedAt: cleared=%v err=%v calls=%v, want nothing", ok, err, st.calls)
+	}
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", t0.Add(-time.Second)); ok || err != nil || !st.marks["alpha"].RateLimitedAt.Equal(t0) {
+		t.Fatalf("an older markedAt: cleared=%v err=%v mark=%+v, want the mark kept", ok, err, st.marks["alpha"])
+	}
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", t0); !ok || err != nil || st.marks["alpha"] != (Mark{}) {
+		t.Fatalf("the mark's own time: cleared=%v err=%v mark=%+v, want it cleared", ok, err, st.marks["alpha"])
 	}
 }

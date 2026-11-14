@@ -14,7 +14,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -614,6 +617,14 @@ type draftRefusal struct {
 // leaves the attention queue with its notification withdrawn on the owner's
 // devices.
 func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftDecision) (plugins.Draft, *draftRefusal) {
+	// 🔴 WHO MAY DECIDE A TEAM'S DRAFT (team sharing phase 3), before the
+	// store: read as the decider, so a draft they cannot see is the store's
+	// "No such draft." below, as before.
+	if cur, err := s.ext.Plugins.Draft(ctx, id); err == nil {
+		if msg := draftDeciderRefusal(authz.MustFrom(ctx), cur, dec.Approve); msg != "" {
+			return cur, &draftRefusal{http.StatusForbidden, msg, asksTabDrafts}
+		}
+	}
 	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
 	if err != nil {
 		r := draftDecisionRefusal(d, err, dec.Approve)
@@ -647,12 +658,56 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	return d, nil
 }
 
+// The refusals draftDeciderRefusal answers (team sharing phase 3).
+const (
+	// DraftTeamSelfDecide: the TEAM ACTING PRINCIPAL (a team officer's
+	// instance or runtime, a team-owned agent) deciding a draft. A team's
+	// drafts are its managers' to decide; 0130's draft_approver trigger
+	// refuses the approval again in Postgres.
+	DraftTeamSelfDecide = "A team never decides its own drafts: one of its managers does, signed in."
+	// DraftTeamNotManager: a member below manager deciding a team's draft (an
+	// operator reads it; only a manager decides it — the plugin tables are
+	// managed, so Postgres refuses the write too).
+	DraftTeamNotManager = "Only a manager of the team that owns this draft decides it."
+	// DraftTeamOwnRequest: a manager approving a team draft they caused.
+	DraftTeamOwnRequest = "You caused this draft, so another manager of the team approves it."
+)
+
+// draftDeciderRefusal is why p may not make this decision on draft d, or ""
+// when it may. A PERSONAL draft (d's owner is p) is unchanged: the owner
+// decides it, as today. For a draft owned by a TEAM:
+//   - the team itself (p.Team) decides none;
+//   - a person must manage the team, by p.TeamScope — the memberships a door
+//     where a person is present carries (a personal API token, an agent and
+//     a mirror host carry none, so none of them decides a team's draft);
+//   - and approves none they caused (d.RequestedByUser).
+func draftDeciderRefusal(p authz.Principal, d plugins.Draft, approve bool) string {
+	if p.Team {
+		return DraftTeamSelfDecide
+	}
+	if d.OwnerID == p.UserID {
+		return ""
+	}
+	if role, in := p.TeamScope().RoleIn(d.OwnerID); !in || role != authz.TeamManager {
+		return DraftTeamNotManager
+	}
+	if approve && d.RequestedByUser != nil && *d.RequestedByUser == p.UserID {
+		return DraftTeamOwnRequest
+	}
+	return ""
+}
+
 // draftDecisionRefusal words a refused decision; d is the draft as the store
 // read it (its state, when it was not in the one the decision needs). A
 // refusal is drawn on the pending view, except one about a draft that already
 // left it.
 func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal {
 	switch {
+	case pgHint(err) == draftApproverHint:
+		// 0130's draft_approver: the database refused what
+		// draftDeciderRefusal refuses first (a race past it, or a caller that
+		// skipped it).
+		return draftRefusal{http.StatusForbidden, DraftTeamOwnRequest, asksTabDrafts}
 	case errors.Is(err, plugins.ErrNotFound):
 		return draftRefusal{http.StatusNotFound, "No such draft.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrDraftBodyMismatch):
@@ -692,6 +747,18 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 		return draftRefusal{http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), asksTabDrafts}
 	}
 	return draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
+}
+
+// draftApproverHint is the HINT 0130's draft_approver trigger refuses with.
+const draftApproverHint = "muster:draft-approver"
+
+// pgHint is err's Postgres HINT, "" for none.
+func pgHint(err error) string {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return pg.Hint
+	}
+	return ""
 }
 
 // DraftUncheckedRefusal is an approval refused because the draft's plugin has

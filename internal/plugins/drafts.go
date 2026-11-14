@@ -143,7 +143,7 @@ type Draft struct {
 	// shown on the card's history, and an outbound draft's officer is told it
 	// (internal/api outboundSettled). nil otherwise.
 	DecisionReason *string `json:"-"`
-	// An OUTREACH draft's (migration 0131, outreach.go): the recorded
+	// An OUTREACH draft's (migration 0132, outreach.go): the recorded
 	// engagement that motivates it (required for a dm, a follow and a like),
 	// the person it reaches (an officer contact's id, as the filing's guard
 	// resolved it; nil for a post, or a reply to no recorded person), and
@@ -151,6 +151,14 @@ type Draft struct {
 	BecauseRef     *string `json:"becauseRef,omitempty"`
 	ContactID      *int64  `json:"contactId,omitempty"`
 	OutreachReason *string `json:"outreachReason,omitempty"`
+	// RequestedByUser is who CAUSED the draft (migration 0130, team sharing
+	// phase 3): the acting principal's id when it was filed — a person's
+	// routed session or chief, or for a TEAM officer's draft the team itself
+	// — stamped by the database, never by hand. nil for a draft the system
+	// scope filed and every draft filed before 0130. internal/api's
+	// draftDeciderRefusal refuses a person approving a team draft they
+	// caused; 0130's draft_approver trigger refuses it again.
+	RequestedByUser *int64 `json:"-"`
 }
 
 // RefusalOutcome is where a refused draft goes (Draft.Refusal).
@@ -460,14 +468,14 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
 	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
-	decision_reason, because_ref, contact_id, outreach_reason`
+	decision_reason, requested_by_user, because_ref, contact_id, outreach_reason`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
 		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
-		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.BecauseRef, &d.ContactID, &d.OutreachReason}
+		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason, &d.RequestedByUser, &d.BecauseRef, &d.ContactID, &d.OutreachReason}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's

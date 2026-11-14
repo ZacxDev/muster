@@ -405,6 +405,14 @@ func (s *Server) agentTools() []agentTool {
 			tools = append(tools, agentTool{def: routingRuleProposeToolDef(), mcp: true, chiefOnly: true})
 		}
 	}
+	// officer_spawn_share (officer_spawn_share.go, team sharing phase 3): the
+	// chief lists its owner's host officer spawns and lends one to a team the
+	// owner operates, or takes it back. MCP, so a claude-code chief reaches
+	// it; chief-only: it acts on the owner's own rows. A chief turn a token
+	// started may lend (operator-approved exception, officer_spawn_share.go).
+	if s.spawnLender != nil && !s.featureOff(features.Officers) {
+		tools = append(tools, agentTool{def: officerSpawnShareToolDef(), mcp: true, chiefOnly: true})
+	}
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
 	// chief-only: they reach the owner's whole fleet.
@@ -1004,6 +1012,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolReplyDraft(ctx, a, arguments)
 	case pluginMessageSettleToolName:
 		return s.toolPluginMessageSettle(ctx, a, arguments)
+	case officerSpawnShareTool:
+		if s.spawnLender == nil || s.featureOff(features.Officers) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolOfficerSpawnShare(ctx, arguments)
 	case routingRuleProposeTo:
 		if !s.rulesOffered() {
 			return toolErr("unknown tool %q", name)

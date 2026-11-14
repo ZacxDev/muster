@@ -551,7 +551,7 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 			"or closes it and queues a draft.refused item if the draft is refused, rejected or expires.", *n.ItemID)
 	}
 	if plugins.IsBatchKind(d.Target().Kind) {
-		out["batch"] = plugins.BatchID(o.ID, d.CreatedAt.UTC().Format("2006-01-02"))
+		out["batch"] = plugins.BatchID(o.Owner, o.ID, d.CreatedAt.UTC().Format("2006-01-02"))
 		out["note"] = "filed, NOT sent: it goes on your owner's outreach batch for the day, where they tick what goes out. " +
 			"An entry they do not tick is rejected \"not selected\" and its item is closed: do not redraft it."
 	}

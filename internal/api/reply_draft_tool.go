@@ -123,14 +123,23 @@ func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d p
 			label = p.Label
 		}
 	}
-	s.goNotify(owner, push.EventPlugin, RouterNotification{
+	n := RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
 		Body:  draftPushBody(m, label) + note,
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": draftLink(d.ID)},
-	}, nil)
+	}
+	s.goNotify(owner, push.EventPlugin, n, nil)
+	// A TEAM officer's outbound draft also reaches the team's operators and
+	// managers (team_notify.go, the minimal team fan-out); a reply draft and a
+	// personal officer's draft do not fan out.
+	if d.Officer != nil {
+		for _, member := range s.teamOfficerRecipients(ctx, owner) {
+			s.goNotify(member, push.EventPlugin, n, nil)
+		}
+	}
 }
 
 // draftPushBody is a draft notification's body: "Reply draft: <sender's

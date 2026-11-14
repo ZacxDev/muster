@@ -220,7 +220,9 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		"RLS forced": {set(`SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname='public' AND c.relkind='r' AND c.relforcerowsecurity`), all},
 		"tables with an owner_isolation policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
-			WHERE schemaname='public' AND policyname='owner_isolation'`), personalTables()},
+			WHERE schemaname='public' AND policyname='owner_isolation'`), isolatedTables()},
+		"tables with a team lend policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies
+			WHERE schemaname='public' AND policyname='team_lent_read'`), lentTables()},
 		"tables with the team policies": {set(`SELECT DISTINCT tablename::text FROM pg_policies
 			WHERE schemaname='public' AND policyname='team_read'`), sharedClassTables()},
 		"tables with a policy": {set(`SELECT DISTINCT tablename::text FROM pg_policies WHERE schemaname='public'`), all},
@@ -244,6 +246,14 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			// The team policies (0127): one per command, each with the user
 			// arm, the scope-all arm and the team arm at its role.
 			checkTeamPolicy(t, tbl, name, cmd, permissive, qual, check, c)
+			continue
+		}
+		if r, lent := lentOwned[tbl]; lent && name == "team_lent_read" {
+			// A lent table's read arm (0130), pinned whole by the share
+			// ledger; here only that it reads and admits nothing else.
+			if cmd != "SELECT" || permissive != "PERMISSIVE" || qual != lentArm(r) || check != "" {
+				t.Errorf("%s: team_lent_read %s %s USING %q CHECK %q; want SELECT, PERMISSIVE, %q", tbl, cmd, permissive, qual, check, lentArm(r))
+			}
 			continue
 		}
 		if name != "owner_isolation" || cmd != "ALL" || permissive != "PERMISSIVE" {
@@ -489,7 +499,7 @@ func TestTheNameTakenCheckSeesEveryUsersAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"muster_agent_name_taken", "muster_retire_agent_name"}; !slices.Equal(got, want) {
+	if want := []string{"muster_agent_name_taken", "muster_owner_is_team", "muster_retire_agent_name"}; !slices.Equal(got, want) {
 		t.Errorf("SECURITY DEFINER functions in public = %v; want exactly %v", got, want)
 	}
 }

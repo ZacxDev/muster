@@ -47,6 +47,7 @@ var usersReads = map[string]string{
 	"internal/users PGStore.ListTeams":                     readTeam,
 	"internal/users PGStore.TeamNames":                     readTeam, // the names of the caller's own teams (task board groups, Owner select)
 	"internal/users PGStore.TeamMembers":                   readByID, // the members of a team id the manager page was handed
+	"internal/users PGStore.TeamNotifyMembers":             readPerson, // a team officer's push recipients: persons only (kind = 'person')
 	"internal/users lockTeam":                              readTeam,
 	"internal/users PGStore.AddTeamMemberByEmailAsManager": readPerson,
 	"internal/users lockPerson":                            readPerson,
