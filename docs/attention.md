@@ -590,7 +590,9 @@ too, through its host's `muster-mirror`:
    [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) and,
    with the plugin store, `plugin_drafts_list` / `plugin_draft_decide` (the
    operator approving or rejecting a reply draft —
-   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), plus
+   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)) and
+   `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` (the operator
+   ticking an officer's [outreach batch](plugins.md#the-outreach-batch)), plus
    `muster_help` ([below](#stale-tool-definitions)); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
@@ -764,7 +766,7 @@ entry, in opencode's config under `mcp`, sends the secret and a static
 |---|---|---|
 | `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. |
 | `tasks_list`, `task_get`, `task_comment`, `task_set_status` | **offered** | Over the tasks that session created (a `created` link, which today only Claude Code's `muster task create` records, so usually none) and the task of its own running host dispatch. `in_progress` **claims nothing**, because a claim ends when its Claude session's window goes, which an opencode session never has. |
-| `attention_answer`, `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`, `plugin_draft_decide`, `plugin_messages_list`, `plugin_message_route`, `agent_destroy`, `agents_list`, `chief_restart`, `dispatch_request`, `dispatch_approve` | refused | Each acts **as the operator**. Extending them to another runtime's sessions, often on other models, is a decision for the operator, not a default. |
+| `attention_answer`, `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`, `plugin_draft_decide`, `plugin_outbound_batch_get`, `plugin_outbound_batch_decide`, `plugin_messages_list`, `plugin_message_route`, `agent_destroy`, `agents_list`, `chief_restart`, `dispatch_request`, `dispatch_approve` | refused | Each acts **as the operator**. Extending them to another runtime's sessions, often on other models, is a decision for the operator, not a default. |
 | `chief_ask` | refused | It hands the chief the session as a `mirror:` subject, and the chief's tools that act on one are built for Claude Code sessions. |
 | `route_reply` | refused | A route to an opencode session is refused before the queue, so no route can be one's. |
 | `agent_report_done` | refused | An opencode host dispatch reports through its reply's done line ([mirroring.md](mirroring.md)). |

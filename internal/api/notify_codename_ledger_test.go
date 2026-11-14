@@ -48,6 +48,7 @@ var noCodenameFirst = map[string]string{
 	"push_task.go Server.notifyTaskDone":                   "a task done / in review: names a task",
 	"push_task.go Server.flushCommentedTasks":              "a task comment: names a task",
 	"reply_draft_tool.go Server.notifyDraftAwaitingNoting": "a reply draft: fixed title, names no session",
+	"outreach_batch.go Server.notifyBatchAwaiting":         "an outreach batch: fixed title, names no session",
 }
 
 // TestEveryPushTitleIsClassifiedForCodenameFirst pins the seam: (1) in this

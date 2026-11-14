@@ -113,7 +113,7 @@ func TestEveryMirrorToolIsClassifiedForTheStepUp(t *testing.T) {
 	}
 	// The gated set, pinned exactly: a change is a decision.
 	want := []string{agentDestroyTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool, dispatchApproveTool,
-		pluginDraftDecideTool, pluginMessageRouteTool, routeReplyToolName, pluginRequestDecideTool}
+		pluginDraftDecideTool, pluginMessageRouteTool, routeReplyToolName, pluginRequestDecideTool, pluginOutboundBatchDecideTool}
 	slices.Sort(want)
 	if got := hostStepUpToolNames(); !slices.Equal(got, want) {
 		t.Fatalf("the gated set = %v, want %v", got, want)

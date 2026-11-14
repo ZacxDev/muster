@@ -83,6 +83,10 @@ type DraftEnd struct {
 	// to tell them; otherwise it is finished no_action and the caller tells
 	// the owner (internal/api's push).
 	EscalateAtBound bool
+	// Quiet: no follow-up and no escalation — the item is finished
+	// no_action with Ended as its summary (an outreach entry its owner did
+	// not tick in its batch: there is nothing to redraft).
+	Quiet bool
 	// ClaimedAt is when its plugin claimed the draft, nil for one never
 	// claimed. Set, a LATE result on an unconfirmed draft (refused or
 	// failed after its lease lapsed) may settle the item that draft's
@@ -215,7 +219,7 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 		return out, nil
 	}
 	summary := e.Ended
-	escalate := e.FollowUp == nil
+	escalate := e.FollowUp == nil && !e.Quiet
 	switch {
 	case out.FollowUp > 0:
 		summary += fmt.Sprintf(" The work continues on item %d.", out.FollowUp)

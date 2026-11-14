@@ -26,7 +26,7 @@ names its caller by a header the caller sets — any process of that user,
 the officer included, can call it as one of your sessions there — so while a
 host officer is declared on a machine, every owner-authority tool reached
 through that machine's door (`plugin_draft_decide`,
-`connector_request_decide`, `attention_answer`, `agent_destroy`,
+`plugin_outbound_batch_decide`, `connector_request_decide`, `attention_answer`, `agent_destroy`,
 `chief_restart`, `dispatch_approve`, `route_reply`, `plugin_message_route`,
 `plugin_request_decide`) decides nothing: it files a **confirmation card**
 that you confirm on your **paired phone** (a signed action: a fresh step-up,
@@ -455,6 +455,21 @@ curl -H "Authorization: Bearer $TOKEN" "$MUSTER/api/officers/defs/$OFFICER/conta
 curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"dnc": true}' \
     "$MUSTER/api/officers/defs/$OFFICER/contacts/example.social/someone/flags"
 ```
+
+**Outreach** — a DM, a follow, a like, or a reply to one of a person's
+recorded engagements — goes through `officer_post_draft` with the person,
+`because_ref` (the engagement that motivates it) and, for a follow or a like,
+a one-line `reason` ([plugins.md](plugins.md#outreach-drafts-dm-follow-like)).
+muster refuses it at the filing, deterministically, for a do-not-contact, bot
+or hostile person; without a qualifying engagement of that person (never a
+like; a DM answers something they said); while another outreach to them is
+out; when they were reached before and have not engaged since; and inside
+the cooldown (`{"outreach": {"cooldown_days": 7}}` in the type's policy, the
+default) unless it answers an engagement newer than the last outreach. A DM
+is approved on its exact text; follows and likes on the day's
+[outreach batch](plugins.md#the-outreach-batch), where the owner ticks what
+goes out and every unticked entry is rejected "not selected". A sent
+outreach is recorded on the person.
 
 `DELETE …/contacts/{venue}/{handle}` erases a person and their whole
 history. An officer that has contacts cannot be deleted (409): delete its

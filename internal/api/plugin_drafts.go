@@ -673,6 +673,16 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	case errors.Is(err, plugins.ErrReplyInFlight):
 		return draftRefusal{http.StatusConflict, "Another reply to that message is already approved and not yet sent. " +
 			"Wait for its result before approving a second one.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrBatchOnly):
+		return draftRefusal{http.StatusConflict, "A follow or a like is approved in its outreach batch: tick it on the batch's card " +
+			"(or plugin_outbound_batch_decide). It can still be rejected on its own.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrContactBlocked):
+		var cb plugins.ContactBlockedError
+		why := ""
+		if errors.As(err, &cb) {
+			why = plugins.BlockedText(cb.Why)
+		}
+		return draftRefusal{http.StatusConflict, "That draft's person is now " + why + ": it can never be approved. Reject it.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrInvalid):
 		return draftRefusal{http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), asksTabDrafts}
 	}

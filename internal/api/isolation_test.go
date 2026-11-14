@@ -551,12 +551,13 @@ var isolationClasses = map[string]routeClass{
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
-	"POST /plugins/drafts/{id}/approve":  classParam,
-	"POST /plugins/drafts/{id}/reject":   classParam,
-	"POST /plugins/messages/{id}/retry":  classParam,
-	"POST /plugin/v1/drafts/claim":       classPlugin,
-	"POST /plugin/v1/drafts/{id}/result": classPlugin,
-	"POST /plugin/v1/drafts/{id}/renew":  classPlugin,
+	"POST /plugins/drafts/{id}/approve":          classParam,
+	"POST /plugins/drafts/{id}/reject":           classParam,
+	"POST /plugins/outreach-batches/{id}/decide": classParam,
+	"POST /plugins/messages/{id}/retry":          classParam,
+	"POST /plugin/v1/drafts/claim":               classPlugin,
+	"POST /plugin/v1/drafts/{id}/result":         classPlugin,
+	"POST /plugin/v1/drafts/{id}/renew":          classPlugin,
 	// The pre-approval check (draft_checks): the listing names nothing (the
 	// token owner's own plugin's drafts) and the verdict names A's draft — which
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).

@@ -110,6 +110,12 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 // notifyDraftAwaitingNoting is notifyDraftAwaiting with muster's own note
 // after the body: a lapsed check's (lapseDraftChecks, DraftCheckLapsedNote).
 func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message, note string) {
+	if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) {
+		// A follow or a like: ONE notification per outreach batch (its tag
+		// replaces the last), never one each (outreach_batch.go).
+		s.notifyBatchAwaiting(owner, d)
+		return
+	}
 	id := strconv.FormatInt(d.ID, 10)
 	label := ""
 	if m.ID != 0 {

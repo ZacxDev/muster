@@ -84,6 +84,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// which is a reject) does not.
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
+	mux.HandleFunc("POST "+outreachBatchPath+"/{id}/decide", s.requirePluginsOn(s.requireOperatorWrite(s.handleOutreachBatchDecide)))
 
 	// Retrying a message the chief never confirmed (plugin_retry.go).
 	s.registerPluginRetryRoutes(mux)

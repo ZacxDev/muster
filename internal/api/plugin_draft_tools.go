@@ -64,7 +64,7 @@ func (s *Server) pluginDraftToolsOn() bool { return s.ext.Plugins != nil }
 
 // pluginDraftToolDefs are the mirrored sessions' reply-draft tools.
 func pluginDraftToolDefs() []agents.ToolDef {
-	return append(pluginDraftOnlyToolDefs(), pluginPairToolDefs()...)
+	return append(append(pluginDraftOnlyToolDefs(), pluginOutboundBatchToolDefs()...), pluginPairToolDefs()...)
 }
 
 // pluginDraftOnlyToolDefs are the two reply-draft tools.
@@ -119,7 +119,7 @@ func (s *Server) dispatchPluginDraftTool(ctx context.Context, c toolCaller, name
 	case pluginRequestDecideTool:
 		return s.toolPluginRequestDecide(ctx, c, arguments), true
 	}
-	return "", false
+	return s.dispatchOutreachBatchTool(ctx, c, name, arguments) // outreach_batch.go
 }
 
 // pluginDraftRouteView is the session route a draft came from.
