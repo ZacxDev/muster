@@ -48,7 +48,8 @@ type wsChatStream struct {
 	write func(v any)
 	every time.Duration
 	// mentions links the reply's mentions as the stored transcript will
-	// (ui.ChatMessageHTMLWith); built once per turn, nil for none.
+	// (ui.ChatStreamHTML); one per turn (lazy: it reads nothing until a
+	// reply names something), nil for none.
 	mentions *ui.MentionIndex
 
 	mu    sync.Mutex
@@ -80,7 +81,7 @@ func (w *wsChatStream) delta(s string) {
 
 // sendHTMLLocked sends content with the bubble's whole text rendered.
 func (w *wsChatStream) sendHTMLLocked(content string) {
-	w.write(map[string]any{"type": "delta", "content": content, "html": ui.ChatMessageHTMLWith("assistant", w.text.String(), w.mentions)})
+	w.write(map[string]any{"type": "delta", "content": content, "html": ui.ChatStreamHTML("assistant", w.text.String(), w.mentions)})
 	w.sent, w.owed = time.Now(), false
 	if w.timer != nil {
 		w.timer.Stop()

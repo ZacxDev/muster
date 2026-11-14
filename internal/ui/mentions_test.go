@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,26 +10,45 @@ import (
 )
 
 // mentionFixture is an index of: two agents — one slug distinctive
-// (fix-login), one a plain English word (scout) — and two mirrored windows,
-// one with a codename (mango:2) and one sharing its codename with a window on
-// another host (pear:1, ambiguous). Tasks 7 and 1234 exist; 8 does not.
-func mentionFixture() *MentionIndex {
+// (fix-login), one a plain English word (scout) — and four mirrored windows:
+// one with a codename (mango:2), two sharing a codename across hosts (pear:1,
+// ambiguous), and an unnamed tmux session "12" (all digits, never a key).
+// Tasks 7 and 1234 exist; 8 does not.
+func mentionFixture() *MentionIndex { return mentionFixtureCounting(new(int), new([][]int64)) }
+
+// mentionFixtureCounting is mentionFixture, counting its name loads and
+// recording each task batch it is asked about.
+func mentionFixtureCounting(nameLoads *int, taskAsks *[][]int64) *MentionIndex {
 	return NewMentionIndex(
-		[]string{"fix-login", "scout", "x<y\"z"},
-		[]MirrorCardView{
-			{Host: "hosta", Session: "work", Window: "@3", Label: "mango:2", Claude: true},
-			{Host: "hosta", Session: "side", Window: "@4", Label: "pear:1", Claude: true},
-			{Host: "hostb", Session: "side", Window: "@9", Label: "pear:1", Claude: true},
+		func() MentionNames {
+			*nameLoads++
+			return MentionNames{
+				Agents: []string{"fix-login", "scout", "x<y\"z"},
+				Sessions: []MirrorCardView{
+					{Host: "hosta", Session: "work", Window: "@3", Label: "mango:2", Claude: true},
+					{Host: "hosta", Session: "side", Window: "@4", Label: "pear:1", Claude: true},
+					{Host: "hostb", Session: "side", Window: "@9", Label: "pear:1", Claude: true},
+					{Host: "hostc", Session: "12", Claude: true},
+				},
+			}
 		},
-		func(id int64) bool { return id == 7 || id == 1234 },
+		func(ids []int64) map[int64]bool {
+			*taskAsks = append(*taskAsks, append([]int64(nil), ids...))
+			out := map[int64]bool{}
+			for _, id := range ids {
+				out[id] = id == 7 || id == 1234
+			}
+			return out
+		},
 	)
 }
 
 const (
-	mangoA = `<a href="/mirror/view?host=hosta&amp;session=work&amp;window=%403" data-mention="session" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">mango:2</a>`
-	loginA = `<a href="/agents/fix-login" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">fix-login</a>`
-	scoutA = `<a href="/agents/scout" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">@scout</a>`
-	task7A = `<a href="/tasks/7" data-mention="task" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">#7</a>`
+	mangoA    = `<a href="/mirror/view?host=hosta&amp;session=work&amp;window=%403" data-mention="session" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">mango:2</a>`
+	loginA    = `<a href="/agents/fix-login" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">fix-login</a>`
+	scoutA    = `<a href="/agents/scout" data-mention="agent" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">@scout</a>`
+	task1234A = `<a href="/tasks/1234" data-mention="task" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">#1234</a>`
+	task7A    = `<a href="/tasks/7" data-mention="task" hx-boost="false" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">#7</a>`
 )
 
 // TestMentionsLinkOnlyWhatResolves pins the WHOLE rendered paragraph for each
@@ -37,6 +57,27 @@ func TestMentionsLinkOnlyWhatResolves(t *testing.T) {
 	p := func(inner string) string { return `<p class="my-1">` + inner + `</p>` }
 	cases := []struct{ name, src, want string }{
 		{"codename", "look at mango:2 now", p("look at " + mangoA + " now")},
+		// Round 1: GitHub numbers in every form the chief writes them.
+		{"pull request number", "see pull request #7 now", p("see pull request #7 now")},
+		{"pull requests number", "pull requests #7", p("pull requests #7")},
+		{"PR list joined by and", "PR #1234 and #7", p("PR #1234 and #7")},
+		{"PRs list joined by commas", "PRs #1234, #7", p("PRs #1234, #7")},
+		{"issues list joined by or", "issues #1234 or #7", p("issues #1234 or #7")},
+		{"PR with a colon", "PR: #7", p("PR: #7")},
+		{"bold PR", "**PR** #7", p("<strong>PR</strong> #7")},
+		{"merged", "merged #7 today", p("merged #7 today")},
+		{"merge", "merge #7 next", p("merge #7 next")},
+		// The control: a list with no GitHub word links every ref in it.
+		{"task list without a PR word", "see #1234 and #7", p("see " + task1234A + " and " + task7A)},
+		// A PR word does not reach past a word that is not part of a ref list.
+		{"PR word then other words", "PR #1234 fixed by #7", p("PR #1234 fixed by " + task7A)},
+		// Round 1: an all-digit key is never a name.
+		{"all-digit session name", "I changed 12 files", p("I changed 12 files")},
+		{"all-digit session name as @mention", "ask @12 now", p("ask @12 now")},
+		// Round 1: wide boundaries and italics.
+		{"curly apostrophe", "mango:2’s turn", p(mangoA + "’s turn")},
+		{"em dash", "mango:2—done", p(mangoA + "—done")},
+		{"italics", "_mango:2_ next", p("<em>" + mangoA + "</em> next")},
 		{"agent slug", "fix-login is done", p(loginA + " is done")},
 		{"task that exists", "see #7 for it", p("see " + task7A + " for it")},
 		{"task that does not exist", "see #8 for it", p("see #8 for it")},
@@ -108,11 +149,18 @@ func TestNoIndexIsTheOldRenderer(t *testing.T) {
 	}
 }
 
-// TestTaskLookupsAreRememberedAndCapped: one read per distinct id, and none
-// past the cap.
-func TestTaskLookupsAreRememberedAndCapped(t *testing.T) {
-	calls := 0
-	mx := NewMentionIndex(nil, nil, func(int64) bool { calls++; return true })
+// TestTaskLookupsAreBatchedAndCapped: every ref a render names is asked about
+// in ONE call, each id once, and none past the cap.
+func TestTaskLookupsAreBatchedAndCapped(t *testing.T) {
+	var asks [][]int64
+	mx := NewMentionIndex(nil, func(ids []int64) map[int64]bool {
+		asks = append(asks, append([]int64(nil), ids...))
+		out := map[int64]bool{}
+		for _, id := range ids {
+			out[id] = true
+		}
+		return out
+	})
 	var b strings.Builder
 	for i := 0; i < 3; i++ {
 		b.WriteString("#5 ")
@@ -121,11 +169,89 @@ func TestTaskLookupsAreRememberedAndCapped(t *testing.T) {
 		b.WriteString("#1000" + strconv.Itoa(i) + " ")
 	}
 	got := markdownHTMLWith(b.String(), mx)
-	if calls != mentionTaskLookupCap {
-		t.Errorf("task reads = %d, want %d (cap)", calls, mentionTaskLookupCap)
+	if len(asks) != 1 || len(asks[0]) != mentionTaskLookupCap {
+		t.Fatalf("task asks = %d (first of %d ids), want 1 of %d", len(asks), len(asks[0]), mentionTaskLookupCap)
 	}
 	if n := strings.Count(got, `data-mention="task"`); n != 3+mentionTaskLookupCap-1 {
 		t.Errorf("task links = %d, want %d", n, 3+mentionTaskLookupCap-1)
+	}
+}
+
+// TestTheIndexIsLazy: an index reads nothing for text that names nothing; it
+// asks about tasks only for a #N, loads the names only for a token that could
+// be one, and each at most once.
+func TestTheIndexIsLazy(t *testing.T) {
+	loads, asks := 0, [][]int64{}
+	mx := mentionFixtureCounting(&loads, &asks)
+	// "12" is all digits: not a name to look up (an unnamed tmux session is).
+	_ = markdownHTMLWith("just plain words here, 12 files, nothing else", mx)
+	if loads != 0 || len(asks) != 0 {
+		t.Fatalf("plain words: %d name loads, %d task asks; want none", loads, len(asks))
+	}
+	_ = markdownHTMLWith("see #7", mx)
+	if loads != 0 || len(asks) != 1 {
+		t.Fatalf("a task ref: %d name loads, %d task asks; want 0 and 1", loads, len(asks))
+	}
+	_ = markdownHTMLWith("see mango:2 and fix-login, then #7 again", mx)
+	_ = markdownHTMLWith("and mango:2 once more", mx)
+	if loads != 1 || len(asks) != 1 {
+		t.Fatalf("names twice, #7 again: %d name loads, %d task asks; want 1 and 1", loads, len(asks))
+	}
+}
+
+// TestAPrimedPageAsksAboutItsTasksOnce: with the whole log primed (what
+// internal/api withChatLogLive does), two replies naming two tasks cost ONE
+// ask, not one per reply.
+func TestAPrimedPageAsksAboutItsTasksOnce(t *testing.T) {
+	msgs := []ChatLine{{Role: "assistant", Content: "first #7", ID: 1}, {Role: "assistant", Content: "then #1234", ID: 2}}
+	for _, primed := range []bool{false, true} {
+		loads, asks := 0, [][]int64{}
+		mx := mentionFixtureCounting(&loads, &asks)
+		if primed {
+			mx.Prime(msgs[0].Content, msgs[1].Content)
+		}
+		body, _, err := ChatLogBody(AgentDetailView{Name: "chief", Status: "running", Mentions: mx, Messages: msgs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), task7A) || !strings.Contains(string(body), task1234A) {
+			t.Fatalf("primed=%v: the refs are not linked: %s", primed, body)
+		}
+		want := 2
+		if primed {
+			want = 1
+		}
+		if len(asks) != want {
+			t.Errorf("primed=%v: %d task asks %v, want %d", primed, len(asks), asks, want)
+		}
+	}
+}
+
+// TestAStreamedReplyDoesNotLinkItsLastToken: while "#1234" streams in as #1,
+// #12, #123, none of those is looked up or linked; a token that is finished
+// (text follows it) is.
+func TestAStreamedReplyDoesNotLinkItsLastToken(t *testing.T) {
+	loads, asks := 0, [][]int64{}
+	mx := mentionFixtureCounting(&loads, &asks)
+	for _, partial := range []string{"see #1", "see #12", "see #123", "ask fix-lo", "ask fix-login"} {
+		if got := ChatStreamHTML("assistant", partial, mx); strings.Contains(got, "data-mention") {
+			t.Errorf("%q: the arriving token was linked: %s", partial, got)
+		}
+	}
+	if len(asks) != 0 || loads != 0 {
+		t.Errorf("arriving tokens were looked up: %d name loads, task asks %v", loads, asks)
+	}
+	got := ChatStreamHTML("assistant", "see #1234 and fix-login then", mx)
+	if !strings.Contains(got, task1234A) || !strings.Contains(got, loginA) {
+		t.Errorf("finished tokens were not linked: %s", got)
+	}
+	// …and the partial refs were never even queued: the one ask is for 1234.
+	if fmt.Sprint(asks) != "[[1234]]" {
+		t.Errorf("task asks = %v, want [[1234]] (no #1, #12 or #123)", asks)
+	}
+	// The same text, stored (not streaming), links its last token.
+	if got := ChatMessageHTML("assistant", "see #12"); strings.Contains(got, "data-mention") {
+		t.Errorf("ChatMessageHTML has no index and must link nothing: %s", got)
 	}
 }
 
@@ -166,17 +292,18 @@ func TestTheMirroredViewLinksMentions(t *testing.T) {
 	}
 }
 
-// TestChatMessageHTMLWithLinksTheAssistantOnly: the chat's renderer links an
-// assistant's reply and leaves the owner's own message as typed.
-func TestChatMessageHTMLWithLinksTheAssistantOnly(t *testing.T) {
+// TestChatStreamHTMLLinksTheAssistantOnly: the stream's renderer links an
+// assistant's reply and leaves the owner's own message as typed; with no
+// index it is the plain renderer.
+func TestChatStreamHTMLLinksTheAssistantOnly(t *testing.T) {
 	mx := mentionFixture()
-	if got := ChatMessageHTMLWith("assistant", "on mango:2", mx); !strings.Contains(got, mangoA) {
+	if got := ChatStreamHTML("assistant", "on mango:2 now", mx); !strings.Contains(got, mangoA) {
 		t.Errorf("assistant: %s", got)
 	}
-	if got := ChatMessageHTMLWith("user", "on mango:2", mx); strings.Contains(got, "data-mention") {
+	if got := ChatStreamHTML("user", "on mango:2 now", mx); strings.Contains(got, "data-mention") {
 		t.Errorf("user: %s", got)
 	}
-	if got, want := ChatMessageHTMLWith("assistant", "on mango:2", nil), ChatMessageHTML("assistant", "on mango:2"); got != want {
+	if got, want := ChatStreamHTML("assistant", "on mango:2 now", nil), ChatMessageHTML("assistant", "on mango:2 now"); got != want {
 		t.Errorf("nil index changed the chat renderer: %s vs %s", got, want)
 	}
 }

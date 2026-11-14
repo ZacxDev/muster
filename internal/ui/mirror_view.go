@@ -1030,6 +1030,14 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 	if t.states == nil {
 		t.states, t.groupOf, t.groups = map[string]string{}, map[string]string{}, map[string][]string{}
 	}
+	// The batch's task refs, primed so its #N mentions cost one read.
+	if t.Mentions != nil {
+		for _, ev := range events {
+			if ev.Kind == cctranscript.KindText {
+				t.Mentions.Prime(ev.Text)
+			}
+		}
+	}
 	var ops []MirrorOp
 	for _, ev := range events {
 		if ev.Usage != nil {

@@ -1924,7 +1924,7 @@ func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
 		// runtime code reads it (nothing converts bubbles any more); the browser
 		// specs count bubbles by it, as they do the mirrored view's.
 		g.Attr("data-md-rendered", ""),
-		chatMessageBody(role, content, mx),
+		chatMessageBody(role, content, mx, false),
 	)
 }
 
@@ -1944,26 +1944,31 @@ func chatBubble(role, content string, id int64, mx *MentionIndex) g.Node {
 // page to that.
 //
 // mx links the mentions in an assistant's reply (mentions.go); the owner's own
-// message is drawn as typed. nil links none.
-func chatMessageBody(role, content string, mx *MentionIndex) g.Node {
+// message is drawn as typed. nil links none. partial: content is a reply still
+// streaming, whose last token is not linked yet.
+func chatMessageBody(role, content string, mx *MentionIndex, partial bool) g.Node {
 	if role == "user" {
 		return promptBody(content)
 	}
-	return renderMarkdownWith(content, mx)
+	return g.Raw(markdownRender(content, false, mentionFor(mx, content, partial)))
 }
 
 // ChatMessageHTML is chatMessageBody as an HTML string: what the chat socket
 // sends the page for a streamed reply's text so far and for the echo of a
 // sent message. Escape-first (markdownHTML), so it is safe to assign to
 // innerHTML.
-func ChatMessageHTML(role, content string) string { return ChatMessageHTMLWith(role, content, nil) }
-
-// ChatMessageHTMLWith is ChatMessageHTML, linking the mentions mx resolves:
-// the streamed reply's renderer (internal/api wsChatStream), so a reply's links
-// are there while it streams, as they are once it is stored.
-func ChatMessageHTMLWith(role, content string, mx *MentionIndex) string {
+func ChatMessageHTML(role, content string) string {
 	var b strings.Builder
-	_ = chatMessageBody(role, content, mx).Render(&b)
+	_ = chatMessageBody(role, content, nil, false).Render(&b)
+	return b.String()
+}
+
+// ChatStreamHTML is ChatMessageHTML for a reply STILL STREAMING (internal/api
+// wsChatStream), linking the mentions mx resolves — except its last token,
+// which may not have finished arriving ("#12" of "#1234").
+func ChatStreamHTML(role, content string, mx *MentionIndex) string {
+	var b strings.Builder
+	_ = chatMessageBody(role, content, mx, true).Render(&b)
 	return b.String()
 }
 

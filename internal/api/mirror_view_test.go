@@ -349,6 +349,31 @@ func TestTheViewSocketRendersBatchesWithTheChatsComponents(t *testing.T) {
 	}
 }
 
+// TestTheViewSocketLinksMentions is the wiring: the rendered view's socket
+// draws its assistant text with a mentions index over the viewer's own hosts,
+// so naming a window (its session "main", as @main) links to its view.
+func TestTheViewSocketLinksMentions(t *testing.T) {
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{batches: []mirror.Msg{
+		{Type: mirror.TypeEvents, Reset: true, Gen: "g1", Offset: 10, Events: []cctranscript.Event{
+			{Kind: cctranscript.KindText, Text: "ask @main next"},
+		}},
+	}}}
+	s, ts := viewServer(t, fm)
+	c, _, err := dialTerm(t, s, ts, ui.MirrorViewWSPath("ws", "main")+"&gen=g0&offset=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	ops := readBatch(t, c)["ops"].([]any)
+	if len(ops) != 1 {
+		t.Fatalf("%d ops", len(ops))
+	}
+	h := ops[0].(map[string]any)["html"].(string)
+	if want := `<a href="` + amp(ui.MirrorRef{Host: "ws", Session: "main"}.ViewPath()) + `" data-mention="session"`; !strings.Contains(h, want) {
+		t.Errorf("the reply does not link @main (%s):\n%s", want, h)
+	}
+}
+
 // The host's prompt index reaches the browser as the batch's index, each prompt
 // named by its bubble's element id and bounded again here (a ref naming no
 // prompt dropped), the host's "more" passed through; a batch from a host that

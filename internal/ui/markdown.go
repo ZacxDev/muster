@@ -192,11 +192,11 @@ func (v *mdVault) restore(s string) string {
 // two links in one paragraph corrupt each other.
 func mdInline(escaped string) string { return mdInlineWith(escaped, nil) }
 
-// mdInlineWith is mdInline, linking the mentions mx resolves (mentions.go).
+// mdInlineWith is mdInline, linking the mentions mc resolves (mentions.go).
 // They are matched AFTER code spans, links and bare URLs are vaulted, so none
 // of those is looked inside, and BEFORE emphasis, which then sees each link
-// only as a placeholder. A nil mx links none.
-func mdInlineWith(escaped string, mx *MentionIndex) string {
+// only as a placeholder. A nil mc links none.
+func mdInlineWith(escaped string, mc *mentionCtx) string {
 	// Defence in depth: mdEscape already strips NUL from all author text, but this
 	// function is package-visible and takes an "already-escaped" string on trust,
 	// so re-strip rather than rely on every future caller having gone through it.
@@ -218,7 +218,7 @@ func mdInlineWith(escaped string, mx *MentionIndex) string {
 	})
 	s = mdLinkify(s, v)
 	s = mdAutolink(s, v)
-	s = mdMention(s, v, mx)
+	s = mdMention(s, v, mc)
 	s = mdEmphasis(s)
 	return v.restore(s)
 }
@@ -526,11 +526,13 @@ func MarkdownHTML(src string) string { return markdownRender(src, true, nil) }
 func markdownHTML(src string) string { return markdownRender(src, false, nil) }
 
 // markdownHTMLWith is markdownHTML, linking the mentions mx resolves.
-func markdownHTMLWith(src string, mx *MentionIndex) string { return markdownRender(src, false, mx) }
+func markdownHTMLWith(src string, mx *MentionIndex) string {
+	return markdownRender(src, false, mentionFor(mx, src, false))
+}
 
 // markdownRender is markdownHTML, with headings drawn as <h1>…<h6> when
-// docHeadings is set (MarkdownHTML), and mentions linked when mx is set.
-func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
+// docHeadings is set (MarkdownHTML), and mentions linked when mc is set.
+func markdownRender(src string, docHeadings bool, mc *mentionCtx) string {
 	// Normalize newlines so \r\n / \r split cleanly.
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	src = strings.ReplaceAll(src, "\r", "\n")
@@ -581,7 +583,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 		// Heading.
 		if m := mdHeadingRe.FindStringSubmatch(line); m != nil && docHeadings {
 			tag := "h" + strconv.Itoa(len(m[1]))
-			out.WriteString("<" + tag + ">" + mdInlineWith(mdEscape(m[2]), mx) + "</" + tag + ">")
+			out.WriteString("<" + tag + ">" + mdInlineWith(mdEscape(m[2]), mc) + "</" + tag + ">")
 			i++
 			continue
 		}
@@ -591,7 +593,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 				size = "text-base"
 			}
 			out.WriteString(`<div class="mt-1 font-semibold text-fg ` + size + `">`)
-			out.WriteString(mdInlineWith(mdEscape(m[2]), mx))
+			out.WriteString(mdInlineWith(mdEscape(m[2]), mc))
 			out.WriteString(`</div>`)
 			i++
 			continue
@@ -601,7 +603,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 		if mdBlockquote.MatchString(line) {
 			var quote []string
 			for i < len(lines) && mdBlockquote.MatchString(lines[i]) {
-				quote = append(quote, mdInlineWith(mdEscape(mdBlockquote.ReplaceAllString(lines[i], "")), mx))
+				quote = append(quote, mdInlineWith(mdEscape(mdBlockquote.ReplaceAllString(lines[i], "")), mc))
 				i++
 			}
 			out.WriteString(`<blockquote class="my-1 border-l-2 border-accent/60 bg-s2 py-1 pl-3 text-fg2">`)
@@ -615,7 +617,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 			out.WriteString(`<ul class="my-1 list-disc space-y-0.5 pl-5">`)
 			for i < len(lines) && mdBulletRe.MatchString(lines[i]) {
 				item := mdBulletRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mx) + `</li>`)
+				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ul>`)
@@ -627,7 +629,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 			out.WriteString(`<ol class="my-1 list-decimal space-y-0.5 pl-5">`)
 			for i < len(lines) && mdOrderedRe.MatchString(lines[i]) {
 				item := mdOrderedRe.ReplaceAllString(lines[i], "")
-				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mx) + `</li>`)
+				out.WriteString(`<li>` + mdInlineWith(mdEscape(item), mc) + `</li>`)
 				i++
 			}
 			out.WriteString(`</ol>`)
@@ -648,13 +650,13 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 			i += 2 // consume the header row AND the separator row
 			out.WriteString(`<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs"><thead><tr>`)
 			for _, c := range head {
-				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInlineWith(mdEscape(c), mx) + `</th>`)
+				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInlineWith(mdEscape(c), mc) + `</th>`)
 			}
 			out.WriteString(`</tr></thead><tbody>`)
 			for i < len(lines) && strings.Contains(lines[i], "|") && !mdBlankLineRe.MatchString(lines[i]) {
 				out.WriteString(`<tr>`)
 				for _, c := range mdTableCells(lines[i]) {
-					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInlineWith(mdEscape(c), mx) + `</td>`)
+					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInlineWith(mdEscape(c), mc) + `</td>`)
 				}
 				out.WriteString(`</tr>`)
 				i++
@@ -688,7 +690,7 @@ func markdownRender(src string, docHeadings bool, mx *MentionIndex) string {
 			para = append(para, mdEscape(lines[i]))
 			i++
 		}
-		out.WriteString(`<p class="my-1">` + mdInlineWith(strings.Join(para, "<br>"), mx) + `</p>`)
+		out.WriteString(`<p class="my-1">` + mdInlineWith(strings.Join(para, "<br>"), mc) + `</p>`)
 	}
 	return out.String()
 }
