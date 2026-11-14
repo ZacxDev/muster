@@ -59,7 +59,7 @@ const noMember = 4
 // neither ledger and fails TestEveryOwnedTableHasAShareClass until someone
 // decides its class (it is never personal by default).
 var personalOwned = []string{
-	"agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
+	"agent_secrets", "agents", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "officer_host_spawns", "page_links",
@@ -71,8 +71,10 @@ var personalOwned = []string{
 // neverShared are the owned tables that must stay personal whatever a later
 // phase decides: credentials, connectors, devices and push (the operator's
 // decision), named so moving one into shareClasses fails by name.
+// agent_secrets (0128) is an agent's credentials: it stays personal even once
+// phase 4 shares agents itself.
 var neverShared = []string{
-	"user_credentials", "connectors", "connector_grants", "connector_standing_grants", "connector_audit",
+	"user_credentials", "agent_secrets", "connectors", "connector_grants", "connector_standing_grants", "connector_audit",
 	"devices", "device_pairing_codes", "device_challenges", "push_subscriptions", "push_preferences",
 }
 

@@ -349,6 +349,12 @@ func (f *fakeStore) SetDisplayName(ctx context.Context, id int64, name string) (
 	f.agents[id] = a
 	return a, nil
 }
+func (f *fakeStore) Secrets(ctx context.Context, id int64) (Secrets, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.agents[id]
+	return Secrets{HooksToken: a.HooksToken, GatewaySecret: a.GatewaySecret}, nil
+}
 func (f *fakeStore) SetHooksToken(ctx context.Context, id int64, token string) error { return nil }
 func (f *fakeStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
 	return nil

@@ -29,6 +29,10 @@ func (s *stuckRowStore) List(context.Context) ([]agents.Agent, error) {
 	return []agents.Agent{s.row}, nil
 }
 
+func (s *stuckRowStore) Secrets(context.Context, int64) (agents.Secrets, error) {
+	return agents.Secrets{HooksToken: s.row.HooksToken, GatewaySecret: s.row.GatewaySecret}, nil
+}
+
 func (s *stuckRowStore) MarkKickoffStuck(context.Context, int64, time.Time, string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

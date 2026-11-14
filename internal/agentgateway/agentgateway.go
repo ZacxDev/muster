@@ -117,6 +117,15 @@ type Config struct {
 	// failures against the Claude account it runs on. Optional: nil means no
 	// claude-code kind is enabled, and nothing is marked.
 	Accounts AccountMarker
+	// Secrets reads an agent's credentials (agents.Store satisfies it) at the
+	// moment a turn resolves: the agents.Agent a caller hands in came from an
+	// ordinary read, which carries none (agents.Secrets). Optional ONLY for a
+	// caller that builds its Agent by hand with the credentials in it
+	// (cmd/ccd/livecheck, tests): nil uses the Agent's own fields as given. A
+	// server that left it nil would refuse every turn as "no hooks token",
+	// which cmd/muster-server's TestTheBuiltGatewayReadsTheAgentsSecretsThroughTheStore
+	// pins against.
+	Secrets agents.SecretReader
 	// Kickoff clears an agent's stale "kickoff failed" record when a later turn
 	// on it completes (agents.Store.ClearKickoffFailure; the agents store
 	// satisfies it). Optional: nil means the record is cleared only by a
@@ -166,6 +175,7 @@ type Gateway struct {
 	client   *http.Client
 	accounts AccountMarker
 	kickoff  KickoffFailureClearer
+	secrets  agents.SecretReader
 	// failover is the account failover (UseFailover); nil = none.
 	failoverMu sync.RWMutex
 	failover   AccountFailover
@@ -213,6 +223,7 @@ func New(cfg Config) (*Gateway, error) {
 		client:   cfg.Client,
 		accounts: cfg.Accounts,
 		kickoff:  cfg.Kickoff,
+		secrets:  cfg.Secrets,
 	}
 	if g.client == nil {
 		g.client = &http.Client{Timeout: DefaultTurnTimeout}
@@ -469,7 +480,17 @@ func (g *Gateway) SendWithTools(ctx context.Context, t Target, sessionKey, instr
 // rotated or mismatched secret and sends the reader to the deployment's secrets,
 // while the real fault is a row the provisioner never finished. The refusal names
 // the agent and the field so the reader lands in the right place.
+//
+// The credentials come from g.secrets (agent_secrets), read here because the
+// row a caller holds came from an ordinary read and carries none.
 func (g *Gateway) reach(ctx context.Context, a agents.Agent) (provision.Endpoint, string, error) {
+	if g.secrets != nil {
+		var err error
+		if a, err = agents.WithSecrets(ctx, g.secrets, a); err != nil {
+			return provision.Endpoint{}, "", fmt.Errorf("read the credentials of agent %q (id %d): %w",
+				a.Name, a.ID, err)
+		}
+	}
 	if a.HooksToken == "" {
 		return provision.Endpoint{}, "", fmt.Errorf("agent %q (id %d) has no hooks token, so no "+
 			"gateway credential can be derived: the token is minted when the instance is created, "+

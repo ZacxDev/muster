@@ -77,6 +77,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO note_attachments (note_id, filename, size_bytes, data) VALUES ($1, 'a.txt', 1, '\x61')`, func() []any { return []any{note} }, nil},
 		{`INSERT INTO task_sessions (note_id, session_id, role) VALUES ($1, $2, 'created')`, func() []any { return []any{note, "sess-" + tag} }, nil},
 		{`INSERT INTO agents (name, namespace, note_id) VALUES ($1, $2, $3) RETURNING id`, func() []any { return []any{"agent-" + tag, "ns-" + tag, note} }, &agent},
+		{`INSERT INTO agent_secrets (agent_id, hooks_token) VALUES ($1, $2)`, func() []any { return []any{agent, "hooks-" + tag} }, nil},
 		{`INSERT INTO chat_sessions (agent_id, session_key) VALUES ($1, $2) RETURNING id`, func() []any { return []any{agent, "key-" + tag} }, &session},
 		{`INSERT INTO chat_messages (agent_id, session_id, role, content) VALUES ($1, $2, 'user', 'hello')`, func() []any { return []any{agent, session} }, nil},
 		{`INSERT INTO connectors (name, hosts, auth_scheme, secret_ciphertext) VALUES ($1, ARRAY['api.example.test'], 'bearer', '\x00')`, func() []any { return []any{"conn-" + tag} }, nil},

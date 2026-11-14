@@ -1182,7 +1182,16 @@ func (a *Adapter) create(ctx context.Context, ag agents.Agent) (agents.Agent, er
 // It also gives a claude-code agent its turn credential (ensureGatewaySecret):
 // every path that builds a spec comes through here first, so no claude-code spec
 // is built without one.
+//
+// 🔴 IT READS THE CREDENTIALS FIRST (agents.WithSecrets). The row it is handed
+// came from an ordinary read, which carries none (agents.Secrets); deciding "none
+// yet" from that row would mint a NEW identity on every Start and re-apply, and
+// hand the pod a token that no longer matches the one its running session holds.
 func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents.Agent, error) {
+	ag, err := agents.WithSecrets(ctx, a.store, ag)
+	if err != nil {
+		return ag, a.fail(ctx, ag, "read credentials", err)
+	}
 	if ag.HooksToken == "" {
 		buf := make([]byte, hooksTokenBytes)
 		if _, err := rand.Read(buf); err != nil {
