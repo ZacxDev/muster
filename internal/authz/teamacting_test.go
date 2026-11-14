@@ -17,12 +17,12 @@ import (
 var actsAsTeam = map[Via]bool{
 	// A team-owned agent's own token: the team is the agent row's owner.
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
-	// A team-owned gateway agent's turn (turnPrincipal refuses a team today).
-	ViaKickoff: true, ViaAgentMessage: true,
 	// Per-owner background work meeting a team-owned row.
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
-	// A team manager's lifecycle action (slice 4.5).
-	ViaTeamAdmin: true,
+	// A team-owned gateway agent's turn: NOT a team door in phase 4.
+	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
+	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
+	ViaKickoff: false, ViaAgentMessage: false,
 	// Never a team.
 	ViaSession: false, ViaDevice: false, ViaToken: false, ViaHook: false, ViaService: false,
 	ViaRunner: false, ViaPlugin: false, ViaMirrorHost: false, ViaPageLink: false,
@@ -87,8 +87,24 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 11 {
-		t.Fatalf("accepted a team at %d doors; the ledger names 11", accepted)
+	if accepted != 8 {
+		t.Fatalf("accepted a team at %d doors; the ledger names 8", accepted)
+	}
+}
+
+// TestATeamGatewayTurnIsRefusedAtTheDoor: a team principal at a gateway turn's
+// doors (kickoff, agent-message) panics with the door refusal. It is the
+// second guard behind internal/api's turnPrincipal, which refuses a team
+// first; the CONTROL is a person at the same doors, accepted.
+func TestATeamGatewayTurnIsRefusedAtTheDoor(t *testing.T) {
+	for _, v := range []Via{ViaKickoff, ViaAgentMessage} {
+		if m := panicOf(func() { WithPrincipal(context.Background(), Principal{UserID: 42, Role: RoleMember, Via: v}) }); m != "" {
+			t.Fatalf("control %s: a person was refused: %s", v, m)
+		}
+		team := Principal{UserID: 42, Team: true, Role: RoleMember, Via: v}
+		if m := panicOf(func() { WithPrincipal(context.Background(), team) }); !strings.Contains(m, "a team never signs in, and that door does not act as a team") {
+			t.Errorf("%s: a team gateway turn's principal: panic %q; want the door refusal", v, m)
+		}
 	}
 }
 

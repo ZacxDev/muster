@@ -399,7 +399,7 @@ var (
 	authzExports = []string{
 		"From", "IsAdmin", "Membership", "Memberships", "MustFrom", "NewMemberships", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
 		"System", "TeamManager", "TeamOperator", "TeamRole", "TeamViewer", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
-		"ViaSession", "ViaSystem", "ViaTeamAdmin", "ViaToken", "WithPrincipal",
+		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
 

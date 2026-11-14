@@ -176,14 +176,6 @@ const (
 	// page's OWNER for that one page only — the link's capability, never a
 	// session. internal/api's requirePageLink, on the /s/{token}/* routes.
 	ViaPageLink Via = "page-link"
-	// ViaTeamAdmin is a team MANAGER's lifecycle action on one of the team's
-	// agents (provision, switch on or off, restart, replace, stop, start,
-	// delete), run AS THE TEAM so credential selection, budget and the
-	// owner all resolve to the team (team sharing phase 4, slice 4.5). It is
-	// DECLARED before that handler exists so the team-acting set
-	// (teamActingVias) is written once; nothing outside this package's tests
-	// mints it yet.
-	ViaTeamAdmin Via = "team-admin"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -234,9 +226,6 @@ var requestVias = map[Via]bool{
 	ViaJobQueue: true,
 	// A page's share link (internal/api's requirePageLink).
 	ViaPageLink: true,
-	// A team manager's lifecycle action on a team agent, as the team (slice
-	// 4.5's /teams/{id}/* handlers; minted nowhere outside tests yet).
-	ViaTeamAdmin: true,
 }
 
 // teamActingVias is the closed set of doors through which a principal may
@@ -249,12 +238,14 @@ var requestVias = map[Via]bool{
 //   - a team-owned agent's own token (ViaAgent, ViaConnect, ViaRelay — the
 //     team is the agent row's owner, never a sign-in; internal/api's admit
 //     admits a team on exactly these three);
-//   - a team-owned gateway agent's turn (ViaKickoff, ViaAgentMessage —
-//     internal/api's turnPrincipal still refuses a team: gateway agents are
-//     not team agents in phase 4, so no site mints these for a team yet);
 //   - the per-owner background work that meets a team-owned row (ViaReap,
-//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue);
-//   - a team manager's lifecycle action (ViaTeamAdmin).
+//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue).
+//
+// A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
+// the set: gateway agents are not team agents in phase 4. internal/api's
+// turnPrincipal refuses a team first (the turn goes toolless); this set's
+// panic is the second guard behind it. A team manager's lifecycle door is
+// added with its one caller (slice 4.5).
 //
 // 🔴 EVERY OTHER DOOR STILL REFUSES A TEAM (WithPrincipal panics). A person's
 // door (session, device, personal token), a shared machine token, a mirror
@@ -264,9 +255,7 @@ var requestVias = map[Via]bool{
 // TestTheTeamActingViasAreExactlyTheListedDoors pins the set.
 var teamActingVias = map[Via]bool{
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
-	ViaKickoff: true, ViaAgentMessage: true,
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
-	ViaTeamAdmin: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
