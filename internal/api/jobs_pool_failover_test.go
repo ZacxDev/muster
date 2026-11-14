@@ -64,11 +64,11 @@ func (s *poolMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error
 	return out, nil
 }
 func (s *poolMarks) LiveCounts(context.Context, int64) (map[string]int, error) { return nil, nil }
-func (s *poolMarks) MarkRateLimited(_ context.Context, _ int64, account, fp, detail string, at time.Time) error {
+func (s *poolMarks) MarkRateLimited(_ context.Context, _ int64, account, detail string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.m[account]
-	m.Account, m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = account, at, detail, fp
+	m.Account, m.RateLimitedAt, m.RateLimitedDetail = account, at, detail
 	s.m[account] = m
 	return nil
 }
@@ -79,7 +79,7 @@ func (s *poolMarks) ClearRateLimited(_ context.Context, _ int64, account string,
 	if !ok || !m.RateLimitedAt.Equal(markedAt) {
 		return false, nil
 	}
-	m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	m.RateLimitedAt, m.RateLimitedDetail = time.Time{}, ""
 	s.m[account] = m
 	return true, nil
 }

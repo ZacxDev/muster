@@ -535,30 +535,38 @@ until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
 9am (UTC)`), or, when the message states none muster can read (no zone, for
 one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
 is usable again at exactly that time — or sooner, when the account's **live
-state** says so:
+state** says so. With `MUSTER_CC_USAGE_POLL=1` the
+[usage poller](#claude-account-usage) keeps reading a cooling account at its
+ordinary interval, and when that reading shows the account usable it clears
+the mark (one log line: `ccusage: account <name>: cleared its rate-limit mark
+of <time> (cooldown was until <time>): <reason>`). Usable means:
 
-- **Its live reading says it is usable.** With `MUSTER_CC_USAGE_POLL=1` the
-  [usage poller](#claude-account-usage) keeps reading a cooling account at its
-  ordinary interval, and when that reading shows the account usable it clears
-  the mark (one log line: `ccusage: account <name>: cleared its rate-limit mark
-  of <time> (cooldown was until <time>): <reason>`). Usable means: from the
-  probe, the overall `anthropic-ratelimit-unified-status` is `allowed` or
-  `allowed_warning`; from the usage endpoint, every window that carries a
-  utilization is below 100% (or past its own reset). A 429, a `rejected`
-  status, a window at 100% that has not reset, or a failed read keeps the mark.
-  The clear is conditional on the mark it read before the reading: a turn
-  that hits the limit again while the reading is in flight writes a newer mark,
-  and that one stands. ⚠ Reading a cooling account whose token the usage
-  endpoint refuses (a `setup-token`) is the one-token probe, so it **spends one
-  output token of that account's quota per interval while it cools**. With the
-  poller off, nothing reads the live state and only the next point applies.
-- **Its token is replaced.** A `rate_limited` mark records the fingerprint of
-  the token that hit the limit (migration 0130), exactly as `auth_failed` does,
-  and a mark whose fingerprint is not the account's current token is ignored
-  everywhere the cooldown is read. Re-issuing the account's token (`claude
-  setup-token`) therefore ends its cooldown by itself. A mark written before
-  0130 carries no fingerprint and is honoured whatever the token until the
-  account is marked again.
+- **From the usage endpoint:** every window that carries a utilization is
+  below 100% (or past its own reset).
+- **From the probe:** the overall `anthropic-ratelimit-unified-status` is
+  `allowed` or `allowed_warning`, **and** the mark's own text names the
+  session limit (`You've hit your session limit`, or the earlier CLI's
+  `5-hour limit reached`) or the weekly limit (`You've hit your weekly
+  limit`), **and** that limit's window in the probe's headers — `5h` for the
+  session limit, `7d` for the weekly one — is present and under its limit (or
+  past its reset). The probe runs on a small model, so its overall status
+  says nothing about a per-model limit: a mark set by any other limit text
+  (`You've hit your Opus limit`, or a message naming no window) is never
+  cleared by the probe and ends at its stated reset.
+
+A 429, a `rejected` status, a window at 100% that has not reset, or a failed
+read keeps the mark. The clear is conditional on the mark it read before the
+reading: a turn that hits the limit again while the reading is in flight
+writes a newer mark, and that one stands. ⚠ Reading a cooling account whose
+token the usage endpoint refuses (a `setup-token`) is the one-token probe, so
+it **spends one output token of that account's quota per interval while it
+cools**. With the poller off, nothing reads the live state and nothing ends a
+cooldown early.
+
+A rate limit is counted per subscription, not per token, so replacing an
+account's token does **not** end its cooldown: a re-issued token on the same
+subscription is still limited. A changed token on a cooling account is read by
+the live probe on the poller's next pass, and that reading decides.
 
 While another account is usable a pool does not wait for any of that: a
 submission that finds no worker it can use moves one off the resting account
@@ -592,7 +600,7 @@ owner's accounts**:
   ago, then the account name. When there is none — every other account is
   cooling down or failed — nothing moves and everything behaves as before
   (the job fails `rate_limited`; a pool submission whose every worker is
-  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works. An account's cooldown also ends before its stated reset when its live reading shows it usable or its token is replaced ([The cooldown](#worker-pools)); from then it is a failover target again.
+  cooling is a 429 that names each worker's reset). Nothing special happens at the reset: the next turn simply works. An account's cooldown also ends before its stated reset when its live reading shows it usable ([The cooldown](#worker-pools)); from then it is a failover target again.
 - **How.** The agent's row is moved to the new account (only if it is still on
   the old one), and its spec is re-applied with the new account's setup-token,
   which **restarts its pod**: the running CLI session and every job lane's CLI

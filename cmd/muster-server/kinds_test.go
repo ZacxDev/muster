@@ -198,7 +198,7 @@ type memMarks struct{}
 
 func (memMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error) { return nil, nil }
 func (memMarks) LiveCounts(context.Context, int64) (map[string]int, error)    { return nil, nil }
-func (memMarks) MarkRateLimited(context.Context, int64, string, string, string, time.Time) error {
+func (memMarks) MarkRateLimited(context.Context, int64, string, string, time.Time) error {
 	return nil
 }
 func (memMarks) ClearRateLimited(context.Context, int64, string, time.Time) (bool, error) {

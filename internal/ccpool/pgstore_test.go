@@ -45,23 +45,23 @@ func TestPGStoreMarksUpsertAndLiveCountsByKindAndStatus(t *testing.T) {
 	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
 	sys := authz.System(context.Background())
 
-	if err := st.MarkRateLimited(ctx, 1, "alpha", "fp5pm5pm5pm5", "resets 5pm", t0); err != nil {
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 5pm", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.MarkAuthFailed(ctx, 1, "alpha", "abc123abc123", "401", t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	// A second rate-limit UPDATES the row; it must not erase the auth mark.
-	if err := st.MarkRateLimited(ctx, 1, "alpha", "fp9pm9pm9pm9", "resets 9pm", t0.Add(2*time.Hour)); err != nil {
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 9pm", t0.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	// The member's own "alpha": a different account.
-	if err := st.MarkRateLimited(member, 2, "alpha", "fpmembermemb", "member limit", t0.Add(5*time.Hour)); err != nil {
+	if err := st.MarkRateLimited(member, 2, "alpha", "member limit", t0.Add(5*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	// A member cannot write a mark against the admin's account (row-level
 	// security's WITH CHECK).
-	if err := st.MarkRateLimited(member, 1, "alpha", "fpforgedforg", "forged", t0); err == nil {
+	if err := st.MarkRateLimited(member, 1, "alpha", "forged", t0); err == nil {
 		t.Fatal("a member's principal wrote a mark against owner 1's account")
 	}
 	for _, c := range []struct {
@@ -87,7 +87,7 @@ func TestPGStoreMarksUpsertAndLiveCountsByKindAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := marks["alpha"]
-	if !m.RateLimitedAt.Equal(t0.Add(2*time.Hour)) || m.RateLimitedDetail != "resets 9pm" || m.RateLimitedToken != "fp9pm9pm9pm9" ||
+	if !m.RateLimitedAt.Equal(t0.Add(2*time.Hour)) || m.RateLimitedDetail != "resets 9pm" ||
 		!m.AuthFailedAt.Equal(t0.Add(time.Hour)) || m.AuthFailedToken != "abc123abc123" || m.AuthFailedDetail != "401" {
 		t.Fatalf("alpha's mark = %+v", m)
 	}
@@ -143,7 +143,7 @@ func TestPGStoreMarksUpsertAndLiveCountsByKindAndStatus(t *testing.T) {
 }
 
 // TestPGStoreClearRateLimitedIsACompareAndClear: the clear erases the
-// rate-limit mark (timestamp, detail and fingerprint) only while its timestamp
+// rate-limit mark (timestamp and detail) only while its timestamp
 // is still the one the caller read; a mark rewritten since — a turn hit the
 // limit again while the live reading was in flight — stands. The auth mark on
 // the same row is never touched, and another owner's same-named account is
@@ -167,13 +167,13 @@ func TestPGStoreClearRateLimitedIsACompareAndClear(t *testing.T) {
 	sys := authz.System(context.Background())
 	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member') ON CONFLICT (id) DO NOTHING`)
 	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
-	if err := st.MarkRateLimited(member, 2, "alpha", "fpmembermemb", "member limit", t0); err != nil {
+	if err := st.MarkRateLimited(member, 2, "alpha", "member limit", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.MarkAuthFailed(ctx, 1, "alpha", "abc123abc123", "401", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkRateLimited(ctx, 1, "alpha", "fpfirstfirst", "resets 5pm", t0); err != nil {
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 5pm", t0); err != nil {
 		t.Fatal(err)
 	}
 	read, err := st.Marks(ctx, 1)
@@ -182,14 +182,14 @@ func TestPGStoreClearRateLimitedIsACompareAndClear(t *testing.T) {
 	}
 	markedAt := read["alpha"].RateLimitedAt
 	// A NEWER mark lands after markedAt was read.
-	if err := st.MarkRateLimited(ctx, 1, "alpha", "fpnewernewer", "resets 9pm", t0.Add(time.Minute)); err != nil {
+	if err := st.MarkRateLimited(ctx, 1, "alpha", "resets 9pm", t0.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := st.ClearRateLimited(ctx, 1, "alpha", markedAt); err != nil || ok {
 		t.Fatalf("clear against the older mark's time: cleared=%v err=%v, want the newer mark kept", ok, err)
 	}
 	m := mustMark(t, st, ctx, 1)
-	if !m.RateLimitedAt.Equal(t0.Add(time.Minute)) || m.RateLimitedDetail != "resets 9pm" || m.RateLimitedToken != "fpnewernewer" {
+	if !m.RateLimitedAt.Equal(t0.Add(time.Minute)) || m.RateLimitedDetail != "resets 9pm" {
 		t.Fatalf("after a refused clear alpha = %+v, want the newer mark", m)
 	}
 	// The clear with the CURRENT mark's time succeeds and leaves the auth mark.
@@ -197,7 +197,7 @@ func TestPGStoreClearRateLimitedIsACompareAndClear(t *testing.T) {
 		t.Fatalf("clear against the current mark's time: cleared=%v err=%v", ok, err)
 	}
 	m = mustMark(t, st, ctx, 1)
-	if !m.RateLimitedAt.IsZero() || m.RateLimitedDetail != "" || m.RateLimitedToken != "" ||
+	if !m.RateLimitedAt.IsZero() || m.RateLimitedDetail != "" ||
 		!m.AuthFailedAt.Equal(t0) || m.AuthFailedToken != "abc123abc123" || m.AuthFailedDetail != "401" {
 		t.Fatalf("after the clear alpha = %+v, want no rate-limit mark and the auth mark intact", m)
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -384,7 +385,7 @@ func (p *Poller) clearIfUsable(ctx context.Context, account string, cd ccpool.Co
 	if cd.Until.IsZero() || cd.MarkedAt.IsZero() || p.ClearCooling == nil {
 		return
 	}
-	reason, ok := LiveUsable(row, now)
+	reason, ok := LiveUsable(row, cd.Detail, now)
 	if !ok {
 		return
 	}
@@ -399,27 +400,44 @@ func (p *Poller) clearIfUsable(ctx context.Context, account string, cd ccpool.Co
 }
 
 // LiveUsable reports whether r — a reading taken at now — shows the account
-// usable right now, and says why. Only a GOOD reading taken at now counts (no
-// ErrorKind, ReadAt equal to now): a kept older reading, a 429 or a refusal
-// is not live evidence of anything.
+// usable right now for the limit its rate-limit mark names (markDetail, the
+// mark's stored detail: the CLI's limit message), and says why. Only a GOOD
+// reading taken at now counts (no ErrorKind, ReadAt equal to now): a kept
+// older reading, a 429 or a refusal is not live evidence of anything.
 //
-//   - From the probe's headers (SourceRateLimitHeaders): the overall
-//     `anthropic-ratelimit-unified-status` is "allowed" or "allowed_warning".
-//     "rejected", or no status at all, is not usable.
+//   - From the probe's headers (SourceRateLimitHeaders), ALL of: the overall
+//     `anthropic-ratelimit-unified-status` is "allowed" or "allowed_warning";
+//     the mark names the session or the weekly limit ([MarkedLimitWindow]);
+//     and that limit's own window in the headers — 5h for the session limit,
+//     7d for the weekly one — is present and under its limit (or past its
+//     reset; [headerWindowUnder]). 🔴 The probe runs on [ProbeModel], and its
+//     overall status speaks for that model only: a mark set by any OTHER limit
+//     (a per-model one, "You've hit your Opus limit", or a message that names
+//     no window) is never cleared here, or the account would be put back,
+//     re-fail, and be marked again every interval. Such a mark ends at its
+//     stated reset.
 //   - From the usage endpoint (SourceUsageAPI): at least one window carries a
 //     utilization, and every window that does is below 100% — or its stated
 //     reset is not after now. One window at 100% that has not reset (a
 //     per-model weekly one included) keeps the account limited: this reads
 //     conservatively, and a mark it keeps still ends at its stated reset.
-func LiveUsable(r Row, now time.Time) (string, bool) {
+func LiveUsable(r Row, markDetail string, now time.Time) (string, bool) {
 	if r.ErrorKind != "" || r.ReadAt.IsZero() || !r.ReadAt.Equal(now) {
 		return "", false
 	}
 	switch r.Source {
 	case SourceRateLimitHeaders:
-		if r.Status == "allowed" || r.Status == "allowed_warning" {
-			return "the live probe's rate-limit status is " + r.Status, true
+		if r.Status != "allowed" && r.Status != "allowed_warning" {
+			return "", false
 		}
+		name, abbr := MarkedLimitWindow(markDetail)
+		if name == "" {
+			return "", false
+		}
+		if w, ok := r.Windows[name]; !ok || !headerWindowUnder(w, now) {
+			return "", false
+		}
+		return "the live probe's rate-limit status is " + r.Status + " and its " + abbr + " window is under its limit", true
 	case SourceUsageAPI:
 		n := 0
 		for _, w := range r.Windows {
@@ -436,6 +454,49 @@ func LiveUsable(r Row, now time.Time) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// The limit messages the CLI writes that name ONE subscription window
+// (internal/cctranscript limit.go and its pinned samples): "You've hit your
+// session limit · …" and the earlier CLI's "5-hour limit reached ∙ …" are the
+// 5-hour window; "You've hit your weekly limit · …" is the 7-day one. The
+// earlier "Claude usage limit reached" names no window, and "You've hit your
+// <model> limit" is a per-model one: neither matches.
+var (
+	sessionLimitText = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your session limit\b|\b5-hour limit reached\b`)
+	weeklyLimitText  = regexp.MustCompile(`(?i)\byou(?:'|’)?ve hit your weekly limit\b`)
+)
+
+// MarkedLimitWindow is the subscription window a rate-limit mark's detail
+// names — FiveHour ("5h") for the session limit, SevenDay ("7d") for the
+// weekly one — and "" for any other text (a per-model limit, a message naming
+// no window, or one naming both).
+func MarkedLimitWindow(detail string) (name, abbr string) {
+	session, weekly := sessionLimitText.MatchString(detail), weeklyLimitText.MatchString(detail)
+	switch {
+	case session && !weekly:
+		return FiveHour, "5h"
+	case weekly && !session:
+		return SevenDay, "7d"
+	}
+	return "", ""
+}
+
+// headerWindowUnder reports whether w, one window from the probe's headers,
+// is under its limit at now: its reset has passed, or it is not `rejected`
+// and either carries a utilization below 100% or, carrying none, says
+// "allowed" / "allowed_warning". A window with nothing to say is not under.
+func headerWindowUnder(w Window, now time.Time) bool {
+	if w.ResetsAt != nil && !w.ResetsAt.After(now) {
+		return true
+	}
+	if w.Status == "rejected" {
+		return false
+	}
+	if w.Utilization != nil {
+		return *w.Utilization < 100
+	}
+	return w.Status == "allowed" || w.Status == "allowed_warning"
 }
 
 func (p *Poller) interval() time.Duration {

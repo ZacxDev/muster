@@ -44,11 +44,11 @@ func (s *liveMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error
 	return out, nil
 }
 func (s *liveMarks) LiveCounts(context.Context, int64) (map[string]int, error) { return nil, nil }
-func (s *liveMarks) MarkRateLimited(_ context.Context, _ int64, account, fp, detail string, at time.Time) error {
+func (s *liveMarks) MarkRateLimited(_ context.Context, _ int64, account, detail string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.m[account]
-	m.Account, m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = account, at, detail, fp
+	m.Account, m.RateLimitedAt, m.RateLimitedDetail = account, at, detail
 	s.m[account] = m
 	return nil
 }
@@ -67,7 +67,7 @@ func (s *liveMarks) ClearRateLimited(_ context.Context, _ int64, account string,
 	if !ok || !m.RateLimitedAt.Equal(markedAt) {
 		return false, nil
 	}
-	m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	m.RateLimitedAt, m.RateLimitedDetail = time.Time{}, ""
 	s.m[account] = m
 	return true, nil
 }
@@ -97,8 +97,12 @@ type liveRig struct {
 	markedAt time.Time
 }
 
-// newLiveRig: alpha is rate-limited under its CURRENT token with no stated
-// reset (the 6h cooldown applies), beta is not marked at all.
+// liveWeekly is alpha's mark's detail: the weekly limit, with no stated reset
+// (so the 6h cooldown applies).
+const liveWeekly = "You've hit your weekly limit"
+
+// newLiveRig: alpha is rate-limited (the weekly limit) with no stated reset
+// (the 6h cooldown applies), beta is not marked at all.
 func newLiveRig(t *testing.T, fetch Fetcher) *liveRig {
 	t.Helper()
 	toks := map[string]string{"alpha": liveTokA, "beta": liveTokB}
@@ -108,7 +112,7 @@ func newLiveRig(t *testing.T, fetch Fetcher) *liveRig {
 	}
 	markedAt := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
 	marks := &liveMarks{m: map[string]ccpool.Mark{"alpha": {Account: "alpha", RateLimitedAt: markedAt,
-		RateLimitedDetail: "You've hit your limit", RateLimitedToken: ccpool.Fingerprint(liveTokA)}}}
+		RateLimitedDetail: liveWeekly}}}
 	pool, err := ccpool.NewWithLimits(src, marks, ccpool.Limits{Cooldown: 6 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -148,10 +152,10 @@ func TestALiveReadingThatSaysUsableClearsTheMark(t *testing.T) {
 		fx     *scripted
 		reason string
 	}{
-		{"the probe says allowed", &scripted{}, "the live probe's rate-limit status is allowed"},
+		{"the probe says allowed", &scripted{}, "the live probe's rate-limit status is allowed and its 7d window is under its limit"},
 		{"the probe says allowed_warning", &scripted{probe: []Result{{Status: http.StatusOK, HasReading: true,
 			Reading: Reading{Status: "allowed_warning", Windows: map[string]Window{SevenDay: {Utilization: f(93), Status: "allowed_warning"}}}}}},
-			"the live probe's rate-limit status is allowed_warning"},
+			"the live probe's rate-limit status is allowed_warning and its 7d window is under its limit"},
 		{"the usage endpoint says under 100%", &scripted{usage: []Result{usageOK(40)}},
 			"the usage endpoint reports every window below 100% (or past its reset)"},
 	} {
@@ -160,7 +164,7 @@ func TestALiveReadingThatSaysUsableClearsTheMark(t *testing.T) {
 			if err := rig.poller.Pass(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if m := rig.alpha(); !m.RateLimitedAt.IsZero() || m.RateLimitedDetail != "" || m.RateLimitedToken != "" {
+			if m := rig.alpha(); !m.RateLimitedAt.IsZero() || m.RateLimitedDetail != "" {
 				t.Fatalf("alpha's mark after a usable live reading = %+v, want cleared", m)
 			}
 			states, err := rig.pool.States(context.Background(), 1)
@@ -204,8 +208,7 @@ func TestALiveReadingThatSaysLimitedKeepsTheMark(t *testing.T) {
 			if err := rig.poller.Pass(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if m := rig.alpha(); !m.RateLimitedAt.Equal(rig.markedAt) || m.RateLimitedDetail != "You've hit your limit" ||
-				m.RateLimitedToken != ccpool.Fingerprint(liveTokA) {
+			if m := rig.alpha(); !m.RateLimitedAt.Equal(rig.markedAt) || m.RateLimitedDetail != liveWeekly {
 				t.Fatalf("alpha's mark = %+v, want it kept (marked %s)", m, rig.markedAt)
 			}
 			if lines := rig.clearLines(); len(lines) != 0 {
@@ -225,7 +228,7 @@ func TestANewerMarkWrittenDuringTheProbeIsNotCleared(t *testing.T) {
 	fx := hooked{inner: &scripted{}, during: func() {
 		if newer.IsZero() { // alpha's probe is the first; beta's must not move it
 			newer = rig.markedAt.Add(30 * time.Second)
-			if err := rig.marks.MarkRateLimited(context.Background(), 1, "alpha", ccpool.Fingerprint(liveTokA), "You've hit your limit again", newer); err != nil {
+			if err := rig.marks.MarkRateLimited(context.Background(), 1, "alpha", "You've hit your weekly limit again", newer); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -234,7 +237,7 @@ func TestANewerMarkWrittenDuringTheProbeIsNotCleared(t *testing.T) {
 	if err := rig.poller.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if m := rig.alpha(); !m.RateLimitedAt.Equal(newer) || m.RateLimitedDetail != "You've hit your limit again" {
+	if m := rig.alpha(); !m.RateLimitedAt.Equal(newer) || m.RateLimitedDetail != "You've hit your weekly limit again" {
 		t.Fatalf("alpha's mark = %+v, want the newer one (%s) kept", m, newer)
 	}
 	if lines := rig.clearLines(); len(lines) != 0 {
@@ -269,24 +272,24 @@ func TestNoClearCoolingMeansNoClear(t *testing.T) {
 // TestLiveUsableCountsOnlyAReadingTakenNow: a kept older reading (ReadAt
 // before now) or a failed attempt is not live evidence, whatever it says.
 func TestLiveUsableCountsOnlyAReadingTakenNow(t *testing.T) {
-	good := Row{Source: SourceRateLimitHeaders, Status: "allowed", ReadAt: t0}
-	if _, ok := LiveUsable(good, t0); !ok {
+	good := Row{Source: SourceRateLimitHeaders, Status: "allowed", ReadAt: t0, Windows: map[string]Window{SevenDay: {Utilization: f(40), Status: "allowed"}}}
+	if _, ok := LiveUsable(good, liveWeekly, t0); !ok {
 		t.Fatal("control: an allowed reading taken now is not usable")
 	}
-	if _, ok := LiveUsable(good, t0.Add(time.Second)); ok {
+	if _, ok := LiveUsable(good, liveWeekly, t0.Add(time.Second)); ok {
 		t.Fatal("an allowed reading from before now counted as live")
 	}
 	failed := good
 	failed.ErrorKind = KindRateLimited
-	if _, ok := LiveUsable(failed, t0); ok {
+	if _, ok := LiveUsable(failed, liveWeekly, t0); ok {
 		t.Fatal("a 429 attempt counted as usable")
 	}
 	past := t0.Add(-time.Minute)
 	reset := Row{Source: SourceUsageAPI, ReadAt: t0, Windows: map[string]Window{FiveHour: {Utilization: f(100), ResetsAt: &past}}}
-	if _, ok := LiveUsable(reset, t0); !ok {
+	if _, ok := LiveUsable(reset, liveWeekly, t0); !ok {
 		t.Fatal("a window at 100% whose reset has passed kept the account limited")
 	}
-	if _, ok := LiveUsable(Row{Source: SourceUsageAPI, ReadAt: t0, Windows: map[string]Window{}}, t0); ok {
+	if _, ok := LiveUsable(Row{Source: SourceUsageAPI, ReadAt: t0, Windows: map[string]Window{}}, liveWeekly, t0); ok {
 		t.Fatal("a usage reading with no window counted as usable")
 	}
 }

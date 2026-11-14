@@ -131,8 +131,8 @@ func (f *fakeStore) LiveCounts(_ context.Context, owner int64) (map[string]int, 
 	f.asked = append(f.asked, owner)
 	return f.live, f.err
 }
-func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, fp, d string, _ time.Time) error {
-	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+fp+"|"+d)
+func (f *fakeStore) MarkRateLimited(_ context.Context, owner int64, a, d string, _ time.Time) error {
+	f.calls = append(f.calls, "rate_limited|"+strconv.FormatInt(owner, 10)+"|"+a+"|"+d)
 	return f.err
 }
 
@@ -144,7 +144,7 @@ func (f *fakeStore) ClearRateLimited(_ context.Context, owner int64, a string, m
 	if f.err != nil || !ok || !m.RateLimitedAt.Equal(markedAt) {
 		return false, f.err
 	}
-	m.RateLimitedAt, m.RateLimitedDetail, m.RateLimitedToken = time.Time{}, "", ""
+	m.RateLimitedAt, m.RateLimitedDetail = time.Time{}, ""
 	f.marks[a] = m
 	return true, nil
 }
@@ -259,7 +259,7 @@ func TestMarkFailureRecordsRateLimitAndAuthFailureNeverTheToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"rate_limited|1|beta|" + Fingerprint(tokBeta) + "|You've hit your limit · resets 5pm",
+		"rate_limited|1|beta|You've hit your limit · resets 5pm",
 		"auth_failed|1|beta|" + Fingerprint(tokBeta) + "|OAuth token invalid",
 	}
 	if strings.Join(st.calls, "\n") != strings.Join(want, "\n") {
@@ -326,7 +326,7 @@ func TestALongDetailIsCutOnARuneBoundary(t *testing.T) {
 	if err := p.MarkFailure(context.Background(), opOwner, "alpha", FailureRateLimited, detail); err != nil {
 		t.Fatal(err)
 	}
-	stored := strings.TrimPrefix(st.calls[0], "rate_limited|1|alpha|"+Fingerprint(tokAlpha)+"|")
+	stored := strings.TrimPrefix(st.calls[0], "rate_limited|1|alpha|")
 	if !utf8.ValidString(stored) || !strings.HasSuffix(stored, "…") || len(stored) > maxDetail+len("…") {
 		t.Fatalf("stored detail is invalid or over-long: %q", stored)
 	}
@@ -373,7 +373,7 @@ func TestSelectChoosesOnlyAmongTheOwnersOwnAccounts(t *testing.T) {
 	if err := p.MarkFailure(ctx, 7, "zulu", FailureRateLimited, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.calls[len(st.calls)-1]; got != "rate_limited|7|zulu|"+Fingerprint("sk-ant-oat01-FAKE-zulu-member-token")+"|x" {
+	if got := st.calls[len(st.calls)-1]; got != "rate_limited|7|zulu|x" {
 		t.Fatalf("mark = %q, want it against owner 7", got)
 	}
 	if err := p.MarkFailure(ctx, 7, "alpha", FailureRateLimited, "x"); !errors.Is(err, ErrUnknownAccount) {
@@ -403,5 +403,23 @@ func TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken(t *testing.T) {
 	}
 	if _, err := p.AuthFailure(context.Background(), opOwner, "delta"); !errors.Is(err, ErrUnknownAccount) {
 		t.Fatalf("delta: %v", err)
+	}
+}
+
+// TestClearRateLimitIsACompareAndClear: the pool hands the store the mark's
+// time it was given and clears only that mark; a zero time clears nothing and
+// never reaches the store.
+func TestClearRateLimitIsACompareAndClear(t *testing.T) {
+	st := &fakeStore{marks: map[string]Mark{"alpha": {RateLimitedAt: t0, RateLimitedDetail: "You've hit your weekly limit · resets Jan 3, 9am (UTC)"}}}
+	p := newPool(t, st)
+	ctx := context.Background()
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", time.Time{}); ok || err != nil || len(st.calls) != 0 {
+		t.Fatalf("zero markedAt: cleared=%v err=%v calls=%v, want nothing", ok, err, st.calls)
+	}
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", t0.Add(-time.Second)); ok || err != nil || !st.marks["alpha"].RateLimitedAt.Equal(t0) {
+		t.Fatalf("an older markedAt: cleared=%v err=%v mark=%+v, want the mark kept", ok, err, st.marks["alpha"])
+	}
+	if ok, err := p.ClearRateLimit(ctx, opOwner, "alpha", t0); !ok || err != nil || st.marks["alpha"] != (Mark{}) {
+		t.Fatalf("the mark's own time: cleared=%v err=%v mark=%+v, want it cleared", ok, err, st.marks["alpha"])
 	}
 }
