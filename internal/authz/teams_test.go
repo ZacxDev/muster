@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+// TestTeamRoleAtLeast pins the role order the handlers gate on (viewer <
+// operator < manager) — the order migration 0127's muster_team_ids reads —
+// and that an unknown role reaches nothing and is reached by nothing.
+func TestTeamRoleAtLeast(t *testing.T) {
+	roles := []TeamRole{TeamViewer, TeamOperator, TeamManager}
+	for i, r := range roles {
+		for j, min := range roles {
+			if got, want := r.AtLeast(min), i >= j; got != want {
+				t.Errorf("%s.AtLeast(%s) = %v; want %v", r, min, got, want)
+			}
+		}
+		if r.AtLeast("owner") || TeamRole("owner").AtLeast(r) || TeamRole("").AtLeast(TeamViewer) {
+			t.Errorf("an unknown role compares as a role (%s)", r)
+		}
+	}
+}
+
 func TestMembershipsAreCanonical(t *testing.T) {
 	a, err := NewMemberships([]Membership{{15, TeamViewer}, {3, TeamManager}, {12, TeamOperator}})
 	if err != nil {

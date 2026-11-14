@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
@@ -275,10 +278,21 @@ func (s *Server) handleBrandingPut(w http.ResponseWriter, r *http.Request) {
 
 	var c branding.Change
 	if vals, ok := r.MultipartForm.Value["name"]; ok {
-		name, err := branding.NormalizeName(strings.Join(vals, ""))
+		raw := strings.Join(vals, "")
+		name, err := branding.NormalizeName(raw)
 		if err != nil {
-			s.brandingRefuseErr(w, r, err)
-			return
+			// 🔴 A NAME STORED BEFORE THE RULE IS KEPT, NOT RE-JUDGED. The
+			// Account form sends the stored name back on every save, so a name
+			// the rule now refuses (say, with a direction mark, allowed before
+			// #660) would otherwise block saving the logo, the app icon and the
+			// checkbox for good. A name byte-identical to the stored one is kept
+			// as it is; any change to it is checked in full.
+			stored, lerr := s.ext.Branding.Load(r.Context())
+			if lerr != nil || stored.Name == "" || raw != stored.Name {
+				s.brandingRefuseErr(w, r, err)
+				return
+			}
+			name = stored.Name
 		}
 		c.Name = &name
 	}
@@ -439,7 +453,39 @@ func (s *Server) brandingRefuseErr(w http.ResponseWriter, r *http.Request, err e
 	case errors.Is(e, branding.ErrSVG), errors.Is(e, branding.ErrUnsupported):
 		code = http.StatusUnsupportedMediaType
 	}
-	s.brandingRefuse(w, r, code, e.Code, e.Msg)
+	msg := e.Msg
+	var ce *branding.NameCharError
+	if errors.As(err, &ce) {
+		// Which character: it may draw as nothing at all.
+		msg = ce.Error()
+		if r.Header.Get("HX-Request") == "true" {
+			w.Header().Set("HX-Redirect", accountPath+"?branding_error="+url.QueryEscape(e.Code)+
+				"&"+brandingCharParam+"="+strconv.FormatInt(int64(ce.Rune), 16)+"#"+brandingAccountID)
+		}
+		s.writeJSON(w, code, map[string]any{"error": msg, "code": e.Code})
+		return
+	}
+	s.brandingRefuse(w, r, code, e.Code, msg)
+}
+
+// brandingCharParam names, on the Account page's redirect after a name_control
+// refusal, the refused character as hex digits. ⚠ DISPLAY-ONLY like the code:
+// the page draws it only as "U+XXXX", and only for a character the rule
+// refuses (brandingCharNote), never as text from the query.
+const brandingCharParam = "branding_char"
+
+// brandingCharNote is " (U+XXXX)" for hex, when hex names a character
+// branding.CheckNameText refuses, and "" for anything else.
+func brandingCharNote(hex string) string {
+	v, err := strconv.ParseUint(hex, 16, 32)
+	if err != nil || v > utf8.MaxRune {
+		return ""
+	}
+	var ce *branding.NameCharError
+	if !errors.As(branding.CheckNameText(string(rune(v))), &ce) || ce.Rune != rune(v) {
+		return ""
+	}
+	return fmt.Sprintf(" (U+%04X)", v)
 }
 
 // brandingRefuse is a refusal: {"error": msg, "code": code}. The Account
@@ -507,6 +553,8 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 		msg, ok := brandingErrorText[code]
 		if !ok {
 			msg = "The branding could not be saved."
+		} else if code == branding.ErrNameControl.Code {
+			msg += brandingCharNote(q.Get(brandingCharParam))
 		}
 		sb.WriteString(problemNode(msg))
 	}

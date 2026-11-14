@@ -94,6 +94,13 @@ var (
 		"internal/api.(*Server).AgentWatchdogPass",
 		"internal/api.outcomeCtx",
 		"internal/api.(*Server).accountOfChecked", // principalFor (and roleOf through it): role, kind and team memberships
+		// Team sharing phase 4 (slice 4.3): moving one of a person's tasks into
+		// a team rewrites owner_id on the task and its children, which only the
+		// system scope may (0127's owner_fixed). handleTaskMove checks the caller
+		// owns the task and operates in the team, then hands notes.MoveToTeam
+		// the system scope; the store re-checks the owner under the row lock and
+		// hands nothing read back.
+		"internal/api.(*Server).handleTaskMove",
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
 		// path asks it from loops with no principal (and a member's principal

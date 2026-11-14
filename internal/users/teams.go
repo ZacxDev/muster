@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 )
 
 // Teams (docs/design/team-sharing.md, phase 1; migration 0126).
@@ -72,6 +73,11 @@ func (s *PGStore) CreateTeam(ctx context.Context, by Actor, name string, firstMa
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > TeamNameMax {
 		return Team{}, ErrTeamName
+	}
+	// A team's name is a users.display_name: the same character rule as a
+	// person's (a *branding.NameCharError).
+	if err := branding.CheckNameText(name); err != nil {
+		return Team{}, err
 	}
 	var t Team
 	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -313,6 +319,31 @@ func (s *PGStore) ListTeams(ctx context.Context) ([]Team, error) {
 		}
 	}
 	return teams, rows.Err()
+}
+
+// TeamNames is the display name of each of ids that is a team (a person's
+// id is left out). It names the teams a caller's own memberships list — the
+// task board's owner groups and the Owner select — so the caller is a member
+// of each; it returns nothing else about them.
+func (s *PGStore) TeamNames(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(sys(ctx), `SELECT id, display_name FROM users WHERE kind = 'team' AND id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
 }
 
 // setMemberTx upserts one membership and audits it, inside tx.

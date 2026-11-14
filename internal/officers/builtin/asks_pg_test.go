@@ -28,7 +28,7 @@ type fakeAsker struct {
 	fail      error
 }
 
-func (f *fakeAsker) Raise(_ context.Context, _ officers.Officer, q string, _ []string, _ time.Duration) (int64, error) {
+func (f *fakeAsker) Raise(_ context.Context, _ officers.Officer, _ builtin.AskAbout, q string, _ []string, _ time.Duration) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail != nil {
