@@ -45,9 +45,16 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // commit or roll back together. The caller owns tx (Commit / Rollback).
 func NewPGTx(tx pgx.Tx) *PGStore { return &PGStore{pool: tx} }
 
+// agentCols is what every ordinary read of an agents row selects.
+//
+// 🔴 IT NAMES NEITHER hooks_token NOR gateway_secret, AND THAT IS THE POINT
+// (team sharing phase 4, slice 4.2). Those are the agent's credentials; they
+// are read only through [PGStore.Secrets] (agent_secrets), so a read of the
+// row — the one a later slice shares with a team's members — never loads
+// them. secrets_ledger_test.go pins it.
 const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id, note_text,
-	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
-	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret,
+	pending_note, model, status, kicked_off, last_output, error_message, created_at, updated_at,
+	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool,
 	cc_account_pinned, cc_failover,
 	outcome, outcome_reason, outcome_at, activity_at, first_reply_at, dispatched_by, outcome_told_at, display_name_source,
 	display_name_at, runs_on_host`
@@ -57,22 +64,30 @@ func scanAgent(row interface {
 }) (Agent, error) {
 	var a Agent
 	err := row.Scan(&a.ID, &a.Name, &a.Namespace, &a.DisplayName, &a.Repo, &a.RepoBranch,
-		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.HooksToken, &a.KickedOff,
+		&a.NoteID, &a.NoteText, &a.PendingNote, &a.Model, &a.Status, &a.KickedOff,
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
 		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
-		&a.GatewaySecret, &a.CCAccountPinned, &a.CCFailover,
+		&a.CCAccountPinned, &a.CCFailover,
 		&a.Outcome, &a.OutcomeReason, &a.OutcomeAt, &a.ActivityAt, &a.FirstReplyAt, &a.DispatchedBy, &a.OutcomeToldAt,
 		&a.DisplayNameSource, &a.DisplayNameAt, &a.RunsOnHost)
 	return a, err
 }
 
-// Create inserts an agent and returns it with generated id/timestamps.
+// Create inserts an agent and returns it with generated id/timestamps. A
+// HooksToken on a is stored as SetHooksToken stores one, in the same
+// statement; like every read, the returned row does not carry it.
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
-			cc_account_pinned, cc_failover, display_name_source, runs_on_host)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-		RETURNING `+agentCols,
+		WITH a AS (
+			INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
+				cc_account_pinned, cc_failover, display_name_source, runs_on_host)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			RETURNING *
+		), s AS (
+			INSERT INTO agent_secrets (agent_id, owner_id, hooks_token)
+			SELECT id, owner_id, hooks_token FROM a WHERE hooks_token <> ''
+		)
+		SELECT `+agentCols+` FROM a`,
 		a.Name, a.Namespace, a.DisplayName, a.Repo, a.RepoBranch, a.NoteID, a.NoteText,
 		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool,
 		a.CCAccountPinned, a.CCFailover, ResolveDisplayNameSource(a.DisplayNameSource), a.RunsOnHost)
@@ -90,8 +105,34 @@ func (s *PGStore) GetByName(ctx context.Context, name string) (Agent, error) {
 // GetByHooksToken looks an agent up by its per-agent hooks token. This is the
 // agent self-service auth path: the token is unique per agent and injected into
 // the pod, so a valid bearer both authenticates and identifies the caller.
+//
+// agent_secrets answers first; the old agents.hooks_token column answers only
+// when it has no row (an agent minted by an older image after 0128 ran — see
+// [PGStore.Secrets]). An empty token matches nothing. The row returned carries
+// no credentials, as every read's does.
 func (s *PGStore) GetByHooksToken(ctx context.Context, token string) (Agent, error) {
-	return scanAgent(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE hooks_token=$1`, token))
+	return scanAgent(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents
+		WHERE $1 <> '' AND id = COALESCE(
+			(SELECT agent_id FROM agent_secrets WHERE hooks_token = $1),
+			(SELECT id FROM agents WHERE hooks_token = $1))`, token))
+}
+
+// Secrets is [SecretReader]: agent id's credentials, from agent_secrets.
+//
+// ⚠ EACH FALLS BACK TO THE OLD agents COLUMN WHEN agent_secrets HAS NONE, FOR
+// ROLLBACK. Until those columns are dropped (a later migration, one release
+// after 0128), every write lands in both; an older image rolled back to writes
+// only the old column, so a token it minted would otherwise be invisible here
+// when this image comes back, and the agent would be re-minted a credential its
+// running pod does not hold. When the columns are dropped, this reads
+// agent_secrets alone.
+func (s *PGStore) Secrets(ctx context.Context, id int64) (Secrets, error) {
+	var out Secrets
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(NULLIF(s.hooks_token, ''), a.hooks_token),
+			COALESCE(NULLIF(s.gateway_secret, ''), a.gateway_secret)
+		FROM agents a LEFT JOIN agent_secrets s ON s.agent_id = a.id
+		WHERE a.id = $1`, id).Scan(&out.HooksToken, &out.GatewaySecret)
+	return out, err
 }
 
 func (s *PGStore) List(ctx context.Context) ([]Agent, error) {
@@ -232,8 +273,16 @@ func (s *PGStore) SetDisplayName(ctx context.Context, id int64, name string) (Ag
 		 WHERE id=$1 RETURNING `+agentCols, id, name))
 }
 
+// SetHooksToken stores agent id's muster identity in agent_secrets, and —
+// DUAL-WRITTEN for rollback, until a later migration drops the column one
+// release after 0128 — in agents.hooks_token, which an older image still reads.
+// One statement, so the two cannot disagree.
 func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1`, id, token)
+	_, err := s.pool.Exec(ctx, `WITH a AS (
+			UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
+		)
+		INSERT INTO agent_secrets (agent_id, owner_id, hooks_token) SELECT id, owner_id, $2 FROM a
+		ON CONFLICT (agent_id) DO UPDATE SET hooks_token = EXCLUDED.hooks_token`, id, token)
 	return err
 }
 
@@ -301,8 +350,14 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 	return res, tx.Commit(ctx)
 }
 
+// SetGatewaySecret stores agent id's turn credential, dual-written as
+// SetHooksToken's is.
 func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1`, id, secret)
+	_, err := s.pool.Exec(ctx, `WITH a AS (
+			UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
+		)
+		INSERT INTO agent_secrets (agent_id, owner_id, gateway_secret) SELECT id, owner_id, $2 FROM a
+		ON CONFLICT (agent_id) DO UPDATE SET gateway_secret = EXCLUDED.gateway_secret`, id, secret)
 	return err
 }
 

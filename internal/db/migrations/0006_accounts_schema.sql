@@ -169,6 +169,11 @@ ALTER TABLE public.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_session
 ALTER TABLE public.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_session_owner_fkey;
 ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_agent_id_fkey;
 ALTER TABLE public.connector_grants DROP CONSTRAINT IF EXISTS connector_grants_agent_owner_fkey;
+-- A LATER table's composite FK on agents (id, owner_id) — 0128's agent_secrets
+-- — depends on the key below too, so a re-run on a database past 0128 drops it
+-- here and re-adds it in section 5. Absent on a fresh database (0006 runs
+-- first), hence IF EXISTS. 🔴 Renumber these comments if 0128 moves.
+ALTER TABLE IF EXISTS public.agent_secrets DROP CONSTRAINT IF EXISTS agent_secrets_agent_owner_fkey;
 
 -- ---------------------------------------------------------------------------
 -- 4. Composite keys on the parents.
@@ -211,6 +216,15 @@ ALTER TABLE public.chat_messages ADD CONSTRAINT chat_messages_session_owner_fkey
 
 ALTER TABLE public.connector_grants ADD CONSTRAINT connector_grants_agent_owner_fkey
     FOREIGN KEY (agent_id, owner_id) REFERENCES public.agents (id, owner_id) ON DELETE CASCADE;
+
+-- 0128's agent_secrets, when this schema has it (see section 3).
+DO $$
+BEGIN
+    IF to_regclass('public.agent_secrets') IS NOT NULL THEN
+        ALTER TABLE public.agent_secrets ADD CONSTRAINT agent_secrets_agent_owner_fkey
+            FOREIGN KEY (agent_id, owner_id) REFERENCES public.agents (id, owner_id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 6. connectors: a name is unique per owner, not globally.

@@ -116,6 +116,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_pr_loops (0119, a draft officer's review-loop announcements).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
+//   - agent_secrets (0128, an agent's credentials, apart from its row).
 //   - session_tags (0086, the per-owner session tags).
 //   - asks (0089, the ask log: every question an agent put to its owner).
 //   - host_dispatches (0093, the chief's host spawns).
@@ -130,7 +131,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_types, officer_defs, officer_items, officer_schedules (0118, the
 //     built-in officer backend's store).
 var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_host_spawns", "plugin_pair_requests", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_host_spawns", "plugin_pair_requests", "agent_secrets", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
 	"routing_rules", "chief_turn_usage", "plugin_message_handling",
 	"pages", "page_versions", "page_links", "page_responses",
@@ -204,6 +205,9 @@ var wantForeignKeys = []string{
 	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0128: an agent's credentials are its own and its owner's, and go with it.
+	"agent_secrets|agent_secrets_agent_owner_fkey|FOREIGN KEY (agent_id, owner_id) REFERENCES agents(id, owner_id) ON DELETE CASCADE",
+	"agent_secrets|agent_secrets_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_judgement_sessions|officer_judgement_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

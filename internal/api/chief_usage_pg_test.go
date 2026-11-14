@@ -87,6 +87,9 @@ func TestAChiefTurnIsRecordedWithItsRealTokensAndTags(t *testing.T) {
 	as := agents.NewPG(pool)
 	chief, err := as.Create(asOwner, agents.Agent{Name: "usgchief-" + suffix, Namespace: "devpod-usgchief-" + suffix,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "usg-hooks-" + suffix})
+	if err == nil {
+		chief, err = agents.WithSecrets(asOwner, as, chief) // Create returns no credentials
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +109,7 @@ func TestAChiefTurnIsRecordedWithItsRealTokensAndTags(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

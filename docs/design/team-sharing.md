@@ -857,6 +857,15 @@ rule the later phases' rows will meet.
 - **Acceptance:** a team chief routes a team task to a team session and is
   refused a person's session; a personal chief's `sessions_overview` contains
   no team host; a moved task's children all carry the team owner.
+- **Shipped, slice 4.2 (agent secrets):** an agent's `hooks_token` and
+  `gateway_secret` moved to `agent_secrets` (migration `0128`), owned and under
+  `owner_isolation`. Ordinary reads of an agents row no longer carry them; the
+  turn sender, the provisioner and the first-turn and delivery checks read them by
+  agent id (`agents.Store.Secrets`), and `internal/agents/secrets_ledger_test.go`
+  fails on any new query that names either column. This is what lets `agents`
+  become readable by a team's members without carrying another owner's
+  credentials. The old columns are still dual-written for rollback; a later
+  migration drops them.
 
 ### Later: consent-based team invites
 

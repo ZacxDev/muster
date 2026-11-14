@@ -144,6 +144,10 @@ func TestADispatchedAgentAnswersItsFirstTurnThroughTheRealPlane(t *testing.T) {
 		t.Fatalf("Dispatch(kickoff=true) on a delivering plane: %v", err)
 	}
 	minted, err := store.Get(ctx, row.ID)
+	if err == nil {
+		// An ordinary read carries no credentials (agents.Secrets).
+		minted, err = agents.WithSecrets(ctx, store, minted)
+	}
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
