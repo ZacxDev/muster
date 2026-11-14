@@ -55,13 +55,14 @@ var gatewayTurnMethods = map[string]int{
 var gatewayTransportFuncs = map[string]bool{"RunToollessTurn": true, "RunToolLoop": true, "ChatStream": true}
 
 const (
-	turnCarriesTools   = "TOOLS"
-	turnToollessCC     = "toolless: claude-code agents only (their tools come over MCP; ccd ignores a request's tools)"
-	turnToollessNoTool = "toolless: the fallback when gatewayTurnTools/KickoffTurnTools answers not ok (not a gateway agent, or a row with no owner)"
-	turnToolless404    = "toolless: the fallback for an image without /v1/responses (a 404 on the FIRST request only)"
-	turnToollessNudge  = "toolless BY DESIGN: the chief nudge is a decision check that runs without tools (docs/chief-nudges.md)"
-	turnImplementation = "the gateway's own implementation"
-	turnLivecheck      = "toolless: a manual live check against one runtime (cmd/ccd/livecheck), not a muster door"
+	turnCarriesTools        = "TOOLS"
+	turnToollessCC          = "toolless: claude-code agents only (their tools come over MCP; ccd ignores a request's tools)"
+	turnToollessNoTool      = "toolless: the fallback when gatewayTurnTools/KickoffTurnTools answers not ok (not a gateway agent, or a row with no owner)"
+	turnToolless404         = "toolless: the fallback for an image without /v1/responses (a 404 on the FIRST request only)"
+	turnToollessTeamGateway = "toolless: a TEAM's gateway agent from every chat door, answer delivery included (teamGatewayToolless; no team gateway agents in phase 4)"
+	turnToollessNudge       = "toolless BY DESIGN: the chief nudge is a decision check that runs without tools (docs/chief-nudges.md)"
+	turnImplementation      = "the gateway's own implementation"
+	turnLivecheck           = "toolless: a manual live check against one runtime (cmd/ccd/livecheck), not a muster door"
 )
 
 // gatewayTurnSite is one row: how many such calls the function makes, and why
@@ -79,6 +80,7 @@ var gatewayTurnLedger = map[string]gatewayTurnSite{
 	// Toolless, and why.
 	"internal/api.(*Server).runTurnWithTools → api.Gateway.Chat":                     {1, turnToolless404},
 	"internal/api.(*Server).gatewayTurn → api.Gateway.Chat":                          {1, turnToollessNoTool},
+	"internal/api.(*Server).chatTurn → api.Gateway.Chat":                             {1, turnToollessTeamGateway},
 	"internal/agentkickoff.(*Deliverer).firstTurnSender → agentkickoff.Gateway.Send": {1, turnToollessNoTool},
 	"internal/api.(*Server).runJobTurn → api.Gateway.Chat":                           {1, turnToollessCC}, // namedJobAgent and the pool chooser refuse every other kind
 	"internal/api.officerFleet.Reprompt → api.Gateway.Chat":                          {1, turnToollessCC}, // an officer's instances are created claude-code (officerFleet.Start)

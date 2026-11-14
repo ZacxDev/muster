@@ -130,7 +130,7 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("agent list: %w", err)
 	}
-	if chief, ok := primaryChief(list); ok && chief.ID != except.agent {
+	if chief, ok := primaryChief(ownedBy(list, requestOwner(ctx))); ok && chief.ID != except.agent {
 		// A chief its owner turned off is not home (chief_toggle.go).
 		on, err := s.chiefOn(ctx, requestOwner(ctx), list)
 		if err != nil {

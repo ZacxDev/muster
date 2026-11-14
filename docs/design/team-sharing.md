@@ -923,6 +923,41 @@ rule the later phases' rows will meet.
   - **Not yet:** dispatching an agent on a team task. Agents are not shared
     until 4.4. A person's agent naming a team task would meet the
     `agents (note_id, owner_id)` key; this slice does not test that path.
+- **Shipped, slice 4.4 (team agents visible):** migration `0131`
+  (`0130` is phase 3's).
+  - **`agents` is shared** (read at viewer, written at operator,
+    `owner_fixed`). 🔴 A team-owned agent keeps no credential in its row:
+    `agents_team_no_secret` forces `hooks_token` and `gateway_secret` to `''`
+    for a team owner on every write, so they live only in `agent_secrets`,
+    which stays personal. `agents.Store.Secrets` answers only the agent's
+    owner or the system scope; a member gets `pgx.ErrNoRows`.
+  - **A member's turn on a team agent runs as the team.** `chatTurn` (every
+    chat door) re-mints the team acting principal (`turnActingContext`,
+    through `ViaAgent`) after a fresh read of the member's role, on every
+    send attempt. A member removed or downgraded while their message is
+    queued is answered "not sent", and the message never reaches the runtime.
+  - **One shared room.** A member types into the team chief's one
+    conversation, behind the per-agent FIFO turn gate. The runtime is handed
+    `[muster] typed by <name> (<role>) in team <team>` before the text, in
+    memory only. The stored row is what was typed, with `typed_by`.
+  - **Route rules** (`teamAgentRoutes`, decided in `admit` for every route
+    naming an agent, ledgered against `routes.golden`): reads at viewer; the
+    chat socket and the send form at operator (a viewer gets 403); lifecycle,
+    settings, new threads and the terminal are refused to every member in
+    this slice. Lifecycle is the manager door of 4.5 (`ViaTeamAdmin`), and
+    the terminal needs the step-up of 4.7.
+  - **A team's gateway agent turns toolless from every chat door**, answer
+    delivery included (`teamGatewayToolless`). This closes the gap carried
+    from 4.1.
+  - **Owner filters:** `chiefAgent`, `homeTarget` and the sidebar's primary
+    chief resolve among the caller's own agents only. Every `Agents.List`
+    caller is classified own / visible / machine
+    (`TestEveryAgentsListCallerIsClassified`).
+  - **`outcomeViewed`:** an operator of the owning team opening the agent's
+    page marks its wait seen. A viewer's look leaves the push owed.
+  - **Not yet:** the viewer's disabled composer and the team badge in the
+    sidebar (UI); home falling back to a team chief; stop and start by an
+    operator (4.5, so the team's credentials are used, not the member's).
 
 ### Later: consent-based team invites
 

@@ -369,6 +369,13 @@ var (
 		// authz.ViaAgent, so the rule store (which refuses every plugin
 		// principal) records the chief's own write. Never a new user id.
 		"internal/api.chiefWriteContext",
+		// A turn a PERSON starts on an agent their TEAM owns (team sharing
+		// slice 4.4, team_agents.go): after a fresh read of the person's role
+		// in the team (operator or above), it runs as the agent's owner — the
+		// team acting principal through authz.ViaAgent — so its credentials,
+		// usage and reply are the team's. Never a new user id: the agent's
+		// own owner, read by agentPrincipal.
+		"internal/api.(*Server).turnActingContext",
 		// A host officer machine's confirmed step-up (host_stepup.go): the
 		// owner-authority call the owner's PHONE just confirmed (a signed
 		// device action, single use, bound to the card) runs as that SAME
