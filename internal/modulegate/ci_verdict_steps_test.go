@@ -33,7 +33,7 @@ var wantVerdictPipes = map[string]string{
 	// The shard's packages / `-run` and its `--require` names come from the
 	// plan step (tests/goshard.py); the required names are pinned there, in
 	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
-	"test": `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
+	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
 		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
@@ -135,8 +135,9 @@ func TestCIRequiresTheIsolationWalkInTheShardPlan(t *testing.T) {
 // job downstream of them with an implicit success() is skipped even when
 // publish-gate passed: no images on main, no release on a tag.
 //
-// So: every job with `needs` carries `!cancelled()` in its `if:`, and each
-// publish job names each of its needs as `needs.<x>.result == 'success'`.
+// So: every job with `needs` carries `!cancelled()` in its job-level `if:`,
+// and every job downstream of publish-gate (found from the needs graph, not
+// a list of names) names each of its needs as `needs.<x>.result == 'success'`.
 func TestCIPublishJobsCheckTheirNeedsExplicitly(t *testing.T) {
 	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
 	b, err := os.ReadFile(path)
@@ -144,44 +145,90 @@ func TestCIPublishJobsCheckTheirNeedsExplicitly(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	src := string(b)
+	// header: the job-level lines only (before `steps:`), so a step's `if:`
+	// can never stand in for a missing job-level one.
+	header := func(job string) []string {
+		var out []string
+		for _, l := range jobLines(src, job) {
+			if l == "steps:" {
+				break
+			}
+			out = append(out, l)
+		}
+		return out
+	}
 	field := func(lines []string, key string) string {
 		for _, l := range lines {
-			if strings.HasPrefix(l, key+": ") {
-				return strings.TrimPrefix(l, key+": ")
+			if strings.HasPrefix(l, key+":") {
+				return strings.TrimSpace(strings.TrimPrefix(l, key+":"))
 			}
 		}
 		return ""
 	}
-	var withNeeds int
+	// needsOf reads `needs: x`, `needs: [x, y]`, or a block list of `- x` lines.
+	needsOf := func(lines []string) (out []string, has bool) {
+		for i, l := range lines {
+			if l != "needs:" && !strings.HasPrefix(l, "needs: ") {
+				continue
+			}
+			has = true
+			if v := strings.Trim(field([]string{l}, "needs"), "[]"); v != "" {
+				for _, n := range strings.Split(v, ",") {
+					out = append(out, strings.TrimSpace(n))
+				}
+				return out, true
+			}
+			for _, m := range lines[i+1:] {
+				if !strings.HasPrefix(m, "- ") {
+					break
+				}
+				out = append(out, strings.TrimSpace(strings.TrimPrefix(m, "- ")))
+			}
+			return out, true
+		}
+		return nil, false
+	}
+	needs := map[string][]string{}
 	for _, line := range strings.Split(src, "\n") {
 		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") || !strings.HasSuffix(line, ":") || strings.HasPrefix(line, "  #") {
 			continue
 		}
 		job := strings.TrimSuffix(strings.TrimSpace(line), ":")
-		lines := jobLines(src, job)
-		if field(lines, "needs") == "" {
-			continue
-		}
-		withNeeds++
-		if !strings.Contains(field(lines, "if"), "!cancelled()") {
-			t.Errorf("job %q has `needs` but its `if:` has no `!cancelled()`: an implicit success() "+
-				"skips it whenever ANY ancestor was skipped (actions/runner#491)", job)
+		if ns, has := needsOf(header(job)); has {
+			if len(ns) == 0 {
+				t.Errorf("job %q has a `needs:` this test cannot read", job)
+			}
+			needs[job] = ns
+			if !strings.Contains(field(header(job), "if"), "!cancelled()") {
+				t.Errorf("job %q has `needs` but its job-level `if:` has no `!cancelled()`: an implicit "+
+					"success() skips it whenever ANY ancestor was skipped (actions/runner#491)", job)
+			}
 		}
 	}
 	// Positive control: the walk must see the jobs this test is about.
-	if withNeeds < 10 {
-		t.Fatalf("positive control FAILED: only %d jobs with `needs` found in %s", withNeeds, path)
+	if len(needs) < 10 {
+		t.Fatalf("positive control FAILED: only %d jobs with `needs` found in %s", len(needs), path)
 	}
-	for _, job := range []string{"image-muster", "image-claude-code-agent", "image-stt-cohere", "release"} {
-		lines := jobLines(src, job)
-		needs := strings.Trim(field(lines, "needs"), "[]")
-		if needs == "" {
-			t.Errorf("positive control FAILED: job %q has no `needs:` line", job)
-			continue
+	// Every job downstream of publish-gate, transitively.
+	down := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for job, ns := range needs {
+			for _, n := range ns {
+				if (n == "publish-gate" || down[n]) && !down[job] {
+					down[job], changed = true, true
+				}
+			}
 		}
-		cond := field(lines, "if")
-		for _, n := range strings.Split(needs, ",") {
-			n = strings.TrimSpace(n)
+	}
+	for _, want := range []string{"image-muster", "image-claude-code-agent", "image-stt-cohere", "release"} {
+		if !down[want] {
+			t.Errorf("positive control FAILED: %q is not found downstream of publish-gate", want)
+		}
+	}
+	for job := range down {
+		cond := field(header(job), "if")
+		for _, n := range needs[job] {
 			if !strings.Contains(cond, "needs."+n+".result == 'success'") {
 				t.Errorf("job %q needs %q but its `if:` does not require `needs.%s.result == 'success'`", job, n, n)
 			}
