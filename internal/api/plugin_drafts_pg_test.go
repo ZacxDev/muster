@@ -78,7 +78,7 @@ func newDraftSeam(t *testing.T) *draftSeam {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,11 @@ func (d *draftSeam) chief(uid int64, name string) agents.Agent {
 	d.t.Helper()
 	a, err := d.as.Create(d.asUser(uid), agents.Agent{Name: name + "-" + d.suffix, Namespace: "devpod-" + name + "-" + d.suffix,
 		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "drf-hooks-" + name + "-" + d.suffix})
+	if err == nil {
+		// Create returns no credentials (agents.Secrets); the runtime's
+		// expectation is built from the stored token.
+		a, err = agents.WithSecrets(d.asUser(uid), d.as, a)
+	}
 	if err != nil {
 		d.t.Fatal(err)
 	}

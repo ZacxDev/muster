@@ -75,7 +75,10 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 		}
 		return a
 	}
-	chief := newAgent("hintchief", "chief")
+	chief, err := agents.WithSecrets(asOwner, as, newAgent("hintchief", "chief")) // Create returns no credentials
+	if err != nil {
+		t.Fatal(err)
+	}
 	sA, sB, sC, sD := newAgent("hint-a", "upgrade runner"), newAgent("hint-b", "notes writer"),
 		newAgent("hint-c", "billing"), newAgent("hint-d", "old runner")
 
@@ -105,7 +108,7 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
 	port, _ := strconv.Atoi(portStr)
 	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
-		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Secrets: agents.NewPG(pool), Client: up.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}

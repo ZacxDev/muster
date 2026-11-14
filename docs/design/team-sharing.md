@@ -857,6 +857,27 @@ rule the later phases' rows will meet.
 - **Acceptance:** a team chief routes a team task to a team session and is
   refused a person's session; a personal chief's `sessions_overview` contains
   no team host; a moved task's children all carry the team owner.
+- **Shipped, slice 4.2 (agent secrets):** an agent's `hooks_token` and
+  `gateway_secret` moved to `agent_secrets` (migration `0128`), owned and under
+  `owner_isolation`. Ordinary reads of an agents row no longer carry them; the
+  turn sender, the provisioner and the first-turn and delivery checks read them by
+  agent id (`agents.Store.Secrets`), and `internal/agents/secrets_ledger_test.go`
+  fails on any new query that names either column.
+  - **What 4.2 guarantees:** the store's ordinary reads of an agent do not carry
+    its credentials, and every query that does name them is in the ledger.
+  - **What it does NOT yet guarantee:** the old `agents.hooks_token` and
+    `agents.gateway_secret` columns are still dual-written for every owner (an
+    older image reads them, so they stay for rollback). So the credentials are
+    still in the `agents` row itself, and sharing `agents` today would let a
+    member's `SELECT … FROM agents` read them.
+  - 🔴 **So slice 4.4, which shares `agents`, must first** make team-owned agents
+    never write those columns (or drop them), with a test that a member
+    principal's `SELECT … FROM agents` on a team agent yields no secret.
+  - ⚠ **Dropping the old columns must re-run the 0128 backfill first.** An
+    agent minted by an older image after a rollback keeps its token only in the
+    old column; `agents.Store.Secrets` finds it through the fallback, so
+    `ensureHooksToken` sees a token and writes nothing to `agent_secrets`.
+    Dropping the columns without the backfill would lose that token.
 
 ### Later: consent-based team invites
 

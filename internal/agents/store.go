@@ -104,10 +104,10 @@ type Agent struct {
 	// (migration 0125, docs/design/officers-on-hosts.md); "" for every other
 	// agent. Such a row is never provisioned: see Provisioned.
 	RunsOnHost string `json:"runsOnHost,omitempty"`
-	Repo              string `json:"repo"` // owner/name
-	RepoBranch        string `json:"repoBranch"`
-	NoteID            *int64 `json:"noteId,omitempty"`
-	NoteText          string `json:"noteText,omitempty"`
+	Repo       string `json:"repo"` // owner/name
+	RepoBranch string `json:"repoBranch"`
+	NoteID     *int64 `json:"noteId,omitempty"`
+	NoteText   string `json:"noteText,omitempty"`
 
 	// PendingNote is the first message an agent was created WITH: the text a
 	// dispatch asked to be delivered as its opening turn. It is written once, by
@@ -175,8 +175,11 @@ type Agent struct {
 	// user (internal/api agentOwnerID). Not serialised: the JSON shape is
 	// unchanged, and an owner id is not something an agent or a page needs.
 	// Zero only for an Agent that never came from the database (a fake store).
-	OwnerID    int64  `json:"-"`
-	Status     string `json:"status"`
+	OwnerID int64  `json:"-"`
+	Status  string `json:"status"`
+	// HooksToken is the agent's muster identity. Like GatewaySecret it is ""
+	// on every row an ordinary read returns: only [WithSecrets] (the
+	// agent_secrets table, migration 0128) fills it. See [Secrets].
 	HooksToken string `json:"-"`
 	// GatewaySecret is the credential muster presents to a claude-code agent's
 	// turn API (ccd's /v1/responses), minted per agent at provision time
@@ -188,7 +191,8 @@ type Agent struct {
 	// hold (MUSTER_HOOK_TOKEN: the approval hook, the MCP entry, git routing), so
 	// every tool call the session makes can read it. A turn credential computable
 	// from it — muster's hooks-sha256 derivation — let any tool call drive the
-	// agent's own turn API. Never serialised, never logged.
+	// agent's own turn API. Never serialised, never logged, and "" on every row
+	// an ordinary read returns (see HooksToken).
 	GatewaySecret string    `json:"-"`
 	KickedOff     bool      `json:"kickedOff"`
 	LastOutput    string    `json:"lastOutput,omitempty"`
@@ -380,6 +384,9 @@ type AgentUnread struct {
 
 // Store is the agents persistence behaviour.
 type Store interface {
+	// SecretReader is the one read of an agent's credentials; no other method
+	// returns them (see [Secrets]).
+	SecretReader
 	Create(ctx context.Context, a Agent) (Agent, error)
 	Get(ctx context.Context, id int64) (Agent, error)
 	GetByName(ctx context.Context, name string) (Agent, error)
@@ -421,8 +428,11 @@ type Store interface {
 	// the namespace key — is immutable) and returns the updated record. A blank
 	// name falls back to the slug Name so the card is never label-less.
 	SetDisplayName(ctx context.Context, id int64, name string) (Agent, error)
+	// SetHooksToken stores the agent's muster identity ([Agent.HooksToken]) in
+	// agent_secrets (and, until the old column is dropped, in agents too).
 	SetHooksToken(ctx context.Context, id int64, token string) error
-	// SetGatewaySecret stores the agent's turn credential ([Agent.GatewaySecret]).
+	// SetGatewaySecret stores the agent's turn credential ([Agent.GatewaySecret]),
+	// written as SetHooksToken is.
 	SetGatewaySecret(ctx context.Context, id int64, secret string) error
 	// SetKickedOff stamps (or un-stamps) the first turn. Stamping also clears a
 	// checkout-wait marker (WaitedForCheckout's kickoff_error) in the SAME write:

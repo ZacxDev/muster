@@ -233,6 +233,11 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if err != nil {
 		return d.attempted(parent, messageID, "chief_unreadable")
 	}
+	// The row carries no credentials (agents.Secrets); the no_token check below
+	// is about the stored one.
+	if fresh, err = agents.WithSecrets(ctx, d.agents, fresh); err != nil {
+		return d.attempted(parent, messageID, "chief_unreadable")
+	}
 	switch {
 	case fresh.OwnerID != p.OwnerID:
 		return d.attempted(parent, messageID, "not_owners_chief")
