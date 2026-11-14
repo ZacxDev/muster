@@ -831,8 +831,11 @@ After the result, for an outbound draft filed with an `item_id`:
     **late `ok: true`** for that draft (a slow post that did go out) completes
     the item `done` with the post's reference after all, and withdraws the
     escalation's open asks, so you are not left with a stale "may have been
-    posted" question. It does not if a newer draft was filed for the item,
-    or if you sent the item back and it was escalated again since. A
+    posted" question. A **late `ok: false`** (it was NOT posted after all)
+    settles it like any refusal: a `draft.refused` item with the plugin's
+    detail, the item finished `no_action` naming it, and the escalation's
+    open asks withdrawn. Neither happens if a newer draft was filed for the
+    item, or if you sent the item back and it was escalated again since. A
     plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
     so the draft never goes unconfirmed in the first place.
 - 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,

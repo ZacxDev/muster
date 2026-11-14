@@ -83,6 +83,11 @@ type DraftEnd struct {
 	// to tell them; otherwise it is finished no_action and the caller tells
 	// the owner (internal/api's push).
 	EscalateAtBound bool
+	// ClaimedAt is when its plugin claimed the draft, nil for one never
+	// claimed. Set, a LATE result on an unconfirmed draft (refused or
+	// failed after its lease lapsed) may settle the item that draft's
+	// unconfirmed end escalated (escalatedByDraft).
+	ClaimedAt *time.Time
 }
 
 // DraftSettled is what Store.DraftEnded did.
@@ -96,6 +101,10 @@ type DraftSettled struct {
 	// Item is what became of the item: its new status (done, escalated),
 	// or "" when it was left as it was.
 	Item string
+	// Withdraw is the raised escalation asks of an item settled out of the
+	// escalation its draft's unconfirmed end caused: the caller withdraws
+	// them, so the owner is not left asking whether it was posted.
+	Withdraw []OpenEscalation
 }
 
 // DraftEnded is DraftEndedTx in a transaction of its own.
@@ -182,7 +191,17 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 		}
 	}
 	lapsed := it.Status == officers.StatusClaimed && !it.live(now)
-	if it.Status != officers.StatusWaiting && !lapsed {
+	switch {
+	case it.Status == officers.StatusWaiting, lapsed:
+	case it.Status == officers.StatusEscalated && e.ClaimedAt != nil:
+		// A late refusal or failure of the draft whose unconfirmed end
+		// escalated it: it was NOT posted after all.
+		ours, open, err := escalatedByDraft(ctx, tx, owner, it, e.Draft, *e.ClaimedAt)
+		if err != nil || !ours {
+			return out, err
+		}
+		out.Withdraw = open
+	default:
 		return out, nil
 	}
 	var other bool
@@ -255,34 +274,11 @@ func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id
 	case it.Status == officers.StatusDone, it.live(now):
 		return false, nil, nil
 	case it.Status == officers.StatusEscalated:
-		var newer bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2 AND id > $3)`,
-			owner, it.ID, draft).Scan(&newer); err != nil {
+		ours, open, err := escalatedByDraft(ctx, tx, owner, it, draft, claimedAt)
+		if err != nil || !ours {
 			return false, nil, err
 		}
-		if newer {
-			return false, nil, nil
-		}
-		var handled bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_items i, jsonb_array_elements(i.asks) e
-			WHERE i.id = $1 AND (e->>'asked_at')::timestamptz >= $2)`, it.ID, claimedAt).Scan(&handled); err != nil {
-			return false, nil, err
-		}
-		if handled {
-			return false, nil, nil
-		}
-		rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
-			WHERE i.id = $1 AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb`, it.ID)
-		if err != nil {
-			return false, nil, err
-		}
-		if withdraw, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
-			e := OpenEscalation{Owner: owner, Item: it.ID, Officer: officer}
-			err := r.Scan(&e.Recipient, &e.AttentionID)
-			return e, err
-		}); err != nil {
-			return false, nil, err
-		}
+		withdraw = open
 	}
 	// Done is enough for the escalation's notices: an unraised one is never
 	// raised (DueNotices reads escalated items only), and a raised one's
@@ -296,6 +292,39 @@ func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id
 		return false, nil, err
 	}
 	return true, withdraw, nil
+}
+
+// escalatedByDraft reports whether owner's ESCALATED item it is escalated
+// because outbound draft draft (claimed at claimedAt) ended unconfirmed
+// (DraftEndedTx), so that draft's late result may settle it: no newer draft
+// was filed for it, and no asks entry was made at or after the claim (an
+// owner who sent the item back re-opens it with one — SettleEscalation — so
+// an escalation since is about something else). open is the escalation's
+// raised, unsettled asks, for the caller to withdraw once it is settled.
+// THE ONE RULE for both late results: DraftPosted (ok) and DraftEndedTx
+// (not ok).
+func escalatedByDraft(ctx context.Context, tx pgx.Tx, owner int64, it itemRow, draft int64, claimedAt time.Time) (ours bool, open []OpenEscalation, err error) {
+	var newer, handled bool
+	if err := tx.QueryRow(ctx, `SELECT
+			EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2 AND id > $3),
+			EXISTS (SELECT 1 FROM officer_items i, jsonb_array_elements(i.asks) e WHERE i.id = $2 AND (e->>'asked_at')::timestamptz >= $4)`,
+		owner, it.ID, draft, claimedAt).Scan(&newer, &handled); err != nil {
+		return false, nil, err
+	}
+	if newer || handled {
+		return false, nil, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
+		WHERE i.id = $1 AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb`, it.ID)
+	if err != nil {
+		return false, nil, err
+	}
+	open, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
+		e := OpenEscalation{Owner: owner, Item: it.ID, Officer: it.OfficerID}
+		err := r.Scan(&e.Recipient, &e.AttentionID)
+		return e, err
+	})
+	return err == nil, open, err
 }
 
 // waitingRefusal is the lease_lost refusal of a verb on a WAITING item, saying

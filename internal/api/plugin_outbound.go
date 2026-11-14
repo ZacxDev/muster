@@ -518,7 +518,7 @@ const ExpiredDetail = "not sent within 7 days of being written: it expired undec
 //     officer's owner, who checks the venue and answers.
 func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, detail string) builtin.DraftEnd {
 	id := strconv.FormatInt(d.ID, 10)
-	e := builtin.DraftEnd{Officer: officer, Draft: d.ID, Max: maxOpenRefusedItems}
+	e := builtin.DraftEnd{Officer: officer, Draft: d.ID, Max: maxOpenRefusedItems, ClaimedAt: d.ClaimedAt}
 	if d.OfficerItemID != nil {
 		e.Item = *d.OfficerItemID
 	}
@@ -580,11 +580,7 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 			if err != nil || !settled {
 				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is (%v)", d.ID, *d.OfficerItemID, officer, err)
 			}
-			for _, w := range withdraw {
-				if _, err := s.cancelAsk(s.attentionPrincipal(ctx, w.Recipient), w.AttentionID); err != nil && !errors.Is(err, attention.ErrNotOpen) {
-					s.logger.Printf("plugins: draft %d sent late; withdraw user %d's escalation ask %d: %v", d.ID, w.Recipient, w.AttentionID, err)
-				}
-			}
+			s.withdrawEscalation(ctx, d.ID, withdraw)
 		}
 		return false
 	}
@@ -620,7 +616,19 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	}
 	s.logger.Printf("plugins: draft %d ended unsent (by %s); %s item %d for %s (at the bound: %v), its item %q",
 		d.ID, by, draftRefusedKind, res.FollowUp, officer, res.AtBound, res.Item)
+	s.withdrawEscalation(ctx, d.ID, res.Withdraw)
 	return res.AtBound
+}
+
+// withdrawEscalation withdraws the raised escalation asks of an item draft
+// d's LATE result settled (its unconfirmed end had escalated it to the
+// owner, asking whether it was posted; now muster knows).
+func (s *Server) withdrawEscalation(ctx context.Context, d int64, asks []builtin.OpenEscalation) {
+	for _, w := range asks {
+		if _, err := s.cancelAsk(s.attentionPrincipal(ctx, w.Recipient), w.AttentionID); err != nil && !errors.Is(err, attention.ErrNotOpen) {
+			s.logger.Printf("plugins: draft %d's late result: withdraw user %d's escalation ask %d: %v", d, w.Recipient, w.AttentionID, err)
+		}
+	}
 }
 
 // DraftEndedTx implements plugins.OfficerLink: outbound draft d ended unsent
