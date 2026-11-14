@@ -283,6 +283,13 @@ type Comment struct {
 	// consumers should render it as a tombstone (or skip it) — but MUST NOT treat
 	// an empty Body on a live comment as retraction; the flag is the predicate.
 	Retracted bool `json:"retracted,omitempty"`
+	// AuthorID is note_comments.author_id, the person who wrote it (0127's
+	// trigger forces it to the acting principal): 0 for a comment written
+	// under the system scope or before 0127. The reads (commentCols) fill
+	// it; AddComment's returned value leaves it 0. It decides who may
+	// retract a comment on a team task (SoftDeleteComment, and the handler
+	// above it), and is not part of the machine JSON.
+	AuthorID int64 `json:"-"`
 }
 
 // Attachment is a file attached to a note. Data is only populated when an

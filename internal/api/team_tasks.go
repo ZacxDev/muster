@@ -11,28 +11,10 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/jackc/pgx/v5"
 )
 
-// --- Team tasks (docs/design/team-sharing.md, phase 4, slice 4.3) -----------
-//
-// A team task is a notes row the TEAM owns. Postgres decides who sees and
-// writes one (migration 0127: notes, note_comments, note_attachments,
-// task_sessions and task_ref_writes read at viewer, written at operator), and
-// the handlers here add what Postgres does not decide:
-//
-//	read                            viewer    (row-level security)
-//	file, comment, change status,
-//	edit, tag, retract a comment    operator  (requireTaskRole + Postgres)
-//	dismiss                         manager   (requireTaskRole only: a
-//	                                           dismiss is an UPDATE of
-//	                                           deleted_at, which Postgres admits
-//	                                           at operator)
-//	move one of your own tasks in   owner + operator in the team (handleTaskMove)
-//
-// A person's OWN task is theirs at every threshold; the role check applies
-// only to a task some team owns. Only the browser session and a paired phone
-// carry team memberships (authz.Principal.TeamScope), so every other door
-// meets no team task at all.
+// Team tasks: who may do what is the table in docs/design/team-sharing.md, slice 4.3.
 
 // taskRoleAllows reports whether p may act at min on a task owner owns: its
 // own task always; a team's only at min or above in that team. owner 0 is a
@@ -59,13 +41,21 @@ func (s *Server) requireTaskManager(next http.HandlerFunc) http.HandlerFunc {
 
 // requireTaskRole wraps a /tasks/{id}/… write: on a team's task it answers
 // 403 unless the caller holds min in that team. A task the caller cannot see
-// (or no task) passes to next, which answers its own 404, so this is no
-// oracle for which ids exist.
+// (or no task: pgx.ErrNoRows) passes to next, which answers its own 404, so
+// this is no oracle for which ids exist. Any other read error is a 500: the
+// gate cannot decide, so it does not let the write through.
 func (s *Server) requireTaskRole(min authz.TeamRole, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil && s.ext.Notes != nil {
 			p, hasP := authz.From(r.Context())
-			if n, err := s.ext.Notes.Get(r.Context(), id); hasP && err == nil && !taskRoleAllows(p, n.OwnerID, min) {
+			n, err := s.ext.Notes.Get(r.Context(), id)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+			case err != nil:
+				s.logger.Printf("notes: team-task role check on %d: %v", id, err)
+				http.Error(w, "could not load the task", http.StatusInternalServerError)
+				return
+			case hasP && !taskRoleAllows(p, n.OwnerID, min):
 				http.Error(w, "this is a team task: it needs a team "+string(min)+" or above", http.StatusForbidden)
 				return
 			}

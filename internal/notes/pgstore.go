@@ -107,11 +107,11 @@ const ownerOfNote = `COALESCE((SELECT owner_id FROM notes WHERE id = $1), nullif
 // 🔴 The empty-string branch is deliberately NOT the placeholder text. The
 // tombstone COPY belongs to the renderer (internal/ui); baking it into SQL would
 // make it indistinguishable from a real comment body whose author typed it.
-const commentCols = `id, note_id, author, CASE WHEN deleted_at IS NULL THEN body ELSE '' END, created_at, (deleted_at IS NOT NULL)`
+const commentCols = `id, note_id, author, CASE WHEN deleted_at IS NULL THEN body ELSE '' END, created_at, (deleted_at IS NOT NULL), COALESCE(author_id, 0)`
 
 // scanCommentInto returns the Scan destinations for commentCols, in order.
 func scanCommentInto(c *Comment) []any {
-	return []any{&c.ID, &c.NoteID, &c.Author, &c.Body, &c.CreatedAt, &c.Retracted}
+	return []any{&c.ID, &c.NoteID, &c.Author, &c.Body, &c.CreatedAt, &c.Retracted, &c.AuthorID}
 }
 
 // scanNoteInto returns the Scan destinations for noteCols, in order. The four
@@ -1130,8 +1130,17 @@ func retractCommentsByAuthorTx(ctx context.Context, tx pgx.Tx, noteID int64, aut
 // see. Both handlers probe the parent with Get first anyway; this is the atomic
 // backstop against a task dismissed between the probe and the update.
 //
-// Unknown comment id, wrong task id, already-retracted comment, dismissed parent
-// → pgx.ErrNoRows. There is deliberately NO restore route (as with tasks):
+// WHO MAY RETRACT (team sharing slice 4.3). On a task the caller owns, any
+// comment, as before. On a team's task, the comment's author (author_id), or
+// a manager of the team; a comment with no author_id (system scope, or
+// written before 0127) only a manager. The handler decides the same and
+// answers 403 first (softDeleteTaskComment); this arm is the backstop, and
+// reads the same settings row-level security does (muster.uid, the
+// caller's manager teams, the system scope).
+//
+// Unknown comment id, wrong task id, already-retracted comment, dismissed
+// parent, a comment the caller may not retract → pgx.ErrNoRows. There is
+// deliberately NO restore route (as with tasks):
 // recovery is a one-column UPDATE an operator runs against the DB.
 //
 // What the reads then do with the stamp is commentCols' business, not this
@@ -1143,7 +1152,11 @@ func (s *PGStore) SoftDeleteComment(ctx context.Context, noteID, commentID int64
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE note_comments SET deleted_at=now()
 		WHERE id=$2 AND note_id=$1 AND note_comments.`+liveOnly+`
-		  AND EXISTS (SELECT 1 FROM notes WHERE id=$1 AND notes.`+liveOnly+`)`, noteID, commentID)
+		  AND EXISTS (SELECT 1 FROM notes WHERE id=$1 AND notes.`+liveOnly+`
+		    AND (notes.owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		      OR note_comments.author_id = nullif(current_setting('muster.uid', true), '')::bigint
+		      OR notes.owner_id = ANY (coalesce((SELECT public.muster_team_ids(3)), '{}'))
+		      OR current_setting('muster.scope', true) = 'all'))`, noteID, commentID)
 	if err != nil {
 		return err
 	}
