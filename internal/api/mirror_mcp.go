@@ -326,6 +326,19 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.hostDispatches() != nil && !s.featureOff(features.TaskRouting) {
 		out = append(out, agentReportDoneToolDef())
 	}
+	// The officer tools a HOST officer's instances use (officer_host.go,
+	// docs/design/officers-on-hosts.md) — while a declared officer runs on a
+	// host. Listed for every session for agent_report_done's reason; the call
+	// binds it to the spawn muster recorded for the caller's session and
+	// window, and refuses any other session.
+	if s.hostOfficersOn() && !s.featureOff(features.Officers) {
+		out = append(out, hostOfficerToolDefs()...)
+		// And the agent connector tools, for a host officer that declares a
+		// connector: served to its instances only (hostOfficerMirrorTool).
+		if s.hostConnectorToolsOn() && !s.featureOff(features.Connectors) {
+			out = append(out, connectorToolDefs()...)
+		}
+	}
 	return out
 }
 
@@ -406,11 +419,25 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 				}
 				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
 			}
+			// 🔴 A HOST OFFICER INSTANCE FIRST (officer_host.go), on every call
+			// while a host officer is declared: a session bound to one runs only
+			// the instance's tools, as its agent row — never an operator power —
+			// and nobody else runs an instance-only tool.
+			if text, ok := s.hostOfficerMirrorTool(r.Context(), t.Host, c, name, args); ok {
+				return text
+			}
 			// 🔴 BY THE RESOLVED CALLER, NOT THE HEADER THAT CARRIED IT: an
 			// opencode caller runs only openCodeMirrorTools, however it was
 			// bound (toolCaller.openCodeSession, the one predicate).
 			if c.openCodeSession() && !openCodeMirrorTools[name] {
 				return toolErr("%s", openCodeToolRefusal(name))
+			}
+			// 🔴 THE STEP-UP GATE (host_stepup.go): on a machine that runs a host
+			// officer, an owner-authority tool is a request to the owner's phone,
+			// never a decision — the caller is named by a header any process
+			// there can set.
+			if text, ok := s.hostStepUpGate(r.Context(), t.Host, c, name, args); ok {
+				return text
 			}
 			// chief_ask is this door's alone, like route_reply below (listed only
 			// with chiefAskOn, and serveMCP refuses an unlisted name).

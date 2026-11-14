@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -97,6 +98,9 @@ func (s *Server) paletteTargets(ctx context.Context) (focus.Live, map[focus.Subj
 	if err != nil {
 		return live, nil, err
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	list = s.withoutOffChief(ctx, list)
 	ids := make([]int64, 0, len(list))
 	for _, a := range list {

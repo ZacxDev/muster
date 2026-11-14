@@ -60,7 +60,7 @@ import (
 //
 // 44 → 45: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
 // sessions created a pull request, and its `claude --resume` line.
-const wantVerbCount = 45
+const wantVerbCount = 46
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -83,6 +83,9 @@ var wiring = []struct {
 	// Creating an agent (agent_create.go) on MUSTER_AGENT_CREATE_TOKEN, which
 	// the runner below sets: the verb refuses locally without it.
 	{"agent create", []string{"agent", "create", "--start=false", "--prompt", "x"}, "POST /api/agents"},
+	// Removing an agent by name (agent_rm.go): a host officer instance's
+	// left-over row needs no provisioner (docs/design/officers-on-hosts.md).
+	{"agent rm", []string{"agent", "rm", "officer-marketing-example-1"}, "DELETE /api/agents/officer-marketing-example-1"},
 	// The /agent/task* family carries no id: the token identifies the caller and
 	// the server resolves the bound task from it. That these three reach
 	// /agent/task* rather than /api/tasks/* is the whole point of the commands —
@@ -301,6 +304,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
 			h.json("PUT /api/plugins/6/deliver-to", http.StatusOK, `{"plugin_id":6,"plugin_name":"example-relay","deliver_to":"officer:example:main"}`)
+			h.json("DELETE /api/agents/officer-marketing-example-1", http.StatusAccepted, `{"removing":"officer-marketing-example-1","id":5,"teardown":"row"}`)
 			h.json("GET /api/officers/types", http.StatusOK, `{"types":[]}`)
 			h.json("GET /api/officers/types/marketing", http.StatusOK, `{"key":"marketing"}`)
 			h.json("PUT /api/officers/types/marketing", http.StatusOK, `{"key":"marketing","charter_version":1}`)

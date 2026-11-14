@@ -30,7 +30,7 @@ func newAgentCmd(a *app) *cobra.Command {
 		Use:   "agent",
 		Short: "Agent roster, name->id resolution, chat history, an agent's own task, and creating one",
 	}
-	cmd.AddCommand(newAgentLsCmd(a), newAgentResolveCmd(a), newAgentMessagesCmd(a), newAgentTaskCmd(a), newAgentCreateCmd(a))
+	cmd.AddCommand(newAgentLsCmd(a), newAgentResolveCmd(a), newAgentMessagesCmd(a), newAgentTaskCmd(a), newAgentCreateCmd(a), newAgentRmCmd(a))
 	return cmd
 }
 
@@ -409,5 +409,28 @@ func (a *app) resolveAgent(ctx context.Context, name string) (json.RawMessage, a
 			fmt.Fprintf(a.stderr, "  %d\t%s\t%s\n", briefs[i].ID, briefs[i].Name, briefs[i].Status)
 		}
 		return nil, agentBrief{}, failf(exitUsage, "agent name %q is ambiguous (%d matches); use the exact slug or the id", q, len(idx))
+	}
+}
+
+// agentRmRoute is a TEMPLATE, for agentMessagesRoute's reason: an unset name
+// fails at exit 2 having sent nothing.
+const agentRmRoute = "/api/agents/{name}"
+
+func newAgentRmCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm <agent-name>",
+		Short: "DELETE /api/agents/{name} — remove an agent (a host officer instance's left-over row needs no provisioner)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := expandPath(agentRmRoute, map[string]string{"name": args[0]})
+			if err != nil {
+				return err
+			}
+			body, err := a.call(cmd.Context(), request{method: http.MethodDelete, path: path, cred: credHook})
+			if err != nil {
+				return err
+			}
+			return a.emit(body)
+		},
 	}
 }

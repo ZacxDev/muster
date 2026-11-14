@@ -62,6 +62,7 @@ LEDGER="agent create
 agent ls
 agent messages
 agent resolve
+agent rm
 agent task comment
 agent task get
 agent task status
@@ -117,7 +118,9 @@ whoami"
 # 40 -> 43: `officer schedule ls|put|delete` (slice 8).
 # 43 -> 44: `plugins deliver-to` (bind a plugin to a builtin officer, phase 3).
 # 44 -> 45: `pr-session` (which of your sessions created a pull request).
-WANT_COUNT=45
+# 45 -> 46: `agent rm` (DELETE /api/agents/{name}; removes a host officer
+#   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
+WANT_COUNT=46
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

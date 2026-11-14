@@ -133,6 +133,9 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 		if err != nil {
 			s.logger.Printf("sessions: list agents: %v", err)
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		idx := s.instanceIndex(ctx)
 		last := s.lastMessageByAgents(ctx, list)
 		for _, a := range list {

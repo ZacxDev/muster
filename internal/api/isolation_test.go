@@ -376,6 +376,9 @@ var isolationClasses = map[string]routeClass{
 	// The built-in officer store's admin API (officer_admin.go): hook tier
 	// (personal token: its owner; shared hook token: the operator), every
 	// store call naming the caller's owner and under its principal.
+	// `muster agent rm` (agent_rm.go): hook tier, as its owner — the row is
+	// read and destroyed under the caller's principal.
+	"DELETE /api/agents/{name}":                            classAdmin,
 	"GET /api/officers/types":                              classAdmin,
 	"GET /api/officers/types/{key}":                        classAdmin,
 	"PUT /api/officers/types/{key}":                        classAdmin,

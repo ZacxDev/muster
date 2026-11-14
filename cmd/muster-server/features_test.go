@@ -500,8 +500,10 @@ func TestTheDictationHintIsTheComposeOne(t *testing.T) {
 	// The set #440's Compose file does not forward, pinned: every one says
 	// Kubernetes, and no other does.
 	// The chief is NOT among them: the Compose stack runs it (its `chief` profile).
+	// Nor are officers: a builtin officer with "runtime": "host" runs in the
+	// Compose stack as host-spawned sessions (docs/design/officers-on-hosts.md).
 	want := []string{features.Dispatch, features.AgentGateway, features.ClaudeCodeAgents,
-		features.ChiefSessionRuntimes, features.ChiefNudges, features.MemoRelay, features.Officers}
+		features.ChiefSessionRuntimes, features.ChiefNudges, features.MemoRelay}
 	var got []string
 	for _, f := range set.All() {
 		if f.Kubernetes {

@@ -125,6 +125,9 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 		if err != nil {
 			return nil, err
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		last := f.s.lastMessageByAgents(ctx, list)
 		for _, a := range list {
 			out = append(out, focus.Candidate{Subject: focus.AgentSubject(a.ID), ActiveAt: agents.LastActivity(a, last[a.ID])})

@@ -362,6 +362,13 @@ var (
 		// authz.ViaAgent, so the rule store (which refuses every plugin
 		// principal) records the chief's own write. Never a new user id.
 		"internal/api.chiefWriteContext",
+		// A host officer machine's confirmed step-up (host_stepup.go): the
+		// owner-authority call the owner's PHONE just confirmed (a signed
+		// device action, single use, bound to the card) runs as that SAME
+		// owner — the hook checked the device principal's user is the card's
+		// — at the door it was asked through, authz.ViaMirrorHost. Never a
+		// new user id.
+		"internal/api.(*Server).stepUpPrincipal",
 		// A pairing's hand-out (internal/plugins pairing.go): the token is
 		// minted acting AS the request's owner, whose id the request row
 		// names (read under System above) — the owner who approved it. Never

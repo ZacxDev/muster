@@ -108,7 +108,8 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	// binding's admin door (PUT /api/plugins/{id}/deliver-to): both counted below.
 	armedHook := 9
 	for _, r := range routeVias[authz.ViaHook] {
-		if strings.Contains(r, " /api/officers/") || strings.HasSuffix(r, "/deliver-to") {
+		// `muster agent rm` (agent_rm.go) is the armed hook tier too.
+		if strings.Contains(r, " /api/officers/") || strings.HasSuffix(r, "/deliver-to") || r == "DELETE /api/agents/{name}" {
 			armedHook++
 		}
 	}
