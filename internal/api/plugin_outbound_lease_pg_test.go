@@ -311,3 +311,57 @@ func TestALateFailureOfAnUnconfirmedDraftSettlesItsItemAndWithdrawsTheEscalation
 		t.Fatalf("the next Attention sweep moved the item to %s", st)
 	}
 }
+
+// TestALateFailureLeavesAnEscalationThatIsNotItsDraftsOwn: the late-failure
+// caller honours escalatedByDraft's "not ours" answers. (a) The OWNER
+// escalated the waiting item by hand while the plugin held the draft's claim:
+// neither the lapse's sweep nor the ok:false that follows touches that
+// escalation (its summary is the owner's). (b) The unconfirmed draft's item
+// was sent back by the owner (an asks entry) and is escalated again: a late
+// ok:false leaves it, and its ask, alone. In both the officer still gets its
+// draft.refused item.
+func TestALateFailureLeavesAnEscalationThatIsNotItsDraftsOwn(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	const body = "A post the owner escalated mid-send."
+	item, id := w.fileForItem("x:hand", body)
+	if rec := w.approve(id, bindingForm(body)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := w.claim(); rec.Code != http.StatusOK {
+		t.Fatalf("the plugin's claim: %d %s", rec.Code, rec.Body.String())
+	}
+	const mine = "the owner holds this one: legal is reviewing the venue"
+	if _, err := w.store.ResolveItem(w.ctx, 1, builtinOfficerID, item, "escalated", mine, time.Now()); err != nil {
+		t.Fatalf("the owner's escalation by hand: %v", err)
+	}
+	w.draftSQL(id, `lease_until = now() - interval '1 minute'`)
+	w.sweepByClaim()
+	if st, _, summary, _ := w.itemRow(item); st != officers.StatusEscalated || summary != mine {
+		t.Fatalf("(a) after the lapse: %s %q; want the owner's own escalation left as it is", st, summary)
+	}
+	if rec := w.result(id, `{"ok":false,"detail":"not sent"}`); rec.Code != http.StatusOK {
+		t.Fatalf("(a) the late failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if st, _, summary, _ := w.itemRow(item); st != officers.StatusEscalated || summary != mine {
+		t.Fatalf("(a) after the late failure: %s %q; want the owner's own escalation left as it is", st, summary)
+	}
+	if _, _, ok := w.refusedItemOf(id); !ok {
+		t.Fatal("(a) no draft.refused item for the failure")
+	}
+
+	item2, id2 := w.unconfirmedForItem("x:sent-back", "An unconfirmed post sent back since.")
+	if _, err := w.f.pool.Exec(authz.System(w.ctx), `UPDATE officer_items SET asks = asks || jsonb_build_array(jsonb_build_object(
+		'ask_id', 1, 'question', 'escalation', 'asked_by', 'user 1', 'asked_at', now(), 'status', 'answered', 'answer', 'look again'))
+		WHERE id = $1`, item2); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.result(id2, `{"ok":false,"detail":"not sent"}`); rec.Code != http.StatusOK {
+		t.Fatalf("(b) the late failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if st, _, _, _ := w.itemRow(item2); st != officers.StatusEscalated {
+		t.Fatalf("(b) the late failure moved an item escalated again since to %s; want left escalated", st)
+	}
+	if got := w.escalationAsks(item2); len(got) != 1 || got[0] != "open" {
+		t.Fatalf("(b) the escalation asks: %v; want the open one left alone", got)
+	}
+}

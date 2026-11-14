@@ -834,8 +834,9 @@ After the result, for an outbound draft filed with an `item_id`:
     posted" question. A **late `ok: false`** (it was NOT posted after all)
     settles it like any refusal: a `draft.refused` item with the plugin's
     detail, the item finished `no_action` naming it, and the escalation's
-    open asks withdrawn. Neither happens if a newer draft was filed for the
-    item, or if you sent the item back and it was escalated again since. A
+    open asks withdrawn. Neither happens to an escalation that is not that
+    draft's own: one you made by hand, one after you sent the item back, or
+    one on an item a newer draft was filed for. A
     plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
     so the draft never goes unconfirmed in the first place.
 - 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,

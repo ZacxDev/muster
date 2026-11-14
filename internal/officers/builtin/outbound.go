@@ -135,9 +135,11 @@ func (s *Store) DraftEnded(ctx context.Context, owner int64, e DraftEnd, now tim
 //
 // The item is settled only while it waits on this draft: WAITING with no
 // open ask — or CLAIMED under a lapsed lease, an item filed for before items
-// waited on their drafts (muster 0.218.0) — and no OTHER draft for it is
-// still pending or approved. Any other item is left as it is (an owner who
-// finished it by hand, an instance working it now).
+// waited on their drafts (muster 0.218.0), or ESCALATED by this same draft's
+// unconfirmed end when a late result arrives (escalatedByDraft) — and no
+// OTHER draft for it is still pending or approved. Any other item is left
+// as it is (an owner who finished or escalated it by hand, an instance
+// working it now).
 //
 // 🔴 THE BOUND'S COUNT AND THE INSERT ARE SERIALISED PER (owner, officer,
 // kind) BY A TRANSACTION-SCOPED ADVISORY LOCK: two refusals settling at once
@@ -222,7 +224,7 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 		escalate = e.EscalateAtBound
 	}
 	if escalate {
-		notices, err := noticesFor(ctx, tx, owner, e.Officer)
+		notices, err := noticesFor(ctx, tx, owner, e.Officer, e.Draft)
 		if err != nil {
 			return out, err
 		}
@@ -296,22 +298,25 @@ func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id
 
 // escalatedByDraft reports whether owner's ESCALATED item it is escalated
 // because outbound draft draft (claimed at claimedAt) ended unconfirmed
-// (DraftEndedTx), so that draft's late result may settle it: no newer draft
-// was filed for it, and no asks entry was made at or after the claim (an
-// owner who sent the item back re-opens it with one — SettleEscalation — so
-// an escalation since is about something else). open is the escalation's
+// (DraftEndedTx), so that draft's late result may settle it: its notices
+// name that draft (the escalation DraftEndedTx wrote — never an owner's own
+// escalation by hand, which writes none); no newer draft was filed for it;
+// and no asks entry was made at or after the claim (an owner who sent the
+// item back re-opens it with one — SettleEscalation — and keeps the old
+// notices, so an escalation since is about something else). open is the escalation's
 // raised, unsettled asks, for the caller to withdraw once it is settled.
 // THE ONE RULE for both late results: DraftPosted (ok) and DraftEndedTx
 // (not ok).
 func escalatedByDraft(ctx context.Context, tx pgx.Tx, owner int64, it itemRow, draft int64, claimedAt time.Time) (ours bool, open []OpenEscalation, err error) {
-	var newer, handled bool
+	var named, newer, handled bool
 	if err := tx.QueryRow(ctx, `SELECT
+			EXISTS (SELECT 1 FROM officer_items WHERE id = $2 AND notices @> jsonb_build_array(jsonb_build_object('draft', $3::bigint))),
 			EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2 AND id > $3),
 			EXISTS (SELECT 1 FROM officer_items i, jsonb_array_elements(i.asks) e WHERE i.id = $2 AND (e->>'asked_at')::timestamptz >= $4)`,
-		owner, it.ID, draft, claimedAt).Scan(&newer, &handled); err != nil {
+		owner, it.ID, draft, claimedAt).Scan(&named, &newer, &handled); err != nil {
 		return false, nil, err
 	}
-	if newer || handled {
+	if !named || newer || handled {
 		return false, nil, nil
 	}
 	rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
