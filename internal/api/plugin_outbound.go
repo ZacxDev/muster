@@ -21,6 +21,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -391,7 +392,8 @@ func postDraftToolDef() agents.ToolDef {
 		Description: "Ask to post something outside — a new post, or a reply on an upstream thread — through the plugin bound to your officer. " +
 			"NOTHING IS SENT by this call: it files a draft. The plugin checks it and uploads the media, your owner reads the exact text and sees every image and video, " +
 			"and only an approval lets the plugin post exactly that, once. Write the body exactly as it should appear. " +
-			"Public links (for example the project's repository) are allowed; internal host names, IP addresses and secrets are refused. " +
+			"Public links are allowed, and a link to one of your officer's standing-read repositories (github.com/<owner>/<repo>) may name the project; " +
+			"anywhere else the deployment's own names are refused, as are internal host names, IP addresses and secrets. " +
 			"Give item_id when the draft is for an item you hold: the item then WAITS ON THE DRAFT and leaves your hands (no holder), so do not complete or release it. " +
 			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft, your owner rejects it, or it expires, muster closes it and " +
 			"queues a draft.refused item saying why (your owner's reason, the plugin's, or muster's), which is where you redraft. " +
@@ -425,6 +427,19 @@ func (s *Server) officerOutboundGranted(ctx context.Context, o officers.Officer)
 	return ok
 }
 
+// officerPublicLinks are the links officer o's outbound drafts may carry even
+// when they spell one of the deployment's own names (flows.StripPublicLinks):
+// `github.com/<owner>/<repo>` for each of its standing-read repositories —
+// the repositories the deployment itself declares public
+// (officers.Officer.StandingReadRepos, THE rule for that).
+func officerPublicLinks(o officers.Officer) []string {
+	var out []string
+	for _, r := range o.StandingReadRepos() {
+		out = append(out, connectors.GitHubGitHost+"/"+r)
+	}
+	return out
+}
+
 // officerPostDraft is officer_post_draft for instance a of officer o.
 func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officers.Officer, c officers.Backend, arguments string) string {
 	if !s.officerOutboundGranted(ctx, o) {
@@ -441,7 +456,8 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("arguments are {plugin, venue, target: {kind, ref?}, body, media?, item_id?}: %v", err)
 	}
-	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media}
+	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media,
+		PublicLinks: officerPublicLinks(o)}
 	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
 		// Whether this instance holds it is decided in the filing's
 		// transaction, under the item's row lock (plugins.FileOutbound).
