@@ -878,6 +878,7 @@ func (p *MCPProxy) rewriteInitialize(body []byte) []byte {
 // the primary's answer — forwarded as before, and relayed unchanged when it is
 // not a list — merged with every instance's remote list (buildPlan).
 func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id json.RawMessage, body []byte) {
+	seq, readAt := p.beginRead(), time.Now()
 	req, ok := p.primaryRequest(w, r, "tools/list", id, nil, body, "")
 	if !ok {
 		return
@@ -897,9 +898,9 @@ func (p *MCPProxy) serveMergedList(w http.ResponseWriter, r *http.Request, id js
 		writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
 		return
 	}
-	session.at = time.Now()
+	session.at = readAt
 	remote, at := p.remotesFor(r.Context())
-	pl := p.storePlan(session, remote, at)
+	pl, _ := p.storePlan(seq, session, remote, at)
 	tools := pl.merged
 	if tools == nil {
 		tools = []map[string]any{}
@@ -993,6 +994,10 @@ func (p *MCPProxy) serveRoutedCall(w http.ResponseWriter, r *http.Request, id js
 	writeBuffered(w, resp.StatusCode, resp.Header.Get("Content-Type"), started, rest)
 }
 
+// CloseStreams ends every open GET stream and refuses new ones: ServeMCP's
+// shutdown hook.
+func (p *MCPProxy) CloseStreams() { p.state.hub.closeAll() }
+
 // describeInstances names the configured instances, the primary first.
 func (p *MCPProxy) describeInstances() string {
 	return toolPlan{primary: p.primaryName(), order: append([]string{p.primaryName()}, p.extraNames()...)}.describeInstances()
@@ -1036,17 +1041,17 @@ func MCPListenPort(addr string) (int, error) {
 
 // ServeMCP serves h on l until ctx ends.
 //
-// Every request's context derives from one base context that is cancelled
-// BEFORE Shutdown, so a handler that never ends by itself — an open GET
-// stream (serveListen) — ends at once instead of holding the shutdown for its
-// whole timeout.
+// A handler that never ends by itself — an open GET stream (serveListen) — is
+// ended when the shutdown begins (RegisterOnShutdown: MCPProxy.CloseStreams),
+// so it does not hold the shutdown for its whole timeout; a POST in flight is
+// NOT cancelled and drains within it.
 func ServeMCP(ctx context.Context, l net.Listener, h http.Handler) error {
-	base, cancelBase := context.WithCancel(context.Background())
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second,
-		BaseContext: func(net.Listener) context.Context { return base }}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	if c, ok := h.(interface{ CloseStreams() }); ok {
+		srv.RegisterOnShutdown(c.CloseStreams)
+	}
 	go func() {
 		<-ctx.Done()
-		cancelBase()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)

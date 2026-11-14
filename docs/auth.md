@@ -558,7 +558,9 @@ minted **on that instance** for that host (`muster-server mirror token create
 to a window. A call marked `X-Muster-Client: remote` is served unbound,
 restricted to the mirror door's admin tools (`remoteMirrorTools` in
 `internal/api/mirror_mcp.go`), and refused when that instance's hub knows
-that host at all, online or offline. Every owner-authority tool such a call
+that host at all, online or offline. The hub's memory keeps an offline host
+for 24 hours and loses it on a restart, so past that a host that mirrors
+there is served unbound too. Every owner-authority tool such a call
 names (the step-up ledger, `hostStepUpTools`) files a step-up card and runs
 only once the owner confirms it from their paired phone. That instance
 cannot tell whether the calling machine runs a host officer, so it always

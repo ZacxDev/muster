@@ -1791,7 +1791,8 @@ alone too.
 The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
 server, at most 64 at once. Everyone else gets the transport's 405: an outsider,
 an opencode caller, `/preview-mcp`, anyone while the watch is off, and anyone
-past the 64. Shutting the mirror down ends every open stream at once.
+past the 64. Shutting the mirror down ends every open stream at once, while a
+call in flight still finishes.
 
 After a change, each connected session re-reads `tools/list`. Within 2 seconds
 of the watch's read, those re-reads reuse it for the other instances' lists, so
@@ -1810,7 +1811,12 @@ listing is its own claim too. What changes is the tool set, which shrinks to
 the admin tools above. The call is also refused:
 
 - when the token's host is **known** to that instance's hub, online or offline.
-  Its sessions are mirrored there, so its calls are bound to them;
+  Its sessions are mirrored there, so its calls are bound to them. "Known" is
+  the hub's memory: an offline host is kept for 24 hours, in memory only. After
+  a `muster-server` restart, or more than 24 hours offline, a host that does
+  mirror there is not known, and its remote-marked calls are served unbound
+  (the admin tools only, owner-authority ones still behind the phone). A
+  durable record would need a migration;
 - when it also names a bound caller's session (`X-Muster-Claude-Session`, or
   an opencode key);
 - when its session is not a Claude session id.

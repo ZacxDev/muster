@@ -27,6 +27,12 @@ type fakeInstance struct {
 	mark    bool
 	seen    []seenRequest
 	srv     *httptest.Server
+	// callDelay delays every tools/call answer; hold, when set, makes the
+	// NEXT session tools/list wait for release, answering the list as it
+	// was when that request arrived.
+	callDelay time.Duration
+	hold      chan struct{}
+	held      chan struct{} // closed once the held request has arrived
 }
 
 type seenRequest struct {
@@ -57,8 +63,19 @@ func (f *fakeInstance) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(b, &req)
 	f.mu.Lock()
 	f.seen = append(f.seen, seenRequest{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), RPC: req.Method, Body: string(b)})
-	session, remote, mark := f.session, f.remote, f.mark
+	session, remote, mark, delay := f.session, f.remote, f.mark, f.callDelay
+	var release chan struct{}
+	if req.Method == "tools/list" && r.Header.Get(MCPClientHeader) != MCPClientRemote && f.hold != nil {
+		release, f.hold = f.hold, nil
+		close(f.held)
+	}
 	f.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	if req.Method == "tools/call" && delay > 0 {
+		time.Sleep(delay)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	var result any
 	switch req.Method {
@@ -611,40 +628,119 @@ func openStream(t *testing.T, ctx context.Context, url string) *http.Response {
 	return resp
 }
 
-// TestShutdownEndsAnOpenListStream: ServeMCP's shutdown ends an open GET
-// stream at once (its handler's context is cancelled first), instead of the
-// stream holding the connection past the shutdown's timeout.
-func TestShutdownEndsAnOpenListStream(t *testing.T) {
-	p, _, _ := twoInstances(t)
+// TestShutdownDrainsAPostAndEndsAStream: when ServeMCP shuts down, an open
+// GET stream ends at once (MCPProxy.CloseStreams), while a tools/call in
+// flight is NOT cancelled: it completes with its answer within the drain.
+func TestShutdownDrainsAPostAndEndsAStream(t *testing.T) {
+	primary := newFakeInstance(t, []map[string]any{tool("agents_list")}, nil, true)
+	primary.mu.Lock()
+	primary.callDelay = 700 * time.Millisecond
+	primary.mu.Unlock()
+	p := proxyFor(primary.srv.URL)
 	p.ToolsRefresh = time.Hour
 	l, err := ListenMCP("127.0.0.1:" + freePort(t))
 	if err != nil {
 		t.Fatal(err)
 	}
+	base := "http://" + l.Addr().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan struct{})
 	go func() { _ = ServeMCP(ctx, l, p); close(served) }()
 	cctx, ccancel := context.WithCancel(context.Background())
 	t.Cleanup(ccancel)
-	resp := openStream(t, cctx, "http://"+l.Addr().String())
+	resp := openStream(t, cctx, base)
 	t.Cleanup(func() { resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET: %d", resp.StatusCode)
 	}
 	ended := make(chan struct{})
 	go func() { _, _ = io.Copy(io.Discard, resp.Body); close(ended) }()
+
+	type answer struct {
+		code int
+		body string
+		err  error
+	}
+	posted := make(chan answer, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(callBody("agents_list", nil)))
+		for k, v := range caller("%7") {
+			req.Header.Set(k, v)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			posted <- answer{err: err}
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		posted <- answer{code: r.StatusCode, body: string(b)}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(primary.calls()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the call never reached the primary")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	start := time.Now()
 	cancel()
 	select {
 	case <-ended:
-		if d := time.Since(start); d > time.Second {
+		if d := time.Since(start); d > 300*time.Millisecond {
 			t.Fatalf("the stream ended %v after the shutdown began", d)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the stream was still open 3s after the shutdown began")
 	}
+	select {
+	case a := <-posted:
+		if a.err != nil || a.code != http.StatusOK || !strings.Contains(a.body, `\"ran\":\"agents_list\"`) {
+			t.Fatalf("the in-flight call during shutdown: %v %d %s", a.err, a.code, a.body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the in-flight call never answered")
+	}
 	<-served
+}
+
+// TestAnOlderReadNeverReplacesANewerOne: a watch whose read of the primary
+// STARTED first but finishes last (held by the upstream) must not replace the
+// plan a later tools/list stored — nor announce a change. Forced: the watch's
+// read is held, the list changes, a session's tools/list reads the new one,
+// then the watch's read is released with the OLD list.
+func TestAnOlderReadNeverReplacesANewerOne(t *testing.T) {
+	p, primary, _ := twoInstances(t)
+	p.ToolsRefresh = time.Hour
+	p.pollTools(context.Background()) // the baseline
+	release := make(chan struct{})
+	primary.mu.Lock()
+	primary.hold, primary.held = release, make(chan struct{})
+	held := primary.held
+	primary.mu.Unlock()
+	done := make(chan struct{})
+	go func() { p.pollTools(context.Background()); close(done) }()
+	<-held // the watch's read has started, and waits
+	primary.set([]map[string]any{tool("attention_ask", "question!"), tool("dispatch_request", "prompt!", "worker_pool"), tool("agents_list"), tool("brand_new")}, nil)
+	if _, names := servedTools(t, p); !strings.Contains(strings.Join(names, " "), "brand_new") {
+		t.Fatalf("the later tools/list did not see the new tool: %v", names)
+	}
+	ch, unsub, _ := p.state.hub.subscribe()
+	defer unsub()
+	close(release)
+	<-done
+	p.state.mu.Lock()
+	pl := p.state.plan
+	p.state.mu.Unlock()
+	if _, ok := pl.session.find("brand_new"); !ok {
+		t.Fatal("the older read replaced the newer plan: brand_new is gone")
+	}
+	select {
+	case <-ch:
+		t.Fatal("the older read announced a change")
+	default:
+	}
 }
 
 func freePort(t *testing.T) string {

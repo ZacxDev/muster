@@ -450,7 +450,11 @@ type instanceState struct {
 	// it reuses it (remotesFor), so the re-reads every connected session
 	// makes on a list_changed cost the instances one read, not one each.
 	remoteAt time.Time
-	hub      listenHub
+	// seq numbers the reads in the order they STARTED (beginRead); planSeq is
+	// the read the stored lists and plan came from. A read that finishes after
+	// a newer one never replaces it (storePlan).
+	seq, planSeq uint64
+	hub          listenHub
 }
 
 // primaryName is the primary's name.
@@ -568,13 +572,29 @@ func (p *MCPProxy) remotesFor(ctx context.Context) (map[string]toolsList, time.T
 	return p.readRemotes(ctx), time.Now()
 }
 
-// storePlan records a fresh read and the plan built from it.
-func (p *MCPProxy) storePlan(session toolsList, remote map[string]toolsList, remoteAt time.Time) toolPlan {
+// beginRead is a read's place in start order, taken BEFORE it fetches.
+func (p *MCPProxy) beginRead() uint64 {
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	p.state.seq++
+	return p.state.seq
+}
+
+// storePlan builds the plan from read seq (beginRead) and records it — unless
+// a read that STARTED later is already stored: lists read earlier are older
+// whatever order the reads finish in, so they never replace newer ones.
+// stored reports whether it was recorded; the plan is returned either way,
+// for the caller that made the read.
+func (p *MCPProxy) storePlan(seq uint64, session toolsList, remote map[string]toolsList, remoteAt time.Time) (toolPlan, bool) {
 	pl := buildPlan(p.primaryName(), p.extraNames(), session, remote)
 	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	if seq <= p.state.planSeq {
+		return pl, false
+	}
+	p.state.planSeq = seq
 	p.state.session, p.state.remote, p.state.remoteAt, p.state.plan = session, remote, remoteAt, &pl
-	p.state.mu.Unlock()
-	return pl
+	return pl, true
 }
 
 // planForCall is the plan a tools/call routes by: the last one, re-read when
@@ -590,8 +610,10 @@ func (p *MCPProxy) planForCall(ctx context.Context) toolPlan {
 	if pl != nil && time.Since(pl.session.at) < maxAge {
 		return *pl
 	}
+	seq := p.beginRead()
 	session := p.fetchList(ctx, p.URL, p.Token, p.AllowHTTP, false)
-	return p.storePlan(session, p.readRemotes(ctx), time.Now())
+	fresh, _ := p.storePlan(seq, session, p.readRemotes(ctx), time.Now())
+	return fresh
 }
 
 // WatchTools re-reads the instances' lists every ToolsRefresh until ctx ends,
@@ -618,12 +640,18 @@ func (p *MCPProxy) WatchTools(ctx context.Context) {
 // tools differ from the last watch's — notify every open GET stream. A primary
 // that cannot be read changes nothing (an outage is not a new list).
 func (p *MCPProxy) pollTools(ctx context.Context) {
+	seq := p.beginRead()
 	session := p.fetchList(ctx, p.URL, p.Token, p.AllowHTTP, false)
 	if session.err != nil {
 		p.logf("muster-mirror: mcp: read the primary's tool list: %v", session.err)
 		return
 	}
-	pl := p.storePlan(session, p.readRemotes(ctx), time.Now())
+	pl, stored := p.storePlan(seq, session, p.readRemotes(ctx), time.Now())
+	if !stored {
+		// A newer read is already stored; this older one says nothing about
+		// the list now (the next watch compares against what is current).
+		return
+	}
 	p.state.mu.Lock()
 	prev := p.state.lastHash
 	p.state.lastHash = pl.hash
@@ -638,11 +666,36 @@ func (p *MCPProxy) pollTools(ctx context.Context) {
 type listenHub struct {
 	mu   sync.Mutex
 	subs map[chan struct{}]struct{}
+	// closed is closed by closeAll (shutdown): every stream ends, and no new
+	// one opens.
+	closed     chan struct{}
+	closedOnce sync.Once
+}
+
+// done is the channel closeAll closes.
+func (h *listenHub) done() chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed == nil {
+		h.closed = make(chan struct{})
+	}
+	return h.closed
+}
+
+// closeAll ends every open stream and refuses new ones.
+func (h *listenHub) closeAll() {
+	ch := h.done()
+	h.closedOnce.Do(func() { close(ch) })
 }
 
 func (h *listenHub) subscribe() (chan struct{}, func(), bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	select {
+	case <-h.closed:
+		return nil, nil, false
+	default:
+	}
 	if len(h.subs) >= maxListenStreams {
 		return nil, nil, false
 	}
@@ -687,6 +740,7 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+	closed := p.state.hub.done()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
@@ -697,6 +751,8 @@ func (p *MCPProxy) serveListen(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-closed:
 			return
 		case <-ch:
 			if _, err := io.WriteString(w, listChangedEvent); err != nil {

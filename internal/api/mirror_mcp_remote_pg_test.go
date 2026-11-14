@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // A REMOTE CALLER (mirror_mcp.go, "A remote caller"): a session mirrored to
@@ -244,5 +245,48 @@ func TestARemoteSessionWorksTheTasksItCreatedOnThatInstance(t *testing.T) {
 	_, r, _ := f.mirrorRPC(t, remoteAs(remote, remoteSID), mcpToolCall(taskCommentTool, map[string]any{"id": created.ID, "body": "from far"}))
 	if text, isErr := toolText(t, r); isErr || !strings.Contains(text, `"body":"from far"`) {
 		t.Fatalf("task_comment: %s", text)
+	}
+}
+
+// TestARemoteDispatchStartsAfterOnePhoneConfirmation: the LA flow. A session
+// mirrored to another muster asks THIS one, as a remote caller, to start an
+// agent: dispatch_request files a hold (ungated) and starts nothing;
+// dispatch_approve files a step-up card and still starts nothing; the
+// owner's phone confirms the card, and exactly one agent starts, its approval
+// row naming the remote host and session.
+func TestARemoteDispatchStartsAfterOnePhoneConfirmation(t *testing.T) {
+	h := newHoldFixture(t)
+	remote := mirrorTok('r')
+	h.tokens[remote] = mirror.Token{ID: 19, OwnerID: h.owner, Host: "far"}
+	call := func(name string, args any) string {
+		t.Helper()
+		hdr := remoteAs(remote, remoteSID)
+		hdr["Content-Type"] = "application/json"
+		w := h.connFixture.call(t, http.MethodPost, "/mirror/mcp", strings.NewReader(mcpToolCall(name, args)), hdr)
+		var r mcpReply
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &r) != nil || r.Error != nil {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body)
+		}
+		text, isErr := toolText(t, &r)
+		if isErr {
+			t.Fatalf("%s: %s", name, text)
+		}
+		return text
+	}
+	var held holdAnswerOut
+	if err := json.Unmarshal([]byte(call(dispatchRequestTool, gatewayRequest())), &held); err != nil || !plugins.ValidHoldID(held.HoldID) {
+		t.Fatalf("dispatch_request: %v %+v", err, held)
+	}
+	h.nothingStarted(t)
+	card := stepUpCardOf(t, call(dispatchApproveTool, map[string]any{"hold_id": held.HoldID}))
+	h.nothingStarted(t)
+	if _, err := h.srv.answerAskFrom(asDevice(h.owner), card, hostDecisionConfirm, attention.AnswerSource{}); err != nil {
+		t.Fatalf("the phone's confirm: %v", err)
+	}
+	if got := h.ownersAgents(t); len(got) != 1 {
+		t.Fatalf("agents after the confirm: %d, want exactly one", len(got))
+	}
+	if ad, _ := h.auditDetail(t, plugins.ActionDispatchApproved, held.HoldID); ad["approved_from"] != "far/"+remoteSID || ad["requested_from"] != "far/"+remoteSID {
+		t.Fatalf("approval row %v: want it to name far and the remote session", ad)
 	}
 }

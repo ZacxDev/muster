@@ -145,6 +145,16 @@ var openCodeMirrorTools = map[string]bool{
 // from it is refused, so the narrower, unbound path is never a way around the
 // binding.
 //
+// ⚠ "KNOWS" IS THE HUB'S MEMORY, NOT A DURABLE RECORD. An offline host is kept
+// for internal/mirror's offlineRetention (24 h), in memory only: after a
+// muster-server restart, or past 24 h offline, a host that does mirror here
+// is no longer known, and its remote-marked calls are served unbound. No
+// durable "this host has connected here" signal exists without a migration
+// (mirror_tokens.last_used_at moves on every /mirror/mcp call too, so it
+// cannot tell connecting from calling). What bounds that window: the remote
+// tool set is the admin tools only, and every owner-authority one still needs
+// the owner's phone (host_stepup.go).
+//
 // 🔴 AND ALWAYS BEHIND THE STEP-UP CARD for an owner-authority tool
 // (host_stepup.go): this muster cannot see whether the caller's machine runs
 // a host officer, so the owner confirms on their phone.
@@ -599,8 +609,9 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 //   - its session is not a Claude session id;
 //   - the tool is not a remote caller's (serveMCP already refuses an unlisted
 //     name; this is the same rule again, at the call);
-//   - host is KNOWN to this muster's hub, online or offline: its sessions are
-//     mirrored here, so its calls are bound to them, never unbound.
+//   - host is KNOWN to this muster's hub, online or offline (within the hub's
+//     in-memory retention: see "KNOWS" above): its sessions are mirrored
+//     here, so its calls are bound to them, never unbound.
 //
 // The caller has no window (mirrorWindow ""): ownersOwnSession's per-window
 // dispatch check has no listing here to read, so the host's mirror applies it
