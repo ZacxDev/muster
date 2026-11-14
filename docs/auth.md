@@ -71,11 +71,17 @@ tasks and team hosts each arrive with their own release.
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
   password, and it cannot be an admin, be invited, hold a passkey, mint a token
-  or pair a phone. Any credential that resolves to a team is refused at every
-  door with "a team cannot sign in; sign in as a person", and so is a mirror
-  token whose owner is a team. A plugin pairing request that names a team as
-  its owner is answered exactly as one that names no account. No background
-  sweep acts as a team.
+  or pair a phone. A team-owned agent's own token (the agent, connector and
+  approval-relay doors) is admitted as the **team acting principal**:
+  `muster.uid` is the team, with no team memberships and never every user's
+  rows. The stopped-agent reaper, the attention queue, route timeouts, the
+  host-dispatch reconciler and the job queue act as the team the same way
+  when they meet a team-owned row. Every other door refuses a credential that
+  resolves to a team ("a team cannot sign in; sign in as a person"), and so
+  does the mirror token lookup for a team-owned token; any other code that
+  builds a team principal at a door outside that set fails. A plugin pairing
+  request that names a team as its owner is answered exactly as one that
+  names no account.
 - **Members and roles.** Each member has one role: `viewer`, `operator` or
   `manager`. A team is never a member of a team. Each request reads the
   person's memberships together with their role, so a change applies from the

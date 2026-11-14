@@ -29,24 +29,59 @@ func (u teamUsers) Account(ctx context.Context, id int64) (users.Account, error)
 	return users.Account{Role: r, Team: id == u.team}, nil
 }
 
-// TestNoDoorAdmitsATeam is the ledger over every authenticated entry point:
-// each route in routes.golden, through its REAL wrapper, with EACH door's
-// credential (routeVias, which TestEveryRouteIsClassifiedForItsPrincipal pins
-// to the golden — so a new route or door is walked here without anyone
-// remembering to add it). Every door's credential resolves to user 1 in this
-// harness; here user 1 is a TEAM, so every request must be refused with the
-// team refusal and reach no handler. The CONTROL is the same request with
-// user 1 a person: it reaches admit's hand-off, so each refusal is a fact
-// about the kind, not about a malformed request.
-func TestNoDoorAdmitsATeam(t *testing.T) {
-	s, h, seen := newPrincipalTestServer(t)
-	vias := make([]string, 0, len(routeVias))
+// doorAdmitsATeam is EVERY door a route is reached through (routeVias' keys)
+// and whether it admits a TEAM's credential. Only an agent's own token does:
+// there the team is the agent row's owner (a team-owned agent acting as its
+// owner, through the team acting principal), never a sign-in. It fails when
+// the door set grows OR shrinks, so a new door decides here, and the walk
+// below holds admit to it by behaviour.
+var doorAdmitsATeam = map[authz.Via]bool{
+	authz.ViaAgent:      true,  // /agent/*, /mcp: requireAgentToken
+	authz.ViaConnect:    true,  // /connect/*: requireConnectorAgent
+	authz.ViaRelay:      true,  // the approval relay: requireRelayAgent
+	authz.ViaSession:    false, // a person, in the browser
+	authz.ViaHook:       false, // the shared machine token
+	authz.ViaService:    false, // the service token
+	authz.ViaToken:      false, // a person's API token
+	authz.ViaRunner:     false, // a host's flow runner
+	authz.ViaMirrorHost: false, // a mirror host (team hosts are phase 2b)
+	authz.ViaPageLink:   false, // a page share link
+	authz.ViaDevice:     false, // a paired phone
+	authz.ViaPlugin:     false, // a plugin (team plugins are phase 3)
+}
+
+// TestOnlyTheAgentDoorsAdmitATeam is the ledger over every authenticated
+// entry point: each route in routes.golden, through its REAL wrapper, with
+// EACH door's credential (routeVias, which
+// TestEveryRouteIsClassifiedForItsPrincipal pins to the golden — so a new
+// route or door is walked here without anyone remembering to add it). Every
+// door's credential resolves to user 1 in this harness; here user 1 is a
+// TEAM. On an agent's own token (doorAdmitsATeam) the request reaches the
+// handler as the TEAM ACTING PRINCIPAL — user 1, Team, member, no Teams;
+// on every other door it is refused with the team refusal and reaches no
+// handler. The CONTROL is the same request with user 1 a person: it reaches
+// admit's hand-off, so each outcome is a fact about the kind, not about a
+// malformed request.
+func TestOnlyTheAgentDoorsAdmitATeam(t *testing.T) {
+	var missing, stale []string
 	for v := range routeVias {
-		vias = append(vias, string(v))
+		if _, ok := doorAdmitsATeam[v]; !ok {
+			missing = append(missing, string(v))
+		}
 	}
-	sort.Strings(vias)
-	refused := 0
-	for _, v := range vias {
+	for v := range doorAdmitsATeam {
+		if _, ok := routeVias[v]; !ok {
+			stale = append(stale, string(v))
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(stale)
+	if len(missing) > 0 || len(stale) > 0 {
+		t.Fatalf("doorAdmitsATeam is out of step with routeVias: doors with no entry %v; entries that are no door %v", missing, stale)
+	}
+	s, h, seen := newPrincipalTestServer(t)
+	refused, admitted := 0, 0
+	for _, v := range sortedVias() {
 		via := authz.Via(v)
 		for _, pattern := range routeVias[via] {
 			method, path := concretePath(pattern)
@@ -59,11 +94,25 @@ func TestNoDoorAdmitsATeam(t *testing.T) {
 				if aborted, code := serve(t, h, req); !aborted || len(*seen) != 1 {
 					t.Fatalf("control: user 1 as a person did not reach the handler (status %d)", code)
 				}
-				// User 1 is a team: refused before any handler.
+				if (*seen)[0].Team {
+					t.Fatalf("control: user 1 as a person arrived as a team: %+v", (*seen)[0])
+				}
+				// User 1 is a team.
 				s.ext.Users = teamUsers{team: authz.OperatorUserID}
 				*seen = nil
 				req = httptest.NewRequest(method, path, nil)
 				credential(s, req, via)
+				if doorAdmitsATeam[via] {
+					if aborted, code := serve(t, h, req); !aborted || len(*seen) != 1 {
+						t.Fatalf("a team-owned agent's %s credential did not reach the handler (status %d)", via, code)
+					}
+					want := authz.Principal{UserID: authz.OperatorUserID, Team: true, Role: authz.RoleMember, Via: via}
+					if got := (*seen)[0]; got != want {
+						t.Fatalf("a team-owned agent's %s credential arrived as %+v; want the team acting principal %+v", via, got, want)
+					}
+					admitted++
+					return
+				}
 				rec := httptest.NewRecorder()
 				func() {
 					defer func() {
@@ -85,9 +134,13 @@ func TestNoDoorAdmitsATeam(t *testing.T) {
 			})
 		}
 	}
-	// Positive control on the walk: the golden's non-public routes were driven.
-	if nonPublic := len(readGolden(t)) - len(publicRoutes); refused < nonPublic || nonPublic < 90 {
-		t.Fatalf("refused %d route/door pairs; the golden has %d non-public routes", refused, nonPublic)
+	// Positive controls on the walk: the golden's non-public routes were
+	// driven, and BOTH outcomes were observed.
+	if nonPublic := len(readGolden(t)) - len(publicRoutes); refused+admitted < nonPublic || nonPublic < 90 {
+		t.Fatalf("walked %d route/door pairs (%d refused, %d admitted); the golden has %d non-public routes", refused+admitted, refused, admitted, nonPublic)
+	}
+	if admitted == 0 || refused == 0 {
+		t.Fatalf("admitted %d, refused %d: the walk observed only one outcome", admitted, refused)
 	}
 }
 

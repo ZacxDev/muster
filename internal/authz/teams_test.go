@@ -42,8 +42,9 @@ func TestMembershipsAreCanonical(t *testing.T) {
 }
 
 // TestWithPrincipalRefusesATeam is the backstop behind internal/api's admit:
-// no code may attach a principal that acts as a team. The control is the same
-// principal with Team false.
+// no code may attach a team principal at a door outside teamActingVias (here,
+// the browser session; TestTheTeamActingViasAreExactlyTheListedDoors walks
+// every door). The control is the same principal with Team false.
 func TestWithPrincipalRefusesATeam(t *testing.T) {
 	p := Principal{UserID: 12, Role: RoleMember, Via: ViaSession}
 	_ = WithPrincipal(context.Background(), p) // control: attaches

@@ -139,14 +139,43 @@ func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) aut
 		s.logger.Printf("principal: reading user %d's role: %v (acting as member, role uncertain)", uid, err)
 		return authz.Principal{UserID: uid, Role: authz.RoleMember, Via: via, RoleUncertain: true}
 	}
-	return authz.Principal{UserID: uid, Role: a.Role, Via: via, Team: a.Team, Teams: a.Teams}
+	if a.Team {
+		return teamActingPrincipal(uid, via)
+	}
+	return authz.Principal{UserID: uid, Role: a.Role, Via: via, Teams: a.Teams}
 }
 
-// TeamSignInRefusal is what every door answers a credential that resolves to a
-// TEAM (users.kind = 'team'): a team owns things, and no one signs in as one
+// teamActingPrincipal is THE TEAM ACTING PRINCIPAL (team sharing phase 4,
+// docs/design/team-sharing.md §2): team acting through via as itself —
+// muster.uid is the team, role member, NO team memberships (muster.teams
+// empty) and never scope "all". It is built here, once, by construction: a
+// team row's role is always member (users_team_no_login) and a team is
+// nobody's member, but the principal does not depend on the row saying so.
+//
+// authz.WithPrincipal accepts it only through authz's teamActingVias; every
+// other door still refuses it (admit with a 403, a background site with
+// WithPrincipal's panic). TestEveryPerOwnerPrincipalSiteIsTeamSafe walks every
+// per-owner site with a team owner.
+func teamActingPrincipal(team int64, via authz.Via) authz.Principal {
+	return authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: via}
+}
+
+// TeamSignInRefusal is what every door but an agent's own token
+// (teamAgentDoors) answers a credential that resolves to a TEAM (users.kind =
+// 'team'): a team owns things, and no one signs in as one
 // (docs/design/team-sharing.md). admit answers it before the principal is
 // attached; authz.WithPrincipal's panic is the backstop for any other caller.
 const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
+
+// teamAgentDoors are the doors admit lets a TEAM through: an agent's own
+// per-agent token — the agent self-service API and /mcp (requireAgentToken),
+// the connector surface (requireConnectorAgent) and the approval relay
+// (requireRelayAgent). Each builds its principal from the agent row's owner
+// (agentPrincipal / principalFor over agentOwnerID), so a team here is a
+// team-owned agent acting as its owner, through the team acting principal.
+// Every other door — a person's, a shared machine token's, a mirror host's,
+// a plugin's, a device's, a share link's — refuses a team.
+var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true}
 
 // AccountUnreadableRefusal is what every door answers when the request's
 // account could not be read (admit: fail closed).
@@ -163,10 +192,12 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	if s.refuseDeviceTokenElsewhere(w, r, p.Via) {
 		return
 	}
-	// A credential that resolves to a team is refused at every door: this is
-	// the one place each wrapper's principal passes
-	// (TestNoDoorAdmitsATeam walks every route through it).
-	if p.Team {
+	// A credential that resolves to a team is refused at every door but a
+	// team-owned AGENT's own token (teamAgentDoors), where the team is the
+	// agent row's owner, never a sign-in. This is the one place each
+	// wrapper's principal passes (TestOnlyTheAgentDoorsAdmitATeam walks every
+	// route through it).
+	if p.Team && !teamAgentDoors[p.Via] {
 		s.logger.Printf("principal: refused a %s credential that resolves to team %d", p.Via, p.UserID)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamSignInRefusal})
 		return
