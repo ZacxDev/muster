@@ -2,12 +2,14 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"html"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -133,6 +135,27 @@ func personLabel(email, display string, id int64) string {
 	return "user #" + strconv.FormatInt(id, 10)
 }
 
+// nameRefused reports whether err is branding.CheckNameText's refusal: a
+// character it names (ErrNameControl) or bytes that are not UTF-8
+// (ErrNameInvalid).
+func nameRefused(err error) bool {
+	return errors.Is(err, branding.ErrNameControl) || errors.Is(err, branding.ErrNameInvalid)
+}
+
+// nameCharSentence is the page's sentence for a name refused by
+// branding.CheckNameText, naming the character (as U+XXXX: it may draw as
+// nothing at all). what is the sentence's subject, "Your name" or "A team name".
+func nameCharSentence(what string, err error) string {
+	var e *branding.NameCharError
+	switch {
+	case errors.As(err, &e):
+		return fmt.Sprintf("%s cannot contain U+%04X: control, text-direction and invisible formatting characters are not allowed.", what, e.Rune)
+	case errors.Is(err, branding.ErrNameInvalid):
+		return what + " is not valid text: it holds bytes that are not UTF-8."
+	}
+	return what + " cannot contain control, text-direction or invisible formatting characters."
+}
+
 // teamProblem maps a store refusal to its status and the page's sentence, and
 // reports whether err is one.
 func teamProblem(err error) (int, string, bool) {
@@ -141,6 +164,8 @@ func teamProblem(err error) (int, string, bool) {
 		return http.StatusConflict, "A team already has that name.", true
 	case errors.Is(err, users.ErrTeamName):
 		return http.StatusBadRequest, "A team name is 1 to 64 characters.", true
+	case nameRefused(err):
+		return http.StatusBadRequest, nameCharSentence("A team name", err), true
 	case errors.Is(err, users.ErrNotATeam):
 		return http.StatusNotFound, "There is no such team.", true
 	case errors.Is(err, users.ErrNotAPerson):

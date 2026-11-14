@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 )
 
 // Teams (docs/design/team-sharing.md, phase 1; migration 0126).
@@ -72,6 +73,11 @@ func (s *PGStore) CreateTeam(ctx context.Context, by Actor, name string, firstMa
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > TeamNameMax {
 		return Team{}, ErrTeamName
+	}
+	// A team's name is a users.display_name: the same character rule as a
+	// person's (a *branding.NameCharError).
+	if err := branding.CheckNameText(name); err != nil {
+		return Team{}, err
 	}
 	var t Team
 	err := s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
