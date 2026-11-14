@@ -19,8 +19,9 @@ name: ci
 # check-runs on the head commit. Trade-off: a branch pushed WITHOUT an open PR
 # gets no CI — run the `make` targets locally (see above).
 #
-# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
-# publishes the muster and claude-code-agent images under that release version
+# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too — UNLESS the
+# same commit's main run concluded success, when the test jobs are skipped
+# (the `main-verdict` job; fail-closed) — and then publishes the muster and claude-code-agent images under that release version
 # (the `image-*` jobs at the end). A downstream release tool may version its own releases outside
 # this repository and push the matching vX.Y.Z tag here on each of them, so a
 # tag usually lands on a commit `main` already built: every
@@ -64,6 +65,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Local: python3 .github/scripts/tag_gate.py decide --repo ZacxDev/muster \
+  #          --workflow ci.yml --sha <sha> --ref-type tag     (needs `gh` auth)
+  #
+  # 🔴 ON A vX.Y.Z TAG, THE TEST JOBS RUN ONLY IF THE SAME COMMIT'S MAIN RUN DID
+  # NOT SUCCEED. 110 of 110 tag runs (2026-10-30 → 11-13) landed on a commit
+  # whose main run had concluded success; re-testing it cost 72 runner-hours
+  # and turned 10 of them red on flakes, each holding a release back (the
+  # downstream release tool takes only a sha whose CI runs ALL succeeded).
+  # Operator decision, PR #655. Every test job below `needs` this one and runs
+  # unless it answered retest=false; the image and release jobs always run.
+  # FAIL-CLOSED: a lookup error, no completed main run, or one that did not
+  # succeed answers retest=true (.github/scripts/tag_gate.py; its tests are
+  # tests/tag_gate_test.py). Skipped on every non-tag run, where its skip is
+  # what lets the suite start at once.
+  main-verdict:
+    name: tag on a commit main already passed? (tags only)
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      retest: ${{ steps.decide.outputs.retest }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: decide from main's run for this commit
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/tag_gate.py decide --repo "$GITHUB_REPOSITORY" --workflow ci.yml --sha "$GITHUB_SHA" --ref-type "$GITHUB_REF_TYPE" >> "$GITHUB_OUTPUT"
+
   # Local: make build && make vet
   #
   # ⚠ THIS JOB NEEDS NO CSS STEP, AND THE REASON CHANGED. It used to read "muster
@@ -75,6 +107,8 @@ jobs:
   # "stale", which is what the `css` job below exists to catch.
   build:
     name: build + vet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -101,10 +135,31 @@ jobs:
       - name: verb ledger (the built CLI exposes exactly its specified verbs)
         run: make verb-ledger
 
-  # Local: make test-db && make test
+  # Local: make test-db && make test (the whole suite in one run; the shards
+  # below are a CI-only split of exactly that set).
+  #
+  # 🔴 THE SUITE RUNS AS SHARDS, EACH ON ITS OWN RUNNER WITH ITS OWN POSTGRES.
+  # One package was this job's wall time: internal/api, 950-1522 s of a 20-31
+  # min job on main (runs 43473563533, 43478905382) — 2,678 serial top-level
+  # tests sharing one database — while every other package together summed
+  # 1,113-1,405 s across the runner's cores. `-p` cannot split a package, so:
+  # shard 0 runs every package except internal/api, and shards 1.. run
+  # internal/api's tests round-robin by name (tests/goshard.py). The partition
+  # is total by construction because every shard is handed the runner's own
+  # `strategy.job-index` / `strategy.job-total` — NOT matrix values, so editing
+  # the matrix list cannot leave an index unrun or run one twice. Adding a
+  # shard is one more matrix entry and nothing else.
   test:
-    name: test (postgres)
+    name: test (postgres, shard ${{ strategy.job-index }} of ${{ strategy.job-total }})
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard always finishes, so one red shard never hides another's.
+      fail-fast: false
+      matrix:
+        # ⚠ COSMETIC: only the COUNT matters (see above).
+        shard: [0, 1, 2, 3]
 
     # 🔴 A `services:` CONTAINER, NOT A `docker run` FROM INSIDE THE SUITE. It
     # gives the external-DSN path for free on a hosted runner: no Docker-daemon
@@ -160,23 +215,52 @@ jobs:
 
       # The verdict below is an instrument, so its refusals are exercised first:
       # one synthetic stream per refusal (skip, zero verdicts, failed test, failed
-      # package, unreadable input). Milliseconds, and no database.
-      - name: verdict.py can refuse
-        run: python3 tests/verdict_test.py
+      # package, unreadable input). Milliseconds, and no database. So is the
+      # shard planner: its partition (every test in exactly one shard) and its
+      # refusals, on synthetic lists. Both in EVERY shard, before either is used.
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed
+        run: |
+          python3 tests/verdict_test.py
+          python3 tests/goshard_test.py
+          python3 tests/tag_gate_test.py
 
+      # The repository-level checks below run once, in shard 0.
       # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
       - name: INSTALL.md's blocks do what they say
+        if: ${{ strategy.job-index == 0 }}
         run: python3 tests/install_guide_test.py
 
       # docs/features.md's anchors (the feature hints link to them), and the
       # compose file, .env.example and the server's variables agreeing.
       - name: docs/features.md, .env.example and the compose file agree
+        if: ${{ strategy.job-index == 0 }}
         run: python3 tests/features_config_test.py
 
       # The Claude Code plugin marketplace: names, source path, skill
       # frontmatter, and the setup skill pointing at INSTALL.md's URL.
       - name: the Claude Code plugin is what the README installs
+        if: ${{ strategy.job-index == 0 }}
         run: python3 tests/claude_plugin_test.py
+
+      # 🔴 THE REQUIRED TESTS ARE GIVEN TO THE PLANNER, NOT TO verdict.py
+      # DIRECTLY: each is in exactly one internal/api shard, so goshard.py hands
+      # its `--require` on only to the shard that runs it, and REFUSES (in every
+      # api shard) if one is not in internal/api's test list at all — a rename,
+      # deletion or build tag still fails CI by name. The `-race -cover` after
+      # `--` are the run's flags, so `go test -list` reuses the run's build.
+      #
+      # ⚠ THE OUTPUT FILES ARE WORD-SPLIT BY `$(cat …)` BELOW; goshard.py refuses
+      # any token with whitespace or a glob character, so that is safe.
+      - name: plan this shard (every package but internal/api, or a share of internal/api's tests)
+        run: >-
+          python3 tests/goshard.py
+          --shard ${{ strategy.job-index }} --of ${{ strategy.job-total }}
+          --split ./internal/api
+          --require TestEveryRouteIsClassifiedForIsolation
+          --require TestNoRouteLetsOneUserReachAnothersData
+          --require TestAnotherUsersWritesNeverReachYourEventStream
+          --args-out "$RUNNER_TEMP/go-test-args" --verdict-out "$RUNNER_TEMP/verdict-args"
+          -- -race -cover
 
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
@@ -216,7 +300,8 @@ jobs:
       # 🔴 THE ISOLATION WALK IS REQUIRED BY NAME (accounts PR 3c). `--require`
       # refuses the run unless each named test is IN it and PASSED, so the gate
       # cannot stop running quietly — a rename, a deletion or a build tag that
-      # filters it out fails this step the same way a red walk does.
+      # filters it out fails this step the same way a red walk does. The names
+      # reach verdict.py through the plan step above (its owning shard only).
       #
       # ⚠ `-timeout 20m`, NOT go test's default 10m, which is PER PACKAGE: under
       # -race -cover internal/api took 460-575 s on main's runs and passed 600 s
@@ -225,42 +310,43 @@ jobs:
       # ⚠ RAISED TO 30m (PR #572): by then internal/api took 1093 s on main
       # (run 42870914465) and 1179 s on that branch (run 42866998195), against the
       # 1200 s cap; two runs of the branch rebased onto main then panicked at
-      # 1200 s mid-suite with nothing hung (running tests: 0-1 s each).
+      # 1200 s mid-suite with nothing hung (running tests: 0-1 s each). Since
+      # the split, no shard comes near it; the cap stays as the hang detector.
       - name: go test, and assert nothing skipped (one run)
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
+          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.
       # Here, on every PR, rather than in the aggregate itself, so a red here
       # never stands in for the suite's own verdict. AFTER the Go suite, so a
       # binder failure never skips it, and `!cancelled()` so a red Go suite
-      # never skips this. Node only, < 1 s.
+      # never skips this. Node only, < 1 s. Shard 0 only.
       - uses: actions/setup-node@v4
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         with:
           node-version: 22
       - name: pick-legs.mjs can choose and refuse
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/pick-legs.test.mjs
       # The mirrored view's snapshot store's own rules (web/static/mirror-snap.js):
       # whose record may be painted, the TTL, the size bound. Node only, < 1 s.
       - name: mirror-snap.js keys, checks and bounds its snapshots
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/mirror-snap.test.mjs
       # The service worker stores a page script only when its bytes are the
       # ones its ?v= names (web/static/sw.js namesItsBytes): a rollout's other
       # pod must not seed the cache-first store. Node only, < 1 s.
       - name: sw.js stores only scripts whose bytes match their URL
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/sw-install.test.mjs
       # The server switcher's list rules (web/static/servers.js): addresses
       # (https only but loopback, no credentials, origin only), dedupe, the
       # cap, labels, the logo path, and that the script makes no request of
       # its own. Node only, < 1 s.
       - name: servers.js keeps only origins and reads nothing from other servers
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/servers.test.mjs
 
   # Local: make leakscan
@@ -277,6 +363,8 @@ jobs:
   # run on `main` after merge has the key). See tests/leakscan.py.
   leakscan:
     name: leak gate
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     env:
       MUSTER_LEAKSCAN_KEY: ${{ secrets.MUSTER_LEAKSCAN_KEY }}
@@ -328,6 +416,8 @@ jobs:
   # named attributes would reach.
   nix:
     name: nix outputs
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -363,6 +453,8 @@ jobs:
   # the only thing that can see that.
   css:
     name: stylesheet
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -408,6 +500,8 @@ jobs:
   # suite is the `mirror-tmux` job below.
   ccd-tmux:
     name: ccd (real tmux)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -464,6 +558,8 @@ jobs:
   # ships — asserted to be older than 3.7.
   mirror-tmux:
     name: muster-mirror (real tmux, the hosts' version)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -523,6 +619,8 @@ jobs:
   # never sees it).
   mirror-tmux-pre37:
     name: muster-mirror (real tmux 3.4, before paste-buffer -S)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -573,6 +671,8 @@ jobs:
   # and no database: neither package needs one outside its tmuxit tests.
   mirror-macos:
     name: muster-mirror (macOS, real ps/sysctl/lsof)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -597,6 +697,8 @@ jobs:
   # supplies a deliberately invalid token) and sends no turn.
   ccd-image:
     name: claude-code-agent image smoke
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -691,6 +793,8 @@ jobs:
   # this step exists to refuse.
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       # Every leg always finishes, so one red leg never hides another's verdict.
@@ -702,7 +806,12 @@ jobs:
         # here and not in the JSON throws at config load. It is not GENERATED
         # from the JSON because that takes a job of its own ahead of the legs:
         # one more runner slot and one more serial hop on every run.
-        leg: [1, 2]
+        #
+        # ⚠ FOUR LEGS (was two): at two, each leg was 29-31 min on main
+        # (runs 43473563533, 43478905382) and the e2e path was the run's
+        # longest. Measured sum of every spec: ~3,330 s, so four legs carry
+        # ~830 s each plus ~2 min of global-setup per leg. See e2e/legs.mjs.
+        leg: [1, 2, 3, 4]
     services:
       postgres:
         image: postgres:16-alpine
@@ -800,8 +909,9 @@ jobs:
   # took a runner slot to do it.
   e2e:
     name: e2e (playwright, chromium)
-    needs: e2e-leg
-    if: ${{ !cancelled() }}
+    needs: [main-verdict, e2e-leg]
+    # Skipped with the legs on a tag whose main run vouched for it (main-verdict).
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -858,6 +968,8 @@ jobs:
   # release, which takes only a sha whose CI runs are ALL success.
   docshots:
     name: docshots (screenshot spec, chromium)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -927,6 +1039,8 @@ jobs:
   # builds, and must answer /readyz, the sign-in page and a password sign-in.
   release-dry-run:
     name: release dry run (assets + compose + stt-cohere contract)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1008,9 +1122,15 @@ jobs:
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
   # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`) — with ONE deliberate
   # exception, `docshots`, which is not in publish-gate's needs (see that job).
-  # A pull request builds every
-  # image the same way and pushes nothing; it does log in read-only and probe the
-  # tag it WOULD push, so the registry path is exercised before merge.
+  #
+  # 🔴 ON A PULL REQUEST THESE JOBS DO NOT RUN; `image-pr` DOES, WITH NO `needs`.
+  # They used to run on PRs too, pushing nothing — but `needs: publish-gate` made
+  # them wait for the whole suite and then add ~6 min (image-muster) to every
+  # PR's wall time, to build what other jobs had already built: the single-arch
+  # `make image` is release-dry-run's, and the claude-code-agent build + its
+  # cc-smoke and compose-smoke runs are ccd-image's, on the same commit. What a
+  # PR alone checked here — the multi-arch build and the read-only probe of the
+  # tag each image WOULD get — is `image-pr`, in parallel with the suite.
   #
   # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE CAN BLOCK A
   # DOWNSTREAM RELEASE that refuses a sha whose CI runs are not ALL
@@ -1033,13 +1153,83 @@ jobs:
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run]
+    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run]
+    # 🔴 `!cancelled()`, AND THE VERDICT IS THE STEP BELOW, NOT `success()`: a
+    # test job SKIPPED because main-verdict answered retest=false must not skip
+    # this gate (and every publish behind it). tag_gate.py gate passes a job
+    # only if it SUCCEEDED, or was skipped on a run whose main-verdict succeeded
+    # with retest=false; any failure, cancellation or undecided skip refuses.
+    #
+    # 🔴 AND EVERY JOB BELOW IT NEEDS AN EXPLICIT `!cancelled() && needs.<x>.result
+    # == 'success'` CONDITION. A job `if:` without a status function is an implicit
+    # `success()`, and that checks every ANCESTOR, not only the direct needs
+    # (actions/runner#491): main-verdict is skipped on every non-tag run and the
+    # test jobs on a vouched tag, so an implicit success() would skip the images
+    # and the release while this gate passed. Pinned by
+    # TestCIPublishJobsCheckTheirNeedsExplicitly (internal/modulegate).
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "every test job succeeded for $GITHUB_SHA"
+      - uses: actions/checkout@v6
+      - name: every test job succeeded, or was skipped behind a green main run
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/tag_gate.py gate
+
+  # Local: docker buildx build --platform linux/amd64,linux/arm64 .
+  #
+  # The pull-request half of the image jobs below (see the note above
+  # publish-gate): the muster image's multi-arch build — the arm64 half is
+  # cross-compiled, and nothing else on a PR builds it — and the read-only
+  # probe of both tags the push jobs would publish, so the registry path is
+  # exercised before merge. Pushes nothing. No `needs`: it runs beside the suite.
+  image-pr:
+    name: images (multi-arch build + GHCR probe; pull request, pushes nothing)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: the tags the push jobs would publish
+        id: tag
+        run: |
+          ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          short="${GITHUB_SHA::7}"
+          {
+            echo "short=$short"
+            echo "muster=$ns/muster:$short"
+            echo "cca=$ns/claude-code-agent:$short"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same-repository pull requests only: a fork's token cannot read packages.
+      - name: log in to ghcr.io
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: probe the tags it would push (pushes nothing)
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.muster }}'
+          .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.cca }}'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: multi-arch build (pushes nothing)
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION='${{ steps.tag.outputs.short }}' .
 
   image-muster:
     name: muster image (GHCR)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.publish-gate.result == 'success' }}
     needs: publish-gate
     runs-on: ubuntu-latest
     concurrency:
@@ -1081,35 +1271,22 @@ jobs:
           make image IMAGE=muster VERSION='${{ steps.tag.outputs.version }}' \
             DOCKER_BUILD_FLAGS="--label org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY --label org.opencontainers.image.revision=$GITHUB_SHA"
 
-      # Same-repository pull requests only: a fork's token cannot read packages.
       - name: log in to ghcr.io
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: probe the tag it would push (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
-
       # 🔴 MULTI-ARCH (linux/amd64 + linux/arm64). The Dockerfile cross-compiles
       # on the build platform, so the arm64 half needs no emulation: its only
       # arm64 stage is the distroless COPY. A docker-container builder is
       # required because the default `docker` driver cannot build more than one
-      # platform. The single-arch `make image` above stays: it is what the
-      # probe and every other local spelling build.
+      # platform. The single-arch `make image` above stays: it is what every
+      # local spelling builds. (A pull request's multi-arch build is `image-pr`.)
       - uses: docker/setup-buildx-action@v3
 
-      - name: multi-arch build (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \
-            --build-arg VERSION='${{ steps.tag.outputs.version }}' .
-
       - name: push (multi-arch)
-        if: ${{ github.event_name == 'push' }}
         env:
           GHCR_REVISION: ${{ github.sha }}
         run: |
@@ -1122,6 +1299,8 @@ jobs:
 
   image-claude-code-agent:
     name: claude-code-agent image (GHCR)
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.publish-gate.result == 'success' }}
     needs: publish-gate
     runs-on: ubuntu-latest
     concurrency:
@@ -1191,19 +1370,13 @@ jobs:
         run: images/claude-code-agent/compose-smoke.sh "$IMG"
 
       - name: log in to ghcr.io
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: probe the tag it would push (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
-
       - name: push
-        if: ${{ github.event_name == 'push' }}
         run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
 
       # 🔴 THE RELEASE VERSION IS A REGISTRY-SIDE COPY OF THE SHORT-SHA IMAGE,
@@ -1236,7 +1409,8 @@ jobs:
   # Local: docker build -t muster-stt-cohere images/stt-cohere
   image-stt-cohere:
     name: stt-cohere image (GHCR, tags only)
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.publish-gate.result == 'success' }}
     needs: publish-gate
     runs-on: ubuntu-latest
     concurrency:
@@ -1379,7 +1553,8 @@ jobs:
   # Local (no publishing): scripts/release-build.sh <X.Y.Z>
   release:
     name: GitHub release (tags only)
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.image-muster.result == 'success' && needs.image-stt-cohere.result == 'success' && needs.image-claude-code-agent.result == 'success' }}
     # image-claude-code-agent: the release's docker-compose.yml names
     # claude-code-agent:<version> (the chief profile), so the release waits
     # for that tag to exist.
