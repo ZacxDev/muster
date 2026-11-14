@@ -119,6 +119,13 @@ var wantCommentSites = map[string]commentSite{
 	// a retraction must not silently sink a task down the board, for the same
 	// reason a retracted comment tombstones instead of vanishing.
 	"ListPage": {liveOnly: true, commentCols: false},
+	// Write: moving a task into a team (team sharing 4.3) rewrites its
+	// comments' owner_id with it, in one statement. It reads no comment column;
+	// liveOnly guards the task it locks (a dismissed task does not move).
+	"MoveToTeam": {liveOnly: true, commentCols: false},
+	// Not a query: the move's ledger of child keys, "note_comments.note_id"
+	// among them (TestEveryForeignKeyOntoNotesIsClassified reads it).
+	"MoveChildren": {liveOnly: false, commentCols: false},
 }
 
 // sqlSites maps each function in file that has a string literal mentioning

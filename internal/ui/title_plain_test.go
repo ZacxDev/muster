@@ -73,6 +73,16 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"merge select label", `data-task-select-label="Thirteen merged"`, func() g.Node {
 			return taskSelectControl(notes.Note{ID: 13, Title: "__Thirteen__ merged", Status: notes.StatusInProgress})
 		}},
+		{"task board team group heading", ">Platform team 15</h2>", func() g.Node {
+			return taskOwnerGroups([]TaskOwnerGroup{{Owner: 15, Team: true, Label: "**Platform** team `15`",
+				Cards: []TaskCardView{{Note: notes.Note{ID: 15, Title: "t", Status: notes.StatusOpen}}}}})
+		}},
+		{"task Owner select option", ">Ops snake_case_team 16</option>", func() g.Node {
+			return taskOwnerSelect([]TaskOwnerOption{{ID: 16, Label: "_Ops_ snake_case_team **16**"}})
+		}},
+		{"task move-to-team option", ">Infra C# 17</option>", func() g.Node {
+			return taskMoveForm(17, []TaskOwnerOption{{ID: 7, Label: "~~Infra~~ C# `17`"}})
+		}},
 		{"terminal <title>", "<title>Terminal · icon Fourteen shell · muster</title>", func() g.Node {
 			return AgentTerminalPage(AgentTerminalView{Name: "a14", DisplayName: "![icon](i.png) Fourteen shell"})
 		}},

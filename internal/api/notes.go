@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
@@ -220,8 +221,10 @@ func (s *Server) tasksView(ctx context.Context, q url.Values) (ui.TasksView, err
 	// the same tag counts, so the two can never disagree (and it costs no extra
 	// query). Best-effort like the tag row: a failure degrades to no chips, not a 500.
 	vocab := s.tagVocabulary(ctx)
+	cards := s.taskCardViews(ctx, page.Notes)
 	return ui.TasksView{
-		Cards:        s.taskCardViews(ctx, page.Notes),
+		Cards:        cards,
+		Groups:       s.taskOwnerGroups(ctx, cards),
 		Vocabulary:   vocab,
 		ActiveTags:   filter,
 		Projects:     notes.ProjectsFromVocabulary(vocab),
@@ -272,7 +275,7 @@ func (s *Server) handleNoteNewModal(w http.ResponseWriter, r *http.Request) {
 	// `body` pre-fills the task text: ComposePage (a share, the New-task
 	// shortcut) opens the sheet with it. Display only — nothing is written until
 	// the operator presses Save, which is the ordinary POST /tasks.
-	if err := ui.RenderNotesModal(w, dirs, failed, r.URL.Query().Get("body")); err != nil {
+	if err := ui.RenderNotesModal(w, dirs, failed, r.URL.Query().Get("body"), s.operatorTeams(r.Context())); err != nil {
 		s.logger.Printf("notes: render modal: %v", err)
 	}
 }
@@ -384,9 +387,22 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The Owner select (team sharing phase 4): you, or a team you are at
+	// least an operator in. Checked BEFORE anything is written; Postgres
+	// refuses the same insert below operator (42501) regardless.
+	// (A handler test that calls this with no principal files for nobody in
+	// particular: an empty owner is all it may name.)
+	p, _ := authz.From(ctx)
+	owner, ownerOK := taskOwnerFromForm(p, r.FormValue("owner"))
+	if !ownerOK {
+		http.Error(w, "you can file a task only for yourself or a team you are an operator or manager of", http.StatusForbidden)
+		return
+	}
+
 	// Optional dispatch config from the create form: model + repo + repo_branch
 	// (the field names POST /api/agents takes too).
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
+		Owner: owner,
 		// The board's own create: the signed-in owner filed it.
 		CreatedBy:  nilIfEmpty(notes.CreatedByOwner),
 		Directory:  directory,
@@ -1763,6 +1779,7 @@ func (s *Server) handleNoteEditModal(w http.ResponseWriter, r *http.Request) {
 		// The tag input's <datalist> suggestions come from the live vocabulary, so
 		// the human reuses existing labels instead of minting near-duplicates.
 		Vocabulary: s.tagVocabulary(r.Context()),
+		MoveTeams:  s.moveTeamsFor(r.Context(), note),
 	}); err != nil {
 		s.logger.Printf("notes: render edit modal: %v", err)
 	}

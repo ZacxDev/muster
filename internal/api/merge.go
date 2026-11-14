@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -153,6 +154,18 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	loser, ok := s.mergeLoad(w, r, loserID)
 	if !ok {
+		return
+	}
+	// Team tasks (team sharing phase 4): a merge writes both tasks, so the
+	// caller is at least an operator on each; and it folds the loser's tags
+	// and a pointer into the winner, so the two have ONE owner — a person's
+	// task never merges into a team's, or a team's into another's.
+	if winner.OwnerID != loser.OwnerID {
+		http.Error(w, "these tasks belong to different owners and cannot be merged", http.StatusConflict)
+		return
+	}
+	if p, ok := authz.From(r.Context()); ok && !taskRoleAllows(p, winner.OwnerID, authz.TeamOperator) {
+		http.Error(w, "this is a team task: it needs a team operator or above", http.StatusForbidden)
 		return
 	}
 

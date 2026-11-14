@@ -130,6 +130,13 @@ type Note struct {
 	// only). Never serialised: the JSON shape is unchanged. Zero from a store
 	// that does not read the column — and zero reaches nobody.
 	OwnerID int64 `json:"-"`
+	// Owner is who Create files the task under (team sharing phase 4): 0 is
+	// the caller (owner_id's default, the person acting), a team id files it
+	// in that team. Only Create reads it, and Postgres decides whether the
+	// caller may (a team's notes are written at operator, migration 0127): a
+	// viewer's or a non-member's insert is refused with 42501, whatever the
+	// handler checked. Never serialised; never read back (OwnerID is).
+	Owner int64 `json:"-"`
 	// Tags  are the task's routing key + labels: a normalized,
 	// de-duplicated, SORTED set. Routing namespaces (initiative:/gate:/auto:) are
 	// behaviour-bearing and validated; everything else is a descriptive label. Always '{}' (never NULL) in the DB; omitempty keeps the JSON shape
@@ -276,6 +283,13 @@ type Comment struct {
 	// consumers should render it as a tombstone (or skip it) — but MUST NOT treat
 	// an empty Body on a live comment as retraction; the flag is the predicate.
 	Retracted bool `json:"retracted,omitempty"`
+	// AuthorID is note_comments.author_id, the person who wrote it (0127's
+	// trigger forces it to the acting principal): 0 for a comment written
+	// under the system scope or before 0127. The reads (commentCols) fill
+	// it; AddComment's returned value leaves it 0. It decides who may
+	// retract a comment on a team task (SoftDeleteComment, and the handler
+	// above it), and is not part of the machine JSON.
+	AuthorID int64 `json:"-"`
 }
 
 // Attachment is a file attached to a note. Data is only populated when an
@@ -658,6 +672,11 @@ type Store interface {
 	// id, at most q.Limit, with their comments: what a plugin reconciles and
 	// converts. See RefListQuery for the filters.
 	ListLiveInNamespace(ctx context.Context, q RefListQuery) ([]Note, error)
+	// MoveToTeam moves task id from its owner from into team, with its
+	// children, in one system-scope transaction (move.go). The caller decides
+	// who may; this refuses a task not from's (ErrMoveNotYours) and one a link
+	// of another owner points at (*MoveBlockedError), moving nothing.
+	MoveToTeam(ctx context.Context, id, from, team int64) error
 	AddAttachment(ctx context.Context, noteID int64, a Attachment) (Attachment, error)
 	// GetAttachment returns a single attachment including its Data, for download.
 	GetAttachment(ctx context.Context, id int64) (Attachment, error)
