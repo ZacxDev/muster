@@ -86,8 +86,8 @@ func sameIDs(a, b []int64) bool { return slices.Equal(a, b) }
 // officer's ask, its escalation to the team and its outbound draft each push
 // to every current OPERATOR and MANAGER of the team — and to no viewer and no
 // one who has left. A PERSONAL officer's ask and outbound draft still push to
-// its owner alone, and a team's REPLY draft (not an officer's) does not fan
-// out. The positive control is that the members' pushes are counted at all
+// its owner alone. A team's REPLY draft (not an officer's) fans out too since
+// phase 2b.1 (goNotify's one fan-out, team_fanout_pg_test.go). The positive control is that the members' pushes are counted at all
 // (the manager's and the operator's).
 func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 	w := newIsoWorld(t)
@@ -170,12 +170,13 @@ func TestATeamOfficersNotificationsReachItsOperatorsAndManagers(t *testing.T) {
 	if got := rec.to("plugin-draft-", people...); !sameIDs(got, want) {
 		t.Errorf("a team officer's outbound draft pushed to %v; want %v", got, want)
 	}
-	// …and a team's REPLY draft (no officer) does not fan out.
+	// …and since phase 2b.1 a team's REPLY draft (no officer) fans out too:
+	// every team-owned notification goes through goNotify's one fan-out.
 	rec.reset()
 	w.srv.notifyDraftAwaitingNoting(context.Background(), team, plugins.Draft{ID: 990002, OwnerID: team}, plugins.Message{}, "")
 	w.srv.WaitForPushes()
-	if got := rec.to("plugin-draft-", people...); len(got) != 0 {
-		t.Errorf("a team's reply draft pushed to members %v; want none (only an officer's draft fans out)", got)
+	if got := rec.to("plugin-draft-", people...); !sameIDs(got, want) {
+		t.Errorf("a team's reply draft pushed to %v; want %v (phase 2b.1: every team-owned push fans out)", got, want)
 	}
 
 	// 4. A PERSONAL officer's ask and draft: its owner alone, as before.

@@ -507,6 +507,10 @@ type RouterNotification struct {
 	// (push.Payload.Silent — browsers that honour it only). Muster-native push
 	// only; the router is never sent an attention notification.
 	Silent bool
+	// skip is a member of the owning TEAM this notification is not sent to:
+	// the person whose own action it reports (a team task comment's author,
+	// teamTaskCommented). 0 for none; it never touches a personal owner.
+	skip int64
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -681,6 +685,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
 	s.registerTeamPages(mux)
+	s.registerAccountTeams(mux)
 	s.registerOfficerSpawnPages(mux)
 	s.registerTeamOfficerPages(mux)
 	s.registerTeamChiefPages(mux)
@@ -1457,34 +1462,58 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the
 	// recover logs. A shutdown therefore cannot be left waiting on a fan-out that
 	// panicked, which is the one property this pairing has to keep.
+	//
+	// 🔴 AND THE ONE TEAM FAN-OUT (team sharing phase 2b, part C;
+	// team_notify.go). When owner is a TEAM, the recipients are read first
+	// (teamPushRecipients: its operators and managers with notify on) and the
+	// WHOLE per-owner decision below runs once for EACH of them, in this
+	// order: that member's codename switch; the team prefix ("platform · ")
+	// on the title it picked; the title rule, once, over the prefixed title;
+	// pushAllowed with that member's mutes and rate cap; sendPush, which stays
+	// "owner, and only owner"; and routerServes for that member. Expanding in
+	// sendPush instead would run all of these against the team, which has no
+	// mutes, one shared cap and no preferences. A person is their own one
+	// recipient, with no prefix: exactly as before.
 	s.pushInFlight.Add(1)
 	safeGo(s.logger, "notify tag="+n.Tag, func() {
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
-		if n.CodenameTitle != "" && s.notifyCodenameFirstOn(s.attentionPrincipal(ctx, owner), owner) {
-			n.Title, n.TitleKeep = n.CodenameTitle, n.CodenameKeep
-		}
-		n.Title = textplain.TitleKeeping(n.Title, n.TitleKeep)
-		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
-			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
-				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions, Silent: n.Silent})
-			if rep.Delivered > 0 && onDelivered != nil {
-				onDelivered(rep.Delivered)
+		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip)
+		for _, to := range recipients {
+			// Each recipient decides on its own copy (a declared
+			// RouterNotification, so the push-title ledgers see it).
+			var m RouterNotification = n
+			if m.CodenameTitle != "" && s.notifyCodenameFirstOn(s.attentionPrincipal(ctx, to), to) {
+				m.Title, m.TitleKeep = m.CodenameTitle, m.CodenameKeep
 			}
-		}
-		// The router knows nothing of "resolved" (it closes its own cards).
-		// Nor of the attention queue's items: it has no attention card, and its
-		// own notifications for a waiting session are its own (attention.go).
-		if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(owner) {
-			return
-		}
-		if err := s.router.Notify(ctx, n); err != nil {
-			s.logger.Printf("router: notify tag=%s: %v", n.Tag, err)
-			return
-		}
-		if onDelivered != nil {
-			onDelivered(-1)
+			// The team's prefix goes on whichever title that member's switch
+			// picked (the same as prefixing both), and before the title rule.
+			// A withdrawal has no title, and gets none.
+			if m.Title != "" {
+				m.Title = prefix + m.Title
+			}
+			m.Title = textplain.TitleKeeping(m.Title, m.TitleKeep)
+			if s.pushServed() && s.pushAllowed(ctx, to, event) {
+				rep := s.sendPush(ctx, to, push.Payload{Type: m.Type, ID: m.ID, Title: m.Title, Body: m.Body, Tag: m.Tag, Data: m.Data,
+					Ask: m.Ask, Update: m.Update, AskActions: m.AskActions, Silent: m.Silent})
+				if rep.Delivered > 0 && onDelivered != nil {
+					onDelivered(rep.Delivered)
+				}
+			}
+			// The router knows nothing of "resolved" (it closes its own cards).
+			// Nor of the attention queue's items: it has no attention card, and its
+			// own notifications for a waiting session are its own (attention.go).
+			if s.router == nil || event == push.EventResolved || event == push.EventAttention || !s.routerServes(to) {
+				continue
+			}
+			if err := s.router.Notify(ctx, m); err != nil {
+				s.logger.Printf("router: notify tag=%s: %v", m.Tag, err)
+				continue
+			}
+			if onDelivered != nil {
+				onDelivered(-1)
+			}
 		}
 	})
 }

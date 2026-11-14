@@ -256,6 +256,14 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 			}
 			continue
 		}
+		if r, own := teamOwnerRead[tbl]; own && name == "team_owner_read" {
+			// A team's own rows' read arm (0133), pinned whole by the share
+			// ledger; here only that it reads and admits nothing else.
+			if cmd != "SELECT" || permissive != "PERMISSIVE" || qual != ownerReadArm(r) || check != "" {
+				t.Errorf("%s: team_owner_read %s %s USING %q CHECK %q; want SELECT, PERMISSIVE, %q", tbl, cmd, permissive, qual, check, ownerReadArm(r))
+			}
+			continue
+		}
 		if name != "owner_isolation" || cmd != "ALL" || permissive != "PERMISSIVE" {
 			t.Errorf("%s: policy %q cmd=%s %s; want owner_isolation, ALL, PERMISSIVE", tbl, name, cmd, permissive)
 		}

@@ -3,51 +3,79 @@ package api
 import (
 	"context"
 
-	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
-// THE MINIMAL TEAM FAN-OUT (team sharing phase 3; operator decision on #668's
-// round 0, Q1). A push names ONE owner (sendPush), and a team has no devices,
-// so a TEAM officer's asks, escalations and outbound drafts reached nobody.
-// Exactly those three kinds now ALSO go to each of the team's current
-// operators and managers, read from team_members at send time
-// (users.PGStore.TeamNotifyMembers): a viewer gets nothing, nor does someone
-// who has left or is disabled. A personal item is unchanged — a person has no
-// members, so the list is empty.
+// THE TEAM FAN-OUT (team sharing phase 2b, part C; docs/design/team-sharing.md
+// "C. The rest of the fan-out"). A push names ONE owner (sendPush), and a team
+// has no devices, so a team-owned notification reached nobody. goNotify is
+// where every notification is decided, and it is the ONE place the fan-out
+// happens: when the notification's owner is a team, goNotify reads the team's
+// recipients here (teamPushRecipients) and then runs the WHOLE per-owner
+// decision — the member's codename switch, the team prefix, the title rule,
+// the member's own mutes and rate cap, sendPush and the router's rule — once
+// for each of them. No call site loops over members: a site that did would
+// send each member a second copy (TestATeamNotificationReachesEachMemberOnce).
 //
-// NOT HERE (phase 2b's fan-out): every other team-owned notification, the
-// withdrawal of these pushes from members' devices when the ask is answered
-// or the draft decided (it is sent to the owner, the team, as today), a
-// member's per-team notify switch, and team-labelled titles.
+// Who: the team's current OPERATORS and MANAGERS whose own notify switch is
+// on (team_members.notify, 0133), persons only, not disabled, read at send
+// time (users.PGStore.TeamPushTargets). A viewer, someone who has left, a
+// disabled person and a member who turned the switch off get nothing.
+// A withdrawal ("resolved") reaches the current operators and managers
+// whatever their switch says (operator decision G1), and a person removed,
+// downgraded or disabled gets one for each of the team's open items
+// (withdrawTeamItemsFrom, team_withdraw.go).
+//
+// A personal owner is unchanged: their one push, as before.
 // ---------------------------------------------------------------------------
 
-// teamNotifyReader is the users store's team fan-out read, asserted (not added
-// to users.Store) so a store without it — the test fakes — fans out to nobody.
-type teamNotifyReader interface {
-	TeamNotifyMembers(ctx context.Context, team int64) ([]int64, error)
+// teamPushReader is the users store's team fan-out read, asserted (not added
+// to users.Store) so a store without it — the test fakes — fans out to nobody
+// and sends a personal push exactly as before.
+type teamPushReader interface {
+	TeamPushTargets(ctx context.Context, owner int64) (users.TeamPushTargets, error)
 }
 
-// teamOfficerRecipients is the members a team officer's notification for
-// owner also goes to: none when owner is not a team, or when they cannot be
-// read (logged; the owner's own push is unaffected).
-func (s *Server) teamOfficerRecipients(ctx context.Context, owner int64) []int64 {
-	r, ok := s.ext.Users.(teamNotifyReader)
-	if !ok || owner <= 0 {
-		return nil
+// teamPushPrefixSep joins a team's name to a team push's title
+// ("platform · Ana is asking"): the " · " muster's other short labels use.
+const teamPushPrefixSep = " · "
+
+// teamPushRecipients is who a notification of event owned by owner goes to,
+// and the prefix its title takes: [owner] and "" for a person (and for an
+// owner the read cannot classify — logged; a team has no devices, so for a
+// team that sends nothing, exactly as before 2b); the team's recipients and
+// "<team> · " for a team. skip is left out (a team task comment's author).
+func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event string, skip int64) ([]int64, string) {
+	r, ok := s.ext.Users.(teamPushReader)
+	if !ok {
+		return []int64{owner}, ""
 	}
-	ids, err := r.TeamNotifyMembers(ctx, owner)
+	t, err := r.TeamPushTargets(ctx, owner)
 	if err != nil {
-		s.logger.Printf("push: read team %d's members for a team officer's notification: %v", owner, err)
-		return nil
+		s.logger.Printf("push: read owner %d's team recipients: %v (sent to the owner alone)", owner, err)
+		return []int64{owner}, ""
 	}
-	return ids
+	if !t.Team {
+		return []int64{owner}, ""
+	}
+	who := t.Notify
+	if event == push.EventResolved {
+		who = t.Withdraw
+	}
+	out := make([]int64, 0, len(who))
+	for _, m := range who {
+		if m != skip {
+			out = append(out, m)
+		}
+	}
+	return out, mirror.OneLine(t.Name, users.TeamNameMax) + teamPushPrefixSep
 }
 
 // teamAuditor is the users store's team-scoped audit writer
-// (users.PGStore.AuditTeam), asserted like teamNotifyReader.
+// (users.PGStore.AuditTeam), asserted like teamPushReader.
 type teamAuditor interface {
 	AuditTeam(ctx context.Context, by users.Actor, team int64, action, object string, detail map[string]any) error
 }
@@ -74,31 +102,5 @@ func (s *Server) auditTeamLevel(ctx context.Context, by users.Actor, team int64,
 			level = "ERROR "
 		}
 		s.logger.Printf("%saudit: %s %s for team %d by user %d: %v", level, action, object, team, by.UserID, err)
-	}
-}
-
-// isOfficerInstance is whether agent a is an instance of a declared officer
-// its owner owns (officerOf's binding, by name, held to the owner).
-func (s *Server) isOfficerInstance(a agents.Agent) bool {
-	o, _, ok := s.officerOf(a)
-	return ok && o.Owner == agentOwnerID(a)
-}
-
-// officerAskFiled is askFiled for an OFFICER's ask or escalation notice, plus
-// the team fan-out: when its owner is a team, the same notification goes to
-// each of the team's operators and managers.
-func (s *Server) officerAskFiled(a attention.Ask) {
-	s.askFiled(a)
-	if !s.notifiable() {
-		return
-	}
-	ctx := context.Background()
-	members := s.teamOfficerRecipients(ctx, a.Owner)
-	if len(members) == 0 {
-		return
-	}
-	it := s.askPushItem(s.attentionPrincipal(ctx, a.Owner), a)
-	for _, m := range members {
-		s.attentionNotify(m, it)
 	}
 }

@@ -427,6 +427,11 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	if s.auth.goTrueMode() && s.gt != nil {
 		passkeysLink = `<a href="` + accountPasskeysPath + `" id="account-passkeys" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Passkeys</a>`
 	}
+	// Account → Teams (team sharing phase 2b.1): your teams and each one's
+	// notify switch.
+	if s.accountTeams() != nil {
+		passkeysLink += `<a href="` + accountTeamsPath + `" id="account-teams-link" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Teams (your role, and each team's notifications)</a>`
+	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
 		note := ResetDoneNote

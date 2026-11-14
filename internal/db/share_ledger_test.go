@@ -83,9 +83,21 @@ var personalOwned = []string{
 // officer_host_spawns is personal BY DEFAULT (operator decision, phase 3).
 var lentOwned = map[string]int{"officer_host_spawns": 1}
 
+// teamOwnerRead is each lent table whose TEAM-owned rows its team's members
+// also read, at the role given (team_owner_read, migration 0133, team
+// sharing phase 2b: a team officer's spawn rows), through the doors that
+// carry muster.teams, and never write. Such a table's policies are exactly
+// owner_isolation, team_lent_read and team_owner_read.
+var teamOwnerRead = map[string]int{"officer_host_spawns": 1}
+
 // lentArm is team_lent_read's USING at role r, as pg_policies prints it.
 func lentArm(r int) string {
 	return fmt.Sprintf("(shared_team_id = ANY (COALESCE(( SELECT muster_team_ids(%d) AS muster_team_ids), '{}'::bigint[])))", r)
+}
+
+// ownerReadArm is team_owner_read's USING at role r, as pg_policies prints it.
+func ownerReadArm(r int) string {
+	return fmt.Sprintf("(owner_id = ANY (COALESCE(( SELECT muster_team_ids(%d) AS muster_team_ids), '{}'::bigint[])))", r)
 }
 
 // neverShared are the owned tables that must stay personal whatever a later
@@ -296,13 +308,21 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 				checkTeamPolicy(t, tbl, p.name, p.cmd, p.permissive, p.qual, p.check, c)
 			}
 		} else if r, lent := lentOwned[tbl]; lent {
-			if strings.Join(names, ",") != "owner_isolation,team_lent_read" {
-				t.Errorf("%s (personal, lendable at %d) has policies %v; want exactly owner_isolation and team_lent_read", tbl, r, names)
+			want := "owner_isolation,team_lent_read"
+			or, ownerRead := teamOwnerRead[tbl]
+			if ownerRead {
+				want += ",team_owner_read"
+			}
+			if strings.Join(names, ",") != want {
+				t.Errorf("%s (personal, lendable at %d) has policies %v; want exactly %s", tbl, r, names, want)
 				continue
 			}
 			for _, p := range ps {
 				if p.name == "team_lent_read" && (p.cmd != "SELECT" || p.permissive != "PERMISSIVE" || p.qual != lentArm(r) || p.check != "") {
 					t.Errorf("%s team_lent_read = %s %s USING %q CHECK %q; want PERMISSIVE SELECT USING %q and no CHECK", tbl, p.cmd, p.permissive, p.qual, p.check, lentArm(r))
+				}
+				if p.name == "team_owner_read" && (p.cmd != "SELECT" || p.permissive != "PERMISSIVE" || p.qual != ownerReadArm(or) || p.check != "") {
+					t.Errorf("%s team_owner_read = %s %s USING %q CHECK %q; want PERMISSIVE SELECT USING %q and no CHECK", tbl, p.cmd, p.permissive, p.qual, p.check, ownerReadArm(or))
 				}
 			}
 		} else if strings.Join(names, ",") != "owner_isolation" {
@@ -385,8 +405,11 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 			}
 		}
 		c, shared := shareClasses[tbl]
+		// A lent table with team_owner_read (0133): the team's own rows read
+		// at that role, never written.
+		ownerRead, readsOwn := teamOwnerRead[tbl]
 		wantDevice := 0
-		if shared && level["manager"] >= c.read {
+		if (shared && level["manager"] >= c.read) || (readsOwn && level["manager"] >= ownerRead) {
 			wantDevice = owned
 		}
 		if got := count(t, device, f.pool, tbl, "WHERE owner_id = $1", team.ID); got != wantDevice {
@@ -395,7 +418,7 @@ func TestTheShareLedgerHoldsForEveryRole(t *testing.T) {
 		for role, lvl := range level {
 			ctx := member(t, f, people[role], authz.ViaSession)
 			wantRead, wantWrite := 0, 0
-			if shared && lvl >= c.read {
+			if (shared && lvl >= c.read) || (readsOwn && lvl >= ownerRead) {
 				wantRead = owned
 			}
 			if shared && lvl >= c.write {

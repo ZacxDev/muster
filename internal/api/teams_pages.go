@@ -162,6 +162,7 @@ func (s *Server) handleTeamMemberSet(w http.ResponseWriter, r *http.Request) {
 		err := s.gt.Accounts.ReroleTeamMemberAsManager(r.Context(), by, team, user, role)
 		if err == nil {
 			s.logger.Printf("teams: user %d is now %s of team %d (by manager %d)", user, role, team, by.UserID)
+			s.teamRoleSet(team, user, role)
 		}
 		s.teamPageDone(w, r, team, "re-role team member", err)
 		return
@@ -198,6 +199,7 @@ func (s *Server) handleTeamMemberRemove(w http.ResponseWriter, r *http.Request) 
 	err = s.gt.Accounts.RemoveTeamMemberAsManager(r.Context(), by, team, user)
 	if err == nil {
 		s.logger.Printf("teams: user %d removed from team %d (by manager %d)", user, team, by.UserID)
+		s.teamMembershipEnded(team, user)
 	}
 	s.teamPageDone(w, r, team, "remove team member", err)
 }

@@ -87,6 +87,9 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // The admin's host officer spawns and their team lend (officer_spawn_share.go):
   // a fresh admin has none, so the empty state is what it draws.
   'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
+  // Account → Teams (account_teams.go, team sharing phase 2b.1): the admin's
+  // teams and each one's notify switch, or the empty state when it has none.
+  'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
 };
 const NOT_A_PAGE: Record<string, string> = {
   'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',

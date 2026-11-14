@@ -147,8 +147,10 @@ with their own release.
     **one** ask the team owns. Every member sees it, an operator answers it,
     and the answer records who did.
   - Its asks, escalations and outbound drafts push to the team's current
-    operators and managers (not viewers). Other team notifications come
-    with team hosts.
+    operators and managers (not viewers), as every team-owned notification
+    does: see [push.md](push.md#team-notifications) for who, the
+    per-member decisions, the withdrawals and each member's switch on
+    **Account → Teams**.
   - Sharing a spawn, taking it back, and editing a team officer's type or
     definition each write an audit row naming the person and the team, which
     the team's managers read on `/teams/<id>`.

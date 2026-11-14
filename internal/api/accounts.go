@@ -912,13 +912,7 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 	if s.gt == nil {
 		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
 	}
-	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() {
-		s.gt.forgetUser(id)
-		s.gt.setDisabled(id, disabled)
-		if disabled {
-			s.cancelQueuedFor(ctx, id, SendQueueCancelDisabled)
-		}
-	})
+	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() { s.userDisabledChanged(ctx, id, disabled) })
 }
 
 // DisableUserAs is DisableUser on behalf of by: the user.disable /
@@ -928,15 +922,7 @@ func (s *Server) DisableUserAs(ctx context.Context, by users.Actor, id int64, di
 	if s.gt == nil {
 		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
 	}
-	return SetUserDisabledAs(ctx, s.gt.GoTrueAuth, &by, id, disabled, func() {
-		s.gt.forgetUser(id)
-		s.gt.setDisabled(id, disabled)
-		// The account's queued messages go with it (the delivery re-checks
-		// the account as well: sendQueueOwnerRefusal).
-		if disabled {
-			s.cancelQueuedFor(ctx, id, SendQueueCancelDisabled)
-		}
-	})
+	return SetUserDisabledAs(ctx, s.gt.GoTrueAuth, &by, id, disabled, func() { s.userDisabledChanged(ctx, id, disabled) })
 }
 
 // SetUserDisabled is DisableUser without a server. invalidate (may be nil)

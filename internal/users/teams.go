@@ -258,21 +258,104 @@ func (s *PGStore) TeamMembers(ctx context.Context, team int64) ([]TeamMember, er
 	})
 }
 
-// TeamNotifyMembers is who a TEAM OFFICER's notification reaches (team
-// sharing phase 3, the minimal fan-out): team's members with role operator or
-// manager, read NOW from team_members — a viewer, someone who has left and a
-// disabled person get nothing — persons only, by id. An id that is not a team
-// has no members, so a personal owner's list is empty. Read under System:
+// TeamPushTargets is who a notification owned by owner reaches when owner
+// is a TEAM (team sharing phase 2b, part C: the one team fan-out, in
+// internal/api goNotify). It is read NOW, at send time, under System:
 // team_members and users are self-read, and the caller is a background push
-// naming the team, not a person.
-func (s *PGStore) TeamNotifyMembers(ctx context.Context, team int64) ([]int64, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id FROM team_members m JOIN users u ON u.id = m.user_id
+// naming the owner, not a person.
+type TeamPushTargets struct {
+	// Team: owner is a team. False for a person (whose push is their own) and
+	// for an id that names no one.
+	Team bool
+	// Name is the team's name, for the title's prefix.
+	Name string
+	// Notify is who a push reaches: the team's OPERATORS and MANAGERS whose
+	// own notify switch (team_members.notify, 0133) is on — persons only, not
+	// disabled. A viewer, someone who has left, a disabled person and a member
+	// who turned the switch off get nothing.
+	Notify []int64
+	// Withdraw is who a withdrawal (a "resolved" notification) reaches: the
+	// same operators and managers WHATEVER their switch says (operator
+	// decision G1: "the team's current operators and managers"), so a member
+	// who turns the switch off after a push still has it closed.
+	Withdraw []int64
+}
+
+// TeamPushTargets reads owner's TeamPushTargets: one query for a person,
+// two for a team. Both member lists are sorted by id.
+func (s *PGStore) TeamPushTargets(ctx context.Context, owner int64) (TeamPushTargets, error) {
+	var t TeamPushTargets
+	var kind string
+	err := s.pool.QueryRow(sys(ctx), `SELECT kind, display_name FROM users WHERE id = $1`, owner).Scan(&kind, &t.Name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TeamPushTargets{}, nil
+	}
+	if err != nil || kind != "team" {
+		return TeamPushTargets{}, err
+	}
+	t.Team = true
+	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id, m.notify FROM team_members m JOIN users u ON u.id = m.user_id
 		WHERE m.team_id = $1 AND m.role IN ('operator', 'manager') AND u.kind = 'person' AND u.disabled_at IS NULL
-		ORDER BY m.user_id`, team)
+		ORDER BY m.user_id`, owner)
+	if err != nil {
+		return TeamPushTargets{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var notify bool
+		if err := rows.Scan(&id, &notify); err != nil {
+			return TeamPushTargets{}, err
+		}
+		t.Withdraw = append(t.Withdraw, id)
+		if notify {
+			t.Notify = append(t.Notify, id)
+		}
+	}
+	return t, rows.Err()
+}
+
+// MyTeam is one of a person's teams as Account -> Teams lists it.
+type MyTeam struct {
+	ID     int64
+	Name   string
+	Role   authz.TeamRole
+	Notify bool
+}
+
+// MyTeams is person user's teams, by name, with their role in each and their
+// notify switch. Read under System: the caller passes the request
+// principal's own id.
+func (s *PGStore) MyTeams(ctx context.Context, user int64) ([]MyTeam, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT t.id, t.display_name, m.role, m.notify FROM team_members m
+		JOIN users t ON t.id = m.team_id AND t.kind = 'team' WHERE m.user_id = $1 ORDER BY lower(t.display_name), t.id`, user)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowTo[int64])
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (MyTeam, error) {
+		var m MyTeam
+		var role string
+		err := r.Scan(&m.ID, &m.Name, &role, &m.Notify)
+		m.Role = authz.TeamRole(role)
+		return m, err
+	})
+}
+
+// SetTeamNotify sets person user's OWN notify switch in team (0133): it
+// updates only team_members.notify, only on the caller's own row, and only
+// while they are a member — ErrNotAMember otherwise, the same answer for a
+// team that does not exist. Under System: team_members is self-read, and the
+// caller passes the request principal's own id (it is in the System ledger).
+// A manager does not set it for anyone else; there is no other writer.
+func (s *PGStore) SetTeamNotify(ctx context.Context, user, team int64, on bool) error {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE team_members SET notify = $3 WHERE team_id = $1 AND user_id = $2`, team, user, on)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotAMember
+	}
+	return nil
 }
 
 // RemoveTeamMember removes person user from team and records it as by.
