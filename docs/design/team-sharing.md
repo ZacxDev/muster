@@ -886,10 +886,24 @@ rule the later phases' rows will meet.
     least an operator in; `notes.Create` writes that owner explicitly, and
     the handler (403) and Postgres (42501) both refuse a viewer or an
     outsider. Comments take the task's owner and record `author_id`.
-  - **Thresholds (handler, `internal/api/team_tasks.go`):** read viewer;
-    file, comment, change status, edit, tag and retract a comment operator;
-    dismiss manager (Postgres admits a dismiss at operator, so only the
-    handler holds it). A merge needs both tasks to have one owner.
+  - **Thresholds.** This table is the one statement of them; the code
+    (`internal/api/team_tasks.go`) points here. A person's own task is
+    theirs at every threshold. Only the browser session and a paired phone
+    carry team memberships, so every other door meets no team task.
+
+    | action on a team task | viewer | operator | manager | enforced by |
+    |---|---|---|---|---|
+    | read (page, board, attachments) | ✓ | ✓ | ✓ | RLS (0127) |
+    | file in the team | | ✓ | ✓ | handler 403 + Postgres 42501 |
+    | comment, change status, complete, edit, tag, retry/dismiss a ref write | | ✓ | ✓ | handler 403 (`requireTaskOperator`) + RLS |
+    | retract a comment | | its author | ✓ | handler 403 (`softDeleteTaskComment`) + the store (`SoftDeleteComment`); RLS admits it at operator |
+    | dismiss | | | ✓ | handler 403 only (`requireTaskManager`); RLS admits it at operator |
+    | move one of **your own** tasks in | | ✓ | ✓ | handler only (the move is a System write) |
+
+    A comment with no `author_id` (written under the system scope, or before
+    0127) only a manager may retract. A merge needs both tasks to have one
+    owner. The role gate answers 500, not a pass-through, when it cannot
+    read the task; only "not found" passes through to the handler's own 404.
   - **Board:** grouped by owner (yours, then each team, by name) whenever a
     team task is on it; otherwise the flat list it always was.
   - **Move to team:** `POST /tasks/{id}/move`, by the task's owner into a team
@@ -901,6 +915,11 @@ rule the later phases' rows will meet.
     reference. `task_ref_writes` is a refusal, not a moved child: each row
     has a composite key onto its personal plugin. Every foreign key onto
     `notes` is classified (`TestEveryForeignKeyOntoNotesIsClassified`).
+  - **Known limitations:** a resolved ask, a finished session route or a
+    completed host dispatch still blocks a move, exactly as a live one does;
+    a link row inserted while a move is in flight (the racing-insert window)
+    is not closed by this slice; and a comment on a team task notifies no
+    other member.
   - **Not yet:** dispatching an agent on a team task. Agents are not shared
     until 4.4. A person's agent naming a team task would meet the
     `agents (note_id, owner_id)` key; this slice does not test that path.
