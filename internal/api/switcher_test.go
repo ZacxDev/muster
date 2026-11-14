@@ -79,7 +79,7 @@ func TestBothSessionPagesDrawTheSwitcherFromTheServersLists(t *testing.T) {
 // ask" (ui.AskerAsksHeading) — so the button arrives with every refresh too.
 func TestTheAsksBlockCarriesTheHideButton(t *testing.T) {
 	out := askerAsksHTML([]attentionItem{{Key: "ask-3", Kind: attentionKindAsk, Text: "go?"}}, "/agents/a", time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
-	if !strings.HasPrefix(out, ui.AskerAsksHeading("1 question")) || !strings.Contains(out, `<li id="ask-3"`) {
+	if !strings.HasPrefix(out, ui.AskerAsksHeading("1 question", 1)) || !strings.Contains(out, `<li id="ask-3"`) {
 		t.Errorf("the block's content:\n%s", out)
 	}
 	if askerAsksHTML(nil, "/agents/a", time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)) != "" {
