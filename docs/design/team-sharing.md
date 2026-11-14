@@ -862,10 +862,17 @@ rule the later phases' rows will meet.
   `owner_isolation`. Ordinary reads of an agents row no longer carry them; the
   turn sender, the provisioner and the first-turn and delivery checks read them by
   agent id (`agents.Store.Secrets`), and `internal/agents/secrets_ledger_test.go`
-  fails on any new query that names either column. This is what lets `agents`
-  become readable by a team's members without carrying another owner's
-  credentials. The old columns are still dual-written for rollback; a later
-  migration drops them.
+  fails on any new query that names either column.
+  - **What 4.2 guarantees:** the store's ordinary reads of an agent do not carry
+    its credentials, and every query that does name them is in the ledger.
+  - **What it does NOT yet guarantee:** the old `agents.hooks_token` and
+    `agents.gateway_secret` columns are still dual-written for every owner (an
+    older image reads them, so they stay for rollback). So the credentials are
+    still in the `agents` row itself, and sharing `agents` today would let a
+    member's `SELECT … FROM agents` read them.
+  - 🔴 **So slice 4.4, which shares `agents`, must first** make team-owned agents
+    never write those columns (or drop them), with a test that a member
+    principal's `SELECT … FROM agents` on a team agent yields no secret.
 
 ### Later: consent-based team invites
 

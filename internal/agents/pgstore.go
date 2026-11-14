@@ -76,6 +76,12 @@ func scanAgent(row interface {
 // Create inserts an agent and returns it with generated id/timestamps. A
 // HooksToken on a is stored as SetHooksToken stores one, in the same
 // statement; like every read, the returned row does not carry it.
+//
+// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
+// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
+// agents must stop writing the old column (or it must be dropped), with a test
+// that a member principal's SELECT … FROM agents on a team agent yields no
+// secret (docs/design/team-sharing.md, phase 4).
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
 		WITH a AS (
@@ -277,6 +283,12 @@ func (s *PGStore) SetDisplayName(ctx context.Context, id int64, name string) (Ag
 // DUAL-WRITTEN for rollback, until a later migration drops the column one
 // release after 0128 — in agents.hooks_token, which an older image still reads.
 // One statement, so the two cannot disagree.
+//
+// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
+// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
+// agents must stop writing the old column (or it must be dropped), with a test
+// that a member principal's SELECT … FROM agents on a team agent yields no
+// secret (docs/design/team-sharing.md, phase 4).
 func (s *PGStore) SetHooksToken(ctx context.Context, id int64, token string) error {
 	_, err := s.pool.Exec(ctx, `WITH a AS (
 			UPDATE agents SET hooks_token=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
@@ -352,6 +364,12 @@ func (s *PGStore) FoldIntoPendingNote(ctx context.Context, id int64, text, last 
 
 // SetGatewaySecret stores agent id's turn credential, dual-written as
 // SetHooksToken's is.
+//
+// 🔴 SLICE 4.4 GATE: this dual-write puts the credential in the agents row for
+// EVERY owner. Before 4.4 makes agents readable by team members, team-owned
+// agents must stop writing the old column (or it must be dropped), with a test
+// that a member principal's SELECT … FROM agents on a team agent yields no
+// secret (docs/design/team-sharing.md, phase 4).
 func (s *PGStore) SetGatewaySecret(ctx context.Context, id int64, secret string) error {
 	_, err := s.pool.Exec(ctx, `WITH a AS (
 			UPDATE agents SET gateway_secret=$2, updated_at=now() WHERE id=$1 RETURNING id, owner_id
