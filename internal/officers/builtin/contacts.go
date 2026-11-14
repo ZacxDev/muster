@@ -481,6 +481,9 @@ func (s *Store) engagementItemTx(ctx context.Context, tx pgx.Tx, owner int64, c 
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return 0, false, fmt.Errorf("builtin: engagement item %d's payload: %w", id, err)
 		}
+		// never stored: a rendered person (an item from before the payload
+		// named the person by id only) is dropped on the next write
+		p.Person = ""
 	} else {
 		if ev.Kind == EventLike {
 			return 0, false, nil
@@ -567,29 +570,39 @@ func eventExcerpts(ctx context.Context, tx pgx.Tx, contact int64, evs []engageme
 // WithPerson is engagement item payload raw with the person rendered in
 // (Person: the fenced untrusted block of who they are and what they said),
 // read in tx as the claiming officer: the officer's copy of the item. Any
-// other payload, or one whose person is gone, is returned as it is.
+// other payload, or one whose person is gone, is returned as it is; so is
+// one a read error left unrendered (withPersonTx is the claims' strict form).
 func WithPerson(ctx context.Context, tx pgx.Tx, owner int64, kind string, raw json.RawMessage) json.RawMessage {
-	if kind != EngagementItemKind {
-		return raw
-	}
-	var p engagementPayload
-	if json.Unmarshal(raw, &p) != nil || p.ContactID == 0 {
-		return raw
-	}
-	c, err := scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts WHERE owner_id = $1 AND id = $2`, owner, p.ContactID))
-	if err != nil {
-		return raw
-	}
-	excerpts, err := eventExcerpts(ctx, tx, c.ID, p.Events)
-	if err != nil {
-		return raw
-	}
-	p.Person = renderPerson(c, p.Events, excerpts, p.Plugin)
-	out, err := json.Marshal(p)
+	out, err := withPersonTx(ctx, tx, owner, kind, raw)
 	if err != nil {
 		return raw
 	}
 	return out
+}
+
+// withPersonTx is WithPerson answering a read error (the claim rolls back on
+// it): only an erased contact leaves the payload as it is.
+func withPersonTx(ctx context.Context, tx pgx.Tx, owner int64, kind string, raw json.RawMessage) (json.RawMessage, error) {
+	if kind != EngagementItemKind {
+		return raw, nil
+	}
+	var p engagementPayload
+	if json.Unmarshal(raw, &p) != nil || p.ContactID == 0 {
+		return raw, nil
+	}
+	c, err := scanContact(tx.QueryRow(ctx, `SELECT `+contactCols+` FROM officer_contacts WHERE owner_id = $1 AND id = $2`, owner, p.ContactID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return raw, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	excerpts, err := eventExcerpts(ctx, tx, c.ID, p.Events)
+	if err != nil {
+		return nil, err
+	}
+	p.Person = renderPerson(c, p.Events, excerpts, p.Plugin)
+	return json.Marshal(p)
 }
 
 // personMarker is the fence marker of a person in an engagement item.
