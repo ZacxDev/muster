@@ -302,7 +302,7 @@ const teamAccessMigrationVersion = 127
 // 🔴 RENUMBER IT WITH THE FILE when the migration is renumbered at merge.
 const agentSecretsMigrationVersion = 128
 
-// officerContactsMigrationVersion is 0130: officer_contacts and
+// officerContactsMigrationVersion is 0131: officer_contacts and
 // officer_contact_events (a builtin officer's people and their engagement,
 // internal/officers/builtin contacts.go), owned and under the same row-level
 // security; same treatment again. It also widens 0121's outbound-draft
@@ -310,7 +310,7 @@ const agentSecretsMigrationVersion = 128
 // is applied RLSOn re-applies IT instead of 0121 (whose narrower constraints
 // would refuse the widened rows). Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerContactsMigrationVersion = 130
+const officerContactsMigrationVersion = 131
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

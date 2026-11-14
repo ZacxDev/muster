@@ -407,7 +407,7 @@ followers, inbound DMs and blocks — one event per message
 never in a repository:
 
 - **One row per person** per venue and handle (`officer_contacts`, migration
-  0130): what the plugin said of them (display name, profile URL, a short bio —
+  0131): what the plugin said of them (display name, profile URL, a short bio —
   the person's own words, untrusted), first seen, last engaged, last
   contacted, the marks **do-not-contact**, **bot** and **hostile**, and the
   officer's labels and notes.

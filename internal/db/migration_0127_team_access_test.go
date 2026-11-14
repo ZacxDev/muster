@@ -14,7 +14,7 @@ import "testing"
 // below counts one table too many.
 var ownedAfter0127 = []string{
 	"agent_secrets",                                // 0128
-	"officer_contacts", "officer_contact_events", // 0130
+	"officer_contacts", "officer_contact_events", // 0131
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {

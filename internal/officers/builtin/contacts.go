@@ -19,7 +19,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A BUILTIN OFFICER'S PEOPLE (migration 0130; docs/officers-builtin.md
+// A BUILTIN OFFICER'S PEOPLE (migration 0131; docs/officers-builtin.md
 // "People and outreach", docs/plugins.md "Engagement").
 //
 // A plugin bound to an officer reports each ENGAGEMENT with its owner's posts
@@ -43,7 +43,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // The inbound event kinds (a person's engagement) and the outreach kinds (the
-// officer's sent drafts), as 0130's CHECK names them.
+// officer's sent drafts), as 0131's CHECK names them.
 const (
 	EventReply       = "reply"
 	EventQuote       = "quote"
@@ -112,7 +112,7 @@ func outKind(target string) string {
 	return ""
 }
 
-// Bounds of what a contact and an event carry (0130's CHECKs say the same).
+// Bounds of what a contact and an event carry (0131's CHECKs say the same).
 const (
 	MaxHandleBytes     = 100
 	MaxDisplayRunes    = 100

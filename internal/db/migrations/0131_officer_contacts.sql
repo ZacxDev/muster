@@ -1,4 +1,4 @@
--- muster 0130 — A BUILTIN OFFICER'S PEOPLE, THEIR ENGAGEMENT, AND OUTREACH
+-- muster 0131 — A BUILTIN OFFICER'S PEOPLE, THEIR ENGAGEMENT, AND OUTREACH
 -- (internal/officers/builtin contacts.go, internal/plugins outbound.go;
 -- docs/plugins.md "Engagement", docs/officers-builtin.md "People and
 -- outreach").
@@ -50,8 +50,8 @@
 -- exists, and this file re-creates the conditional replyable trigger itself.
 -- Every statement is idempotent.
 --
--- Must apply after 0129 (the contiguity test refuses a gap); 🔴 RENUMBER IT
--- (and db.officerContactsMigrationVersion) if another migration takes 0130
+-- Must apply after 0130 (the contiguity test refuses a gap: #668 takes 0130); 🔴 RENUMBER IT
+-- (and db.officerContactsMigrationVersion) if another migration takes 0131
 -- first.
 --
 -- ROLLBACK. An older image never reads the new tables or columns, but it
@@ -66,7 +66,7 @@
 --   ALTER TABLE public.plugin_reply_drafts DROP COLUMN IF EXISTS because_ref,
 --       DROP COLUMN IF EXISTS contact_id, DROP COLUMN IF EXISTS outreach_reason;
 --   DROP TABLE public.officer_contact_events, public.officer_contacts;
---   DELETE FROM schema_migrations WHERE version = 130;
+--   DELETE FROM schema_migrations WHERE version = 131;
 
 SET LOCAL lock_timeout = '3s';
 
