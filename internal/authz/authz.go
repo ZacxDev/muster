@@ -132,6 +132,8 @@ const (
 	// stopping one declared officer's instance agents: a background job acting
 	// as the officer's configured OWNER only. One site mints it —
 	// internal/api's officerPrincipal — handed the owner from MUSTER_OFFICERS.
+	// That owner may be a TEAM (team sharing phase 3): the principal is then
+	// the team acting principal (teamActingVias).
 	ViaOfficer Via = "officer"
 	// ViaKickoff is the KICKOFF DELIVERER (internal/agentkickoff) running a
 	// gateway agent's FIRST TURN with its tools in muster's process: each tool
@@ -239,7 +241,13 @@ var requestVias = map[Via]bool{
 //     team is the agent row's owner, never a sign-in; internal/api's admit
 //     admits a team on exactly these three);
 //   - the per-owner background work that meets a team-owned row (ViaReap,
-//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue).
+//     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue);
+//   - a TEAM OFFICER's runtime (ViaOfficer, team sharing phase 3): an officer
+//     whose MUSTER_OFFICERS owner is a team runs its wake loop, its builtin
+//     store and its outbound drafts as the team. It approves none of them —
+//     plugin_reply_drafts' draft_approver trigger (0130) refuses a team
+//     approving its own draft, and internal/api's draftDeciderRefusal says
+//     so first.
 //
 // A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
 // the set: gateway agents are not team agents in phase 4. internal/api's
@@ -249,8 +257,9 @@ var requestVias = map[Via]bool{
 //
 // 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
 // (WithPrincipal panics). A person's door (session, device, personal token),
-// a shared machine token, a mirror host (team hosts are phase 2b), an officer
-// or plugin (phase 3), the focus, question and send-queue loops — a team
+// a shared machine token, a mirror host (team hosts are phase 2b), a plugin
+// token (a plugin's owner is its pairing person), the focus, question and
+// send-queue loops — a team
 // principal arriving there is a bug, not a team.
 //
 // ⚠ THE PANIC KEYS ON THE FLAG, NOT ON THE OWNER ID. internal/api's
@@ -268,6 +277,7 @@ var requestVias = map[Via]bool{
 var teamActingVias = map[Via]bool{
 	ViaAgent: true, ViaConnect: true, ViaRelay: true,
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
+	ViaOfficer: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

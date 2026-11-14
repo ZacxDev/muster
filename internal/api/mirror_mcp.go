@@ -120,6 +120,86 @@ var openCodeMirrorTools = map[string]bool{
 	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
 }
 
+// ---------------------------------------------------------------------------
+// A REMOTE CALLER: A SESSION MIRRORED TO ANOTHER MUSTER (docs/mirroring.md,
+// "Several muster instances").
+//
+// One muster-mirror mirrors its host's sessions to ONE muster (its primary)
+// and may also name other muster instances as MCP-only targets, for the
+// owner's admin tools (dispatch_request, agents_list, …) on that instance. Such
+// a target never sees the host's sessions, so it can bind no call to a window:
+// the host's mirror marks every request it sends there X-Muster-Client:
+// remote, and names the calling Claude session in X-Muster-Remote-Session.
+//
+// 🔴 THE AUTH MODEL IS UNCHANGED: the token is that host's own mirror token ON
+// THIS instance (`muster-server mirror token create <host>` here), scoped to
+// that host and its owner; the session id is the caller's claim, exactly as on
+// the primary, where a host's listing is its own claim too. What changes is the
+// TOOL SET, which shrinks to remoteMirrorTools — the owner's admin tools,
+// none of them tied to the calling session's window or to an ask it waits on —
+// and every audit row those tools write names the host and the claimed
+// session, as they do for a bound caller.
+//
+// 🔴 ONLY A HOST THIS MUSTER DOES NOT MIRROR. A host this hub knows, online or
+// offline, has its calls bound to its listed sessions; a remote-marked call
+// from it is refused, so the narrower, unbound path is never a way around the
+// binding.
+//
+// ⚠ "KNOWS" IS THE HUB'S MEMORY, NOT A DURABLE RECORD. An offline host is kept
+// for internal/mirror's offlineRetention (24 h), in memory only: after a
+// muster-server restart, or past 24 h offline, a host that does mirror here
+// is no longer known, and its remote-marked calls are served unbound. No
+// durable "this host has connected here" signal exists without a migration
+// (mirror_tokens.last_used_at moves on every /mirror/mcp call too, so it
+// cannot tell connecting from calling). What bounds that window: the remote
+// tool set is the admin tools only, and every owner-authority one still needs
+// the owner's phone (host_stepup.go).
+//
+// 🔴 AND ALWAYS BEHIND THE STEP-UP CARD for an owner-authority tool
+// (host_stepup.go): this muster cannot see whether the caller's machine runs
+// a host officer, so the owner confirms on their phone.
+// ---------------------------------------------------------------------------
+
+// mirrorClientRemote marks a remote caller (mirrorClientHeader);
+// mirrorRemoteSessionHeader carries its Claude session id.
+const (
+	mirrorClientRemote        = "remote"
+	mirrorRemoteSessionHeader = "X-Muster-Remote-Session"
+	// remoteListMetaKey is the tools/list result's _meta key that says the list
+	// is the remote caller's: how a host's mirror tells a muster that serves
+	// MCP-only hosts from an older one, which ignores the marker.
+	remoteListMetaKey = "muster/caller"
+)
+
+// remoteMirrorTools is what a remote caller is offered, by name: the owner's
+// admin tools of the mirror door. Left out, and refused by name: the attention
+// tools and chief_ask (an ask is waited on with attention_wait, by the session
+// that filed it, on the muster it is mirrored to), route_reply and
+// plugin_messages_list / plugin_message_route (a route targets a session this
+// muster lists; "self" is the caller), agent_report_done and the host-officer
+// tools (bound to a spawn muster recorded for the caller's window), and the
+// page tools (the calling session's own pages). muster_help is serveMCP's own.
+//
+// The task tools stay ON, over the same scope as a bound caller's
+// (taskScopeOf): the tasks that session created HERE. That is not empty by
+// construction: `muster task create` pointed at this instance (MUSTER_API_URL)
+// from inside the session sends its id (X-Muster-Session-Id), and the task's
+// `created` link names it (TestARemoteSessionWorksTheTasksItCreatedOnThatInstance).
+var remoteMirrorTools = map[string]bool{
+	attentionAnswerTool: true, agentDestroyTool: true, agentsListTool: true, chiefRestartTool: true,
+	connectorRequestsListTool: true, connectorRequestDecideTool: true,
+	pluginDraftsListTool: true, pluginDraftDecideTool: true, pluginRequestsListTool: true, pluginRequestDecideTool: true,
+	dispatchRequestTool: true, dispatchApproveTool: true,
+	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
+}
+
+// remoteToolRefusal is the door's answer to a remote caller naming a tool of
+// the door it is not offered.
+func remoteToolRefusal(name string) string {
+	return name + " is tied to the calling session, and this muster does not mirror it (the call came from another muster instance's host); " +
+		"call it without instance, on the muster the session is mirrored to"
+}
+
 // openCodeToolRefusal is the door's answer — a sentence, for a tool error —
 // to an opencode session naming a tool of the door it is not offered.
 func openCodeToolRefusal(name string) string {
@@ -354,9 +434,39 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	// the narrower set, refused by name at the call (openCodeMirrorTools).
 	agentKey := strings.TrimSpace(r.Header.Get(mirrorAgentSessionHeader))
 	openCode := agentKey != "" || strings.EqualFold(strings.TrimSpace(r.Header.Get(mirrorClientHeader)), mirrorClientOpenCode)
+	// A remote caller (a session mirrored to another muster): the admin set,
+	// unbound (remoteMirrorCaller). Its marker is the client header's other
+	// value, so it is never also opencode-marked; a stray opencode KEY beside
+	// it is refused at the call.
+	remote := strings.EqualFold(strings.TrimSpace(r.Header.Get(mirrorClientHeader)), mirrorClientRemote)
+	remoteSID := strings.TrimSpace(r.Header.Get(mirrorRemoteSessionHeader))
 	tools := s.mirrorTools
 	instructions := "muster's tools for a mirrored Claude Code session."
-	if openCode {
+	var listMeta map[string]any
+	switch {
+	case remote:
+		tools = func() []agents.ToolDef {
+			var out []agents.ToolDef
+			for _, d := range s.mirrorTools() {
+				if remoteMirrorTools[d.Name] {
+					out = append(out, d)
+				}
+			}
+			return out
+		}
+		all := disabled
+		disabled = func(name string) string {
+			if slices.ContainsFunc(s.mirrorTools(), func(d agents.ToolDef) bool { return d.Name == name }) {
+				return remoteToolRefusal(name)
+			}
+			if all == nil {
+				return ""
+			}
+			return all(name)
+		}
+		listMeta = map[string]any{remoteListMetaKey: mirrorClientRemote}
+		instructions = "muster's admin tools for a session mirrored to another muster instance."
+	case openCode:
 		tools = func() []agents.ToolDef {
 			var out []agents.ToolDef
 			for _, d := range s.mirrorTools() {
@@ -378,7 +488,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		}
 		instructions = "muster's tools for a mirrored opencode session."
 	}
-	if s.attentionToolsOn() {
+	if s.attentionToolsOn() && !remote {
 		instructions += " " + mirrorAttentionInstruction
 	}
 	// 🔴 THE SESSION IS BOUND AT tools/call, NOT AT CONNECT. initialize,
@@ -392,7 +502,12 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		tools: tools,
 		call: func(name, args string) string {
 			var c toolCaller
-			if openCode {
+			if remote {
+				var refused string
+				if c, refused = s.remoteMirrorCaller(r.Context(), t.Host, sid, agentKey, remoteSID, name); refused != "" {
+					return refused
+				}
+			} else if openCode {
 				// 🔴 FAILS CLOSED: an opencode caller is bound by its key
 				// alone, never beside or as a Claude session.
 				if sid != "" || !mirror.OpenCodeMCPCaller(agentKey) {
@@ -482,7 +597,49 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		instructions: instructions,
 		disabled:     disabled,
 		offFeatures:  off,
+		listMeta:     listMeta,
 	})
+}
+
+// remoteMirrorCaller is a remote caller's toolCaller (the block above
+// remoteMirrorTools), or the refusal — a tool error — when the call may not run:
+//
+//   - it carries a bound caller's header too (X-Muster-Claude-Session, or an
+//     opencode key): a remote call is never ALSO a bound one;
+//   - its session is not a Claude session id;
+//   - the tool is not a remote caller's (serveMCP already refuses an unlisted
+//     name; this is the same rule again, at the call);
+//   - host is KNOWN to this muster's hub, online or offline (within the hub's
+//     in-memory retention: see "KNOWS" above): its sessions are mirrored
+//     here, so its calls are bound to them, never unbound.
+//
+// The caller has no window (mirrorWindow ""): ownersOwnSession's per-window
+// dispatch check has no listing here to read, so the host's mirror applies it
+// before it sends (it refuses a window muster started for the chief).
+func (s *Server) remoteMirrorCaller(ctx context.Context, host, sid, agentKey, remoteSID, name string) (toolCaller, string) {
+	switch {
+	case sid != "" || agentKey != "":
+		return toolCaller{}, toolErr("a remote caller (%s: %s) names its session in %s only, never beside %s or %s",
+			mirrorClientHeader, mirrorClientRemote, mirrorRemoteSessionHeader, mirrorSessionHeader, mirrorAgentSessionHeader)
+	case !mirror.ValidClaudeSession(remoteSID):
+		return toolCaller{}, toolErr("%q is not a Claude session id: a remote caller names its Claude session in %s", remoteSID, mirrorRemoteSessionHeader)
+	case !remoteMirrorTools[name]:
+		return toolCaller{}, toolErr("%s", remoteToolRefusal(name))
+	}
+	for _, h := range s.ext.Mirror.Hosts(ctx) {
+		// Online OR offline: a host this hub knows is mirrored here, and its
+		// calls are bound to its sessions (an offline one's are refused there).
+		if h.Host == host {
+			return toolCaller{}, toolErr("host %s mirrors its sessions to this muster, so its calls are bound to them: send this call as a mirrored session (without %s: %s)",
+				host, mirrorClientHeader, mirrorClientRemote)
+		}
+	}
+	short := remoteSID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return toolCaller{asker: attention.Asker{MirrorHost: host, MirrorSession: remoteSID,
+		Label: "session " + short + " @ " + host + " (mirrored elsewhere)"}, remote: true}, ""
 }
 
 // mirrorBindWait bounds how long a tools/call waits for its host's listing to

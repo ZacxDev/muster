@@ -236,6 +236,11 @@ type app struct {
 	// chiefReapplied is closed when the boot re-apply of a running Compose
 	// chief is done; nil without the Compose chief runtime.
 	chiefReapplied <-chan struct{}
+	// askSweepEvery and jobReapEvery override the question-store sweep and job
+	// reaper intervals; zero (production) means the default. Tests set them on
+	// their own app — see askSweepInterval for why they are not package vars.
+	askSweepEvery time.Duration
+	jobReapEvery  time.Duration
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -839,6 +844,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The built-in officer store (internal/officers/builtin): on whenever
 	// MUSTER_OFFICERS is set — `[]`, the empty roster, included — and there is
 	// a database: the admin API (`muster officer`) and the Attention sweep.
+	// A host officer spawn's team lending (team sharing phase 3:
+	// /officers/spawns, the chief's officer_spawn_share), wherever spawns can
+	// be kept.
+	if a.pool != nil {
+		srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(a.pool))
+	}
 	var officerStore *builtin.Store
 	if cfg.OfficersSet && a.pool != nil {
 		officerStore = builtin.NewStore(a.pool)
@@ -1027,13 +1038,30 @@ func beforeStopOn(prov *agentprovision.Adapter) func(func(context.Context, agent
 	return prov.UseBeforeStop
 }
 
-// askSweepEvery is how often the question store's expiry runs
-// (askq.SweepEvery; a test shortens it).
-var askSweepEvery = askq.SweepEvery
+// askSweepInterval is how often the question store's expiry runs:
+// a.askSweepEvery when set (a test shortens it), else askq.SweepEvery.
+//
+// 🔴 A FIELD ON THE APP, NOT A PACKAGE VARIABLE. It used to be a package var a
+// test overwrote, and the supervised loops of an EARLIER test's app (api.Supervise
+// goroutines, not joined when Run returns) read it with no happens-before edge
+// to that write: `go test -race` failed main CI on it. Each app now owns its
+// interval, so no test can reach another test's loops through it.
+func (a *app) askSweepInterval() time.Duration {
+	if a.askSweepEvery > 0 {
+		return a.askSweepEvery
+	}
+	return askq.SweepEvery
+}
 
-// jobReapEvery is how often the job reaper runs after its boot pass
-// (api.JobReapInterval; a test shortens it).
-var jobReapEvery = api.JobReapInterval
+// jobReapInterval is how often the job reaper runs after its boot pass:
+// a.jobReapEvery when set (a test shortens it), else api.JobReapInterval. A
+// field for the reason askSweepInterval gives.
+func (a *app) jobReapInterval() time.Duration {
+	if a.jobReapEvery > 0 {
+		return a.jobReapEvery
+	}
+	return api.JobReapInterval
+}
 
 // approvalGateFor builds the gate the claude-code approval relay files through:
 // a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
@@ -1260,16 +1288,16 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// the attention queue) without waiting for a page to ask. In memory, no
 	// database.
 	if a.srv != nil {
-		a.loop(ctx, "a.srv.RunAskSweep", func(ctx context.Context) { a.srv.RunAskSweep(ctx, askSweepEvery) })
+		a.loop(ctx, "a.srv.RunAskSweep", func(ctx context.Context) { a.srv.RunAskSweep(ctx, a.askSweepInterval()) })
 	}
 	// The machine job API's reaper: a pass now (boot) and every
-	// jobReapEvery, failing only jobs past their own deadline, so it is safe
+	// a.jobReapInterval(), failing only jobs past their own deadline, so it is safe
 	// while the other pod of a rolling update still runs jobs, then running
 	// each free agent's oldest queued job (a job a crash left queued). Before the pool
 	// guard because it keys on the job store, not the pool: it returns at once
 	// when there is none.
 	if a.srv != nil {
-		a.loop(ctx, "a.srv.RunJobReaper", func(ctx context.Context) { a.srv.RunJobReaper(ctx, jobReapEvery) })
+		a.loop(ctx, "a.srv.RunJobReaper", func(ctx context.Context) { a.srv.RunJobReaper(ctx, a.jobReapInterval()) })
 	}
 	// Suggested replies' text leaves memory past its TTL (suggest.CacheTTL).
 	// In memory, no database.

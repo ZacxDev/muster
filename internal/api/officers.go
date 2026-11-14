@@ -32,6 +32,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officership"
 	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -435,6 +436,13 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 			return nil, fmt.Errorf(officerHostNoAgents, strings.Join(hosts, ", "))
 		}
 	}
+	// 🔴 AN OWNER IS A PERSON OR A TEAM, AND IT EXISTS (team sharing phase 3,
+	// officers.CheckOwners): a team owns a TEAM OFFICER, whose runtime acts as
+	// the team; an owner naming nobody, or a team owning a host officer (team
+	// hosts are phase 2b), is refused here rather than on its first pass.
+	if err := officers.CheckOwners(cfg.Officers, s.officerOwnerKind); err != nil {
+		return nil, err
+	}
 	reg := officers.NewRegistry(cfg.Officers)
 	build, err := s.officerBackendBuilder(cfg)
 	if err != nil {
@@ -719,9 +727,26 @@ func (e errOfficerConnector) Error() string {
 
 func (e errOfficerConnector) Is(target error) bool { return target == connectors.ErrInvalid }
 
+// officerOwnerKind is how an officer's owner id reads in users, for
+// officers.CheckOwners at boot (read under System: users is self-read).
+func (s *Server) officerOwnerKind(owner int64) (officers.OwnerKind, error) {
+	a, err := s.accountOfChecked(context.Background(), owner)
+	switch {
+	case errors.Is(err, users.ErrNotFound):
+		return officers.OwnerMissing, nil
+	case err != nil:
+		return officers.OwnerMissing, err
+	case a.Team:
+		return officers.OwnerTeam, nil
+	}
+	return officers.OwnerPerson, nil
+}
+
 // officerPrincipal is ctx acting as owner, through authz.ViaOfficer: how the
 // wake loop reads and moves one officer's instance agents, so row-level
-// security confines it to that owner's rows.
+// security confines it to that owner's rows. A TEAM owner (a team officer,
+// team sharing phase 3) is the team acting principal: muster.uid = the team,
+// no memberships, never scope all.
 func (s *Server) officerPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaOfficer))
 }

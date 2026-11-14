@@ -140,6 +140,11 @@ const (
 	envPaneMapDir = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envMCPListen  = "MUSTER_MIRROR_MCP_LISTEN"
 	envMCPSecret  = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	// Several muster instances (mirrorhost's mcptargets.go): extra MCP-only
+	// targets, the primary's name, and the tool-list watch.
+	envMCPTargets      = "MUSTER_MIRROR_MCP_TARGETS_FILE"
+	envMCPPrimaryName  = "MUSTER_MIRROR_MCP_PRIMARY_NAME"
+	envMCPToolsRefresh = "MUSTER_MIRROR_MCP_TOOLS_REFRESH"
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
@@ -211,6 +216,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	mcpListen := fs.String("mcp-listen", getenv(envMCPListen), "serve muster's attention and task tools to this host's Claude Code sessions as an MCP endpoint at http://<addr>/mcp — a LOOPBACK address only, e.g. 127.0.0.1:47823; each call needs the secret in -mcp-secret-file (Authorization: Bearer ${MUSTER_MIRROR_MCP_SECRET:-}) and names its pane and tmux server with X-Muster-Pane: ${TMUX_PANE:-} and X-Muster-Tmux: ${TMUX:-}; empty = off ("+envMCPListen+")")
 	mcpSecretFile := fs.String("mcp-secret-file", or(getenv(envMCPSecret), mirrorhost.DefaultMCPSecretFile()), "the local MCP endpoint's secret, created (0600) when missing ("+envMCPSecret+")")
+	mcpTargetsFile := fs.String("mcp-targets-file", getenv(envMCPTargets), "with -mcp-listen: a JSON list of OTHER muster instances, [{\"name\": \"la\", \"url\": \"https://…\", \"token_file\": \"/abs/path\"}], whose admin tools (dispatch_request, agents_list, …) this host's sessions may call by passing instance: \"<name>\"; each token file holds THIS host's mirror token minted on THAT instance, mode 0600 or tighter. They are MCP targets only: this host's sessions are mirrored to -url alone. Invalid = logged and ignored, never fatal: MCP then reaches the primary only ("+envMCPTargets+")")
+	mcpPrimaryName := fs.String("mcp-primary-name", or(getenv(envMCPPrimaryName), mirrorhost.DefaultPrimaryName), "the name the -url instance goes by in an instance argument ([a-z0-9-]{1,32}) ("+envMCPPrimaryName+")")
+	mcpToolsRefresh := fs.String("mcp-tools-refresh", or(getenv(envMCPToolsRefresh), mirrorhost.DefaultToolsRefresh.String()), "with -mcp-listen: how often every instance's tool list is re-read; a change is announced to connected sessions with notifications/tools/list_changed, so they pick up a muster upgrade without reconnecting. 0 = off: no watch, no GET stream, no listChanged capability ("+envMCPToolsRefresh+")")
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
@@ -381,6 +389,36 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 
+	// Several muster instances: validated whole at boot, before anything dials.
+	// 🔴 OPT-IN, SO NEVER FATAL, like the MCP endpoint itself: a bad value is
+	// logged with its reason and the host runs without what it configures —
+	// no extra targets (a bad targets file or primary name), or the default
+	// watch interval (a bad refresh). Mirroring, and MCP to the primary, go on.
+	primaryName := *mcpPrimaryName
+	extrasOff := false
+	if !mirrorhost.ValidInstanceName(primaryName) {
+		logger.Printf("muster-mirror: -mcp-primary-name %q must be 1-32 of a-z, 0-9 and '-'; it is IGNORED (the primary is %q) and no extra MCP target is used", primaryName, mirrorhost.DefaultPrimaryName)
+		primaryName, extrasOff = mirrorhost.DefaultPrimaryName, true
+	}
+	toolsRefresh, err := time.ParseDuration(strings.TrimSpace(*mcpToolsRefresh))
+	if err != nil || toolsRefresh < 0 {
+		logger.Printf("muster-mirror: -mcp-tools-refresh %q is not a duration of 0 or more (e.g. 1m, 30s, 0); it is IGNORED, the tool lists are re-read every %s", *mcpToolsRefresh, mirrorhost.DefaultToolsRefresh)
+		toolsRefresh = mirrorhost.DefaultToolsRefresh
+	}
+	var mcpExtras []mirrorhost.MCPInstance
+	extrasIgnored := "" // why a configured targets file was ignored (MCPProxy.ExtrasIgnored)
+	switch {
+	case *mcpTargetsFile != "" && extrasOff:
+		extrasIgnored = "-mcp-primary-name is invalid"
+	case *mcpTargetsFile != "":
+		var terr error
+		if mcpExtras, terr = mirrorhost.LoadMCPTargets(expandHome(*mcpTargetsFile), primaryName); terr != nil {
+			// The error names the entry and why, never a token (LoadMCPTargets).
+			logger.Printf("muster-mirror: the MCP targets file is IGNORED, MCP reaches the primary only: %v", terr)
+			mcpExtras, extrasIgnored = nil, strings.TrimPrefix(terr.Error(), "muster-mirror: ")
+		}
+	}
+
 	if skipPermsErr != nil {
 		fmt.Fprintf(stderr, "muster-mirror: %s=%q is not a bool (1, t, T, TRUE, true, True, 0, f, F, FALSE, false or False)\n", envAgentSpawnSkipPermissions, getenv(envAgentSpawnSkipPermissions))
 		return 2
@@ -445,7 +483,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
+		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision,
+			Primary: primaryName, Extras: mcpExtras, ExtrasIgnored: extrasIgnored, ToolsRefresh: toolsRefresh}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
@@ -455,6 +494,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 			mcpUp.Store(true)
 		}()
+	}
+	if *mcpListen == "" && len(mcpExtras) > 0 {
+		logger.Printf("muster-mirror: -mcp-targets-file has no effect without -mcp-listen: no session reaches another instance")
 	}
 	var previewDone chan struct{}
 	switch {
@@ -712,6 +754,15 @@ func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost
 		proxy.OpenCodeAncestors = src.Ancestors
 	}
 	logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), secretFile)
+	if len(proxy.Extras) > 0 {
+		// Names and URLs only: never a token.
+		var names []string
+		for _, e := range proxy.Extras {
+			names = append(names, e.Name+"="+e.URL)
+		}
+		logger.Printf("muster-mirror: MCP admin tools also reach %s (MCP only: this host's sessions are mirrored to %s alone)", strings.Join(names, ", "), proxy.Primary)
+	}
+	go proxy.WatchTools(ctx)
 	go func() {
 		if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {
 			logger.Printf("muster-mirror: MCP endpoint: %v", err)

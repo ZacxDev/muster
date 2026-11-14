@@ -237,9 +237,12 @@ var (
 		// written in the system scope, since the recipient need not own it; and an
 		// officer definition's escalate_to is checked against users, which is
 		// self-read under RLS — answering only which of the caller's own ids
-		// are not users.
+		// are not persons — on the JSON admin API and on a team's officers
+		// page (team sharing phase 3), each answering only which of the
+		// caller's own ids are missing.
 		"internal/api.(*Server).SweepOfficerAttention",
 		"internal/api.(*Server).handleOfficerDefPut",
+		"internal/api.(*Server).handleTeamOfficerDefPut",
 		// …and its scheduler (#503 slice 8): FireDue reads every owner's due
 		// schedules and fires each with a compare-and-set, inserting the item
 		// with that schedule's own owner_id.

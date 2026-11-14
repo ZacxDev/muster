@@ -66,10 +66,23 @@ var personalOwned = []string{
 	"agent_secrets", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_preferences",
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "officer_host_spawns", "page_links",
+	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
 	"page_responses", "page_versions", "pages", "pins", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
+}
+
+// lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
+// owner writes a row — but whose owner may LEND one row to ONE team
+// (shared_team_id, migration 0130): that team's members then read it, at the
+// role given (1 viewer), through the doors that carry muster.teams, and never
+// write it. Its policies are exactly owner_isolation and team_lent_read.
+// officer_host_spawns is personal BY DEFAULT (operator decision, phase 3).
+var lentOwned = map[string]int{"officer_host_spawns": 1}
+
+// lentArm is team_lent_read's USING at role r, as pg_policies prints it.
+func lentArm(r int) string {
+	return fmt.Sprintf("(shared_team_id = ANY (COALESCE(( SELECT muster_team_ids(%d) AS muster_team_ids), '{}'::bigint[])))", r)
 }
 
 // neverShared are the owned tables that must stay personal whatever a later
@@ -96,6 +109,24 @@ func sharedClassTables() []string {
 	return out
 }
 
+// lentTables is lentOwned's tables, sorted.
+func lentTables() []string {
+	out := make([]string, 0, len(lentOwned))
+	for t := range lentOwned {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isolatedTables is every owned table under owner_isolation: the personal
+// ones and the lent ones (personal, plus team_lent_read).
+func isolatedTables() []string {
+	out := append(personalTables(), lentTables()...)
+	sort.Strings(out)
+	return out
+}
+
 func personalTables() []string {
 	out := append([]string(nil), personalOwned...)
 	sort.Strings(out)
@@ -112,8 +143,14 @@ func unclassified(tables []string) (missing, both []string) {
 			both = append(both, t)
 		}
 	}
+	for t := range lentOwned {
+		if _, shared := shareClasses[t]; shared || personal[t] {
+			both = append(both, t)
+		}
+	}
 	for _, t := range tables {
-		if _, shared := shareClasses[t]; !shared && !personal[t] {
+		_, lent := lentOwned[t]
+		if _, shared := shareClasses[t]; !shared && !personal[t] && !lent {
 			missing = append(missing, t)
 		}
 	}
@@ -194,6 +231,11 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 			t.Errorf("shareClasses lists %s, which is not an owned table", tbl)
 		}
 	}
+	for tbl := range lentOwned {
+		if !owned[tbl] {
+			t.Errorf("lentOwned lists %s, which is not an owned table", tbl)
+		}
+	}
 	for _, tbl := range neverShared {
 		if _, shared := shareClasses[tbl]; shared {
 			t.Errorf("%s is shared; credentials, connectors, devices and push are never shared", tbl)
@@ -249,6 +291,16 @@ func TestEveryOwnedTableHasAShareClass(t *testing.T) {
 			}
 			for _, p := range ps {
 				checkTeamPolicy(t, tbl, p.name, p.cmd, p.permissive, p.qual, p.check, c)
+			}
+		} else if r, lent := lentOwned[tbl]; lent {
+			if strings.Join(names, ",") != "owner_isolation,team_lent_read" {
+				t.Errorf("%s (personal, lendable at %d) has policies %v; want exactly owner_isolation and team_lent_read", tbl, r, names)
+				continue
+			}
+			for _, p := range ps {
+				if p.name == "team_lent_read" && (p.cmd != "SELECT" || p.permissive != "PERMISSIVE" || p.qual != lentArm(r) || p.check != "") {
+					t.Errorf("%s team_lent_read = %s %s USING %q CHECK %q; want PERMISSIVE SELECT USING %q and no CHECK", tbl, p.cmd, p.permissive, p.qual, p.check, lentArm(r))
+				}
 			}
 		} else if strings.Join(names, ",") != "owner_isolation" {
 			t.Errorf("%s (personal) has policies %v; want owner_isolation only", tbl, names)

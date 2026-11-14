@@ -1667,6 +1667,177 @@ A `muster-mirror@<tenant>` unit also needs `-agent-spawn-tenant-server`
 ([above](#starting-agents-on-a-tenants-tmux-server)). To turn it off, drop either and
 restart: a window already running keeps running, with its worktree.
 
+## Several muster instances
+
+One `muster-mirror` mirrors its host's sessions to **one** muster: the
+**primary**, `-url` and `-token-file` as ever. It can also name **other muster
+instances** as MCP targets, so the host's Claude Code sessions can call those
+instances' admin tools (`dispatch_request`, `agents_list`, …) through the same
+local MCP endpoint, by passing `instance: "<name>"`. An extra target **never
+receives this host's sessions**: the mirror connection dials the primary only.
+
+### Setting it up
+
+1. On each other instance (it runs `MUSTER_MIRROR=1` and a muster with this
+   feature), mint a mirror token for this host, under the same host name:
+
+   ```sh
+   muster-server mirror token create <host>
+   ```
+
+   The host never connects there. It is an **MCP-only host** on that instance.
+2. Put the token in a file only you can read (`chmod 600`).
+3. List the instances in a targets file and point the mirror at it with
+   `-mcp-targets-file` (`MUSTER_MIRROR_MCP_TARGETS_FILE`):
+
+   ```json
+   [
+     {"name": "work", "url": "https://muster.work.example", "token_file": "~/.config/muster-mirror/work.token"}
+   ]
+   ```
+
+   The primary is named `default` unless `-mcp-primary-name` says otherwise.
+   The file is checked when the daemon starts. A failure is logged, naming the entry
+   and never the token, and the file is ignored: MCP then reaches the primary
+   only. Like every MCP setting, it is never fatal, so mirroring goes on. The rules are in
+   [configuration.md](configuration.md#muster-mirror-host-agent).
+
+The startup log names each target and its URL, never its token.
+
+### What an extra target is sent
+
+Only `POST /mirror/mcp`, with **that instance's** token for this host, the
+header `X-Muster-Client: remote` and nothing of this host but the calling
+session's id:
+
+- `tools/list`, when a session lists its tools, on each tool-list watch
+  (below), and before a call when the last read is older than the watch
+  interval;
+- `tools/call`, only for a call that names that instance. It carries the
+  arguments the session passed, without `instance`, and the calling Claude
+  session's id in `X-Muster-Remote-Session`.
+
+It is never sent the window listing, a transcript, a terminal, the primary's
+token, or the pane and tmux headers, and never an `initialize`.
+
+### Which tools take `instance`
+
+A tool that **some** muster offers a remote caller is an admin tool. Its
+definition gains an optional `instance` argument, an enum of the instances that
+offer it, and without it the call runs on the primary. A muster serves a remote
+caller exactly these tools, when its features have them on (`internal/api`'s
+`remoteMirrorTools`):
+
+`attention_answer`, `agent_destroy`, `agents_list`, `chief_restart`,
+`connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`,
+`plugin_draft_decide`, `plugin_requests_list`, `plugin_request_decide`,
+`dispatch_request`, `dispatch_approve`, the task tools (over the tasks that
+session created on that instance: `muster task create` run from the session
+with `MUSTER_API_URL` pointing at that instance records the session's id on
+the task, so the scope is real, not empty) and `muster_help`.
+
+Everything else is **session-bound** and runs on the primary only. That covers
+`attention_ask`, `attention_wait` and `attention_cancel`, and `chief_ask`,
+whose answer is collected with `attention_wait`. It covers `route_reply`,
+`plugin_messages_list` and `plugin_message_route`, because a route targets a
+session the instance lists. It covers `agent_report_done` and the host-officer
+tools, and the page tools.
+
+The tool list a session sees is the **union** of the instances' tools:
+
+- An argument only some instances take says which, in its description. A
+  call that passes it to an instance without it is **refused**, never sent
+  with the argument dropped.
+- A tool the primary lacks requires `instance`. Its description says it is not
+  on the primary.
+- Only the arguments every offering instance requires are marked required.
+- A tool whose own definition already has an argument named `instance` keeps
+  it, runs on the primary, and is never routed by it.
+
+### Refusals
+
+A refused call is a tool error the model reads, and nothing is sent anywhere:
+
+- an instance the mirror does not know, naming the ones it does. It is never
+  sent to the primary instead;
+- a session-bound tool named with another instance;
+- an instance that does not offer the tool, or an argument it does not take;
+- an instance whose muster is too old to serve an MCP-only host (its tool list
+  lacks the remote mark), or that could not be reached for its tool list;
+- a window muster started for the chief (a host dispatch). The other instance
+  has no listing of this host to check that against, so the host refuses it.
+  The same window still reaches the primary, which checks it there;
+- an instance other than the primary's name while a configured targets file
+  was **ignored** at start. The refusal says the file was ignored and why. A
+  call naming the primary, or none, runs there with `instance` taken out.
+
+With extra targets configured, every answer to a call starts with a text item
+naming the instance that gave it: `[muster instance: <name>]`.
+
+### The tool list stays current
+
+Claude Code caches a server's tool list when it connects, so after a muster
+upgrade a session kept a stale schema. The mirror now re-reads every
+instance's list every `-mcp-tools-refresh` (default `1m`; `0` turns it off).
+When what `/mcp` would serve changes, it sends
+`notifications/tools/list_changed` on every open `GET /mcp` stream. It also
+advertises `capabilities.tools.listChanged` in its `initialize` answer. Claude
+Code 2.1.289's client registers its list-changed handler only when a server's
+`initialize` sets that capability, which is why the mirror sets it. The handler
+then re-reads `tools/list`, and Claude Code also re-reads it when the stream
+reopens, for example after the mirror restarts. This works with the primary
+alone too.
+
+The `GET /mcp` stream is served only to a Claude Code caller of this host's tmux
+server, at most 64 at once. Everyone else gets the transport's 405: an outsider,
+an opencode caller, `/preview-mcp`, anyone while the watch is off, and anyone
+past the 64. Shutting the mirror down ends every open stream at once, while a
+call in flight still finishes.
+
+After a change, each connected session re-reads `tools/list`. Within 2 seconds
+of the watch's read, those re-reads reuse it for the other instances' lists, so
+the instances are read once rather than once per session. The primary's own
+list is always forwarded live.
+
+**opencode callers are unchanged.** Their requests go to the primary exactly
+as before: no `instance`, no merged list and no stream.
+
+### On the other instance
+
+A remote-marked call is served by `POST /mirror/mcp` under the auth model it
+already had. The token is a mirror token scoped to its host and owner, and the
+session id is the caller's claim, as it is on the primary, where a host's
+listing is its own claim too. What changes is the tool set, which shrinks to
+the admin tools above. The call is also refused:
+
+- when the token's host is **known** to that instance's hub, online or offline.
+  Its sessions are mirrored there, so its calls are bound to them. "Known" is
+  the hub's memory: an offline host is kept for 24 hours, in memory only. After
+  a `muster-server` restart, or more than 24 hours offline, a host that does
+  mirror there is not known, and its remote-marked calls are served unbound
+  (the admin tools only, owner-authority ones still behind the phone). A
+  durable record would need a migration;
+- when it also names a bound caller's session (`X-Muster-Claude-Session`, or
+  an opencode key);
+- when its session is not a Claude session id.
+
+**An owner-authority tool always needs the owner's phone.** These are
+`attention_answer`, `agent_destroy`, `chief_restart`, `connector_request_decide`,
+`plugin_draft_decide`, `plugin_request_decide` and `dispatch_approve` (the
+step-up ledger, `hostStepUpTools`). That instance cannot see whether the
+caller's machine runs a host officer, because officers are declared on the
+muster the host is mirrored to. So every such call from a remote caller files a
+step-up confirmation card and runs nothing until the owner confirms it from
+their paired phone. A browser or MCP answer to the card is refused. Then it runs
+once, as the session that asked. `dispatch_request` itself is not gated: it
+files a hold, so starting an agent there is `dispatch_request`, then
+`dispatch_approve`, then one confirmation on the phone.
+
+The rows those tools write name the host and the claimed session, as they do
+for a bound caller. For example, `attention_answer` records
+`answered_via_host` and `answered_via_session`, and `dispatch_request`'s hold
+row records the host and session.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends

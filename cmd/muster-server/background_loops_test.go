@@ -27,8 +27,10 @@ import (
 //     the only users-table owner lists in the module).
 //   - noOwner: the loop acts as System or as no user.
 //   - configOwner: the owner an officer's MUSTER_OFFICERS entry names. A team
-//     id there is NOT refused at boot yet (team officers are phase 3): its
-//     first pass panics in authz.WithPrincipal, and api.Supervise contains it.
+//     id there is a TEAM OFFICER (team sharing phase 3): its wake loop acts as
+//     the team acting principal (authz.ViaOfficer is a team door), and
+//     api.EnableOfficers refuses at boot an owner that names nobody, and a
+//     team owner of a "runtime": "host" officer (team hosts are phase 2b).
 //
 // Whatever the class, a panic is contained by api.Supervise.
 var backgroundLoops = map[string]string{

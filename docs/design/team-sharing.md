@@ -843,6 +843,90 @@ rule the later phases' rows will meet.
 - **Rollback:** as phase 2; the officer keeps running under its owner and its
   asks become invisible to people until roll-forward.
 
+> **As built in phase 3 (0130):**
+> - **The door.** `authz.ViaOfficer` joined `teamActingVias`
+>   (`TestTheTeamActingViasAreExactlyTheListedDoors`, now 9 doors). The
+>   runtime of an officer whose `MUSTER_OFFICERS` owner is a team acts as the
+>   team acting principal. That covers its wake loop, its builtin store, its
+>   asks and its outbound drafts.
+> - **Boot.** `officers.CheckOwners`, called from `api.EnableOfficers`,
+>   refuses an owner that names nobody. It also refuses a team owning a
+>   `"runtime": "host"` officer, because team hosts are 2b and the hub never
+>   lists a team's host.
+> - **The tables were already classed by 2a.** 0130 adds no share-class
+>   change to them.
+> - **Charter edits are a session page, not the JSON admin API.** This is a
+>   delta from §4, which let "a personal token" set `owner` to a team it
+>   manages. 2a's operator decision is that a personal API token carries no
+>   team access, and `/api/officers/*` admits only a personal token or the
+>   hook token. So those routes stay the caller's own and never name a team.
+>   A manager edits a team's types and officers on `/teams/{id}/officers`,
+>   signed in. Every member reads that page; only a manager writes. Postgres
+>   refuses an operator too, because officer types and defs are managed.
+> - **Escalation to a team.** One team-owned ask. A team id is admitted as
+>   `escalate_to` only on that page, and only the page's team or a team the
+>   manager operates. The JSON API's check (`UsersExist`) still refuses a
+>   team.
+> - **Drafts.**
+>   - `plugin_reply_drafts.requested_by_user` is stamped by
+>     `muster_actor_column`: the person, or the team for a team officer's
+>     draft.
+>   - `draft_approver` (a trigger, on a decision: an update) refuses a team
+>     approving a draft it owns, and a person approving a team's draft they
+>     caused. A draft FILED approved is a standing approval (a route's
+>     allowlist) and is not refused (#668 round 0, D2).
+>   - `decideDraftAs` refuses first (`draftDeciderRefusal`): the team
+>     itself; a member below manager; and the requester, for an approval. A
+>     door without the person's teams (token, agent, mirror host) is "not a
+>     manager".
+>   - The requester may still REJECT their own draft.
+>   - Step-up is the Asks page's existing approval step-up, unchanged.
+>   - `plugin_draft_decide` (the mirror door) carries no teams, so it never
+>     reaches a team's draft. This holds until 2b's reduced team-token tool
+>     set.
+> - **Host spawns are lendable, personal by default** (operator decision; a
+>   new share class, `lentOwned`).
+>   - The owner lends one row to one team they operate, and unlends it.
+>     There are two ways in: `/officers/spawns` (the session tier) and the
+>     chief's `officer_spawn_share` (chief-only, and on MCP for a
+>     claude-code chief).
+>   - `lendHostSpawn` is the one gate. `spawnLendDoors` admits:
+>     - the owner's browser session;
+>     - the owner's own chief: its MCP door (`ViaAgent`), and a gateway
+>       chief's machine-message (`ViaAgentMessage`) and kickoff
+>       (`ViaKickoff`) turns.
+>   - A personal API token never lends **directly**.
+>   - 🔴 **This is an operator-approved exception to 2a's "a personal API
+>     token carries no team access"** (#668, after round 1). A token, or the
+>     hook token, that **messages the chief** can have it lend or unlend the
+>     **owner's own** spawn rows to a team the owner operates.
+>   - That is the whole exception. It reads nothing of the team's. It does
+>     not reach team drafts (the draft guard reads `TeamScope`, which is
+>     empty on every agent door) or team charters (session pages only).
+>   - The role is read from `Principal.Teams`, not `TeamScope`, which is
+>     empty on the chief's doors.
+>   - Moving a lend from one team to another writes an unshare audit row for
+>     the team it left.
+>   - `lend_target` enforces it again in Postgres from `team_members`.
+>   - `internal/users` ends a person's lends to a team when they leave it or
+>     drop to viewer.
+>   - A team-owned spawn (a team officer's) is not lendable. It is visible
+>     only to the team acting principal until 2b.
+> - **Audit rows** (#668 round 0, choice 12): sharing and unsharing a spawn
+>   (`officer.spawn.share` / `.unshare`) and a team charter edit
+>   (`officer.type.put`, `officer.def.put`) each write an `audit_log` row
+>   naming the person and the team (`team_id`), read by its managers. The row
+>   is written after the change, not in its transaction; a failed write is
+>   logged.
+> - **The minimal team fan-out** (#668 round 0, Q1, operator decision): a
+>   team officer's asks, its escalations to the team and its outbound drafts
+>   push to the team's current operators and managers, read from
+>   `team_members` at send time (`users.PGStore.TeamNotifyMembers`). Viewers,
+>   people who have left and disabled people get nothing; a personal item is
+>   unchanged. Everything else is 2b's: other team-owned pushes, withdrawing
+>   these from members' devices once answered or decided, the per-member
+>   `notify` switch and team-labelled titles.
+
 ### Phase 4: team tasks and a team chief
 
 - **Migration:** the phase-4 tables into `sharedTables`;
@@ -931,6 +1015,13 @@ rule the later phases' rows will meet.
     for a team owner on every write, so they live only in `agent_secrets`,
     which stays personal. `agents.Store.Secrets` answers only the agent's
     owner or the system scope; a member gets `pgx.ErrNoRows`.
+  - **Which doors see a team agent:** a member sees it only where a person is
+    present (the browser session, a paired phone: `Principal.TeamScope`). A
+    personal API token, an agent and a mirror host carry no team and see
+    none. This slice adds no sharing door. Phase 3's operator-approved
+    exception stays as it is: a token that messages the chief can have it lend
+    or unlend the owner's own `officer_host_spawns` rows to a team the owner
+    operates. Nothing else; team drafts and charters stay session-only.
   - **A member's turn on a team agent runs as the team.** `chatTurn` (every
     chat door) re-mints the team acting principal (`turnActingContext`,
     through `ViaAgent`) after a fresh read of the member's role, on every
