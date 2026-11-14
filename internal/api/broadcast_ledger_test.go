@@ -47,6 +47,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// (countSessionTurn): the agent's owner, whose open chats draw it.
 		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)",
 		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)", // its start and its end
+		// The machine message door stored its turn's reply (machine_agents.go):
+		// chat.reply to the agent's owner, whose open chats refetch on it — the
+		// door's principal is a machine token's, not the chats' viewer.
+		"(*Server).handleAPIAgentSendMessage → broadcastTo(a.OwnerID)",
 		"(*Server).writeChiefNote → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		// A claim made or released after a status write (task_claims.go): ctx

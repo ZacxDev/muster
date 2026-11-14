@@ -292,14 +292,17 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	if d, b := strings.Index(pane, "window.musterDraft = {"), strings.Index(pane, `id="`+SwitcherID+`"`); d < 0 || d > b {
 		t.Errorf("the agent page's bar is drawn before the draft's script (draft %d, bar %d)", d, b)
 	}
-	if form := pane[strings.Index(pane, `id="chat-form"`):]; !strings.Contains(form[:strings.Index(form, ">")], " "+switcherRoom(false)) {
-		t.Error("the chat form does not reserve the bar's room")
+	// The bar's room is the PANE's bottom padding, not the chat form's: the
+	// composer is laid out above the bar, never with the bar inside its box
+	// (chief-header-chats-sheet: the form slid under the bar).
+	if form := pane[strings.Index(pane, `id="chat-form"`):]; strings.Contains(form[:strings.Index(form, ">")], switcherRoom(false)) {
+		t.Error("the chat form reserves the bar's room inside its own box")
 	}
 	if !strings.Contains(pane, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[2.8125rem] [&amp;[data-switcher-pending]]:invisible"`) {
 		t.Error("the agent page's bar is not absolute")
 	}
-	if !strings.Contains(pane, `class="flex flex-1 flex-col gap-2 min-h-0 relative"`) {
-		t.Error("the agent pane is not relative (the bar's containing block)")
+	if !strings.Contains(pane, `class="flex flex-1 flex-col gap-2 min-h-0 relative `+switcherRoom(false)+`"`) {
+		t.Error("the agent pane is not relative (the bar's containing block) with the bar's room as its padding")
 	}
 	if strings.Contains(renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1})), switcherRoom(false)) {
 		t.Error("CONTROL: a pane with no switcher reserves its room")

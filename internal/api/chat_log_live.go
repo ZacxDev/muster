@@ -75,12 +75,22 @@ func relayOf(m agents.ChatMessage) *ui.ChatRelay {
 }
 
 // withChatLogLive fills v's live fields for session: TurnInFlight from the
-// session's turn count, and DispatchCards for the agent_dispatch calls in
-// v.Messages.
+// session's turn count, DispatchCards for the agent_dispatch calls in
+// v.Messages, and the mentions index (mentions.go) with every reply's task
+// refs primed, so the whole log's #N mentions cost one read. Every renderer of
+// #chat-log calls it, so the page, the chief panel, the chat-log refetch and
+// the view strip all link mentions alike. The index is lazy: a log that names
+// nothing reads nothing.
 func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, session agents.ChatSession) {
 	v.TurnInFlight = s.sessionTurns.inFlight(session.SessionKey)
 	v.DispatchCards = s.dispatchCardsFor(ctx, v.Messages)
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
+	v.Mentions = s.mentionIndex(ctx)
+	for _, l := range v.Messages {
+		if l.Role == "assistant" {
+			v.Mentions.Prime(l.Content)
+		}
+	}
 }
 
 // ownerCardsFor reads the stored ask of every ask_owner call in lines whose
