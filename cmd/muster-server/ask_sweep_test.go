@@ -18,11 +18,8 @@ import (
 // expires (firing the change callback that takes it off the attention queue),
 // and the loop ends with the server's context.
 func TestTheBackgroundLoopsSweepTheQuestionStore(t *testing.T) {
-	old := askSweepEvery
-	askSweepEvery = 10 * time.Millisecond
-	defer func() { askSweepEvery = old }()
 	logger := log.New(io.Discard, "", 0)
-	a := &app{logger: logger, srv: api.New(nil, api.AuthConfig{}, logger)}
+	a := &app{logger: logger, srv: api.New(nil, api.AuthConfig{}, logger), askSweepEvery: 10 * time.Millisecond}
 	store := a.srv.Questions()
 	var mu sync.Mutex
 	now := time.Now()
