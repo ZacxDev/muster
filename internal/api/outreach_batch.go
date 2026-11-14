@@ -318,6 +318,14 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 		}
 	}
 	s.clearBatchNote(owner, id)
+	// …and the team's members' copies (notifyDraftAwaitingNoting's fan-out).
+	if bOwner, _, _, ok := plugins.ParseBatchID(id); ok {
+		for _, member := range s.teamOfficerRecipients(ctx, bOwner) {
+			if member != owner {
+				s.clearBatchNote(member, id)
+			}
+		}
+	}
 	s.logger.Printf("plugins: outreach batch %s decided via %s: %d approved, %d not selected", id, dec.Via, len(res.Approved), len(res.Rejected))
 	return res, nil
 }
