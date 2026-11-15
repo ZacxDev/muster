@@ -188,6 +188,20 @@ const PersonIDs = `SELECT id FROM public.users WHERE kind = 'person'`
 // owner set, and a team is never disabled through this column.
 const EnabledPersonIDs = PersonIDs + ` AND disabled_at IS NULL`
 
+// EnabledPersonOrTeamIDs is EnabledPersonIDs WIDENED BY TEAMS: the owner set
+// of a credential that a TEAM may own and that is honoured without a sign-in
+// — a team host's mirror token (team sharing phase 2b.2;
+// internal/mirror PGStore.Authenticate and TokenLive). It is EnabledPersonIDs
+// plus a team arm, so the person rule — and its disabled clause (#681) — stays
+// in one place: a disabled PERSON is still out. A team has no disabled_at
+// (users_team_no_login); a team token held by a person who was disabled or
+// left is the rotate mark's case (mirror_tokens.rotate_at), not this filter's.
+//
+// 🔴 NEVER WIDEN EnabledPersonIDs ITSELF. Its other readers (the focus
+// refresher, the flow runner token, plugin tokens and pairing) must not
+// yield a team.
+const EnabledPersonOrTeamIDs = EnabledPersonIDs + ` UNION ALL SELECT id FROM public.users WHERE kind = 'team'`
+
 // The two kinds of users row (migration 0126).
 const (
 	KindPerson = "person"
@@ -386,6 +400,13 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		}
 		// #681: every live mirror host token, in THIS transaction.
 		if err := revokeMirrorTokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+		// Team sharing 2b.2: the host tokens of every team this person
+		// operates or manages are MARKED ROTATE (never revoked: D-1113 #6),
+		// in THIS transaction. A disable does not touch memberships, so
+		// without this a disabled operator would leave no mark.
+		if err := markRotateForDisableTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
 		// And every live flow runner token, in THIS transaction.

@@ -65,7 +65,13 @@ type askMirror struct {
 	typingCtx context.Context
 	feedCh    chan mirror.Msg
 	watchSeen int
+	// watchedAs is the principal of each WatchWindow, in order.
+	watchedAs []authz.Principal
 }
+
+// askTeamOwner is the team that owns "mmt_team"'s host (a fixture id no
+// constant in the code equals).
+const askTeamOwner = 900243
 
 func newAskMirror(interactive bool) *askMirror {
 	fm := &fakeMirror{online: true, interactive: interactive, v2: &fakeMirrorV2{},
@@ -258,6 +264,9 @@ func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (in
 		return 1, "other", true
 	case "mmt_u2":
 		return 2, "ws", true
+	case "mmt_team":
+		// A TEAM host's token (team sharing 2b.2): its owner is the team.
+		return askTeamOwner, "ws", true
 	}
 	http.Error(w, "bad token", http.StatusUnauthorized)
 	return 0, "", false
@@ -290,10 +299,12 @@ func (a *askMirror) Nudge(owner int64) {
 // WatchWindow is the window's transcript stream: whatever feed sends, until
 // the watch ends. Only user 1's window main@1 has one.
 func (a *askMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
-	if p, ok := authz.From(ctx); !ok || p.UserID != 1 || host != "ws" || session != "main" || window != "@1" {
+	p, ok := authz.From(ctx)
+	if !ok || a.fakeMirror.user(ctx) != 1 || host != "ws" || session != "main" || window != "@1" {
 		return mirror.ErrHostOffline
 	}
 	a.amu.Lock()
+	a.watchedAs = append(a.watchedAs, p)
 	a.watchSeen++
 	a.amu.Unlock()
 	for {

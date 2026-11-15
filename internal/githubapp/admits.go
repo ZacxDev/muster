@@ -24,7 +24,10 @@ import (
 //     repositories.
 //   - A team is admitted only through the doors that may name a team at all
 //     (authz's teamActingVias, which WithPrincipal enforces): its agents'
-//     tokens, the per-owner background work, and the manager's door.
+//     tokens, the per-owner background work, and the manager's door. A team
+//     HOST (authz.ViaMirrorHost, phase 2b.2) acts as the team too, but its
+//     door serves only internal/api's teamHostTools, none of which reads a
+//     repository or the `github` connector.
 //   - The System principal names no user and is not admitted.
 //
 // teams is read, never written; nil admits admins only (the rule before 4.8).

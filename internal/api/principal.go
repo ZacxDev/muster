@@ -160,8 +160,8 @@ func teamActingPrincipal(team int64, via authz.Via) authz.Principal {
 	return authz.Principal{UserID: team, Team: true, Role: authz.RoleMember, Via: via}
 }
 
-// TeamSignInRefusal is what every door but an agent's own token
-// (teamAgentDoors) answers a credential that resolves to a TEAM (users.kind =
+// TeamSignInRefusal is what every door but an agent's own token and a team
+// host's (teamAgentDoors) answers a credential that resolves to a TEAM (users.kind =
 // 'team'): a team owns things, and no one signs in as one
 // (docs/design/team-sharing.md). admit answers it before the principal is
 // attached; authz.WithPrincipal's panic is the backstop for any other caller.
@@ -173,9 +173,17 @@ const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
 // (requireRelayAgent). Each builds its principal from the agent row's owner
 // (agentPrincipal / principalFor over agentOwnerID), so a team here is a
 // team-owned agent acting as its owner, through the team acting principal.
-// Every other door — a person's, a shared machine token's, a mirror host's,
-// a plugin's, a device's, a share link's — refuses a team.
-var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true}
+//
+// And, since team sharing 2b.2, a TEAM HOST's mirror token (ViaMirrorHost:
+// requireMirrorHostToken, POST /mirror/mcp and GET /mirror/host): the team is
+// the token's owner, never a sign-in, and the MCP door serves a team token
+// only teamHostTools (mirror_mcp.go) — opened in the same change as that
+// ledger, since row-level security shows the team acting principal every
+// team row.
+//
+// Every other door — a person's, a shared machine token's, a plugin's, a
+// device's, a share link's — refuses a team.
+var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true, authz.ViaMirrorHost: true}
 
 // AccountUnreadableRefusal is what every door answers when the request's
 // account could not be read (admit: fail closed).
@@ -193,8 +201,8 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 		return
 	}
 	// A credential that resolves to a team is refused at every door but a
-	// team-owned AGENT's own token (teamAgentDoors), where the team is the
-	// agent row's owner, never a sign-in. This is the one place each
+	// team-owned AGENT's own token and a team HOST's (teamAgentDoors), where
+	// the team is the row's owner, never a sign-in. This is the one place each
 	// wrapper's principal passes (TestOnlyTheAgentDoorsAdmitATeam walks every
 	// route through it).
 	if p.Team && !teamAgentDoors[p.Via] {

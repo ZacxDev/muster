@@ -104,7 +104,7 @@ const (
 	agentDispatchPoolNoTask = "a worker_pool agent serves machine jobs and takes no task_id"
 	agentDispatchPoolKind   = "worker_pool %q: only a claude-code agent can be a machine-job worker"
 	// A TEAM's chief (team sharing phase 4): pod/claude-code agents only.
-	agentDispatchTeamHost    = "a team's agents run on the cluster only: a host target is not available to a team yet (team hosts are a later phase); use pod/claude-code"
+	agentDispatchTeamHost    = "a team's agents run on the cluster only: a team's chief cannot dispatch onto a host yet, a team host included (a later phase); use pod/claude-code"
 	agentDispatchTeamGateway = "a team's agents are Claude Code agents: use pod/claude-code (a Standard agent is not available to a team)"
 	agentDispatchTeamPool    = "worker_pool: a team's agents are not machine-job workers"
 	agentDispatchPoolName    = "worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'"

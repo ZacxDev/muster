@@ -167,6 +167,7 @@ GET /tasks/{id}/attachments/{aid}
 GET /teams/{id}
 GET /teams/{id}/chief
 GET /teams/{id}/connectors
+GET /teams/{id}/hosts
 GET /teams/{id}/officers
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
@@ -375,6 +376,9 @@ POST /teams/{id}/chief/restart
 POST /teams/{id}/chief/stop
 POST /teams/{id}/connectors/{grant}/approve
 POST /teams/{id}/connectors/{grant}/deny
+POST /teams/{id}/hosts
+POST /teams/{id}/hosts/replace
+POST /teams/{id}/hosts/{token}/revoke
 POST /teams/{id}/members
 POST /teams/{id}/members/{user}/remove
 POST /teams/{id}/officers/defs/{officer}

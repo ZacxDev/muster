@@ -249,7 +249,7 @@ var requestVias = map[Via]bool{
 //
 //   - a team-owned agent's own token (ViaAgent, ViaConnect, ViaRelay — the
 //     team is the agent row's owner, never a sign-in; internal/api's admit
-//     admits a team on exactly these three);
+//     admits a team on these three and on a team host's token, below);
 //   - the per-owner background work that meets a team-owned row (ViaReap,
 //     ViaAttention, ViaRoute, ViaHostDispatch, ViaJobQueue);
 //   - a TEAM OFFICER's runtime (ViaOfficer, team sharing phase 3): an officer
@@ -265,7 +265,17 @@ var requestVias = map[Via]bool{
 //     team, so the team's credentials are the ones used — and (slice 4.8)
 //     reads and decides the team agents' connector requests, which live in
 //     the personal connector tables the team owns (internal/api's
-//     teamAdminContext, the one site).
+//     teamAdminContext, the one site);
+//
+//   - a TEAM HOST (team sharing phase 2b.2): a muster-mirror connected with a
+//     team-owned mirror token. Its POST /mirror/mcp acts as the team
+//     (ViaMirrorHost; internal/api's admit lets a team through there, and
+//     the door serves only teamHostTools to a team token — row-level
+//     security shows the team acting principal EVERY team row, so that
+//     reduced tool set is the whole guard), and the AskUserQuestion watcher
+//     reads the team host's window as the team (ViaAsk, askPrincipal). The
+//     step-up card's runner (stepUpPrincipal, also ViaMirrorHost) refuses a
+//     team itself: a team has no phone, and a team host files no card.
 //
 // A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
 // the set: gateway agents are not team agents in phase 4. internal/api's
@@ -274,9 +284,8 @@ var requestVias = map[Via]bool{
 //
 // 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
 // (WithPrincipal panics). A person's door (session, device, personal token),
-// a shared machine token, a mirror host (team hosts are phase 2b), a plugin
-// token (a plugin's owner is its pairing person), the focus, question and
-// send-queue loops — a team
+// a shared machine token, a plugin token (a plugin's owner is its pairing
+// person), the focus and send-queue loops (ViaQueue joins in 2b.4) — a team
 // principal arriving there is a bug, not a team.
 //
 // ⚠ THE PANIC KEYS ON THE FLAG, NOT ON THE OWNER ID. internal/api's
@@ -286,7 +295,9 @@ var requestVias = map[Via]bool{
 // BACKGROUND site hands it on: there the owner id acts as an ordinary member.
 // Today no team id reaches that fallback: no team-owned agent or task exists
 // before slice 4.5, and the owner reads behind the sites outside this set
-// (mirror tokens, focus) are person-only (users.PersonIDs). For a team id it would still be muster.uid = the
+// (focus) are person-only (users.PersonIDs); a team mirror token's door is in
+// it since 2b.2, and admit refuses its unreadable account (a 503) before the
+// question watcher could meet one. For a team id it would still be muster.uid = the
 // team with no memberships — the same rows the team acting principal sees —
 // but the panic above would not fire; a site that must refuse a team on an
 // unreadable account has to check RoleUncertain itself.
@@ -296,6 +307,8 @@ var teamActingVias = map[Via]bool{
 	ViaReap: true, ViaAttention: true, ViaRoute: true, ViaHostDispatch: true, ViaJobQueue: true,
 	ViaOfficer:   true,
 	ViaTeamAdmin: true,
+	// Team sharing 2b.2: a team host's MCP door and its question watcher.
+	ViaMirrorHost: true, ViaAsk: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

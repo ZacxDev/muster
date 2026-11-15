@@ -80,6 +80,11 @@ var (
 	//   - accountOfChecked (and roleOf through principalFor): the request principal's ROLE, kind and team memberships, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
+		// `muster-server mirror token create <host> --team <id>` (team sharing
+		// 2b.2): a TEAM host token, minted from the server's shell — which can
+		// already do anything — with the team's audit row in the same
+		// transaction; it mints only for an id that names a team.
+		"cmd/muster-server.mirrorCreateTeamToken",
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",

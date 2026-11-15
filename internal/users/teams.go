@@ -381,6 +381,13 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	if err := endLends(ctx, tx, team, user); err != nil {
 		return err
 	}
+	// Team sharing 2b.2: an operator or a manager leaving marks the team's
+	// host tokens rotate (team_hosts.go), in this transaction.
+	if holdsTokenRole(role) {
+		if err := markTeamTokensRotateTx(ctx, tx, team); err != nil {
+			return err
+		}
+	}
 	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
 }
 
@@ -479,6 +486,13 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	if role == authz.TeamViewer {
 		if err := endLends(ctx, tx, team, user); err != nil {
 			return err
+		}
+		// Team sharing 2b.2: an operator or a manager dropping to viewer
+		// marks the team's host tokens rotate (team_hosts.go).
+		if before != nil && holdsTokenRole(*before) {
+			if err := markTeamTokensRotateTx(ctx, tx, team); err != nil {
+				return err
+			}
 		}
 	}
 	detail := map[string]any{"user": user, "role": string(role)}

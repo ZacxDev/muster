@@ -1262,7 +1262,7 @@ the next step. Each question below is decided as stated.
 
 ## Phase 2b design: team hosts (decided 2026-11-14)
 
-**Status: decided; slice 2b.1 built (see its "as built" note in F).** The operator accepted every recommendation in
+**Status: decided; slices 2b.1 and 2b.2 built (see their "as built" notes in F).** The operator accepted every recommendation in
 [G](#g-operator-decided-2026-11-14), and commit `5f848980` records the
 decisions. The build waits for phase 4.5 (PR #680) to merge. This section is
 the design for phase 2b. It replaces the bullet list under
@@ -2150,6 +2150,153 @@ by re-checking the migration number (D). The slices ship **in order**.
    yet. Its **asks** do appear: `attention_asks` is read at viewer, so a team
    host's question shows on members' Attention from this slice on, and an
    operator may answer it there (D-1113 #11).
+
+   > **As built in 2b.2 (no migration; 0133's `rotate_at` is its column).**
+   > - **The token lookup.** `mirror.PGStore.Authenticate` and `TokenLive`
+   >   filter owners through a NEW constant, `users.EnabledPersonOrTeamIDs` =
+   >   `EnabledPersonIDs` + a team arm (`UNION ALL … kind = 'team'`).
+   >   🔴 **Deviation:** `EnabledPersonIDs` itself is not widened. On main it
+   >   also filters the focus refresher's owners, the flow runner token and
+   >   plugin tokens and pairing, none of which may yield a team (G4, and the
+   >   users-read ledger). `TestTheTeamArmKeepsThePersonRule` pins the new
+   >   constant to the person rule plus that arm, and the users-read ledger
+   >   gains the class "enabled persons, or teams". `Authenticate` also
+   >   reports `Token.Team`, which pins the connection (below).
+   > - **The doors.** `admit`'s team arm (`teamAgentDoors`) gains
+   >   `ViaMirrorHost`; `teamActingVias` gains `ViaMirrorHost` and `ViaAsk`
+   >   (12 doors). `ViaMirrorHost` also fronts `GET /mirror/host` (the
+   >   doctor's this-host check), which a team token now opens too: it names
+   >   only the token's own host. `askPrincipal` acts as the team.
+   >   🔴 **Deviation:** D's table says `stepUpPrincipal` stays
+   >   `refusedByWithPrincipal`. It uses `ViaMirrorHost`, so WithPrincipal no
+   >   longer refuses a team there; `stepUpPrincipal` now refuses a team
+   >   itself (`stepUpTeamRefusal`, a panic — unreachable: a team host files
+   >   no card), and its per-owner row is the new class `refusedStepUpNoTeam`.
+   > - **`teamHostTools`** (`internal/api/team_host_tools.go`): 19 kept
+   >   (the three attention tools, the four task tools, `agent_report_done`,
+   >   the 11 officer instance tools), 29 refused, as A lists them. A team
+   >   token's `tools/list` is the kept tools only (also over the opencode
+   >   set, for an opencode session on a team host). 🔴 That listing filter is
+   >   the ONE guard (#685 round 1, G3): serveMCP runs a listed name only, so
+   >   a refused or unclassified name never reaches the call; serveMCP's
+   >   disabled hook only words the refusal (`teamHostToolRefusal`) instead of
+   >   "unknown tool". There is no second check at the call. Being unlisted,
+   >   a refused name never reaches `hostOfficerMirrorTool` or the step-up
+   >   gate.
+   > - **Remote mode** answers 401 `TeamHostRemoteRefusal` to every
+   >   remote-marked request of a team token (initialize and tools/list
+   >   included), before serveMCP.
+   > - **The agent-read seam** (`TestNoMirrorDoorAgentReaderIsReachableByATeamToken`,
+   >   `mirrorDoorAgentReaders`): the nine ledger entries that serve a mirror
+   >   tool name the `teamHostTools` refusal, or, for the officer reads, what
+   >   they read on a team host. ⚠ Its growth check is a convention (an entry
+   >   whose line names the mirror door must be listed), not a call graph.
+   > - **The second connection** (`internal/mirror/teamhold.go`). For a team
+   >   token, `ServeConnect` asks the hub before it touches the connection's
+   >   token record: with `(team, host)` live and no confirm armed, the
+   >   connection is refused at once (`ErrHeldForManager`, "pending a
+   >   manager's confirmation") and the attempt recorded.
+   >   🔴 **Deviation from "held, not swapped in … on a confirm the hub
+   >   takes the new connection":** the held socket is refused, not parked,
+   >   because muster-mirror waits 15 s for a welcome and would otherwise
+   >   churn. Each held attempt is recorded by its TCP peer address, with
+   >   when it was first and last seen, and the card lists every one. A
+   >   manager's confirm names ONE attempt by its address and arms a one-shot
+   >   replacement for `ReplaceConfirmWindow` (3 min; muster-mirror retries at
+   >   most a minute apart) that admits only a reconnect from that address;
+   >   it replaces the live one the way a newer connection does today. There
+   >   is no confirm without an address (#685 round 0: a blanket confirm let
+   >   a kept token retrying every 2 s win the race). ⚠ The address is the
+   >   TCP peer, not X-Forwarded-For: behind a proxy chain every machine is
+   >   one address, and the binding cannot tell them apart. No protocol
+   >   change. A connection while the host is offline is taken at once; a
+   >   personal host keeps newer-replaces. `muster doctor` on a held machine
+   >   reports `held` (`GET /mirror/host`, `Service.HeldHere`: an attempt
+   >   from its address is held and the live connection is from another),
+   >   not `online`.
+   >   🔴 **Round 1 (Y1), measured on a NodePort deployment: every host
+   >   showed as the same pod-network address.** So in the supported deployments (a proxy chain or
+   >   a NodePort) the address binding tells NO machines apart: the held
+   >   machine and the live host are one address. A confirm for an attempt
+   >   whose address equals the live connection's is therefore REFUSED
+   >   (`ErrIndistinguishable`), and the card says "this machine can't be told
+   >   apart from the live host by address; stop the live host first, or
+   >   replace the token". `muster doctor` there reports `held_unsure` (FAIL:
+   >   the server cannot tell which of the two this machine is), not online.
+   >   A per-attempt code that binds the confirm to one machine is a separate
+   >   follow-up PR, not built here.
+   >   Held attempts are logged and nudge members' views at most once per
+   >   `heldAnnounceEvery` (30 s) per address (G2); every attempt is still
+   >   counted on the card.
+   >   🔴 **The hold guards the tunnel only (G1).** A held machine, or any
+   >   kept copy of the token, can still call `/mirror/mcp` and `/mirror/ask`
+   >   as any session the LIVE host lists: those doors bind a call to the live
+   >   host's listing, and the session id is the caller's claim. The rotate
+   >   mark (revoke and re-mint) is the answer to a kept token.
+   > - **`/teams/{id}/hosts`** (`team_hosts_page.go`): GET, `POST` (mint),
+   >   `POST …/{token}/revoke`, `POST …/replace`. Managers only (the request's
+   >   memberships, then `teamAdminContext`'s fresh read), and the token rows
+   >   are read and written AS THE TEAM. Mint, revoke **and the replace
+   >   confirm** need step-up (the design was silent on the confirm; it decides
+   >   who receives every member's sends). Each is audited as the manager
+   >   (`team.host.token.create`, `.revoke`, `team.host.replace`). Linked from
+   >   `/teams/{id}`.
+   > - **`muster-server mirror token create <host> --team <id>`**:
+   >   `mirror.PGStore.CreateTeamToken` under System, which mints only when
+   >   the id names a team (`ErrNotATeam`), with the team's audit row
+   >   (`via = cli`) in the mint's own transaction. `mirror token ls` still
+   >   lists the operator's tokens only; a team's are on its page.
+   > - **Rotate marks** (`internal/users/team_hosts.go`): `removeMemberTx`
+   >   (an operator or a manager), `setMemberTx` (operator or manager →
+   >   viewer) and `SetDisabledAs` (an operator or manager of any team) set
+   >   `rotate_at = now()` on the team's unrevoked tokens in their own
+   >   transaction. A later trigger moves the mark forward, so the page names
+   >   the latest reason. The reason (`TeamRotateReason`, under System: a
+   >   `user.disable` row names no team) is the newest of the three triggering
+   >   audit rows **written in the mark's own transaction** (`at =
+   >   rotate_at`, round 1 G4: "the newest row before it" showed a stale
+   >   disable of someone who was a viewer then), each condition reading the
+   >   row's own role, never today's membership. A disable through
+   >   `SetDisabled` with no actor writes no audit row; the page then says
+   >   "rotate (marked <date>)".
+   > - **No episode for a team owner** (`attentionMirrorChanged`): with
+   >   session state on, a team's waiting windows take today's diff path, not
+   >   the episode one. An owner whose account could not be read keeps the
+   >   person path. 2b.3 removes the branch.
+   > - **The phase 4.7 seam (agreed with that session):** 2b.2 adds no answer
+   >   path for team asks. `attention_answer` is refused to a team token, and
+   >   `attention_wait` / `attention_cancel` are bound to the session's own
+   >   asks; `askPrincipal`'s callers only read transcripts.
+   >   `TestATeamHostCannotAnswerATeamAskThatIsNotItsOwn` pins it over a
+   >   dispatch-shaped System card, a team agent's ask and another session's.
+   > - **Tests:** `TestATeamMirrorTokenAuthenticatesAsTheTeam`,
+   >   `TestAuthenticateSaysWhetherTheOwnerIsATeam`,
+   >   `TestTheCLIMintsATeamTokenOnlyForATeam`,
+   >   `TestASecondTeamHostConnectionWaitsForAManager`,
+   >   `TestATeamHostReconnectingWhileOfflineIsTakenAtOnce`,
+   >   `TestAConfirmForOneAddressDoesNotLetAnotherIn`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
+   >   `TestAHeldMachineIsToldItIsHeld` (`internal/mirror`);
+   >   `TestTheReplaceConfirmNamesOneHeldMachine`,
+   >   `TestDoctorTellsAHeldMachineItIsHeld` (`internal/api`);
+   >   `TestRemovingAnOperatorMarksTheTeamsHostTokensRotate`,
+   >   `TestDowngradingAnOperatorToViewerMarksTheTeamsHostTokensRotate`,
+   >   `TestDisablingAnOperatorMarksTheTeamsHostTokensRotate`,
+   >   `TestTheRotateReasonIsReadFromTheTeamsAudit`,
+   >   `TestTheTeamArmKeepsThePersonRule` (`internal/users`);
+   >   `TestEveryMirrorToolIsClassifiedForATeamHost`,
+   >   `TestATeamHostIsListedOnlyItsKeptTools`,
+   >   `TestATeamHostRefusesEachRefusedToolAtTheCall`,
+   >   `TestATeamHostCannotAnswerATeamAskThatIsNotItsOwn`,
+   >   `TestATeamTokenIsNotServedRemotely`,
+   >   `TestNoMirrorDoorAgentReaderIsReachableByATeamToken`,
+   >   `TestATeamHostsQuestionIsWatchedAsTheTeam`,
+   >   `TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff`,
+   >   `TestTheTeamHostsPageIsTheManagersAndRunsAsTheTeam` (`internal/api`);
+   >   and the ledgers `TestOnlyTheAgentDoorsAdmitATeam` (`ViaMirrorHost` →
+   >   true), `TestTheTeamActingViasAreExactlyTheListedDoors` (12),
+   >   `TestEveryPerOwnerPrincipalSiteIsTeamSafe` (`askPrincipal` acts; 10
+   >   act, 4 refuse).
 3. **2b.3: viewers.**
    - `access()`, the new `VisibleHosts` and its caller ledger (`Hosts` stays
      own-only), the read routes and `mirrorTeamRoutes`.

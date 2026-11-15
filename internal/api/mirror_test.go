@@ -71,6 +71,9 @@ type mirrorCall struct {
 // belongs to user 1 only: Hosts and Attach act for ctx's principal, as
 // mirror.Service does.
 type fakeMirror struct {
+	// teamHost, when set, is a TEAM id whose principal this fake treats as
+	// owning "ws" as well (team sharing 2b.2's team host tests).
+	teamHost    int64
 	mu          sync.Mutex
 	online      bool
 	interactive bool
@@ -177,6 +180,11 @@ func (f *fakeMirror) user(ctx context.Context) int64 {
 	p, ok := authz.From(ctx)
 	if !ok || p.All() {
 		return 0
+	}
+	if f.teamHost != 0 && p.UserID == f.teamHost {
+		// The team host fixture (team sharing 2b.2): the TEAM's principal
+		// owns "ws" too, so a team token's calls bind to its windows.
+		return 1
 	}
 	return p.UserID
 }

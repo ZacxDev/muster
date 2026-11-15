@@ -88,6 +88,23 @@ type MirrorHostReport struct {
 	// with ANOTHER token of the same owner — a second machine minted under the
 	// same name. Online is false then: this machine is not the one connected.
 	OtherToken bool `json:"other_token,omitempty"`
+	// Held: THIS machine is a team host's HELD second connection (team
+	// sharing 2b.2, mirror/teamhold.go): another connection is live for the
+	// team host under the same token, and a manager must confirm this one on
+	// /teams/<id>/hosts. Online is false then, though the token matches.
+	Held bool `json:"held,omitempty"`
+	// HeldUnsure: a second connection is held from THIS machine's address,
+	// and the live connection came from the same address (a proxy or a
+	// NodePort), so muster cannot tell whether this machine is the live one
+	// or the held one. Online stays as the token says, and the doctor says it
+	// cannot be sure.
+	HeldUnsure bool `json:"held_unsure,omitempty"`
+}
+
+// mirrorHeldReader is the mirror plugin's held-attempt check
+// (mirror.Service.HeldHere), asserted so a fake without it reports no hold.
+type mirrorHeldReader interface {
+	HeldHere(ctx context.Context, host string, r *http.Request) (held, unsure bool)
 }
 
 func (s *Server) registerDoctorRoutes(mux Mux) {
@@ -114,6 +131,16 @@ func (s *Server) handleMirrorHost(w http.ResponseWriter, r *http.Request) {
 				rep.Online, rep.Interactive = true, hv.Interactive
 			} else {
 				rep.OtherToken = true
+			}
+		}
+		// 🔴 A HELD team host machine shares the live one's token, so the
+		// token match above says Online for it: it is not.
+		if hr, ok := s.ext.Mirror.(mirrorHeldReader); ok && rep.Online {
+			switch held, unsure := hr.HeldHere(r.Context(), t.Host, r); {
+			case held:
+				rep.Online, rep.Interactive, rep.Held = false, false, true
+			case unsure:
+				rep.HeldUnsure = true
 			}
 		}
 	}

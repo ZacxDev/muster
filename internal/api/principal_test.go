@@ -258,6 +258,13 @@ var routeVias = map[authz.Via][]string{
 		"POST /teams/{id}/connectors/{grant}/approve",
 		"POST /teams/{id}/connectors/{grant}/deny",
 		"POST /agents/{id}/credentials/rotate",
+		// A team's host tokens (team sharing 2b.2, team_hosts_page.go):
+		// requireSession (+ same-origin for the writes); the manager check and
+		// the team acting context (teamAdminContext) are AFTER the principal.
+		"GET /teams/{id}/hosts",
+		"POST /teams/{id}/hosts",
+		"POST /teams/{id}/hosts/{token}/revoke",
+		"POST /teams/{id}/hosts/replace",
 		"GET /officers/spawns",
 		"POST /officers/spawns/{id}/share",
 		"POST /officers/spawns/{id}/unshare",
