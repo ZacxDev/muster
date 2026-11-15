@@ -93,6 +93,12 @@ type ShipRepo struct {
 	// forbidden globs, one per line; the draft gate reads it from the pull
 	// request's TARGET branch at every check (draftgate.go).
 	ForbiddenPathsFile string
+	// TestOnlyPathsFile, when set, is a repository file listing the "money
+	// paths": globs (the forbidden-path grammar, MatchForbidden) a pull
+	// request of the officer may change ONLY in a test file (IsTestFile: a
+	// `*.test.*` or `*.spec.*` name). Read from the TARGET branch at every
+	// check like ForbiddenPathsFile, fail closed, and itself forbidden.
+	TestOnlyPathsFile string
 }
 
 // RepoList is the officer's ship repositories: Repos when parsed, else the one
@@ -153,6 +159,7 @@ type declaredShipRepo struct {
 	} `json:"github_app"`
 	ForbiddenPaths     []string `json:"forbidden_paths"`
 	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
+	TestOnlyPathsFile  string   `json:"test_only_paths_file"`
 }
 
 // parseShipRepo validates one repository's base, prefix, App and forbidden
@@ -213,6 +220,14 @@ func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
 		}
 		r.ForbiddenPathsFile = f
 	}
+	if d.TestOnlyPathsFile != "" {
+		f := strings.TrimSpace(d.TestOnlyPathsFile)
+		if !ValidListFile(f) {
+			return ShipRepo{}, fmt.Errorf("ship: %stest_only_paths_file %q must be a repository-relative file path (no leading '/', no '.' or '..' segment, no glob characters)",
+				what, d.TestOnlyPathsFile)
+		}
+		r.TestOnlyPathsFile = f
+	}
 	return r, nil
 }
 
@@ -246,7 +261,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 	dec.DisallowUnknownFields()
 	var list []declaredShipRepo
 	if err := dec.Decode(&list); err != nil {
-		return nil, fmt.Errorf(`ship: repos must be a list of {"repo", "base"?, "branch_prefix"?, "github_app", "forbidden_paths"?}: %v`, err)
+		return nil, fmt.Errorf(`ship: repos must be a list of {"repo", "base"?, "branch_prefix"?, "github_app", "forbidden_paths"?, "forbidden_paths_file"?, "test_only_paths_file"?}: %v`, err)
 	}
 	if n := len(list); n < 1 || n > MaxShipRepos {
 		return nil, fmt.Errorf("ship: repos lists %d repositories; 1..%d", n, MaxShipRepos)
@@ -267,6 +282,9 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		}
 		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && !wallStage(stage) {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s and %s stages only; stage %s would ignore it — remove it", StageDraft, StageShepherd, stage)
+		}
+		if r.TestOnlyPathsFile != "" && !wallStage(stage) {
+			return nil, fmt.Errorf("ship: repos[%d].test_only_paths_file is enforced by the %s and %s stages only; stage %s would ignore it — remove it", i, StageDraft, StageShepherd, stage)
 		}
 		lr := strings.ToLower(r.Repo)
 		if seen[lr] {

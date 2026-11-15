@@ -89,6 +89,41 @@ func patchLines(patch string) []patchLine {
 	return out
 }
 
+// testFileGlobs are the names a test file has: the target repository's own
+// officer-PR checker's TEST_GLOBS, in the forbidden-path grammar.
+var testFileGlobs = []string{"*.test.*", "*.spec.*"}
+
+// IsTestFile is THE rule for whether p is a test file: its NAME (the last
+// segment) matches `*.test.*` or `*.spec.*` (testFileGlobs). A directory so
+// named does not make the files under it tests.
+func IsTestFile(p string) bool {
+	name := path.Base(p)
+	for _, g := range testFileGlobs {
+		if officers.MatchForbidden(g, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// moneyPathWhy is THE money-path rule (ship.repos[].test_only_paths_file):
+// why changing p is refused, "" when it is not. A path under a money glob
+// (MatchForbidden) may be changed only when it is a test file (IsTestFile);
+// a rename is judged on both of its paths, so a file can neither be moved
+// into a money path nor out of one unless it is a test. "" for an empty p or
+// no globs.
+func moneyPathWhy(money []string, p string) string {
+	if p == "" || IsTestFile(p) {
+		return ""
+	}
+	for _, pat := range money {
+		if officers.MatchForbidden(pat, p) {
+			return fmt.Sprintf("a money path (%s): an officer may change it only in a test file (%s)", pat, strings.Join(testFileGlobs, " or "))
+		}
+	}
+	return ""
+}
+
 // ForbiddenFiles is THE content rule of a draft officer's comparison: the
 // paths that make it refused and why (none: admitted). A file is refused when
 //

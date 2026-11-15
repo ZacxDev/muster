@@ -339,20 +339,25 @@ type comparisonVerdict struct {
 // pull request (afterCreate) and the sweep (Sweep): GitHub's comparison
 // base...head in sr through ForbiddenFiles, with sr's forbidden globs and,
 // when set, its forbidden_paths_file read fresh from base, then the
-// kustomization rule (removedKustomizeEntries). It decides; each caller
+// kustomization rule (removedKustomizeEntries) and, when set, the money paths
+// of its test_only_paths_file (moneyPathWhy). It decides; each caller
 // answers the verdict its own way (a 409, or a close).
 func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh GitHub, base, head string) comparisonVerdict {
-	var files []string
+	var files, testOnly []string
 	if sr.ForbiddenPathsFile != "" {
 		files = []string{sr.ForbiddenPathsFile}
 	}
-	return g.checkWall(ctx, sr.Repo, gh, sr.ForbiddenPaths, files, base, head)
+	if sr.TestOnlyPathsFile != "" {
+		testOnly = []string{sr.TestOnlyPathsFile}
+	}
+	return g.checkWall(ctx, sr.Repo, gh, sr.ForbiddenPaths, files, testOnly, base, head)
 }
 
-// checkWall is checkComparison with the wall spelled out: the globs, and the
-// forbidden-path list files read fresh from base (a shepherd's wall has one
-// per source: officers.ShepherdRules).
-func (g *PushGate) checkWall(ctx context.Context, repo string, gh GitHub, globs, files []string, base, head string) comparisonVerdict {
+// checkWall is checkComparison with the wall spelled out: the globs, the
+// forbidden-path list files and the money-path (test-only) list files, each
+// read fresh from base (a shepherd's wall has one per source:
+// officers.ShepherdRules).
+func (g *PushGate) checkWall(ctx context.Context, repo string, gh GitHub, globs, files, testOnly []string, base, head string) comparisonVerdict {
 	if gh == nil {
 		return comparisonVerdict{Err: fmt.Errorf("no GitHub reader for %s", repo)}
 	}
@@ -385,10 +390,38 @@ func (g *PushGate) checkWall(ctx context.Context, repo string, gh GitHub, globs,
 		}
 		forbidden = append(append(forbidden, list...), f)
 	}
+	// 🔴 THE MONEY PATHS: the same source rule as the forbidden list — read
+	// from the TARGET branch at every check, fail closed, and the list file
+	// itself forbidden, so an officer cannot shrink its own money paths.
+	var money []string
+	for _, f := range testOnly {
+		raw, err := gh.FileAt(ctx, f, base)
+		if err != nil {
+			v.Paths, v.Unverified = []string{f}, true
+			v.Why = fmt.Sprintf("its money-path (test-only) list %s could not be read at %s, so nothing can be checked: %v", f, base, err)
+			return v
+		}
+		list, err := officers.ParseForbiddenList(string(raw))
+		if err != nil {
+			v.Paths, v.Unverified = []string{f}, true
+			v.Why = fmt.Sprintf("its money-path (test-only) list %s at %s does not parse (%v), so nothing can be checked", f, base, err)
+			return v
+		}
+		money = append(money, list...)
+		forbidden = append(forbidden, f)
+	}
 	var whys []string
 	v.Paths, v.Why = ForbiddenFiles(forbidden, cmp.Files)
 	if v.Why != "" {
 		whys = append(whys, v.Why)
+	}
+	for _, f := range cmp.Files {
+		for _, p := range []string{f.Path, f.Previous} {
+			if why := moneyPathWhy(money, p); why != "" {
+				v.Paths = append(v.Paths, p)
+				whys = append(whys, p+": "+why)
+			}
+		}
 	}
 	for _, f := range cmp.Files {
 		if f.Status == "removed" && f.Patch == "" && f.Changes == 0 {

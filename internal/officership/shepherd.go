@@ -525,7 +525,7 @@ func (g *PushGate) verifyShepherdPush(ctx context.Context, sr officers.ShipRepo,
 	case len(cmp.Files) > maxShepherdPushFiles:
 		return fmt.Sprintf("it changes %d files, over the cap of %d for one shepherd push", len(cmp.Files), maxShepherdPushFiles), nil, true
 	}
-	v := g.checkWall(ctx, sr.Repo, gh, sp.rule.ForbiddenPaths, sp.rule.ForbiddenPathsFiles, baseOf(sr, pr), sp.cmd.newOID)
+	v := g.checkWall(ctx, sr.Repo, gh, sp.rule.ForbiddenPaths, sp.rule.ForbiddenPathsFiles, sp.rule.TestOnlyPathsFiles, baseOf(sr, pr), sp.cmd.newOID)
 	switch {
 	case v.Err != nil:
 		return v.Err.Error() + ", so the change could not be checked", nil, true
@@ -749,7 +749,7 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 	pass(GateChecks)
 	// checkWall reads only gh (no PushGate state): the same wall a push passes
 	// before it lands, now at the head being marked ready.
-	v := (&PushGate{Repo: sr.Repo}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
+	v := (&PushGate{Repo: sr.Repo}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, rule.TestOnlyPathsFiles, baseOf(sr, pr), pr.HeadSHA)
 	switch {
 	case v.Err != nil:
 		return out, refuse(GateWall, "%v, so #%d's head %s cannot be checked against the wall", v.Err, n, short(pr.HeadSHA))
