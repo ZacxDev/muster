@@ -290,6 +290,11 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 			mirrors[i].Superseded = mirrors[i].FocusKey != "" && sup[mirrors[i].FocusKey]
 		}
 	}
+	// The viewer's TEAMS' mirrored sessions (team sharing 2b.3), each in its
+	// team's group, added after every decorator above: those read the
+	// viewer's own pins, names, tags and attention by host name or session
+	// key, and none of them is a team session's (teamMirrorCards).
+	mirrors = append(mirrors, s.teamMirrorCards(ctx)...)
 	return cards, mirrors, nil
 }
 

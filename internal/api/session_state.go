@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/redact"
@@ -114,7 +115,7 @@ func (s *Server) SessionStatePass(ctx context.Context) error {
 	if !s.sessionStateOn() {
 		return nil
 	}
-	owners, err := s.ext.Episodes.Owners(ctx)
+	owners, err := s.stateOwners(ctx)
 	if err != nil {
 		return err
 	}
@@ -123,9 +124,39 @@ func (s *Server) SessionStatePass(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		s.sessionStateOwner(s.attentionPrincipal(ctx, o), o, &budget)
+		// 🔴 A TEAM IS ONE BECAUSE THE LIST SAYS SO (#690 round 1, 🟡4): its
+		// pass runs as the team acting principal, built from the team arm's
+		// own row — never from an account read, whose failure would build a
+		// member principal and run the team's pass as a person's (its
+		// classifier, its agents). A person-arm owner whose principal reads
+		// as a team (impossible while users.kind never changes) is skipped.
+		octx := s.attentionPrincipal(ctx, o.ID, o.Team)
+		if !o.Team && authz.MustFrom(octx).Team {
+			s.logger.Printf("session state: owner %d is listed as a person and reads as a team: skipped", o.ID)
+			continue
+		}
+		s.sessionStateOwner(octx, o, &budget)
 	}
 	return nil
+}
+
+// ownerKinder is the episode store's owner list with each owner's kind
+// (sessionstate.PG.OwnerKinds), asserted so a store without it lists persons.
+type ownerKinder interface {
+	OwnerKinds(ctx context.Context) ([]sessionstate.Owner, error)
+}
+
+// stateOwners is who the pass visits, and what each is.
+func (s *Server) stateOwners(ctx context.Context) ([]sessionstate.Owner, error) {
+	if k, ok := s.ext.Episodes.(ownerKinder); ok {
+		return k.OwnerKinds(ctx)
+	}
+	ids, err := s.ext.Episodes.Owners(ctx)
+	out := make([]sessionstate.Owner, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, sessionstate.Owner{ID: id})
+	}
+	return out, err
 }
 
 // statePass is one owner's part of a pass: what every session's step reads.
@@ -143,11 +174,25 @@ type statePass struct {
 }
 
 // sessionStateOwner is one owner's part of the pass, as that owner.
-func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *int) {
+func (s *Server) sessionStateOwner(octx context.Context, o sessionstate.Owner, budget *int) {
+	owner, team := o.ID, o.Team
 	st := s.ext.Episodes
 	open, err := st.OpenEpisodes(octx)
 	if err != nil {
 		s.logger.Printf("session state: owner %d: open episodes: %v", owner, err)
+		return
+	}
+	// 🔴 A TEAM WITH NO LIVE TOKEN HAS NO HOST TO SETTLE ITS STOPS (#690 round
+	// 1, 🟡2): its last token was revoked, so nothing will list its windows
+	// again under it. Every open episode ends 'gone', and the deferred clear
+	// withdraws each shown push from the team's operators and managers — as a
+	// person's window gone from its host ends. A token minted again opens a
+	// stop's next episode from its window, carrying its push (resumedReasons).
+	if team && !o.Live {
+		defer s.clearEndedEpisodes(octx, owner)
+		for _, ep := range open {
+			s.endEpisode(octx, ep, sessionstate.EndGone, s.now())
+		}
 		return
 	}
 	byKey := map[string]sessionstate.Episode{}
@@ -189,7 +234,19 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 			dropped[h.Host] = h.OfflineSince
 		}
 	}
-	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner), hs: hs}
+	sp := statePass{owner: owner, budget: budget, now: s.now(), hs: hs}
+	// 🔴 A TEAM'S PASS (team sharing 2b.3; sessionstate.PG.Owners' team arm)
+	// RUNS NO CLASSIFIER AND NO CHIEF: the stall classifier is a model call on
+	// a session's last message, and a team's transcripts reach no person's
+	// model or chief (G4, D-1113 #10) — nor, in 2b, a team chief's: the
+	// nudge sweep and its live judging stay persons only. A team episode is the
+	// deterministic state alone: waiting on a prompt, needing you, done. Nor
+	// are a team's AGENTS' conversations episodes here: the arm is for team
+	// HOSTS (it visits only a team holding a mirror token), and a team agent's
+	// stops are not designed in 2b.
+	if !team {
+		sp.cl, sp.judges = s.stateClassifier(octx), s.episodeChiefJudges(octx, owner)
+	}
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
@@ -198,6 +255,9 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {
 		if c.OtherUser || c.Chief || c.Officer {
+			continue
+		}
+		if c.Kind == chiefnudge.KindAgent && team {
 			continue
 		}
 		if c.Kind == chiefnudge.KindAgent {

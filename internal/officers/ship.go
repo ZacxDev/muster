@@ -132,6 +132,13 @@ type Ship struct {
 	// Shepherd is a StageShepherd officer's `shepherd` block (shepherd.go):
 	// whose pull requests it acts on. nil on every other stage.
 	Shepherd *Shepherd
+	// DocsOnly is a draft officer's `docs_only` block (ship_docs.go): nil
+	// for an officer whose pull requests may touch any path its forbidden
+	// list allows.
+	DocsOnly *DocsOnly
+	// InternalPatternsFile is the local file of internal-details patterns
+	// that repositories marked public are scanned with (ship_docs.go).
+	InternalPatternsFile string
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string
@@ -237,7 +244,11 @@ type declaredShip struct {
 	SensitivePaths     []string `json:"sensitive_paths"`
 	ForbiddenPaths     []string `json:"forbidden_paths"`
 	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
-	Notice             *struct {
+	// Public, DocsOnly and InternalPatternsFile are ship_docs.go's.
+	Public               bool            `json:"public"`
+	DocsOnly             json.RawMessage `json:"docs_only"`
+	InternalPatternsFile string          `json:"internal_patterns_file"`
+	Notice               *struct {
 		Path    string `json:"path"`
 		Channel string `json:"channel"`
 	} `json:"notice"`
@@ -328,6 +339,9 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		return nil, err
 	}
 	s.Repos = repos
+	if err := parseDocsAndPublic(s, d); err != nil {
+		return nil, err
+	}
 	primary, _ := s.RepoFor(repo, repo)
 	s.Base, s.BranchPrefix, s.AppID, s.AppAccount = primary.Base, primary.BranchPrefix, primary.AppID, primary.AppAccount
 	// 🔴 A DRAFT OFFICER NEEDS NO CHECKS: nothing it can call reads them. A

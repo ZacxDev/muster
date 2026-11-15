@@ -47,20 +47,26 @@ type myTeamsReader interface {
 	MyTeams(ctx context.Context, user int64) ([]users.MyTeam, error)
 }
 
-// teamMembershipEnded is a person removed from team: the sweep, and their
-// open terminals on the team's agents closed (closeTeamTerminals).
+// teamMembershipEnded is a person removed from team: the sweep, and every
+// request they hold open on the team's surface ended (closeTeamLive: its
+// agents' terminals, its hosts' views, their event streams subscribed to it).
 func (s *Server) teamMembershipEnded(team, person int64) {
-	s.closeTeamTerminals(team, person)
+	s.closeTeamLive(team, person, "", false)
 	s.withdrawTeamItemsFrom(team, person)
 }
 
-// teamRoleSet is a person's role in team set to role: the sweep, and their
-// open terminals on the team's agents closed, when the new role is below
-// operator (a viewer receives no team push and opens no terminal). An add at
-// viewer sweeps too, which closes nothing the person was shown.
+// teamRoleSet is a person's role in team set to role: every request they hold
+// open on the team's surface that role no longer reaches is ended
+// (closeTeamLive: below operator, a team agent's terminal), and, when the new
+// role is below operator, the sweep (a viewer receives no team push and opens
+// no terminal). An add at viewer sweeps too, which closes nothing the person
+// was shown.
 func (s *Server) teamRoleSet(team, person int64, role authz.TeamRole) {
-	if role.Valid() && !role.AtLeast(authz.TeamOperator) {
-		s.closeTeamTerminals(team, person)
+	if !role.Valid() {
+		return
+	}
+	s.closeTeamLive(team, person, role, true)
+	if !role.AtLeast(authz.TeamOperator) {
 		s.withdrawTeamItemsFrom(team, person)
 	}
 }
@@ -134,6 +140,33 @@ var withdrawableTeamKinds = []withdrawableTeamKind{
 	{"drafts", (*Server).openTeamDrafts},
 	{"tasks in review", (*Server).openTeamReviews},
 	{"officer cap holds", (*Server).openTeamCapHolds},
+	{"session episodes", (*Server).openTeamEpisodes},
+}
+
+// openTeamEpisodes is team's session episodes whose push is shown (team
+// sharing 2b.3, the state pass's team arm): open ones pushed, and ended ones
+// not yet cleared — each withdrawn under its episode key's tag, as
+// clearEpisode closes it (#690 round 1, 🟡1).
+func (s *Server) openTeamEpisodes(ctx context.Context, team int64) ([]withdrawal, error) {
+	if s.ext.Episodes == nil {
+		return nil, nil
+	}
+	open, err := s.ext.Episodes.OpenEpisodes(ctx)
+	ended, uerr := s.ext.Episodes.Uncleared(ctx)
+	if err == nil {
+		err = uerr
+	}
+	var out []withdrawal
+	seen := map[int64]bool{}
+	for _, ep := range append(open, ended...) {
+		if ep.Owner != team || ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() || seen[ep.ID] {
+			continue
+		}
+		seen[ep.ID] = true
+		key := episodeKey(ep.ID)
+		out = append(out, withdrawal{key, attentionTag(key)})
+	}
+	return out, err
 }
 
 // openTeamAsks is team's open asks (escalation notices included): their

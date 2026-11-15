@@ -99,7 +99,7 @@ func (s *Server) handleMirrorTerminalScroll(w http.ResponseWriter, r *http.Reque
 		scrollRefuse(w, ui.ScrollRefusalUnsupported, http.StatusNotFound, "mirroring is off")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	r.Body = http.MaxBytesReader(w, r.Body, mirrorScrollBodyMax)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "the request is too large", http.StatusRequestEntityTooLarge)
 		return

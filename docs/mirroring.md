@@ -1861,13 +1861,41 @@ server and its own `muster-mirror`.
   only; every owner-authority tool, estate read and page tool is refused
   ([auth.md](auth.md#teams), "Team hosts"). A team host token is never served
   to another muster instance's remote calls.
-- **What members see in this version.** A team host session's
-  `attention_ask` shows on every member's Attention. The team host's sessions
-  themselves are listed to its members in a later release (2b.3).
+- **What members see (team sharing 2b.3).** Every member — viewer and up —
+  sees the team host's sessions in the sidebar and the session switcher,
+  under the team's name, below their own; a member's own host of the same
+  name is a separate entry. A team session's pages and sockets name the team
+  (`owner=<team id>` beside `host=&session=&window=`). A member can open the
+  Rendered view and the terminal **read-only**, see its subagents and its
+  questions, and scroll its terminal (which moves it for every watcher). A
+  team host session's `attention_ask` shows on every member's Attention, and
+  an operator answers it there.
+- **Not on a team session in this version.** Typing — the composer, live
+  keys, the send queue, answering a question in the pane — comes with team
+  operators in a later release; the composer is drawn disabled and says so.
+  The chief panel, proposals, succession and suggested replies are **off** on
+  team sessions (they would send the team's transcript to a person's model or
+  chief), and their routes answer 403. A team session has no focus title, no
+  Preview button, and none of the viewer's own pins, tags or names. Opening
+  a team session does not settle its waiting stop: it settles when the window
+  moves on.
+- **Waiting and done pushes.** A team host session that waits on a prompt,
+  or stops, is an episode of the team's, like a person's: its operators and
+  managers get one push each (never a viewer), under each member's own
+  notify switch, mutes and rate cap. No stall classifier runs for a team.
+- **Leaving a team ends what you hold open.** A member removed from the team
+  (here, on another replica, or from the CLI) has the team host's pages,
+  sockets and their event stream ended within 10 seconds; the page
+  reconnects with the teams they are in then. A member who is added sees the
+  team's sessions from their next page load.
 - **A personal host becoming a team host.** That is the same machine
   reconnecting with a team token: its personal entry goes offline and a team
-  entry comes online. Nothing the sessions had moves; to keep history, run two
-  `muster-mirror` daemons on two tmux servers, one personal and one team.
+  entry comes online, and the team's view of its sessions **starts empty**.
+  Nothing the sessions had moves: their history, asks, queued sends, names,
+  pins and tags stay the personal owner's. To keep both, run two
+  `muster-mirror` daemons on two tmux servers on the machine, one personal and
+  one team; they show as two hosts, and neither's sessions appear under the
+  other owner.
 - **One connection at a time.** While the team host is connected, a second
   connection with its token is held for a manager's confirmation on
   `/teams/<id>/hosts`, instead of replacing it (a personal host's newer

@@ -536,6 +536,11 @@ func (m *isoMirror) LiveTokenHosts(context.Context) ([]string, error) { return n
 // HostToken: no connection is tracked.
 func (m *isoMirror) HostToken(context.Context, string) (int64, bool) { return 0, false }
 
+// VisibleHosts: the isolation walk's team host (isoMirror.team), to its
+// members on a door that carries teams; nothing else (each route reads its
+// own entries through Hosts).
+func (m *isoMirror) VisibleHosts(ctx context.Context) []mirror.HostView { return m.teamVisible(ctx) }
+
 // ScrollWindow: A's host advertises no scrolling (Hosts sets no PaneScroll), so
 // the route answers 409 for A before asking; as B it must 404 before that.
 func (m *isoMirror) ScrollWindow(ctx context.Context, host, _, _ string, _ int) error {

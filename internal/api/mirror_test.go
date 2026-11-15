@@ -139,6 +139,18 @@ type fakeMirror struct {
 	noHosts bool
 	// shown is the mirror.ShownSession each PasteWindow named, in order.
 	shown []string
+	// teamHosts is what VisibleHosts lists beside nothing of the fake's own
+	// (team sharing 2b.3): team hosts, each with its Owner.
+	teamHosts []mirror.HostView
+}
+
+// VisibleHosts is the fake's TEAM hosts only (f.teamHosts, as given, for
+// every principal): its callers read their own entries through Hosts, and a
+// test of a team host's view sets this.
+func (f *fakeMirror) VisibleHosts(context.Context) []mirror.HostView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]mirror.HostView(nil), f.teamHosts...)
 }
 
 // HostToken answers f.hostTok for the host's owner.

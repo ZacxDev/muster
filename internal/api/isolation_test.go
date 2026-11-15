@@ -1609,6 +1609,9 @@ type isoObjs struct {
 	device                         int64  // a paired device's id (0039)
 	agentName, connName, tag, link string
 	mirrorHost, mirrorSession      string
+	// mirrorOwner, when set, is a TEAM whose host the mirror routes name
+	// (`owner=`, team sharing 2b.3): the team-host leg of teamRoleWalks.
+	mirrorOwner int64
 	queued                         int64  // a queued message's id (0019)
 	upload                         string // a file attachment's public id (0024)
 	route                          string // a session route's id (0021)
@@ -1772,12 +1775,28 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	}
 	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
 		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
+		q := url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}
+		if o.mirrorOwner != 0 {
+			// A team host's entry: owner= on every route, in the URL (where
+			// mirrorTeamGate reads it on every route) and, for a POST, in its
+			// form too (where the scroll's view rule and mirrorEntry read it).
+			path += "?" + url.Values{"owner": {strconv.FormatInt(o.mirrorOwner, 10)}}.Encode()
+			if method != http.MethodPost {
+				path += "&"
+			}
+			q.Set("owner", strconv.FormatInt(o.mirrorOwner, 10))
+		} else if method != http.MethodPost {
+			path += "?"
+		}
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.
-			return method, path, url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}, "text": {"iso-write"},
-				"kind": {"terminal"}, "password": {"iso-not-the-password"}, "lines": {"3"}}.Encode()
+			q.Set("text", "iso-write")
+			q.Set("kind", "terminal")
+			q.Set("password", "iso-not-the-password")
+			q.Set("lines", "3")
+			return method, path, q.Encode()
 		}
-		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
+		path += q.Encode()
 	}
 	if path == "/ui/focus/history" {
 		// Focus history (0022) names its session by a query parameter: A's agent.
@@ -2612,11 +2631,30 @@ func (s *isoStream) text() string {
 type isoMirror struct {
 	owner int64
 	host  string
+	// teamOwner, when set, is a TEAM owning teamHost (team sharing 2b.3):
+	// listed by VisibleHosts to its members (Principal.TeamScope), as
+	// mirror.Service does, and nobody else. teamHost carries the TEAM's
+	// canary, so the walk can tell its leak from one of A's.
+	teamOwner int64
+	teamHost  string
 }
 
 func (m *isoMirror) mine(ctx context.Context) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && p.UserID == m.owner
+}
+
+// teamVisible is the team's host, for a principal that is a member of it on a
+// door that carries teams (Principal.TeamScope), else nothing.
+func (m *isoMirror) teamVisible(ctx context.Context) []mirror.HostView {
+	p, ok := authz.From(ctx)
+	if m.teamOwner == 0 || !ok || p.All() {
+		return nil
+	}
+	if _, in := p.TeamScope().RoleIn(m.teamOwner); !in {
+		return nil
+	}
+	return []mirror.HostView{{Owner: m.teamOwner, Host: m.teamHost, Sessions: []string{"main"}, Online: true}}
 }
 
 func (m *isoMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
@@ -2888,6 +2926,29 @@ func (w *isoWorld) addTeamOf(t *testing.T, manager, operator int64) (int64, stri
 	return team.ID, "cnryt" + w.suffix
 }
 
+// objTeamHost is A's objects with the mirror routes aimed at team's host
+// (isoMirror.teamHost, named with teamCanary) instead of A's own.
+func (w *isoWorld) objTeamHost(team int64, teamCanary string) isoObjs {
+	o := w.objA
+	o.mirrorHost, o.mirrorOwner = teamCanary+"-host", team
+	if m, ok := w.srv.ext.Mirror.(*isoMirror); ok {
+		m.teamOwner, m.teamHost = team, o.mirrorHost
+	}
+	return o
+}
+
+// mirrorRoutes is the routes of routes that name a mirrored entry
+// (mirrorTeamRoutes, but for the host doors, which take no owner=).
+func mirrorRoutes(routes []string) []string {
+	var out []string
+	for _, r := range routes {
+		if rule, ok := mirrorTeamRoutes[r]; ok && rule != mirrorTeamHostDoor {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // teamRoleWalks walks B's browser session over every route once per role B
 // can hold in team — none, viewer, operator, manager (phase 2a). In EVERY
 // role B sees none of A's personal rows (checkOutsider, A's canary). As a
@@ -2900,6 +2961,9 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 	t.Helper()
 	store := users.NewPG(w.pool)
 	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	// The team's host is online for the whole walk, every route included —
+	// the sidebar's too, which lists it to members only (VisibleHosts).
+	teamHost := w.objTeamHost(team, teamCanary)
 	for _, role := range []string{"none", "viewer", "operator", "manager"} {
 		if role == "none" {
 			if err := store.RemoveTeamMember(w.sys, by, team, w.b.uid); err != nil {
@@ -2910,6 +2974,38 @@ func (w *isoWorld) teamRoleWalks(t *testing.T, team int64, teamCanary string, ro
 		}
 		before, aBefore := teamTask(), w.snapshot()
 		results := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}}, routes)
+		// THE TEAM HOST LEG (team sharing 2b.3; design E, the isolation walk):
+		// every mirror route again, naming the TEAM's host (owner=), whose
+		// name carries the team's canary. Counted with the rest below: a
+		// non-member sees it on no route; a member (viewer and up) does.
+		hostResults := w.walkAs(w.b, teamHost, []cred{{sessionUser: w.b.uid}}, mirrorRoutes(routes))
+		hostSaw := 0
+		for _, res := range hostResults {
+			if strings.Contains(res.body, teamCanary+"-host") {
+				hostSaw++
+				if role == "none" {
+					t.Errorf("LEAK: B, NOT a member, %s %s → %d carries the team HOST's canary\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+				}
+			}
+		}
+		if role != "none" && hostSaw == 0 {
+			t.Errorf("CONTROL: B as the team's %s saw the team's HOST on no mirror route: the team-host leg is not reaching it", role)
+		}
+		if role == "none" {
+			// No oracle: a non-member naming the team's REAL host is answered
+			// exactly as naming a host the team does not have.
+			ghost := teamHost
+			ghost.mirrorHost = "ghost-host"
+			byRoute := map[string]int{}
+			for _, res := range w.walkAs(w.b, ghost, []cred{{sessionUser: w.b.uid}}, mirrorRoutes(routes)) {
+				byRoute[res.via+" "+res.route] = res.status
+			}
+			for _, res := range hostResults {
+				if g := byRoute[res.via+" "+res.route]; g != res.status {
+					t.Errorf("DISTINGUISHABLE: B, NOT a member, %s %s answered %d about the team's host but %d about a host it does not have", res.via, res.route, res.status, g)
+				}
+			}
+		}
 		w.checkOutsider(t, "B as the team's "+role, results)
 		w.sameRows(t, "B's walk as the team's "+role, aBefore)
 		saw := 0

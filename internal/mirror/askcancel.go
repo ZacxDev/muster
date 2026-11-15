@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 )
 
@@ -107,7 +108,7 @@ func (h *Hub) CancelAsk(ctx context.Context, owner int64, host, session, window 
 
 // CancelAsk is Hub.CancelAsk for the viewing principal's host.
 func (s *Service) CancelAsk(ctx context.Context, host, session, window string) (string, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return "", err
 	}

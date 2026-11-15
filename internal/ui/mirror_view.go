@@ -77,6 +77,11 @@ type MirrorViewView struct {
 	// Tags is the viewer's own tags on the tmux session (internal/sessiontags),
 	// drawn in the header after the title (sessionTagsHead); nil for none.
 	Tags []string
+	// Owner is a TEAM host's owner (MirrorRef.Owner), 0 for the viewer's own;
+	// TeamNote, set on a team host's session, is what its disabled composer
+	// says: a member watches it here, and typing comes later (2b.4).
+	Owner    int64
+	TeamNote string
 	// Interactive: the host advertised -interactive, so the composer is offered
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
@@ -173,7 +178,7 @@ func MirrorViewOnlyNote(kind string) string {
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
 // opt out of boost), with its own socket and script.
 func MirrorViewPage(v MirrorViewView) g.Node {
-	ref := MirrorRef{Host: v.Host, Session: v.Session, Window: v.Window}
+	ref := MirrorRef{Owner: v.Owner, Host: v.Host, Session: v.Session, Window: v.Window}
 	composer := ComposerView{SendPath: MirrorSendPath, Host: v.Host, Session: v.Session, Window: v.Window,
 		Placeholder: "Message Claude…", Aria: "Message Claude in this session", DisabledPlaceholder: "Read-only host",
 		Notice: v.Notice, NoticeOK: v.NoticeOK, Nonce: v.Nonce, Dictate: v.Dictate, Upload: v.Upload, Queue: v.Queue,
@@ -216,6 +221,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
+	}
+	if v.TeamNote != "" {
+		// A TEAM host's session (team sharing 2b.3): watched, not typed into.
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue, composer.DraftKey = v.TeamNote, "Watching a team session", nil, ""
+		composer.Suggest, composer.SuggestPaused = "", false
 	}
 	if v.Chief {
 		agent := "Claude"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 )
 
@@ -172,7 +173,7 @@ func (hc *hostConn) resumeSpawned(m Msg) {
 // SpawnResume asks one of the viewing principal's hosts to resume Claude Code
 // session sid in a new window. See Hub.SpawnResume.
 func (s *Service) SpawnResume(ctx context.Context, host, sid string) (ResumedWindow, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return ResumedWindow{}, err
 	}

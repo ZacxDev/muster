@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -145,7 +146,7 @@ func (h *Hub) relayOpenCodeAnswer(ctx context.Context, hc *hostConn, session, wi
 
 // AnswerOpenCodeAsk is Hub.AnswerOpenCodeAsk for the viewing principal's host.
 func (s *Service) AnswerOpenCodeAsk(ctx context.Context, host, session, window, promptID, choice string) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return err
 	}

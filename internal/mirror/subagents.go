@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/ccsubagents"
@@ -295,7 +296,7 @@ func (hc *hostConn) subagentTailed(m Msg) {
 // SubagentTail is Hub.SubagentTail for the viewing principal (ctx's). No
 // step-up: it reads, and types nothing.
 func (s *Service) SubagentTail(ctx context.Context, host, session, window, agent string) (SubagentTail, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return SubagentTail{}, err
 	}

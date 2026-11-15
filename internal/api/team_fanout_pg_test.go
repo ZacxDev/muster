@@ -645,29 +645,38 @@ func refreshedFor(streams map[int64]<-chan sse.Event, key string, people ...int6
 }
 
 // TestATeamItemRefreshesItsMembersPages (#683 round 0, Q1, operator
-// decision): when a TEAM owns an item, attentionChanged also refreshes the
-// open Attention and ask pages of the team's current operators and managers
-// — the operator whose notify switch is off included (a page refresh is not
-// a push) — and of no viewer, ex-member, disabled operator or outsider. Both
-// of #671's refresh points (an outreach batch arriving, and decided) are
-// covered, and so are a team ask's and a team draft's. Red at bfcf934d,
-// where the refresh named the team, which no page subscribes to.
+// decision; reworked by team sharing 2b.3): when a TEAM owns an item,
+// attentionChanged's one event reaches the open pages of the team's current
+// members through their own streams, which subscribe to each of their teams
+// (streamOwners, the rule handleEvents subscribes by) — the operator whose
+// notify switch is off included (a page refresh is not a push), and since
+// 2b.3 a VIEWER too, whose pages read the team's items at viewer — and no
+// ex-member's or outsider's. (A disabled member holds no stream: the session
+// tier refuses and ends it.) Both of #671's refresh points (an outreach batch
+// arriving, and decided) are covered, and so are a team ask's and a team
+// draft's. Red at bfcf934d, where the refresh named the team, which no page
+// subscribed to; 2b.1 then sent each operator a copy (teamViewRecipients),
+// which 2b.3's subscriptions replace.
 func TestATeamItemRefreshesItsMembersPages(t *testing.T) {
 	w := newIsoWorld(t)
 	f, _ := newFanTeam(t, w)
 	streams := map[int64]<-chan sse.Event{}
 	for _, id := range f.everyone() {
-		sub, ch := w.bus.Subscribe(id)
+		if id == f.dis {
+			continue
+		}
+		sub, ch := w.bus.Subscribe(streamOwners(w.personAt(t, id, authz.ViaSession))...)
 		streams[id] = ch
 		t.Cleanup(func() { w.bus.Unsubscribe(sub) })
 	}
-	want := ids(f.ana, f.ben, f.off)
+	people := []int64{f.ana, f.ben, f.cal, f.dee, f.off, f.gone}
+	want := ids(f.ana, f.ben, f.cal, f.off)
 	check := func(what, key string) {
 		t.Helper()
 		w.srv.WaitForPushes()
-		if got := refreshedFor(streams, key, f.everyone()...); !sameIDs(got, want) {
-			t.Errorf("%s refreshed the pages of %v; want the team's operators and managers %v (never viewer %d, ex-member %d, disabled %d, outsider %d)",
-				what, got, want, f.cal, f.gone, f.dis, f.dee)
+		if got := refreshedFor(streams, key, people...); !sameIDs(got, want) {
+			t.Errorf("%s refreshed the pages of %v; want the team's members %v (never ex-member %d, outsider %d)",
+				what, got, want, f.gone, f.dee)
 		}
 	}
 	dm, follow, batch := fanDrafts(t, w, f.team)
@@ -706,7 +715,7 @@ func TestATeamItemRefreshesItsMembersPages(t *testing.T) {
 
 	// CONTROL: a person's item refreshes their own page alone.
 	w.srv.attentionChanged(f.ben, "fan-own-key")
-	if got := refreshedFor(streams, "fan-own-key", f.everyone()...); !sameIDs(got, ids(f.ben)) {
+	if got := refreshedFor(streams, "fan-own-key", people...); !sameIDs(got, ids(f.ben)) {
 		t.Errorf("a personal item refreshed the pages of %v; want only its owner %d", got, f.ben)
 	}
 }

@@ -83,13 +83,17 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The viewer opened this window (best-effort): its "recently viewed"
-	// entry, and its open stop ends (session_viewed.go).
+	// entry, and its open stop ends (session_viewed.go). Neither on a TEAM
+	// host's (team sharing 2b.3; the terminal page says why).
+	team := onTeamHost(r)
 	vctx := op.begin("visit")
-	s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
-	s.episodeViewedMirror(vctx, r, h, e)
+	if !team {
+		s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
+		s.episodeViewedMirror(vctx, r, h, e)
+	}
 	ctx := op.begin("view")
-	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
-		SessionName: s.mirrorName(ctx, e), StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+	v := ui.MirrorViewView{Owner: e.Owner, Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
+		SessionName: s.mirrorNameUnlessTeam(r.WithContext(ctx), e), StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
 		LiveCopy: e.LiveCopyWarning(),
@@ -116,6 +120,29 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		if rt.GatedSend {
 			v.AgentSession = e.AgentSession
 		}
+	}
+	// 🔴 A TEAM HOST'S SESSION (team sharing 2b.3) IS WATCHED, AND EVERY
+	// EXTRA THAT IS THE VIEWER'S OWN IS LEFT OUT: its composer is drawn
+	// disabled (typing is 2b.4's) with no queue; no rename offer or focus
+	// history (G4: no focus titles); no chief mode, succession or suggested
+	// replies (each would send the transcript to the viewer's own model or
+	// chief — G4, D-1113 #10; their routes answer 403 there,
+	// mirrorTeamRoutes); no tags, asks block or preview (the viewer's own,
+	// keyed by host name). Its Attention asks are on the Attention page.
+	if team {
+		v.TeamNote, v.FocusHistory = MirrorTeamComposerNote, ""
+		v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e)})
+		v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
+		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
+		viewDocument(w)
+		op.serverTiming(w)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		op.begin("render")
+		if err := ui.MirrorViewPage(v).Render(w); err != nil {
+			outcome = telemetry.ReasonError
+			s.logger.Printf("mirror: render team view page: %v", err)
+		}
+		return
 	}
 	// The rename offer, when the conversation has moved on from its name.
 	v.Drift = s.mirrorDrift(r, e, v.SessionName)
@@ -250,7 +277,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still
 	// running across the reconnect is attributed when its next turn arrives.
-	lkey := ledgerKey{requestOwner(r.Context()), host, session, window}
+	lkey := ledgerKey{mirrorTarget(r), host, session, window}
 	if drawn.Resumed {
 		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
 			drawn.RestoreLedger(l)
@@ -262,7 +289,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// own poll is the fallback.
 	sctx := op.begin("subscribe")
 	if h, e, _, _, ok := s.mirrorEntry(r.WithContext(sctx), host, session, window); ok && e.ClaudeSession != "" {
-		changed, stop := s.askSubscribe(askWatchKey{requestOwner(r.Context()), h.Host, e.ClaudeSession})
+		changed, stop := s.askSubscribe(askWatchKey{mirrorTarget(r), h.Host, e.ClaudeSession})
 		defer stop()
 		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
 			for {
@@ -278,7 +305,12 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// Suggested replies (suggest.go): this socket's tracker — nil when the
 	// window cannot have any — fed every batch, and the page told what its
 	// turn ends make of them.
-	sg := s.suggestSocket(live, r.WithContext(telemetry.Detached(r.Context())), c, host, session, window, drawn.Resumed)
+	// None on a team host's session (G4: suggested replies run on the viewer's
+	// own key; mirrorTeamRoutes refuses their routes there).
+	var sg *suggestSocket
+	if !onTeamHost(r) {
+		sg = s.suggestSocket(live, r.WithContext(telemetry.Detached(r.Context())), c, host, session, window, drawn.Resumed)
+	}
 	// What the hub measures of the open (the round trip to the host, the
 	// host's own phases) lands here before the first batch is handed on.
 	var stats mirror.OpenStats

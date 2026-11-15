@@ -45,6 +45,12 @@ on:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
+  # ⚠ NO `schedule` (nightly) TRIGGER, ON PURPOSE (PR #691): a scheduled run
+  # lands on main's HEAD sha, and the downstream release tool refuses a sha
+  # unless EVERY CI run for it succeeded (see the tag filter above) — so one
+  # flaky nightly would block releasing that sha. The `schedule` branches in
+  # the `test` job (restore no cache) are ready for a nightly that does not
+  # count against a release; adding one is the operator's call.
 
 # 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
 # CANCELLED OR DROPPED. A newer commit on a PR supersedes the older run of the
@@ -196,14 +202,78 @@ jobs:
       # executed all of it. A skip is invisible in a verdict. With it, an
       # unavailable database is a hard failure that names the variable.
       MUSTER_TEST_REQUIRE_DB: "1"
+      # 🔴 A PER-RUN VALUE, READ ONLY BY THE TESTS WHOSE RESULT GO'S TEST CACHE
+      # MUST NEVER REPLAY: each runs `go list ./...` (or similar) in a subprocess,
+      # whose reads the cache cannot see. Go keys a cached result on every
+      # variable the test read, so a new value here is always a cache miss for
+      # them. The readers: `git grep -n MUSTER_TEST_NOCACHE -- '*_test.go'`.
+      MUSTER_TEST_NOCACHE: ${{ github.run_id }}-${{ github.run_attempt }}
+      # No __pycache__ in the tree from the python steps: a directory listing a
+      # Go test reads would then differ on every run.
+      PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
+      # Full history: the test selection below diffs against the PR's base or
+      # the push's `before`, which a depth-1 clone does not have.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
+      # 🔴 `cache: false`: setup-go's own cache is keyed on go.sum ALONE, with no
+      # restore-keys, and is saved only when that key misses — so it was saved
+      # once per go.sum by whichever job got there first and then restored,
+      # frozen, forever. Every test in this job re-ran on every run (0 of the
+      # suite's packages reported `(cached)` on main run 43722000476). The
+      # cache below replaces it for this job.
       - uses: actions/setup-go@v6
+        id: go
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
+
+      # 🔴 GO'S BUILD AND TEST CACHE, ENFORCED. Go re-runs a package whenever its
+      # test binary, the files and directories its tests opened inside the
+      # module, the environment variables they read, or the cacheable flags
+      # (-run, -timeout, …) changed; anything else replays the recorded events,
+      # which tests/verdict.py counts exactly as it counts a real run. What Go
+      # cannot see, and how each is covered:
+      #   - a file's BYTES (it keys a file on size+mode+mtime): tests/gomtime.py
+      #     below makes the mtime a function of the git object id.
+      #   - what a SUBPROCESS reads: MUSTER_TEST_NOCACHE above.
+      #   - tools outside the module (git, tmux, sh): the runner image is part
+      #     of the key AND of every restore prefix, so a new image starts cold.
+      #     The real-tmux legs below stay uncached for the same reason.
+      #   - the Postgres SERVICE container, which is NOT part of the runner
+      #     image and floats on its tag: its image DIGEST is in the key and
+      #     every prefix too, so a new server (a tag bump or a minor under
+      #     `16-alpine`) starts cold rather than replaying another server's pass.
+      # One cache per shard (the shards run different -run sets, and a cache
+      # key is written once). A restore prefix may come from an older commit;
+      # that is the point, and Go's own keys decide what it can replay.
+      # 🔴 THE NIGHTLY `schedule` RUN RESTORES NOTHING: it is the uncached full
+      # verdict that would catch a cache-replayed green.
+      - name: Go cache key
+        id: gocache
+        run: |
+          {
+            pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
+            pg=${pg#sha256:}
+            [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-${ImageVersion}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+      - name: restore Go's build and test cache
+        if: ${{ github.event_name != 'schedule' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}-
 
       # Migrate the TEMPLATE once. Skipping this does not break anything — each
       # package would bootstrap its own copy — but it is the difference between
@@ -223,6 +293,8 @@ jobs:
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
           python3 tests/tag_gate_test.py
+          python3 tests/goselect_test.py
+          python3 tests/gomtime_test.py
 
       # The repository-level checks below run once, in shard 0.
       # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
@@ -312,10 +384,77 @@ jobs:
       # 1200 s cap; two runs of the branch rebased onto main then panicked at
       # 1200 s mid-suite with nothing hung (running tests: 0-1 s each). Since
       # the split, no shard comes near it; the cap stays as the hang detector.
+      # 🔴 REVERSE-DEPENDENCY TEST SELECTION — SHADOW BY DEFAULT. tests/goselect.py
+      # names the packages whose test binaries the diff can reach (plus the
+      # always-run set, and everything on any fallback), and the ledger step
+      # below records every failure OUTSIDE that set. With the repository
+      # variable MUSTER_SELECTIVE_TESTS unset (the default) nothing is skipped:
+      # the full shard runs. Only `enforce` narrows the shard (goselect.py apply),
+      # and then the step summary says SCOPED, not a full verdict.
+      # Base: a PR's merge commit against its first parent (exactly the PR's
+      # change); a push's `before`; nothing on a tag or the nightly (full).
+      - name: select the affected Go tests (shadow unless MUSTER_SELECTIVE_TESTS=enforce)
+        id: select
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || (github.event_name == 'push' && github.ref_type == 'branch') && github.event.before || '' }}
+          SELECTIVE: ${{ vars.MUSTER_SELECTIVE_TESTS == 'enforce' && 'enforce' || 'off' }}
+        run: |
+          python3 tests/goselect.py select --base "$BASE" --out "$RUNNER_TEMP/selection.json"
+          if [ "$SELECTIVE" = enforce ]; then
+            python3 tests/goselect.py apply --selection "$RUNNER_TEMP/selection.json" --args "$RUNNER_TEMP/go-test-args" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Directly before the suite, so no earlier step can re-stamp a file.
+      - name: content-addressed mtimes (so Go's test cache can match a fresh checkout)
+        run: python3 tests/gomtime.py
+
       - name: go test, and assert nothing skipped (one run)
+        if: ${{ steps.select.outputs.run != 'false' }}
+        # gocachetest=1 makes `go` say, per package on stderr, whether Go's
+        # test cache answered and why not ("input file … too new", a changed
+        # variable): the only account of a miss. Go hashes GODEBUG into every
+        # cached result's key, so removing it costs one cold run, nothing else.
+        env:
+          GODEBUG: gocachetest=1
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary --results-out "$RUNNER_TEMP/results.json" $(cat "$RUNNER_TEMP/verdict-args")
+
+      # The MISS LEDGER: one record per shard per run — a `SELECTIVE-LEDGER {…}`
+      # log line and the `selective-ledger-<shard>` artifact (30 days). The
+      # 7-day miss rate is computed from the artifacts (command in PR #691).
+      - name: test-selection ledger (failures outside the selection)
+        if: ${{ !cancelled() }}
+        env:
+          MODE: ${{ vars.MUSTER_SELECTIVE_TESTS == 'enforce' && 'enforce' || 'shadow' }}
+        run: >-
+          python3 tests/goselect.py ledger --selection "$RUNNER_TEMP/selection.json"
+          --results "$RUNNER_TEMP/results.json" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          --sha "$GITHUB_SHA" --event "$GITHUB_EVENT_NAME" --shard "${{ strategy.job-index }}"
+          --mode "$MODE" --out "$RUNNER_TEMP/selective-ledger.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: selective-ledger-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/selective-ledger.json
+          retention-days: 30
+
+      # Saved even when a test failed: Go never caches a failing result, and
+      # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
+      # set is ~0.55-0.75 GB per shard (measured on PR #691), the repository's
+      # cache budget is 10 GB, and a PR's cache serves only that PR — so saving
+      # per PR run would evict main's, the one every PR restores. Not on the
+      # nightly (it restored nothing) or a tag.
+      - name: save Go's build and test cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.gocache.outputs.build }}
+            ${{ steps.gocache.outputs.mod }}
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.

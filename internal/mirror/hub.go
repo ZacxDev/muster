@@ -78,6 +78,11 @@ type hostKey struct {
 // PER-SESSION host (an older muster-mirror) has no Windows, and those four are
 // what it sent.
 type HostView struct {
+	// Owner is the user (a person, or a team) whose host this is: the owner
+	// half of the hub's (owner, host) key. Two entries named alike are two
+	// owners' hosts (Service.VisibleHosts), and a caller acts on one by its
+	// Owner, never its name alone.
+	Owner    int64
 	Host     string
 	Sessions []string
 	// Windows is every window the host lists (NormalizeWindows' order); nil for
@@ -542,7 +547,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		hc.mu.Lock()
-		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
+		out = append(out, HostView{Owner: owner, Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentSpawnClones: hc.agentSpawnClones, AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
@@ -556,7 +561,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 			continue
 		}
 		if k.owner == owner {
-			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
+			out = append(out, HostView{Owner: owner, Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
 				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), GitHubRepos: maps.Clone(o.githubRepos), Colors: maps.Clone(o.colors), Interactive: o.interactive,
 				OfflineSince: o.since})
 		}

@@ -13,6 +13,8 @@ import (
 // facts beside its own. HostView.Entries and HostView.Find are the only
 // producers.
 type SessionView struct {
+	// Owner is its host's (HostView.Owner).
+	Owner   int64
 	Host    string
 	Session string
 	// Window is the tmux window id (Window.ID) the entry is; "" = the entry is
@@ -268,7 +270,7 @@ func qualify(list []SessionView) {
 func Qualified(hosts []HostView, e SessionView) SessionView {
 	e.Qualifier = ""
 	for _, s := range Ordered(hosts) {
-		if s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
+		if s.Owner == e.Owner && s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
 			e.Qualifier = s.Qualifier
 			break
 		}
@@ -423,7 +425,7 @@ func (s SessionView) ActiveAt() time.Time {
 // Entries is every entry of the host, in its own stable order: a per-window
 // host's windows (session, then index), a per-session host's sessions (name).
 func (h HostView) Entries() []SessionView {
-	base := SessionView{Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
+	base := SessionView{Owner: h.Owner, Host: h.Host, Online: h.Online, Interactive: h.Interactive, Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	if h.Windows != nil {
 		out := make([]SessionView, 0, len(h.Windows))
 		for _, w := range h.Windows {
