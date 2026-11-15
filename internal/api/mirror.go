@@ -418,10 +418,12 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
-	// None on a team host's: they are the viewer's PERSONAL viewer plugins
-	// (mirrorTeamRoutes: the preview button is own-only).
+	// On a team host's: the TEAM's viewer plugins (team sharing 2b.3b),
+	// never the viewer's own; none when the team has none.
 	var vp []plugins.Plugin
-	if !team {
+	if team {
+		vp, _ = s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
+	} else {
 		vp = s.viewerPlugins(op.begin("plugins"), e.Window)
 	}
 	v.Plugins = pluginChips(vp, e)

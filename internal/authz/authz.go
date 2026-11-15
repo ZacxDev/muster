@@ -309,6 +309,9 @@ var teamActingVias = map[Via]bool{
 	ViaTeamAdmin: true,
 	// Team sharing 2b.2: a team host's MCP door and its question watcher.
 	ViaMirrorHost: true, ViaAsk: true,
+	// Team sharing 2b.3b: a team VIEWER plugin's token, served the hand-off
+	// redeem and /self only (internal/api teamPluginRoutes).
+	ViaPlugin: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

@@ -2580,8 +2580,9 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   - `Service.Hosts` gives every entry Owner 0, so an own entry's URLs
    >     carry no `owner=` from any caller (the sidebar's highlight matches).
 3b. **2b.3b: team plugins and team previews** (operator ruling,
-   2026-11-15: its own slice, after 2b.3 merges and before 2b.4). **Design
-   delta, not built; stopped on the fork below.**
+   2026-11-15: its own slice, after 2b.3 merges and before 2b.4). **Built;
+   the fork below was decided (ii), and the two sign-offs accepted — see
+   "As built in 2b.3b" at its end.**
    - **What exists.** A viewer plugin is a person's: minted on their own form
      (`pluginCreateInput`), owned by them, read at operator under 0127
      (`plugins` is shared, read 2, write 3). A plugin's token is refused for a
@@ -2637,6 +2638,48 @@ by re-checking the migration number (D). The slices ship **in order**.
        `PLUGIN_TOKENS_FILE` by the gateway's admin, out of band.
      Recommendation: **(ii)**. The gateway change is small and in this repo,
      and without it (i) ships a button that opens nothing on a team session.
+
+   > **As built in 2b.3b (no migration).** Operator: (ii); both sign-offs
+   > accepted (a viewer opening a preview writes the hand-off as the team; a
+   > team plugin token is served the redeem and `/self` alone).
+   > - **The token.** `plugins.PGStore.Authenticate` admits an enabled person
+   >   or a team (`users.EnabledPersonOrTeamIDs`; users-read ledger
+   >   `readEnabledPersonOrTeam`) and reports `Plugin.OwnerTeam`. `ViaPlugin`
+   >   joins `teamAgentDoors` and `authz.teamActingVias` (13 doors), and
+   >   `requirePluginToken` refuses a team's token on every route outside
+   >   `teamPluginRoutes`' kept two (`POST /plugin/v1/handoffs/redeem`,
+   >   `GET /plugin/v1/self`) BEFORE its capability check
+   >   (`TeamPluginRouteRefusal`; `TestATeamPluginTokenIsServedOnlyRedeemAndSelf`,
+   >   pinned to routes.golden, fails when the set grows or shrinks).
+   >   `githubapp.Admits` is untouched: `ViaPlugin` is not in `teamAppDoors`.
+   > - **`/self`** answers `owner_kind` (`person` / `team`) and, for a team,
+   >   `team_name`. The gateway (`internal/previewgw`) parses both;
+   >   `ResolveOwner` takes `team:<id>` for a team, matching only an answer
+   >   whose owner IS that team, and a login never matches a team's answer
+   >   (`TestResolveOwnerNamesATeamByItsID`). The manual
+   >   `PLUGIN_TOKENS_FILE` step is in `docs/previews.md` ("Team previews").
+   > - **The page** `/teams/{id}/plugins` (`team_plugins_page.go`): the hosts
+   >   page's gate (managers, a fresh role read, AS THE TEAM), step-up on
+   >   mint and revoke, audited `team.plugin.create` / `.revoke`; the row has
+   >   `viewer` and nothing else (`TestOnlyAManagerMintsATeamViewerPlugin`).
+   > - **The preview.** `GET /ui/mirror/preview-button` is `mirrorTeamView`.
+   >   On a team session the pages and the button read the TEAM's viewer
+   >   plugins AS THE TEAM (`teamViewerPlugins` → `teamPreviewPrincipal`,
+   >   `ViaPlugin`, withPrincipalLedger), after a fresh viewer read
+   >   (`teamMemberNow`); with none the button says `TeamNoViewerPlugin`. The
+   >   hand-off mint takes `owner`, resolves the window over the team's hosts
+   >   (`teamHostsOf`) and mints AS THE TEAM, refusing any other owner's
+   >   plugin (`TestATeamSessionsPreviewRunsOnTheTeamsPlugin`).
+   > - 🔴 **Found while building: personal plugin paths read team rows.** A
+   >   member's session reads their teams' `plugins` rows (shared, read at
+   >   operator), so a team's viewer plugin would have been a chip of a
+   >   member's OWN window and listed, revocable and reconfigurable on their
+   >   own `/plugins` page. Each personal path now keeps the principal's own:
+   >   the chips (`liveViewerPluginsOf`), the page list, revoke, draft
+   >   checks and deliver-to (`ownsPlugin`), and the mint (`HandoffIn.Owner`,
+   >   filtered in SQL). An operator could not mint a team plugin's hand-off
+   >   anyway (the mint's `FOR UPDATE` needs the write role), a MANAGER
+   >   could; the test uses a manager.
 
 4. **2b.4: operators.**
    - Typing and step-up through `access`.

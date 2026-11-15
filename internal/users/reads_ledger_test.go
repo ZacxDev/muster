@@ -56,7 +56,7 @@ var usersReads = map[string]string{
 	"internal/users PGStore.TeamRotateReason":              readByID,                // the name of the person an audit row of the team names, for the rotate line
 	"internal/officers/builtin Store.UsersExist":           readPerson,
 	"internal/plugins PGStore.CreatePairRequest":           readEnabledPerson,
-	"internal/plugins PGStore.Authenticate":                readEnabledPerson,
+	"internal/plugins PGStore.Authenticate":                readEnabledPersonOrTeam, // a team viewer plugin (2b.3b) or an enabled person's; OwnerTeam says which
 	"internal/push PGStore.ForOwner":                       readPerson,
 	"internal/users emailTaken":                            readByID, // uniqueness over every row; a team has no email
 	"internal/users PGStore.RedeemInvite":                  readByID, // a count by GoTrue subject; a team has none

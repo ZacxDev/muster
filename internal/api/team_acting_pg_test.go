@@ -224,6 +224,13 @@ var perOwnerSites = map[string]perOwnerSite{
 	// the step-up runner refuses a team ITSELF: a team has no phone, and a
 	// team host files no card (teamHostTools refuses every owner-authority
 	// tool first).
+	// A member's preview of a TEAM session (team sharing 2b.3b): the team's
+	// viewer plugins read, and its hand-off written, as the team, through
+	// the team plugin door (called only after teamMemberNow).
+	"teamPreviewPrincipal": {actsAsTeam: true, via: authz.ViaPlugin,
+		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
+			return s.teamPreviewPrincipal(ctx, team)
+		}},
 	"stepUpPrincipal": {refusal: refusedStepUpNoTeam,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.stepUpPrincipal(ctx, team)
@@ -415,13 +422,14 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 10 || refusing != 4 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 10 and 4", acting, refusing)
+	if acting != 11 || refusing != 4 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 11 and 4", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through
 	// the very builder every site uses.
-	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice, authz.ViaToken, authz.ViaFocus, authz.ViaPlugin} {
+	// (ViaPlugin is team-acting since 2b.3b: a team viewer plugin's door.)
+	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice, authz.ViaToken, authz.ViaFocus, authz.ViaRunner} {
 		msg := panicOf(func() { authz.WithPrincipal(context.Background(), f.srv.principalFor(context.Background(), team, via)) })
 		if !strings.Contains(msg, "a team never signs in, and that door does not act as a team") {
 			t.Errorf("a team principal through %s: panic %q; want the door refusal", via, msg)

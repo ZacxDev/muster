@@ -97,6 +97,12 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    left out. `host-token ls` lists the tokens and `host-token revoke <id>`
    revokes one; a running gateway re-reads the file on every tunnel and every
    30 s.
+   **A team host** (team sharing 2b.3b): name the team as `team:<id>`
+   (`muster-preview host-token create team:12 build-01`). Only a live token
+   whose `/self` says the owner IS that team (`owner_kind` `team`) matches;
+   a login never names a team, and `team:<id>` never names a person. As for
+   a person, which owner a host is minted for is the gateway admin's
+   assertion.
 5. **The host:** save the token to a file only this user can read
    (`chmod 600`), write `previews.json`, and run `muster-mirror` with
    `-preview`, `-preview-urls ws://<mesh address>:<port>/v1/host,wss://tunnel.<zone>/v1/host`,
@@ -139,6 +145,31 @@ previews have started, the file is re-read every 5 s, and a file that turns
 invalid then turns previews off (`previews_off`) until it is fixed
 (`internal/previewhost/config.go`, `host.go`). `-preview` runs on the default
 tmux server's daemon only.
+
+## Team previews (manual step for the gateway's admin)
+
+A team session's Preview runs on the TEAM's viewer plugin, never a member's
+own (team sharing 2b.3b). muster does not hand a team's token to the gateway:
+the gateway's admin does it by hand, once per team.
+
+1. A manager of the team mints the team's viewer plugin on
+   `/teams/<id>/plugins` (a recent sign-in; origin `https://*.<zone>`, entry
+   URL `https://w.<zone>/__muster/enter`, as step 2 above). The token is
+   shown once; the manager gives it to the gateway's admin out of band.
+2. The gateway's admin appends that token to the gateway's
+   `PLUGIN_TOKENS_FILE` (one token per line) and restarts the gateway, or
+   waits for its next re-read. Its `/self` answers `owner_kind` `team` and
+   the team's `team_name`.
+3. The admin mints each team host's host token as `team:<id>` (step 4
+   above) and installs it on that machine for the Unix user the team shares.
+4. A member's Preview on a team session then opens on the team's plugin. With
+   no live team viewer plugin, the session says "This team has no viewer
+   plugin set up" and nothing falls back to the member's own.
+
+A team's plugin token is served `POST /plugin/v1/handoffs/redeem` and
+`GET /plugin/v1/self` only, and refused at every other plugin route whatever
+its row claims. Revoking it on `/teams/<id>/plugins` closes the team's
+previews within the gateway's `/self` re-check.
 
 ## How it is built
 

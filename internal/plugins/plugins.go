@@ -132,6 +132,10 @@ type Plugin struct {
 	// or its display name when it has none (the admin Users page's spelling).
 	// Set by Authenticate only, for GET /plugin/v1/self.
 	OwnerLogin string `json:"-"`
+	// OwnerTeam: the owner is a TEAM (team sharing 2b.3b: a team viewer
+	// plugin, minted by a manager on /teams/<id>/plugins). Set by
+	// Authenticate only; OwnerLogin is then the team's name.
+	OwnerTeam bool `json:"-"`
 }
 
 // Capability is one thing a plugin token may open (plugins.capabilities).
