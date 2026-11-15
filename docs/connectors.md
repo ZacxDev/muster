@@ -1,7 +1,9 @@
 # Connectors
 
 A **connector** is a stored HTTP credential: a bearer token, a header, or basic
-auth. Connectors are sealed with AES-256-GCM. An agent never receives the secret.
+auth. Connectors are sealed with AES-256-GCM. (An
+[internal_http connector](#internal-http-connectors) is configured on the
+server instead.) An agent never receives the secret.
 It calls muster's proxy instead, at `/connect/{connector}/{host}/{path…}`, and
 muster injects the credential.
 
@@ -16,7 +18,9 @@ it cannot clone asks for `github` itself, before its session starts
 grant lasts until the agent is destroyed, the grant or the shared approval it
 came from is revoked, or the connector is deleted. Connectors handle HTTP —
 and one database kind, [postgres](#postgres-connectors), whose queries
-muster-server runs itself.
+muster-server runs itself. An [internal_http](#internal-http-connectors)
+connector is also HTTP, but muster-server sends the call to one service fixed
+in its configuration.
 
 **The `github` connector can come from a GitHub App.** When
 `MUSTER_GITHUB_APP_ID` and `MUSTER_GITHUB_APP_PRIVATE_KEY` are set, `github` is
@@ -99,9 +103,11 @@ The query fails with a `connect` error that says it refused a non-public
 address.
 
 It is **off by default**, so a self-hosted install whose database is on the same
-machine or network keeps working. It covers postgres connectors only:
-[Web Push](push.md#which-push-services) sends go to the push hosts the operator
-configures and are not checked. The HTTP connector proxy at `/connect/` refuses
+machine or network keeps working. It covers postgres connectors only. An
+[internal_http connector](#internal-http-connectors)'s service is the admin's
+own choice and is not checked.
+[Web Push](push.md#which-push-services) sends are not checked either: they go to the push hosts the operator
+configures. The HTTP connector proxy at `/connect/` refuses
 these addresses whether or not it is set. The boot log has a `dial guard: ON` or
 `dial guard: OFF` line.
 
@@ -210,6 +216,142 @@ Secret), and the two `ALTER ROLE … SET` lines run once by hand.
    admin may ask the same way; revoking its grant stops it at the next call.
 6. **Check it.** The audit trail on the Connectors tab shows a `query` row per
    call, and a refused write reads `class=read_only`.
+
+## Internal HTTP connectors
+
+An **internal_http connector** lets an agent call one HTTP service that an
+admin fixed in muster-server's configuration, such as an in-cluster service
+that the proxy at `/connect/` would refuse. The agent never chooses where the
+request goes and never holds the service's credential.
+
+The HTTP proxy refuses every non-public address because the agent picks the
+host there, in the request path. If that rule did not exist, an agent could aim
+a request that carries a credential at anything inside the network (SSRF).
+Here the host is not the agent's to pick: the admin sets it at boot, and no tool
+argument can change it. That is why the private-address rule is not applied to
+this one kind. The proxy and every other connector kind still refuse private
+addresses. `TestOtherConnectorKindsStillRefusePrivateAddresses` checks this.
+
+### Configuration
+
+Each connector is declared in `MUSTER_INTERNAL_HTTP_CONNECTORS`. Its bearer
+token goes in a separate variable,
+`MUSTER_INTERNAL_HTTP_TOKEN_<NAME>`
+([configuration.md](configuration.md)):
+
+```json
+[{"name": "app-driver",
+  "base_url": "http://app-driver.example.internal:8080",
+  "path_prefix": "/v1/",
+  "max_response_bytes": 8388608,
+  "timeout_seconds": 60}]
+```
+
+| field | default | |
+|---|---|---|
+| `name` | required | A connector name. `github` and `kube-read` are refused. |
+| `base_url` | required | `http://` or `https://`, a host and an optional port. Anything else is refused: a path, a user, a query or a fragment. |
+| `path_prefix` | `/v1/` | Every call's path must start with it. Each segment is plain: no `.` or `..`. |
+| `max_response_bytes` | 8 MiB | The response cap, from 1 KiB to 32 MiB. A larger response is refused, not cut, so a screenshot is never returned half-finished. |
+| `timeout_seconds` | 30 | The per-call timeout, from 1 to 300. |
+
+A `token` field is refused, because the token only ever comes from its
+variable. A declaration with an error stops the server from starting, and so
+does a missing token. The server also needs `MUSTER_CONNECTOR_ENCRYPTION_KEY`.
+Each connector gets one boot log line that names the service and the cap, but
+never the token.
+
+**Only admins' agents see one.** It is a virtual connector, like
+[`kube-read`](#the-kube-read-connector), shown only to an admin
+principal. A member's agent finds no connector of that name.
+
+### The tool: `internal_http_request`
+
+```
+internal_http_request {connector, method, path, query?, body?}
+→ {status, content_type, body | body_base64, bytes, max_bytes, duration_ms}
+```
+
+- **The arguments are exactly those five.** Any other key is refused, not
+  ignored. That includes `url`, `host`, `base_url` and `headers`.
+- **`method`** is `GET`, `POST` or `DELETE`. Every other method is refused
+  before anything is sent.
+- **`path`** must start with the connector's prefix. It may contain only
+  letters, digits, `/`, `.`, `_`, `~` and `-`. muster refuses the path, and does
+  not try to repair it, if it is any of these:
+  - an absolute URL;
+  - a path that starts with `//`;
+  - a path that has an empty segment, or a `.` or `..` segment;
+  - a path with any percent-escape (`%2e%2e`, `%2f`, `%5c`);
+  - a path with a backslash, `?`, `#`, `@`, `:` or whitespace.
+
+  muster builds the request URL itself: it takes the scheme and host from
+  `base_url`, and the path is the validated string.
+- **`query`** holds names and values. muster encodes them, so a value that
+  looks like a URL is still only a value.
+- **`body`** is a JSON value, accepted for `POST` only, and sent as
+  `application/json`. The limit is 1 MiB.
+- **The answer** contains the status, the `Content-Type` and the body.
+  A text body (`text/*`, JSON or XML that is valid UTF-8) comes back as
+  `body`. Any other body, such as an image, comes back as `body_base64`.
+  No other response header is returned. A redirect is returned as it is and
+  never followed.
+
+**The token stays in muster-server.** muster-server adds
+`Authorization: Bearer <token>` to each call, and removes the token from every
+response body. The token never appears in a tool result, an error, a log line,
+an audit row, the agent's environment or the agent's view of the connector.
+That view does not include the service's address either. The proxy refuses
+`/connect/<name>/…` (403), naming the tool.
+
+### The grant
+
+**The grant comes from the proxy, and it is per agent.** A call runs only for
+an agent whose owner approved **that agent's** grant (`Proxy.CheckAccess`).
+That is the same request card, the same `connector_request` flow, and the same
+pending request on first use as every connector.
+
+**An approval is never shared.** It records no
+[shared approval](#shared-approvals), and no shared approval approves a request
+for it. Each agent that asks is approved by hand. A repository change does not
+re-open the grant, because what the connector reaches is configuration, not a
+repository.
+
+An officer instance may use it only if its officer lists the connector in
+`connectors` ([officers.md](officers.md#configuration)).
+
+**Audit.** Every call writes one connector-audit row with kind `proxy`, and
+one line to muster-server's log. A refused call is included. The row holds:
+
+- the agent and the connector;
+- the method;
+- the service's host;
+- the validated path (`-` when the path was refused);
+- the status;
+- a detail line: `internal_http bytes=N duration=Nms class=…`.
+
+The class is one of `ok`, `method`, `path`, `query`, `body`, `too_large`,
+`timeout`, `connect` and `refused`. The row never holds a query value, a body
+or the token.
+
+### Setting one up
+
+1. **The service** takes a bearer token that you generate, at least 8
+   characters long.
+2. **The network.** muster-server must be able to reach the service. The agent
+   pod does not need to reach it. Allow muster-server's egress to the service,
+   and the service's ingress from muster-server. No agent's or officer's
+   network policy changes.
+3. **muster-server's environment.** Set `MUSTER_INTERNAL_HTTP_CONNECTORS` as
+   above. Set `MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER` from a Secret. Then restart
+   muster-server.
+4. **The officer.** If an officer uses it, add the connector's name to the
+   officer's `connectors`.
+5. **The grant.** The instance asks with `connector_request{name:
+   "app-driver"}`. Approve that request on the Connectors tab or with
+   `connector_request_decide`.
+6. **Check it.** The audit trail shows a `proxy` row for each call, with the
+   detail `internal_http … class=ok`.
 
 ## The kube-read connector
 

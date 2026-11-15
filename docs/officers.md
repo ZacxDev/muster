@@ -64,7 +64,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. Needs no `repo` with `read_grant: "standing"`. |
 | `read_grant` | none (per-instance approval) | `"standing"`: the `read_repos` are read with **no approval**, anonymously, reads only, each checked PUBLIC with GitHub — see [A standing public read](#a-standing-public-read-read_grant-standing). A **builtin** officer only: on an HQ officer, without `read_repos`, or any other value, a boot refusal naming the officer. |
 | `read_at` | none (default branch) | `"release"`: a standing read is pointed at muster's own release tag (`v<the server's version>`), named in the first message. Needs `read_grant: "standing"`; any other value is a boot refusal. |
-| `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
+| `connectors` | none | Connector names, besides `github`, the instances may request. Examples: a [postgres connector](connectors.md#postgres-connectors), for read-only SQL through `postgres_query`, or an [internal_http connector](connectors.md#internal-http-connectors), for calls through `internal_http_request` to one service the admin configured. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
 | `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
@@ -168,8 +168,8 @@ three things in that session's `settings.json` at provision time (the pod's
   `…officer_release_evaluation`; then, when the connector
   store is configured (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, so the instance is
   offered them), `…connectors_list`, `…connector_request` and
-  `…connector_status` — and `…postgres_query` when the officer declares
-  `connectors`. Redundant under bypass and kept: it names the muster
+  `…connector_status` — and `…postgres_query` and `…internal_http_request`
+  when the officer declares `connectors`. Redundant under bypass and kept: it names the muster
   tools the instance is for, and holds if bypass is ever lifted. The channel
   only takes bare tool names and always writes them as `mcp__muster__<name>`
   (a name holding `__` or anything but `[a-z0-9_]` is refused and the pod does
@@ -538,6 +538,27 @@ any other connector its owner holds is refused with an error naming the officer 
 would file an implicit request) — and an officer's request for another
 connector filed before this rule cannot be approved (the tab and
 `connector_request_decide` refuse it).
+
+**Calling an in-cluster service.** An officer's pod reaches only muster's
+connect port, and the proxy refuses every private address. To let an officer
+call an internal service, the admin declares it as an
+[internal_http connector](connectors.md#internal-http-connectors) in
+`MUSTER_INTERNAL_HTTP_CONNECTORS`, with its token in
+`MUSTER_INTERNAL_HTTP_TOKEN_<NAME>`. The admin then lists its name in the
+officer's `connectors`:
+
+```json
+{"id": "ui-check:example-web", "hq_url": "…", "connectors": ["app-driver"]}
+```
+
+Each instance asks for the connector with `connector_request` and is approved
+by hand, and the approval is never shared. The instance then calls
+`internal_http_request{connector: "app-driver", method, path}`. It chooses only
+the method (GET, POST or DELETE) and a path under the connector's prefix.
+muster-server sends the call to the configured service, adds the token, caps
+the response and audits each call. The instance never sees the service's
+address or its token. muster-server must be able to reach the service, and the
+officer's own network policy does not change.
 
 **Always read-only** — except for a [shipping officer](#shipping-officers),
 whose requests go through its push gate and carry its OWN App's token instead
@@ -1266,6 +1287,12 @@ requested once and decided by hand, and how to query a postgres one:
 read-only transaction with a timeout and capped rows, reading `pg_catalog` to
 check tables and columns (the github sentence then says "the only connector
 you may use for it").
+
+The kickoff does not describe the
+[internal_http](connectors.md#internal-http-connectors) tool. An approved
+instance learns it from `connector_status`, whose `usage` names
+`internal_http_request{connector, method, path, query?, body?}`, and from the
+tool's own description. Neither of those names the service's address.
 
 An instance of a pool with [`fresh_session_per_item`](#the-two-pools) is
 also told, last, that this conversation is for ONE item: once it has

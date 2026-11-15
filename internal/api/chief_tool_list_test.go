@@ -26,7 +26,7 @@ var chiefMCPToolList = []string{
 
 // notChiefToolList are the registry's notChief tools: offered to every agent
 // but the chief.
-var notChiefToolList = []string{"agent_report_done", "connector_request", "connector_status", "postgres_query", "browser_flow_request", "browser_flow_status"}
+var notChiefToolList = []string{"agent_report_done", "connector_request", "connector_status", "postgres_query", "internal_http_request", "browser_flow_request", "browser_flow_status"}
 
 func chiefAndWorkerServer(t *testing.T) (*Server, agents.Agent, agents.Agent) {
 	t.Helper()

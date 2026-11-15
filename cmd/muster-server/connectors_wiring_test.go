@@ -51,6 +51,12 @@ func TestConnectorConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		"url with path":            {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/x"}, envAgentConnectURL},
 		"url with userinfo":        {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "http://u:p@muster.example.test:18191"}, envAgentConnectURL},
 		"url not http":             {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191", envAgentConnectURL: "ftp://muster.example.test"}, envAgentConnectURL},
+		// An internal_http connector is granted through the store.
+		"internal_http without key": {map[string]string{envInternalHTTPConnectors: `[{"name":"app-driver","base_url":"http://app-driver.example.internal"}]`,
+			"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-token-123"}, envConnectorEncKey},
+		"internal_http bad entry": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "18191",
+			envAgentConnectURL: "http://muster.example.test:18191/", envInternalHTTPConnectors: `[{"name":"app-driver","base_url":"http://app-driver.example.internal/v1"}]`,
+			"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-token-123"}, envInternalHTTPConnectors},
 	} {
 		err := load(c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

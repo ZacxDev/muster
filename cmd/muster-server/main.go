@@ -457,6 +457,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if ext.Connectors != nil && declaresKube(cfg.Officers) {
 			ext.Connectors = connectors.WithVirtual(ext.Connectors, connectors.KubeReadVirtual(), authz.IsAdmin)
 		}
+		// The internal_http connectors (MUSTER_INTERNAL_HTTP_CONNECTORS): each
+		// presented through the same store, to admins' agents only, so a
+		// request for one is filed and approved by hand like any connector
+		// grant. Only internal_http_request reaches them; the proxy refuses them.
+		if ext.Connectors != nil {
+			ext.Connectors = withInternalHTTP(ext.Connectors, cfg.InternalHTTP, logger)
+		}
 	}
 
 	// 🔴 THE ASSIGNMENT IS TWO STEPS, AND THE nil-CHECK IS NOT PEDANTRY. Assigning
@@ -2563,6 +2570,19 @@ func needsYouLiveCount(c *api.ChiefNudges) int {
 }
 
 // declaresKube reports whether any declared officer has a `kube` block.
+// withInternalHTTP presents each internal_http connector through store, to
+// admins' agents ONLY (authz.IsAdmin: the service is the deployment's, and it
+// reaches inside the network), logging one boot line per connector.
+func withInternalHTTP(store connectors.Store, list []*connectors.InternalHTTP, logger *log.Logger) connectors.Store {
+	for _, ih := range list {
+		ih.Logger = logger
+		store = connectors.WithVirtual(store, ih, authz.IsAdmin)
+		logger.Printf("internal_http connector %s: %s under %s (cap %d bytes, timeout %s; admins' agents, approved "+
+			"per agent)", ih.Name(), ih.BaseURL(), ih.PathPrefix(), ih.MaxResponseBytes(), ih.Timeout())
+	}
+	return store
+}
+
 func declaresKube(list []officers.Officer) bool {
 	for _, o := range list {
 		if o.Kube != nil {
