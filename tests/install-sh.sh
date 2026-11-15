@@ -46,8 +46,9 @@ fresh_user() {
   # systemd's own socket, not the D-Bus one: `systemctl --user` talks to the
   # manager over $XDG_RUNTIME_DIR/systemd/private, and the runner has no
   # D-Bus user session (on the runner /run/user/<uid>/bus did not appear in 30s).
-  for _ in $(seq 60); do [ -S "/run/user/$uid/systemd/private" ] && return 0; sleep 1; done
-  echo "install-sh: $u's user manager did not start: $(ls -la "/run/user/$uid" 2>&1); $(systemctl status "user@$uid.service" --no-pager 2>&1 | head -5)" >&2; return 1
+  # sudo: the runtime dir is the user's own, mode 0700.
+  for _ in $(seq 60); do sudo test -S "/run/user/$uid/systemd/private" && return 0; sleep 1; done
+  echo "install-sh: $u's user manager did not start: $(sudo ls -la "/run/user/$uid" 2>&1); $(systemctl status "user@$uid.service" --no-pager 2>&1 | head -5)" >&2; return 1
 }
 # as <user> <command>: a login-like shell of that user with its user manager.
 as() {
