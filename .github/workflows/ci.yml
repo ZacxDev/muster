@@ -236,9 +236,17 @@ jobs:
       #   - a file's BYTES (it keys a file on size+mode+mtime): tests/gomtime.py
       #     below makes the mtime a function of the git object id.
       #   - what a SUBPROCESS reads: MUSTER_TEST_NOCACHE above.
-      #   - tools outside the module (git, tmux, sh): the runner image is part
-      #     of the key AND of every restore prefix, so a new image starts cold.
-      #     The real-tmux legs below stay uncached for the same reason.
+      #   - tools outside the module (git, tmux, sh): the runner IMAGE VERSION
+      #     is in every SAVED key, and a restore with an unchanged go.sum
+      #     prefers a cache from the same image version, but FALLS BACK to
+      #     another image version of the same OS (and once go.sum changes, the
+      #     last prefix takes the newest cache from any image version).
+      #     Operator decision 2026-11-15: two hosted image versions are in
+      #     rotation at once, and requiring a match left shard 0 cold on main
+      #     run 43741778087. 🔴 RESIDUAL RISK, ACCEPTED: a test that shells out
+      #     to a system binary the image changed (e.g. git) can replay a stale
+      #     pass until one of its own inputs changes, because Go keys nothing on
+      #     the binaries a test executes. The real-tmux legs below stay uncached.
       #   - the Postgres SERVICE container, which is NOT part of the runner
       #     image and floats on its tag: its image DIGEST is in the key and
       #     every prefix too, so a new server (a tag bump or a minor under
@@ -246,8 +254,12 @@ jobs:
       # One cache per shard (the shards run different -run sets, and a cache
       # key is written once). A restore prefix may come from an older commit;
       # that is the point, and Go's own keys decide what it can replay.
-      # 🔴 THE NIGHTLY `schedule` RUN RESTORES NOTHING: it is the uncached full
-      # verdict that would catch a cache-replayed green.
+      # ⚠ NO NIGHTLY EXISTS (removed in #691, see the `on:` block): nothing on
+      # `main` currently re-runs the suite uncached, so a cache-replayed green is
+      # caught only when the package's own inputs next change. The restore below
+      # still skips a `schedule` event, so a nightly would be uncached — but
+      # adding one is gated on the release tool's rule that EVERY CI run on a
+      # sha must pass.
       - name: Go cache key
         id: gocache
         run: |
@@ -255,7 +267,8 @@ jobs:
             pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
             pg=${pg#sha256:}
             [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
-            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-${ImageVersion}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
+            echo "image=img${ImageVersion}"
             echo "build=$(go env GOCACHE)"
             echo "mod=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"
@@ -266,8 +279,11 @@ jobs:
           path: |
             ${{ steps.gocache.outputs.build }}
             ${{ steps.gocache.outputs.mod }}
-          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # Most specific first: same go.sum AND image version, then same
+          # go.sum on any image version of this OS, then anything for the shard.
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-
             ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-
             ${{ steps.gocache.outputs.prefix }}-
 
@@ -398,8 +414,8 @@ jobs:
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
       # set is ~0.55-0.75 GB per shard (measured on PR #691), the repository's
       # cache budget is 10 GB, and a PR's cache serves only that PR — so saving
-      # per PR run would evict main's, the one every PR restores. Not on the
-      # nightly (it restored nothing) or a tag.
+      # per PR run would evict main's, the one every PR restores. Not on a
+      # `schedule` run (it would restore nothing) or a tag.
       - name: save Go's build and test cache
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
@@ -407,7 +423,7 @@ jobs:
           path: |
             ${{ steps.gocache.outputs.build }}
             ${{ steps.gocache.outputs.mod }}
-          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.
