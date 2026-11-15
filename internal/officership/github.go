@@ -62,6 +62,10 @@ type Compare struct {
 	BehindBy int
 	Files    []File
 	Commits  []string // shas, oldest first
+	// CommitTexts are what each of Commits says about itself, in the same
+	// order: its message, then its author's and committer's name and email
+	// (the draft gate's internal-details scan of a public repository).
+	CommitTexts []string
 	// MergeBase is the comparison's merge base commit: what a removed file
 	// is read at when GitHub shows no diff for it (the draft gate).
 	MergeBase string
@@ -425,7 +429,12 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 		BehindBy int        `json:"behind_by"`
 		Files    []restFile `json:"files"`
 		Commits  []struct {
-			SHA string `json:"sha"`
+			SHA    string `json:"sha"`
+			Commit struct {
+				Message string     `json:"message"`
+				Author  restPerson `json:"author"`
+				Commit  restPerson `json:"committer"`
+			} `json:"commit"`
 		} `json:"commits"`
 		TotalCommits int `json:"total_commits"`
 		MergeBase    struct {
@@ -446,9 +455,18 @@ func (g *REST) Compare(ctx context.Context, base, head string) (Compare, error) 
 	}
 	for _, x := range r.Commits {
 		c.Commits = append(c.Commits, x.SHA)
+		c.CommitTexts = append(c.CommitTexts, x.Commit.Message+"\n"+x.Commit.Author.String()+"\n"+x.Commit.Commit.String())
 	}
 	return c, nil
 }
+
+// restPerson is a commit's author or committer as the REST API reports it.
+type restPerson struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+func (p restPerson) String() string { return p.Name + " <" + p.Email + ">" }
 
 // Statuses implements GitHub (the combined status: the latest per context).
 func (g *REST) Statuses(ctx context.Context, sha string) (map[string]string, error) {

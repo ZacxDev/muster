@@ -578,5 +578,33 @@ Every pull request body must start with this exact line:
 (with your item's number), and must have the sections %[6]s, each heading on a line of its own. Cite evidence by audit id; never quote a credential or any credential-shaped value — muster refuses a diff, title or body that holds one.
 muster reads the comparison of every pull request you open or edit and refuses it (409) when it changes a forbidden path of that repository or a .gitattributes file, removes a PersistentVolumeClaim, PersistentVolume, CloudNativePG or Canary manifest, or carries a credential-shaped value; HQ is told. That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does), so never delete or rename a volume, database or canary by any route. The same check covers pushes: after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request on a hit (HQ is told; you cannot reopen it), so check a fix before you push it. Limits: %[7]d open pull requests per repository, %[8]d new per UTC day, %[9]d per item. You never mark ready, merge, tag or release: a human reviews the draft.`,
 		strings.Join(repos, "; "), GitHubConnector, onlyConnector(o), Slug(o.ID), strings.Replace(BodyFirstLine(o.ID, 0), "item 0", "item <n>", 1),
-		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, MaxNewPRsPerDay, MaxPRsPerItem) + ciLogsNote(o)
+		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, s.NewPRsPerDay(), MaxPRsPerItem) + docsOnlyNote(o) + ciLogsNote(o)
+}
+
+// docsOnlyNote tells a docs-only draft officer what its pull requests may
+// touch, and a public repository's officer that it is scanned ("" when
+// neither applies).
+func docsOnlyNote(o Officer) string {
+	s := o.Ship
+	var out string
+	if d := s.DocsOnly; d != nil {
+		out += fmt.Sprintf(`
+DOCS ONLY: every path your pull request changes, adds, removes or renames from must match one of %s (and no forbidden path); one path outside refuses the whole pull request. At most %d files and %d changed lines per pull request.`,
+			strings.Join(d.AllowedPaths, ", "), d.MaxFiles, d.MaxDiffLines)
+		if !d.AllowCommandEdits {
+			out += " Never change a line inside a fenced code block (a command) and never change a file that is not Markdown: muster refuses both. Propose a command change as text in the pull request body instead."
+		}
+	}
+	var public []string
+	for _, r := range s.RepoList(o.Repo) {
+		if r.Public {
+			public = append(public, r.Repo)
+		}
+	}
+	if len(public) > 0 {
+		out += fmt.Sprintf(`
+PUBLIC repositories: %s. Anyone can read them, including every branch you push. Never put an internal hostname, address, cluster or node name, internal link or item detail into a diff, a commit message, your git author identity, a title, a body or a comment there: muster scans all of them, deletes a pushed branch that matches, and refuses the pull request.`,
+			strings.Join(public, ", "))
+	}
+	return out
 }

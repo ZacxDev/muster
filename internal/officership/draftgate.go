@@ -30,7 +30,7 @@ import (
 //   - its title and body carry no secret-shaped value (redact.HasSecretValue);
 //   - (POST only) the branch's item is one HQ shows THIS instance holding
 //     (ItemClaimed), and the rate limits hold: officers.MaxOpenPRsPerRepo open
-//     in this repository, officers.MaxNewPRsPerDay opened this UTC day across
+//     in this repository, Ship.NewPRsPerDay opened this UTC day across
 //     the officer's repositories, officers.MaxPRsPerItem for the item, in any
 //     state — counted from EVERY pull request the officer's App opened
 //     (GitHub.OfficerPRs, every page; too many pages is a refusal, never a
@@ -91,6 +91,9 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	}
 	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, "its title or body has a credential-shaped value")
+	}
+	if why := g.publicTextWhy(sr, "its title or body", title+"\n"+body); why != "" {
+		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
 	}
 	if err := g.claimed(ctx, item); err != nil {
 		return err
@@ -183,9 +186,15 @@ func (g *PushGate) draftEdit(ctx context.Context, sr officers.ShipRepo, gh GitHu
 		if redact.HasSecretValue(body) {
 			return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "its new body has a credential-shaped value")
 		}
+		if why := g.publicTextWhy(sr, "its new body", body); why != "" {
+			return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
+		}
 	}
 	if redact.HasSecretValue(jsonString(m["title"])) {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "its new title has a credential-shaped value")
+	}
+	if why := g.publicTextWhy(sr, "its new title", jsonString(m["title"])); why != "" {
+		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
 	}
 	return g.refuseOnHit(ctx, sr, pr.Number, pr.HeadRef, g.checkComparison(ctx, sr, gh, pr.BaseRef, pr.HeadSHA))
 }
@@ -194,6 +203,9 @@ func (g *PushGate) draftEdit(ctx context.Context, sr officers.ShipRepo, gh GitHu
 func (g *PushGate) draftComment(ctx context.Context, sr officers.ShipRepo, pr PR, body string) error {
 	if redact.HasSecretValue(body) {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "the comment has a credential-shaped value")
+	}
+	if why := g.publicTextWhy(sr, "the comment", body); why != "" {
+		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
 	}
 	return nil
 }
@@ -274,8 +286,8 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 		return refused("item %d already has %d pull request(s) (any state); the limit is %d per item", item, forItem, officers.MaxPRsPerItem)
 	case open >= officers.MaxOpenPRsPerRepo:
 		return refused("%d of this officer's pull requests are open in %s; the limit is %d", open, sr.Repo, officers.MaxOpenPRsPerRepo)
-	case today >= officers.MaxNewPRsPerDay:
-		return refused("this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, officers.MaxNewPRsPerDay)
+	case today >= g.Ship.NewPRsPerDay():
+		return refused("this officer opened %d pull request(s) today (UTC); the limit is %d a day", today, g.Ship.NewPRsPerDay())
 	}
 	return nil
 }
@@ -404,6 +416,21 @@ func (g *PushGate) checkWall(ctx context.Context, repo string, gh GitHub, globs,
 			}
 		}
 	}
+	// 🔴 THE DOCS-ONLY AND PUBLIC RULES (docsgate.go) are a draft officer's
+	// only: a shepherd's wall (a PushGate of another stage, or none) is the
+	// author's forbidden lists, as before.
+	if g.Ship.IsDraft() {
+		if sr, ok := g.Ship.RepoFor(g.Repo, repo); ok {
+			dv := g.docsWall(ctx, sr, gh, cmp, base, head)
+			if len(dv.paths) > 0 {
+				// Unverified only when nothing else refused: a content hit
+				// anywhere deletes the branch.
+				v.Unverified = dv.unverified && len(v.Paths) == 0
+				v.Paths = append(v.Paths, dv.paths...)
+				whys = append(whys, dv.whys...)
+			}
+		}
+	}
 	v.Paths, v.Why = sortedUnique(v.Paths), strings.Join(whys, "; ")
 	return v
 }
@@ -516,6 +543,9 @@ func (g *PushGate) afterPush(ctx context.Context, sr officers.ShipRepo, cmds []p
 				"officer %s: muster could not look up the pull requests from %s in %s after a push, so the push was NOT re-checked "+
 					"(the next sweep reads it): %v", g.OfficerID, branch, sr.Repo, err)})
 			continue
+		}
+		if len(prs) == 0 && sr.Public {
+			g.publicBranchCheck(ctx, sr, gh, branch, c.newOID)
 		}
 		for _, pr := range prs {
 			sha := c.newOID
@@ -1060,4 +1090,44 @@ func (g *PushGate) contentRefusal(ctx context.Context, sr officers.ShipRepo, n i
 	}
 	g.announce(ctx, officers.Notice{PR: n, HeadSHA: headSHA, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
 	return conflict("%s in %s: %s", what, sr.Repo, why)
+}
+
+// publicBranchCheck is a public repository's answer to a push of sha to
+// branch with NO open pull request: the branch is world-readable the moment
+// GitHub has it, so it is checked now rather than when a pull request is
+// opened from it. A content hit deletes the branch (server-side, with the
+// officer App's token; only the officer's own branch shape) and tells HQ; an
+// unreadable comparison, or an unverified refusal, is told, not acted on.
+//
+// 🔴 A DELETION IS NOT AN UNDO: what was pushed was public until now, and
+// GitHub can still serve the commit by its sha. The notice says so: treat a
+// hit as a leak.
+func (g *PushGate) publicBranchCheck(ctx context.Context, sr officers.ShipRepo, gh GitHub, branch, sha string) {
+	v := g.checkComparison(ctx, sr, gh, sr.Base, sha)
+	switch {
+	case v.Err != nil:
+		g.announce(ctx, officers.Notice{HeadSHA: sha, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+			"officer %s: muster could not check a push of %s to %s in PUBLIC repository %s (no pull request is open from it): %v",
+			g.OfficerID, shortSHA(sha), branch, sr.Repo, v.Err)})
+		return
+	case len(v.Paths) == 0:
+		return
+	}
+	what := "left the branch (the refusal names nothing it could read)"
+	if _, own := officers.BranchItem(sr.BranchPrefix, g.OfficerID, branch); own && !v.Unverified {
+		if err := gh.DeleteBranch(ctx, branch); err != nil {
+			what = fmt.Sprintf("could NOT delete the branch (%v); a human must", err)
+		} else {
+			what = "deleted the branch"
+		}
+	}
+	ps := v.Paths
+	summary := fmt.Sprintf("officer %s: muster refused a push of %s to %s in PUBLIC repository %s and %s: %s. "+
+		"The content was public until then and GitHub may still serve the commit by its sha: treat it as a leak",
+		g.OfficerID, shortSHA(sha), branch, sr.Repo, what, v.Why)
+	if len(ps) > officers.MaxNoticePaths {
+		summary += fmt.Sprintf(" (+%d more paths)", len(ps)-officers.MaxNoticePaths)
+		ps = ps[:officers.MaxNoticePaths]
+	}
+	g.announce(ctx, officers.Notice{HeadSHA: sha, Paths: ps, Summary: summary, Channel: g.Ship.NoticeChannel})
 }
