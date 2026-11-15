@@ -22,7 +22,10 @@
 // "which accounts may this OWNER use", and every selection, mark and live count
 // is per (owner, account): there is no path from a member's dispatch to an
 // environment-pool account (TestAMemberDispatchNeverSelectsAnAdminPoolAccount
-// in internal/credentials).
+// in internal/credentials). The one exception is the marks of a SHARED pool's
+// accounts ([SharedAccounts]): the admin and the teams listed on the server
+// pool run on the same accounts, so their marks are kept once, under the
+// pool's marks owner, and every owner on the pool sees them.
 //
 // # Selection
 //
@@ -119,6 +122,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // The failure types ccd reports that mark an account. They are ccd's own
@@ -214,6 +219,52 @@ type Store interface {
 // member); [Static] is a fixed map.
 type Source interface {
 	Accounts(ctx context.Context, owner int64) (map[string]string, error)
+}
+
+// SharedAccounts is implemented by a [Source] under which several owners run on
+// ONE set of accounts (internal/credentials.Plane: the admin and every team in
+// MUSTER_TEAMS_ON_SERVER_POOL share the environment pool).
+//
+// A rate limit or an auth failure is a property of the ACCOUNT, not of whoever
+// hit it: a team's first agent on the server pool must not be placed on an
+// account the admin's agents already found exhausted. So the marks of a shared
+// pool's accounts are kept under ONE owner, the one MarksOwner names, and every
+// owner on that pool reads and writes them there. Live counts stay per owner.
+type SharedAccounts interface {
+	// MarksOwner reports the owner whose marks stand for owner's accounts, and
+	// true, when owner's accounts are a shared pool's. false: owner's accounts
+	// are its own, and so are its marks.
+	MarksOwner(ctx context.Context, owner int64) (int64, bool)
+}
+
+// markScope is the context and owner the marks of owner's accounts are read
+// and written under: owner itself under ctx, or — for an owner on a shared
+// pool ([SharedAccounts]) — the pool's marks owner under authz.System.
+//
+// 🔴 A SYSTEM-LEDGER SITE, AND IT READS ACCOUNT HEALTH ONLY. cc_account_marks
+// is under row-level security, so a team acting as itself cannot read the
+// marks the admin's agents recorded on the same pool account. Every Store
+// query names the owner (PGStore), so System here reaches exactly the pool's
+// marks rows: per account a timestamp, the CLI's limit message and a token
+// fingerprint — nothing of any owner's muster data. It is taken only when the
+// Source says owner runs on the shared pool; an owner with accounts of its own
+// (a member's bring-your-own) keeps its own principal and its own marks.
+func (p *Pool) markScope(ctx context.Context, owner int64) (context.Context, int64) {
+	sh, ok := p.src.(SharedAccounts)
+	if !ok {
+		return ctx, owner
+	}
+	to, shared := sh.MarksOwner(ctx, owner)
+	if !shared || to <= 0 {
+		return ctx, owner
+	}
+	return authz.System(ctx), to
+}
+
+// marks is the marks of owner's accounts, read where [Pool.markScope] says.
+func (p *Pool) marks(ctx context.Context, owner int64) (map[string]Mark, error) {
+	mctx, mowner := p.markScope(ctx, owner)
+	return p.store.Marks(mctx, mowner)
 }
 
 // Static is a fixed account map, the same for every owner: the environment
@@ -356,7 +407,7 @@ func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, err
 		}
 		return pin, nil
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -385,7 +436,7 @@ func (p *Pool) AuthFailure(ctx context.Context, owner int64, account string) (st
 	if !ok || tok == "" {
 		return "", fmt.Errorf("%w %q for user %d", ErrUnknownAccount, account, owner)
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return "", fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -423,7 +474,7 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 	if err != nil {
 		return nil, err
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -666,7 +717,7 @@ func (p *Pool) FailoverTarget(ctx context.Context, owner int64, from string) (st
 	if err != nil {
 		return "", false, err
 	}
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return "", false, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -691,7 +742,7 @@ type Cooldown struct {
 
 // Cooldown is owner's account's rate-limit cooldown.
 func (p *Pool) Cooldown(ctx context.Context, owner int64, account string) (Cooldown, error) {
-	marks, err := p.store.Marks(ctx, owner)
+	marks, err := p.marks(ctx, owner)
 	if err != nil {
 		return Cooldown{}, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
@@ -720,7 +771,8 @@ func (p *Pool) ClearRateLimit(ctx context.Context, owner int64, account string, 
 	if markedAt.IsZero() {
 		return false, nil
 	}
-	ok, err := p.store.ClearRateLimited(ctx, owner, account, markedAt)
+	mctx, mowner := p.markScope(ctx, owner)
+	ok, err := p.store.ClearRateLimited(mctx, mowner, account, markedAt)
 	if err != nil {
 		return false, fmt.Errorf("ccpool: clear the rate-limit mark of account %q: %w", account, err)
 	}
@@ -751,8 +803,9 @@ func (p *Pool) MarkFailure(ctx context.Context, owner int64, account, failure, d
 		}
 		detail = detail[:cut] + "…"
 	}
+	mctx, mowner := p.markScope(ctx, owner)
 	if failure == FailureRateLimited {
-		return p.store.MarkRateLimited(ctx, owner, account, detail, p.now())
+		return p.store.MarkRateLimited(mctx, mowner, account, detail, p.now())
 	}
-	return p.store.MarkAuthFailed(ctx, owner, account, Fingerprint(tok), detail, p.now())
+	return p.store.MarkAuthFailed(mctx, mowner, account, Fingerprint(tok), detail, p.now())
 }

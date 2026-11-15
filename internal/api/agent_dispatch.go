@@ -1300,13 +1300,24 @@ func (s *Server) alreadyDispatchedAnswer(ctx context.Context, a agents.Agent, ta
 // ctx names it, or its account says so. An account that cannot be read is
 // treated as a team — the refusal is the safe side.
 func (s *Server) ownerIsTeam(ctx context.Context, owner int64) bool {
-	if p, ok := authz.From(ctx); ok && !p.All() && p.UserID == owner {
-		return p.Team
-	}
-	acct, err := s.accountOfChecked(ctx, owner)
+	team, err := s.ownerTeam(ctx, owner)
 	if err != nil {
 		s.logger.Printf("agent_dispatch: read owner %d: %v (refused as a team's)", owner, err)
 		return true
 	}
-	return acct.Team
+	return team
+}
+
+// ownerTeam is ownerIsTeam's answer with the read error kept: for a caller
+// where "team" is NOT the safe side of an unread account (provisionChief's
+// kickoff text, which would hand a person's chief the team's instructions).
+func (s *Server) ownerTeam(ctx context.Context, owner int64) (bool, error) {
+	if p, ok := authz.From(ctx); ok && !p.All() && p.UserID == owner {
+		return p.Team, nil
+	}
+	acct, err := s.accountOfChecked(ctx, owner)
+	if err != nil {
+		return false, err
+	}
+	return acct.Team, nil
 }

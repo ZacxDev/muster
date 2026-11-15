@@ -261,8 +261,8 @@ type Poller struct {
 	// one read before the reading (markedAt), so a newer one stands
 	// (ccpool.Pool.ClearRateLimit). nil: no mark is ever cleared here.
 	ClearCooling func(ctx context.Context, owner int64, account string, markedAt time.Time) (bool, error)
-	// Owner is the user whose accounts are read: the operator (user 1), whose
-	// environment pool this is. Members' own accounts are not polled.
+	// Owner is the user whose accounts are read when Source is not
+	// [PoolOwned]. Members' own accounts are not polled.
 	Owner    int64
 	Interval time.Duration
 	Logger   *log.Logger
@@ -288,11 +288,15 @@ func (p *Poller) logf(format string, args ...any) {
 	}
 }
 
-// Run polls at once, then every Interval, until ctx ends. It acts as the
-// operator (authz.Operator): the rows are the operator's, under row-level
-// security, and nobody else's are read.
+// Run polls at once, then every Interval, until ctx ends.
+//
+// 🔴 IT ACTS AS authz.System, AND READS ONE OWNER'S ROWS. The owner is the
+// pool's ([PoolOwned]), derived per pass — the lowest-id enabled admin, not a
+// fixed user 1 — so no fixed principal can be its own. Every Store query
+// names that owner (PG), as do the pool's marks queries, so the system scope
+// reaches the pool owner's usage and marks rows and nobody else's.
 func (p *Poller) Run(ctx context.Context) {
-	ctx = authz.Operator(ctx)
+	ctx = authz.System(ctx)
 	iv := p.Interval
 	if iv <= 0 {
 		iv = DefaultInterval
@@ -314,14 +318,46 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// Pass reads each of Owner's accounts once (those not held back by Step) and
-// saves what changed. ctx must act as Owner.
+// PoolOwned is a [ccpool.Source] whose shared pool is kept under a DERIVED
+// owner: internal/credentials.Plane, whose EnvPoolOwner is also the owner its
+// MarksOwner files the pool's marks under.
+type PoolOwned interface {
+	EnvPoolOwner(ctx context.Context) (int64, bool)
+}
+
+// owner is the owner a pass reads.
+//
+// 🔴 A [PoolOwned] Source NAMES IT, AND Owner IS THEN NOT READ. The pool's
+// marks are kept under the Source's EnvPoolOwner, so the accounts this poller
+// reads, the cooldowns it reads and clears and the readings it saves are that
+// owner's — the marks it clears are the marks the selection reads. It is read
+// off the Source itself rather than wired beside it, so the two cannot be
+// handed different answers. false: no owner, and the pass reads nothing.
+func (p *Poller) owner(ctx context.Context) (int64, error) {
+	po, ok := p.Source.(PoolOwned)
+	if !ok {
+		return p.Owner, nil
+	}
+	o, ok := po.EnvPoolOwner(ctx)
+	if !ok || o <= 0 {
+		return 0, errors.New("the server pool has no owner to read (no enabled admin could be read)")
+	}
+	return o, nil
+}
+
+// Pass reads each of the owner's accounts once (those not held back by Step)
+// and saves what changed. ctx must be able to read and write that owner's rows
+// (Run: the system scope).
 func (p *Poller) Pass(ctx context.Context) error {
-	acc, err := p.Source.Accounts(ctx, p.Owner)
+	owner, err := p.owner(ctx)
+	if err != nil {
+		return err
+	}
+	acc, err := p.Source.Accounts(ctx, owner)
 	if err != nil {
 		return fmt.Errorf("read the accounts: %w", err)
 	}
-	prev, err := p.Store.Latest(ctx, p.Owner)
+	prev, err := p.Store.Latest(ctx, owner)
 	if err != nil {
 		return fmt.Errorf("read the latest readings: %w", err)
 	}
@@ -340,7 +376,7 @@ func (p *Poller) Pass(ctx context.Context) error {
 		// clear below compares against, so a mark a turn writes while the
 		// probe is in flight (newer) is never the one cleared.
 		var cd ccpool.Cooldown
-		switch c, err := p.cooling(ctx, n); {
+		switch c, err := p.cooling(ctx, owner, n); {
 		case err != nil:
 			p.logf("ccusage: account %s: read the pool's cooldown (not probing it this pass): %v", n, err)
 			sc.CoolingUntil, sc.CoolingUnknown = now.Add(p.interval()), true
@@ -353,7 +389,7 @@ func (p *Poller) Pass(ctx context.Context) error {
 		if !changed {
 			continue
 		}
-		p.clearIfUsable(ctx, n, cd, row, now)
+		p.clearIfUsable(ctx, owner, n, cd, row, now)
 		if row.ErrorKind != before.ErrorKind || row.Error != before.Error {
 			if row.ErrorKind == "" {
 				p.logf("ccusage: account %s: reading again (%s)", n, row.Source)
@@ -361,7 +397,7 @@ func (p *Poller) Pass(ctx context.Context) error {
 				p.logf("ccusage: account %s: %s", n, row.Error)
 			}
 		}
-		if err := p.Store.Save(ctx, p.Owner, row); err != nil {
+		if err := p.Store.Save(ctx, owner, row); err != nil {
 			p.logf("ccusage: account %s: save: %v", n, err)
 		}
 	}
@@ -371,17 +407,17 @@ func (p *Poller) Pass(ctx context.Context) error {
 // cooling is the pool's cooldown for account. 🔴 WITH NO Cooling SOURCE IT IS
 // AN ERROR, so the account is not probed: the probe spends quota, and without
 // the pool muster cannot tell an account that is out of it.
-func (p *Poller) cooling(ctx context.Context, account string) (ccpool.Cooldown, error) {
+func (p *Poller) cooling(ctx context.Context, owner int64, account string) (ccpool.Cooldown, error) {
 	if p.Cooling == nil {
 		return ccpool.Cooldown{}, errors.New("no account pool to read the cooldown from")
 	}
-	return p.Cooling(ctx, p.Owner, account)
+	return p.Cooling(ctx, owner, account)
 }
 
 // clearIfUsable clears the pool's rate-limit mark of an account that was
 // cooling (cd, read before this step) when row — this step's reading — shows
 // it usable (LiveUsable). It logs one line when it clears.
-func (p *Poller) clearIfUsable(ctx context.Context, account string, cd ccpool.Cooldown, row Row, now time.Time) {
+func (p *Poller) clearIfUsable(ctx context.Context, owner int64, account string, cd ccpool.Cooldown, row Row, now time.Time) {
 	if cd.Until.IsZero() || cd.MarkedAt.IsZero() || p.ClearCooling == nil {
 		return
 	}
@@ -389,7 +425,7 @@ func (p *Poller) clearIfUsable(ctx context.Context, account string, cd ccpool.Co
 	if !ok {
 		return
 	}
-	cleared, err := p.ClearCooling(ctx, p.Owner, account, cd.MarkedAt)
+	cleared, err := p.ClearCooling(ctx, owner, account, cd.MarkedAt)
 	switch {
 	case err != nil:
 		p.logf("ccusage: account %s: clear its rate-limit mark: %v", account, err)

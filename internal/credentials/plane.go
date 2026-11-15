@@ -18,9 +18,12 @@ type Personal interface {
 	HasOpenRouterKey(ctx context.Context, owner int64) (bool, error)
 }
 
-// RoleReader reads a user's role (internal/users.PGStore.Role).
+// RoleReader reads a user's role (internal/users.PGStore.Role) and the
+// lowest-id enabled admin (internal/users.PGStore.FirstAdmin: the server
+// pool's marks owner, [Plane.EnvPoolOwner]).
 type RoleReader interface {
 	Role(ctx context.Context, id int64) (authz.Role, error)
+	FirstAdmin(ctx context.Context) (int64, error)
 }
 
 // The messages a member sees for a kind they have no credential for. One
@@ -31,6 +34,10 @@ const (
 	// TeamNoGateway is a team's gateway-kind refusal (team sharing phase 4):
 	// a team's agents are Claude Code agents on the server pool.
 	TeamNoGateway = "A team's agents are Claude Code agents; Standard agents are not available to a team."
+	// TeamPoolNotConfigured is a LISTED team's claude-code refusal when the
+	// server has no Claude pool (EnvClaude nil): the team is on the server
+	// pool, and the pool has no accounts to lend.
+	TeamPoolNotConfigured = "This team is listed on the server pool, but this server has no Claude pool configured."
 )
 
 // Plane decides whose model-provider credentials an OWNER's agents run on.
@@ -111,9 +118,63 @@ func (p *Plane) onServerPool(owner int64) bool {
 	return owner > 0 && p.TeamsOnServerPool[owner]
 }
 
+// onEnvironmentPool reports whether owner's Claude accounts are the
+// environment's pool: an admin's, or a team's listed on the server pool. ONE
+// predicate for [Plane.Accounts] and [Plane.MarksOwner], so the accounts an
+// owner runs on and the marks it reads can never come from two answers.
+func (p *Plane) onEnvironmentPool(ctx context.Context, owner int64) bool {
+	return p.onServerPool(owner) || p.usesEnvironment(ctx, owner)
+}
+
+var _ ccpool.SharedAccounts = (*Plane)(nil)
+
+// MarksOwner implements [ccpool.SharedAccounts]: every owner on the
+// environment's pool shares its accounts, so their rate-limit and auth-failure
+// marks are kept once, under [Plane.EnvPoolOwner] — the owner the usage poller
+// reads and clears them as (internal/ccusage PoolOwned). A member's own
+// accounts are theirs, and so are their marks (false).
+//
+// No pool owner (its read failed): false, so each owner keeps its own marks —
+// unshared for a moment, never filed under somebody's personal accounts.
+func (p *Plane) MarksOwner(ctx context.Context, owner int64) (int64, bool) {
+	if p.EnvClaude == nil || !p.onEnvironmentPool(ctx, owner) {
+		return 0, false
+	}
+	return p.EnvPoolOwner(ctx)
+}
+
+// EnvPoolOwner is the ONE answer to "whose id is the environment pool's shared
+// account state kept under": the pool's rate-limit and auth-failure marks
+// ([Plane.MarksOwner]) and the usage poller's readings, which also reads and
+// clears those marks as this owner (the poller reads it off the plane,
+// ccusage.PoolOwned). It is the lowest-id enabled admin.
+//
+// 🔴 NOT authz.OperatorUserID. Marks are keyed (owner, account name), and user
+// 1 is a person who can be demoted: a fixed owner of 1 then filed every
+// admin's and listed team's pool marks under user 1's PERSONAL accounts of the
+// same name, steering user 1's own dispatches (and theirs steered the pool).
+// An admin's own accounts ARE the pool, so an admin's id holds no personal
+// marks to collide with.
+//
+// With no Roles (no database) it is user 1, as [Plane.usesEnvironment]
+// answers then. A read error is false: no owner, nothing shared.
+func (p *Plane) EnvPoolOwner(ctx context.Context) (int64, bool) {
+	if p.Roles == nil {
+		return authz.OperatorUserID, true
+	}
+	id, err := p.Roles.FirstAdmin(ctx)
+	if err != nil || id <= 0 {
+		if p.Logger != nil {
+			p.Logger.Printf("credentials: reading the server pool's owner (the first enabled admin): %d, %v (pool marks not shared)", id, err)
+		}
+		return 0, false
+	}
+	return id, true
+}
+
 // Accounts implements [ccpool.Source]: owner's Claude accounts.
 func (p *Plane) Accounts(ctx context.Context, owner int64) (map[string]string, error) {
-	if p.onServerPool(owner) || p.usesEnvironment(ctx, owner) {
+	if p.onEnvironmentPool(ctx, owner) {
 		if p.EnvClaude == nil {
 			return map[string]string{}, nil
 		}
@@ -158,6 +219,10 @@ func (p *Plane) Unavailable(ctx context.Context, owner int64, kinds []string) ma
 		case pool && k == agents.KindGateway:
 			// A listed team is lent the Claude pool, not the OpenRouter key.
 			out[k] = TeamNoGateway
+		case pool && k == agents.KindClaudeCode && p.EnvClaude == nil:
+			// Listed, but there is no pool to lend: NeedClaude ("add your
+			// setup token") is not something a team can do.
+			out[k] = TeamPoolNotConfigured
 		case k == agents.KindClaudeCode:
 			acc, err := p.Accounts(ctx, owner)
 			if err != nil || len(acc) == 0 {

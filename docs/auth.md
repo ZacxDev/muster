@@ -71,13 +71,16 @@ usable. That lets you bind the operator's login before you switch modes.
 
 ## Teams
 
-A team is a group of people on one muster server who will share sessions,
-officers and tasks ([design/team-sharing.md](design/team-sharing.md)). **This
-version records teams and their members, enforces who may read and write a
-team's rows, and runs team officers. A team host's mirror token connects, and
-its sessions' questions reach the team's members' Attention.** Showing a team
-host's sessions to its members, and typing into them, arrive with their own
-releases (team sharing 2b.3 and 2b.4).
+A team is a group of people on one muster server who share sessions,
+officers, tasks and a chief ([design/team-sharing.md](design/team-sharing.md)).
+**A team has its own tasks (filed in it or moved into it), a team chief that a
+manager provisions and its operators chat with in one shared conversation,
+the agents that chief starts, its officers, and its hosts' sessions, which its
+members read and whose questions reach their Attention.** A team's agents run
+on the server's Claude pool only when an admin lists the team in
+`MUSTER_TEAMS_ON_SERVER_POOL`, and work in repositories only when it is listed
+in `MUSTER_TEAMS_ON_GITHUB_APP` ([chief.md](chief.md)). Typing into a team
+host's sessions arrives with its own release (team sharing 2b.4).
 
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
@@ -108,13 +111,17 @@ releases (team sharing 2b.3 and 2b.4).
     focus, officer items).
   - A manager writes the managed ones (host tokens, officer types and
     charters, plugins and their drafts).
-  - Credentials, connectors, devices, push and agents (until their secrets are
-    split off) are never shared.
+  - Credentials, connectors, devices and push are never shared. A team's
+    agents are (0131), without their secrets, which live in `agent_secrets`.
+  - A Claude account's rate-limit and auth-failure marks are the ACCOUNT's:
+    the admin and every team on the server pool see the same marks on the
+    pool's accounts. A member's own accounts, and their marks, are theirs.
   - A person reaches a team's rows only from the browser or a paired phone.
     A personal API token, their agents (their own chief included), their
     mirror hosts and every background job act on their personal rows only. A
     team-scoped token may come later.
-  - No one moves a row into or out of a team.
+  - A person moves one of their own tasks into a team they operate in, with
+    its children; nothing moves out of a team.
 - **Who manages teams.** An admin, on **Admin → Teams** (`/admin/teams`),
   creates a team, naming its first manager, and adds, re-roles and removes
   members. A team's **manager** does the same for their own team on

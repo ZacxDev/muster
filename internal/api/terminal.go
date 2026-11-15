@@ -105,7 +105,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	// do — a reload or a shared link of this view lands here, not on the chat.
 	// (The switcher's Recent leaves the page's own session out whatever is
 	// recorded: ui.NewSwitcher.)
-	s.recordAgentVisit(r.Context(), a.ID)
+	s.recordAgentVisit(r.Context(), a)
 	// The session switcher at the page's foot (ui/switcher.go), as the chat
 	// page draws it — its pin posting back to THIS view.
 	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{AgentID: a.ID, Back: ui.AgentTerminalPath(a.Name)})

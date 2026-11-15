@@ -272,7 +272,18 @@ the team on `/teams/{id}/chief`, as the team. It is a `claude-code` agent named
 only when an admin lists the team in `MUSTER_TEAMS_ON_SERVER_POOL`; otherwise
 the page says the team has no Claude account and provisioning is refused. Its
 instructions tell it that its owner is a team, that several people talk to it,
-and that every member reads what it prints.
+and that every member reads what it prints. Its first turn says the same: it
+introduces itself to the team and speaks only of the team's tasks and agents
+(a person's chief is asked instead to report on the fleet). The pool's
+accounts are shared with the admin, and so are their rate-limit and
+auth-failure marks: a team's agent is not placed on, or failed over to, an
+account the admin's agents found exhausted, and the reverse.
+
+A member sees the team chief's one shared conversation and its earlier chats,
+but the page offers no **New side chat**, **Fresh primary**, **Make
+primary**, **Archive** or **Unarchive** on it: the server refuses those to
+every member. Opening a team agent's page is not recorded in the member's
+**recently viewed**.
 
 A team's chief starts **team-owned** `pod/claude-code` agents on the team's
 tasks, or from a request, once an admin lists the team in
