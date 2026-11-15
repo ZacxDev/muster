@@ -239,9 +239,23 @@ func PageCard(v PageCardView, id string) g.Node {
 // Share: the address (the button's own, or POST PageSharePath's answer) goes
 // to navigator.share when the browser has one — a cancelled sheet
 // (AbortError) is silence — and otherwise, or when the sheet fails, to the
-// clipboard (cgCopyText) with a "Link copied" toast. A copy the browser
-// refuses shows the address in the toast instead, and the button keeps it, so
-// the next tap shares at once.
+// clipboard with a "Link copied" toast. A copy the browser refuses shows the
+// address in the toast instead, and the button keeps it, so the next tap
+// shares at once.
+//
+// 🔴 THE SHARE SHEET NEEDS THE TAP'S OWN USER ACTIVATION (iOS Safari refuses
+// navigator.share once a tap's handler has awaited a fetch), SO THE ADDRESS IS
+// FETCHED BEFORE THE CLICK: on the button's pointerdown (and keyboard focus),
+// ensure() asks the server for the page's link, and the click — a few hundred
+// milliseconds later — finds it on the button and calls navigator.share
+// SYNCHRONOUSLY, inside the click's own dispatch. The Pages screens draw the
+// address on the button already. Only a click that beats its own pointerdown's
+// fetch takes the slow path: the address is put on the clipboard in the same
+// click (a ClipboardItem whose content is the pending fetch — what Safari
+// allows), the sheet is tried when the fetch lands, and if the browser
+// refuses it the toast says the link is copied; the next tap shares at once.
+// A pointerdown that turns into a scroll has made (or found) the page's link
+// and given it to nobody: it is still only the owner's, until it is sent.
 const pageShareJS = `
   if (!window.__musterPageShare) {
     window.__musterPageShare = true;
@@ -258,6 +272,7 @@ const pageShareJS = `
     };
     var setShareURL = function (id, url) {
       document.querySelectorAll('[data-page-share][data-page-id="' + id + '"]').forEach(function (b) {
+        b._ensure = null;
         if (url) b.setAttribute('data-share-url', url); else b.removeAttribute('data-share-url');
       });
       document.querySelectorAll('[data-share-url-field][data-page-id="' + id + '"]').forEach(function (f) { f.value = url || ''; });
@@ -270,33 +285,77 @@ const pageShareJS = `
         });
       });
     };
+    // ensure is the button's address: its own, else ONE fetch per button
+    // (kept while it is in flight, and its answer kept on the button).
+    var ensure = function (btn) {
+      var have = btn.getAttribute('data-share-url');
+      if (have) return Promise.resolve(have);
+      if (!btn._ensure) {
+        btn._ensure = postJSON(btn.closest('form').action).then(function (j) {
+          if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
+          else btn.setAttribute('data-share-url', j.url);
+          return j.url;
+        }, function (e) { btn._ensure = null; throw e; });
+      }
+      return btn._ensure;
+    };
     var copyShare = function (btn, url) {
       return window.cgCopyText(url).then(function () { pageToast('Link copied'); }, function () {
         btn.setAttribute('data-share-url', url);
         pageToast('Copy this link: ' + url);
       });
     };
+    var canSheet = function (data) { return !!navigator.share && (!navigator.canShare || navigator.canShare(data)); };
+    // sheet calls navigator.share NOW (the caller is still inside the tap,
+    // or has nothing better), falling back to fallback() on any failure but a
+    // cancel.
+    var sheet = function (data, fallback) {
+      var p;
+      try { p = navigator.share(data); } catch (e) { p = Promise.reject(e); }
+      return p.catch(function (e) {
+        if (e && e.name === 'AbortError') return;
+        return fallback();
+      });
+    };
     var sharePage = function (btn) {
-      if (btn.getAttribute('aria-busy') === 'true') return;
       var title = btn.getAttribute('data-share-title') || document.title;
       var have = btn.getAttribute('data-share-url');
+      if (have) {
+        // The fast path: synchronous, inside the click's own dispatch.
+        var data = { title: title, url: have };
+        if (canSheet(data)) sheet(data, function () { return copyShare(btn, have); });
+        else copyShare(btn, have);
+        return;
+      }
+      if (btn.getAttribute('aria-busy') === 'true') return;
       btn.setAttribute('aria-busy', 'true');
-      var got = have ? Promise.resolve(have) : postJSON(btn.closest('form').action).then(function (j) {
-        if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
-        return j.url;
-      });
+      var got = ensure(btn);
+      // The slow path: the address goes on the clipboard in THIS click, as a
+      // ClipboardItem whose content is the pending fetch.
+      var copied = null;
+      if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+        try {
+          copied = navigator.clipboard.write([new ClipboardItem({ 'text/plain': got.then(function (u) { return new Blob([u], { type: 'text/plain' }); }) })]);
+          copied.catch(function () {});
+        } catch (e) { copied = null; }
+      }
+      var copiedOr = function (url) {
+        if (!copied) return copyShare(btn, url);
+        return copied.then(function () { pageToast('Link copied'); }, function () { return copyShare(btn, url); });
+      };
       got.then(function (url) {
         var data = { title: title, url: url };
-        if (navigator.share && (!navigator.canShare || navigator.canShare(data))) {
-          return navigator.share(data).catch(function (e) {
-            if (e && e.name === 'AbortError') return;
-            return copyShare(btn, url);
-          });
-        }
-        return copyShare(btn, url);
+        if (canSheet(data)) return sheet(data, function () { return copiedOr(url); });
+        return copiedOr(url);
       }).catch(function (e) { pageToast(e.message || 'The link could not be made.'); })
         .then(function () { btn.removeAttribute('aria-busy'); });
     };
+    var early = function (e) {
+      var btn = e.target.closest && e.target.closest('[data-page-share]');
+      if (btn && !btn.getAttribute('data-share-url')) ensure(btn).catch(function () {});
+    };
+    document.addEventListener('pointerdown', early, true);
+    document.addEventListener('focusin', early, true);
     document.addEventListener('click', function (e) {
       var btn = e.target.closest && e.target.closest('[data-page-share]');
       if (!btn) return;

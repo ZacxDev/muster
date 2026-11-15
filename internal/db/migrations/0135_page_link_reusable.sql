@@ -13,9 +13,17 @@
 --       still serves and can still be revoked, but its address cannot be shown
 --       again.
 --   page_links.made_by_agent  the link was made by an agent (its request,
---       approved or — MUSTER_PAGES_AGENT_SHARE=auto — made live at once),
+--       approved, or made live at once for an owner who opted in below),
 --       not by the owner. Backfilled from requested_by: the owner's own links
 --       were always recorded as 'you'.
+--   notify_preferences.pages_agent_share   the user's opt-in, on Account,
+--       "Let my agents share pages without asking": their agents'
+--       page_share_request makes the page's link live at once instead of
+--       asking them. 🔴 OFF FOR EVERY USER, NEW AND EXISTING: NOT NULL DEFAULT
+--       false, nothing backfilled, and no row reads off
+--       (notifypref.PG.PagesAgentShare). A new column on 0094's owned table:
+--       its forced owner_isolation policy covers it, and rollback/rls_off.sql
+--       + --rls-on re-apply 0094 unchanged.
 --
 -- Inert without its code: an older image reads none of the columns, and every
 -- link it makes is reusable = false, token_sealed NULL.
@@ -30,6 +38,7 @@
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS token_sealed;
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS reusable;
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS made_by_agent;
+--   ALTER TABLE public.notify_preferences DROP COLUMN IF EXISTS pages_agent_share;
 --   DELETE FROM schema_migrations WHERE version = 135;
 
 SET LOCAL lock_timeout = '3s';
@@ -47,3 +56,6 @@ ALTER TABLE public.page_links ADD CONSTRAINT page_links_sealed_is_reusable
 CREATE UNIQUE INDEX IF NOT EXISTS page_links_one_reusable ON public.page_links (page_id) WHERE reusable AND state = 'live';
 
 UPDATE public.page_links SET made_by_agent = true WHERE requested_by <> 'you' AND NOT made_by_agent;
+
+ALTER TABLE public.notify_preferences
+    ADD COLUMN IF NOT EXISTS pages_agent_share BOOLEAN NOT NULL DEFAULT false;

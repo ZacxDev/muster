@@ -499,8 +499,6 @@ var bannerExempt = map[string]string{
 	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
 		"whose OFF line names " + envCCUsagePoll,
 	envPagesUploadBytes: "printed with its value on the `shareable pages: ON` line; it means nothing with pages off, whose OFF line names " + envPages,
-	envPagesAgentShare: "printed in BOTH its values on the `shareable pages: ON` line (TestThePagesBannerSaysWhetherAnAgentsLinkWaits); " +
-		"it means nothing with pages off, whose OFF line names " + envPages + ", and a value but ask or auto refuses to boot",
 	envAskLogTextTTL:    "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
 	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
 		"log off, whose OFF line names " + envAskLog,

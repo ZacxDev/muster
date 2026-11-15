@@ -154,7 +154,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}",
 		"GET /pages/{id}/preview",
 		"GET /pages/{id}/versions/{v}/content",
-		"POST /pages/{id}/links",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/share",
 		"POST /pages/{id}/share/rotate",
@@ -310,6 +309,7 @@ var routeVias = map[authz.Via][]string{
 		// "Start notification titles with the tmux name" (notify_prefs.go):
 		// the session tier.
 		"POST /account/notifications/codename",
+		"POST /account/pages/agent-share",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",

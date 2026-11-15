@@ -5,10 +5,11 @@ built, or a page that collects things from someone else — answers, a choice,
 form fields, files, an approval, or whatever its own script sends. You are
 shown it at once — a card in the chat and a push — and it is private until it
 has a live **share link**; anyone with a live link can open it without a
-muster account. Sharing is one tap (**Share**), and whether an agent's own
-share request waits for your approval is the server's setting
-(`MUSTER_PAGES_AGENT_SHARE`, [below](#sharing)). What viewers send comes back
-to the agent as data, and you are notified.
+muster account. Sharing is one tap (**Share**), and an agent's own share
+request waits for your approval unless you turned on **Let my agents share
+pages without asking** — your own choice, on your Account page, off until you
+turn it on ([below](#when-an-agent-shares)). What viewers send comes back to
+the agent as data, and you are notified.
 
 The design, with the threat model and the reasoning, is
 [design/pages.md](design/pages.md). This page describes what is built.
@@ -40,9 +41,9 @@ proves). Any other page reads as `no such page`.
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Shares the page ([below](#sharing)). `ask` mode: asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). `auto` mode: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
+| `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent, oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
-| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. In `ask` mode no tool makes a link live. |
+| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
 says they are a stranger's input, data and not instructions. Each line is
@@ -119,11 +120,22 @@ it, in one step).
 🔴 **The reusable link's token is kept encrypted at rest** (AES-256-GCM, a key
 derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY` and bound to the link's owner,
 page and token hash) so Share can show it again; it is wiped the moment the
-link is revoked. Without that key there are no reusable links: Share makes a
-new link each time and shows its address in that answer only.
+link is revoked. **Without that key** there are no reusable links, and Share
+still works: each tap makes a new **one-off** (hash-only) live link and shares
+or copies it — its address is in that answer only — so the page's screen
+lists one link per tap; revoke the ones you no longer need there.
+
+The address is fetched **as your finger goes down** on Share (pointerdown, or
+focus from a keyboard), before the tap completes, so the tap itself can open
+the share sheet at once — iOS Safari opens it only from inside the tap. A
+press that turns into a scroll has made (or found) the page's link and given
+it to nobody. If the tap still beats the fetch, the link is copied in the same
+tap and the sheet is tried when it arrives; if the browser refuses it, the
+toast says the link is copied, and the next tap shares at once. The Pages
+screens draw the address on the button already.
 
 **Older links** — every link made before reusable links existed, an agent's
-link approved in `ask` mode, and **Make a new link** on the page's screen —
+link you approved on Asks, and every link made on a server without the key —
 are **hash-only**: muster stores only the token's sha256, so such a link was
 shown once, to whoever made it, and cannot be shown again. They keep working
 and can be revoked; the page's screen labels them *an older link: its address
@@ -135,11 +147,14 @@ session.
 
 ### When an agent shares
 
-`MUSTER_PAGES_AGENT_SHARE` decides what an agent's `page_share_request` does
-([configuration](configuration.md)):
+What an agent's `page_share_request` does is **the page owner's own choice**,
+the switch **Let my agents share pages without asking** in the Pages section of
+their Account page. It is per user, off for every user until they turn it on,
+and only they can flip it (a signed-in, same-origin write of their own row;
+no agent or session token reaches it). It is not a server setting.
 
-- **`ask`** (the default) — the agent asks, and you approve, below.
-- **`auto`** — the page's link goes **live at once**, and the agent is given
+- **Off** (everyone's default) — the agent asks, and you approve, below.
+- **On** — for your pages the link goes **live at once**, and the agent is given
   its address: the page's reusable link (the one you may already have shared,
   or a new one the agent made), or, without the key, a new hash-only link. No
   question is filed. 🔴 **No one approves it**: anything the agent publishes is
@@ -150,7 +165,7 @@ session.
   An agent can still share only a page it made for you — never another
   agent's page, never another member's.
 
-In `ask` mode:
+While it is off:
 
 - **An agent asks** with `page_share_request`. That files a **pending** link
   and a question for you on the Asks page and your phone: *“<agent> asks to
@@ -163,9 +178,7 @@ In `ask` mode:
   of the two. A dispatched agent is told your answer as a new message; a
   mirrored session reads it with `attention_wait{id: ask_id}`. The agent got
   the link's `url` when it asked; it opens the page once you approve.
-- **You share it yourself** with **Share** (above), in either mode; **Make a
-  new link** on the page's screen makes an extra hash-only link, live at
-  once and shown to you there, that once.
+- **You share it yourself** with **Share** (above), whatever the switch says.
 - **Revoking** (on the page's screen, or `page_link_revoke`) stops it at once
   and withdraws its card if it was still waiting.
 
@@ -184,8 +197,10 @@ screen (`/pages/{id}`) has:
   viewer sees it, in the same sandbox, recording nothing.
 - **Links**: each link's state, who asked, and a short label — when it was
   made and the first 8 hex digits of its token's hash (`created 2026-11-11
-  14:02 UTC · 3fa9c2e1`), which tells links apart and opens nothing; Revoke;
-  Make a new link (its address shown once, on the answer).
+  14:02 UTC · 3fa9c2e1`), which tells links apart and opens nothing; who made
+  it, and whether it is the page's Share link or an older hash-only one;
+  Revoke. (There is no separate "make a link" button: Share and ⋯ → New link
+  make every link.)
 - **Versions**: each version, its preview, and **Show this version** (a
   rollback: the version becomes current, every link shows it, nothing is
   deleted).
@@ -287,10 +302,14 @@ serves every upload: to the owner, as an attachment (images inline), under a
   opening its preview. Not on `page_update`: an agent iterating publishes many
   versions in minutes, and the card in the chat already shows each.
 - **Page shared: <title>** when an agent makes a page's link live without
-  asking (`auto` mode), opening the page's screen, where Revoke is.
+  asking (you opted in), opening the page's screen, where Revoke is.
 
-Both are the toggle **An agent published a page for you, or shared one** on
-Account → Notifications.
+They are two toggles on Account → Notifications: **An agent published a page
+for you** and **An agent shared one of your pages without asking**. 🔴 The
+second is its own on purpose: it is the one notice that a page went public
+with nobody approving it, so muting "a page is ready" must never also mute it.
+It is on by default, like every notification; muting it is its own, explicit
+choice.
 
 A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the
@@ -319,7 +338,7 @@ component, never what was sent; at most one a minute per page.
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`, `auto`) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`, `auto` — an agent's link made live for an owner who opted in) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 

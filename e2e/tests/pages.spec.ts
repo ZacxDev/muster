@@ -303,6 +303,10 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await page.fill('#branding-name', BRAND);
   await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: PNG });
   await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+  // The ask flow is an owner who did NOT let their agents share without
+  // asking (Account → Pages): the leg's database is shared, so it is checked
+  // here, not assumed.
+  await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
 
   // 1. The agent publishes; the page is private.
   const created = await call('page_create', { title: 'Checkout launch ' + stamp, blocks: BLOCKS });

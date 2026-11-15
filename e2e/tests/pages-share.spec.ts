@@ -9,8 +9,9 @@ import { binDir, dsn, pagesShareConnectPort, pagesShareMirrorMCPPort, pagesShare
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // SHAREABLE PAGES, INSTANT SHARE (docs/pages.md#sharing, #in-the-chat), every
-// hop real, on a server in AUTO mode (MUSTER_PAGES_AGENT_SHARE=auto) with a
-// link key (MUSTER_CONNECTOR_ENCRYPTION_KEY) — pages.spec.ts is the ask mode:
+// hop real, on a server with a link key (MUSTER_CONNECTOR_ENCRYPTION_KEY),
+// whose owner turns ON "Let my agents share pages without asking" on the
+// Account page (a per-owner opt-in; pages.spec.ts is an owner who did not):
 //
 //   a Claude Code session in a mirrored window publishes a page through its
 //   host's loopback MCP endpoint (page_create) → the call and its result land
@@ -19,9 +20,11 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //     - on a desktop browser with no share sheet, the page's link is on the
 //       clipboard and "Link copied" shows; a second Share copies the SAME link;
 //     - on a phone, navigator.share is called with the page's title and that
-//       same link;
-//   → a signed-out browser opens the link and sees the page → the agent's own
-//   page_share_request is live at once and returns that same link.
+//       same link, SYNCHRONOUSLY inside the tap (the address is fetched on
+//       pointerdown, before the click — what iOS Safari's share sheet needs);
+//   → a signed-out browser opens the link and sees the page → the owner turns
+//   the opt-in on, on Account → the agent's own page_share_request is live at
+//   once and returns that same link.
 //
 // Every value below is an obvious fake.
 
@@ -50,7 +53,6 @@ test.beforeAll(async () => {
     MUSTER_MIRROR: '1',
     MUSTER_FOCUS_INTERVAL: '0',
     MUSTER_PAGES: '1',
-    MUSTER_PAGES_AGENT_SHARE: 'auto',
     MUSTER_PUBLIC_URL: origin,
     MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
     // A link key is the connector key, and that one needs its listener.
@@ -82,7 +84,21 @@ test.beforeAll(async () => {
   mirrorProc.stderr?.on('data', (d) => (mirrorLog += d));
 });
 
-test.afterAll(async () => {
+test.afterAll(async ({ browser }) => {
+  // 🔴 THE OPT-IN IS THE OWNER'S ROW IN THE LEG'S SHARED DATABASE (user 1's,
+  // every spec's owner): turned off again here, or a spec after this one —
+  // pages.spec.ts, the ask flow — would find its agent sharing at once.
+  if (server) {
+    const ctx = await browser.newContext({ baseURL: origin });
+    try {
+      const page = await ctx.newPage();
+      await signIn(page, origin);
+      const r = await page.request.post(origin + '/account/pages/agent-share', { form: { on: '0' }, headers: { Origin: origin }, maxRedirects: 0 });
+      expect(r.status(), 'the opt-in was turned off again').toBe(303);
+    } finally {
+      await ctx.close();
+    }
+  }
   if (mirrorProc && mirrorProc.exitCode === null) {
     const done = new Promise((r) => mirrorProc!.once('exit', r));
     mirrorProc.kill('SIGTERM');
@@ -204,16 +220,22 @@ test('phone: Share opens the native share sheet with the title and the same link
   let ctx: BrowserContext | undefined;
   try {
     ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, baseURL: origin });
-    // The share sheet, stubbed: what the page asked it to share. A first call
-    // that the user CANCELS (AbortError) must say nothing and copy nothing.
+    // The share sheet, stubbed: what the page asked it to share, and whether
+    // it was asked INSIDE the tap's click dispatch (inClick: set by a capture
+    // listener on window before any other, cleared by a bubble listener on
+    // window after the page's own) — not after an await. A call that the
+    // user CANCELS (AbortError) must say nothing and copy nothing.
     await ctx.addInitScript(() => {
-      const w = window as unknown as { __shared: unknown[]; __cancelNext: boolean };
+      const w = window as unknown as { __shared: unknown[]; __cancelNext: boolean; __inClick: boolean };
       w.__shared = [];
       w.__cancelNext = false;
+      w.__inClick = false;
+      window.addEventListener('click', () => (w.__inClick = true), true);
+      window.addEventListener('click', () => (w.__inClick = false));
       Object.defineProperty(Navigator.prototype, 'share', {
         configurable: true,
-        value: (d: unknown) => {
-          w.__shared.push(d);
+        value: (d: Record<string, unknown>) => {
+          w.__shared.push({ ...d, inClick: w.__inClick });
           if (w.__cancelNext) {
             w.__cancelNext = false;
             return Promise.reject(new DOMException('cancelled', 'AbortError'));
@@ -226,11 +248,17 @@ test('phone: Share opens the native share sheet with the title and the same link
     const page = await ctx.newPage();
     const card = await openCard(page);
     const share = card.getByRole('button', { name: `Share “${TITLE}”` });
+    // The card holds no address; the finger going down fetches it, so it is
+    // on the button BEFORE the click.
+    await expect(share).not.toHaveAttribute('data-share-url', /./);
+    await share.dispatchEvent('pointerdown');
+    await expect(share).toHaveAttribute('data-share-url', linkRE);
     await share.tap();
     await expect.poll(() => page.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared.length)).toBe(1);
-    const got = await page.evaluate(() => (window as unknown as { __shared: { title: string; url: string }[] }).__shared[0]);
+    const got = await page.evaluate(() => (window as unknown as { __shared: { title: string; url: string; inClick: boolean }[] }).__shared[0]);
     expect(got.title).toBe(TITLE);
     expect(got.url).toMatch(linkRE);
+    expect(got.inClick, 'navigator.share was called inside the click, with no await before it').toBe(true);
     if (sharedURL) expect(got.url, 'the same link the desktop copied').toBe(sharedURL);
     // Cancelled: silence (no toast).
     await page.evaluate(() => ((window as unknown as { __cancelNext: boolean }).__cancelNext = true));
@@ -245,8 +273,24 @@ test('phone: Share opens the native share sheet with the title and the same link
   }
 });
 
-test('auto mode: the agent’s share request is live at once and returns the page’s same link', async () => {
+test('an owner who opts in on Account: the agent’s share request is live at once and returns the page’s same link', async ({ browser }) => {
   await publish();
+  // Before the opt-in the agent is asked to wait for the owner.
+  const asked = await call('page_share_request', { page_id: pageID });
+  expect(asked.body.status, asked.text).toBe('pending');
+  // The owner turns it on, on the Account page.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: origin });
+  try {
+    const page = await ctx.newPage();
+    await signIn(page, origin);
+    await page.goto(origin + '/account#pages-agent-share');
+    const sw = page.locator('#pages-agent-share');
+    await expect(sw).toHaveAttribute('data-state', 'off');
+    await page.locator('#pages-agent-share-toggle').click();
+    await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'on');
+  } finally {
+    await ctx.close();
+  }
   const req = await call('page_share_request', { page_id: pageID, reason: 'for the client' });
   expect(req.isError, req.text).toBe(false);
   expect(req.body.status).toBe('live');

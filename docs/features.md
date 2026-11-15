@@ -429,17 +429,18 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
 Agents publish small pages for you — a showcase, questions, a form, file
 uploads, an approval, or their own script in a sandbox — shown to you at once
 (a card in the chat, a push), and shared with a link anyone can open: one tap
-on Share, or an agent's request, which waits for your approval unless
-`MUSTER_PAGES_AGENT_SHARE=auto`. What viewers send comes back to the agent as
+on Share, or an agent's request, which waits for your approval unless you
+turned on **Let my agents share pages without asking** on your Account page
+(each user's own choice, off by default). What viewers send comes back to the agent as
 data, and you are notified. [pages.md](pages.md).
 
 - **Needs:** the core's database, and `MUSTER_PUBLIC_URL` (links are written on
   it). An `upload` block needs [attachments](#attachments).
 - **Turn it on:** `MUSTER_PAGES=1` in `.env`.
 - **Safety:** a page is served sandboxed, with no network; it never runs as
-  muster. By default you approve every link an agent asks for; with
-  `MUSTER_PAGES_AGENT_SHARE=auto` an agent's link goes live without asking and
-  you are told. You can revoke any link.
+  muster. You approve every link an agent asks for, unless you opted in to
+  your agents sharing without asking (Account → Pages; then you are told each
+  time). You can revoke any link.
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
 

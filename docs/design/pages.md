@@ -111,8 +111,12 @@ All four tables are owned, under forced row-level security, with
 
 - **Only the token's sha256 is stored** (operator decision, round 0). A link
   is shown once — to the agent in `page_share_request`'s result, or to the
-  owner on the answer to **Make a new link** — and a lost one is replaced, not
+  owner on the answer to their Share — and a lost one is replaced, not
   recovered. A lookup hashes the presented token and compares in constant time.
+  *(Superseded for the owner's Share: with a link key a page keeps ONE
+  reusable link whose token is also sealed at rest, so Share shows it again —
+  see the threat model and docs/pages.md#sharing. Hash-only links remain for
+  agents' pending links and servers with no key.)*
 - **A creator** is the calling agent (`agent_id`) or the mirrored session's
   **host** (`mirror_host`). The tools act only on pages their caller created:
   a dispatched agent on its own, a mirrored session on its host's (the host is
@@ -261,15 +265,18 @@ SDK answers `{preview: true}` and records nothing.
 4. An answer in the session (the owner typing to the agent) settles the card
    without the hook: the link stays `pending` and serves nothing.
 
-That is `MUSTER_PAGES_AGENT_SHARE=ask`, the default. With `auto` none of the
-above happens: `page_share_request` makes the page's link live at once (the
-page's one reusable link when the server has a link key, else a new hash-only
-link), files no card, returns `status: "live"` and the address, and pushes the
-owner (`page_published`). The owner's door is not consulted, by the deployer's
-choice; see the threat model.
+That is the flow for an owner who has not opted in — every user, until they
+do. For an owner who turned on **Let my agents share pages without asking**
+(their own Account switch, `notify_preferences.pages_agent_share`, read for
+the PAGE's owner) none of the above happens: `page_share_request` makes the
+page's link live at once (the page's one reusable link when the server has a
+link key, else a new hash-only link), files no card, returns
+`status: "live"` and the address, and pushes the owner (`page_shared`, its own
+toggle). The owner's door is not consulted, by that owner's own choice; see
+the threat model.
 
-The owner's **Mint link** and **Revoke** on the Pages screen need a signed-in,
-same-origin request, like every other owner write.
+The owner's **Share**, **New link** and **Revoke** on the Pages screens need a
+signed-in, same-origin request, like every other owner write.
 
 ## Response delivery
 
@@ -309,7 +316,7 @@ label. Viewer data is never logged.
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
 | The link leaks | 256 bits, looked up only by its sha256; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push. A page's **reusable** link (the Share button's) also keeps its token **encrypted** (AES-256-GCM, a key derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY`, bound to the row's owner, page and hash), wiped when it stops being live: a database read alone yields no live link, a database read **plus** that key yields each page's current Share link. Without the key, links are hash-only as before | whoever it was given to; anyone holding both the database and the key |
 | A link outlives intent | revoke on the Pages screen, on the page card's ⋯ (Revoke link, New link), or with `page_link_revoke`; checked on every request | until revoked |
-| An agent shares without the owner | **`ask` (the default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **`auto` (`MUSTER_PAGES_AGENT_SHARE=auto`, the deployer's choice):** there is **no** owner gate — the agent's request makes the page's link live at once and hands the agent its address. The controls left are scope and notice: only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed ("Page shared"), the chat's page card and the page's screen say who made it live without asking, and Revoke is one tap | `ask`: the owner approving what they did not preview. `auto`: **anything the agent publishes can be public before the owner looks** — content, a phishing form, a leak of the owner's data the agent can read — until the owner revokes it |
+| An agent shares without the owner | **Owner not opted in (every user's default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **Owner opted in** (*Let my agents share pages without asking*, that owner's own switch on Account, `notify_preferences.pages_agent_share`): there is **no** owner gate for that owner's pages — the agent's request makes the page's link live at once and hands the agent its address. The controls left: the opt-in is per owner and only the owner flips it (a signed-in, same-origin write of their own row under row-level security; no agent or mirror token reaches the route); it is read for the PAGE's owner, never the caller's or the operator's; only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed (*Page shared*, its own toggle so muting *Page ready* never hides it), and the chat's page card and the page's screen say who made it live without asking, with Revoke one tap away | Not opted in: the owner approving what they did not preview. Opted in: **anything that owner's agent publishes can be public before the owner looks** — content, a phishing form, a leak of data the agent can read — until the owner revokes it; that owner chose this, for their own pages only |
 | Prompt injection through responses | fenced DATA with a preface; the push carries no viewer text | the agent's own judgement |
 | Malicious uploads | sniffed type; served only through `SetServeHeaders` (attachment, sandbox CSP, `nosniff`); never inline on the shell or content | none known |
 | Exhaustion | [limits](../pages.md#limits) | bandwidth |

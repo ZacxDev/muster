@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 )
 
-// INSTANT SHARE (docs/pages.md#sharing): MUSTER_PAGES_AGENT_SHARE=auto, the
+// INSTANT SHARE (docs/pages.md#sharing): an owner's opt-in to their agents sharing without asking, the
 // owner's one-tap Share and its reusable link, the publish push, the chat's
 // page card route. Every name, title and address is invented.
 
@@ -61,27 +62,51 @@ func (f *pageFixture) pagePushesTagged(tag string) ([]push.Payload, []int64) {
 	return out, who
 }
 
-// TestAutoModeSharesAtOnceWithNoCard: with MUSTER_PAGES_AGENT_SHARE=auto an
-// agent's page_share_request makes the page's link live NOW — no attention
-// row is filed — and returns its url, which a stranger opens; a second
-// request returns the SAME url; the owner (only) is pushed once; the page's
-// screen says the agent made it live without asking, with Revoke beside it.
-func TestAutoModeSharesAtOnceWithNoCard(t *testing.T) {
+// optIn flips uid's own "Let my agents share pages without asking" through
+// the Account route, signed in as uid, and puts the session back.
+func (f *pageFixture) optIn(t *testing.T, uid int64, on bool) {
+	t.Helper()
+	prev := f.session
+	f.session = uid
+	defer func() { f.session = prev }()
+	v := "0"
+	if on {
+		v = "1"
+	}
+	body, hdr := form(url.Values{"on": {v}})
+	w := f.call(t, http.MethodPost, accountPagesAgentSharePath, body, merge(f.ownerHdr(), hdr))
+	if w.Code != http.StatusSeeOther || !strings.HasSuffix(w.Header().Get("Location"), "#"+pagesAgentShareID) {
+		t.Fatalf("the opt-in as user %d: %d %v %s", uid, w.Code, w.Header(), w.Body.String())
+	}
+}
+
+// optedIn reads uid's opt-in as uid.
+func (f *pageFixture) optedIn(uid int64) bool {
+	return f.srv.pageAgentShareOn(f.as(uid, authz.ViaSession), uid)
+}
+
+// TestAnOptedInOwnersAgentSharesAtOnce: for an owner who turned on "Let my
+// agents share pages without asking", their agent's page_share_request makes
+// the page's link live NOW — no attention row is filed — and returns its url,
+// which a stranger opens; a second request returns the SAME url; the owner
+// (only) is pushed once, on the page_shared toggle; the page's screen says
+// the agent made it live without asking, with Revoke beside it.
+func TestAnOptedInOwnersAgentSharesAtOnce(t *testing.T) {
 	f := newPageFixture(t).keyed(t)
-	f.srv.ext.PagesAgentShareAuto = true
+	f.optIn(t, f.owner, true)
 	id := f.create(t, f.agent, "Auto shared", `[{"type":"markdown","text":"hello"}]`)
 	before := f.asksOf(t, f.owner)
 
 	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id, "reason": "for the client"})
 	if req["status"] != "live" || req["ask_id"] != nil || req["reusable"] != true || req["shared_by"] != f.agent.Name {
-		t.Fatalf("page_share_request in auto mode: %v", req)
+		t.Fatalf("page_share_request for an opted-in owner: %v", req)
 	}
 	tok := tokenOf(t, req["url"])
 	if n := f.asksOf(t, f.owner); n != before {
-		t.Fatalf("auto mode filed %d attention ask(s)", n-before)
+		t.Fatalf("an opted-in owner's agent filed %d attention ask(s)", n-before)
 	}
 	if w := f.get(t, pages.LinkPath(tok), nil); w.Code != http.StatusOK {
-		t.Fatalf("the auto-shared link does not serve a stranger: %d", w.Code)
+		t.Fatalf("the shared link does not serve a stranger: %d", w.Code)
 	}
 	again := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
 	if again["url"] != req["url"] || again["status"] != "live" {
@@ -102,29 +127,158 @@ func TestAutoModeSharesAtOnceWithNoCard(t *testing.T) {
 	}
 }
 
-// TestAutoModeWithoutAKeyMakesAHashOnlyLiveLink: no link key, auto mode: the
-// link is still live at once (hash-only, shown in this result only).
-func TestAutoModeWithoutAKeyMakesAHashOnlyLiveLink(t *testing.T) {
+// TestAnOwnerWhoDidNotOptInIsStillAsked: owner A opted in, owner B did not.
+// B's agent still files the pending link and the owner card; A's shares at
+// once — on the same server, at the same time.
+func TestAnOwnerWhoDidNotOptInIsStillAsked(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	f.optIn(t, f.owner, true)
+	if f.optedIn(f.other) {
+		t.Fatal("B starts opted in")
+	}
+	a := f.create(t, f.agent, "A's page", `[{"type":"markdown","text":"a"}]`)
+	b := f.create(t, f.otherAgent, "B's page", `[{"type":"markdown","text":"b"}]`)
+	beforeB := f.asksOf(t, f.other)
+	rb := f.tool(t, f.otherAgent, pageShareRequestTool, map[string]any{"page_id": b})
+	if rb["status"] != "pending" || pnum(rb["ask_id"]) <= 0 || f.asksOf(t, f.other) != beforeB+1 {
+		t.Fatalf("B (not opted in): %v", rb)
+	}
+	if w := f.get(t, pages.LinkPath(tokenOf(t, rb["url"])), nil); w.Code != http.StatusNotFound {
+		t.Fatalf("B's pending link serves: %d", w.Code)
+	}
+	if ra := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": a}); ra["status"] != "live" {
+		t.Fatalf("A (opted in): %v", ra)
+	}
+}
+
+// TestOnlyTheOwnerFlipsTheirOwnOptIn: a member's POST sets their own opt-in
+// and nobody else's; it is off for everyone until then; the route takes no
+// agent's, anonymous or cross-origin request; and the store refuses a read of
+// another user's row.
+func TestOnlyTheOwnerFlipsTheirOwnOptIn(t *testing.T) {
 	f := newPageFixture(t)
-	f.srv.ext.PagesAgentShareAuto = true
+	if f.optedIn(f.owner) || f.optedIn(f.other) {
+		t.Fatal("the opt-in is not off by default")
+	}
+	f.optIn(t, f.other, true)
+	if !f.optedIn(f.other) || f.optedIn(f.owner) {
+		t.Fatalf("B's POST: B %v, A %v; want B on and A untouched", f.optedIn(f.other), f.optedIn(f.owner))
+	}
+	body := url.Values{"on": {"1"}}.Encode()
+	ct := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	for name, h := range map[string]map[string]string{
+		"no credential":        merge(ct, map[string]string{"Origin": "http://example.com"}),
+		"an agent's token":     merge(ct, map[string]string{"Origin": "http://example.com", "Authorization": "Bearer " + f.agent.HooksToken}),
+		"a session, no Origin": merge(ct, map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "null"}),
+	} {
+		if w := f.call(t, http.MethodPost, accountPagesAgentSharePath, strings.NewReader(body), h); w.Code == http.StatusSeeOther {
+			t.Errorf("%s flipped the opt-in: %d", name, w.Code)
+		}
+	}
+	if f.optedIn(f.owner) {
+		t.Fatal("a refused request turned A's opt-in on")
+	}
+	// The store: B's principal cannot read A's row, nor write it.
+	if _, err := f.srv.ext.NotifyPrefs.PagesAgentShare(f.as(f.other, authz.ViaSession), f.owner); err == nil {
+		t.Fatal("B read A's opt-in")
+	}
+	_ = f.srv.ext.NotifyPrefs.SetPagesAgentShare(f.as(f.other, authz.ViaSession), f.owner, true)
+	if f.optedIn(f.owner) {
+		t.Fatal("B wrote A's opt-in")
+	}
+	// The Account page draws the switch in the caller's own state.
+	f.session = f.other
+	acct := f.get(t, accountPath, f.ownerHdr()).Body.String()
+	if !strings.Contains(acct, `id="`+pagesAgentShareID+`" data-testid="`+pagesAgentShareID+`" data-state="on"`) || !strings.Contains(acct, pagesAgentShareLabel) {
+		t.Fatalf("B's Account page lacks the switch, on")
+	}
+	f.session = f.owner
+	acct = f.get(t, accountPath, f.ownerHdr()).Body.String()
+	if !strings.Contains(acct, `id="`+pagesAgentShareID+`" data-testid="`+pagesAgentShareID+`" data-state="off"`) {
+		t.Fatalf("A's Account page lacks the switch, off")
+	}
+}
+
+// TestTheOptInIsThePageOwners: page_share_request reads the PAGE OWNER's
+// opt-in — not the operator's, not anybody else's. The operator (user 1) opted
+// in and the page's owner did not: asked. Then the owner opts in and the
+// operator out: live. (The mutation check in the PR: read
+// authz.OperatorUserID's instead of p.OwnerID's, and this goes red.)
+func TestTheOptInIsThePageOwners(t *testing.T) {
+	f := newPageFixture(t).keyed(t)
+	op := f.as(authz.OperatorUserID, authz.ViaSession)
+	if err := f.srv.ext.NotifyPrefs.SetPagesAgentShare(op, authz.OperatorUserID, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.srv.ext.NotifyPrefs.SetPagesAgentShare(op, authz.OperatorUserID, false) })
+	id := f.create(t, f.agent, "Whose setting", `[{"type":"markdown","text":"x"}]`)
+	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id}); r["status"] != "pending" {
+		t.Fatalf("the operator opted in, the owner did not: %v (want pending)", r)
+	}
+	if err := f.srv.ext.NotifyPrefs.SetPagesAgentShare(op, authz.OperatorUserID, false); err != nil {
+		t.Fatal(err)
+	}
+	f.optIn(t, f.owner, true)
+	if r := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id}); r["status"] != "live" {
+		t.Fatalf("the owner opted in, the operator did not: %v (want live)", r)
+	}
+}
+
+// TestTheToolsReadRightInBothStates: page_share_request's description names
+// both outcomes and whose setting decides; page_create's next hint says what a
+// share will do for THIS owner — asked, or live at once — and flips when the
+// owner flips the opt-in.
+func TestTheToolsReadRightInBothStates(t *testing.T) {
+	var desc string
+	for _, d := range pageToolDefs() {
+		if d.Name == pageShareRequestTool {
+			desc = d.Description
+		}
+	}
+	for _, want := range []string{`status "live"`, `status "pending"`, "your owner's own setting", "attention_wait"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("page_share_request's description lacks %q: %s", want, desc)
+		}
+	}
+	f := newPageFixture(t)
+	next := func() string {
+		out := f.tool(t, f.agent, pageCreateTool, map[string]any{"title": "Hint", "blocks": json.RawMessage(`[{"type":"markdown","text":"x"}]`)})
+		n, _ := out["next"].(string)
+		return n
+	}
+	if n := next(); !strings.Contains(n, "your owner is asked, and approves the link") || strings.Contains(n, "live at once") {
+		t.Fatalf("next, not opted in: %s", n)
+	}
+	f.optIn(t, f.owner, true)
+	if n := next(); !strings.Contains(n, "its link is live at once, and your owner is told") || strings.Contains(n, "approves") {
+		t.Fatalf("next, opted in: %s", n)
+	}
+}
+
+// TestAnOptedInShareWithoutAKeyMakesAHashOnlyLiveLink: no link key, opted in:
+// the link is still live at once (hash-only, shown in this result only).
+func TestAnOptedInShareWithoutAKeyMakesAHashOnlyLiveLink(t *testing.T) {
+	f := newPageFixture(t)
+	f.optIn(t, f.owner, true)
 	id := f.create(t, f.agent, "No key", `[{"type":"markdown","text":"x"}]`)
 	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
 	if req["status"] != "live" || req["reusable"] != false {
-		t.Fatalf("auto mode without a key: %v", req)
+		t.Fatalf("opted in without a key: %v", req)
 	}
 	if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusOK {
 		t.Fatalf("the link does not serve: %d", w.Code)
 	}
 }
 
-// TestAnAgentCannotAutoShareAnotherOwnersPage: in auto mode, another owner's
-// agent — and another agent of the same owner — get "no such page", and no
-// link is made on the page. 🔴 THE GUARD THIS PINS is pageShareAuto's PageFor
-// under the agent's owner's principal (the mutation check in the PR: read the
-// page as the system instead, and this goes red).
+// TestAnAgentCannotAutoShareAnotherOwnersPage: with both owners opted in,
+// another owner's agent — and another agent of the same owner — get "no such
+// page", and no link is made on the page. 🔴 THE GUARD THIS PINS is the
+// PageFor read under the agent's owner's principal before any share (the
+// mutation check in the PR).
 func TestAnAgentCannotAutoShareAnotherOwnersPage(t *testing.T) {
 	f := newPageFixture(t).keyed(t)
-	f.srv.ext.PagesAgentShareAuto = true
+	f.optIn(t, f.owner, true)
+	f.optIn(t, f.other, true)
 	id := f.create(t, f.agent, "Mine", `[{"type":"markdown","text":"x"}]`)
 	sid := strconv.FormatInt(id, 10)
 	for _, a := range []struct {
@@ -149,25 +303,6 @@ func TestAnAgentCannotAutoShareAnotherOwnersPage(t *testing.T) {
 	// The control: the page's own agent can.
 	if got := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id}); got["status"] != "live" {
 		t.Fatalf("the page's own agent: %v", got)
-	}
-}
-
-// TestAskModeIsTodaysFlow: the default (ask) files a pending link and an owner
-// card, and returns status pending — what TestOnlyTheOwnersOwnDoorApprovesALink
-// then decides.
-func TestAskModeIsTodaysFlow(t *testing.T) {
-	f := newPageFixture(t).keyed(t)
-	if f.srv.ext.PagesAgentShareAuto {
-		t.Fatal("the fixture is not in ask mode")
-	}
-	id := f.create(t, f.agent, "Ask first", `[{"type":"markdown","text":"x"}]`)
-	before := f.asksOf(t, f.owner)
-	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
-	if req["status"] != "pending" || pnum(req["ask_id"]) <= 0 || f.asksOf(t, f.owner) != before+1 {
-		t.Fatalf("ask mode: %v", req)
-	}
-	if w := f.get(t, pages.LinkPath(tokenOf(t, req["url"])), nil); w.Code != http.StatusNotFound {
-		t.Fatalf("a pending link served in ask mode: %d", w.Code)
 	}
 }
 

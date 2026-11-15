@@ -212,6 +212,7 @@ POST /account/devices/pair
 POST /account/devices/{id}/remove
 POST /account/notifications/codename
 POST /account/notifications/tmux
+POST /account/pages/agent-share
 POST /account/passkeys/options
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
@@ -313,7 +314,6 @@ POST /mirror/view/suggest/event
 POST /officers/spawns/{id}/share
 POST /officers/spawns/{id}/unshare
 POST /pages/{id}/delete
-POST /pages/{id}/links
 POST /pages/{id}/links/{link}/revoke
 POST /pages/{id}/rollback
 POST /pages/{id}/share

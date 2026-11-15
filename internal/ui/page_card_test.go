@@ -112,7 +112,7 @@ func TestTheSidebarHasPagesOnlyWhenServed(t *testing.T) {
 // the copy fallback — once per window.
 func TestThePageShareScriptIsInTheAppScript(t *testing.T) {
 	js := renderString(t, appScript(Features{}))
-	for _, want := range []string{"window.__musterPageShare", "navigator.share(data)", "e.name === 'AbortError'", "window.cgCopyText(url)", "'Link copied'"} {
+	for _, want := range []string{"window.__musterPageShare", "navigator.share(data)", "e.name === 'AbortError'", "window.cgCopyText(url)", "'Link copied'", "addEventListener('pointerdown', early, true)", "new ClipboardItem("} {
 		if !strings.Contains(js, want) {
 			t.Errorf("appScript lacks %s", want)
 		}
