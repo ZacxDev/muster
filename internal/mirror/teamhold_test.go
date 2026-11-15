@@ -53,9 +53,18 @@ func newPeerRig(t *testing.T) *rig {
 // connectFrom is a hand-driven host (rawConnect) connecting from addr.
 func (r *rig) connectFrom(t *testing.T, token, addr string, hello mirror.Msg) error {
 	t.Helper()
+	return r.connectFromWith(t, token, addr, nil, hello)
+}
+
+// connectFromWith is connectFrom sending extra headers too.
+func (r *rig) connectFromWith(t *testing.T, token, addr string, extra http.Header, hello mirror.Msg) error {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	hdr := http.Header{}
+	hdr := extra.Clone()
+	if hdr == nil {
+		hdr = http.Header{}
+	}
 	hdr.Set("Authorization", "Bearer "+token)
 	hdr.Set(peerHeader, addr)
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(r.srv.URL, "http")+mirror.ConnectPath, &websocket.DialOptions{HTTPHeader: hdr})

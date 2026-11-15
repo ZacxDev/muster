@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -244,8 +245,9 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// is sent nothing — until a manager confirms it.
 	peer := s.peerAddr(r)
 	if tok.Team {
-		if admit, announce := s.hub.admitPinned(key, peer); !admit {
-			s.refuseHeld(r, ws, tok, peer, announce)
+		code := attemptCodeOf(r)
+		if admit, announce := s.hub.admitPinned(key, peer, code); !admit {
+			s.refuseHeld(r, ws, tok, peer, code, announce)
 			return
 		}
 	}
@@ -279,12 +281,17 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 // first, as every refusal reads it, so the host reads the refusal as muster's
 // answer to its registration. Logged, and the team's views nudged, only when
 // announce (at most once per heldAnnounceEvery per address): a machine in a
-// tight retry loop is counted on the card, not announced each time.
-func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, announce bool) {
+// tight retry loop is counted on the card, not announced each time. The log
+// names the attempt's code by its fingerprint only (internal/attemptcode).
+func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, code *[32]byte, announce bool) {
 	_, _ = readHello(r.Context(), ws)
 	refuse(r.Context(), ws, ErrHeldForManager)
 	if announce {
-		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer)
+		which := "with no attempt code (an old muster-mirror)"
+		if code != nil {
+			which = "with attempt code " + attemptcode.Fingerprint(*code) + " (fingerprint)"
+		}
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer, which)
 		s.hub.changed(tok.OwnerID)
 	}
 }

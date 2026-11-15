@@ -17,23 +17,23 @@ func TestAHeldMachineInATightLoopIsAnnouncedOncePerInterval(t *testing.T) {
 	h.now = func() time.Time { return clock }
 	key := hostKey{900251, "build-06"}
 	h.hosts[key] = &hostConn{key: key} // the live team host
-	if admit, announce := h.admitPinned(key, "192.0.2.99"); admit || !announce {
+	if admit, announce := h.admitPinned(key, "192.0.2.99", nil); admit || !announce {
 		t.Fatalf("the first held attempt: admit %v, announce %v; want held and announced", admit, announce)
 	}
 	for i := 0; i < 50; i++ {
 		clock = clock.Add(200 * time.Millisecond) // 10 s in all, inside the interval
-		if admit, announce := h.admitPinned(key, "192.0.2.99"); admit || announce {
+		if admit, announce := h.admitPinned(key, "192.0.2.99", nil); admit || announce {
 			t.Fatalf("held attempt %d inside the interval: admit %v, announce %v; want held, not announced", i+2, admit, announce)
 		}
 	}
 	if got := h.HeldReplacements(key.owner); len(got) != 1 || got[0].Attempts != 51 {
 		t.Fatalf("the card = %+v; want one address counting all 51 attempts", got)
 	}
-	if _, announce := h.admitPinned(key, "203.0.113.7"); !announce {
+	if _, announce := h.admitPinned(key, "203.0.113.7", nil); !announce {
 		t.Fatal("ANOTHER address's first held attempt was not announced")
 	}
 	clock = clock.Add(heldAnnounceEvery)
-	if _, announce := h.admitPinned(key, "192.0.2.99"); !announce {
+	if _, announce := h.admitPinned(key, "192.0.2.99", nil); !announce {
 		t.Fatal("the first attempt after the interval was not announced")
 	}
 }

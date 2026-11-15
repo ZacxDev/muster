@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/tmuxver"
 )
@@ -659,6 +660,13 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server+mirrorHostRoute, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
+	// This machine's attempt code, when its muster-mirror left one: the server
+	// tells a held team host machine by it, whatever the addresses (team
+	// sharing 2b.2). Sent only to the token's own server (above).
+	code := d.attemptCode()
+	if code != "" {
+		req.Header.Set(attemptcode.Header, code)
+	}
 	resp, body, err := d.do(req)
 	if err != nil {
 		d.add(name, statusFail, "GET "+mirrorHostRoute+": "+err.Error(), "retry")
@@ -682,6 +690,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
 	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
 		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case h.Held && code != "":
+		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; give this code to a team manager: %s", h.Host, code),
+			"a manager of the team types this code on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
 	case h.Held:
 		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; a manager must confirm this machine", h.Host),
 			"a manager of the team confirms this machine, by its address, on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
@@ -1023,6 +1034,33 @@ func (d *doctorRun) checkFeatures() {
 // three checks read THIS machine's files — muster-mirror's settings, Claude
 // Code's user config and settings — and nothing else. Read-only; they print
 // no secret (the MCP secret's presence is checked, never its content).
+
+// envMirrorAttemptCodeFile is where muster-mirror leaves its attempt code
+// (its -attempt-code-file; else internal/mirrorpath's default).
+const envMirrorAttemptCodeFile = "MUSTER_MIRROR_ATTEMPT_CODE_FILE"
+
+// attemptCode is this machine's running muster-mirror's attempt code, in its
+// canonical XXXX-XXXX-XXXX form, or "" when it left none (an old
+// muster-mirror, or none running) or the file holds no well-formed code.
+func (d *doctorRun) attemptCode() string {
+	_, vals := d.mirrorEnvValues()
+	path := expandHome(strings.TrimSpace(vals[envMirrorAttemptCodeFile]), d.a.homeDir)
+	if path == "" {
+		path = mirrorpath.DefaultAttemptCodeFile()
+	}
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	code := strings.TrimSpace(string(raw))
+	if _, ok := attemptcode.Normalize(code); !ok {
+		return ""
+	}
+	return code
+}
 
 // The agent ask tool's defaults (docs/features.md#agent-ask-tool).
 const (

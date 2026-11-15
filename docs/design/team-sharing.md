@@ -2138,6 +2138,61 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   the server cannot tell which of the two this machine is), not online.
    >   A per-attempt code that binds the confirm to one machine is a separate
    >   follow-up PR, not built here.
+   >   🔴 **The follow-up: the ATTEMPT CODE (no migration; the hold is in
+   >   memory).** Round 1's proposal, built. `internal/attemptcode` (a
+   >   stdlib-only leaf, so the CLI links it without the mirror package)
+   >   draws a code per muster-mirror PROCESS: 12 Crockford base32
+   >   characters (60 bits from crypto/rand), shown `XXXX-XXXX-XXXX`; typed
+   >   forms (case, dashes, spaces, I/L/O) normalise. muster-mirror sends it
+   >   on every `/mirror/connect` as `X-Muster-Attempt-Code` (no tunnel
+   >   protocol change), logs "held: … give this code to a team manager:
+   >   <code>" when held, and writes it 0600 to `-attempt-code-file`
+   >   (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`, default
+   >   `internal/mirrorpath.DefaultAttemptCodeFile`), removed at exit while it
+   >   is still its own. The hub records a coded attempt by the code's
+   >   SHA-256 (domain-separated), never the code: `heldAttempt.code` is the
+   >   hash, the map key is its hex, and logs and the audit row carry
+   >   `attemptcode.Fingerprint` (16 hex). The card shows no per-row button
+   >   for a coded attempt; one field takes a typed code (`POST
+   >   …/hosts/replace` with `code`, same route, same step-up), and
+   >   `Hub.ConfirmCode` compares it against EVERY held coded attempt of the
+   >   team with `subtle.ConstantTimeCompare`, no early exit, and arms the
+   >   one match: `heldAttempt.admits` then lets in only a reconnect whose
+   >   code hash equals it (constant time), one-shot, within
+   >   `ReplaceConfirmWindow`. A wrong code arms nothing, is audited
+   >   `team.host.replace.refused` (with the typed code's fingerprint) and
+   >   counts against the TEAM: past `confirmFailLimit` (5) per
+   >   `confirmFailWindow` (10 min) every code confirm of that team is
+   >   refused (`ErrConfirmRateLimited`, 429) without comparing, the right
+   >   code included. 🔴 **The fallback:** an attempt with no code (or a
+   >   malformed one) is #685's codeless attempt — recorded by address,
+   >   confirmed by address (`ConfirmReplacement`), refused at the live
+   >   address (`ErrIndistinguishable`), and labelled "cannot be told apart
+   >   from other machines (old muster-mirror)". An address arm admits only
+   >   a CODELESS reconnect and an address confirm never names a coded
+   >   attempt; a code arm admits only that code. `muster doctor` sends the
+   >   code it reads from the file to the token's own server on `GET
+   >   /mirror/host`, and `Service.HeldHere` answers by the code alone
+   >   (never `held_unsure`); with no code it keeps the address answer.
+   >   ⚠ **Not closed:** a kept token can still spray fresh codes, and past
+   >   `maxHeldAttempts` (16) per host the oldest-seen attempt is forgotten,
+   >   so a fast sprayer can push the moved machine's attempt off the card
+   >   until its next retry; the answer is still revoke and re-mint. The
+   >   code is per process, so a restart of the moved machine draws a new
+   >   one. Tests: `TestACodeConfirmAdmitsTheMachineShowingItAndNoOther`,
+   >   `TestAWrongCodeArmsNothingAndGuessesAreLimited`,
+   >   `TestAnAttemptWithoutACodeFallsBackToTheAddressRule`,
+   >   `TestTheFallbackAndTheCodeAdmitOnlyTheirOwnKind`,
+   >   `TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash`,
+   >   `TestDoctorsQuestionIsAnsweredByTheCode` — over the REAL loopback
+   >   peer, every connection one address — and `TestTheHubKeepsOnlyTheCodesHash`,
+   >   `TestTheGuessLimitAgesOut`, `TestTheCodeIsComparedInConstantTime`
+   >   (structural: it reads the source) (`internal/mirror`);
+   >   `TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine`
+   >   (`internal/api`); `TestDoctorShowsAHeldMachinesCode`
+   >   (`cmd/muster`); `TestTheAttemptCodeFileIsPrivateAndOnlyItsOwnerRemovesIt`
+   >   (`cmd/muster-mirror`); `TestACodeIsTypeableAndTypedFormsAgree`
+   >   (`internal/attemptcode`).
    >   Held attempts are logged and nudge members' views at most once per
    >   `heldAnnounceEvery` (30 s) per address (G2); every attempt is still
    >   counted on the card.

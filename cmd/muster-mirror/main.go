@@ -46,7 +46,9 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
 	"github.com/ZacxDev/muster/internal/previewhost"
@@ -140,6 +142,9 @@ const (
 	envPaneMapDir = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envMCPListen  = "MUSTER_MIRROR_MCP_LISTEN"
 	envMCPSecret  = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	// envAttemptCodeFile: where this process leaves its attempt code for
+	// `muster doctor` (team sharing 2b.2: a held team host is confirmed by it).
+	envAttemptCodeFile = "MUSTER_MIRROR_ATTEMPT_CODE_FILE"
 	// Several muster instances (mirrorhost's mcptargets.go): extra MCP-only
 	// targets, the primary's name, and the tool-list watch.
 	envMCPTargets      = "MUSTER_MIRROR_MCP_TARGETS_FILE"
@@ -216,6 +221,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	mcpListen := fs.String("mcp-listen", getenv(envMCPListen), "serve muster's attention and task tools to this host's Claude Code sessions as an MCP endpoint at http://<addr>/mcp — a LOOPBACK address only, e.g. 127.0.0.1:47823; each call needs the secret in -mcp-secret-file (Authorization: Bearer ${MUSTER_MIRROR_MCP_SECRET:-}) and names its pane and tmux server with X-Muster-Pane: ${TMUX_PANE:-} and X-Muster-Tmux: ${TMUX:-}; empty = off ("+envMCPListen+")")
 	mcpSecretFile := fs.String("mcp-secret-file", or(getenv(envMCPSecret), mirrorhost.DefaultMCPSecretFile()), "the local MCP endpoint's secret, created (0600) when missing ("+envMCPSecret+")")
+	attemptCodeFile := fs.String("attempt-code-file", or(getenv(envAttemptCodeFile), mirrorpath.DefaultAttemptCodeFile()), "where this process writes (0600) its attempt code — a random code drawn at start and sent on every connect; when a team host's connection is held, a team manager confirms this machine by typing it, and `muster doctor` reads it here to show it; empty = not written ("+envAttemptCodeFile+")")
 	mcpTargetsFile := fs.String("mcp-targets-file", getenv(envMCPTargets), "with -mcp-listen: a JSON list of OTHER muster instances, [{\"name\": \"la\", \"url\": \"https://…\", \"token_file\": \"/abs/path\"}], whose admin tools (dispatch_request, agents_list, …) this host's sessions may call by passing instance: \"<name>\"; each token file holds THIS host's mirror token minted on THAT instance, mode 0600 or tighter. They are MCP targets only: this host's sessions are mirrored to -url alone. Invalid = logged and ignored, never fatal: MCP then reaches the primary only ("+envMCPTargets+")")
 	mcpPrimaryName := fs.String("mcp-primary-name", or(getenv(envMCPPrimaryName), mirrorhost.DefaultPrimaryName), "the name the -url instance goes by in an instance argument ([a-z0-9-]{1,32}) ("+envMCPPrimaryName+")")
 	mcpToolsRefresh := fs.String("mcp-tools-refresh", or(getenv(envMCPToolsRefresh), mirrorhost.DefaultToolsRefresh.String()), "with -mcp-listen: how often every instance's tool list is re-read; a change is announced to connected sessions with notifications/tools/list_changed, so they pick up a muster upgrade without reconnecting. 0 = off: no watch, no GET stream, no listChanged capability ("+envMCPToolsRefresh+")")
@@ -457,8 +463,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	spawnCfg := mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
 		Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
 		TenantServer: *agentSpawnTenantServer, KeepPermissionPrompts: !*agentSpawnSkipPermissions, Geteuid: geteuid}
+	// The attempt code is this PROCESS's: drawn once, so every reconnect of
+	// this process presents the same one, and a restart a new one.
+	attemptCode := attemptcode.New()
+	if *attemptCodeFile != "" {
+		path := expandHome(*attemptCodeFile)
+		if err := writeAttemptCode(path, attemptCode); err != nil {
+			logger.Printf("muster-mirror: the attempt code could not be written to %s (`muster doctor` will not show it; the log does when held): %v", path, err)
+		} else {
+			defer removeAttemptCode(path, attemptCode)
+		}
+	}
 	c, err := mirrorhost.New(mirrorhost.Config{
-		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
+		URL: *url, Token: token, AttemptCode: attemptCode, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		AgentSpawn:    spawnCfg,
@@ -811,4 +828,37 @@ func runAgentSpawnLog(args []string, getenv func(string) string, stdout, stderr 
 		return 1
 	}
 	return 0
+}
+
+// writeAttemptCode leaves code at path for `muster doctor`: the file 0600, its
+// directory 0700, written whole (a temp file renamed over it), so a doctor
+// never reads half a code. A symlink at path is replaced, never followed.
+func writeAttemptCode(path, code string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".attempt-code-*")
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(code + "\n")
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(f.Name(), path)
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+	}
+	return werr
+}
+
+// removeAttemptCode removes path at exit if it still holds this process's
+// code (another muster-mirror may have written its own since).
+func removeAttemptCode(path, code string) {
+	if b, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(b)) == code {
+		_ = os.Remove(path)
+	}
 }

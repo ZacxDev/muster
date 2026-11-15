@@ -142,7 +142,8 @@ releases (team sharing 2b.3 and 2b.4).
   - **Minting.** A team's **manager** mints, revokes and confirms its host
     tokens on `/teams/<id>/hosts`, signed in within the step-up window; each
     is audited (`team.host.token.create`, `team.host.token.revoke`,
-    `team.host.replace`) as the manager. The page shows each token's last
+    `team.host.replace`, and `team.host.replace.refused` for a wrong code) as
+    the manager. The page shows each token's last
     use, whether its host is connected, and its rotate mark. `muster-server
     mirror token create <host> --team <id>` mints the same token from the
     server's shell (audited `via = cli`), for a headless bootstrap.
@@ -179,21 +180,39 @@ releases (team sharing 2b.3 and 2b.4).
     connected, a second connection presenting its token is **held**: refused
     as pending a manager's confirmation, sent nothing and shown to no one,
     while the connected host keeps serving. The manager sees "Replace the
-    connected host?" on `/teams/<id>/hosts`, with **each held machine listed
-    by the address it connected from** (first and last seen). The manager
-    confirms ONE of them: that address's next attempt (muster-mirror retries
-    at most a minute apart) replaces the connected host, within 3 minutes,
-    and another address presenting the token stays held. There is no confirm
-    that names no machine. 🔴 **An address is all muster can tell machines
-    apart by, and behind a proxy or a Kubernetes NodePort every machine
-    shares one address** (measured on a NodePort deployment: every host
-    showed as the same pod-network address), so there the confirm cannot distinguish the moved machine
-    from a kept copy of the token. An attempt from the live host's own
-    address cannot be confirmed at all: stop the live host first (the next
-    connection is then taken at once), or revoke the token and mint a new
-    one. `muster doctor` on a held machine says it is held; where the held
-    and live machines share an address it says it cannot tell which this
-    machine is.
+    connected host?" on `/teams/<id>/hosts`, listing each held machine
+    (first and last seen, the address it came from).
+  - **The manager confirms by the machine's code.** Each `muster-mirror`
+    process draws a random **attempt code** when it starts (60 bits, shown as
+    `XXXX-XXXX-XXXX`) and sends it on every connect. A held one prints
+    "give this code to a team manager: XXXX-XXXX-XXXX" in its log, and
+    `muster doctor` on that machine shows it. The manager types the code of
+    the machine they moved on the hosts page; there is no per-row button
+    for such a machine. The confirm needs the step-up sign-in and is audited
+    (`team.host.replace`, naming the code's fingerprint). It admits ONLY that
+    code's next attempt, within 3 minutes (muster-mirror retries at most a
+    minute apart), and is spent once used. Every other connection stays held
+    **whatever its address**, so this holds behind a proxy or a Kubernetes
+    NodePort, where every machine shares one address. A kept copy of the
+    token, on another machine, draws its own code, which the manager never
+    types. muster keeps and logs only a hash of the code (audit rows and logs
+    carry a 16-hex fingerprint), compares it in constant time, and refuses a
+    team's code confirms for a while after 5 wrong codes in 10 minutes. A
+    wrong code arms nothing and is audited as `team.host.replace.refused`.
+  - **An old `muster-mirror` sends no code.** Its attempt is confirmed by the
+    address it connected from, as before, and the card labels it "cannot be
+    told apart from other machines (old muster-mirror)". 🔴 **An address is
+    all muster can tell such a machine apart by, and behind a proxy or a
+    NodePort every machine shares one** (measured on a NodePort deployment:
+    every host showed as the same pod-network address). A codeless attempt
+    from the live host's own address cannot be confirmed at all: stop the
+    live host first (the next connection is then taken at once), or revoke
+    the token and mint a new one. An address confirm admits only a codeless
+    reconnect, and a code confirm only a reconnect with that code. Upgrade
+    `muster-mirror` on the moved machine to get the code.
+  - `muster doctor` on a held machine says it is held and shows its code. For
+    an old `muster-mirror` whose held and live machines share an address, it
+    says it cannot tell which this machine is.
   - 🔴 **The hold guards the tunnel only.** A held machine, or anyone keeping
     a copy of the token, can still call `/mirror/mcp` and `/mirror/ask` as
     any session the connected host lists (those doors believe the session a

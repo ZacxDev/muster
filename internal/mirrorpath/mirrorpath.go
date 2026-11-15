@@ -29,3 +29,19 @@ func DefaultMCPSecretFile() string {
 	}
 	return MCPSecretFileIn(dir)
 }
+
+// AttemptCodeFileName is the running muster-mirror's attempt code (team
+// sharing 2b.2: a held team host is confirmed by it), in muster-mirror's
+// config directory, where `muster doctor` reads it to show it.
+const AttemptCodeFileName = "attempt-code"
+
+// DefaultAttemptCodeFile is where muster-mirror leaves its attempt code when
+// -attempt-code-file / MUSTER_MIRROR_ATTEMPT_CODE_FILE does not say: under
+// os.UserConfigDir(). "" when there is no user config directory.
+func DefaultAttemptCodeFile() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "muster-mirror", AttemptCodeFileName)
+}
