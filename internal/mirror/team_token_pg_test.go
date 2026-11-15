@@ -75,4 +75,3 @@ func TestATeamMirrorTokenAuthenticatesAsTheTeam(t *testing.T) {
 		t.Fatalf("a revoked team token authenticated: %v", err)
 	}
 }
-

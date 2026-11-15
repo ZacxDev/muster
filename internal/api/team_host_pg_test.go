@@ -134,4 +134,3 @@ func TestATeamHostCannotAnswerATeamAskThatIsNotItsOwn(t *testing.T) {
 		t.Fatalf("CONTROL: the session could not cancel its own ask: %s", body)
 	}
 }
-

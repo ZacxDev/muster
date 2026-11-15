@@ -54,8 +54,10 @@ func TestEveryMirrorToolIsClassifiedForATeamHost(t *testing.T) {
 		officers.ToolContactNote, officers.ToolContactsList, officers.ToolHeartbeat, officers.ToolItems,
 		officers.ToolPostDraft, officers.ToolRelease, taskCommentTool, taskGetTool, taskSetStatusTool, tasksListTool}
 	slices.Sort(want)
+	// Errorf, not Fatalf: the per-decision checks below must still run, so a
+	// wrong kept tool fails with ITS reason too (mutation-checked).
 	if !slices.Equal(kept, want) {
-		t.Fatalf("the kept set = %v\nwant %v", kept, want)
+		t.Errorf("the kept set = %v\nwant %v", kept, want)
 	}
 	for n := range hostStepUpTools {
 		if teamHostKeeps(n) {
