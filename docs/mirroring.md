@@ -1838,6 +1838,58 @@ for a bound caller. For example, `attention_answer` records
 `answered_via_host` and `answered_via_session`, and `dispatch_request`'s hold
 row records the host and session.
 
+## Team hosts
+
+A **team host** is a `muster-mirror` connected with a **team host token**: a
+mirror token owned by a team (team sharing phase 2b.2). Run it on a machine, or
+a dedicated Unix user on one, that the team treats as shared, with its own tmux
+server and its own `muster-mirror`.
+
+- **Getting a token.** A manager of the team mints one on `/teams/<id>/hosts`
+  (it is shown once), or the server's shell mints it:
+
+  ```sh
+  muster-server mirror token create build-01 --team 12
+  ```
+
+  Put it in the token file of that Unix user's `muster-mirror` and restart the
+  unit. Host names are unique per owner: `build-01` may be a team host and a
+  member's personal host at the same time, and the two never mix.
+- **What it reaches.** The host registers under the team, and its sessions'
+  `AskUserQuestion` prompts are the team's questions. Its sessions' MCP door
+  offers the session's own asks, the tasks it created and `agent_report_done`
+  only; every owner-authority tool, estate read and page tool is refused
+  ([auth.md](auth.md#teams), "Team hosts"). A team host token is never served
+  to another muster instance's remote calls.
+- **What members see in this version.** A team host session's
+  `attention_ask` shows on every member's Attention. The team host's sessions
+  themselves are listed to its members in a later release (2b.3).
+- **A personal host becoming a team host.** That is the same machine
+  reconnecting with a team token: its personal entry goes offline and a team
+  entry comes online. Nothing the sessions had moves; to keep history, run two
+  `muster-mirror` daemons on two tmux servers, one personal and one team.
+- **One connection at a time.** While the team host is connected, a second
+  connection with its token is held for a manager's confirmation on
+  `/teams/<id>/hosts`, instead of replacing it (a personal host's newer
+  connection replaces the older one). The held `muster-mirror` logs "pending
+  a manager's confirmation" and keeps retrying, and `muster doctor` there
+  reports "held: another connection is live for this team host". The page
+  lists each held machine by the address it connected from; once a manager
+  confirms that machine, its next attempt from that address takes over.
+  **Behind a proxy or a Kubernetes NodePort every machine shares one
+  address**, so there a confirm cannot tell machines apart, and a held
+  machine at the live host's own address cannot be confirmed: stop the live
+  host first, or replace the token. `muster doctor` then says it cannot tell
+  which machine it is. A held machine (or any kept copy of the token) can
+  still use `/mirror/mcp` and `/mirror/ask` as any session the connected host
+  lists; revoking and re-minting the token is what stops it. A host that disconnected first (a restart) is taken
+  back at once. A muster-mirror whose old connection is half-open waits for
+  the keepalive to end it, and then reconnects.
+- **Leaving.** A manager revokes the token: the connection ends at the next
+  recheck and the team's sessions on that host vanish. When an operator or a
+  manager leaves, drops to viewer or is disabled, the team's tokens are marked
+  rotate on that page: revoke and re-mint them.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends

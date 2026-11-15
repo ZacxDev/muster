@@ -125,6 +125,8 @@ const (
 	refusedByWithPrincipal = "panics: a team never signs in, and that door does not act as a team"
 	// refusedToolless: turnPrincipal answers false — the turn goes toolless.
 	refusedToolless = "false: a team's gateway turn goes toolless (no team gateway agents in phase 4)"
+	// refusedStepUpNoTeam: stepUpPrincipal panics with stepUpTeamRefusal.
+	refusedStepUpNoTeam = "panics: a team has no phone, and a team host files no step-up card"
 )
 
 // perOwnerSites is EVERY function in this package that calls
@@ -207,7 +209,10 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.focusPrincipal(ctx, team)
 		}},
-	"askPrincipal": {refusal: refusedByWithPrincipal,
+	// The question watcher (mirror_ask.go): a team host's AskUserQuestion is
+	// the team's, and its watcher reads the team host's window AS THE TEAM
+	// (team sharing 2b.2; TestATeamHostsQuestionIsWatchedAsTheTeam).
+	"askPrincipal": {actsAsTeam: true, via: authz.ViaAsk,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.askPrincipal(ctx, team)
 		}},
@@ -215,7 +220,11 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.queuedPrincipal(ctx, team)
 		}},
-	"stepUpPrincipal": {refusal: refusedByWithPrincipal,
+	// ViaMirrorHost is team-acting since 2b.2 (a team host's MCP door), so
+	// the step-up runner refuses a team ITSELF: a team has no phone, and a
+	// team host files no card (teamHostTools refuses every owner-authority
+	// tool first).
+	"stepUpPrincipal": {refusal: refusedStepUpNoTeam,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.stepUpPrincipal(ctx, team)
 		}},
@@ -371,6 +380,13 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 					if !strings.Contains(msg, "a team never signs in, and that door does not act as a team") {
 						t.Fatalf("%s with a team owner: panic %q, ctx %v; want WithPrincipal's door refusal", name, msg, ctx)
 					}
+				case refusedStepUpNoTeam:
+					// stepUpTeamRefusal, spelled out so the ledger compiles at
+					// a tree without it (where the row is red: WithPrincipal's
+					// own panic, not the runner's).
+					if msg != "step-up: a team has no phone, and a team host files no step-up card (teamHostTools refuses every owner-authority tool)" {
+						t.Fatalf("%s with a team owner: panic %q, ctx %v; want the step-up runner's own refusal", name, msg, ctx)
+					}
 				case refusedToolless:
 					if msg != "" || ctx != nil {
 						t.Fatalf("%s with a team-owned agent: panic %q, ok %v; want false, no panic", name, msg, ctx != nil)
@@ -399,13 +415,13 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 9 || refusing != 5 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 9 and 5", acting, refusing)
+	if acting != 10 || refusing != 4 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 10 and 4", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through
 	// the very builder every site uses.
-	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice, authz.ViaToken, authz.ViaMirrorHost, authz.ViaPlugin} {
+	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice, authz.ViaToken, authz.ViaFocus, authz.ViaPlugin} {
 		msg := panicOf(func() { authz.WithPrincipal(context.Background(), f.srv.principalFor(context.Background(), team, via)) })
 		if !strings.Contains(msg, "a team never signs in, and that door does not act as a team") {
 			t.Errorf("a team principal through %s: panic %q; want the door refusal", via, msg)

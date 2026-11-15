@@ -203,6 +203,9 @@ type Hub struct {
 	// written: not in hosts yet (nothing may be sent them before the welcome,
 	// see ServeConn), but holding their place under maxHosts.
 	joining map[hostKey]int
+	// held is the TEAM hosts' held second connections (teamhold.go): a
+	// connection for a live (team, host) waits for a manager.
+	held map[hostKey]*held
 	// arrivals numbers every join in the order its hello was accepted
 	// (hostConn.arrival); under mu.
 	arrivals uint64
@@ -765,8 +768,10 @@ func normalizeSessions(in []string) []string {
 // hello as host B is refused here, before anything is registered.
 //
 // A newer connection for the same (owner, host) replaces the older one (a
-// restarted muster-mirror whose previous TCP connection has not timed out yet).
-// A NEW host beyond MaxHosts is refused.
+// restarted muster-mirror whose previous TCP connection has not timed out yet)
+// — for a PERSONAL host. A TEAM host's second connection is held before it
+// gets here (Service.ServeConnect, teamhold.go). A NEW host beyond MaxHosts is
+// refused.
 //
 // Registration is in memory only: nothing on this path waits on a database.
 func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *websocket.Conn) error {

@@ -65,12 +65,18 @@ type Service struct {
 	// for HostToken; gen tells a connection's own entry from its successor's.
 	connMu  sync.Mutex
 	connTok map[hostKey]connToken
+	// peerFn, when set, reads a request's peer address instead of clientAddr
+	// (SetPeerAddr; tests). Under connMu.
+	peerFn func(*http.Request) string
 	connGen uint64
 }
 
 type connToken struct {
 	id  int64
 	gen uint64
+	// addr is the connection's peer address (peerAddr): how a held team host
+	// attempt is told from the live one (teamhold.go, HeldHere).
+	addr string
 }
 
 // HostToken is the id of the token the viewing principal's host is
@@ -231,19 +237,31 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.CloseNow()
 
+	key := hostKey{tok.OwnerID, tok.Host}
+	// 🔴 A TEAM HOST IS PINNED (teamhold.go): a second connection for a live
+	// (team, host) is refused as held — BEFORE it touches connTok or the hub,
+	// so the live connection's token stays the one tracked, and the held one
+	// is sent nothing — until a manager confirms it.
+	peer := s.peerAddr(r)
+	if tok.Team {
+		if admit, announce := s.hub.admitPinned(key, peer); !admit {
+			s.refuseHeld(r, ws, tok, peer, announce)
+			return
+		}
+	}
+
 	// A hijacked connection's request context does not end with the TCP
 	// connection, and nothing else ends this one on revocation, so its life is
 	// its own context: cancelled by the token check below or by the read loop.
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(r.Context()))
 	defer cancel(nil)
 	go s.watchToken(ctx, cancel, tok)
-	key := hostKey{tok.OwnerID, tok.Host}
 	s.connMu.Lock()
 	if s.connTok == nil {
 		s.connTok = map[hostKey]connToken{}
 	}
 	s.connGen++
-	mine := connToken{id: tok.ID, gen: s.connGen}
+	mine := connToken{id: tok.ID, gen: s.connGen, addr: peer}
 	s.connTok[key] = mine
 	s.connMu.Unlock()
 	defer func() {
@@ -255,6 +273,20 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	}()
 	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
+}
+
+// refuseHeld answers a held team host connection (teamhold.go): its hello
+// first, as every refusal reads it, so the host reads the refusal as muster's
+// answer to its registration. Logged, and the team's views nudged, only when
+// announce (at most once per heldAnnounceEvery per address): a machine in a
+// tight retry loop is counted on the card, not announced each time.
+func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, announce bool) {
+	_, _ = readHello(r.Context(), ws)
+	refuse(r.Context(), ws, ErrHeldForManager)
+	if announce {
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer)
+		s.hub.changed(tok.OwnerID)
+	}
 }
 
 // authenticate checks the request's mirror token (ServeConnect's rules: the

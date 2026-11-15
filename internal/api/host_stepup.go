@@ -285,9 +285,23 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 // checked the device principal's user is the card's owner), at the door the
 // call was asked through — authz.ViaMirrorHost — so the tool runs exactly as
 // the mirror door would have run it. Never another user id.
+//
+// 🔴 A TEAM OWNER PANICS HERE (stepUpTeamRefusal). ViaMirrorHost is
+// team-acting since team sharing 2b.2 (a team host's MCP door), so
+// WithPrincipal no longer refuses a team at this door; this does. A team has
+// no phone, and a team host files no card — every tool in hostStepUpTools is
+// refused for a team token first (teamHostTools) — so a team owner here is a
+// bug, never a decision to run.
 func (s *Server) stepUpPrincipal(ctx context.Context, owner int64) context.Context {
-	return authz.WithPrincipal(context.WithoutCancel(ctx), s.principalFor(ctx, owner, authz.ViaMirrorHost))
+	p := s.principalFor(ctx, owner, authz.ViaMirrorHost)
+	if p.Team {
+		panic(stepUpTeamRefusal)
+	}
+	return authz.WithPrincipal(context.WithoutCancel(ctx), p)
 }
+
+// stepUpTeamRefusal is stepUpPrincipal's panic on a team owner.
+const stepUpTeamRefusal = "step-up: a team has no phone, and a team host files no step-up card (teamHostTools refuses every owner-authority tool)"
 
 // runStepUpTool runs a confirmed owner-authority tool exactly as the mirror
 // door would have, for caller c of host. ONLY hostDecisionForAnswer calls it

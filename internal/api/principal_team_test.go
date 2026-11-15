@@ -34,7 +34,8 @@ func (u teamUsers) Account(ctx context.Context, id int64) (users.Account, error)
 // there the team is the agent row's owner (a team-owned agent acting as its
 // owner, through the team acting principal), never a sign-in. It fails when
 // the door set grows OR shrinks, so a new door decides here, and the walk
-// below holds admit to it by behaviour.
+// below holds admit to it by behaviour. A team host's mirror token (2b.2) is
+// the other: there the team is the token's owner.
 var doorAdmitsATeam = map[authz.Via]bool{
 	authz.ViaAgent:      true,  // /agent/*, /mcp: requireAgentToken
 	authz.ViaConnect:    true,  // /connect/*: requireConnectorAgent
@@ -44,7 +45,7 @@ var doorAdmitsATeam = map[authz.Via]bool{
 	authz.ViaService:    false, // the service token
 	authz.ViaToken:      false, // a person's API token
 	authz.ViaRunner:     false, // a host's flow runner
-	authz.ViaMirrorHost: false, // a mirror host (team hosts are phase 2b)
+	authz.ViaMirrorHost: true,  // a mirror host: a TEAM HOST's token (2b.2) acts as the team, through teamHostTools
 	authz.ViaPageLink:   false, // a page share link
 	authz.ViaDevice:     false, // a paired phone
 	authz.ViaPlugin:     false, // a plugin (team plugins are phase 3)
@@ -152,7 +153,7 @@ func TestOnlyTheAgentDoorsAdmitATeam(t *testing.T) {
 // ⚠ A FORCING FUNCTION, NOT COVERAGE. It checks that a sentence exists, never
 // that the route behaves as the sentence says. The behavioural tests are
 // TestATeamRowIsNeverASignInIdentity (the sign-in rows) and
-// TestATeamOwnedMirrorTokenIsRefused (the mirror rows).
+// TestATeamMirrorTokenAuthenticatesAsTheTeam (the mirror rows).
 var publicRouteTeamGuard = map[string]string{
 	// No identity at all: nothing for a team to be.
 	"GET /apple-touch-icon-precomposed.png": guardNoIdentity,
@@ -195,9 +196,11 @@ var publicRouteTeamGuard = map[string]string{
 	"GET /plugin/v1/pair/{request_id}": guardPairOwner,
 	"POST /api/device/pair":            guardMintedByASession,
 	"GET /f/{id}":                      "an HMAC over one upload's id; it names no user",
-	// The mirror plugin's own doors: the token lookup refuses a token whose
-	// owner is a team (mirror.PGStore.Authenticate:
-	// TestATeamOwnedMirrorTokenIsRefused).
+	// The mirror plugin's own doors: a team-owned token is a TEAM HOST's
+	// (2b.2), and registers its host and its questions under the team, never
+	// as a sign-in (mirror.PGStore.Authenticate:
+	// TestATeamMirrorTokenAuthenticatesAsTheTeam); a second connection for a
+	// live team host waits for a manager (TestASecondTeamHostConnectionWaitsForAManager).
 	"GET /mirror/connect": guardMirrorToken,
 	"POST /mirror/ask":    guardMirrorToken,
 }
@@ -206,7 +209,7 @@ const (
 	guardNoIdentity       = "no identity: serves the same thing to everyone, or only starts a sign-in"
 	guardSignIn           = "a sign-in that finds persons only"
 	guardMintedByASession = "its single-use code is minted by a signed-in session, which admit refuses to a team"
-	guardMirrorToken      = "the mirror token lookup refuses a team owner"
+	guardMirrorToken      = "a team-owned mirror token is a team host's: the host registers under the team, which never signs in"
 	guardPairOwner        = "an anonymous request whose owner lookup by name finds persons only"
 )
 

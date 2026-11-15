@@ -703,6 +703,12 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/chief/stop":               classParam,
 	"POST /teams/{id}/chief/restart":            classParam,
 	"POST /agents/{id}/credentials/rotate":      classParam,
+	// A team's host tokens (phase 2b.2): {id} is a team A manages, {token} a
+	// token of that team's.
+	"GET /teams/{id}/hosts":                     classParam,
+	"POST /teams/{id}/hosts":                    classParam,
+	"POST /teams/{id}/hosts/{token}/revoke":     classParam,
+	"POST /teams/{id}/hosts/replace":            classParam,
 	// Host officer spawns and their team lend (phase 3): the list shows the
 	// caller's own (and those lent to their teams); {id} is A's spawn.
 	"GET /officers/spawns":                      classList,

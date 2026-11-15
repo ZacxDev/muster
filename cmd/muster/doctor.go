@@ -669,6 +669,8 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Online      bool   `json:"online"`
 		Interactive bool   `json:"interactive"`
 		OtherToken  bool   `json:"other_token"`
+		Held        bool   `json:"held"`
+		HeldUnsure  bool   `json:"held_unsure"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -680,6 +682,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
 	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
 		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case h.Held:
+		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; a manager must confirm this machine", h.Host),
+			"a manager of the team confirms this machine, by its address, on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
 	case h.OtherToken:
 		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
 			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")
@@ -687,6 +692,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
 			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+
 				" (right after a server restart, wait a few seconds and run doctor again)")
+	case h.HeldUnsure:
+		d.add(name, statusFail, fmt.Sprintf("team host %q is connected, but a second machine with its token is held, from the same address as the live one (a proxy or NodePort): the server cannot tell which of the two this machine is", h.Host),
+			"if this machine was moved, stop the old host first so this one is taken; if not, a kept copy of the token is retrying: a manager revokes it and mints a new one on the team's hosts page")
 	default:
 		mode := "read-only"
 		if h.Interactive {
