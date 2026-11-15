@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,8 @@ import (
 // tool output says how.
 
 // connectorToolDefs declares the connector tools, in registry order:
-// connectors_list, connector_request, connector_status and postgres_query.
+// connectors_list, connector_request, connector_status, postgres_query and
+// internal_http_request.
 func connectorToolDefs() []agents.ToolDef {
 	fn := func(name, desc string, params map[string]any) agents.ToolDef {
 		return agents.ToolDef{Type: "function", Name: name, Description: desc, Parameters: params}
@@ -59,7 +61,124 @@ func connectorToolDefs() []agents.ToolDef {
 					"description": "Positional parameter values for $1, $2, … (strings, numbers, booleans or null).",
 					"items":       map[string]any{}},
 			}, "connector", "sql")),
+		fn(internalHTTPToolName, "Call an internal_http connector this agent has an approved grant for (ask with "+
+			"connector_request first). The connector's service and its credential are set by the server's admin: you "+
+			"choose only the method and a path under the connector's prefix (default /v1/), never a URL or a host. "+
+			"Returns {status, content_type, body (text) or body_base64 (anything else), bytes, max_bytes, duration_ms, "+
+			"images?}. Over MCP an image comes back as an image you can see, not as base64 text: an image body, and each "+
+			"top-level *_base64 field of a JSON body that holds a PNG, JPEG, GIF or WebP (e.g. png_base64), whose value "+
+			"is then a placeholder; images counts them. A response over the connector's size cap is refused, not cut.",
+			objSchema(map[string]any{
+				"connector": strProp("The internal_http connector's name."),
+				"method": map[string]any{"type": "string", "enum": connectors.InternalHTTPMethods,
+					"description": "GET, POST or DELETE."},
+				"path": strProp("The path, starting with the connector's prefix, e.g. /v1/sessions. Letters, digits, '/', " +
+					"'.', '_', '~' and '-' only: no scheme, host, '..', percent-escape, backslash, '?' or '#'."),
+				"query": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"},
+					"maxProperties": connectors.InternalHTTPMaxQueryParams,
+					"description":   "Query parameters (name → value); muster encodes them."},
+				"body": map[string]any{"description": "POST only: a JSON value, sent as application/json."},
+			}, "connector", "method", "path")),
 	}
+}
+
+// internalHTTPManagedNote is the Connectors tab's line for an internal_http
+// connector. It is the OWNER's view, so it names the configured service; no
+// agent-facing text does.
+func internalHTTPManagedNote(ih *connectors.InternalHTTP) string {
+	return "Provided by this server's configuration (MUSTER_INTERNAL_HTTP_CONNECTORS) for " + internalHTTPToolName + ": " +
+		"GET, POST and DELETE to " + ih.BaseURL() + " under " + ih.PathPrefix() + ", with a bearer token muster-server adds " +
+		"and the agent never sees; responses over " + strconv.Itoa(ih.MaxResponseBytes()) + " bytes are refused, and each " +
+		"call times out after " + ih.Timeout().String() + ". Each agent is approved on its own: an approval is never shared. " +
+		"There is no stored secret to rotate or delete."
+}
+
+// internalHTTPGrantsDescription says what approving a request for an
+// internal_http connector grants. 🔴 IT NAMES NO ADDRESS: it is read by a
+// model — connector_requests_list and connector_request_decide answer the
+// owner's mirrored session — so it says "the connector's configured service"
+// and the prefix, never the base URL. The owner's human view, the Connectors
+// tab (internalHTTPManagedNote), names the service.
+func internalHTTPGrantsDescription(ih *connectors.InternalHTTP) string {
+	return internalHTTPToolName + " for this agent only: GET, POST and DELETE requests to " + ih.Name() +
+		"'s configured service (its address is on the Connectors tab) under " + ih.PathPrefix() +
+		", carrying the connector's bearer token (added by muster-server, never shown to the agent); " +
+		"the agent chooses only the method and the path"
+}
+
+// internalHTTPToolName is the internal_http connector's call tool.
+const internalHTTPToolName = connectors.InternalHTTPTool
+
+// toolInternalHTTP runs one internal_http call for agent a.
+//
+// 🔴 THE ARGUMENTS ARE PARSED STRICTLY: a key the tool does not define (a
+// `url`, `host` or `base_url`, a `headers` map) is refused, never ignored, so
+// a model that tries to choose the destination is told so. The destination is
+// the connector's configuration (connectors.InternalHTTP).
+//
+// 🔴 THE GRANT CHECK IS THE PROXY'S OWN (Proxy.CheckAccess), as for
+// postgres_query: an agent reaches the service only after its owner approved
+// THAT agent for THAT connector. An officer instance is refused first for any
+// connector its officer does not declare (officerConnectorRefusal).
+func (s *Server) toolInternalHTTP(ctx context.Context, a agents.Agent, arguments string) string {
+	if s.ext.Connectors == nil || s.connectProxy == nil {
+		return toolErr("%s", ConnectorsUnconfigured)
+	}
+	var in struct {
+		Connector string            `json:"connector"`
+		Method    string            `json:"method"`
+		Path      string            `json:"path"`
+		Query     map[string]string `json:"query"`
+		Body      json.RawMessage   `json:"body"`
+	}
+	dec := json.NewDecoder(strings.NewReader(orEmptyJSON(arguments)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return toolErr("arguments must be {connector, method, path, query?, body?} — the destination is the connector's, "+
+			"never an argument: %v", err)
+	}
+	name := strings.TrimSpace(in.Connector)
+	if err := connectors.ValidateName(name); err != nil {
+		return s.connectorToolResult(internalHTTPToolName, a, nil, err)
+	}
+	if err := s.officerConnectorRefusal(a, name); err != nil {
+		return toolErr("%s", err.Error())
+	}
+	ih, ok := connectors.InternalHTTPOf(ctx, s.ext.Connectors, name)
+	if !ok {
+		return toolErr("connector %s is not an internal_http connector on this server", name)
+	}
+	caller := s.callerOf(a)
+	acc, err := s.connectProxy.CheckAccess(ctx, caller, name, "")
+	switch {
+	case errors.Is(err, connectors.ErrRoleUncertain):
+		return toolErr("%s", err.Error())
+	case err != nil:
+		return s.connectorToolResult(internalHTTPToolName, a, nil, err)
+	case !acc.Usable:
+		return toolErr("this agent has no approved grant for connector %s (grant: %s): ask with connector_request{name: %q, "+
+			"reason}, then wait with connector_status until it is approved", name, acc.Grant.Status, name)
+	}
+	res, err := ih.Do(ctx, s.ext.Connectors, caller, connectors.InternalHTTPRequest{Method: in.Method, Path: in.Path,
+		Query: in.Query, Body: in.Body})
+	var herr *connectors.InternalHTTPError
+	switch {
+	case err == nil:
+		// 🔴 AN IMAGE IS RETURNED AS AN IMAGE where the caller can be handed
+		// one (an MCP door: toolImagesFrom): a screenshot as megabytes of
+		// base64 text is unreadable to the model and overruns its client's
+		// output limit. Elsewhere the result is the whole answer as text.
+		if images := toolImagesFrom(ctx); images != nil {
+			var imgs []connectors.InternalHTTPImage
+			res, imgs = res.SplitImages()
+			images.add(imgs...)
+		}
+		return toolJSON(res)
+	case errors.As(err, &herr):
+		return toolErr("%s [%s]", herr.Message, herr.Class)
+	}
+	s.logger.Printf("connectors: tool %s for agent %d: %v", internalHTTPToolName, a.ID, err)
+	return toolErr("the tool failed")
 }
 
 // postgresQueryToolName is the postgres connector's query tool

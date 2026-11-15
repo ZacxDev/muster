@@ -108,6 +108,7 @@ var teamHostTools = map[string]teamHostRule{
 	"connector_request":   teamRefused(whyConnectorG3),
 	"connector_status":    teamRefused(whyConnectorG3),
 	postgresQueryToolName: teamRefused(whyConnectorG3),
+	internalHTTPToolName:  teamRefused(whyConnectorG3),
 }
 
 // teamHostKeeps reports whether a team token may run tool name: classified

@@ -313,6 +313,14 @@ func PostgresUsage(name string) string {
 		"\", sql, params?}. One read-only statement per call; muster connects to the database, you never see the credential."
 }
 
+// InternalHTTPUsage is an internal_http connector's usage line: the call tool,
+// not the proxy. It names no URL: the agent is never told the destination.
+func InternalHTTPUsage(name string) string {
+	return "Call it with the " + internalHTTPToolName + " tool: " + internalHTTPToolName + "{connector: \"" + name +
+		"\", method, path, query?, body?}. The service and its credential are the server's; you choose only GET, POST or " +
+		"DELETE and a path under the connector's prefix."
+}
+
 func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name string) (AgentConnectorView, error) {
 	v := AgentConnectorView{Name: name, Grant: "none"}
 	c, err := s.ext.Connectors.GetConnector(ctx, name)
@@ -335,9 +343,13 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	}
 	if v.Exists && v.Grant == connectors.StatusApproved {
 		v.Usage = ProxyUsage(name, v.Hosts)
-		if c.Scheme == connectors.SchemePostgres {
+		switch c.Scheme {
+		case connectors.SchemePostgres:
 			// A database is never reached through the HTTP proxy (it refuses one).
 			v.Usage = PostgresUsage(name)
+		case connectors.SchemeInternalHTTP:
+			// Nor is an internal_http connector: its tool is its only door.
+			v.Usage = InternalHTTPUsage(name)
 		}
 	}
 	return v, nil
@@ -716,6 +728,8 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 			Shared: shared[k.Name]}
 		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok && connectors.IsKubeRead(vc) {
 			cv.Managed = kubeReadManagedNote
+		} else if ih, isIH := vc.(*connectors.InternalHTTP); ok && isIH {
+			cv.Managed = internalHTTPManagedNote(ih)
 		} else if ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
 				"requests to its own repository carry a 1-hour token limited to it (" + githubAppScope(vc) + "); " +
@@ -1095,6 +1109,10 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 		// re-opens the grant (connectors.ReconcileGrant), as does a change of its
 		// `read_repos` (the set, connectors.RepoScope; a reordering does not).
 		repo = s.agentRepoScope(a)
+		// For an internal_http connector it is the connector's destination
+		// instead (connectors.GrantScope): a restart that points the name at
+		// another service re-opens the approval.
+		repo = connectors.GrantScope(ctx, s.ext.Connectors, g.Connector, repo)
 	}
 	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, repo, via)
 	if err != nil {

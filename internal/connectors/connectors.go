@@ -169,7 +169,9 @@ type Grant struct {
 	// agent's effective repository when the owner decided it, or — when none
 	// was recorded (a decision before 0061, an approval from a standing grant,
 	// a grant not yet decided) — the agent row's own repository. "" for none.
-	// See ReconcileGrant.
+	// For an internal_http connector it is instead the destination the
+	// approval was made for (InternalHTTP.Destination, written by GrantScope),
+	// a fingerprint never shown to an agent. See ReconcileGrant.
 	Repo string `json:"-"`
 }
 

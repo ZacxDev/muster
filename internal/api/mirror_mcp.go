@@ -536,11 +536,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	// refused as a TOOL error the model sees.
 	s.serveMCP(w, r, mcpSurface{
 		tools: tools,
-		call: func(name, args string) string {
+		call: func(ctx context.Context, name, args string) string {
 			var c toolCaller
 			if remote {
 				var refused string
-				if c, refused = s.remoteMirrorCaller(r.Context(), t.Host, sid, agentKey, remoteSID, name); refused != "" {
+				if c, refused = s.remoteMirrorCaller(ctx, t.Host, sid, agentKey, remoteSID, name); refused != "" {
 					return refused
 				}
 			} else if openCode {
@@ -549,12 +549,12 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 				if sid != "" || !mirror.OpenCodeMCPCaller(agentKey) {
 					return toolErr("an opencode caller is bound by its opencode session (its MCP endpoint sends %s: opencode:<id>), never by a Claude session", mirrorAgentSessionHeader)
 				}
-				e, ok := s.awaitMirrorSession(r.Context(), t.Host, agentKey)
+				e, ok := s.awaitMirrorSession(ctx, t.Host, agentKey)
 				if !ok {
 					return toolErr("host %s lists no one window running opencode session %q that it sends to now; a host acts only as its own sessions",
 						t.Host, mirror.SessionIDOf(agentKey))
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
 			} else {
 				// 🔴 THE CLAUDE HEADER NAMES A CLAUDE SESSION ONLY. mirrorSessionOf
 				// also binds an opencode caller's key, so without this an
@@ -563,18 +563,18 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 				if !mirror.ValidClaudeSession(sid) {
 					return toolErr("%q is not a Claude session id: a Claude Code caller is named by %s, an opencode one by %s with the marker", sid, mirrorSessionHeader, mirrorAgentSessionHeader)
 				}
-				e, ok := s.awaitMirrorSession(r.Context(), t.Host, sid)
+				e, ok := s.awaitMirrorSession(ctx, t.Host, sid)
 				if !ok {
 					return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
 						t.Host, sid, mirrorSessionHeader)
 				}
-				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(ctx, e)}, mirrorWindow: e.Window}
 			}
 			// 🔴 A HOST OFFICER INSTANCE FIRST (officer_host.go), on every call
 			// while a host officer is declared: a session bound to one runs only
 			// the instance's tools, as its agent row — never an operator power —
 			// and nobody else runs an instance-only tool.
-			if text, ok := s.hostOfficerMirrorTool(r.Context(), t.Host, c, name, args); ok {
+			if text, ok := s.hostOfficerMirrorTool(ctx, t.Host, c, name, args); ok {
 				return text
 			}
 			// 🔴 BY THE RESOLVED CALLER, NOT THE HEADER THAT CARRIED IT: an
@@ -587,45 +587,45 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// officer, an owner-authority tool is a request to the owner's phone,
 			// never a decision — the caller is named by a header any process
 			// there can set.
-			if text, ok := s.hostStepUpGate(r.Context(), t.Host, c, name, args); ok {
+			if text, ok := s.hostStepUpGate(ctx, t.Host, c, name, args); ok {
 				return text
 			}
 			// chief_ask is this door's alone, like route_reply below (listed only
 			// with chiefAskOn, and serveMCP refuses an unlisted name).
 			if name == chiefAskTool {
-				return s.toolChiefAsk(r.Context(), c, args)
+				return s.toolChiefAsk(ctx, c, args)
 			}
 			// So is chief_restart (listed only with chiefRestartOn): it is not in
 			// dispatchCallerTool, so no gateway agent can name it.
 			if name == chiefRestartTool {
-				return s.toolChiefRestart(r.Context(), c, args)
+				return s.toolChiefRestart(ctx, c, args)
 			}
 			// So is agents_list (listed only with the agent store).
 			if name == agentsListTool {
-				return s.toolAgentsList(r.Context(), c, args)
+				return s.toolAgentsList(ctx, c, args)
 			}
 			// route_reply is this door's alone: it is not in dispatchCallerTool,
 			// which a gateway agent reaches naming any tool.
 			if name == routeReplyToolName {
-				return s.toolRouteReply(r.Context(), c, args)
+				return s.toolRouteReply(ctx, c, args)
 			}
 			// So are plugin_messages_list / plugin_message_route.
-			if text, ok := s.dispatchPluginMessageRouteTool(r.Context(), c, name, args); ok {
+			if text, ok := s.dispatchPluginMessageRouteTool(ctx, c, name, args); ok {
 				return text
 			}
 			// And dispatch_request / dispatch_approve (listed only with
 			// dispatchHoldToolsOn): not in dispatchCallerTool, so no dispatched
 			// agent and no chief can name them; each refuses any caller but a
 			// mirrored session again inside.
-			if text, ok := s.dispatchHoldTool(r.Context(), c, name, args); ok {
+			if text, ok := s.dispatchHoldTool(ctx, c, name, args); ok {
 				return text
 			}
 			// agent_report_done here is the host-dispatch form (listed only with
 			// the host-dispatch store): bound to THIS session's own dispatch.
 			if name == agentReportDoneTool {
-				return s.toolHostReportDone(r.Context(), t.Host, c.asker.MirrorSession, c.mirrorWindow, args)
+				return s.toolHostReportDone(ctx, t.Host, c.asker.MirrorSession, c.mirrorWindow, args)
 			}
-			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
+			if text, ok := s.dispatchCallerTool(ctx, c, name, args); ok {
 				return text
 			}
 			return toolErr("unknown tool %q", name)
