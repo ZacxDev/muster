@@ -159,6 +159,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /pages/{id}': 'measured in pages.spec.ts (one page)',
   'GET /pages/{id}/preview': 'measured in pages.spec.ts (the owner\'s preview shell)',
   'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the preview frames',
+  'GET /pages/{id}/card': 'a page card fragment the chat\'s live stream fetches and inserts (no document of its own)',
   'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
   'GET /s/{token}/content': 'the sandboxed content document the shell frames',
 };
