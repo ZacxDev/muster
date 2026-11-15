@@ -265,7 +265,9 @@ func connectorsStatus(c config, ext api.Extensions) features.Status {
 		return features.Status{State: features.On}
 	case ext.Credentials != nil && c.AgentConnectURL == "":
 		why := "members' own credentials only; " + agentConnectorsOff()
-		if ext.Provisioner != nil {
+		// A DISPATCH question (the provisioner gate ledger): the Compose
+		// chief's provisioner dispatches nothing, as the Dispatch entry reads it.
+		if ext.Provisioner != nil && ext.ComposeChief == nil {
 			return features.Status{State: features.Misconfigured, Reason: why}
 		}
 		return features.Status{State: features.On, Reason: why}
