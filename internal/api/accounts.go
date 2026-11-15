@@ -912,6 +912,10 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 	if s.gt == nil {
 		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
 	}
+	if disabled {
+		// Before the disable deletes the person's phones (team_withdraw.go).
+		s.teamItemsWithdrawnBeforeDisable(ctx, id)
+	}
 	return SetUserDisabled(ctx, s.gt.GoTrueAuth, id, disabled, func() { s.userDisabledChanged(ctx, id, disabled) })
 }
 
@@ -921,6 +925,10 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 func (s *Server) DisableUserAs(ctx context.Context, by users.Actor, id int64, disabled bool) error {
 	if s.gt == nil {
 		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
+	}
+	if disabled {
+		// Before the disable deletes the person's phones (team_withdraw.go).
+		s.teamItemsWithdrawnBeforeDisable(ctx, id)
 	}
 	return SetUserDisabledAs(ctx, s.gt.GoTrueAuth, &by, id, disabled, func() { s.userDisabledChanged(ctx, id, disabled) })
 }

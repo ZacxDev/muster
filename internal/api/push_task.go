@@ -346,7 +346,7 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 			s.goNotify(n.OwnerID, push.EventResolved, RouterNotification{
 				Type: push.TypeResolved,
 				ID:   strconv.FormatInt(n.ID, 10),
-				Tag:  fmt.Sprintf("task-%d-done", n.ID),
+				Tag:  taskDoneTag(n.ID),
 			}, nil)
 		}
 		return
@@ -370,9 +370,13 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 		ID:    strconv.FormatInt(n.ID, 10),
 		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), confirmedRefWriteFrom(ctx), n)),
 		Body:  withTaskRef(taskTitle(n), taskRefFragment(n)),
-		Tag:   fmt.Sprintf("task-%d-done", n.ID),
+		Tag:   taskDoneTag(n.ID),
 	})
 }
+
+// taskDoneTag is task id's "ready for review" notification tag (its push,
+// its withdrawal, and the team sweep's "tasks in review" kind).
+func taskDoneTag(id int64) string { return fmt.Sprintf("task-%d-done", id) }
 
 // reviewPushTitle is the ready-for-review push's title: "Task #N ready for
 // review", then " · <source>" when the source has a label. The " · " joiner is

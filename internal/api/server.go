@@ -355,6 +355,15 @@ type Server struct {
 	// teams; users.kind never changes), so attentionChanged's team arm
 	// (teamViewRecipients) reads nothing for them after the first time.
 	personOwners sync.Map
+	// teamOwners remembers the owner ids known to be teams, so a failed
+	// recipient read is counted as a dropped TEAM push only for a team
+	// (teamPushRecipients).
+	teamOwners sync.Map
+	// capHolds is each owner's officer cap-hold notices shown and not yet
+	// ended (officerCapHoldNotice), by tag: the team sweep's
+	// "officer cap holds" kind reads them. In memory, as the episode is.
+	capHoldsMu sync.Mutex
+	capHolds   map[int64]map[string]bool
 	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
 	deviceLimits deviceLimits
@@ -515,6 +524,10 @@ type RouterNotification struct {
 	// the person whose own action it reports (a team task comment's author,
 	// teamTaskCommented). 0 for none; it never touches a personal owner.
 	skip int64
+	// wait, when set, is Done once this notification has been handed to every
+	// recipient's devices (or refused): the disable sweep waits on it before
+	// the disable deletes the person's phones (team_withdraw.go).
+	wait *sync.WaitGroup
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -1479,8 +1492,14 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// mutes, one shared cap and no preferences. A person is their own one
 	// recipient, with no prefix: exactly as before.
 	s.pushInFlight.Add(1)
+	if n.wait != nil {
+		n.wait.Add(1)
+	}
 	safeGo(s.logger, "notify tag="+n.Tag, func() {
 		defer s.pushInFlight.Done()
+		if n.wait != nil {
+			defer n.wait.Done()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip)

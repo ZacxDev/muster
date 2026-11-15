@@ -13,39 +13,76 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// failingTeamReader is a users store whose team read always fails.
-type failingTeamReader struct{ users.Store }
-
-func (failingTeamReader) TeamPushTargets(context.Context, int64) (users.TeamPushTargets, error) {
-	return users.TeamPushTargets{}, errors.New("synthetic read failure")
+// scriptedTeamReader is a users store whose team read answers as told.
+type scriptedTeamReader struct {
+	users.Store
+	team  bool
+	fail  bool
+	reads *int
 }
 
-// TestADroppedTeamPushIsCounted (#683 round 0, choice 3): when the read of a
-// notification owner's team recipients fails, the push goes to the owner
-// alone — for a team, nobody — and muster_push_suppressed_total
-// {reason="team_read_failed"} counts it. CONTROL: a read that works counts
-// nothing.
+func (r scriptedTeamReader) TeamPushTargets(context.Context, int64) (users.TeamPushTargets, error) {
+	*r.reads++
+	if r.fail {
+		return users.TeamPushTargets{}, errors.New("synthetic read failure")
+	}
+	return users.TeamPushTargets{Team: r.team, Name: "t", Notify: []int64{91}, Withdraw: []int64{91}}, nil
+}
+
+// TestADroppedTeamPushIsCounted (#683 rounds 0 and 1): a failed recipient
+// read sends the push to its owner alone — for a team, nobody — and
+// muster_push_suppressed_total counts it BY WHAT MUSTER KNOWS of the owner:
+//   - a known TEAM: team_read_failed (a dropped team push);
+//   - an owner whose kind was never read: owner_kind_unread, never
+//     team_read_failed (it may be a person whose push did go);
+//   - a known PERSON: no read at all, nothing counted, their push goes.
 func TestADroppedTeamPushIsCounted(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
-	c := metrics.PushSuppressed.WithLabelValues("team_read_failed")
-	before := testutil.ToFloat64(c)
-	s.ext.Users = failingTeamReader{}
-	if got, prefix := s.teamPushRecipients(context.Background(), 4242, "plugin", 0); len(got) != 1 || got[0] != 4242 || prefix != "" {
-		t.Errorf("a failed read answered %v %q; want the owner alone, no prefix", got, prefix)
+	team := metrics.PushSuppressed.WithLabelValues("team_read_failed")
+	unread := metrics.PushSuppressed.WithLabelValues("owner_kind_unread")
+	reads := 0
+	moved := func(f func()) (float64, float64) {
+		t0, u0 := testutil.ToFloat64(team), testutil.ToFloat64(unread)
+		f()
+		return testutil.ToFloat64(team) - t0, testutil.ToFloat64(unread) - u0
 	}
-	if d := testutil.ToFloat64(c) - before; d != 1 {
-		t.Errorf("team_read_failed moved by %v; want 1", d)
+	ask := func(owner int64) ([]int64, string) {
+		return s.teamPushRecipients(context.Background(), owner, "plugin", 0)
 	}
-	s.ext.Users = okTeamReader{}
-	before = testutil.ToFloat64(c)
-	_, _ = s.teamPushRecipients(context.Background(), 4242, "plugin", 0)
-	if d := testutil.ToFloat64(c) - before; d != 0 {
-		t.Errorf("control: a read that works moved team_read_failed by %v", d)
-	}
-}
 
-type okTeamReader struct{ users.Store }
+	// An owner never read before, whose read fails.
+	s.ext.Users = scriptedTeamReader{fail: true, reads: &reads}
+	dt, du := moved(func() {
+		if got, prefix := ask(4242); len(got) != 1 || got[0] != 4242 || prefix != "" {
+			t.Errorf("a failed read answered %v %q; want the owner alone, no prefix", got, prefix)
+		}
+	})
+	if dt != 0 || du != 1 {
+		t.Errorf("an unread owner's failed read moved team_read_failed by %v and owner_kind_unread by %v; want 0 and 1", dt, du)
+	}
 
-func (okTeamReader) TeamPushTargets(context.Context, int64) (users.TeamPushTargets, error) {
-	return users.TeamPushTargets{}, nil
+	// A known team (one good read), then a failed read: a dropped team push.
+	s.ext.Users = scriptedTeamReader{team: true, reads: &reads}
+	if got, _ := ask(5151); len(got) != 1 || got[0] != 91 {
+		t.Fatalf("control: the team's read answered %v; want its member 91", got)
+	}
+	s.ext.Users = scriptedTeamReader{fail: true, reads: &reads}
+	if dt, du := moved(func() { ask(5151) }); dt != 1 || du != 0 {
+		t.Errorf("a known team's failed read moved team_read_failed by %v and owner_kind_unread by %v; want 1 and 0", dt, du)
+	}
+
+	// A known person (one good read), then a failing store: no read, no
+	// count, their own push.
+	s.ext.Users = scriptedTeamReader{reads: &reads}
+	ask(6262)
+	s.ext.Users = scriptedTeamReader{fail: true, reads: &reads}
+	before := reads
+	dt, du = moved(func() {
+		if got, _ := ask(6262); len(got) != 1 || got[0] != 6262 {
+			t.Errorf("a known person's push went to %v; want them", got)
+		}
+	})
+	if dt != 0 || du != 0 || reads != before {
+		t.Errorf("a known person's push read %d time(s) and moved the counters by %v / %v; want no read and no count", reads-before, dt, du)
+	}
 }

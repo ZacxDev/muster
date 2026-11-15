@@ -2,16 +2,20 @@ package api
 
 import (
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -437,8 +441,9 @@ func TestADecidedTeamDraftIsWithdrawnFromItsMembers(t *testing.T) {
 
 // TestLeavingATeamWithdrawsItsOpenItems (G1's sweep): a person removed from
 // the team (by its manager, and by an admin), downgraded to viewer, or
-// disabled is sent a withdrawal for each of the team's open asks, pending
-// drafts and pending outreach batches — once the change commits. CONTROL:
+// disabled is sent a withdrawal for each of the team's open items of every
+// withdrawable kind: asks, pending drafts, pending outreach batches, tasks in
+// review and officer cap holds (the last two red at 80f08e51). CONTROL:
 // a member who stays (ana) gets no withdrawal, and nor does an outsider.
 // Red at base: nothing withdrew a team's items from anyone.
 func TestLeavingATeamWithdrawsItsOpenItems(t *testing.T) {
@@ -449,8 +454,15 @@ func TestLeavingATeamWithdrawsItsOpenItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	dm, _, batch := fanDrafts(t, w, f.team)
+	// …and the two later kinds (#683 round 1): a team task in review, and a
+	// team officer's cap-hold notice.
+	var review int64
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO notes (owner_id, title, status) VALUES ($1, 'in review', 'ready_for_review') RETURNING id`, f.team).Scan(&review); err != nil {
+		t.Fatal(err)
+	}
+	w.srv.officerCapHoldNotice(officers.Officer{ID: "mk:a", Owner: f.team}, officers.CapHold{Item: "fan-item", N: 1})
 	w.srv.WaitForPushes()
-	tags := []string{attentionTag(attentionAskKey(ask)), draftTag(dm), batchTag(batch)}
+	tags := []string{attentionTag(attentionAskKey(ask)), draftTag(dm), batchTag(batch), "task-" + strconv.FormatInt(review, 10) + "-done", "officer-cap-hold-mk:a-fan-item"}
 	us := users.NewPG(w.pool)
 	admin := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
 	team := strconv.FormatInt(f.team, 10)
@@ -697,4 +709,89 @@ func TestATeamItemRefreshesItsMembersPages(t *testing.T) {
 	if got := refreshedFor(streams, "fan-own-key", f.everyone()...); !sameIDs(got, ids(f.ben)) {
 		t.Errorf("a personal item refreshed the pages of %v; want only its owner %d", got, f.ben)
 	}
+}
+
+// TestADisabledMembersPhoneIsSentTheWithdrawals (#683 round 1, 🟡3): a team
+// operator with a paired phone and a browser, both subscribed, is disabled
+// by an admin; the team's open ask's withdrawal reaches BOTH — the sweep runs
+// before the disable deletes the phone, after which ForOwner would refuse its
+// row. Red at 80f08e51, where the sweep ran after the disable and only the
+// browser got it. Through the real push service, devices and stores.
+func TestADisabledMembersPhoneIsSentTheWithdrawals(t *testing.T) {
+	w := newIsoWorld(t)
+	f, _ := newFanTeam(t, w)
+	pushStore := push.NewPG(w.pool)
+	pusher := &isoPusher{}
+	slow := &slowSendPush{PushService: push.NewService(pushStore, pusher, push.VAPIDConfig{PublicKey: "fan-vapid-public"}, log.New(io.Discard, "", 0))}
+	w.srv.ext.Push = slow
+	var phone int64
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "fan-phone-"+w.suffix).Scan(&phone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		for _, q := range []string{`DELETE FROM push_subscriptions WHERE owner_id = $1`, `DELETE FROM devices WHERE owner_id = $1`,
+			`DELETE FROM device_pairing_codes WHERE owner_id = $1`, `DELETE FROM team_members WHERE user_id = $1`,
+			`DELETE FROM audit_log WHERE user_id = $1`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = w.pool.Exec(bg, q, phone)
+		}
+	})
+	admin := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	if err := users.NewPG(w.pool).SetTeamMember(w.sys, admin, f.team, phone, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	me := w.personAt(t, phone, authz.ViaSession)
+	ds := devices.NewPG(w.pool)
+	code, _, err := ds.CreatePairingCode(me, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dev, err := ds.Redeem(context.Background(), code, devices.PairIn{Name: "fan phone", AppVersion: "1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := "https://fcm.googleapis.com/fcm/send/fan-native-" + w.suffix
+	browser := "https://fcm.googleapis.com/fcm/send/fan-browser-" + w.suffix
+	var sub push.Subscription
+	sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth = native, "p256-native", "auth-native"
+	if err := pushStore.ClaimNative(me, phone, dev.ID, sub, "fan phone"); err != nil {
+		t.Fatal(err)
+	}
+	sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth = browser, "p256-browser", "auth-browser"
+	if _, err := pushStore.Claim(me, phone, sub, "fan browser"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "On your phone?", nil, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	w.srv.WaitForPushes()
+	// Positive control: the ask itself reached both of the operator's devices.
+	if pusher.sentTo(native) != 1 || pusher.sentTo(browser) != 1 {
+		t.Fatalf("control: the team ask reached the phone %d and the browser %d time(s); want 1 each", pusher.sentTo(native), pusher.sentTo(browser))
+	}
+	// Each send now waits before it reads the person's devices, so a sweep
+	// the disable did not WAIT for would read them after the phone is gone.
+	slow.delay.Store(int64(400 * time.Millisecond))
+	if err := w.srv.DisableUserAs(context.Background(), admin, phone, true); err != nil {
+		t.Fatal(err)
+	}
+	w.srv.WaitForPushes()
+	if got := pusher.sentTo(native); got != 2 {
+		t.Errorf("the disabled operator's paired phone was sent %d notification(s); want 2 (the ask, then its withdrawal before the phone was deleted)", got)
+	}
+	if got := pusher.sentTo(browser); got != 2 {
+		t.Errorf("the disabled operator's browser was sent %d notification(s); want 2 (the ask, then its withdrawal)", got)
+	}
+}
+
+// slowSendPush is a PushService whose SendTo waits delay before the real
+// one reads the owner's devices.
+type slowSendPush struct {
+	PushService
+	delay atomic.Int64
+}
+
+func (p *slowSendPush) SendTo(ctx context.Context, owner int64, pl push.Payload) push.Report {
+	time.Sleep(time.Duration(p.delay.Load()))
+	return p.PushService.SendTo(ctx, owner, pl)
 }

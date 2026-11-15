@@ -1957,13 +1957,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   phone.
    > - **The sweep** (`internal/api/team_withdraw.go`): a removal (manager's
    >   or admin's), a role set below operator (manager's re-role or admin's
-   >   set) and a disable (`userDisabledChanged`, now the one hook both
-   >   `DisableUser` and `DisableUserAs` call) send that person a withdrawal
-   >   for each of the team's open asks, pending drafts and pending outreach
-   >   batches, read as the team. It runs in the server process after the
-   >   store's transaction commits. A disable through the CLI
-   >   (`SetUserDisabledAs` with no server) sends no sweep: that process has
-   >   no push service.
+   >   set) and a disable (`teamItemsWithdrawnBeforeDisable`, called by both
+   >   `DisableUser` and `DisableUserAs`) send that person a withdrawal for
+   >   each of the team's open items of every withdrawable kind (below), read
+   >   as the team. A removal and a downgrade sweep after the store's
+   >   transaction commits; a disable sweeps before it. A disable through the
+   >   CLI (`SetUserDisabledAs` with no server) sends no sweep: that process
+   >   has no push service.
    > - **The switch:** `GET /account/teams` and `POST
    >   /account/teams/{id}/notify` (`on=1|0`), linked from `/account`.
    >   `users.PGStore.SetTeamNotify` updates only `notify` on the caller's
@@ -1985,8 +1985,36 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   being decided, and gives team asks and drafts the same. A person's id
    >   is remembered as a person, so their changes read nothing more. 2b.3's
    >   stream subscriptions replace it; delete it then.
-   > - **A failed recipient read** is counted,
-   >   `muster_push_suppressed_total{reason="team_read_failed"}`.
+   > - **A failed recipient read** is counted in
+   >   `muster_push_suppressed_total`: `team_read_failed` for an owner known
+   >   to be a team, `owner_kind_unread` for one whose kind was never read (a
+   >   person's push still went). A known person is never read again
+   >   (`personOwners`; `users.kind` never changes).
+   > - **The sweep's kinds are one list** (#683 round 1),
+   >   `withdrawableTeamKinds` in `team_withdraw.go`: asks, drafts and
+   >   outreach batches, tasks in review, officer cap holds. Cap holds are
+   >   recorded in memory as the officer loop shows and ends them, as the
+   >   episode itself is; a restart forgets an open one.
+   >   `TestEveryPushIsClassifiedForTheTeamSweep` classes every push the
+   >   package builds (the codename ledger's set) as one of those kinds or as
+   >   never withdrawn from a team member, so a new kind must choose.
+   > - **A disable sweeps before it commits** (#683 round 1):
+   >   `SetDisabledAs` deletes the person's paired phones and `ForOwner`
+   >   refuses a disabled owner's native rows, so the server's disable
+   >   (`DisableUser`, `DisableUserAs`) sends the withdrawals first and waits
+   >   for them (`RouterNotification.wait`). A disable then refused (the last
+   >   admin) has closed notifications that were still the person's; the next
+   >   change to each item shows it again. The CLI's disable sends none.
+   > - **Known windows, recorded, not closed** (#683 round 1, 🟢6 and 🟢7):
+   >   - a push that read its recipients just before a removal committed can
+   >     be delivered after the sweep's withdrawal, and then stays on the
+   >     ex-member's devices: inherent to G1's "no recipient table";
+   >   - `attentionChanged`'s team arm reads the team's members
+   >     synchronously (a 5 s timeout) on every change to a team item,
+   >     inline in the request or loop that made it. A person costs nothing
+   >     after the first read. No per-request cache was added: the refresh has
+   >     no request to hang one on, and a longer-lived one would refresh a
+   >     member who just left. 2b.3's stream subscriptions delete it.
    > - **The machine comment route** (`POST /api/tasks/{id}/comments`)
    >   carries no team, so it never reaches a team task (404, pinned in
    >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`). It was left as

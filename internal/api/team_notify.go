@@ -55,17 +55,29 @@ func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event stri
 	if !ok {
 		return []int64{owner}, ""
 	}
+	if _, person := s.personOwners.Load(owner); person {
+		// A known person (users.kind never changes): their own push, no read.
+		return []int64{owner}, ""
+	}
 	t, err := r.TeamPushTargets(ctx, owner)
 	if err != nil {
-		// Fails CLOSED for a team (it has no devices, so this reaches nobody);
-		// counted so a dropped team push shows up, not only logged.
-		metrics.PushSuppressed.WithLabelValues("team_read_failed").Inc()
+		// Sent to the owner alone: for a TEAM (no devices) that is nobody.
+		// Counted by what muster knows: a known team's push is dropped
+		// (team_read_failed); an owner whose kind was never read may be a
+		// person, whose push did go (owner_kind_unread).
+		reason := "owner_kind_unread"
+		if _, team := s.teamOwners.Load(owner); team {
+			reason = "team_read_failed"
+		}
+		metrics.PushSuppressed.WithLabelValues(reason).Inc()
 		s.logger.Printf("push: read owner %d's team recipients: %v (sent to the owner alone)", owner, err)
 		return []int64{owner}, ""
 	}
 	if !t.Team {
+		s.personOwners.Store(owner, struct{}{})
 		return []int64{owner}, ""
 	}
+	s.teamOwners.Store(owner, struct{}{})
 	who := t.Notify
 	if event == push.EventResolved {
 		who = t.Withdraw
@@ -107,6 +119,7 @@ func (s *Server) teamViewRecipients(owner int64) []int64 {
 		s.personOwners.Store(owner, struct{}{})
 		return nil
 	}
+	s.teamOwners.Store(owner, struct{}{})
 	return t.Withdraw
 }
 

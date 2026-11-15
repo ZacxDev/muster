@@ -102,12 +102,21 @@ member's comment on a team task (below).
 - **The title names the team.** It starts with the team's name and ` · `, as
   in `platform · Ana is asking`. The prefix goes on before the title is
   plained, so it survives a long title.
-- **Withdrawals.** When a team's ask is answered or its draft or outreach batch
-  decided, the notification is withdrawn from the team's current operators
-  and managers, whatever their switch says. A person who is removed from the
-  team, downgraded to viewer or disabled is sent a withdrawal for each of the
-  team's open asks, pending drafts and pending outreach batches, once the
-  change has saved.
+- **Withdrawals.** When a team's item is answered, decided or ends, its
+  notification is withdrawn from the team's current operators and managers,
+  whatever their switch says. A person who is removed from the team or
+  downgraded to viewer is sent, once the change has saved, a withdrawal for
+  each of the team's open items: asks, pending drafts and outreach batches,
+  tasks in review, and officer cap-hold notices. A person **disabled** on the
+  server's pages (Admin → Users) is sent the same withdrawals **before** the
+  disable, on their browsers and their paired phones alike.
+  - **Limits.** A disable through `muster-server accounts` (the CLI) sends
+    **no** withdrawal: that process has no push service. The disable then
+    deletes the person's paired phones, so their team notifications stay on
+    those phones (a tap opens nothing: the phone's credential is gone), and
+    on their browsers until each item's next change.
+  - A notification already on its way when the person leaves can land
+    just after its withdrawal, and then stays.
 - **The switch.** **Account → Teams** (`/account/teams`) lists your teams,
   your role in each, and one switch per team: **Notifications from this
   team**, on by default. It is yours; a manager cannot set it for you. Off
@@ -130,9 +139,11 @@ member's comment on a team task (below).
   whatever their switch says: a refresh is not a push.
 - **A dropped team push is counted.** If muster cannot read who a
   notification's owner is, it sends it to the owner alone; for a team, which
-  has no devices, that is nobody. Each such notification counts in
-  `muster_push_suppressed_total{reason="team_read_failed"}` and logs
-  `push: read owner <id>'s team recipients: …`.
+  has no devices, that is nobody. It logs `push: read owner <id>'s team
+  recipients: …` and counts in `muster_push_suppressed_total`:
+  `reason="team_read_failed"` when the owner is known to be a team (a
+  dropped team push), and `reason="owner_kind_unread"` when muster had not
+  yet read the owner's kind (a person's push did go; a team's did not).
 - A waiting or done push for a session on a **team host** comes with team
   hosts ([design](design/team-sharing.md#phase-2b-design-team-hosts-decided-2026-11-14),
   slice 2b.3).
