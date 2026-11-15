@@ -10,9 +10,11 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -55,6 +57,14 @@ const (
 	endSessionNoOwner = "ending a session needs your owner's own request: a message they sent from that session's view, or one " +
 		"they typed in your chat — the message you are answering is neither (a plugin message, a session's words or muster's " +
 		"note never counts)"
+	// endSessionTyperNotOperator / endSessionTyperSignedOut: a TEAM's chief
+	// (team sharing 2b.4, an operator decision: the team dispatch
+	// rule), on a member's line whose typer is no longer an operator of the
+	// team on a fresh read, or was signed out everywhere since they typed it.
+	endSessionTyperNotOperator = "ending a session needs a request typed by an operator or a manager of your team: the member " +
+		"who typed the message you are answering is no longer one, so muster files no card; ask the team in the chat"
+	endSessionTyperSignedOut = "ending a session needs a request typed by an operator or a manager of your team: the member " +
+		"who typed the message you are answering was signed out of every session since, so muster files no card; ask the team again in the chat"
 	endSessionNotTheirs = "%s is not one of your owner's sessions muster can see now: name a mirrored session by its key, or one " +
 		"of your owner's agents as agent:<name>"
 	endSessionNoClose = "host %q cannot end sessions (its muster-mirror is older, or not -interactive): ask your owner to close it there"
@@ -64,7 +74,50 @@ const (
 	endSessionMoved = "the session is not in the window the card named any more (it moved, or that window runs another " +
 		"conversation now): nothing was ended; ask your chief again"
 	endSessionNoAgent = "this muster cannot stop agents (no provisioner)"
+	// endSessionTeamAgent: a team's chief naming one of the team's AGENTS.
+	// Stopping and removing a team agent is a manager's, on the team's
+	// agents page (slice 4.5), so no end card is filed for one.
+	endSessionTeamAgent = "a team's agent is not ended from a card: a manager of your team stops and removes it on the team's agents page"
 )
+
+// A TEAM's end card refusals (team sharing 2b.4; the operator's decision,
+// "Operator+, fresh sign-in"): its answerer, what they read.
+const (
+	TeamEndCardNotFromPhone = "this is a team's card to end a session: it is answered only in muster in a browser, with a recent sign-in — " +
+		"not from a phone or a notification. Open it in muster in a browser"
+	TeamEndCardBrowserOnly  = "this is a team's card to end a session: it is answered only in muster in a browser, by a person signed in there"
+	TeamEndCardOperatorOnly = "this is a team's card to end a session: only an operator or a manager of the team ends one of its sessions"
+	TeamEndCardStepUp       = "this is a team's card to end a session: ending it needs a recent sign-in. Confirm it's you, then answer again"
+)
+
+// teamEndCardRefusal is "" when ctx may answer proposal card a (proposal x)
+// that is not its own principal's: x is an END card of a TEAM ctx's person
+// belongs to, answered from a signed-in BROWSER (never a phone: the dispatch
+// card's rule, refuseTeamDispatchCardOnPhone's shape), by an operator or a
+// manager of the team on a FRESH read (teamOperatorNow), whose sign-in is
+// fresh NOW (stepup.Fresh). Every other card not the principal's is
+// proposalNotOwnersDoor, as before. acceptEndSession then resolves the
+// session under the team, never the answerer.
+func (s *Server) teamEndCardRefusal(ctx context.Context, a attention.Ask, x plugins.Proposal) string {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.Team || x.Kind != plugins.ProposalEndSession || a.Owner <= 0 || a.Owner == p.UserID || x.Owner != a.Owner {
+		return proposalNotOwnersDoor
+	}
+	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
+		return proposalNotOwnersDoor
+	}
+	switch {
+	case p.Via == authz.ViaDevice:
+		return TeamEndCardNotFromPhone
+	case p.Via != authz.ViaSession:
+		return TeamEndCardBrowserOnly
+	case !s.teamOperatorNow(ctx, p.UserID, a.Owner):
+		return TeamEndCardOperatorOnly
+	case !stepup.Fresh(ctx, s.stepUpNow()):
+		return TeamEndCardStepUp
+	}
+	return ""
+}
 
 // endSessionOffered reports whether end_session_propose is offered: exactly
 // where succession_propose is (successionOffered: the chief's dispatch, the
@@ -117,13 +170,16 @@ func (s *Server) toolEndSessionPropose(ctx context.Context, a agents.Agent, argu
 	// (2): a line the owner typed in the chief's own chat, naming the session.
 	msg, why := s.ownerTurnFor(ctx, a)
 	if why != "" {
-		return refuse(endSessionNoOwner)
+		return refuse(s.ownerTurnRefusal(ctx, a, why, sayEnd))
 	}
 	key := strings.TrimPrefix(strings.TrimSpace(in.Session), string(focus.KindMirror)+":")
 	if name, ok := strings.CutPrefix(key, "agent:"); ok {
 		ag, err := s.ext.Agents.GetByName(ctx, name)
 		if err != nil || ag.OwnerID != agentOwnerID(a) {
 			return refuse(fmt.Sprintf(endSessionNotTheirs, key))
+		}
+		if s.ownerIsTeam(ctx, agentOwnerID(a)) {
+			return refuse(endSessionTeamAgent)
 		}
 		if ag.ID == a.ID {
 			return refuse(endSessionChief)
@@ -214,7 +270,25 @@ func (s *Server) acceptEndSession(ctx context.Context, x plugins.Proposal, choic
 		return proposalNotATap
 	}
 	st := s.proposals()
-	owner := requestOwner(ctx)
+	// 🔴 THE CARD'S OWNER, NEVER THE TAPPER'S: a person's own card is tapped
+	// by its owner, and a TEAM's (team sharing 2b.4) by a member whom
+	// proposalForAnswer let through (teamEndCardRefusal) — its session is
+	// resolved and closed AS THE TEAM (attentionPrincipal), so a member's own
+	// window of the same name is never the one ended.
+	owner := x.Owner
+	if owner <= 0 {
+		return proposalNotOwnersDoor
+	}
+	if owner != requestOwner(ctx) {
+		acct, err := s.accountOfChecked(ctx, owner)
+		if err != nil || !acct.Team {
+			return proposalNotOwnersDoor
+		}
+		if x.SubjectAgent > 0 {
+			return endSessionTeamAgent
+		}
+		ctx = s.attentionPrincipal(ctx, owner, true)
+	}
 	if x.SubjectAgent > 0 {
 		if s.ext.Provisioner == nil || s.ext.Agents == nil {
 			return endSessionNoAgent

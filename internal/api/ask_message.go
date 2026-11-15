@@ -109,7 +109,8 @@ func (s *Server) handleMirrorAskMessage(w http.ResponseWriter, r *http.Request) 
 	}
 	// The queue's gates, a Send's: -interactive, a fresh sign-in, a listed
 	// window the queue can wait on.
-	q := sendQueueTarget{t: sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}, back: mirrorRef(e).ViewPath(), h: h, e: e, listed: true}
+	// queueTargetOf: a team window's card queues into the TEAM's queue.
+	q := sendQueueTarget{t: queueTargetOf(h, e), back: mirrorRef(e).ViewPath(), h: h, e: e, listed: true}
 	if g := s.sendQueueGate(r.Context(), q); g.status != 0 {
 		switch {
 		case g.stale:

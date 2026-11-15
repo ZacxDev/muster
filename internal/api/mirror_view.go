@@ -123,7 +123,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// 🔴 A TEAM HOST'S SESSION (team sharing 2b.3) IS WATCHED, AND EVERY
 	// EXTRA THAT IS THE VIEWER'S OWN IS LEFT OUT: its composer is drawn
-	// disabled (typing is 2b.4's) with no queue; no rename offer or focus
+	// disabled to a viewer, and to an operator or a manager it types into
+	// the team's window with the team's queue (2b.4); no rename offer or focus
 	// history (G4: no focus titles); no chief mode, succession or suggested
 	// replies (each would send the transcript to the viewer's own model or
 	// chief — G4, D-1113 #10; their routes answer 403 there,
@@ -131,7 +132,20 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// host name). Its preview runs on the TEAM's plugins (2b.3b). Its
 	// Attention asks are on the Attention page.
 	if team {
-		v.TeamNote, v.FocusHistory = MirrorTeamComposerNote, ""
+		v.FocusHistory = ""
+		if teamOperatorOn(r) {
+			// An OPERATOR (or a manager) types here (team sharing 2b.4): the
+			// composer and the TEAM window's queue, every form naming the
+			// team (owner=). No paperclip: an upload is the uploader's own
+			// file, and a link to it in a team's session is not the team's.
+			if v.ViewOnly == "" {
+				v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
+			}
+			v.Upload, v.UploadOff = "", false
+			v.Notice, v.NoticeOK = composerNotice(r)
+		} else {
+			v.TeamNote = MirrorTeamComposerNote
+		}
 		v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e)})
 		v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
 		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
@@ -282,7 +296,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still
 	// running across the reconnect is attributed when its next turn arrives.
-	lkey := ledgerKey{mirrorTarget(r), host, session, window}
+	lkey := ledgerKey{windowOwner(r.Context()), host, session, window}
 	if drawn.Resumed {
 		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
 			drawn.RestoreLedger(l)
@@ -294,7 +308,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// own poll is the fallback.
 	sctx := op.begin("subscribe")
 	if h, e, _, _, ok := s.mirrorEntry(r.WithContext(sctx), host, session, window); ok && e.ClaudeSession != "" {
-		changed, stop := s.askSubscribe(askWatchKey{mirrorTarget(r), h.Host, e.ClaudeSession})
+		changed, stop := s.askSubscribe(askWatchKey{windowOwner(r.Context()), h.Host, e.ClaudeSession})
 		defer stop()
 		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
 			for {
@@ -514,7 +528,9 @@ func (s *Server) mirrorStepUpPage(ctx context.Context, w http.ResponseWriter, p 
 	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
+	// The team (owner=) rides the action's query: only the query aims a
+	// request at a team window (mirrorTeamGate).
+	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: ownerQuery(mirrorConfirmSendPath, p.e.Owner), Fields: fields,
 		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
 		s.logger.Printf("mirror: render confirm page: %v", err)
 	}
@@ -718,7 +734,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			return
 		}
 		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
-			s.heldRefusal(r.Context(), w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
+			s.heldRefusal(r.Context(), w, true, ownerQuery(mirrorSendPath(p.target), p.e.Owner), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
@@ -787,7 +803,7 @@ func heldDestKey(host, session, window string, target mirror.PasteTarget) string
 // them left out is a second delivery from a copy of the page that never saw
 // the offer (audit #275 round 1, Y1: Queue and Send now).
 func (s *Server) isHeldFor(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, again bool) bool {
-	return !again && s.sends.isHeld(requestOwner(ctx), heldDestKey(host, session, window, target), text)
+	return !again && s.sends.isHeld(windowOwner(ctx), heldDestKey(host, session, window, target), text)
 }
 
 // settleHeld records how a delivery of text ended for the hold: one that may
@@ -795,7 +811,7 @@ func (s *Server) isHeldFor(ctx context.Context, host, session, window string, ta
 // here — a Send's, a Send now's and the dispatcher's (sendQueueDeliver) — so a
 // may-have-landed queued message is held like a Send's.
 func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, key string, err error) {
-	owner, dest := requestOwner(ctx), heldDestKey(host, session, window, target)
+	owner, dest := windowOwner(ctx), heldDestKey(host, session, window, target)
 	switch {
 	case err == nil:
 		s.sends.release(owner, dest, text)
@@ -822,7 +838,7 @@ func (s *Server) messageKey(ctx context.Context, host, session, window string, t
 	if !again {
 		return nonce
 	}
-	if k := s.sends.heldKey(requestOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
+	if k := s.sends.heldKey(windowOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
 		return k
 	}
 	return nonce
@@ -902,7 +918,7 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 }
 
 func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
-	st, finish := s.sends.claim(requestOwner(ctx), nonce, text)
+	st, finish := s.sends.claim(windowOwner(ctx), nonce, text)
 	switch st {
 	case nonceRepeat:
 		return true, nil

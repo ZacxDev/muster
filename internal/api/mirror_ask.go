@@ -229,10 +229,11 @@ func (s *Server) askWindow(w http.ResponseWriter, r *http.Request, host, session
 	return h, e, true
 }
 
-// askKey is the key of the call tool in e's Claude session, for the request's
-// owner.
+// askKey is the key of the call tool in e's Claude session, for the window's
+// owner (windowOwner: a team host's questions are the team's, registered
+// under its token's owner — team sharing 2b.4's pane answer).
 func askKey(r *http.Request, h mirror.HostView, e mirror.SessionView, tool string) askq.Key {
-	return askq.Key{Owner: requestOwner(r.Context()), Source: askSourceMirror, Scope: h.Host, Session: e.ClaudeSession, ToolUseID: tool}
+	return askq.Key{Owner: windowOwner(r.Context()), Source: askSourceMirror, Scope: h.Host, Session: e.ClaudeSession, ToolUseID: tool}
 }
 
 // questionCard is entry x as a card of e's window, h being its host.
@@ -302,17 +303,18 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 	var vs []ui.MirrorAskLiveView
 	// 🔴 A TEAM HOST'S WINDOW (team sharing 2b.3): its questions are the
 	// TEAM's (the hook registers them under the token's owner), read by the
-	// request's target, and drawn UNANSWERABLE — an answer typed into the pane
-	// is typing, 2b.4's (its routes are own-only, mirrorTeamRoutes).
-	team := onTeamHost(r)
+	// request's target. An answer typed into the pane is typing (2b.4): an
+	// operator's or a manager's (its routes are mirrorTeamOperate), so a
+	// viewer's cards are drawn UNANSWERABLE.
+	watchOnly := onTeamHost(r) && !teamOperatorOn(r)
 	// An opencode window's ask, read live from its host (mirror_opencode_ask.go).
-	if p, ok := openCodePending(h, e); ok && !team {
+	if p, ok := openCodePending(h, e); ok && !watchOnly {
 		vs = append(vs, s.openCodeLiveCard(r, h, e, p))
 	}
 	if e.ClaudeSession != "" {
-		for _, x := range s.asks.ForSession(mirrorTarget(r), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
+		for _, x := range s.asks.ForSession(windowOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
 			c := questionCard(h, e, x)
-			if team {
+			if watchOnly {
 				c.Unanswerable, c.CanCancel, c.Retry, c.Message = MirrorTeamAskNote, false, false, false
 			}
 			vs = append(vs, c)
@@ -326,8 +328,8 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 }
 
 // MirrorTeamAskNote is what a team host's question card says in place of its
-// answer controls (team sharing 2b.3).
-const MirrorTeamAskNote = "This is a team session: answering its question from muster is not available yet."
+// answer controls to a VIEWER of the team (team sharing 2b.3, 2b.4).
+const MirrorTeamAskNote = "This is a team session and you are a viewer of its team: an operator or a manager answers its question."
 
 // askPartlyFilled ends a failure note when muster may have typed part of the
 // answer before it stopped.

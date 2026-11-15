@@ -79,8 +79,9 @@ the agents that chief starts, its officers, and its hosts' sessions, which its
 members read and whose questions reach their Attention.** A team's agents run
 on the server's Claude pool only when an admin lists the team in
 `MUSTER_TEAMS_ON_SERVER_POOL`, and work in repositories only when it is listed
-in `MUSTER_TEAMS_ON_GITHUB_APP` ([chief.md](chief.md)). Typing into a team
-host's sessions arrives with its own release (team sharing 2b.4).
+in `MUSTER_TEAMS_ON_GITHUB_APP` ([chief.md](chief.md)). A team's operators
+and managers type into its hosts' sessions, each with their own fresh sign-in
+(team sharing 2b.4).
 
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
@@ -183,10 +184,26 @@ host's sessions arrives with its own release (team sharing 2b.4).
     loop — and a member reads them read-only. One table decides what each
     mirror route does with a team session (`mirrorTeamRoutes`): watch it,
     refuse it (the chief panel, proposals, succession and suggested replies:
-    403 at every role), or serve the member's own sessions only (typing,
-    until team operators). Anyone not a member is answered 404, as for a host
-    that does not exist. A member's open views and event stream end within
-    10 seconds of leaving the team.
+    403 at every role), or let an operator type into it (below). Anyone not
+    a member is answered 404, as for a host that does not exist. A member's
+    open views and event stream end within 10 seconds of leaving the team.
+  - **Who types into it (2b.4).** An operator or a manager: the composer, the
+    terminal's live keys, the send queue and an answer typed into the pane.
+    Each needs **that person's own** fresh sign-in, in the browser they type
+    from (a viewer is answered 403). Their live terminal is registered at
+    operator, so a removal or a drop to viewer ends it within 10 seconds. A
+    queued send is the team's (`owner_id`) and the queuer's (`queued_by`):
+    at delivery muster re-reads **the queuer** — enabled, still an operator
+    or a manager of the team, no sign-out since — and a row that fails is not
+    sent. Removing a member or dropping them to viewer cancels what they
+    queued into the team's windows, and a disable or a sign-out everywhere
+    cancels it on every team. Only the queuer edits, retries or sends now
+    their row; a manager may also cancel or delete anyone's. A paired
+    phone's answer to a team's question needs an operator or a manager, on a
+    fresh read; a viewer's is refused by name (`not_operator`). A team
+    chief's card to END one of the team's sessions is ended by an operator
+    or a manager from a browser with a fresh sign-in, never from a phone, and
+    the session ended is the team's.
   - **The rotate mark.** When an operator or a manager is removed, drops to
     viewer or is **disabled**, the team's unrevoked host tokens are marked
     rotate (`mirror_tokens.rotate_at`), in the same transaction. Nothing is

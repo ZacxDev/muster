@@ -1449,6 +1449,10 @@ team host ([G4](#g-operator-decided-2026-11-14)).
     team nor a member is refused, and that check fails closed. No such row is
     written in 2b. The rule is stated now so that the chief forward does not
     meet a refusal built for persons.
+    🔴 **Superseded in 2b.4 (round 0, #702 D1):** until a team-acting writer
+    lands, a row queued by the team itself is **refused** at delivery,
+    failing closed; that writer's own change opens the pass, with its own
+    test.
 - **Edits.** Only the person who queued a row may edit it, so
   `edit_stepup_at` always belongs to `queued_by` and needs no `edited_by`
   column. A manager may cancel any row, but not edit it.
@@ -2727,12 +2731,156 @@ by re-checking the migration number (D). The slices ship **in order**.
 
      The red-at-base test names the base's panic, and its fixture bypasses
      the cancelling paths (E).
-   - A row queued by the team itself is the team's own.
+   - A row queued by the team itself is the team's own. **Changed in round 0
+     (#702, D1): refused, failing closed, until a team-acting writer lands
+     with its own test** — no path queues one today.
    - `CancelQueuedBy`, and the edit and cancel rules (the new
      `requireTeamManager`).
    - The pane answer, and the device route.
 
    It needs 2b.3's stream sweep, so that a removed operator's terminal closes.
+   **Built (no migration: 0127's `queued_by`, its actor trigger and the share
+   class of `send_queue` already carry it). See "As built in 2b.4".**
+
+   > **As built in 2b.4.**
+   > - **`ViaQueue` and the delivery check, in one change.** `ViaQueue`
+   >   joins `teamActingVias` (14 doors), so `queuedPrincipal` builds the team
+   >   acting principal for a team's row and the dispatcher probes and pastes
+   >   as the team. `sendQueueOwnerRefusal` now judges `Item.Queuer()`
+   >   (`queued_by`, or the owner for a row the system scope or pre-0127 code
+   >   wrote): a person's own row keeps its account checks; a member's row in
+   >   a team's queue gets the member's account checks AND
+   >   `teamOperatorNow` (an enabled person, operator or above, fresh read);
+   >   a row whose owner's kind cannot be read, or whose queuer is not its
+   >   owner and whose owner is no team, fails closed. 🔴 **Round 0 (#702,
+   >   D1):** a team's row queued by the TEAM ITSELF (`queued_by` = the team)
+   >   is REFUSED too (`SendQueueTeamQueued`), not passed: no writer makes one
+   >   today (the POST route queues as the member; the team-acting writers —
+   >   a team chief's host forward, a route reply — are refused for a team
+   >   elsewhere), so a pass would open for whichever writer came first with
+   >   no check behind it. That writer's change opens it, with its own test. `TestATeamSendIsCheckedAgainstWhoQueuedIt`
+   >   changes ben in the database directly (disable; delete his membership)
+   >   and, separately, through the real removal (cancel-path words): red at
+   >   base with `queuedPrincipal`'s panic, and red on the half-applied mutant
+   >   (the check reading the owner) because the disabled member's row is
+   >   pasted. `TestEveryPerOwnerPrincipalSiteIsTeamSafe`: `queuedPrincipal`
+   >   acts as the team (12 act, 3 refuse).
+   >   🔴 **Deviation:** a refused row ends **failed**, not cancelled, as every
+   >   other delivery refusal does, and its words name the check without
+   >   names: "Not sent: the person who queued it is no longer an operator of
+   >   the team that owns this session." (no extra reads at delivery).
+   > - 🔴 **Found while building: the queue was read by address alone.**
+   >   Since 0127 a member's principal reads (and at operator writes) their
+   >   teams' `send_queue` rows, and a team's `build-01` shares its address
+   >   with the member's own, so a member's own window's list, head and paste
+   >   stamp read the team's rows too, and every `{id}` route reached a team
+   >   row with no `owner=` at all. Fixed in the store: `sendqueue.Target`
+   >   gains `Owner` (0 = the caller's own), which `targetWhere`, `Enqueue`,
+   >   `Retry` (into the row's own owner's queue), `Delete`'s turn carry and
+   >   `SentBodies` pin (`TestAMembersOwnQueueNeverReadsTheTeamsSameNamedWindow`,
+   >   red at base; `TestATeamsQueueIsAddressedByItsOwner`). In the handlers,
+   >   `sendQueueRowRefusal`: a row is acted on only in the queue the request
+   >   is aimed at (`windowOwner`: the gate's `owner=`, else the principal's
+   >   own), else 404. The send hold, the nonce claim and the queue's turn
+   >   stamps are keyed by `windowOwner` too, so a member's Send and the
+   >   dispatcher's delivery into one team window meet in one place.
+   > - **Typing through `access`.** `teamNeedsOpen` opens operator. The route
+   >   table's `mirrorTeamOwnOnly` is now `mirrorTeamOperate` (a member at
+   >   operator, aimed and registered for the sweep at operator; a viewer is
+   >   403 `MirrorTeamViewerRefusal`), and the terminal socket is
+   >   `mirrorTeamViewOrKeys` (operator for `mode=rw`). The step-up is each
+   >   handler's own `stepup.Fresh` on the member's own sign-in, and the
+   >   plugin's (`AttachWindow`, the paste) again
+   >   (`TestAccessReachesATeamHostOnlyAsFarAsTheMembership`,
+   >   `TestATeamHostIsWatchedByItsMembersAndNoOneElse`). Opening operator in
+   >   `access` reaches only the routes the gate aims: no route aims a spawn
+   >   or a close at a team.
+   > - **Cancelling on leaving.** `users.CancelQueuedByTx(team, user)` (THE
+   >   statement) runs in `removeMemberTx` and in `setMemberTx`'s drop to
+   >   viewer; `sendqueue.PGStore.CancelQueuedBy` (team 0 = every team)
+   >   delegates to it. A disable and a sign-out everywhere make ONE call,
+   >   `sendqueue.PGStore.CancelUser` (`CancelOwner` + `CancelQueuedBy(0, …)`;
+   >   round 0, D3), from the server (`cancelQueuedFor`) and the CLI's disable
+   >   alike
+   >   (`TestLeavingATeamCancelsYourQueuedSendsToIt`,
+   >   `TestDisablingAMemberCancelsWhatTheyQueuedIntoTheirTeams`).
+   > - **Edit and cancel rules.** `requireTeamManager` (a fresh manager read).
+   >   🔴 **Decided (the design named cancel and edit only):** edit, Retry and
+   >   Send now are the queuer's alone; Cancel and Delete are the queuer's or
+   >   a manager's. The list draws another's row with "Queued by <name>." and
+   >   only what the viewer may do to it
+   >   (`TestOnlyItsQueuerOrAManagerChangesATeamSend`). A viewer is drawn no
+   >   queue at all (`GET /send-queue` is an operator route).
+   > - **The pane answer.** An operator's question cards on a team session are
+   >   answerable; the ask key is the window's owner (`mirrorTarget`), so the
+   >   answer types into the TEAM's picker. A viewer's are drawn unanswerable
+   >   (`MirrorTeamAskNote`).
+   > - **The device route.** `teamPhoneAskRefusal` runs before the answer
+   >   and the dismissal: a team's question needs an operator or a manager
+   >   on a fresh read (`teamOperatorNow`), else 403 `not_operator`. A team's
+   >   dispatch card is refused by `refuseTeamDispatchCardOnPhone`: inside
+   >   the answer path (`teamCardRefusal`), and by name on the dismissal,
+   >   which had no such check (⚠ the dismissal's refusal is not pinned by a
+   >   test)
+   >   (`TestAPhoneAnswersATeamAskAtOperator`: red at base, where a viewer's
+   >   answer met row-level security's filtered write and was told the
+   >   question was not open).
+   > - **The pages.** An operator's composer on a team session posts with
+   >   `owner=` in its action, keeps no draft (drafts are keyed by host name)
+   >   and has no paperclip (an upload is the uploader's own file);
+   >   dictation stays.
+   > - **A team chief's other say-so (operator decision 2026-11-15, its own
+   >   PR).** On a team's chief, end_session_propose, a text route and
+   >   agent_dispatch's gate release take a typed turn on the team dispatch
+   >   rule: a fresh typed turn from an operator or above of the team (the
+   >   marker is set only then), the role re-read when the chief calls, else
+   >   the call's own card path. The base already sent all four uses through
+   >   ONE predicate, `ownerTurnFor` (`typerSpeaksForOwner`,
+   >   `typerSignedOutSince`); `TestEverySaySoIsTheOneTypedTurnPredicate`
+   >   pins it (its `ownerTurnFor` half fails only when a use stops calling
+   >   it — round 0 on #703, D2: growth is the safe direction —; the
+   >   `typerSpeaksForOwner` half is exact). The gate release is exercised on
+   >   a team task (`TestATeamChiefsGateReleaseTakesTheTeamDispatchRule`).
+   > - **One wording table (round 0 on #703).** `ownerTurnWords` is THE
+   >   translation of an `ownerTurnFor` refusal into the chief's sentence, by
+   >   use (gated release, no-task and ungated dispatch, route, end) and by
+   >   whose chief it is; agent_dispatch, a route and end_session_propose
+   >   call it (`ownerTurnRefusal`; host_dispatch keeps the person's words: a
+   >   team's chief is refused a host target first, `agentDispatchTeamHost`).
+   >   A gate a member set (`chiefReleaseNotChiefsGate`) is worded for the
+   >   team too (round 1). A PERSON's chief
+   >   reads each use's sentences unchanged. A TEAM's chief never reads "your
+   >   owner": every refusal that said it — a stale sign-in's no-marker
+   >   included — is worded for an operator or a manager of the team, with
+   >   the use's action and fallback (`teamTurnWords`); the member refusals
+   >   (removed or demoted, signed out since) were team words already.
+   > - **The team's END CARD (operator decision 2026-11-15, "Operator+, fresh
+   >   sign-in").** An operator or a manager of the team ends a team session
+   >   from the chief's card, from a signed-in BROWSER with a fresh sign-in;
+   >   a viewer, a stale sign-in and a paired phone are refused by name and
+   >   the card stays open (`teamEndCardRefusal`; the dispatch card's shape).
+   >   The card's proposal is read, decided and accepted AS THE TEAM
+   >   (`attentionPrincipal`), so `acceptEndSession` resolves and closes the
+   >   TEAM's window — never the tapper's own window of the same address
+   >   (`TestATeamsEndCardIsAnOperatorsWithAFreshSignIn`).
+   >   🔴 **Found while building:** proposals are read owner by owner, so at
+   >   base a member's tap on a team's end card found no proposal and was
+   >   recorded as a PLAIN answer — the card closed with nothing ended
+   >   (red at base: a stale operator's tap "answered" it).
+   >   🔴 **Decided (fail closed):** a team chief's end card for one of the
+   >   team's AGENTS is not filed (`endSessionTeamAgent`): stopping and
+   >   removing a team agent is a manager's, on the team's agents page (4.5),
+   >   and an operator's tap would bypass that. A card filed before this
+   >   release is refused on the tap too (`TestATeamAgentIsNeverEndedFromACard`).
+   >   An operator's "Not now" declines a team's card as the team
+   >   (`TestATeamMemberDeclinesATeamsEndCard`).
+   >   Its push carries no answer actions: every proposal card's filing push
+   >   is built with none (`proposalCardFiled`), so a phone has nothing to tap
+   >   (corrected in round 1: the earlier note said otherwise).
+   > - ⚠ **Known, not changed:** an answer typed into a team window's picker
+   >   records its `ask_attempts` row as the member's own (the table's
+   >   `owner_id` default), keyed by host name, so it shows on the member's
+   >   own answers record, not the team's.
 5. **2b.5: team officers on team hosts.**
    - The `CheckOwners` change, with a team host officer that declares
      `connectors` refused at boot (G3).

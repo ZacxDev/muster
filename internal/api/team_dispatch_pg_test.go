@@ -452,8 +452,11 @@ func TestATeamMarkerMustNameItsRowsTyper(t *testing.T) {
 	if err := st.SetOwnerTurn(td.teamCtx, td.chief.ID, td.w.b.uid, msg.ID, ownerLane, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if text := td.dispatch(td.onTask("", true)); !strings.Contains(text, ownerAskedNoTaskUnverifiable) {
-		t.Errorf("a marker naming B on a row B did not type: %s; want %q", truncate(text, 300), ownerAskedNoTaskUnverifiable)
+	// A TEAM's chief reads the team's words (round 0 on #703: never "your
+	// owner's turn"), pinned literally.
+	const want = "owner_asked: the member's turn could not be read, so muster cannot take this as the team's request; try again later"
+	if text := td.dispatch(td.onTask("", true)); !strings.Contains(text, want) {
+		t.Errorf("a marker naming B on a row B did not type: %s; want %q", truncate(text, 300), want)
 	}
 	if on := td.teamAgentsOnTask(t); len(on) != 0 {
 		t.Fatalf("started %+v", on)

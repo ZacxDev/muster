@@ -86,7 +86,8 @@ const (
 	// ViaQueue is the SERVER-SIDE SEND QUEUE's dispatcher probing the window
 	// and delivering a message its owner queued from a signed-in session
 	// earlier (internal/sendqueue): the deferred end of that owner's own
-	// request, acting as the OWNER only. One site mints it — internal/api's
+	// request, acting as the OWNER only — for a team's row the team acting
+	// principal (team sharing 2b.4; teamActingVias). One site mints it — internal/api's
 	// queuedPrincipal, called only by the dispatcher — and it is a request door
 	// in the sense that matters here: one user, never everybody.
 	ViaQueue Via = "send-queue"
@@ -276,6 +277,10 @@ var requestVias = map[Via]bool{
 //     reads the team host's window as the team (ViaAsk, askPrincipal). The
 //     step-up card's runner (stepUpPrincipal, also ViaMirrorHost) refuses a
 //     team itself: a team has no phone, and a team host files no card.
+//     Team sharing 2b.4: the send queue's dispatcher probes and pastes into
+//     a team host's window as the team (ViaQueue, queuedPrincipal); whether
+//     the member who queued the row may still send it is checked from its
+//     queued_by at delivery.
 //
 // A team-owned GATEWAY agent's turn (ViaKickoff, ViaAgentMessage) is NOT in
 // the set: gateway agents are not team agents in phase 4. internal/api's
@@ -284,9 +289,8 @@ var requestVias = map[Via]bool{
 //
 // 🔴 EVERY OTHER DOOR REFUSES A PRINCIPAL THAT CARRIES Team = true
 // (WithPrincipal panics). A person's door (session, device, personal token),
-// a shared machine token, a plugin token (a plugin's owner is its pairing
-// person), the focus and send-queue loops (ViaQueue joins in 2b.4) — a team
-// principal arriving there is a bug, not a team.
+// a shared machine token, a plugin token outside its team arm, the focus
+// loop — a team principal arriving there is a bug, not a team.
 //
 // ⚠ THE PANIC KEYS ON THE FLAG, NOT ON THE OWNER ID. internal/api's
 // principalFor falls back, when the account cannot be read, to a principal
@@ -312,6 +316,11 @@ var teamActingVias = map[Via]bool{
 	// Team sharing 2b.3b: a team VIEWER plugin's token, served the hand-off
 	// redeem and /self only (internal/api teamPluginRoutes).
 	ViaPlugin: true,
+	// Team sharing 2b.4: the send queue's dispatcher probing and pasting into
+	// a team host's window AS THE TEAM. Who may still send is decided from
+	// the row's queued_by, on a fresh read, at delivery (internal/api
+	// sendQueueOwnerRefusal), never from the team acting principal.
+	ViaQueue: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the
