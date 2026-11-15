@@ -213,11 +213,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      # Full history: the test selection below diffs against the PR's base or
-      # the push's `before`, which a depth-1 clone does not have.
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       # 🔴 `cache: false`: setup-go's own cache is keyed on go.sum ALONE, with no
       # restore-keys, and is saved only when that key misses — so it was saved
@@ -293,7 +289,6 @@ jobs:
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
           python3 tests/tag_gate_test.py
-          python3 tests/goselect_test.py
           python3 tests/gomtime_test.py
 
       # The repository-level checks below run once, in shard 0.
@@ -384,34 +379,11 @@ jobs:
       # 1200 s cap; two runs of the branch rebased onto main then panicked at
       # 1200 s mid-suite with nothing hung (running tests: 0-1 s each). Since
       # the split, no shard comes near it; the cap stays as the hang detector.
-      # 🔴 REVERSE-DEPENDENCY TEST SELECTION — SHADOW BY DEFAULT. tests/goselect.py
-      # names the packages whose test binaries the diff can reach (plus the
-      # always-run set, and everything on any fallback), and the ledger step
-      # below records every failure OUTSIDE that set. With the repository
-      # variable MUSTER_SELECTIVE_TESTS unset (the default) nothing is skipped:
-      # the full shard runs. Only `enforce` narrows the shard (goselect.py apply),
-      # and then the step summary says SCOPED, not a full verdict.
-      # Base: a PR's merge commit against its first parent (exactly the PR's
-      # change); a push's `before`; nothing on a tag or the nightly (full).
-      - name: select the affected Go tests (shadow unless MUSTER_SELECTIVE_TESTS=enforce)
-        id: select
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || (github.event_name == 'push' && github.ref_type == 'branch') && github.event.before || '' }}
-          SELECTIVE: ${{ vars.MUSTER_SELECTIVE_TESTS == 'enforce' && 'enforce' || 'off' }}
-        run: |
-          python3 tests/goselect.py select --base "$BASE" --out "$RUNNER_TEMP/selection.json"
-          if [ "$SELECTIVE" = enforce ]; then
-            python3 tests/goselect.py apply --selection "$RUNNER_TEMP/selection.json" --args "$RUNNER_TEMP/go-test-args" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       # Directly before the suite, so no earlier step can re-stamp a file.
       - name: content-addressed mtimes (so Go's test cache can match a fresh checkout)
         run: python3 tests/gomtime.py
 
       - name: go test, and assert nothing skipped (one run)
-        if: ${{ steps.select.outputs.run != 'false' }}
         # gocachetest=1 makes `go` say, per package on stderr, whether Go's
         # test cache answered and why not ("input file … too new", a changed
         # variable): the only account of a miss. Go hashes GODEBUG into every
@@ -420,26 +392,7 @@ jobs:
           GODEBUG: gocachetest=1
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary --results-out "$RUNNER_TEMP/results.json" $(cat "$RUNNER_TEMP/verdict-args")
-
-      # The MISS LEDGER: one record per shard per run — a `SELECTIVE-LEDGER {…}`
-      # log line and the `selective-ledger-<shard>` artifact (30 days). The
-      # 7-day miss rate is computed from the artifacts (command in PR #691).
-      - name: test-selection ledger (failures outside the selection)
-        if: ${{ !cancelled() }}
-        env:
-          MODE: ${{ vars.MUSTER_SELECTIVE_TESTS == 'enforce' && 'enforce' || 'shadow' }}
-        run: >-
-          python3 tests/goselect.py ledger --selection "$RUNNER_TEMP/selection.json"
-          --results "$RUNNER_TEMP/results.json" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          --sha "$GITHUB_SHA" --event "$GITHUB_EVENT_NAME" --shard "${{ strategy.job-index }}"
-          --mode "$MODE" --out "$RUNNER_TEMP/selective-ledger.json"
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: selective-ledger-${{ strategy.job-index }}
-          path: ${{ runner.temp }}/selective-ledger.json
-          retention-days: 30
+          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
