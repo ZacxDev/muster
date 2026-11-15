@@ -281,7 +281,7 @@ claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude
 
 | binary | what it is |
 |---|---|
-| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`. |
+| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token create <host> --team <id>` (a team host token, audited in the team's log; [mirroring.md](mirroring.md#team-hosts)), `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`. |
 | `muster-migrate` | Applies the schema to `DATABASE_URL`. The server also migrates itself at boot. `--rls-off` and `--rls-on` are the row-level-security rollback tools ([schema.md](schema.md)). |
 | `muster-mirror` | The host agent for [mirrored sessions](mirroring.md). |
 | `ccd` | The supervisor inside the `claude-code` agent image ([provisioner.md](provisioner.md)). |

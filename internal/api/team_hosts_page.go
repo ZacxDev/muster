@@ -119,8 +119,12 @@ func (s *Server) handleTeamHostsPage(w http.ResponseWriter, r *http.Request) {
 // renderTeamHosts draws the page. minted, when set, is a token just minted:
 // shown ONCE, here, and never again.
 func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team int64, tctx context.Context, code int, problem, minted string) {
-	toks, hub, ok := s.teamHostStores(w, r)
-	if !ok {
+	toks, ok1 := s.ext.MirrorTokens.(teamHostTokens)
+	hub, ok2 := s.ext.Mirror.(teamHostHub)
+	if s.ext.MirrorTokens == nil || s.ext.Mirror == nil || !ok1 || !ok2 {
+		// The mirror plugin is off (MUSTER_MIRROR): the page says so, in place.
+		s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="`+adminCard+
+			`" id="team-hosts-off"><h1 class="text-base font-semibold text-fg">Team hosts</h1><p class="text-sm text-fg2">`+html.EscapeString(TeamHostsNoStore)+`</p></section></div>`)
 		return
 	}
 	list, err := toks.ListTokens(tctx)

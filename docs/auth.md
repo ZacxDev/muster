@@ -74,8 +74,10 @@ usable. That lets you bind the operator's login before you switch modes.
 A team is a group of people on one muster server who will share sessions,
 officers and tasks ([design/team-sharing.md](design/team-sharing.md)). **This
 version records teams and their members, enforces who may read and write a
-team's rows, and runs team officers.** Team tasks and team hosts each arrive
-with their own release.
+team's rows, and runs team officers. A team host's mirror token connects, and
+its sessions' questions reach the team's members' Attention.** Showing a team
+host's sessions to its members, and typing into them, arrive with their own
+releases (team sharing 2b.3 and 2b.4).
 
 - **What a team is.** A `users` row of kind `team`: something that can own
   things. **No one signs in as a team.** It has no login, no email and no
@@ -88,10 +90,11 @@ with their own release.
   when they meet a team-owned row, and so does a **team officer**'s runtime
   (the officer door, `authz.ViaOfficer`): an officer whose `owner` in
   `MUSTER_OFFICERS` is a team runs its instances, its store, its asks and its
-  outbound drafts as the team. Every other door refuses a credential that
-  resolves to a team ("a team cannot sign in; sign in as a person"), and so
-  does the mirror token lookup for a team-owned token; any other code that
-  builds a team principal at a door outside that set fails. A plugin pairing
+  outbound drafts as the team. A **team host**'s mirror token (below) is the
+  other credential admitted as the team. Every other door refuses a
+  credential that resolves to a team ("a team cannot sign in; sign in as a
+  person"); any other code that builds a team principal at a door outside
+  that set fails. A plugin pairing
   request that names a team as its owner is answered exactly as one that
   names no account.
 - **Members and roles.** Each member has one role: `viewer`, `operator` or
@@ -133,10 +136,61 @@ with their own release.
   activity** on `/admin/users`, and a team's under its managers' page.
 - **Not a user.** A team is not listed on `/admin/users`, and every user action
   there answers 404 for a team's id.
+- **Team hosts** (team sharing 2b.2). A team host is a `muster-mirror`
+  connected with a **team host token**: a mirror token owned by the team, on a
+  machine (or a Unix user on one) the team treats as shared.
+  - **Minting.** A team's **manager** mints, revokes and confirms its host
+    tokens on `/teams/<id>/hosts`, signed in within the step-up window; each
+    is audited (`team.host.token.create`, `team.host.token.revoke`,
+    `team.host.replace`) as the manager. The page shows each token's last
+    use, whether its host is connected, and its rotate mark. `muster-server
+    mirror token create <host> --team <id>` mints the same token from the
+    server's shell (audited `via = cli`), for a headless bootstrap.
+  - **What the token does.** `/mirror/connect` registers the host under the
+    team, and `/mirror/ask` opens its sessions' questions as the team's. Its
+    `POST /mirror/mcp` acts as the **team acting principal**, and Postgres
+    then shows it every team row, so the door serves it a **reduced tool
+    set** (`teamHostTools`): the session's own asks (`attention_ask`,
+    `attention_wait`, `attention_cancel`), the tasks that session created, its
+    own host dispatch's `agent_report_done`, and a team host officer
+    instance's own tools. Everything else is refused by name, listed or not:
+    every owner-authority tool (`attention_answer`, the decide tools,
+    `agent_destroy`, `chief_restart`, `dispatch_approve`, `route_reply`,
+    `plugin_message_route`, and the rest), every read of the team's whole
+    estate (`agents_list`, `plugin_drafts_list`, `plugin_outbound_batch_get`,
+    …), `dispatch_request`, `chief_ask`, the page tools and a host
+    instance's connector tools. So a team host never answers or decides
+    anything — no team ask, no dispatch card — and files no step-up card. A
+    team token's **remote** call (`X-Muster-Client: remote`) is refused 401:
+    it would be served unbound to any listed session. A team token's
+    session-state episodes are not opened until 2b.3.
+  - **Its asks.** A team host session's `attention_ask` is the team's, and
+    shows on every member's Attention (viewer and up). Members answer it there.
+  - **The rotate mark.** When an operator or a manager is removed, drops to
+    viewer or is **disabled**, the team's unrevoked host tokens are marked
+    rotate (`mirror_tokens.rotate_at`), in the same transaction. Nothing is
+    revoked (a revoke would cut every team session at once): the page says
+    "rotate: ben left on <date>", read from the team's audit row, until a
+    manager revokes the token and mints a new one. 🔴 **A token someone kept
+    after leaving connects from any machine.** That is why the mark matters.
+  - **A second connection waits for a manager.** While a team host is
+    connected, a second connection presenting its token is **held**: refused
+    as pending a manager's confirmation, sent nothing and shown to no one,
+    while the connected host keeps serving. The manager sees "Replace the
+    connected host?" on `/teams/<id>/hosts`; confirming lets the held
+    machine's next attempt (muster-mirror retries at most a minute apart)
+    replace the connected one. A connection arriving while the host is
+    offline is taken at once, as for a personal host, so a restart of the
+    real host is unaffected. This does not close the offline window: only
+    rotation does.
+  - A viewer reads everything on a team host's screens and transcripts; an
+    operator who types runs commands as the host's Unix user. Team members
+    have to trust each other.
 - **Team officers.**
   - `MUSTER_OFFICERS` accepts a team's id as an officer's `owner`. Boot
     refuses an owner that names nobody, and a team owning a
-    `"runtime": "host"` officer: team hosts come later.
+    `"runtime": "host"` officer: team host officers come with team sharing
+    2b.5.
   - Every member reads the team's officer types and charters on
     `/teams/<id>/officers`. Only a **manager** changes them, there, signed
     in. Postgres refuses an operator's write too.
@@ -307,7 +361,7 @@ buttons are.
 | Personal API token (`mst_…`) | you: your user id and role | Minted only in the browser at `/account/tokens`, and shown once. Only its sha256 is stored. A token cannot mint another token. Revoking one refuses it on the next request. Disabling a user revokes all of their tokens (their mirror and flow runner tokens too, in the same transaction), and re-enabling them brings none back. |
 | `MUSTER_HOOK_TOKEN` | user 1, admin | A shared secret, enforced only when set; while unset, the hook routes are open. gotrue mode requires it. |
 | `MUSTER_SERVICE_TOKEN` | user 1 | It also requires an `X-Muster-Actor` header. It fails closed (503 while unset) and must be at least 32 characters. |
-| Mirror token (`mmt_…`) | the host it was minted for | A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes and `POST /mirror/mcp`. Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
+| Mirror token (`mmt_…`) | the host it was minted for | A **team host token** (owned by a team) is served a reduced tool set and never remotely; see [Teams](#teams) ("Team hosts"). A disabled owner's token is refused, and the owner's open host connections end at the next token recheck (30s). Disabling a user revokes all of their mirror tokens, and re-enabling them brings none back. Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes and `POST /mirror/mcp`. Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `agent_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `plugin_outbound_batch_get` / `plugin_outbound_batch_decide` — a READ of its owner's officers' outreach batches (the people, their engagement excerpts, the officers' reasons) and an approval as the operator of any follows and likes in them (recorded as via MCP from that host; the same accepted risk), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `agents_list`, a READ of its owner's agents (name, kind, worker pool, Claude account name but never a token, status, task) — and, through `chief_restart`, a **restart (Stop then Start) of its owner's own chief**, which with `force` cuts off a turn in flight (the same as the agent page's Stop/Start, which need no fresh sign-in either; **no audit row**: the host is named in muster's server log — [chief.md](chief.md#restarting-the-chief)) — and, with the chief's dispatch on, through `dispatch_request` and `dispatch_approve`, the **start of a new agent on its owner's behalf** with a prompt of the caller's choosing, or a **machine-job worker in any pool it names**, on one of its owner's Claude accounts — **including a pool that carries deployment privileges** (`MUSTER_AGENT_CC_BYPASS_POOLS`: the pool's job turns run without permission prompts; `MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`: the worker's pod holds a mirror of that pool's private repository, and must work on that one repository) — but **a pool worker takes no prompt** on this door (refused at the request, and again at the approval), so the token cannot give that worker instructions: its only turns are the jobs submitted to its pool. A worker it adds holds one of the owner's live slots and takes a share of the pool's jobs. All within the chief's caps (each request and approval is an audit row naming the host and session; each start notifies the owner — [chief.md](chief.md#starting-an-agent-from-your-own-session)) — never another task (but for the comment `route_reply` adds to a task the chief [routed](plugins.md#routing-a-task-to-a-session) to one of that host's sessions), another host's session, another owner's ask or request, a secret, or a chief tool. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | A disabled owner's token is refused. Disabling a user revokes all of their runner tokens, and re-enabling them brings none back. See [browser-flows.md](browser-flows.md). |
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |

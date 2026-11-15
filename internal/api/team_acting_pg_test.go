@@ -381,7 +381,10 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 						t.Fatalf("%s with a team owner: panic %q, ctx %v; want WithPrincipal's door refusal", name, msg, ctx)
 					}
 				case refusedStepUpNoTeam:
-					if msg != stepUpTeamRefusal {
+					// stepUpTeamRefusal, spelled out so the ledger compiles at
+					// a tree without it (where the row is red: WithPrincipal's
+					// own panic, not the runner's).
+					if msg != "step-up: a team has no phone, and a team host files no step-up card (teamHostTools refuses every owner-authority tool)" {
 						t.Fatalf("%s with a team owner: panic %q, ctx %v; want the step-up runner's own refusal", name, msg, ctx)
 					}
 				case refusedToolless:
