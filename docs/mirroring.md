@@ -1872,19 +1872,40 @@ server and its own `muster-mirror`.
   connection with its token is held for a manager's confirmation on
   `/teams/<id>/hosts`, instead of replacing it (a personal host's newer
   connection replaces the older one). The held `muster-mirror` logs "pending
-  a manager's confirmation" and keeps retrying, and `muster doctor` there
-  reports "held: another connection is live for this team host". The page
-  lists each held machine by the address it connected from; once a manager
-  confirms that machine, its next attempt from that address takes over.
-  **Behind a proxy or a Kubernetes NodePort every machine shares one
-  address**, so there a confirm cannot tell machines apart, and a held
-  machine at the live host's own address cannot be confirmed: stop the live
-  host first, or replace the token. `muster doctor` then says it cannot tell
-  which machine it is. A held machine (or any kept copy of the token) can
-  still use `/mirror/mcp` and `/mirror/ask` as any session the connected host
-  lists; revoking and re-minting the token is what stops it. A host that disconnected first (a restart) is taken
-  back at once. A muster-mirror whose old connection is half-open waits for
-  the keepalive to end it, and then reconnects.
+  a manager's confirmation" and keeps retrying.
+- **Moving the host: give the manager the code.** Each `muster-mirror`
+  process draws an **attempt code** when it starts and sends it on every
+  connect (the `X-Muster-Attempt-Code` header; the tunnel protocol is
+  unchanged). A held one logs
+
+  ```
+  muster-mirror: held: team host build-01 is already connected from another machine; give this code to a team manager: K7QM-2XWD-9RTB
+  ```
+
+  once per process (later holds say "`muster doctor` shows this machine's
+  code"), and `muster doctor` there reports "held: … give this code to a
+  team manager: K7QM-2XWD-9RTB". 🔴 Anyone who can read that log (the
+  user's journal, an admin, wherever it is shipped) can learn the code. The
+  code is also in the file
+  `-attempt-code-file` names (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`, else
+  `muster-mirror/attempt-code` in the user config directory, mode 0600;
+  `-attempt-code-file=` on the command line writes none), removed when
+  muster-mirror exits. The manager types it on the hosts page
+  (case, dashes and spaces do not matter): that code's next attempt takes
+  over within 3 minutes, and no other connection does, whatever its
+  address. A restart draws a new code, so type the one the running process
+  shows.
+- **A `muster-mirror` that sends no code** (older than the code) cannot be
+  confirmed: behind a proxy or a Kubernetes NodePort every machine shares one
+  address, so nothing tells it apart. It is held with "upgrade muster-mirror
+  on this machine, or stop the live host"; the hosts page says the same.
+  Upgrade it, or stop the live host (the next connection is then taken at
+  once).
+- A held machine (or any kept copy of the token) can still use `/mirror/mcp`
+  and `/mirror/ask` as any session the connected host lists; revoking and
+  re-minting the token is what stops it. A host that disconnected first (a
+  restart) is taken back at once. A muster-mirror whose old connection is
+  half-open waits for the keepalive to end it, and then reconnects.
 - **Leaving.** A manager revokes the token: the connection ends at the next
   recheck and the team's sessions on that host vanish. When an operator or a
   manager leaves, drops to viewer or is disabled, the team's tokens are marked

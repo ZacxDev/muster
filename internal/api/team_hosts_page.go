@@ -54,7 +54,7 @@ type teamHostTokens interface {
 // (*mirror.Service, asserted from ext.Mirror).
 type teamHostHub interface {
 	HeldReplacements(ctx context.Context) []mirror.HeldReplacement
-	ConfirmReplacement(ctx context.Context, host, addr string) error
+	ConfirmCode(ctx context.Context, code string) (host, fingerprint string, err error)
 	HostToken(ctx context.Context, host string) (int64, bool)
 }
 
@@ -66,14 +66,14 @@ type teamRotateReader interface {
 
 // The page's answers, one spelling each.
 const (
-	TeamHostsStepUp      = "Minting, revoking or replacing a team host needs a recent sign-in. Confirm it's you, then try again."
-	TeamHostsNoStore     = "This muster has no mirror plugin, so it has no host tokens."
-	TeamHostsSameAddress = "This machine can't be told apart from the live host by address; stop the live host first, or replace the token."
-	TeamHostsNoHeld      = "No connection from that address is waiting for that host now. Choose one held machine by its address, or the host is no longer connected and its next connection is taken anyway."
-	TeamHostsNoToken     = "That token does not exist or is already revoked."
-	TeamHostsManager     = "Only a manager of the team manages its host tokens."
-	teamHostsThreat      = "A viewer reads everything on a team host's screens and transcripts, including any secret a command printed. An operator who types runs commands as the host's Unix user: an operator on a team host has a shell there. Team members have to trust each other."
-	teamHostsRotateOK    = "When an operator or a manager leaves, drops to viewer or is disabled, the team's host tokens are marked rotate: a copy they kept still connects, from any machine. Revoke the marked token and mint a new one."
+	TeamHostsStepUp     = "Minting, revoking or replacing a team host needs a recent sign-in. Confirm it's you, then try again."
+	TeamHostsNoStore    = "This muster has no mirror plugin, so it has no host tokens."
+	TeamHostsNoCode     = "No machine waiting for this team shows that code. Type the code exactly as the machine you moved shows it (its muster-mirror log, or `muster doctor` there)."
+	TeamHostsNoCodeHeld = "sends no attempt code (an older muster-mirror), so it cannot be confirmed: upgrade muster-mirror on that machine, or stop the live host"
+	TeamHostsNoToken    = "That token does not exist or is already revoked."
+	TeamHostsManager    = "Only a manager of the team manages its host tokens."
+	teamHostsThreat     = "A viewer reads everything on a team host's screens and transcripts, including any secret a command printed. An operator who types runs commands as the host's Unix user: an operator on a team host has a shell there. Team members have to trust each other."
+	teamHostsRotateOK   = "When an operator or a manager leaves, drops to viewer or is disabled, the team's host tokens are marked rotate: a copy they kept still connects, from any machine. Revoke the marked token and mint a new one."
 )
 
 // teamHostsWrite is the gate of the page and its writes: team {id}, managed
@@ -151,25 +151,34 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 	held := hub.HeldReplacements(tctx)
 	if len(held) > 0 {
 		b.WriteString(`<section class="` + adminCard + `" id="team-host-held"><h2 class="text-base font-semibold text-fg">Replace the connected host?</h2>
-<p class="text-sm text-fg2">Another machine presented this team's token for a host that is already connected. Each such machine is listed below by the address it connected from. It is held: it receives nothing and shows nothing until you confirm. Confirm only the machine you moved the host to, by its address: its next attempt from that address replaces the connected host. An address is all muster can tell machines apart by. Behind a proxy or a Kubernetes NodePort every machine shares one address, so there the confirm cannot tell the moved machine from a kept copy of the token, and an attempt from the live host's own address cannot be confirmed at all. If you do not recognise an address, or cannot tell, stop the live host first (its replacement is then taken at once) or revoke the token and mint a new one.</p><ul class="flex flex-col gap-2">`)
+<p class="text-sm text-fg2">Another machine presented this team's token for a host that is already connected. Each such machine is listed below. It is held: it receives nothing and shows nothing until you confirm. To move the host, type the code the machine you moved shows (its muster-mirror log says "give this code to a team manager", and so does <code>muster doctor</code> there): its next attempt with that code replaces the connected host, and no other machine's. A kept copy of the token shows its own code, which you never type. If you did not move the host, confirm nothing: revoke the token and mint a new one.</p><ul class="flex flex-col gap-2">`)
+		coded := false
 		for _, h := range held {
+			coded = coded || h.Coded
 			b.WriteString(`<li class="flex flex-wrap items-center gap-2" data-held-host="` + html.EscapeString(h.Host) + `" data-held-addr="` + html.EscapeString(h.Addr) +
-				`" data-confirmed="` + strconv.FormatBool(h.Confirmed) + `">` +
+				`" data-held-coded="` + strconv.FormatBool(h.Coded) + `" data-confirmed="` + strconv.FormatBool(h.Confirmed) + `">` +
 				`<span class="text-sm text-fg">` + html.EscapeString(h.Host) + ` from ` + html.EscapeString(h.Addr) + `</span><span class="text-sm text-fg2">` +
 				strconv.Itoa(h.Attempts) + ` attempt(s), first ` + fmtTime(h.First) + `, last ` + fmtTime(h.Last) + `</span>`)
 			switch {
 			case h.Confirmed:
 				b.WriteString(`<span class="text-sm text-fg2">Confirmed: this machine's next attempt replaces the connected host.</span>`)
-			case h.SameAsLive:
-				b.WriteString(`<span class="text-sm text-fg2" data-indistinguishable>` + html.EscapeString(TeamHostsSameAddress) + `</span>`)
+			case h.Coded:
+				// 🔴 NO BUTTON: a coded attempt is named only by its code, typed below.
+				b.WriteString(`<span class="text-sm text-fg2">shows a code: type it below to confirm this machine</span>`)
 			default:
-				b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/replace"><input type="hidden" name="host" value="` + html.EscapeString(h.Host) + `">` +
-					`<input type="hidden" name="addr" value="` + html.EscapeString(h.Addr) + `">` +
-					`<button type="submit" class="` + adminButton + `">Replace with this machine</button></form>`)
+				// 🔴 NO CODE, NO CONFIRM (mirror/teamhold.go): nothing tells it apart.
+				b.WriteString(`<span class="text-sm text-fg2" data-no-code>` + html.EscapeString(TeamHostsNoCodeHeld) + `</span>`)
 			}
 			b.WriteString(`</li>`)
 		}
-		b.WriteString(`</ul></section>`)
+		b.WriteString(`</ul>`)
+		if coded {
+			b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/replace" class="flex flex-col gap-2" id="team-host-code-form">` +
+				`<label for="team-host-code" class="text-sm font-medium text-fg">The code the machine you moved shows</label>` +
+				`<input id="team-host-code" name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" class="` + adminInput + `">` +
+				`<button type="submit" class="` + adminButton + `">Replace with the machine showing this code</button></form>`)
+		}
+		b.WriteString(`</section>`)
 	}
 	b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Tokens</h2><ul class="flex flex-col gap-2" id="team-host-tokens">`)
 	live := 0
@@ -306,9 +315,12 @@ func (s *Server) handleTeamHostRevoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/teams/"+strconv.FormatInt(team, 10)+"/hosts", http.StatusSeeOther)
 }
 
-// handleTeamHostReplace is POST /teams/{id}/hosts/replace (host): a manager
-// confirms a held second connection — its next attempt replaces the
-// connected host (mirror.Hub.ConfirmReplacement) — and it is audited.
+// handleTeamHostReplace is POST /teams/{id}/hosts/replace (code): a manager
+// confirms a held second connection by the code its machine shows
+// (mirror.Hub.ConfirmCode) — its next attempt with that code replaces the
+// connected host — and it is audited. A wrong (or no) code arms nothing and is
+// audited as refused. 🔴 The code itself is never logged or audited: only its
+// fingerprint (attemptcode.Fingerprint).
 func (s *Server) handleTeamHostReplace(w http.ResponseWriter, r *http.Request) {
 	team, tctx, ok := s.teamHostsWrite(w, r)
 	if !ok || !s.teamHostsFresh(w, r, team, tctx) {
@@ -318,22 +330,14 @@ func (s *Server) handleTeamHostReplace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// 🔴 THE CONFIRM NAMES ONE HELD ATTEMPT, by its address: there is no
-	// confirm without one (mirror/teamhold.go, #685 round 0).
-	host, addr := strings.TrimSpace(r.FormValue("host")), strings.TrimSpace(r.FormValue("addr"))
-	if mirror.ValidHost(host) != nil || addr == "" {
-		s.renderTeamHosts(w, r, team, tctx, http.StatusConflict, TeamHostsNoHeld, "")
+	host, fp, err := hub.ConfirmCode(tctx, r.FormValue("code"))
+	if err != nil {
+		s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.replace.refused", "team:"+strconv.FormatInt(team, 10), map[string]any{"code_fingerprint": fp}, true)
+		s.logger.Printf("teams: manager %d typed a code (fingerprint %q) no held machine of team %d shows", actorOf(r).UserID, fp, team)
+		s.renderTeamHosts(w, r, team, tctx, http.StatusConflict, TeamHostsNoCode, "")
 		return
 	}
-	switch err := hub.ConfirmReplacement(tctx, host, addr); {
-	case errors.Is(err, mirror.ErrIndistinguishable):
-		s.renderTeamHosts(w, r, team, tctx, http.StatusConflict, TeamHostsSameAddress, "")
-		return
-	case err != nil:
-		s.renderTeamHosts(w, r, team, tctx, http.StatusConflict, TeamHostsNoHeld, "")
-		return
-	}
-	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.replace", "host:"+host, map[string]any{"addr": addr}, true)
-	s.logger.Printf("teams: manager %d confirmed replacing team %d's host %s", actorOf(r).UserID, team, host)
+	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.replace", "host:"+host, map[string]any{"code_fingerprint": fp}, true)
+	s.logger.Printf("teams: manager %d confirmed replacing team %d's host %s by attempt code %s (fingerprint)", actorOf(r).UserID, team, host, fp)
 	http.Redirect(w, r, "/teams/"+strconv.FormatInt(team, 10)+"/hosts", http.StatusSeeOther)
 }

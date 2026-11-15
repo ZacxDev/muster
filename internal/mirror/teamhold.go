@@ -2,10 +2,14 @@ package mirror
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/attemptcode"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,35 +25,31 @@ import (
 // So for a TEAM-OWNED token (Token.Team) a second connection for a (team,
 // host) that is LIVE is HELD, not swapped in:
 //
-//   - it is refused at once with ErrHeldForManager ("pending a manager's
-//     confirmation"), before it is registered or listed anywhere, so it is
-//     sent nothing and shows members nothing; the live host keeps serving;
-//   - EACH held attempt is recorded by the address it came from (the TCP
-//     peer, Service.peerAddr), with when it was first and last seen, and
-//     /teams/{id}/hosts lists them all on a "replace the connected host?"
-//     card;
-//   - 🔴 A MANAGER'S CONFIRM NAMES ONE ATTEMPT, by its address
-//     (ConfirmReplacement). It arms a one-shot replacement for
-//     ReplaceConfirmWindow that admits ONLY a reconnect from that address:
-//     the chosen machine's next attempt — muster-mirror retries at most a
-//     minute apart — is taken, and the live connection is cancelled the way
-//     a replacement is today. Another address presenting the same token in
-//     that window is still held. There is no confirm that names no attempt,
-//     so a retained token retrying fast cannot win the race a blanket
-//     confirm would open (#685 round 0).
-//
-// 🔴 AN ADDRESS IS THE TCP PEER, NOT X-Forwarded-For (which any client
-// writes), AND IN THE SUPPORTED DEPLOYMENTS IT TELLS NO MACHINES APART.
-// Behind a proxy chain or a Kubernetes NodePort every machine shares one
-// address (measured on a NodePort deployment: every host showed as the same
-// pod-network address), so the
-// held machine and the live host are the SAME address there, and a confirm
-// cannot distinguish them. So a confirm for an attempt whose address is the
-// LIVE connection's is REFUSED (ErrIndistinguishable, Service.
-// ConfirmReplacement): the manager must stop the live host first (its
-// replacement is then taken at once, as offline) or replace the token. The
-// binding does real work only where hosts reach muster directly, each from
-// its own address. A stronger binding (a per-attempt code) is a follow-up.
+//   - it is refused at once, before it is registered or listed anywhere, so it
+//     is sent nothing and shows members nothing; the live host keeps serving;
+//   - EACH held attempt is recorded, by its ATTEMPT CODE's hash
+//     (internal/attemptcode), with the address it came from (for the card
+//     only) and when it was first and last seen, and /teams/{id}/hosts lists
+//     them all on a "replace the connected host?" card;
+//   - 🔴 A MANAGER'S CONFIRM NAMES ONE ATTEMPT, BY THE CODE ITS MACHINE SHOWS
+//     (ConfirmCode): the manager types the code muster-mirror printed on the
+//     machine they moved (its log, `muster doctor`). It arms a one-shot
+//     replacement for ReplaceConfirmWindow that admits ONLY a reconnect
+//     presenting that code: the chosen machine's next attempt — muster-mirror
+//     retries at most a minute apart, with the same code, since the code is
+//     per process — is taken, and the live connection is cancelled the way a
+//     replacement is today. Any other connection in that window is still
+//     held, whatever its address: a kept copy of the token, on another
+//     machine, draws its own code, which the manager never types. This holds
+//     behind a proxy or a NodePort, where every machine shares one address
+//     (#685 round 1, Y1). The card offers no per-row button: the code is the
+//     only way to name an attempt.
+//   - 🔴 AN ATTEMPT WITH NO CODE (a muster-mirror older than the code, or a
+//     malformed header) cannot be confirmed at all (ErrHeldNoCode): an address
+//     tells no machines apart in the supported deployments (Y1), so there is
+//     nothing to name it by. The card says so: upgrade muster-mirror on that
+//     machine, or stop the live host (its next connection is then taken at
+//     once, as offline).
 //
 // 🔴 THE HOLD GUARDS THE TUNNEL ONLY. A held machine, or any kept copy of the
 // token, can still call /mirror/mcp and /mirror/ask: those doors bind a call
@@ -58,15 +58,21 @@ import (
 // lists, within teamHostTools. The rotate mark is the answer to a kept token.
 //
 // A connection arriving while the host is OFFLINE (not live) is taken at
-// once, as today, so a restart of the real host is unaffected: a clean
-// restart closes the old connection first, and a half-open one is ended by
-// the keepalive, after which the retry is taken. A PERSONAL host keeps the
-// newer-replaces rule. This closes the silent take-over by a retained token;
-// it does not close the offline window, which only rotation closes.
+// once, as today, code or no code, so a restart of the real host is
+// unaffected: a clean restart closes the old connection first, and a
+// half-open one is ended by the keepalive, after which the retry is taken. A
+// PERSONAL host keeps the newer-replaces rule. This closes the silent
+// take-over by a retained token; it does not close the offline window, which
+// only rotation closes.
 // ---------------------------------------------------------------------------
 
-// ErrHeldForManager is the welcome's refusal of a held team host connection.
+// ErrHeldForManager is the welcome's refusal of a held team host connection
+// that presents an attempt code.
 var ErrHeldForManager = errors.New("mirror: this team host is already connected; this connection is pending a manager's confirmation on the team's hosts page")
+
+// ErrHeldNoCode is the welcome's refusal of a held team host connection that
+// presents NO attempt code: no manager can confirm it.
+var ErrHeldNoCode = errors.New("mirror: this team host is already connected, and this muster-mirror sends no attempt code, so no manager can confirm it: upgrade muster-mirror on this machine, or stop the live host")
 
 // ReplaceConfirmWindow is how long a manager's confirm waits for the chosen
 // machine's next attempt. muster-mirror's backoff tops out at a minute (with
@@ -77,73 +83,102 @@ const ReplaceConfirmWindow = 3 * time.Minute
 // its last attempt.
 const heldRetention = 15 * time.Minute
 
-// heldAnnounceEvery is the most often ONE address's held attempts are logged
-// and nudge the team's views: a machine retrying in a tight loop is counted,
-// not announced on every attempt.
+// heldAnnounceEvery is the most often ONE attempt's holds are logged and
+// nudge the team's views: a machine retrying in a tight loop is counted, not
+// announced on every attempt.
 const heldAnnounceEvery = 30 * time.Second
 
-// ErrIndistinguishable: the chosen held attempt came from the LIVE
-// connection's own address, so a confirm could not tell the two machines
-// apart (the file comment).
-var ErrIndistinguishable = errors.New("mirror: this machine can't be told apart from the live host by address; stop the live host first, or replace the token")
+// ErrNoSuchCode: no machine held for the team shows that code.
+var ErrNoSuchCode = errors.New("mirror: no held machine shows that code")
 
-// ErrNothingHeld: no attempt from that address is held for that host (or the
-// host is no longer connected, and its next connection is taken anyway).
-var ErrNothingHeld = errors.New("mirror: no held attempt from that address")
-
-// maxHeldAttempts bounds the distinct addresses recorded per (team, host): a
-// token spraying from many addresses cannot grow the hub without bound. Past
-// it, the oldest-seen attempt is forgotten.
+// maxHeldAttempts bounds the distinct attempts recorded per (team, host): a
+// token spraying codes (or, with no code, addresses) cannot grow the hub
+// without bound. Past it, the oldest-seen attempt is forgotten.
 const maxHeldAttempts = 16
 
 // HeldReplacement is one held second connection, as the manager's card shows
-// it: one machine, by the address it connected from.
+// it: one machine, by when it was seen and where from — never by its code,
+// which the manager types.
 type HeldReplacement struct {
 	Host string
-	// Addr is the attempt's TCP peer address (see the file comment's ⚠).
+	// Addr is the attempt's TCP peer address, shown for context only: it
+	// names nothing (the file comment).
 	Addr string
-	// First and Last are the first and the latest held attempt from Addr.
+	// Coded: the attempt sent an attempt code, and is confirmed by typing it
+	// (ConfirmCode). False: no code, so it cannot be confirmed.
+	Coded bool
+	// First and Last are the first and the latest held attempt.
 	First, Last time.Time
 	Attempts    int
 	// Confirmed: a manager chose THIS attempt, and its next attempt is taken.
 	Confirmed bool
-	// SameAsLive: Addr is the live connection's own address, so this attempt
-	// cannot be confirmed (ErrIndistinguishable). Set by
-	// Service.HeldReplacements.
-	SameAsLive bool
 }
 
-// heldAttempt is one address's held attempts, under Hub.mu.
+// heldAttempt is one machine's held attempts, under Hub.mu: one code, or one
+// address's codeless attempts (for the card only).
 type heldAttempt struct {
-	first, last time.Time
-	attempts    int
-	// announced is when this address's hold was last logged and nudged.
-	announced time.Time
+	addr string
+	// coded and code: the attempt code's HASH (attemptcode.Hash), never the
+	// code.
+	coded bool
+	code  [32]byte
+	first time.Time
+	last  time.Time
+	// attempts counts them.
+	attempts int
+}
+
+// admits reports whether a reconnect presenting code (nil: none) is the
+// machine a confirm of a chose: only a coded attempt is ever armed, and it
+// admits only its own code.
+func (a *heldAttempt) admits(code *[32]byte) bool {
+	return a.coded && code != nil && subtle.ConstantTimeCompare(code[:], a.code[:]) == 1
+}
+
+// attemptKey is where an attempt is recorded in held.attempts: by the code's
+// hash, or by address for a codeless one.
+func attemptKey(addr string, code *[32]byte) string {
+	if code != nil {
+		return "code:" + hex.EncodeToString(code[:])
+	}
+	return "addr:" + addr
 }
 
 // held is one (team, host)'s hold state, under Hub.mu.
 type held struct {
 	attempts map[string]*heldAttempt
-	// confirmedAddr and confirmedUntil: a manager's confirm of ONE attempt,
-	// good until then (zero: none).
-	confirmedAddr  string
+	// confirmed and confirmedUntil: a manager's confirm of ONE coded attempt
+	// (its attemptKey), good until then (zero: none).
+	confirmed      string
 	confirmedUntil time.Time
+	// announced is when this host's holds were last logged and nudged: ONE
+	// bound per (team, host), so a token spraying fresh codes is counted, not
+	// announced once per code.
+	announced time.Time
 }
 
-// admitPinned decides a TEAM host connection's arrival for key from addr:
-// true when it may proceed — the host is offline, or a manager's confirm of
-// THIS address is armed (and is now spent) — and false when it is held (the
-// attempt is recorded under addr). announce reports, for a held attempt,
-// whether to log it and nudge the views now: at most once per
-// heldAnnounceEvery per address.
-func (h *Hub) admitPinned(key hostKey, addr string) (admit, announce bool) {
+// admitPinned decides a TEAM host connection's arrival for key from addr,
+// presenting code (nil: none): true when it may proceed — the host is
+// offline, or a manager's confirm of THIS code is armed (and is now spent) —
+// and false when it is held (the attempt is recorded). announce reports, for
+// a held attempt, whether to log it and nudge the views now: at most once per
+// heldAnnounceEvery per (team, host).
+//
+// Past maxHeldAttempts the attempt evicted is one seen only ONCE (the oldest
+// such), else the oldest: a real muster-mirror retries with the same code, so
+// its count grows, while a sprayed code is seen once — the moved machine's
+// attempt survives a spray once it has retried. The confirmed attempt is
+// never evicted.
+func (h *Hub) admitPinned(key hostKey, addr string, code *[32]byte) (admit, announce bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 	hd := h.held[key]
-	if hd != nil && hd.confirmedAddr == addr && now.Before(hd.confirmedUntil) {
-		delete(h.held, key) // the confirm is one-shot, and the other attempts go with the host they wanted
-		return true, false
+	if hd != nil && now.Before(hd.confirmedUntil) {
+		if c := hd.attempts[hd.confirmed]; c != nil && c.admits(code) {
+			delete(h.held, key) // the confirm is one-shot, and the other attempts go with the host they wanted
+			return true, false
+		}
 	}
 	if h.hosts[key] == nil {
 		delete(h.held, key) // offline: taken at once, and nothing is left to confirm
@@ -156,32 +191,52 @@ func (h *Hub) admitPinned(key hostKey, addr string) (admit, announce bool) {
 		hd = &held{attempts: map[string]*heldAttempt{}}
 		h.held[key] = hd
 	}
-	a := hd.attempts[addr]
+	ak := attemptKey(addr, code)
+	a := hd.attempts[ak]
 	if a == nil || now.Sub(a.last) > heldRetention {
 		if a == nil && len(hd.attempts) >= maxHeldAttempts {
-			oldest := ""
-			for k, v := range hd.attempts {
-				if k != hd.confirmedAddr && (oldest == "" || v.last.Before(hd.attempts[oldest].last)) {
-					oldest = k
-				}
-			}
-			delete(hd.attempts, oldest)
+			delete(hd.attempts, hd.evictee())
 		}
 		a = &heldAttempt{first: now}
-		hd.attempts[addr] = a
+		if code != nil {
+			a.coded, a.code = true, *code
+		}
+		hd.attempts[ak] = a
 	}
+	a.addr = addr
 	a.last = now
 	a.attempts++
-	if a.announced.IsZero() || now.Sub(a.announced) >= heldAnnounceEvery {
-		a.announced = now
+	if hd.announced.IsZero() || now.Sub(hd.announced) >= heldAnnounceEvery {
+		hd.announced = now
 		return false, true
 	}
 	return false, false
 }
 
-// HeldReplacements is owner's held second connections, one per (host,
-// address), for the manager's card. A hold whose live host has gone is gone
-// too, and an attempt not seen for heldRetention is forgotten.
+// evictee is the attempt admitPinned forgets when hd is full: the oldest-seen
+// attempt seen only once, else the oldest-seen; never the confirmed one.
+func (hd *held) evictee() string {
+	once, oldest := "", ""
+	for k, v := range hd.attempts {
+		if k == hd.confirmed {
+			continue
+		}
+		if oldest == "" || v.last.Before(hd.attempts[oldest].last) {
+			oldest = k
+		}
+		if v.attempts == 1 && (once == "" || v.last.Before(hd.attempts[once].last)) {
+			once = k
+		}
+	}
+	if once != "" {
+		return once
+	}
+	return oldest
+}
+
+// HeldReplacements is owner's held second connections, one per attempt, for
+// the manager's card. A hold whose live host has gone is gone too, and an
+// attempt not seen for heldRetention is forgotten.
 func (h *Hub) HeldReplacements(owner int64) []HeldReplacement {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -196,13 +251,13 @@ func (h *Hub) HeldReplacements(owner int64) []HeldReplacement {
 			continue
 		}
 		confirmed := now.Before(hd.confirmedUntil)
-		for addr, a := range hd.attempts {
-			if now.Sub(a.last) > heldRetention && !(confirmed && addr == hd.confirmedAddr) {
-				delete(hd.attempts, addr)
+		for ak, a := range hd.attempts {
+			if now.Sub(a.last) > heldRetention && !(confirmed && ak == hd.confirmed) {
+				delete(hd.attempts, ak)
 				continue
 			}
-			out = append(out, HeldReplacement{Host: k.host, Addr: addr, First: a.first, Last: a.last, Attempts: a.attempts,
-				Confirmed: confirmed && addr == hd.confirmedAddr})
+			out = append(out, HeldReplacement{Host: k.host, Addr: a.addr, Coded: a.coded, First: a.first, Last: a.last, Attempts: a.attempts,
+				Confirmed: confirmed && ak == hd.confirmed})
 		}
 		if len(hd.attempts) == 0 {
 			delete(h.held, k)
@@ -212,34 +267,88 @@ func (h *Hub) HeldReplacements(owner int64) []HeldReplacement {
 		if out[i].Host != out[j].Host {
 			return out[i].Host < out[j].Host
 		}
-		return out[i].Addr < out[j].Addr
+		if out[i].Addr != out[j].Addr {
+			return out[i].Addr < out[j].Addr
+		}
+		return out[i].First.Before(out[j].First)
 	})
 	return out
 }
 
-// ConfirmReplacement arms the replacement of owner's live host by the held
-// attempt from addr: that address's next attempt within ReplaceConfirmWindow
-// is taken, and no other address's. False when no attempt from addr is held
-// for host (or the live host has gone, so the next attempt is taken anyway).
-// A later confirm of another address replaces this one.
-func (h *Hub) ConfirmReplacement(owner int64, host, addr string) bool {
+// ConfirmCode is a manager's confirm by the code the moved machine shows: it
+// arms the replacement of owner's live host by the held attempt presenting
+// that code — only a reconnect with that code, within ReplaceConfirmWindow,
+// is taken. It answers the host, and the code's fingerprint for the audit row
+// ("" for a malformed code). ErrNoSuchCode when no held machine of owner's
+// shows the code — including one whose attempt was forgotten (heldRetention,
+// or maxHeldAttempts' eviction).
+func (h *Hub) ConfirmCode(owner int64, code string) (host, fingerprint string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	k := hostKey{owner, host}
-	hd := h.held[k]
-	if hd == nil || h.hosts[k] == nil || addr == "" || hd.attempts[addr] == nil {
-		return false
+	now := h.now()
+	want, wellFormed := attemptcode.Hash(code)
+	if !wellFormed {
+		return "", "", ErrNoSuchCode
 	}
-	hd.confirmedAddr, hd.confirmedUntil = addr, h.now().Add(ReplaceConfirmWindow)
-	return true
+	fingerprint = attemptcode.Fingerprint(want)
+	for k, hd := range h.held {
+		if k.owner != owner || h.hosts[k] == nil {
+			continue
+		}
+		for ak, a := range hd.attempts {
+			if a.coded && subtle.ConstantTimeCompare(want[:], a.code[:]) == 1 && now.Sub(a.last) <= heldRetention {
+				hd.confirmed, hd.confirmedUntil = ak, now.Add(ReplaceConfirmWindow)
+				return k.host, fingerprint, nil
+			}
+		}
+	}
+	return "", fingerprint, ErrNoSuchCode
 }
 
-// heldFrom reports whether owner's host has a held attempt from addr.
-func (h *Hub) heldFrom(owner int64, host, addr string) bool {
+// heldCode reports whether owner's host has a held attempt presenting code,
+// seen within heldRetention (ConfirmCode's own rule: a forgotten attempt is
+// not reported held).
+func (h *Hub) heldCode(owner int64, host string, code [32]byte) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	hd := h.held[hostKey{owner, host}]
-	return hd != nil && hd.attempts[addr] != nil
+	if hd == nil {
+		return false
+	}
+	a := hd.attempts[attemptKey("", &code)]
+	return a != nil && h.now().Sub(a.last) <= heldRetention
+}
+
+// hasHolds reports whether owner's host has any held attempt seen within
+// heldRetention.
+func (h *Hub) hasHolds(owner int64, host string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	hd := h.held[hostKey{owner, host}]
+	if hd == nil {
+		return false
+	}
+	now := h.now()
+	for _, a := range hd.attempts {
+		if now.Sub(a.last) <= heldRetention {
+			return true
+		}
+	}
+	return false
+}
+
+// attemptCodeOf is r's attempt code's hash (attemptcode.Header), or nil when
+// it sends none — or a malformed one, which is treated as none.
+func attemptCodeOf(r *http.Request) *[32]byte {
+	v := r.Header.Get(attemptcode.Header)
+	if v == "" {
+		return nil
+	}
+	h, ok := attemptcode.Hash(v)
+	if !ok {
+		return nil
+	}
+	return &h
 }
 
 // HeldReplacements is the viewing principal's held team host connections
@@ -250,82 +359,53 @@ func (s *Service) HeldReplacements(ctx context.Context) []HeldReplacement {
 	if err != nil {
 		return nil
 	}
-	out := s.hub.HeldReplacements(o)
-	for i := range out {
-		if live, ok := s.liveAddr(o, out[i].Host); ok && live == out[i].Addr {
-			out[i].SameAsLive = true
-		}
-	}
-	return out
+	return s.hub.HeldReplacements(o)
 }
 
-// ConfirmReplacement is Hub.ConfirmReplacement for the viewing principal's
-// host and the chosen attempt's address: nil when armed, ErrIndistinguishable
-// for an attempt from the live connection's own address (nothing is armed),
-// ErrNothingHeld when no attempt from addr is held.
-func (s *Service) ConfirmReplacement(ctx context.Context, host, addr string) error {
+// ConfirmCode is Hub.ConfirmCode for the viewing principal (the team): the
+// host the code's machine is held for, and the code's fingerprint, or
+// ErrNoSuchCode.
+func (s *Service) ConfirmCode(ctx context.Context, code string) (host, fingerprint string, err error) {
 	o, err := owner(ctx)
 	if err != nil {
-		return ErrNothingHeld
+		return "", "", ErrNoSuchCode
 	}
-	if live, ok := s.liveAddr(o, host); ok && live == addr {
-		return ErrIndistinguishable
-	}
-	if !s.hub.ConfirmReplacement(o, host, addr) {
-		return ErrNothingHeld
-	}
-	return nil
-}
-
-// liveAddr is the address owner's host's live connection came from.
-func (s *Service) liveAddr(owner int64, host string) (string, bool) {
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-	c, ok := s.connTok[hostKey{owner, host}]
-	return c.addr, ok
+	return s.hub.ConfirmCode(o, code)
 }
 
 // HeldHere answers, for the machine making r — the viewing principal's host,
 // by the token's (owner, host) — `muster doctor`'s this-host question, which
-// the token alone cannot (a held machine shares the live one's token):
-//   - held: an attempt from r's address is held and the live connection came
-//     from ANOTHER address — this machine is the held one;
-//   - unsure: an attempt from r's address is held and the live connection
-//     came from the SAME address (a proxy or NodePort: the file comment) —
-//     this muster cannot tell whether this machine is the live one or the
-//     held one.
-func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) (held, unsure bool) {
+// the token alone cannot (a held machine shares the live one's token), by the
+// attempt code r presents (doctor reads it where muster-mirror leaves it):
+//   - held: an attempt with that code is held;
+//   - unknown: a TEAM host is live, machines are held for it, and r presents
+//     no code, or a code that is neither held nor the live connection's — so
+//     this machine may be a held one this muster cannot name (#688 round 1,
+//     Y1: the doctor must not say "connected" then);
+//   - neither: r's code is the live connection's, or nothing is held.
+func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) (held, unknown bool) {
 	o, err := owner(ctx)
 	if err != nil {
 		return false, false
 	}
-	addr := s.peerAddr(r)
-	if !s.hub.heldFrom(o, host, addr) {
+	code := attemptCodeOf(r)
+	if code != nil && s.hub.heldCode(o, host, *code) {
+		return true, false
+	}
+	live, ok := s.liveConn(o, host)
+	if !ok || !live.team || !s.hub.hasHolds(o, host) {
 		return false, false
 	}
-	live, ok := s.liveAddr(o, host)
-	if !ok {
+	if code != nil && live.code != nil && subtle.ConstantTimeCompare(code[:], live.code[:]) == 1 {
 		return false, false
 	}
-	return live != addr, live == addr
+	return false, true
 }
 
-// SetPeerAddr overrides how a request's peer address is read (tests: one
-// process cannot dial from several addresses). nil restores clientAddr.
-func (s *Service) SetPeerAddr(fn func(*http.Request) string) {
+// liveConn is owner's host's live connection as ServeConnect tracks it.
+func (s *Service) liveConn(owner int64, host string) (connToken, bool) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
-	s.peerFn = fn
-}
-
-// peerAddr is r's peer address as the hold records it: clientAddr, unless a
-// test set SetPeerAddr.
-func (s *Service) peerAddr(r *http.Request) string {
-	s.connMu.Lock()
-	fn := s.peerFn
-	s.connMu.Unlock()
-	if fn != nil {
-		return fn(r)
-	}
-	return clientAddr(r)
+	c, ok := s.connTok[hostKey{owner, host}]
+	return c, ok
 }

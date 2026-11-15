@@ -2186,9 +2186,84 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   the server cannot tell which of the two this machine is), not online.
    >   A per-attempt code that binds the confirm to one machine is a separate
    >   follow-up PR, not built here.
+   >   🔴 **The follow-up (#688): the ATTEMPT CODE, and the address binding
+   >   above is GONE (no migration; the hold is in memory).** Round 1's
+   >   proposal, built, then cut down by its own round 0 (D1 to D3).
+   >   `internal/attemptcode` (a stdlib-only leaf, so the CLI links it
+   >   without the mirror package) draws a code per muster-mirror PROCESS:
+   >   12 Crockford base32 characters (60 bits from crypto/rand), shown
+   >   `XXXX-XXXX-XXXX`; typed forms (case, dashes, spaces, I/L/O)
+   >   normalise. muster-mirror sends it on every `/mirror/connect` as
+   >   `X-Muster-Attempt-Code` (no tunnel protocol change), logs "held: …
+   >   give this code to a team manager: <code>" when held, and writes it
+   >   0600 to `-attempt-code-file` (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`,
+   >   default `internal/mirrorpath.DefaultAttemptCodeFile`), removed at exit
+   >   while it is still its own. The hub records a coded attempt by the
+   >   code's SHA-256 (domain-separated), never the code: `heldAttempt.code`
+   >   is the hash, the map key is its hex, and logs and the audit row carry
+   >   `attemptcode.Fingerprint` (16 hex). The card has no per-row button; one
+   >   field takes a typed code (`POST …/hosts/replace` with `code`, same
+   >   route, same step-up), and `Hub.ConfirmCode` arms the held coded
+   >   attempt with that hash; `heldAttempt.admits` then lets in only a
+   >   reconnect presenting that code, one-shot, within
+   >   `ReplaceConfirmWindow`. A wrong code arms nothing and is audited
+   >   `team.host.replace.refused` (with the typed code's fingerprint).
+   >   🔴 **No code, no confirm:** an attempt with no code (or a malformed
+   >   one) for a LIVE team host is held with `ErrHeldNoCode` ("upgrade
+   >   muster-mirror on this machine, or stop the live host"), and the card
+   >   says the same; nothing can confirm it. #685's address confirm
+   >   (`ConfirmReplacement`, `SameAsLive`, `ErrIndistinguishable`, the
+   >   per-row address form, `Service.SetPeerAddr`) and doctor's
+   >   `held_unsure` are deleted: in the supported deployments it always
+   >   refused, and team hosts had never shipped, so no older muster-mirror
+   >   needs it. Offline arrival is unchanged, code or no code. `muster
+   >   doctor` sends the code it reads from the file to the token's own
+   >   server on `GET /mirror/host`, and `Service.HeldHere` answers by the
+   >   code alone; with no code it answers not held.
+   >   Round 0 also deleted a per-team wrong-code rate limit (only a
+   >   step-up'd, trusted manager can type a code, and a guess gains no one
+   >   anything) and a structural constant-time test (the compared values
+   >   are hashes); the `subtle.ConstantTimeCompare` call stays.
+   >   **Round 1 (#688):** past `maxHeldAttempts` (16) per host the attempt
+   >   forgotten is the oldest seen only ONCE, else the oldest, and never
+   >   the confirmed one; a real muster-mirror retries with one code, so
+   >   once the moved machine has retried, a spray of fresh codes (each seen
+   >   once) evicts only sprayed ones. Holds are announced at most once per
+   >   `heldAnnounceEvery` per (team, host), not per code. The live
+   >   connection's code hash is kept with its token, so `GET /mirror/host`
+   >   answers held, connected, or `held_unknown` (machines are held and the
+   >   request's code is missing or neither), and doctor FAILs on unknown
+   >   rather than PASS "connected". muster-mirror prints the code once per
+   >   process; later holds point at `muster doctor`. Fingerprints are an
+   >   HMAC under a per-process key, so a log or audit reader cannot test
+   >   guesses offline (they match only within one server process).
+   >   `heldCode` honours `heldRetention` like `ConfirmCode`.
+   >   ⚠ **Not closed:** a kept token can still spray. Before the moved
+   >   machine's SECOND attempt its record is seen once, so a spray can
+   >   evict it, and its correct code then answers "no such code" until its
+   >   next retry (at most a minute) records it again; the answer to a
+   >   sprayer is still revoke and re-mint. The code is per process, so a
+   >   restart of the moved machine draws a new one. Anyone who can read the
+   >   moved machine's muster-mirror log (its user's journal, admins, any log
+   >   shipping) sees the code once; with it, a kept copy retrying fast can
+   >   race the moved machine inside the confirm window.
+   >   Tests: `TestASecondTeamHostConnectionWaitsForAManager`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
+   >   `TestACodeConfirmAdmitsTheMachineShowingItAndNoOther`,
+   >   `TestAWrongCodeArmsNothing`,
+   >   `TestACodelessAttemptIsHeldAndCannotBeConfirmed`,
+   >   `TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash`,
+   >   `TestDoctorsQuestionIsAnsweredByTheCode` — over the REAL loopback
+   >   peer, every connection one address — and
+   >   `TestTheHubKeepsOnlyTheCodesHash` (`internal/mirror`);
+   >   `TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine`
+   >   (`internal/api`); `TestDoctorShowsAHeldMachinesCode`
+   >   (`cmd/muster`); `TestTheAttemptCodeFileIsPrivateAndOnlyItsOwnerRemovesIt`
+   >   (`cmd/muster-mirror`); `TestACodeIsTypeableAndTypedFormsAgree`
+   >   (`internal/attemptcode`).
    >   Held attempts are logged and nudge members' views at most once per
-   >   `heldAnnounceEvery` (30 s) per address (G2); every attempt is still
-   >   counted on the card.
+   >   `heldAnnounceEvery` (30 s) per (team, host) since #688 (G2 bounded it
+   >   per address); every attempt is still counted on the card.
    >   🔴 **The hold guards the tunnel only (G1).** A held machine, or any
    >   kept copy of the token, can still call `/mirror/mcp` and `/mirror/ask`
    >   as any session the LIVE host lists: those doors bind a call to the live
@@ -2235,10 +2310,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `TestTheCLIMintsATeamTokenOnlyForATeam`,
    >   `TestASecondTeamHostConnectionWaitsForAManager`,
    >   `TestATeamHostReconnectingWhileOfflineIsTakenAtOnce`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen` (`internal/mirror`;
+   >   rewritten for codes in #688, which deleted the address tests
    >   `TestAConfirmForOneAddressDoesNotLetAnotherIn`,
-   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
-   >   `TestAHeldMachineIsToldItIsHeld` (`internal/mirror`);
-   >   `TestTheReplaceConfirmNamesOneHeldMachine`,
+   >   `TestAHeldMachineIsToldItIsHeld`,
+   >   `TestAnAttemptFromTheLiveAddressCannotBeConfirmed`,
+   >   `TestTheReplaceConfirmNamesOneHeldMachine` and
+   >   `TestTheCardCannotConfirmAMachineAtTheLiveAddress`);
    >   `TestDoctorTellsAHeldMachineItIsHeld` (`internal/api`);
    >   `TestRemovingAnOperatorMarksTheTeamsHostTokensRotate`,
    >   `TestDowngradingAnOperatorToViewerMarksTheTeamsHostTokensRotate`,

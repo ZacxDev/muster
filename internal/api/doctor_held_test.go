@@ -13,11 +13,11 @@ import (
 // machine is a held team host connection (mirror.Service.HeldHere).
 type heldHereMirror struct {
 	*fakeMirror
-	held, unsure bool
+	held, unknown bool
 }
 
 func (m *heldHereMirror) HeldHere(context.Context, string, *http.Request) (bool, bool) {
-	return m.held, m.unsure
+	return m.held, m.unknown
 }
 
 // TestDoctorTellsAHeldMachineItIsHeld (#685 round 0): a team host's HELD
@@ -30,16 +30,16 @@ func TestDoctorTellsAHeldMachineItIsHeld(t *testing.T) {
 	toks := fakeMirrorTokens{mirrorTok('a'): mirror.Token{ID: 1, OwnerID: 1, Host: "ws"}}
 	cfg := AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}
 	for _, c := range []struct {
-		held, unsure                 bool
-		online, wantHeld, wantUnsure bool
+		held, unknown                 bool
+		online, wantHeld, wantUnknown bool
 	}{
 		{online: true},
 		{held: true, wantHeld: true},
-		// Round 1, Y1: the held machine shares the live one's address, so the
-		// server cannot tell which this is: it says so rather than "connected".
-		{unsure: true, online: true, wantUnsure: true},
+		// #688 round 1, Y1: machines are held and this one could not be
+		// named by its code: not reported as a plain "connected".
+		{unknown: true, online: true, wantUnknown: true},
 	} {
-		fm := &heldHereMirror{fakeMirror: &fakeMirror{online: true, interactive: true, hostTok: map[string]int64{"ws": 1}}, held: c.held, unsure: c.unsure}
+		fm := &heldHereMirror{fakeMirror: &fakeMirror{online: true, interactive: true, hostTok: map[string]int64{"ws": 1}}, held: c.held, unknown: c.unknown}
 		ts := doctorServer(t, cfg, Extensions{Mirror: fm, MirrorTokens: toks})
 		req, _ := http.NewRequest(http.MethodGet, ts.URL+MirrorHostPath, nil)
 		req.Header.Set("Authorization", "Bearer "+mirrorTok('a'))
@@ -52,9 +52,9 @@ func TestDoctorTellsAHeldMachineItIsHeld(t *testing.T) {
 		resp.Body.Close()
 		online, _ := rep["online"].(bool)
 		held, _ := rep["held"].(bool)
-		unsure, _ := rep["held_unsure"].(bool)
-		if resp.StatusCode != 200 || online != c.online || held != c.wantHeld || unsure != c.wantUnsure {
-			t.Errorf("a machine with HeldHere=(%v, %v): %d %v; want online=%v held=%v held_unsure=%v", c.held, c.unsure, resp.StatusCode, rep, c.online, c.wantHeld, c.wantUnsure)
+		unknown, _ := rep["held_unknown"].(bool)
+		if resp.StatusCode != 200 || online != c.online || held != c.wantHeld || unknown != c.wantUnknown {
+			t.Errorf("a machine with HeldHere=(%v, %v): %d %v; want online=%v held=%v held_unknown=%v", c.held, c.unknown, resp.StatusCode, rep, c.online, c.wantHeld, c.wantUnknown)
 		}
 	}
 }

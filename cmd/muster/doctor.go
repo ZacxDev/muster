@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/tmuxver"
 )
@@ -659,6 +660,13 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server+mirrorHostRoute, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
+	// This machine's attempt code, when its muster-mirror left one: the server
+	// tells a held team host machine by it, whatever the addresses (team
+	// sharing 2b.2). Sent only to the token's own server (above).
+	code, codePath := d.attemptCode()
+	if code != "" {
+		req.Header.Set(attemptcode.Header, code)
+	}
 	resp, body, err := d.do(req)
 	if err != nil {
 		d.add(name, statusFail, "GET "+mirrorHostRoute+": "+err.Error(), "retry")
@@ -670,7 +678,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Interactive bool   `json:"interactive"`
 		OtherToken  bool   `json:"other_token"`
 		Held        bool   `json:"held"`
-		HeldUnsure  bool   `json:"held_unsure"`
+		HeldUnknown bool   `json:"held_unknown"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -683,8 +691,12 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
 		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
 	case h.Held:
-		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; a manager must confirm this machine", h.Host),
-			"a manager of the team confirms this machine, by its address, on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
+		// The server says held only for the code this request presented.
+		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; give this code to a team manager: %s", h.Host, code),
+			"a manager of the team types this code on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
+	case h.HeldUnknown:
+		d.add(name, statusFail, fmt.Sprintf("team host %q is connected and other machines are held for it, but this machine's attempt code (%s) is missing, unreadable or not the live connection's: this may be a held machine", h.Host, codePath),
+			"run doctor as the user muster-mirror runs as, with its settings ("+envMirrorAttemptCodeFile+" in "+d.mirrorEnv+" if it is set); restart muster-mirror so it writes a fresh code; then run doctor again")
 	case h.OtherToken:
 		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
 			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")
@@ -692,9 +704,6 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
 			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+
 				" (right after a server restart, wait a few seconds and run doctor again)")
-	case h.HeldUnsure:
-		d.add(name, statusFail, fmt.Sprintf("team host %q is connected, but a second machine with its token is held, from the same address as the live one (a proxy or NodePort): the server cannot tell which of the two this machine is", h.Host),
-			"if this machine was moved, stop the old host first so this one is taken; if not, a kept copy of the token is retrying: a manager revokes it and mints a new one on the team's hosts page")
 	default:
 		mode := "read-only"
 		if h.Interactive {
@@ -1023,6 +1032,34 @@ func (d *doctorRun) checkFeatures() {
 // three checks read THIS machine's files — muster-mirror's settings, Claude
 // Code's user config and settings — and nothing else. Read-only; they print
 // no secret (the MCP secret's presence is checked, never its content).
+
+// envMirrorAttemptCodeFile is where muster-mirror leaves its attempt code
+// (its -attempt-code-file; else internal/mirrorpath's default).
+const envMirrorAttemptCodeFile = "MUSTER_MIRROR_ATTEMPT_CODE_FILE"
+
+// attemptCode is this machine's running muster-mirror's attempt code, as it
+// wrote it (XXXX-XXXX-XXXX), and the file it was read from; code is "" when
+// it left none (an old muster-mirror, or none running) or the file holds no
+// well-formed code.
+func (d *doctorRun) attemptCode() (code, path string) {
+	_, vals := d.mirrorEnvValues()
+	path = expandHome(strings.TrimSpace(vals[envMirrorAttemptCodeFile]), d.a.homeDir)
+	if path == "" {
+		path = mirrorpath.DefaultAttemptCodeFile()
+	}
+	if path == "" {
+		return "", ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", path
+	}
+	code = strings.TrimSpace(string(raw))
+	if _, ok := attemptcode.Normalize(code); !ok {
+		return "", path
+	}
+	return code, path
+}
 
 // The agent ask tool's defaults (docs/features.md#agent-ask-tool).
 const (
