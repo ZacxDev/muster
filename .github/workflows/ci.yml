@@ -237,11 +237,13 @@ jobs:
       #     below makes the mtime a function of the git object id.
       #   - what a SUBPROCESS reads: MUSTER_TEST_NOCACHE above.
       #   - tools outside the module (git, tmux, sh): the runner IMAGE VERSION
-      #     is in every SAVED key, and a restore prefers a cache from the same
-      #     image version, but FALLS BACK to another image version of the same
-      #     OS (operator decision 2026-11-15: two hosted image versions are in
+      #     is in every SAVED key, and a restore with an unchanged go.sum
+      #     prefers a cache from the same image version, but FALLS BACK to
+      #     another image version of the same OS (and once go.sum changes, the
+      #     last prefix takes the newest cache from any image version).
+      #     Operator decision 2026-11-15: two hosted image versions are in
       #     rotation at once, and requiring a match left shard 0 cold on main
-      #     run 43741778087). 🔴 RESIDUAL RISK, ACCEPTED: a test that shells out
+      #     run 43741778087. 🔴 RESIDUAL RISK, ACCEPTED: a test that shells out
       #     to a system binary the image changed (e.g. git) can replay a stale
       #     pass until one of its own inputs changes, because Go keys nothing on
       #     the binaries a test executes. The real-tmux legs below stay uncached.

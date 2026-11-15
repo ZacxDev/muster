@@ -12,9 +12,10 @@ import (
 // FALLS BACK IN.
 //
 // 🔴 The runner IMAGE VERSION is in every saved key and is the FIRST thing a
-// restore gives up (operator decision 2026-11-15): with two hosted image
-// versions in rotation, a restore that required it left shard 0 cold on main
-// run 43741778087. Everything else Go cannot see — the Go version, the
+// restore gives up while go.sum is unchanged; once go.sum changes, the last
+// prefix takes the newest cache from any image. Operator decision 2026-11-15:
+// with two hosted image versions in rotation, a restore that required it left
+// shard 0 cold on main run 43741778087. Everything else Go cannot see — the Go version, the
 // Postgres service digest, the shard — stays in the fixed prefix that no
 // restore key drops, and go.sum is dropped only last.
 //
@@ -77,8 +78,10 @@ func TestCIGoCacheFallsBackAcrossImageVersionsFirst(t *testing.T) {
 		t.Fatalf("positive control FAILED: no `restore-keys: |` block in the `test` job")
 	}
 	var got []string
+	// Every line of the block, up to the blank line, comment or next step that
+	// ends it — not only the `${{` ones, so an added key of any shape counts.
 	for _, l := range lines[at+1:] {
-		if !strings.HasPrefix(l, "${{") {
+		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "- ") {
 			break
 		}
 		got = append(got, l)
