@@ -240,3 +240,87 @@ func TestATeamsApprovalCardHasNoChangeRepo(t *testing.T) {
 		t.Errorf("the team's approval card offers %q; want exactly %q and %q", a.Options, approveLabel, declineLabel)
 	}
 }
+
+// TestADisabledMemberSpeaksForNoTeam: a disable keeps B's team membership, so
+// every team say-so re-check (teamOperatorNow) must refuse a DISABLED person
+// itself. B approves a card with a fresh sign-in and is then disabled: the
+// chief's completing call is refused (agentDispatchTeamCardAnswerer) — no
+// sign-out cutoff is read for an answerer, so only the role re-check can
+// catch it. B's fresh typed turn, then B disabled: refused with the role
+// sentence (ownerAskedNoTaskTyperNotOperator), not the cutoff one. A disabled
+// B answering a card: TeamCardOperatorOnly. CONTROLS: B enabled starts
+// (TestAnOperatorsFreshTypedTurnStartsATeamAgent,
+// TestATeamTaskIsNotTheTeamsSaySo), and teamOperatorNow(B) is true before.
+//
+// 🔴 RED with teamOperatorNow as it was at 6a4f9e68 (no disabled read:
+// accountOfChecked reads no disabled_at): the disabled answerer's card
+// started the agent (mutation M7, `return !u.Disabled() || true`).
+func TestADisabledMemberSpeaksForNoTeam(t *testing.T) {
+	td := newTeamDispatchWorld(t)
+	us := users.NewPG(td.w.pool)
+	disable := func(on bool) {
+		t.Helper()
+		if _, err := us.SetDisabled(td.w.sys, td.w.b.uid, on); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = us.SetDisabled(td.w.sys, td.w.b.uid, false)
+		_, _ = td.w.pool.Exec(td.w.sys, `UPDATE users SET sessions_not_before = NULL WHERE id = $1`, td.w.b.uid)
+	})
+	if !td.w.srv.teamOperatorNow(td.teamCtx, td.w.b.uid, td.team) {
+		t.Fatal("control: B (operator, enabled) is not an operator now")
+	}
+
+	// The card's answerer, disabled after the tap.
+	in := td.onTask("k-disabled-answerer", false)
+	ask := heldCard(td.dispatch(in))
+	if ask <= 0 {
+		t.Fatal("fixture: no card")
+	}
+	if _, err := td.w.srv.answerAskFrom(td.personCtx(td.w.b.uid, authz.ViaSession, true), ask, approveLabel, attention.AnswerSource{}); err != nil {
+		t.Fatalf("B approving: %v", err)
+	}
+	disable(true)
+	if td.w.srv.teamOperatorNow(td.teamCtx, td.w.b.uid, td.team) {
+		t.Error("a DISABLED B still reads as an operator of the team")
+	}
+	if text := td.dispatch(in); !strings.Contains(text, agentDispatchTeamCardAnswerer) {
+		t.Errorf("a disabled answerer's card: %s; want %q", truncate(text, 400), agentDispatchTeamCardAnswerer)
+	}
+	if on := td.teamAgentsOnTask(t); len(on) != 0 {
+		t.Fatalf("a disabled answerer's card started %+v", on)
+	}
+
+	// A disabled B answering a new card.
+	in2 := td.onTask("k-disabled-answer", false)
+	ask2 := heldCard(td.dispatch(in2))
+	if ask2 <= 0 {
+		t.Fatal("fixture: no second card")
+	}
+	if _, err := td.w.srv.answerAskFrom(td.personCtx(td.w.b.uid, authz.ViaSession, true), ask2, approveLabel, attention.AnswerSource{}); err == nil ||
+		!strings.Contains(err.Error(), TeamCardOperatorOnly) {
+		t.Errorf("a disabled B answering the team's card: %v; want %q", err, TeamCardOperatorOnly)
+	}
+
+	// The typer: B re-enabled (the disable's session cutoff cleared, so only
+	// the role re-check can refuse), types fresh, is disabled, the chief calls.
+	disable(false)
+	if _, err := td.w.pool.Exec(td.w.sys, `UPDATE users SET sessions_not_before = NULL WHERE id = $1`, td.w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	td.typed(t, td.w.b.uid, true, "start a Claude agent on the team task")
+	if turn := td.marked(t); turn.By != td.w.b.uid {
+		t.Fatalf("fixture: B's fresh typed turn marked %+v", turn)
+	}
+	disable(true)
+	if _, err := td.w.pool.Exec(td.w.sys, `UPDATE users SET sessions_not_before = NULL WHERE id = $1`, td.w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	if text := td.dispatch(td.onTask("", true)); !strings.Contains(text, ownerAskedNoTaskTyperNotOperator) {
+		t.Errorf("a disabled typer's turn: %s; want %q", truncate(text, 400), ownerAskedNoTaskTyperNotOperator)
+	}
+	if on := td.teamAgentsOnTask(t); len(on) != 0 {
+		t.Fatalf("a disabled typer's turn started %+v", on)
+	}
+}

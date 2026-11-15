@@ -1155,9 +1155,13 @@ rule the later phases' rows will meet.
     one with no task does (`teamTaskNeedsCard`); with no `request_key` it is
     refused. A person's own task is still their say-so.
   - **The marker ends with the typer's sign-in:** `ownerTurnFor` refuses a
-    member's marker when the typer is disabled, or their
-    `sessions_not_before` / `signed_out_at` is at or after the typed row's
-    `created_at` (`typerSignedOutSince`; the send queue's whole-second rule).
+    member's marker when the typer's `sessions_not_before` / `signed_out_at`
+    is at or after the typed row's `created_at` (`typerSignedOutSince`; the
+    send queue's whole-second rule).
+  - **A disabled member speaks for no team:** `teamOperatorNow`, the one
+    role re-check behind the typer, the card answerer (at the answer and when
+    the start completes) and the terminal, also refuses a disabled person — a
+    disable keeps the membership row.
   - **Push:** a team's dispatch card's push has no chips or signed actions and
     says to open it in a browser (`teamDispatchCardPush`, the same hold test,
     `teamCardHold`, as the phone-door refusal). No "Change repo" on a team's

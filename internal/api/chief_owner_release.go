@@ -236,9 +236,10 @@ const (
 	// no longer an operator (or above) of the team on a fresh read.
 	chiefReleaseTyperNotOperator = "owner_asked: the member who typed the message you are answering is no longer an operator " +
 		"of your team, so muster cannot release the gate on their word; use task_route_attention"
-	// chiefReleaseTyperSignedOut: a TEAM's chief, on a marker whose typer was
-	// disabled, reset or signed out everywhere since they typed it
-	// (typerSignedOutSince).
+	// chiefReleaseTyperSignedOut: a TEAM's chief, on a marker whose typer's
+	// sessions were cut off (a password reset) or signed out everywhere since
+	// they typed it (typerSignedOutSince). A disabled typer is
+	// chiefReleaseTyperNotOperator's (teamOperatorNow).
 	chiefReleaseTyperSignedOut = "owner_asked: the member who typed the message you are answering was signed out of every " +
 		"session since, so muster cannot release the gate on their word; use task_route_attention"
 )
@@ -284,9 +285,15 @@ func (s *Server) typerSpeaksForOwner(ctx context.Context, a agents.Agent, typedB
 	return !atTyping || stepup.Fresh(ctx, s.stepUpNow())
 }
 
-// teamOperatorNow reports whether person is a PERSON who is an operator or a
-// manager of team, on a fresh read of their account (accountOfChecked, under
-// System). An account that cannot be read, a team, or a viewer is false.
+// teamOperatorNow reports whether person is an ENABLED PERSON who is an
+// operator or a manager of team, on a fresh read of their account
+// (accountOfChecked, under System) and of their row (personNamer.ByID, persons
+// only). An account that cannot be read, a team, a viewer or a DISABLED
+// person is false: a disable keeps the team membership, so the role alone
+// would still read operator. Every team say-so re-check is this one call —
+// the typer's (typerSpeaksForOwner, at typing and when the chief calls), the
+// card answerer's (teamCardRefusal at the answer, teamCardAnswerer when the
+// start completes) and the terminal's.
 func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 	if person <= 0 || team <= 0 || person == team {
 		return false
@@ -299,8 +306,19 @@ func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 	if acct.Team {
 		return false
 	}
-	role, in := acct.Teams.RoleIn(team)
-	return in && role.AtLeast(authz.TeamOperator)
+	if role, in := acct.Teams.RoleIn(team); !in || !role.AtLeast(authz.TeamOperator) {
+		return false
+	}
+	pn, ok := s.ext.Users.(personNamer)
+	if !ok {
+		return false
+	}
+	u, err := pn.ByID(ctx, person)
+	if err != nil {
+		s.logger.Printf("team dispatch: read user %d (team %d): %v (not an operator)", person, team, err)
+		return false
+	}
+	return !u.Disabled()
 }
 
 // typerSignedOutSince is "" when the member who typed msg (a member's marker on
@@ -308,7 +326,8 @@ func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 // ownerTurnFor's refusal. The marker is the step-up stamp (see above), but a
 // sign-in fresh at typing can be ended before the chief calls: the account
 // disabled or its password reset (users.sessions_not_before) or signed out
-// everywhere (users.signed_out_at). Either at or after the row was written
+// everywhere (users.signed_out_at). ByID reads under System itself (users
+// package), persons only. Either at or after the row was written
 // ends the turn's say-so — the send queue's rule (sendQueueOwnerRefusal,
 // "at or before, in whole seconds"), judged on the row's created_at, which no
 // sign-in that typed it can postdate. No column holds that sign-in's time, so
@@ -323,12 +342,14 @@ func (s *Server) typerSignedOutSince(ctx context.Context, typer int64, msg agent
 	if !ok {
 		return chiefReleaseUnverifiable
 	}
-	u, err := pn.ByID(authz.System(ctx), typer)
+	u, err := pn.ByID(ctx, typer)
 	if err != nil {
 		s.logger.Printf("task routing: read the typer %d of message %d: %v", typer, msg.ID, err)
 		return chiefReleaseUnverifiable
 	}
-	if u.Disabled() || atOrBefore(msg.CreatedAt, u.SessionsNotBefore) || atOrBefore(msg.CreatedAt, u.SignedOutAt) {
+	// A DISABLED typer is teamOperatorNow's (it runs first, through
+	// typerSpeaksForOwner); a disable also moves sessions_not_before.
+	if atOrBefore(msg.CreatedAt, u.SessionsNotBefore) || atOrBefore(msg.CreatedAt, u.SignedOutAt) {
 		return chiefReleaseTyperSignedOut
 	}
 	return ""
@@ -441,7 +462,7 @@ func (s *Server) ownerTurnFor(ctx context.Context, chief agents.Agent) (agents.C
 	if owner := agentOwnerID(chief); owner <= 0 || !s.typerSpeaksForOwner(ctx, chief, turn.By, false) {
 		if owner > 0 && turn.By != owner && s.ownerIsTeam(ctx, owner) {
 			// A member's marker whose typer is no longer an operator of the team
-			// (removed, or made a viewer, since they typed it).
+			// (removed, made a viewer or disabled since they typed it).
 			return agents.ChatMessage{}, chiefReleaseTyperNotOperator
 		}
 		return agents.ChatMessage{}, chiefReleaseNotOwnersTurn
