@@ -33,7 +33,7 @@ var wantVerdictPipes = map[string]string{
 	// The shard's packages / `-run` and its `--require` names come from the
 	// plan step (tests/goshard.py); the required names are pinned there, in
 	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
-	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
+	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary --results-out "$RUNNER_TEMP/results.json" $(cat "$RUNNER_TEMP/verdict-args")`,
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
 		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
