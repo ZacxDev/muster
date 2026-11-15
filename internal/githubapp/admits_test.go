@@ -54,3 +54,22 @@ func TestAdmitsIsAnAdminOrAListedTeamsOwnPrincipal(t *testing.T) {
 		t.Error("with no list, a team was admitted")
 	}
 }
+
+// TestAdmitsLendsAListedTeamTheAppOnlyAtItsAgentAndManagerDoors: the listed
+// team's own acting principal, through every door authz lets a team act at
+// that is NOT one of teamAppDoors, is refused — the team HOST door
+// (ViaMirrorHost) first among them: its tools read no repository, and a team
+// host tool added later must not inherit the App by being on that door.
+//
+// 🔴 RED at c67e38e4: Admits admitted the listed team at any door.
+func TestAdmitsLendsAListedTeamTheAppOnlyAtItsAgentAndManagerDoors(t *testing.T) {
+	admits := Admits(map[int64]bool{12: true})
+	bg := context.Background()
+	for _, via := range []authz.Via{authz.ViaMirrorHost, authz.ViaAsk, authz.ViaRelay, authz.ViaOfficer, authz.ViaReap,
+		authz.ViaAttention, authz.ViaRoute, authz.ViaHostDispatch, authz.ViaJobQueue} {
+		ctx := authz.WithPrincipal(bg, authz.Principal{UserID: 12, Team: true, Role: authz.RoleMember, Via: via})
+		if admits(ctx) {
+			t.Errorf("the listed team through %s was lent the App; want refused (not one of its agent or manager doors)", via)
+		}
+	}
+}

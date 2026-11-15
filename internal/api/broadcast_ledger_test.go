@@ -176,6 +176,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// way; the revoke is the tab's request.
 		"(*Server).approveFromStanding → broadcast(ctx)",
 		"(*Server).handleStandingGrantRevoke → broadcast(ctx)",
+		// A manager's revoke of the team's standing grant (team_connectors.go,
+		// 4.8): under the team acting principal, the grant's owner, as
+		// decideConnectorGrant's approval is.
+		"(*Server).handleTeamStandingRevoke → broadcast(tctx)",
 		"(*Server).handleNoteEdit → broadcast(r.Context())",
 		"(*Server).handleNoteTagAdd → broadcast(r.Context())",
 		"(*Server).handleNoteTagRemove → broadcast(r.Context())",

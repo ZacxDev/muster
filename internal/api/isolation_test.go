@@ -704,10 +704,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/chief/restart":           classParam,
 	// A team's connector requests (slice 4.8): {id} is a team A manages,
 	// {grant} one of that team's requests.
-	"GET /teams/{id}/connectors":                  classParam,
-	"POST /teams/{id}/connectors/{grant}/approve": classParam,
-	"POST /teams/{id}/connectors/{grant}/deny":    classParam,
-	"POST /agents/{id}/credentials/rotate":        classParam,
+	"GET /teams/{id}/connectors":                             classParam,
+	"POST /teams/{id}/connectors/{grant}/approve":            classParam,
+	"POST /teams/{id}/connectors/{grant}/deny":               classParam,
+	"POST /teams/{id}/connectors/standing/{standing}/revoke": classParam,
+	"POST /agents/{id}/credentials/rotate":                   classParam,
 	// A team's host tokens (phase 2b.2): {id} is a team A manages, {token} a
 	// token of that team's.
 	"GET /teams/{id}/hosts":                 classParam,

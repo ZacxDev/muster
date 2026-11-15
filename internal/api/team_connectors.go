@@ -46,6 +46,15 @@ import (
 //     for any other team the App is not its connector (githubapp.Admits), and
 //     the approval is refused naming why.
 //   - Every decision writes the team's audit row naming the manager.
+//   - 🔴 A MANAGER REVOKES a repository already approved for the team (round-0
+//     ruling: "add a manager revoke in this slice"), through the same door,
+//     with a fresh sign-in: the team's standing grant ends, and with it every
+//     approval it gave (connectors.Store.RevokeStandingGrant), so the team's
+//     next agent on that repository asks again. Row-level security scopes it
+//     to the team's own standing grants: another team's, or a person's, is the
+//     404 a missing one gets. Unlisting the team only PAUSES its approvals
+//     (the App is not its connector while unlisted, and re-listing restores
+//     them); a revoke is what removes one.
 // ---------------------------------------------------------------------------
 
 // The team connector page's sentences, one spelling each.
@@ -56,25 +65,26 @@ const (
 	TeamConnectorsNoApp       = "This team is not lent the deployment's GitHub App: an admin lists the team in MUSTER_TEAMS_ON_GITHUB_APP. Nothing was approved."
 	TeamConnectorsGone        = "That request no longer exists, or was already decided."
 	TeamConnectorsNone        = "No connector request is waiting."
+	TeamConnectorsRevokeStale = "Revoking a repository approved for the team needs a recent sign-in. Confirm it's you, then revoke again."
+	TeamConnectorsRevokeGone  = "That approval was already revoked."
+	TeamConnectorsNoSuchGrant = "There is no such approval for this team."
 )
 
 func (s *Server) registerTeamConnectorPages(mux Mux) {
 	mux.HandleFunc("GET /teams/{id}/connectors", s.requireSession(s.handleTeamConnectorsPage))
 	mux.HandleFunc("POST /teams/{id}/connectors/{grant}/approve", s.requireOperatorWrite(s.handleTeamConnectorApprove))
 	mux.HandleFunc("POST /teams/{id}/connectors/{grant}/deny", s.requireOperatorWrite(s.handleTeamConnectorDeny))
+	mux.HandleFunc("POST /teams/{id}/connectors/standing/{standing}/revoke", s.requireOperatorWrite(s.handleTeamStandingRevoke))
 }
 
-// teamConnectorsManager is the page's gate: team {id}, the caller is a manager
-// of it (the request's memberships, then a FRESH read in teamAdminContext),
-// and the team-acting context the page reads and decides under. A non-member
-// gets the 404 a missing team gets; it answers the request itself on false.
+// teamConnectorsManager is the page's gate: team {id}, the caller is a member
+// of it (the request's memberships), then a manager of it by a FRESH read
+// (teamAdminContext, the one role check), and the team-acting context the page
+// reads and decides under. A non-member gets the 404 a missing team gets; it
+// answers the request itself on false.
 func (s *Server) teamConnectorsManager(w http.ResponseWriter, r *http.Request) (int64, context.Context, bool) {
-	team, role, ok := s.teamChiefRole(w, r)
+	team, _, ok := s.teamChiefRole(w, r)
 	if !ok {
-		return 0, nil, false
-	}
-	if role != authz.TeamManager {
-		s.renderNotice(w, r, http.StatusForbidden, "Team connectors", TeamConnectorsManagerOnly)
 		return 0, nil, false
 	}
 	tctx, err := s.teamAdminContext(r.Context(), team)
@@ -99,8 +109,8 @@ func (s *Server) handleTeamConnectorsPage(w http.ResponseWriter, r *http.Request
 }
 
 // renderTeamConnectors draws the team's pending connector requests (each with
-// Approve and Deny) and the repositories already approved for the team, read
-// as the team (tctx).
+// Approve and Deny) and the repositories already approved for the team (each
+// with Revoke), read as the team (tctx).
 func (s *Server) renderTeamConnectors(w http.ResponseWriter, r *http.Request, tctx context.Context, team int64, code int, problem, notice string) {
 	if s.ext.Connectors == nil {
 		s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", ConnectorsUnconfigured)
@@ -164,8 +174,10 @@ func (s *Server) renderTeamConnectors(w http.ResponseWriter, r *http.Request, tc
 			continue
 		}
 		shown++
-		b.WriteString(`<li class="text-sm text-fg" data-standing="` + strconv.FormatInt(sg.ID, 10) + `">` + html.EscapeString(sg.Connector) +
-			` · ` + html.EscapeString(sg.Repo) + `</li>`)
+		sid := strconv.FormatInt(sg.ID, 10)
+		b.WriteString(`<li class="flex flex-wrap items-center gap-2 text-sm text-fg" data-standing="` + sid + `"><span>` + html.EscapeString(sg.Connector) +
+			` · ` + html.EscapeString(sg.Repo) + `</span><form method="POST" action="/teams/` + id + `/connectors/standing/` + sid +
+			`/revoke"><button type="submit" class="` + adminQuiet + `" data-revoke="` + sid + `">Revoke</button></form></li>`)
 	}
 	if shown == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No repository yet.</li>`)
@@ -259,4 +271,59 @@ func (s *Server) decideTeamConnector(w http.ResponseWriter, r *http.Request, app
 		verb = "approved"
 	}
 	s.renderTeamConnectors(w, r, tctx, team, http.StatusOK, "", dg.AgentName+" "+verb+" for "+dg.Connector+"."+shareNotice(shared))
+}
+
+// handleTeamStandingRevoke is a manager's Revoke of a repository already
+// approved for the team: standing grant {standing} ends, with every approval
+// it gave (RevokeStandingGrant), so the team's next agent on that repository
+// asks again. The gate (manager, fresh read), then the step-up, then the
+// revoke AS THE TEAM — row-level security makes another owner's standing grant
+// the 404 a missing one is — and the team's audit row naming the manager.
+func (s *Server) handleTeamStandingRevoke(w http.ResponseWriter, r *http.Request) {
+	team, tctx, ok := s.teamConnectorsManager(w, r)
+	if !ok {
+		return
+	}
+	if s.ext.Connectors == nil {
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Team connectors", ConnectorsUnconfigured)
+		return
+	}
+	sid, err := strconv.ParseInt(r.PathValue("standing"), 10, 64)
+	if err != nil || sid <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	// 🔴 THE STEP-UP FIRST, before the standing grant is even read: a revoke
+	// ends a credential the team's running agents hold.
+	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		w.Header().Set("X-Muster-Step-Up", "required")
+		s.renderTeamConnectors(w, r, tctx, team, http.StatusForbidden, TeamConnectorsRevokeStale, "")
+		return
+	}
+	sg, revoked, err := s.ext.Connectors.RevokeStandingGrant(tctx, sid, "operator")
+	switch {
+	case err == nil:
+	case errors.Is(err, connectors.ErrNotFound):
+		s.renderTeamConnectors(w, r, tctx, team, http.StatusNotFound, TeamConnectorsNoSuchGrant, "")
+		return
+	case errors.Is(err, connectors.ErrNotPending):
+		s.renderTeamConnectors(w, r, tctx, team, http.StatusConflict, TeamConnectorsRevokeGone, "")
+		return
+	default:
+		s.logger.Printf("teams: revoke team %d's standing grant %d: %v", team, sid, err)
+		s.renderTeamConnectors(w, r, tctx, team, http.StatusInternalServerError, "The approval could not be revoked. Try again.", "")
+		return
+	}
+	s.auditTeamLevel(r.Context(), actorOf(r), team, "connector.revoke", "connector:"+sg.Connector, map[string]any{
+		"standing_grant_id": sg.ID, "connector": sg.Connector, "repo": sg.Repo, "grants_revoked": len(revoked), "outcome": "succeeded"}, true)
+	s.auditGrant(tctx, connectors.Grant{Connector: sg.Connector}, "standing grant "+strconv.FormatInt(sg.ID, 10)+
+		" ("+sg.Connector+standingScope(sg)+") revoked by a team manager; "+strconv.Itoa(len(revoked))+" grant(s) it gave revoked with it")
+	for _, g := range revoked {
+		s.auditGrant(tctx, g, "revoked with standing grant "+strconv.FormatInt(sg.ID, 10))
+	}
+	s.broadcast(tctx, EventConnectorChanged, sg.Connector)
+	s.logger.Printf("teams: manager %d revoked team %d's standing grant %d (%s%s, %d grant(s))", authz.MustFrom(r.Context()).UserID,
+		team, sg.ID, sg.Connector, standingScope(sg), len(revoked))
+	s.renderTeamConnectors(w, r, tctx, team, http.StatusOK, "", "Revoked "+sg.Connector+standingScope(sg)+
+		" for the team, with "+strconv.Itoa(len(revoked))+" agent grant(s) it gave. The team's next agent there will need a manager's approval.")
 }

@@ -326,7 +326,10 @@ func callerID(ctx context.Context) int64 {
 // the new-task form's Owner select): the list is then the repositories THAT
 // owner's agents may use (githubAppForOwner), never the viewer's. A team is
 // answered only to an operator or above in it (the role that files and edits
-// its tasks); anyone else, and any other owner, gets an empty list.
+// its tasks); anyone else, and any other owner, gets an empty list. That is
+// the form's rule, NOT a secrecy boundary: a viewer of a listed team already
+// sees the App's repository names on the team's repo card and through the
+// team chief's repos_list.
 func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) {
 	repos := make([]ui.RepoView, 0)
 	if list, err := s.repoPickerRepos(r.Context(), r.URL.Query().Get("owner")); err == nil {

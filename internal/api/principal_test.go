@@ -257,6 +257,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}/connectors",
 		"POST /teams/{id}/connectors/{grant}/approve",
 		"POST /teams/{id}/connectors/{grant}/deny",
+		"POST /teams/{id}/connectors/standing/{standing}/revoke",
 		"POST /agents/{id}/credentials/rotate",
 		// A team's host tokens (team sharing 2b.2, team_hosts_page.go):
 		// requireSession (+ same-origin for the writes); the manager check and

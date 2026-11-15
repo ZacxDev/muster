@@ -1216,11 +1216,28 @@ rule the later phases' rows will meet.
     team's later agents on that repository are approved when they ask, and
     one on another repository asks again. Every decision writes the team's
     audit row (`connector.approve`, `connector.deny`) naming the manager.
-  - **Not done:** a team agent's request notifies nobody beyond what the
-    team owner's push fan-out (2b) sends; the page has no revoke of a
-    team's approved repository yet (unsetting the variable re-opens every
-    App approval of the team: its credential source changes); no
-    migration.
+  - **A manager revokes** (round-0 ruling: "add a manager revoke in this
+    slice"): the page lists the team's approved repositories, each with
+    Revoke, through the same door with a fresh sign-in. The revoke runs
+    `RevokeStandingGrant` as the team, so row-level security limits it to
+    the team's own standing grants (another team's or a person's is a
+    404), and it ends every agent grant the standing grant gave: the
+    team's next agent on that repository asks again. It writes the team's
+    audit row `connector.revoke` naming the manager. **Unlisting a team
+    pauses its approvals and re-listing restores them**: while unlisted the
+    App is not the team's connector, so its agents' grants re-open and
+    nothing is served, but the team's standing grants stay, and once the
+    team is listed again its agents are approved from them. Revoke is the
+    way to remove an approval.
+  - **A team agent's request is pushed to the team's managers only**
+    (an operator cannot decide it), linking `/teams/{id}/connectors`: a
+    member's `/connectors` lists only their own grants.
+  - **`githubapp.Admits` admits a team only at an explicit set of doors**
+    (its agents' tokens, the connect proxy, the manager's door). A team
+    host (`ViaMirrorHost`), the question watcher, the approval relay, a
+    team officer and the background loops are refused, so a team-host
+    tool added later does not inherit the App.
+  - **Not done:** no migration.
 
 ### Later: consent-based team invites
 

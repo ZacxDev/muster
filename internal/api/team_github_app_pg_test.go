@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -47,18 +49,32 @@ func (appVirtual) Problem(int64) string       { return "" }
 
 // teamAppWorld is the team dispatch world with the App configured (two
 // repositories) and, when listed, the team lent it — wired as buildApp wires
-// it: the api's set and the connector store's predicate from one list.
+// it: the api's set and the connector store's predicate from ONE list, the
+// github connector wrapped ONCE. list flips the team's entry in that one map,
+// so an "unlisted" leg is the deployment an unlisted team really meets, never
+// a second wrap over the first.
 type teamAppWorld struct {
 	*teamDispatchWorld
 	store connectors.Store
+	teams map[int64]bool
+}
+
+// list lends (true) or withdraws (false) the App from the team, in the one
+// map both the api and the connector store read.
+func (tw *teamAppWorld) list(on bool) {
+	if on {
+		tw.teams[tw.team] = true
+	} else {
+		delete(tw.teams, tw.team)
+	}
 }
 
 func newTeamAppWorld(t *testing.T, listed bool) *teamAppWorld {
 	t.Helper()
 	td := newTeamDispatchWorld(t)
-	var teams map[int64]bool
+	teams := map[int64]bool{}
 	if listed {
-		teams = map[int64]bool{td.team: true}
+		teams[td.team] = true
 	}
 	base := td.w.srv.ext.Connectors
 	td.w.srv.ext.GitHubApp = &listingApp{repos: []string{teamAppRepo, teamAppOther}}
@@ -70,7 +86,7 @@ func newTeamAppWorld(t *testing.T, listed bool) *teamAppWorld {
 		_, _ = td.w.pool.Exec(bg, `DELETE FROM connector_standing_grants WHERE owner_id = $1`, td.team)
 		_, _ = td.w.pool.Exec(bg, `DELETE FROM connector_audit WHERE owner_id = $1`, td.team)
 	})
-	return &teamAppWorld{teamDispatchWorld: td, store: td.w.srv.ext.Connectors}
+	return &teamAppWorld{teamDispatchWorld: td, store: td.w.srv.ext.Connectors, teams: teams}
 }
 
 // teamWorkerOn is a team agent on the team task, in repo, with its own token.
@@ -138,6 +154,20 @@ func (tw *teamAppWorld) decide(verb string, grant, uid int64, signedIn time.Time
 	return tw.browserAs(http.MethodPost, "/teams/"+strconv.FormatInt(tw.team, 10)+"/connectors/"+strconv.FormatInt(grant, 10)+"/"+verb, uid, signedIn)
 }
 
+// alertOf is the page's one problem (problemNode's role="alert" paragraph),
+// unescaped; "" for none. The WHOLE sentence, never a word of it: the team
+// connectors page also prints TeamConnectorsNoApp as its header for an
+// unlisted team, so a substring check passes whichever refusal fired.
+func alertOf(body string) string {
+	_, rest, ok := strings.Cut(body, `<p role="alert"`)
+	if !ok {
+		return ""
+	}
+	_, rest, _ = strings.Cut(rest, ">")
+	text, _, _ := strings.Cut(rest, "</p>")
+	return html.UnescapeString(text)
+}
+
 // TestAListedTeamsChiefDispatchesIntoAnAppRepository: with the team listed,
 // B's fresh typed turn has the team chief start a Claude Code agent on the
 // team task IN an App repository: the agent is the team's, in that
@@ -192,8 +222,7 @@ func TestAnUnlistedTeamAndAMembersOwnPrincipalHaveNoRepositories(t *testing.T) {
 		t.Fatalf("an unlisted team's dispatch started %+v", on)
 	}
 
-	tw.w.srv.ext.GitHubAppTeams = map[int64]bool{tw.team: true}
-	tw.w.srv.ext.Connectors = connectors.WithVirtual(tw.w.srv.ext.Connectors, appVirtual{}, githubapp.Admits(tw.w.srv.ext.GitHubAppTeams))
+	tw.list(true)
 	if why := tw.w.srv.connectedRepo(tw.teamCtx, teamAppRepo); why != "" {
 		t.Fatalf("control: the listed team's own principal: %q; want the App repository connected", why)
 	}
@@ -256,11 +285,11 @@ func TestTheRepoPickerIsDecidedByTheObjectsOwner(t *testing.T) {
 	if got := picker(authz.OperatorUserID, ""); !strings.Contains(got, teamAppRepo) {
 		t.Fatalf("control: the admin's own list: %s; want %s", truncate(got, 300), teamAppRepo)
 	}
-	tw.w.srv.ext.GitHubAppTeams = nil
+	tw.list(false)
 	if got := picker(authz.OperatorUserID, team); strings.Contains(got, teamAppRepo) {
 		t.Errorf("the admin on an UNLISTED team's object: %s; want no repository (decided by the owner, not the viewer)", truncate(got, 300))
 	}
-	tw.w.srv.ext.GitHubAppTeams = map[int64]bool{tw.team: true}
+	tw.list(true)
 
 	rec := tw.browserAs(http.MethodGet, "/ui/tasks/"+strconv.FormatInt(tw.task.ID, 10)+"/edit", tw.w.b.uid, now)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `/ui/agents/repos?owner=`+team) {
@@ -346,13 +375,26 @@ func TestATeamConnectorApprovalIsRefusedBelowAFreshManager(t *testing.T) {
 		t.Errorf("a refused approval wrote %d audit row(s)", n)
 	}
 
-	tw.w.srv.ext.GitHubAppTeams = nil
-	tw.w.srv.ext.Connectors = connectors.WithVirtual(tw.w.srv.ext.Connectors, appVirtual{}, githubapp.Admits(nil))
-	if rec := tw.decide("approve", id, tw.w.a.uid, time.Now()); rec.Code != http.StatusConflict ||
-		!strings.Contains(rec.Body.String(), "not lent the deployment&#39;s GitHub App") {
-		t.Errorf("A approving on an UNLISTED team: %d %s; want 409 saying the team is not lent the App", rec.Code, truncate(rec.Body.String(), 600))
+	// The UNLISTED team, in the one-wrap world (tw.list): decideTeamConnector's
+	// own refusal names why (TeamConnectorsNoApp). Behind it, the operator
+	// decision itself refuses the approval (errConnectorMissing: for the
+	// unlisted team `github` is no connector at all) — pinned directly, so
+	// the page's refusal is a clearer message over a real backstop, not the
+	// only guard.
+	tw.list(false)
+	if rec := tw.decide("approve", id, tw.w.a.uid, time.Now()); rec.Code != http.StatusConflict || alertOf(rec.Body.String()) != TeamConnectorsNoApp {
+		t.Errorf("A approving on an UNLISTED team: %d, problem %q; want 409 with the problem %q", rec.Code, alertOf(rec.Body.String()), TeamConnectorsNoApp)
 	}
 	pending("A approving on an unlisted team")
+	tctx, err := tw.w.srv.teamAdminContext(tw.personCtx(tw.w.a.uid, authz.ViaSession, true), tw.team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing errConnectorMissing
+	if _, _, err := tw.w.srv.decideConnectorGrant(tctx, id, true, connectors.DecisionSource{}); !errors.As(err, &missing) {
+		t.Errorf("the operator decision on an UNLISTED team's github request: %v; want errConnectorMissing (no App connector for that team)", err)
+	}
+	pending("the operator decision on an unlisted team")
 
 	if rec := tw.decide("deny", id, tw.w.a.uid, stale); rec.Code != http.StatusOK {
 		t.Fatalf("control: A denying with a stale sign-in: %d %s", rec.Code, truncate(rec.Body.String(), 300))

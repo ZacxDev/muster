@@ -374,6 +374,7 @@ POST /tasks/{id}/tags
 POST /teams/{id}/chief/provision
 POST /teams/{id}/chief/restart
 POST /teams/{id}/chief/stop
+POST /teams/{id}/connectors/standing/{standing}/revoke
 POST /teams/{id}/connectors/{grant}/approve
 POST /teams/{id}/connectors/{grant}/deny
 POST /teams/{id}/hosts

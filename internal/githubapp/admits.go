@@ -22,12 +22,18 @@ import (
 //     door (authz.ViaTeamAdmin), which act as the team, never to a member's
 //     own principal. A member's personal chief and personal agents keep no
 //     repositories.
-//   - A team is admitted only through the doors that may name a team at all
-//     (authz's teamActingVias, which WithPrincipal enforces): its agents'
-//     tokens, the per-owner background work, and the manager's door. A team
-//     HOST (authz.ViaMirrorHost, phase 2b.2) acts as the team too, but its
-//     door serves only internal/api's teamHostTools, none of which reads a
-//     repository or the `github` connector.
+//   - 🔴 A team is admitted only through an EXPLICIT set of doors,
+//     teamAppDoors: its agents' own tokens on the API and MCP (authz.ViaAgent:
+//     the team chief's repos_list and dispatch checks, a team agent's
+//     connector status and request routes), the connect proxy's token mint
+//     (authz.ViaConnect), and the manager's door (authz.ViaTeamAdmin: the
+//     approval on /teams/{id}/connectors). Every OTHER door a team acts
+//     through (authz's teamActingVias) is refused here, though WithPrincipal
+//     admits a team at it: a team HOST (authz.ViaMirrorHost), the question
+//     watcher (ViaAsk), the approval relay (ViaRelay), a team officer's
+//     runtime and the per-owner background loops. None of them reads a
+//     repository today; listing the doors means a team-host tool or loop
+//     added later does not inherit the App silently — it is a line here.
 //   - The System principal names no user and is not admitted.
 //
 // teams is read, never written; nil admits admins only (the rule before 4.8).
@@ -37,6 +43,15 @@ func Admits(teams map[int64]bool) func(context.Context) bool {
 			return true
 		}
 		p, ok := authz.From(ctx)
-		return ok && !p.All() && p.Team && p.UserID > 0 && teams[p.UserID]
+		return ok && !p.All() && p.Team && p.UserID > 0 && teamAppDoors[p.Via] && teams[p.UserID]
 	}
+}
+
+// teamAppDoors is the closed set of doors through which a listed team's
+// acting principal is lent the App (Admits). Read, never written;
+// TestAdmitsIsAnAdminOrAListedTeamsOwnPrincipal pins it door by door.
+var teamAppDoors = map[authz.Via]bool{
+	authz.ViaAgent:     true,
+	authz.ViaConnect:   true,
+	authz.ViaTeamAdmin: true,
 }
