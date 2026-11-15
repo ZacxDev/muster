@@ -35,6 +35,7 @@ type teamDispatchWorld struct {
 	pod    *podLanes
 	task   notes.Note
 	pusher *payloadPusher
+	t      *testing.T
 }
 
 func newTeamDispatchWorld(t *testing.T) *teamDispatchWorld {
@@ -51,11 +52,9 @@ func newTeamDispatchWorld(t *testing.T) *teamDispatchWorld {
 	t.Cleanup(func() { plane.TeamsOnServerPool = nil })
 	pusher, store := &payloadPusher{}, &memPush{}
 	w.srv.ext.Push = push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
-	// The push endpoints: the TEAM's own and B's (an operator). Today (no
-	// phase 2b.1 fan-out on this tree) a team's push reaches the team's own
-	// subscription only; under 2b.1 it fans out to the operators and managers
-	// instead, with the "<team> · " title prefix. teamPushed accepts either,
-	// so this fixture holds on both trees (see teamPushed).
+	// The push endpoints: B's (an operator), where 2b.1's fan-out sends a
+	// team's push with the "<team> · " title prefix, and the TEAM's own, as
+	// the negative control: no team push may reach it (teamPushed).
 	claim(t, store, tw.team, ep("team-dispatch"))
 	claim(t, store, tw.w.b.uid, ep("team-dispatch-operator"))
 	n, err := notes.NewPG(w.pool).Create(tw.teamCtx, notes.Note{Title: "team work " + w.suffix, Body: "Do the team's work."})
@@ -72,23 +71,23 @@ func newTeamDispatchWorld(t *testing.T) *teamDispatchWorld {
 		_, _ = w.pool.Exec(bg, `DELETE FROM notes WHERE owner_id = $1`, tw.team)
 		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE user_id = $1`, tw.team)
 	})
-	return &teamDispatchWorld{teamAgentWalk: tw, pod: pod, task: n, pusher: pusher}
+	return &teamDispatchWorld{teamAgentWalk: tw, pod: pod, task: n, pusher: pusher, t: t}
 }
 
-// teamPushed reports whether a push whose JSON holds want reached the team's
-// own endpoint or B's (the operator's).
-//
-// 🔴 SEAM WITH PHASE 2b.1 (#683): whichever of the two PRs merges SECOND must
-// tighten this to B's endpoint ALONE, with the title prefixed "<team name> · "
-// — on a tree without 2b.1 a team's push reaches only the team's own
-// subscription, so no member-side assertion can hold here yet.
+// teamPushed reports whether a push whose JSON holds want reached B (an
+// operator) under phase 2b.1's per-member fan-out: on B's endpoint, its title
+// prefixed "<team name> · ". The team's own subscription is no recipient
+// (teamPushRecipients: operators and managers only), so a push there fails
+// the test outright.
 func (td *teamDispatchWorld) teamPushed(want string) bool {
-	for _, e := range []string{ep("team-dispatch"), ep("team-dispatch-operator")} {
-		for _, p := range td.pusher.to(e) {
-			raw, _ := json.Marshal(p)
-			if strings.Contains(string(raw), want) {
-				return true
-			}
+	if got := td.pusher.to(ep("team-dispatch")); len(got) > 0 {
+		td.t.Errorf("a push reached the TEAM's own subscription, which 2b.1's fan-out never sends to: %+v", got)
+	}
+	prefix := "agents team " + td.w.suffix + " · "
+	for _, p := range td.pusher.to(ep("team-dispatch-operator")) {
+		raw, _ := json.Marshal(p)
+		if strings.Contains(string(raw), want) && strings.HasPrefix(p.Title, prefix) {
+			return true
 		}
 	}
 	return false
