@@ -37,6 +37,10 @@ func TestOpenCodePairSaysWhichOpencodeItNeeds(t *testing.T) {
 		"opencode 1": {"1.19.5",
 			[]string{"this host has opencode 1.19.5", "muster needs opencode 2 or later", "`opencode upgrade --major`", "opencode 1 has no background service"},
 			[]string{"`opencode service"}},
+		// The boundary: exactly the oldest major muster works with.
+		"opencode 2": {"opencode v2.0.32+6ec5682",
+			[]string{"opencode 2.0.32+6ec5682 is installed", "`opencode service start`"},
+			[]string{"upgrade", "muster needs"}},
 		"opencode 3": {"opencode v3.4.1+abc1234",
 			[]string{"opencode 3.4.1+abc1234 is installed", "`opencode service start`"},
 			[]string{"upgrade", "muster needs"}},
