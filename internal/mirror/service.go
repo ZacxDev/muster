@@ -462,12 +462,20 @@ func access(ctx context.Context, need authz.TeamRole) (int64, error) {
 // from it by host NAME alone; with a team's build-01 listed beside the
 // principal's own build-01 each would take whichever came first. The
 // team-aware listing is VisibleHosts, for a ledgered set of callers.
+//
+// Each entry's Owner is 0, "the principal's own" (#690 round 1, 🟢3): an own
+// entry's URLs carry no owner= (ui.MirrorRef), as before teams. Only
+// VisibleHosts names owners.
 func (s *Service) Hosts(ctx context.Context) []HostView {
 	o, err := owner(ctx)
 	if err != nil {
 		return nil
 	}
-	return s.hub.Hosts(o)
+	hs := s.hub.Hosts(o)
+	for i := range hs {
+		hs[i].Owner = 0
+	}
+	return hs
 }
 
 // VisibleHosts is the principal's own hosts, then each of its teams' hosts

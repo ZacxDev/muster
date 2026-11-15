@@ -73,8 +73,10 @@ func TestHostsNeverListsATeamHost(t *testing.T) {
 	r := twoBuild01s(t)
 	ana := member(t, tAna, authz.ViaSession, authz.Membership{Team: tTeam, Role: authz.TeamOperator})
 	hs := r.svc.Hosts(ana)
-	if len(hs) != 1 || hs[0].Owner != tAna || hs[0].Sessions[0] != "ana-own" {
-		t.Fatalf("Hosts: %+v; want ana's own build-01 alone", hs)
+	// Owner 0: "the principal's own", so an own entry's URLs carry no owner=
+	// (#690 round 1, 🟢3).
+	if len(hs) != 1 || hs[0].Owner != 0 || hs[0].Sessions[0] != "ana-own" {
+		t.Fatalf("Hosts: %+v; want ana's own build-01 alone, with Owner 0", hs)
 	}
 	vs := r.svc.VisibleHosts(ana)
 	if len(vs) != 2 || vs[0].Owner != tAna || vs[1].Owner != tTeam || vs[1].Sessions[0] != "team-shared" {

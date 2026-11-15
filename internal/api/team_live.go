@@ -24,7 +24,9 @@ import (
 //   - teamLiveOpen registers the request by (team, person) with the role it
 //     NEEDS (a viewer's stream: viewer; a team agent's shell: operator);
 //   - closeTeamLive ends, at once, those a removal or a role change in THIS
-//     process left the person short of (teamMembershipEnded, teamRoleSet);
+//     process left the person short of (teamMembershipEnded, teamRoleSet) —
+//     and each registration reads the role again after registering, so a
+//     change that landed just before it is not missed;
 //   - sweepTeamLive re-reads every registered person's memberships in ONE
 //     query each teamLiveEvery (DisableSweepInterval, 10 s) and ends the
 //     same — the removal another replica, or the CLI, made.
@@ -231,10 +233,22 @@ func (s *Server) teamEventsOpen(ctx context.Context) (context.Context, []int64, 
 		teams = append(teams, m.Team)
 		dones = append(dones, s.teamLiveAdd(m.Team, p.UserID, &teamLive{need: authz.TeamViewer, cause: errTeamStreamClosed, cancel: cancel}))
 	}
-	return ctx, teams, func() {
+	done := func() {
 		for _, d := range dones {
 			d()
 		}
 		cancel(nil)
 	}
+	// Read the memberships AGAIN, after registering (#690 round 1, 🟢1; as
+	// teamTerminalOpen does): a removal that landed between the principal's
+	// read and the registration ran its close before this stream was there.
+	// A team the person is no longer in ends the stream now, and the page
+	// reconnects subscribed to the teams as they are.
+	for _, team := range teams {
+		if !s.teamMemberNow(ctx, p.UserID, team, authz.TeamViewer) {
+			cancel(errTeamStreamClosed)
+			break
+		}
+	}
+	return ctx, teams, done
 }

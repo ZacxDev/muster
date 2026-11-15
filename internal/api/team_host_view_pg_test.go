@@ -194,8 +194,13 @@ func TestATeamHostIsWatchedByItsMembersAndNoOneElse(t *testing.T) {
 		t.Errorf("CONTROL: A's own terminal page: %d; want 200 with its socket at %s", rec.Code, ownWS)
 	}
 	teamWS := html.EscapeString("/mirror/terminal/ws?" + v.teamQuery.Encode())
-	if body := v.get(v.teamPath, v.cal).Body.String(); !strings.Contains(body, teamWS) {
-		t.Errorf("the team host's page does not open its socket at %s", teamWS)
+	// 🔴 A, who has a build-01 of her OWN, opening the TEAM's build-01 gets the
+	// team's entry — its socket names the team and its session — never her
+	// own host of that name (#690 round 1, 🟡5).
+	for who, uid := range map[string]int64{"cal": v.cal, "A (her own build-01 too)": w.a.uid} {
+		if body := v.get(v.teamPath, uid).Body.String(); !strings.Contains(body, teamWS) {
+			t.Errorf("%s: the team host's page does not open its socket at %s", who, teamWS)
+		}
 	}
 
 	extra := []string{"/mirror/view/chief", "/mirror/view/chief/log", "/mirror/view/proposal", "/mirror/view/successor", "/mirror/view/suggest"}
@@ -370,5 +375,72 @@ func TestARemovedOperatorsTerminalClosesWithinTheSweep(t *testing.T) {
 	case <-cEvents:
 		t.Error("CONTROL: cal's event stream ended too")
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// staleMember is uid's browser-session principal as it was read BEFORE a
+// change the caller then makes in the database.
+func (v *teamView) staleMember(uid int64) context.Context {
+	return authz.WithPrincipal(context.Background(), v.w.srv.principalFor(v.w.sys, uid, authz.ViaSession))
+}
+
+// TestARemovalJustBeforeAViewIsNotMissed (#690 round 1, 🟢1): cal's request
+// was admitted as a member; she is removed before her view registers (through
+// the store: nothing in this process closes anything). The gate reads her
+// role again after registering and answers 404; her event stream, opened on
+// the same stale principal, ends at once. CONTROL: B, still a member, is let
+// through and his stream stays open.
+//
+// 🔴 RED at 1181b8aa: nothing re-read the role, so both lived until the next
+// sweep.
+func TestARemovalJustBeforeAViewIsNotMissed(t *testing.T) {
+	v := newTeamView(t)
+	cal, ben := v.staleMember(v.cal), v.staleMember(v.w.b.uid)
+	if err := v.store.RemoveTeamMember(v.w.sys, v.admin, v.team, v.cal); err != nil {
+		t.Fatal(err)
+	}
+	gate := func(ctx context.Context) (int, bool) {
+		r := httptest.NewRequest("GET", v.teamPath, nil).WithContext(ctx)
+		r.Pattern = "GET /mirror/terminal"
+		rec := httptest.NewRecorder()
+		_, done, ok := v.w.srv.mirrorTeamGate(rec, r)
+		if done != nil {
+			done()
+		}
+		return rec.Code, ok
+	}
+	if code, ok := gate(cal); ok || code != http.StatusNotFound {
+		t.Errorf("cal, removed after her principal was read: gate ok=%v %d; want refused 404", ok, code)
+	}
+	if _, ok := gate(ben); !ok {
+		t.Error("CONTROL: B, still a member, was refused")
+	}
+	cctx, _, cdone := v.w.srv.teamEventsOpen(cal)
+	defer cdone()
+	bctx, _, bdone := v.w.srv.teamEventsOpen(ben)
+	defer bdone()
+	if cctx.Err() == nil {
+		t.Error("cal's event stream, opened on the stale principal, is still open")
+	}
+	if bctx.Err() != nil {
+		t.Error("CONTROL: B's event stream ended")
+	}
+}
+
+// TestAnOversizedScrollIsRefusedBeforeItIsRead (#690 round 1, 🟢2): a scroll
+// whose body passes the handler's 4 KiB bound is answered 413, whether or not
+// it names a team — the gate reads the body first, under the same bound.
+//
+// 🔴 RED at 1181b8aa: the gate parsed the body under net/http's 10 MiB
+// default, so the handler's own bound never applied.
+func TestAnOversizedScrollIsRefusedBeforeItIsRead(t *testing.T) {
+	v := newTeamView(t)
+	body := url.Values{"host": {"build-01"}, "session": {v.own}, "lines": {"3"}, "pad": {strings.Repeat("x", 5<<10)}}
+	if rec := v.w.do(v.w.h, "POST", "/mirror/terminal/scroll", body.Encode(), cred{sessionUser: v.w.a.uid}); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("A's oversized scroll: %d %q; want 413", rec.Code, truncate(rec.Body.String(), 120))
+	}
+	small := url.Values{"host": {"build-01"}, "session": {v.own}, "lines": {"3"}}
+	if rec := v.w.do(v.w.h, "POST", "/mirror/terminal/scroll", small.Encode(), cred{sessionUser: v.w.a.uid}); rec.Code == http.StatusRequestEntityTooLarge {
+		t.Errorf("CONTROL: A's ordinary scroll was answered 413")
 	}
 }

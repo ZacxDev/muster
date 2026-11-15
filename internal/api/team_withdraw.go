@@ -140,6 +140,33 @@ var withdrawableTeamKinds = []withdrawableTeamKind{
 	{"drafts", (*Server).openTeamDrafts},
 	{"tasks in review", (*Server).openTeamReviews},
 	{"officer cap holds", (*Server).openTeamCapHolds},
+	{"session episodes", (*Server).openTeamEpisodes},
+}
+
+// openTeamEpisodes is team's session episodes whose push is shown (team
+// sharing 2b.3, the state pass's team arm): open ones pushed, and ended ones
+// not yet cleared — each withdrawn under its episode key's tag, as
+// clearEpisode closes it (#690 round 1, 🟡1).
+func (s *Server) openTeamEpisodes(ctx context.Context, team int64) ([]withdrawal, error) {
+	if s.ext.Episodes == nil {
+		return nil, nil
+	}
+	open, err := s.ext.Episodes.OpenEpisodes(ctx)
+	ended, uerr := s.ext.Episodes.Uncleared(ctx)
+	if err == nil {
+		err = uerr
+	}
+	var out []withdrawal
+	seen := map[int64]bool{}
+	for _, ep := range append(open, ended...) {
+		if ep.Owner != team || ep.PushedAt.IsZero() || !ep.ClearedAt.IsZero() || seen[ep.ID] {
+			continue
+		}
+		seen[ep.ID] = true
+		key := episodeKey(ep.ID)
+		out = append(out, withdrawal{key, attentionTag(key)})
+	}
+	return out, err
 }
 
 // openTeamAsks is team's open asks (escalation notices included): their

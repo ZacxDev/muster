@@ -2552,6 +2552,33 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   every mirror row of the walk; the real plugin's is pinned in
    >   `internal/mirror` (`TestHostsNeverListsATeamHost`, mutant M3).
    > - `teamNeedsOpen` is kept (#690 round 0, D2): it fails closed.
+   > - **Round 1 (#690), all fixed:**
+   >   - a member who leaves, drops to viewer or is disabled is sent the
+   >     withdrawal of the team's shown episode pushes (`withdrawableTeamKinds`
+   >     gains "session episodes"; `TestLeavingATeamWithdrawsItsEpisodePushes`);
+   >   - a team keeps being visited while it has an open or shown episode, its
+   >     last token revoked: its pass then ends every open episode 'gone' and
+   >     clears it (`chiefnudge.PG.TeamHostOwners` reports `Live`;
+   >     `TestRevokingATeamsLastTokenEndsItsEpisodes`);
+   >   - team-ness comes from the owner LIST (`sessionstate.PG.OwnerKinds`):
+   >     a team's pass runs as the team acting principal built from its row,
+   >     never from an account read, whose failure would build a member
+   >     (`TestAFailedAccountReadNeverRunsATeamsPassAsAPerson`). Two halves
+   >     say "team" (the principal and the pass's flag); either alone keeps
+   >     the classifier off, so mutating one survives and both together dies;
+   >   - a team episode's tap opens the TEAM's window (`owner=`), and its
+   >     Attention row is drawn only for the team's operators and managers —
+   >     whom its push reaches, never a viewer — named over the team's hosts,
+   >     never the member's own same-named one (`teamEpisodeShown`,
+   >     `teamHostsOf`; `TestATeamEpisodeOpensTheTeamSessionForItsOperators`);
+   >   - `mirrorEntry`'s owner filter is pinned by a manager with her own
+   >     `build-01` opening the team's;
+   >   - a view and an event stream read the role again after registering, as
+   >     the team terminal does (`TestARemovalJustBeforeAViewIsNotMissed`);
+   >   - the gate reads the scroll's body under the handler's 4 KiB bound and
+   >     answers 413 itself (`TestAnOversizedScrollIsRefusedBeforeItIsRead`);
+   >   - `Service.Hosts` gives every entry Owner 0, so an own entry's URLs
+   >     carry no `owner=` from any caller (the sidebar's highlight matches).
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
    - `ViaQueue` becomes team-acting **and** `sendQueueOwnerRefusal` reads

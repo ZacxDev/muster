@@ -236,13 +236,38 @@ func cut(s string, n int) string {
 
 func validState(s string) bool { return s == StateNeedsYou || s == StateStalled }
 
-// Owners implements Store: every enabled person (chiefnudge.PG.Owners), then
-// every team with an unrevoked mirror token (chiefnudge.PG.TeamHostOwners) —
-// the TEAM ARM (team sharing 2b.3): a team host's waiting and done windows are
-// episodes, opened, settled and pushed as the team, and the push fan-out
-// (internal/api goNotify) reaches its operators and managers. The pass runs no
-// classifier for a team (internal/api's stateClassifier).
+// Owners implements Store: every owner OwnerKinds lists, persons first.
 func (p *PG) Owners(ctx context.Context) ([]int64, error) {
+	os, err := p.OwnerKinds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(os))
+	for _, o := range os {
+		out = append(out, o.ID)
+	}
+	return out, nil
+}
+
+// Owner is one owner the pass visits, with what the LIST says it is: a team
+// (the team arm), and for a team whether it holds an unrevoked mirror token.
+// 🔴 TEAM-NESS IS THE LIST'S, NEVER A PRINCIPAL'S (#690 round 1, 🟡4): a
+// failed account read builds a member principal, which would run a team's
+// pass as a person's — its classifier, its agents.
+type Owner struct {
+	ID   int64
+	Team bool
+	Live bool
+}
+
+// OwnerKinds is every enabled person (chiefnudge.PG.Owners), then the TEAM
+// ARM (team sharing 2b.3; chiefnudge.PG.TeamHostOwners): every team holding an
+// unrevoked mirror token, and every team holding none whose episodes are
+// still open or shown. A team host's waiting and done windows are episodes,
+// opened, settled and pushed as the team, and the push fan-out (internal/api
+// goNotify) reaches its operators and managers. The pass runs no classifier
+// for a team (internal/api's sessionStateOwner).
+func (p *PG) OwnerKinds(ctx context.Context) ([]Owner, error) {
 	cn := chiefnudge.NewPG(p.pool)
 	os, err := cn.Owners(ctx)
 	if err != nil {
@@ -252,11 +277,14 @@ func (p *PG) Owners(ctx context.Context) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]int64, 0, len(os)+len(teams))
+	out := make([]Owner, 0, len(os)+len(teams))
 	for _, o := range os {
-		out = append(out, o.ID)
+		out = append(out, Owner{ID: o.ID})
 	}
-	return append(out, teams...), nil
+	for _, t := range teams {
+		out = append(out, Owner{ID: t.ID, Team: true, Live: t.Live})
+	}
+	return out, nil
 }
 
 // Open implements Store.

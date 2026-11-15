@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -149,6 +150,13 @@ func (s *Server) mirrorTeamGate(w http.ResponseWriter, r *http.Request) (*http.R
 	// owner= in the body is the handler's mirrorEntry's to refuse (404).
 	raw := r.URL.Query().Get("owner")
 	if raw == "" && rule == mirrorTeamView && r.Method == http.MethodPost {
+		// Under the scroll handler's own bound (#690 round 1, 🟢2): its body
+		// is parsed here first, so the limit and its 413 are applied here.
+		r.Body = http.MaxBytesReader(w, r.Body, mirrorScrollBodyMax)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "the request is too large", http.StatusRequestEntityTooLarge)
+			return nil, nil, false
+		}
 		raw = r.PostFormValue("owner")
 	}
 	if raw == "" {
@@ -171,6 +179,15 @@ func (s *Server) mirrorTeamGate(w http.ResponseWriter, r *http.Request) (*http.R
 	switch rule {
 	case mirrorTeamView:
 		ctx, done := s.teamLiveOpen(mirror.ForOwner(r.Context(), o), o, p.UserID, authz.TeamViewer, errTeamStreamClosed)
+		// Read the role AGAIN, after registering (#690 round 1, 🟢1; as
+		// teamTerminalOpen does): a removal that landed between the
+		// principal's read and the registration ran its close before this
+		// request was there to be closed. Not a member now: the same 404.
+		if !s.teamMemberNow(ctx, p.UserID, o, authz.TeamViewer) {
+			done()
+			http.NotFound(w, r)
+			return nil, nil, false
+		}
 		return r.WithContext(ctx), done, true
 	case mirrorTeamRefused:
 		http.Error(w, MirrorTeamExtraRefusal, http.StatusForbidden)
@@ -178,6 +195,21 @@ func (s *Server) mirrorTeamGate(w http.ResponseWriter, r *http.Request) (*http.R
 		http.Error(w, MirrorTeamOwnOnlyRefusal, http.StatusForbidden)
 	}
 	return nil, nil, false
+}
+
+// mirrorScrollBodyMax is the scroll request's body bound (handleMirrorTerminalScroll).
+const mirrorScrollBodyMax = 4 << 10
+
+// teamMemberNow reads person's role in team fresh (accountOfChecked) and
+// reports whether it reaches need. A failed read is false: fail closed.
+func (s *Server) teamMemberNow(ctx context.Context, person, team int64, need authz.TeamRole) bool {
+	a, err := s.accountOfChecked(ctx, person)
+	if err != nil {
+		s.logger.Printf("team streams: read user %d's role in team %d: %v (not a member)", person, team, err)
+		return false
+	}
+	role, in := a.Teams.RoleIn(team)
+	return !a.Team && in && role.AtLeast(need)
 }
 
 // mirrorTarget is the owner a request's mirror calls are about: its team

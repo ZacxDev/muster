@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"html"
 	"regexp"
@@ -787,8 +788,19 @@ func (s *Server) episodeOpenTarget(ctx context.Context, owner, id int64, key str
 		s.logger.Printf("attention: the tap target of %s: %v (opening the queue instead)", key, err)
 	}
 	// 🔴 OWNER-SCOPED TWICE: Get reads under row-level security, and the
-	// explicit check holds with it rolled back.
-	if err != nil || !ok || ep.Owner != owner {
+	// explicit check holds with it rolled back. A TEAM's episode opens for
+	// whom its push went to — an operator or a manager of the team
+	// (teamEpisodeShown) — on the TEAM's host (#690 round 1, 🟡3).
+	team := ok && ep.Owner != owner && teamEpisodeShown(ctx, ep.Owner)
+	if err != nil || !ok || (ep.Owner != owner && !team) {
+		return attentionItemPath(key)
+	}
+	if team {
+		if ep.Kind == sessionstate.KindMirror && ep.Host != "" {
+			if e, ok := sessionKeyEntry(s.teamHostsOf(ctx, ep.Owner), ep.Host, ep.Key); ok {
+				return ui.MirrorRef{Owner: ep.Owner, Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()
+			}
+		}
 		return attentionItemPath(key)
 	}
 	switch ep.Kind {
@@ -806,6 +818,36 @@ func (s *Server) episodeOpenTarget(ctx context.Context, owner, id int64, key str
 		}
 	}
 	return attentionItemPath(key)
+}
+
+// teamEpisodeShown reports whether ctx's principal is shown team's episodes —
+// their Attention rows and their tap — on its own door: an operator or a
+// manager of team (Principal.TeamScope), exactly whom the episode's push
+// reaches (TeamPushTargets). A viewer is not: they get no push, and a
+// "Needs you" row is not theirs to act on.
+func teamEpisodeShown(ctx context.Context, team int64) bool {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || team == p.UserID {
+		return false
+	}
+	role, in := p.TeamScope().RoleIn(team)
+	return in && role.AtLeast(authz.TeamOperator)
+}
+
+// teamHostsOf is team's hosts among ctx's principal's VisibleHosts: what a
+// team episode's row and tap are named and resolved over — never the
+// principal's own hosts, which may hold a build-01 of the same name.
+func (s *Server) teamHostsOf(ctx context.Context, team int64) []mirror.HostView {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	var out []mirror.HostView
+	for _, h := range s.ext.Mirror.VisibleHosts(ctx) {
+		if h.Owner == team {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // --- the Attention section: "Stalled / waiting" -----------------------------
@@ -904,11 +946,18 @@ func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time
 	// What each mirrored window waits on, by its episode key: the waiting
 	// items of the SAME hub read (the hosts episodeWho names them over).
 	waits := map[string]attentionItem{}
+	own := requestOwner(ctx)
 	if err == nil && len(eps) > 0 {
 		carded := episodeCarded(rd)
 		kept := eps[:0:0]
 		for _, ep := range eps {
-			if !(ep.Kind == sessionstate.KindMirror && carded[ep.Key]) {
+			// 🔴 A TEAM'S EPISODE (readable at viewer since 0127) is drawn
+			// only for whom its push went to (teamEpisodeShown): an
+			// operator or a manager, never a viewer (#690 round 1, 🟡3).
+			if ep.Owner != own && !teamEpisodeShown(ctx, ep.Owner) {
+				continue
+			}
+			if !(ep.Owner == own && ep.Kind == sessionstate.KindMirror && carded[ep.Key]) {
 				kept = append(kept, ep)
 			}
 		}
@@ -930,8 +979,17 @@ func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time
 		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li>` + "\n")
 	}
 	esc := html.EscapeString
+	teamHosts := map[int64][]mirror.HostView{}
 	for _, ep := range eps {
-		who, _, _, _ := s.episodeWho(ctx, ep, rd.hosts)
+		hosts := rd.hosts
+		if ep.Owner != own {
+			// Named over the TEAM's hosts, read once per team.
+			if _, ok := teamHosts[ep.Owner]; !ok {
+				teamHosts[ep.Owner] = s.teamHostsOf(ctx, ep.Owner)
+			}
+			hosts = teamHosts[ep.Owner]
+		}
+		who, _, _, _ := s.episodeWho(ctx, ep, hosts)
 		state := "Stalled"
 		if ep.State == sessionstate.StateNeedsYou {
 			state = "Needs you"
@@ -945,7 +1003,7 @@ func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time
 			quiet = ` · <span data-attention-episode-quiet="` + esc(ep.Quiet) + `">` + esc(q) + `</span>`
 		}
 		line := ""
-		if it, ok := waits[ep.Key]; ok && ep.Kind == sessionstate.KindMirror {
+		if it, ok := waits[ep.Key]; ok && ep.Owner == own && ep.Kind == sessionstate.KindMirror {
 			line = attentionWaitLineHTML(it)
 		}
 		key := episodeKey(ep.ID)

@@ -249,12 +249,9 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	}
 	var hosts []mirror.HostView
 	if target == requestOwner(r.Context()) {
-		// The principal's own: Owner is left 0 (mirrorRef's "own", whose URLs
-		// carry no owner=), so a team entry is the only one that names one.
+		// The principal's own: Hosts leaves Owner 0 (mirrorRef's "own", whose
+		// URLs carry no owner=), so a team entry is the only one that names one.
 		hosts = s.ext.Mirror.Hosts(r.Context())
-		for i := range hosts {
-			hosts[i].Owner = 0
-		}
 	} else {
 		for _, x := range s.ext.Mirror.VisibleHosts(r.Context()) {
 			if x.Owner == target {

@@ -317,7 +317,14 @@ type attentionCard struct {
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
 // the hub's change nudge (which names only an owner) reads that owner's
 // windows. internal/authz's withPrincipalLedger lists it.
-func (s *Server) attentionPrincipal(ctx context.Context, owner int64) context.Context {
+//
+// knownTeam (the session-state pass's team arm, #690 round 1, 🟡4) says the
+// caller's own list names owner a TEAM: the team acting principal is built
+// from that, with no account read — a failed read would build a member.
+func (s *Server) attentionPrincipal(ctx context.Context, owner int64, knownTeam ...bool) context.Context {
+	if len(knownTeam) > 0 && knownTeam[0] {
+		return authz.WithPrincipal(ctx, teamActingPrincipal(owner, authz.ViaAttention))
+	}
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAttention))
 }
 

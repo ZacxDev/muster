@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -226,5 +228,168 @@ func TestTheStatePassRunsNoClassifierForATeam(t *testing.T) {
 	}
 	if n := f.jevCalls(j); n != 1 {
 		t.Fatalf("classifier calls: %d; want 1 (the person's stop alone)", n)
+	}
+}
+
+// pushedTeamWait is the waiting test's first half: a team window waits, its
+// episode is pushed to ben and ana, and the episode's id is returned.
+func pushedTeamWait(t *testing.T, f *stateFixture, st stateTeam, rec *fanPush) int64 {
+	t.Helper()
+	f.waitWithSecrets()
+	f.srv.AttentionMirrorChanged(st.team)
+	f.pastGrace(t)
+	f.srv.WaitForPushes()
+	eps := f.teamEpisodes(t, st.team)
+	if len(eps) != 1 || eps[0].Ended {
+		t.Fatalf("the team's episodes: %+v; want one open", eps)
+	}
+	if got := episodePushesTo(rec, eps[0].ID, st.ben, st.ana); got[0] != 1 || got[1] != 1 {
+		t.Fatalf("precondition: episode pushes to ben, ana: %v; want [1 1]", got)
+	}
+	return eps[0].ID
+}
+
+// TestLeavingATeamWithdrawsItsEpisodePushes (#690 round 1, 🟡1): ben holds a
+// team session's "Needs you" push; he leaves the team, and the sweep sends
+// him its withdrawal — the episode is still open, so its own clear would only
+// ever reach the CURRENT operators and managers. CONTROL: ana, still a
+// manager, is sent none.
+//
+// 🔴 RED at 1181b8aa: withdrawableTeamKinds had no episode kind.
+func TestLeavingATeamWithdrawsItsEpisodePushes(t *testing.T) {
+	f := newStateFixture(t, false)
+	st, rec := newStateTeam(t, f)
+	id := pushedTeamWait(t, f, st, rec)
+	sys := authz.System(context.Background())
+	if err := users.NewPG(f.pool).RemoveTeamMember(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, st.team, st.ben); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.teamMembershipEnded(st.team, st.ben)
+	f.srv.WaitForPushes()
+	tag := "attention-episode-" + strconv.FormatInt(id, 10)
+	if got := rec.withdrawnFrom(tag, st.ben, st.ana); len(got) != 1 || got[0] != st.ben {
+		t.Fatalf("the open episode's push was withdrawn from %v; want ben alone", got)
+	}
+}
+
+// TestRevokingATeamsLastTokenEndsItsEpisodes (#690 round 1, 🟡2): a team
+// window waits and is pushed; the team's only host token is revoked. The next
+// pass still visits the team, ends the episode 'gone' and withdraws its push
+// from ben and ana — no host will settle it again.
+//
+// 🔴 RED at 1181b8aa: the team left the owner list with its last token, and
+// its episode stayed open and shown.
+func TestRevokingATeamsLastTokenEndsItsEpisodes(t *testing.T) {
+	f := newStateFixture(t, false)
+	st, rec := newStateTeam(t, f)
+	id := pushedTeamWait(t, f, st, rec)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE mirror_tokens SET revoked_at = now() WHERE owner_id = $1`, st.team); err != nil {
+		t.Fatal(err)
+	}
+	f.statePass(t)
+	f.srv.WaitForPushes()
+	eps := f.teamEpisodes(t, st.team)
+	if len(eps) != 1 || !eps[0].Ended {
+		t.Fatalf("after the last token's revoke the team's episodes are %+v; want the one ended", eps)
+	}
+	tag := "attention-episode-" + strconv.FormatInt(id, 10)
+	if got := rec.withdrawnFrom(tag, st.ana, st.ben); len(got) != 2 {
+		t.Fatalf("withdrawn from %v; want ana and ben", got)
+	}
+}
+
+// failingAccount is the users store with one id's account read failing.
+type failingAccount struct {
+	*users.PGStore
+	id int64
+}
+
+func (u failingAccount) Account(ctx context.Context, id int64) (users.Account, error) {
+	if id == u.id {
+		return users.Account{}, errors.New("the account read failed")
+	}
+	return u.PGStore.Account(ctx, id)
+}
+
+// TestAFailedAccountReadNeverRunsATeamsPassAsAPerson (#690 round 1, 🟡4): the
+// team's account read FAILS (a member principal, role uncertain, would be
+// built for it). Its pass still runs as the team — no classifier — because
+// the owner list, not a principal, says it is a team. CONTROL: the person's
+// stop is classified (one call).
+//
+// 🔴 RED at 1181b8aa: the pass took team-ness from the principal, so the
+// failed read ran the team's pass as a person's and classified its stop.
+func TestAFailedAccountReadNeverRunsATeamsPassAsAPerson(t *testing.T) {
+	f := newStateFixture(t, true)
+	j := withJev(t, f.nudgeFixture)
+	j.set(200, 0.81, 0.10, 0.09)
+	st, _ := newStateTeam(t, f)
+	tctx := authz.WithPrincipal(context.Background(), teamActingPrincipal(st.team, authz.ViaAttention))
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	if _, err := agents.NewPG(f.pool).Create(tctx, agents.Agent{Name: "fachief-" + suffix, Namespace: "devpod-fachief-" + suffix,
+		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "fa-chief-tok-" + suffix}); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.ext.Users = failingAccount{PGStore: users.NewPG(f.pool), id: st.team}
+	f.statePass(t)
+	if eps := f.teamEpisodes(t, st.team); len(eps) != 1 || eps[0].JevErr != jevNotConfigured {
+		t.Fatalf("the team's episodes: %+v; want one, unclassified (%q)", eps, jevNotConfigured)
+	}
+	if n := f.jevCalls(j); n != 1 {
+		t.Fatalf("classifier calls: %d; want 1 (the person's stop alone)", n)
+	}
+}
+
+// TestATeamEpisodeOpensTheTeamSessionForItsOperators (#690 round 1, 🟡3): the
+// fixture's operator (user 1) owns a "ws" of their own AND is an operator of
+// the team, whose "ws" lists the same window, labelled "Team:1" there. The
+// team's episode's tap opens the TEAM's window (owner=), and its Attention row
+// is named over the team's hosts ("Team:1"), never the operator's own
+// ("Gold:1"); a viewer (cal) is drawn no row of it.
+//
+// 🔴 RED at 1181b8aa: the tap fell back to the queue, the row was named over
+// the member's own hosts, and every member saw it.
+func TestATeamEpisodeOpensTheTeamSessionForItsOperators(t *testing.T) {
+	f := newStateFixture(t, false)
+	st, rec := newStateTeam(t, f)
+	sys := authz.System(context.Background())
+	if err := users.NewPG(f.pool).SetTeamMember(sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, st.team, authz.OperatorUserID, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	id := pushedTeamWait(t, f, st, rec)
+	f.mirror.mu.Lock()
+	tw := append([]mirror.Window(nil), f.mirror.windows...)
+	tw[0].Label = "Team:1"
+	f.mirror.teamHosts = []mirror.HostView{{Owner: st.team, Host: "ws", Windows: tw, Online: true, Interactive: true, Rendered: true, StatusReport: true}}
+	f.mirror.mu.Unlock()
+	as := func(uid int64) context.Context {
+		return authz.WithPrincipal(context.Background(), f.srv.principalFor(sys, uid, authz.ViaSession))
+	}
+	key := episodeKey(id)
+	want := ui.MirrorRef{Owner: st.team, Host: "ws", Session: "main", Window: "@1"}.ViewPath()
+	if got := f.srv.openTarget(as(authz.OperatorUserID), key); got != want {
+		t.Errorf("the operator's tap on the team episode opens %q; want the team's window %q", got, want)
+	}
+	if got := f.srv.openTarget(as(st.ben), key); got != want {
+		t.Errorf("ben's tap opens %q; want %q", got, want)
+	}
+	now := time.Now()
+	octx := as(authz.OperatorUserID)
+	rows, _ := f.srv.episodeRowsHTML(octx, f.srv.readAsks(octx), now)
+	if !strings.Contains(rows, `id="`+key+`"`) || !strings.Contains(rows, "Team:1") {
+		t.Errorf("the operator's rows do not draw the team episode named over the team's host:\n%s", rows)
+	}
+	if i := strings.Index(rows, `id="`+key+`"`); i >= 0 {
+		row := rows[i:]
+		if j := strings.Index(row, "</li>"); j >= 0 {
+			row = row[:j]
+		}
+		if strings.Contains(row, "Gold:1") {
+			t.Errorf("the team episode's row carries the operator's OWN window's label:\n%s", row)
+		}
+	}
+	cctx := as(st.cal)
+	if rows, _ := f.srv.episodeRowsHTML(cctx, f.srv.readAsks(cctx), now); strings.Contains(rows, `id="`+key+`"`) {
+		t.Errorf("cal (viewer) is drawn the team episode's row:\n%s", rows)
 	}
 }
