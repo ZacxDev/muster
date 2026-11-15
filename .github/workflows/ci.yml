@@ -239,9 +239,13 @@ jobs:
       #   - a file's BYTES (it keys a file on size+mode+mtime): tests/gomtime.py
       #     below makes the mtime a function of the git object id.
       #   - what a SUBPROCESS reads: MUSTER_TEST_NOCACHE above.
-      #   - tools outside the module (git, tmux, sh, Postgres): the runner image
-      #     is part of the key AND of every restore prefix, so a new image starts
-      #     cold. The real-tmux legs below stay uncached for the same reason.
+      #   - tools outside the module (git, tmux, sh): the runner image is part
+      #     of the key AND of every restore prefix, so a new image starts cold.
+      #     The real-tmux legs below stay uncached for the same reason.
+      #   - the Postgres SERVICE container, which is NOT part of the runner
+      #     image and floats on its tag: its image DIGEST is in the key and
+      #     every prefix too, so a new server (a tag bump or a minor under
+      #     `16-alpine`) starts cold rather than replaying another server's pass.
       # One cache per shard (the shards run different -run sets, and a cache
       # key is written once). A restore prefix may come from an older commit;
       # that is the point, and Go's own keys decide what it can replay.
@@ -251,7 +255,10 @@ jobs:
         id: gocache
         run: |
           {
-            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-${ImageVersion}-go${{ steps.go.outputs.go-version }}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
+            pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
+            pg=${pg#sha256:}
+            [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-${ImageVersion}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}"
             echo "build=$(go env GOCACHE)"
             echo "mod=$(go env GOMODCACHE)"
           } >> "$GITHUB_OUTPUT"
@@ -389,7 +396,7 @@ jobs:
         id: select
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || (github.event_name == 'push' && github.ref_type == 'branch') && github.event.before || '' }}
-          SELECTIVE: ${{ vars.MUSTER_SELECTIVE_TESTS }}
+          SELECTIVE: ${{ vars.MUSTER_SELECTIVE_TESTS == 'enforce' && 'enforce' || 'off' }}
         run: |
           python3 tests/goselect.py select --base "$BASE" --out "$RUNNER_TEMP/selection.json"
           if [ "$SELECTIVE" = enforce ]; then

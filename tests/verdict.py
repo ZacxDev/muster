@@ -104,6 +104,7 @@ def main(stream, echo: str, out=None, require: list[str] | None = None,
             # <unwritable dir>`: every test passes, the package event is `pass`,
             # go exits 1, and this is the only failure in the stream.
             failed_builds.append(e.get("ImportPath", "?"))
+            results[e.get("ImportPath", "?").split(" [", 1)[0].removesuffix(".test") + "\t"] = "fail"
             continue
 
         if not test:
@@ -112,6 +113,7 @@ def main(stream, echo: str, out=None, require: list[str] | None = None,
                 out.write(e.get("Output", ""))
             elif action == "fail":
                 failed_pkgs.append(pkg)
+                results[pkg + "\t"] = "fail"
             continue
 
         name = f"{pkg}.{test}"
@@ -138,7 +140,8 @@ def main(stream, echo: str, out=None, require: list[str] | None = None,
         out.write("".join(text))
 
     if results_out:
-        # Every test's last verdict, "<package>\t<test>" -> pass|fail|skip, for
+        # Every test's last verdict, "<package>\t<test>" -> pass|fail|skip, plus
+        # "<package>\t" -> fail for a package-level or build failure, for
         # the test-selection ledger (tests/goselect.py ledger). Written before
         # any refusal below, so a red run still leaves its record.
         with open(results_out, "w") as f:

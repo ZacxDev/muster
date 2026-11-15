@@ -190,8 +190,23 @@ class Ledger(unittest.TestCase):
         for k in ("run_id", "sha", "event", "fallback"):
             self.assertIn(k, rec)
 
-    def test_a_fallback_run_has_no_misses(self):
+    def test_a_package_level_failure_outside_the_selection_is_a_miss(self):
+        rec, _ = self.ledger(self.SEL, {"p/a\tTestA": "pass", "p/b\t": "fail"})
+        self.assertEqual(rec["failed_outside_selection"], ["p/b"])
+        self.assertEqual(rec["total_tests"], 1)
+
+    def test_a_missing_selection_file_still_writes_a_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            with redirect_stdout(io.StringIO()):
+                goselect.cmd_ledger(SimpleNamespace(selection=f"{d}/absent.json", results=f"{d}/absent.json", run_id="7",
+                                                    sha="abc", event="push", shard="0", mode="shadow", out=f"{d}/l.json"))
+            rec = json.loads(Path(f"{d}/l.json").read_text())
+            self.assertTrue(rec["fallback"].startswith("selector error"))
+            self.assertIsNone(rec["would_miss"])
+
+    def test_a_fallback_run_has_no_misses_but_records_would_be_misses(self):
         rec, _ = self.ledger(self.SEL | {"fallback": "go.mod: x"}, self.RES)
+        self.assertEqual(rec["would_miss"], ["p/b.TestC"])
         self.assertEqual(rec["failed_outside_selection"], [])
         self.assertEqual(rec["fallback"], "go.mod: x")
         self.assertEqual(rec["selected_tests"], rec["total_tests"])

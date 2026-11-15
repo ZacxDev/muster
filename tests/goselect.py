@@ -23,8 +23,14 @@ filepath.Join("..", …), a module-root helper, runtime.Caller) or runs the `go`
 tool over other packages is invisible to an import graph, so every package with
 such a test is selected on every run. Found by scanning each package's
 _test.go files with ALWAYS_RUN_SIGNS on every run, not from a pinned list, so a
-new such test joins the set the day it lands; ALWAYS_RUN_EXTRA pins what the
-scan cannot see.
+new such test joins the set the day it lands. Checked against Go's own test logs
+in PR #691 (every package that opened a module file outside its directory was
+flagged).
+
+🔴 SHADOW EVIDENCE ON FALLBACK RUNS. `selected` is always the graph selection,
+even when a fallback runs everything, and the ledger's `would_miss` is every
+failure outside it — what enforcing WITHOUT that fallback would have missed.
+`failed_outside_selection` is the real miss (empty whenever everything ran).
 
 Exit codes: 0 always for `select` and `ledger` (an error becomes a fallback or a
 note; this script must never change a verdict); `apply` exits 1 on bad input.
@@ -70,11 +76,6 @@ ALWAYS_RUN_SIGNS: list[tuple[str, re.Pattern[str]]] = [
     ("runtime.Caller (locating files by source position)", re.compile(r'\bruntime\.Caller\(')),
     ("runs the go tool", re.compile(r'exec\.Command(?:Context)?\((?:[^,()]+,\s*)?"go"')),
 ]
-# Packages the scan cannot see but that read the tree by path: (import path
-# suffix after the module, reason). Empty is a claim, re-checked by the
-# discovery recorded in the PR that added this file.
-ALWAYS_RUN_EXTRA: list[tuple[str, str]] = []
-
 TEST_FUNC = re.compile(r"^func (?:Test|Example|Fuzz)\w*\(", re.M)
 
 
@@ -224,9 +225,6 @@ def cmd_select(a) -> int:
         if not tested:
             raise RuntimeError("`go list` named no package with tests")
         always = scan_always(tested, root)
-        mod = run("go", "list", "-m", cwd=root).strip()
-        for suffix, why in ALWAYS_RUN_EXTRA:
-            always.setdefault(f"{mod}/{suffix}", f"pinned: {why}")
         res |= select(changed, allp, tested, always, count_tests(tested, root))
         res["changed"] = changed
         res["always"] = sorted(always)
@@ -256,22 +254,29 @@ def load_results(path: str) -> dict[str, str]:
 
 
 def cmd_ledger(a) -> int:
-    with open(a.selection) as f:
-        sel = json.load(f)
-    results = load_results(a.results)  # {"pkg\ttest": "pass"|"fail"|"skip"}
+    try:
+        with open(a.selection) as f:
+            sel = json.load(f)
+    except (OSError, ValueError) as e:  # an earlier step failed: still one record
+        sel = {"selected": [], "fallback": f"selector error: no selection ({e})"}
+    # {"pkg\ttest": verdict}; "pkg\t" is a package-level or build failure.
+    results = load_results(a.results)
     full = bool(sel.get("fallback"))
+    errored = str(sel.get("fallback") or "").startswith("selector error")
     chosen = set(sel.get("selected", []))
     failed = sorted(k for k, v in results.items() if v == "fail")
-    miss = [] if full else [k for k in failed if k.split("\t", 1)[0] not in chosen]
-    ran = [k for k in results if results[k] in ("pass", "fail")]
+    outside = [k for k in failed if k.split("\t", 1)[0] not in chosen]
+    miss = [] if full else outside
+    ran = [k for k in results if results[k] in ("pass", "fail") and not k.endswith("\t")]
     rec = {
         "v": 1, "run_id": a.run_id, "sha": a.sha, "event": a.event, "shard": a.shard, "mode": a.mode,
         "fallback": sel.get("fallback"),
         "selected_packages": None if full else len(chosen), "total_packages": sel.get("total_packages"),
         "selected_tests": len(ran) if full else sum(1 for k in ran if k.split("\t", 1)[0] in chosen),
         "total_tests": len(ran),
-        "failed": [k.replace("\t", ".") for k in failed],
-        "failed_outside_selection": [k.replace("\t", ".") for k in miss],
+        "failed": [k.replace("\t", ".").rstrip(".") for k in failed],
+        "failed_outside_selection": [k.replace("\t", ".").rstrip(".") for k in miss],
+        "would_miss": None if errored else [k.replace("\t", ".").rstrip(".") for k in outside],
         "results_read": bool(results),
     }
     with open(a.out, "w") as f:
