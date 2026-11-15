@@ -241,7 +241,7 @@ token goes in a separate variable,
 
 ```json
 [{"name": "app-driver",
-  "base_url": "http://app-driver.example.internal:8080",
+  "base_url": "http://app-driver.example.test:8080",
   "path_prefix": "/v1/",
   "max_response_bytes": 8388608,
   "timeout_seconds": 60}]

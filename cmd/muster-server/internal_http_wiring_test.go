@@ -26,7 +26,7 @@ func (emptyStore) GetConnector(context.Context, string) (connectors.Connector, e
 func TestInternalHTTPConnectorsAreWiredForAdminsOnly(t *testing.T) {
 	env := map[string]string{envDatabase: "postgres://unused", envStandalone: "1", envConnectorEncKey: connectorKey(1),
 		envConnectPort: "18191", envAgentConnectURL: "http://muster.example.test:18191/",
-		envInternalHTTPConnectors:               `[{"name":"app-driver","base_url":"http://app-driver.example.internal:8080"}]`,
+		envInternalHTTPConnectors:               `[{"name":"app-driver","base_url":"http://app-driver.example.test:8080"}]`,
 		"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": "fixture-wiring-token-99"}
 	cfg, err := loadConfig(func(n string) string { return env[n] })
 	if err != nil {
@@ -52,7 +52,7 @@ func TestInternalHTTPConnectorsAreWiredForAdminsOnly(t *testing.T) {
 		t.Fatalf("a member's GetConnector(app-driver) = %v, want not found", err)
 	}
 	line := logs.String()
-	if !strings.Contains(line, "http://app-driver.example.internal:8080") || strings.Contains(line, "fixture-wiring-token-99") {
+	if !strings.Contains(line, "http://app-driver.example.test:8080") || strings.Contains(line, "fixture-wiring-token-99") {
 		t.Fatalf("boot line %q: want the service named and no token", line)
 	}
 }

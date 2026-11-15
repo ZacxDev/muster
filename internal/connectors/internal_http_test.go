@@ -386,24 +386,24 @@ func TestTheConfigurationIsTheAdminsAndCarriesNoToken(t *testing.T) {
 	env := map[string]string{"MUSTER_INTERNAL_HTTP_TOKEN_APP_DRIVER": ihToken}
 	getenv := func(k string) string { return env[k] }
 	bad := []string{
-		`[{"name":"app-driver","base_url":"http://svc.example.internal:8080","token":"x"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal:8080/v1"}]`,
-		`[{"name":"app-driver","base_url":"http://u:p@svc.example.internal"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal?x=1"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal#f"}]`,
-		`[{"name":"app-driver","base_url":"ftp://svc.example.internal"}]`,
-		`[{"name":"app-driver","base_url":"svc.example.internal"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal:99999"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","path_prefix":"/v1"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","path_prefix":"/../"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","path_prefix":"/%2e/"}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","max_response_bytes":100}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","max_response_bytes":67108864}]`,
-		`[{"name":"app-driver","base_url":"http://svc.example.internal","timeout_seconds":301}]`,
-		`[{"name":"github","base_url":"http://svc.example.internal"}]`,
-		`[{"name":"Bad_Name","base_url":"http://svc.example.internal"}]`,
-		`[{"name":"other","base_url":"http://svc.example.internal"}]`, // no MUSTER_INTERNAL_HTTP_TOKEN_OTHER
-		`[{"name":"app-driver","base_url":"http://a.example.internal"},{"name":"app-driver","base_url":"http://b.example.internal"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test:8080","token":"x"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test:8080/v1"}]`,
+		`[{"name":"app-driver","base_url":"http://u:p@svc.example.test"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test?x=1"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test#f"}]`,
+		`[{"name":"app-driver","base_url":"ftp://svc.example.test"}]`,
+		`[{"name":"app-driver","base_url":"svc.example.test"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test:99999"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","path_prefix":"/v1"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","path_prefix":"/../"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","path_prefix":"/%2e/"}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","max_response_bytes":100}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","max_response_bytes":67108864}]`,
+		`[{"name":"app-driver","base_url":"http://svc.example.test","timeout_seconds":301}]`,
+		`[{"name":"github","base_url":"http://svc.example.test"}]`,
+		`[{"name":"Bad_Name","base_url":"http://svc.example.test"}]`,
+		`[{"name":"other","base_url":"http://svc.example.test"}]`, // no MUSTER_INTERNAL_HTTP_TOKEN_OTHER
+		`[{"name":"app-driver","base_url":"http://a.example.test"},{"name":"app-driver","base_url":"http://b.example.test"}]`,
 		`{"name":"app-driver"}`,
 	}
 	for _, raw := range bad {
@@ -413,13 +413,13 @@ func TestTheConfigurationIsTheAdminsAndCarriesNoToken(t *testing.T) {
 			t.Errorf("a refusal carries the token: %v", err)
 		}
 	}
-	got, err := connectors.ParseInternalHTTP(`[{"name":"app-driver","base_url":"http://App-Driver.example.internal:8080/",
+	got, err := connectors.ParseInternalHTTP(`[{"name":"app-driver","base_url":"http://App-Driver.example.test:8080/",
 		"timeout_seconds":60}]`, getenv)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("a good declaration: %v", err)
 	}
 	ih := got[0]
-	if ih.Name() != "app-driver" || ih.BaseURL() != "http://app-driver.example.internal:8080" || ih.PathPrefix() != "/v1/" ||
+	if ih.Name() != "app-driver" || ih.BaseURL() != "http://app-driver.example.test:8080" || ih.PathPrefix() != "/v1/" ||
 		ih.MaxResponseBytes() != 8<<20 || ih.Timeout().Seconds() != 60 {
 		t.Fatalf("parsed %s %s %s %d %s", ih.Name(), ih.BaseURL(), ih.PathPrefix(), ih.MaxResponseBytes(), ih.Timeout())
 	}
@@ -457,15 +457,19 @@ func TestTheProxyNeverServesAnInternalHTTPConnector(t *testing.T) {
 func TestOtherConnectorKindsStillRefusePrivateAddresses(t *testing.T) {
 	svc := newIHService(t)
 	ih := newIH(t, svc.srv.URL, connectors.InternalHTTPSettings{})
-	for _, addr := range []string{"10.0.0.5", "192.168.1.9", "172.16.0.2", "100.64.0.1", "169.254.169.254", "127.0.0.1"} {
+	// Built from octets (as internal/safedial's tests do): 10/8, 192.168/16,
+	// 172.16/12, 100.64/10 (CGNAT), link-local metadata, loopback.
+	for _, oct := range [][4]byte{{10, 0, 0, 5}, {192, 168, 1, 9}, {172, 16, 0, 2}, {100, 64, 0, 1}, {169, 254, 169, 254},
+		{127, 0, 0, 1}} {
+		addr := netip.AddrFrom4(oct)
 		policy := connectors.Policy{Resolve: func(context.Context, string) ([]netip.Addr, error) {
-			return []netip.Addr{netip.MustParseAddr(addr)}, nil
+			return []netip.Addr{addr}, nil
 		}}
-		stored := connectors.Connector{Name: "svc", Hosts: []string{"svc.example.internal"}, Scheme: connectors.SchemeBearer}
+		stored := connectors.Connector{Name: "svc", Hosts: []string{"svc.example.test"}, Scheme: connectors.SchemeBearer}
 		p := &connectors.Proxy{Store: connectors.WithVirtual(approvedStub{c: stored}, ih, allowAll), Policy: policy}
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/connect/svc/svc.example.internal/v1/x", nil)
-		p.Serve(w, r, connectors.Caller{AgentID: 1, AgentName: "a"}, "svc", "svc.example.internal", "v1/x")
+		r := httptest.NewRequest(http.MethodGet, "/connect/svc/svc.example.test/v1/x", nil)
+		p.Serve(w, r, connectors.Caller{AgentID: 1, AgentName: "a"}, "svc", "svc.example.test", "v1/x")
 		if w.Code < 400 || !strings.Contains(w.Body.String(), "non-public") {
 			t.Errorf("a stored bearer connector resolving to %s: %d %s, want the non-public refusal", addr, w.Code, w.Body)
 		}

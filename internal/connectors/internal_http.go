@@ -193,7 +193,7 @@ func NewInternalHTTP(d InternalHTTPSettings, token string) (*InternalHTTP, error
 		base.User != nil || (base.Path != "" && base.Path != "/") || base.RawPath != "" || base.RawQuery != "" ||
 		base.Fragment != "" || base.ForceQuery || base.Hostname() == "" {
 		return nil, fmt.Errorf("internal_http connector %q: base_url %q must be scheme://host[:port] with no path, user, "+
-			"query or fragment (e.g. http://app-driver.example.internal:8080)", name, d.BaseURL)
+			"query or fragment (e.g. http://app-driver.example.test:8080)", name, d.BaseURL)
 	}
 	if p := base.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
