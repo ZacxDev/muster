@@ -478,6 +478,9 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envInternalHTTPConnectors: "announced at boot on its own `internal_http connector <name>:` line per connector (withInternalHTTP), " +
+		"and only when set: a bad entry or a missing token REFUSES boot, so there is no silently half-on state; unset, there " +
+		"is no such connector and internal_http_request answers that the name is not one",
 	envTeamsOnServerPool: "announced at boot on its own `team server pool: ON` line naming each team, and only when set: " +
 		"every id is checked to be a team first and boot is REFUSED otherwise, so there is no silently half-on state; unset, " +
 		"no team is lent the pool and the team chief's page says so (Kubernetes only; refused beside MUSTER_CHIEF_RUNTIME=compose)",

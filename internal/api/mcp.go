@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -161,7 +164,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	compose := s.isComposeChief(r.Context(), a)
 	s.serveMCP(w, r, mcpSurface{
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
-		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
+		call:         func(ctx context.Context, name, args string) string { return s.dispatchAgentTool(ctx, a, name, args) },
 		instructions: s.mcpInstructionsFor(r.Context(), a),
 		disabled:     disabled,
 		offFeatures:  off,
@@ -176,8 +179,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 // token) and POST /mirror/mcp (a mirrored session, through its host's token)
 // are two surfaces over the ONE protocol implementation below.
 type mcpSurface struct {
-	tools        func() []agents.ToolDef
-	call         func(name, args string) string
+	tools func() []agents.ToolDef
+	// call runs one tool. ctx is the request's, carrying the call's image
+	// collector (withToolImages): a tool that returns an image adds it there.
+	call         func(ctx context.Context, name, args string) string
 	instructions string
 	// disabled explains a name the door does not list because its feature is
 	// off ("disabled: <feature> — set … (docs/…)"), or "" (features.go's
@@ -276,11 +281,12 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		s.writeMCPToolResult(w, req.ID, def, func() string {
+		ctx, images := withToolImages(r.Context())
+		s.writeMCPToolResult(w, req.ID, def, images, func() string {
 			if p.Name == mcpHelpTool {
 				return catalog.help(string(p.Arguments), surface)
 			}
-			return surface.call(p.Name, string(p.Arguments))
+			return surface.call(ctx, p.Name, string(p.Arguments))
 		})
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
@@ -292,12 +298,64 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 var mcpHeartbeatEvery = 15 * time.Second
 
 // toolResult is a dispatched tool's text as an MCP tools/call result.
-func toolResult(text string) map[string]any {
-	result := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
+func toolResult(text string) map[string]any { return toolResultWithImages(text, nil) }
+
+// toolResultWithImages is toolResult with images after the text, each an MCP
+// image content block ({type: "image", data: base64, mimeType}) the model
+// client shows. A refusal carries none.
+func toolResultWithImages(text string, images []connectors.InternalHTTPImage) map[string]any {
+	content := []map[string]any{{"type": "text", "text": text}}
+	result := map[string]any{}
 	if isToolErr(text) {
 		result["isError"] = true
+	} else {
+		for _, img := range images {
+			content = append(content, map[string]any{"type": "image", "mimeType": img.MIMEType,
+				"data": base64.StdEncoding.EncodeToString(img.Data)})
+		}
 	}
+	result["content"] = content
 	return result
+}
+
+// toolImages collects the images one MCP tools/call returns beside its text
+// (toolResultWithImages). Only an MCP door installs one (serveMCP): a tool
+// called with none in its context — the in-process gateway runtime, whose
+// tool results are text only — returns its whole answer as text.
+type toolImages struct {
+	mu   sync.Mutex
+	list []connectors.InternalHTTPImage
+}
+
+type toolImagesKey struct{}
+
+// withToolImages returns ctx carrying a new image collector, and the collector.
+func withToolImages(ctx context.Context) (context.Context, *toolImages) {
+	t := &toolImages{}
+	return context.WithValue(ctx, toolImagesKey{}, t), t
+}
+
+// toolImagesFrom is ctx's image collector, or nil when the caller cannot be
+// handed an image.
+func toolImagesFrom(ctx context.Context) *toolImages {
+	t, _ := ctx.Value(toolImagesKey{}).(*toolImages)
+	return t
+}
+
+func (t *toolImages) add(imgs ...connectors.InternalHTTPImage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.list = append(t.list, imgs...)
+}
+
+// take returns the collected images; nil-safe.
+func (t *toolImages) take() []connectors.InternalHTTPImage {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.list
 }
 
 // writeMCPToolResult runs one tool call and writes its JSON-RPC answer.
@@ -311,11 +369,14 @@ func toolResult(text string) map[string]any {
 // (RFC 8259 §2), so the body still parses as the one JSON-RPC response the
 // transport promises; a call that finishes sooner is written exactly as before.
 //
+// images is the call's image collector (withToolImages): what the tool added
+// there is written after its text (toolResultWithImages).
+//
 // def is the called tool's served definition. Whatever the call answers — the
 // tool's own text, or "the tool failed" when it panicked — a refusal carries
 // def under current_definition (withCurrentDefinition, mcp_help.go): the caller
 // may be holding an older one.
-func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, def map[string]any, run func() string) {
+func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, def map[string]any, images *toolImages, run func() string) {
 	done := make(chan string, 1)
 	go func() {
 		defer func() {
@@ -333,11 +394,12 @@ func (s *Server) writeMCPToolResult(w http.ResponseWriter, id json.RawMessage, d
 	for {
 		select {
 		case text := <-done:
+			result := toolResultWithImages(text, images.take())
 			if !started {
-				s.writeMCP(w, id, toolResult(text), nil)
+				s.writeMCP(w, id, result, nil)
 				return
 			}
-			if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": toolResult(text)}); err != nil {
+			if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result}); err != nil {
 				s.logger.Printf("mcp: write a long call's answer: %v", err)
 			}
 			return

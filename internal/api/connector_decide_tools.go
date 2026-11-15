@@ -140,6 +140,9 @@ func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k co
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok && connectors.IsKubeRead(vc) {
 		return s.kubeGrantsDescription(ctx, g), ""
 	}
+	if ih, ok := connectors.InternalHTTPOf(ctx, s.ext.Connectors, g.Connector); ok {
+		return internalHTTPGrantsDescription(ih), ""
+	}
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 		if strings.TrimSpace(repo) == "" {
 			return appNoRepoNote, vc.Problem(g.AgentID)
@@ -307,6 +310,15 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 		kube = true
 		if approve {
 			out["grants"] = s.kubeGrantsDescription(ctx, g)
+		}
+	}
+	if ih, ok := connectors.InternalHTTPOf(ctx, s.ext.Connectors, g.Connector); ok {
+		// Likewise an internal_http connector: no repository is involved.
+		// Its description names no address (internalHTTPGrantsDescription):
+		// this answer goes to a model session.
+		kube = true
+		if approve {
+			out["grants"] = internalHTTPGrantsDescription(ih)
 		}
 	}
 	if approve && g.Source == connectors.SourceApp && !kube {

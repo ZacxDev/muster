@@ -82,9 +82,23 @@ func (s *Server) standingKey(ctx context.Context, connector string, a agents.Age
 	if p, has := authz.From(ctx); has && p.RoleUncertain {
 		return "", "", false
 	}
+	if s.perAgentConnector(ctx, connector) {
+		return "", "", false
+	}
 	source = connectors.SourceFor(ctx, s.ext.Connectors, connector)
 	repo, ok = connectors.StandingRepo(source, s.agentRepo(a))
 	return source, repo, ok
+}
+
+// perAgentConnector reports whether connector's approvals are never shared,
+// whoever asks: an internal_http connector (connectors.InternalHTTP). Its
+// service is the admin's and reaches inside the network, so each agent that
+// uses it is a decision its owner makes for that agent (operator brief:
+// "per-instance approval"). No standing grant is keyed on it (standingKey),
+// and approving it records none (shareApproval).
+func (s *Server) perAgentConnector(ctx context.Context, connector string) bool {
+	_, ok := connectors.InternalHTTPOf(ctx, s.ext.Connectors, connector)
+	return ok
 }
 
 // approveFromStanding approves pending grant g when one of its owner's live
@@ -189,7 +203,7 @@ func (s *Server) shareApproval(ctx context.Context, g connectors.Grant, via conn
 	}
 	// A pool worker's or an officer's approval is its own: it is never shared
 	// (and never matched: approveFromStanding).
-	if s.excludedFromSharing(a) {
+	if s.excludedFromSharing(a) || s.perAgentConnector(ctx, g.Connector) {
 		return out
 	}
 	repo, ok := connectors.StandingRepo(g.Source, s.agentRepo(a))

@@ -646,6 +646,13 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 				" tool only, never through the proxy"}, "kube-read: not proxied")
 			return
 		}
+		// Nor has an internal_http connector: its destination is the admin's,
+		// and only the internal_http_request tool reaches it.
+		if c.Scheme == SchemeInternalHTTP {
+			refuse(http.StatusForbidden, RefusalBody{Error: "connector " + connector + " is served by the " + InternalHTTPTool +
+				" tool only, never through the proxy"}, "internal_http: not proxied")
+			return
+		}
 		if !c.AllowsHost(host) {
 			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")

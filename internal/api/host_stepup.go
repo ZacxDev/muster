@@ -97,6 +97,7 @@ var hostStepUpExempt = map[string]string{
 	"connector_request":        "a host instance's own (hostOfficerMirrorTool)",
 	"connector_status":         "a host instance's own (hostOfficerMirrorTool)",
 	postgresQueryToolName:      "a host instance's own (hostOfficerMirrorTool)",
+	internalHTTPToolName:       "a host instance's own (hostOfficerMirrorTool)",
 	pluginRequestsListTool:     "a read",
 	officers.ToolBrief:         "a host instance's own (hostOfficerMirrorTool)",
 	officers.ToolItems:         "a host instance's own (hostOfficerMirrorTool)",

@@ -95,6 +95,8 @@ NOT_FORWARDED = {
         "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD", "MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS",
     ]},
     "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
+    "MUSTER_INTERNAL_HTTP_CONNECTORS": "deployment-specific: a JSON array naming the admin's own internal services, each with "
+    "its own MUSTER_INTERNAL_HTTP_TOKEN_<NAME>; there is no default to forward (docs/connectors.md#internal-http-connectors)",
     **{name: "test fixture: read only by a `-tags e2eterm` build" for name in [
         "MUSTER_E2E_HOLD_READY_DIR", "MUSTER_E2E_TERM_WINDOW", "MUSTER_E2E_GITHUB_API",
         "MUSTER_E2E_OPENROUTER_MODELS", "MUSTER_E2E_SUGGEST_URL", "MUSTER_E2E_GOTRUE_SKEW",
