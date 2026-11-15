@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	g "maragu.dev/gomponents"
@@ -93,8 +94,11 @@ const SendQueueMayHaveSentText = "May already have been sent."
 // list as it was when the page was drawn.
 type ComposerQueue struct {
 	// Src is the list's URL (SendQueuePath with the window's address).
-	Src  string
-	List SendQueueListView
+	Src string
+	// Owner is a TEAM window's owner (team sharing 2b.4), 0 for the viewer's
+	// own: Queue then posts naming it (owner=).
+	Owner int64
+	List  SendQueueListView
 	// Disabled, when set, draws Queue disabled and says why under the list —
 	// a host whose muster-mirror does not report whether Claude Code is busy,
 	// a window that is not Claude Code. The server refuses such a queue
@@ -149,7 +153,36 @@ type SendQueueItem struct {
 	Editing    bool
 	HoldToken  string
 	HoldLeftMS int64
+	// Owner is a TEAM's id when the row is in a team window's queue (team
+	// sharing 2b.4), 0 for the viewer's own: every action's URL then names
+	// it (owner=), so the server acts on the team's queue and no other.
+	Owner int64
+	// QueuedBy names who queued a team row that is NOT the viewer's ("" for
+	// the viewer's own, and on a personal queue): the row then offers no Send
+	// now, Edit or Retry — only its queuer does those — and Cancel and
+	// Delete only to a manager (the server decides; it draws Cancellable and
+	// Deletable so).
+	QueuedBy string
 }
+
+// SendQueueQueuedByText is what a team row someone else queued says.
+func SendQueueQueuedByText(name string) string { return "Queued by " + name + "." }
+
+// ownerPath is p naming owner as its owner= (team sharing 2b.4), p itself for
+// the viewer's own (0): an own row's URLs are what they always were.
+func ownerPath(p string, owner int64) string {
+	if owner == 0 {
+		return p
+	}
+	sep := "?"
+	if strings.Contains(p, "?") {
+		sep = "&"
+	}
+	return p + sep + "owner=" + strconv.FormatInt(owner, 10)
+}
+
+// path is p for this row: its owner named (ownerPath).
+func (it SendQueueItem) path(p string) string { return ownerPath(p, it.Owner) }
 
 // What a held, a lapsed and an edited message say under their preview.
 const (
@@ -278,12 +311,14 @@ func SendQueueList(v SendQueueListView) g.Node {
 					g.Text(SendQueueLapsedText))),
 				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
 					P(g.Attr("data-queue-edited", ""), Class("text-[11px] text-muted"), g.Text(SendQueueEditedText))),
+				g.If(it.QueuedBy != "", P(g.Attr("data-queue-by", ""), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
+					g.Text(SendQueueQueuedByText(it.QueuedBy)))),
 			),
 			g.If(it.Retryable, sendQueueRetryForm(it)),
 			g.If(it.Cancellable, sendQueueRowMenu(it)),
 			g.If(it.Deletable, Form(
 				Method("post"),
-				Action(SendQueueDeletePath(it.ID)),
+				Action(it.path(SendQueueDeletePath(it.ID))),
 				g.Attr("data-delete", ""),
 				Class("shrink-0"),
 				Button(Type("submit"),
@@ -459,7 +494,7 @@ func sendQueueEditRow(it SendQueueItem) g.Node {
 		Form(
 			ID("mv-qe-"+id),
 			Method("post"),
-			Action(SendQueueEditSavePath(it.ID)),
+			Action(it.path(SendQueueEditSavePath(it.ID))),
 			g.Attr("data-queue-edit-form", ""),
 			g.Attr("data-hold-left-ms", strconv.FormatInt(max(it.HoldLeftMS, 0), 10)),
 			g.Attr("novalidate", ""),
@@ -483,7 +518,7 @@ func sendQueueEditRow(it SendQueueItem) g.Node {
 				g.Text(it.Body),
 			),
 			Div(Class("flex justify-end gap-2"),
-				Button(Type("submit"), g.Attr("formaction", SendQueueEditCancelPath(it.ID)), g.Attr("data-queue-edit-cancel", ""),
+				Button(Type("submit"), g.Attr("formaction", it.path(SendQueueEditCancelPath(it.ID))), g.Attr("data-queue-edit-cancel", ""),
 					g.Attr("aria-label", SendQueueEditCancelLabel),
 					Class("press min-h-[44px] rounded-lg px-3 text-sm font-semibold text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2"),
 					g.Text("Cancel")),
@@ -537,18 +572,20 @@ func sendQueueRowMenu(it SendQueueItem) g.Node {
 			g.Attr("role", "menu"),
 			g.Attr("aria-label", "Queued message"),
 			Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
-			Form(Method("post"), Action(SendQueueSendNowPath(it.ID)), g.Attr("data-send-now", ""),
+			// Only its queuer sends it now (a team row someone else queued:
+			// QueuedBy set).
+			g.If(it.QueuedBy == "", Form(Method("post"), Action(it.path(SendQueueSendNowPath(it.ID))), g.Attr("data-send-now", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("title", "Send it now, without waiting for Claude Code to be idle"),
-					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel))),
+					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueSendNowLabel)))),
 			// Edit HOLDS the message first (the server), and only then is its text
 			// drawn for editing: a form, so it works without script.
-			g.If(it.Editable, Form(Method("post"), Action(SendQueueEditPath(it.ID)), g.Attr("data-edit", ""),
+			g.If(it.Editable, Form(Method("post"), Action(it.path(SendQueueEditPath(it.ID))), g.Attr("data-edit", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"),
 					g.Attr("title", "Change its text; it is held (not sent) while you edit, and keeps its place"),
 					Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueEditLabel)))),
 			Button(Type("button"), g.Attr("role", "menuitem"), g.Attr("data-queue-copy", ""), g.Attr("hidden", ""),
 				Class(sendQueueMenuItemClass+" text-fg"), g.Text(SendQueueCopyLabel)),
-			Form(Method("post"), Action(SendQueueCancelPath(it.ID)), g.Attr("data-cancel", ""),
+			Form(Method("post"), Action(it.path(SendQueueCancelPath(it.ID))), g.Attr("data-cancel", ""),
 				Button(Type("submit"), g.Attr("role", "menuitem"), g.Attr("aria-label", SendQueueCancelLabel),
 					Class(sendQueueMenuItemClass+" text-st-error-fg"), g.Text("Cancel"))),
 		),
@@ -566,7 +603,7 @@ func sendQueueRetryForm(it SendQueueItem) g.Node {
 	}
 	return Form(
 		Method("post"),
-		Action(SendQueueRetryPath(it.ID)),
+		Action(it.path(SendQueueRetryPath(it.ID))),
 		g.Attr("data-retry", ""),
 		g.If(it.MayHaveDelivered, g.Attr("data-confirm", SendQueueMayHaveSentText+" Queue it again anyway?")),
 		Class("shrink-0"),
@@ -640,7 +677,7 @@ func sendQueueButton(q *ComposerQueue, off bool) g.Node {
 		ID("mv-queue-send"),
 		Type("submit"),
 		g.Attr("role", "menuitem"),
-		g.Attr("formaction", SendQueuePath),
+		g.Attr("formaction", ownerPath(SendQueuePath, q.Owner)),
 		g.If(q.Disabled != "", g.Attr("disabled", "")),
 		g.Attr("aria-label", "Queue: send when Claude Code is idle"),
 		g.If(q.Disabled == "", g.Attr("title", "Send when Claude Code has been idle for a while — even after this page is closed")),

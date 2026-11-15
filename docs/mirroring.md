@@ -1870,10 +1870,16 @@ server and its own `muster-mirror`.
   questions, and scroll its terminal (which moves it for every watcher). A
   team host session's `attention_ask` shows on every member's Attention, and
   an operator answers it there.
-- **Not on a team session in this version.** Typing — the composer, live
-  keys, the send queue, answering a question in the pane — comes with team
-  operators in a later release; the composer is drawn disabled and says so.
-  The chief panel, proposals, succession and suggested replies are **off** on
+- **Typing (team sharing 2b.4).** An **operator** or a **manager** of the
+  team types into a team session: the composer, the terminal's live keys,
+  the send queue and answering a question in the pane, each with their own
+  fresh sign-in ([sending-and-step-up.md](sending-and-step-up.md#a-team-sessions-queue)).
+  A **viewer**'s composer is drawn disabled and says so, their question cards
+  are drawn unanswerable, and every typing route answers them 403. The
+  composer on a team session keeps no draft (drafts are keyed by host name)
+  and has no paperclip (an upload is the uploader's own file).
+- **Not on a team session in this version.** The chief panel, proposals,
+  succession and suggested replies are **off** on
   team sessions (they would send the team's transcript to a person's model or
   chief), and their routes answer 403. A team session has no focus title, no
   Preview button, and none of the viewer's own pins, tags or names. Opening

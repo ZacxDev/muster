@@ -78,8 +78,9 @@ type MirrorViewView struct {
 	// drawn in the header after the title (sessionTagsHead); nil for none.
 	Tags []string
 	// Owner is a TEAM host's owner (MirrorRef.Owner), 0 for the viewer's own;
-	// TeamNote, set on a team host's session, is what its disabled composer
-	// says: a member watches it here, and typing comes later (2b.4).
+	// TeamNote, set on a team host's session for a VIEWER of the team, is what
+	// its disabled composer says (an operator or a manager types into it:
+	// team sharing 2b.4, TeamNote "").
 	Owner    int64
 	TeamNote string
 	// Interactive: the host advertised -interactive, so the composer is offered
@@ -222,10 +223,17 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
 	}
-	if v.TeamNote != "" {
-		// A TEAM host's session (team sharing 2b.3): watched, not typed into.
-		composer.Disabled, composer.DisabledPlaceholder, composer.Queue, composer.DraftKey = v.TeamNote, "Watching a team session", nil, ""
+	if v.Owner != 0 {
+		// A TEAM host's session (team sharing 2b.4): the form names the team
+		// (owner=), and keeps no draft — drafts are keyed by host NAME, so the
+		// viewer's own build-01 would share it — and offers no suggested
+		// replies (G4).
+		composer.Owner, composer.DraftKey = v.Owner, ""
 		composer.Suggest, composer.SuggestPaused = "", false
+	}
+	if v.TeamNote != "" {
+		// ...watched, not typed into, by a viewer of the team (2b.3).
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = v.TeamNote, "Watching a team session", nil
 	}
 	if v.Chief {
 		agent := "Claude"

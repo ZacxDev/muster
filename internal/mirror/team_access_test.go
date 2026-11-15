@@ -96,9 +96,11 @@ func TestHostsNeverListsATeamHost(t *testing.T) {
 // at the team's build-01; access lets a viewer WATCH it (a read-only attach,
 // its state, a scroll's door) and refuses — with the no-oracle
 // ErrNoPrincipal — anyone who is not a member, a door that carries no team,
-// and every typing call (an interactive attach, a paste) whatever the role:
-// typing is 2b.4's. CONTROL: with no target, ana's call reaches her own
-// build-01, and her own typing is untouched.
+// and a viewer's typing (an interactive attach, a paste). An OPERATOR types
+// (team sharing 2b.4): her interactive attach reaches the team's pane, and
+// with a stale sign-in it is refused as a step-up (the plugin's own check).
+// CONTROL: with no target, ana's call reaches her own build-01, and her own
+// typing is untouched.
 func TestAccessReachesATeamHostOnlyAsFarAsTheMembership(t *testing.T) {
 	r := twoBuild01s(t)
 	cal := mirror.ForOwner(member(t, tCal, authz.ViaSession, authz.Membership{Team: tTeam, Role: authz.TeamViewer}), tTeam)
@@ -128,10 +130,39 @@ func TestAccessReachesATeamHostOnlyAsFarAsTheMembership(t *testing.T) {
 			t.Errorf("%s: AgentState %+v; want refused", who, st)
 		}
 	}
-	for who, ctx := range map[string]context.Context{"cal (viewer)": cal, "ana (operator)": ana} {
-		refused(who+": paste", r.svc.PasteWindow(ctx, "build-01", "team-shared", "", "hello", mirror.PasteActivePane))
-		_, _, _, _, res := attach(t, ctx, r.svc, "build-01", "team-shared", false)
-		refused(who+": interactive attach", within(t, res, who))
+	refused("cal (viewer): paste", r.svc.PasteWindow(cal, "build-01", "team-shared", "", "hello", mirror.PasteActivePane))
+	_, _, _, _, resCal := attach(t, cal, r.svc, "build-01", "team-shared", false)
+	refused("cal (viewer): interactive attach", within(t, resCal, "cal"))
+
+	// The operator types (2b.4): her interactive attach reaches the TEAM's
+	// pane, not her own same-named one...
+	stdinA, screenA, _, cancelA, resA := attach(t, ana, r.svc, "build-01", "team-shared", false)
+	// A refused attach reads no keys, so the write is not waited on here.
+	go func() { _, _ = stdinA.Write([]byte("x")) }()
+	select {
+	case err := <-resA:
+		t.Fatalf("ana's (operator) interactive attach to the team's session ended at once: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	eventually(t, "the team's pane drawn for its operator's live keys", func() bool { return screenA.String() != "" })
+	cancelA()
+	if err := within(t, resA, "ana's team attach"); errors.Is(err, mirror.ErrNoPrincipal) {
+		t.Fatalf("ana's (operator) interactive attach: %v", err)
+	}
+	if err := r.svc.PasteWindow(ana, "build-01", "team-shared", "", "hello", mirror.PasteActivePane); errors.Is(err, mirror.ErrNoPrincipal) {
+		t.Errorf("ana's (operator) paste into the team's session was refused by access: %v", err)
+	}
+	// ...and only with a fresh sign-in: a stale one is the step-up refusal.
+	stale := stepup.WithAuthTime(ana, time.Now().Add(-48*time.Hour))
+	_, _, _, cancelS, resS := attach(t, stale, r.svc, "build-01", "team-shared", false)
+	select {
+	case err := <-resS:
+		if !errors.Is(err, mirror.ErrStepUpRequired) {
+			t.Errorf("ana's interactive attach with a stale sign-in: %v; want ErrStepUpRequired", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancelS()
+		t.Errorf("ana's interactive attach with a stale sign-in was ACCEPTED; want ErrStepUpRequired")
 	}
 
 	// CONTROL: no target is ana's own host, typing included.

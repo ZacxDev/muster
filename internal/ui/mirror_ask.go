@@ -436,7 +436,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 	return Form(
 		g.Attr("data-ask-form", ""),
 		Method("post"),
-		Action(MirrorAskPath),
+		Action(ownerPath(MirrorAskPath, v.Ref.Owner)),
 		Class("flex flex-col gap-4"),
 		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
@@ -455,7 +455,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 // page names), dismissing the picker first if it is still on screen.
 func askMessageForm(v MirrorAskLiveView) g.Node {
 	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
-	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-message", ""), Method("post"), Action(MirrorAskMessagePath), Class("flex flex-col gap-2"),
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-message", ""), Method("post"), Action(ownerPath(MirrorAskMessagePath, v.Ref.Owner)), Class("flex flex-col gap-2"),
 		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
 		hidden("tool", v.ToolID),
@@ -485,7 +485,7 @@ func askRetryForm(v MirrorAskLiveView) g.Node {
 			fields = append(fields, hidden("a"+idx, askq.OtherValue), hidden("o"+idx, v.Chosen[i].Other))
 		}
 	}
-	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-retry", ""), Method("post"), Action(MirrorAskPath), Class("flex flex-col gap-2"),
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-retry", ""), Method("post"), Action(ownerPath(MirrorAskPath, v.Ref.Owner)), Class("flex flex-col gap-2"),
 		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
 		hidden("tool", v.ToolID), g.Group(fields),
@@ -515,7 +515,7 @@ func askCancelControl(v MirrorAskLiveView) g.Node {
 			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
 		Dialog(g.Attr("data-ask-cancel-dialog", ""), g.Attr("aria-labelledby", base+"-title"),
 			Class("m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-4 text-sm text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60"),
-			Form(g.Attr("data-ask-cancel-form", ""), Method("post"), Action(MirrorAskCancelPath), Class("flex flex-col gap-3"),
+			Form(g.Attr("data-ask-cancel-form", ""), Method("post"), Action(ownerPath(MirrorAskCancelPath, v.Ref.Owner)), Class("flex flex-col gap-3"),
 				hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
 				g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
 				hidden("tool", v.ToolID),

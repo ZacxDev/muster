@@ -243,7 +243,7 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	if s.ext.Mirror == nil {
 		return h, e, false, false, false
 	}
-	target := mirrorTarget(r)
+	target := windowOwner(r.Context())
 	if raw := mirrorOwnerParam(r); raw != "" && raw != strconv.FormatInt(target, 10) {
 		return h, e, false, false, false
 	}
@@ -284,9 +284,10 @@ func mirrorRef(e mirror.SessionView) ui.MirrorRef {
 	return ui.MirrorRef{Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window}
 }
 
-// MirrorTeamComposerNote is what a team host's session's composer says, drawn
-// disabled (team sharing 2b.3: viewers; typing is 2b.4's).
-const MirrorTeamComposerNote = "This is a team session: you can watch it here. Typing into a team session is not available yet."
+// MirrorTeamComposerNote is what a team host's session's composer says to a
+// VIEWER of the team, drawn disabled (team sharing 2b.3; an operator or a
+// manager types into it, 2b.4).
+const MirrorTeamComposerNote = "This is a team session and you are a viewer of its team: you can watch it here; an operator or a manager types into it."
 
 // handleMirrorTerminalPage is GET /mirror/terminal?host=…&session=…: the shared
 // terminal page, pointed at the mirror socket.
@@ -347,7 +348,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// 🔴 LIVE KEYS ONLY WHEN THE HOST ADVERTISED -interactive: elsewhere the
 		// page's keys are off. The hub refuses a rw attach to a host that did
 		// not, regardless.
-		ReadOnlyOnly: !h.Interactive || team,
+		// A team host's: an operator's or a manager's (team sharing 2b.4).
+		ReadOnlyOnly: !h.Interactive || (team && !teamOperatorOn(r)),
 		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
 		// a user can switch to ANY session there, or open a new window — a
 		// shell on the host. The "only listed sessions" rule guards opening an
@@ -377,10 +379,16 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// The outcome of a send the browser submitted, which was answered with a
 		// redirect back here (composer.go).
 		c.Notice, c.NoticeOK = composerNotice(r)
+		if team {
+			// A team host's (team sharing 2b.4): the form names the team, and
+			// keeps no draft (drafts are keyed by host NAME: the viewer's own
+			// build-01 would share it) and takes no upload (the uploader's own
+			// file).
+			c.Owner, c.DraftKey, c.Upload, c.UploadOff = e.Owner, "", "", false
+		}
 		switch {
-		case team:
+		case team && !teamOperatorOn(r):
 			c.Disabled, c.DisabledPlaceholder = MirrorTeamComposerNote, "Watching a team session"
-			c.DraftKey = ""
 		case !h.Interactive:
 			c.Disabled, c.DisabledPlaceholder = ui.MirrorReadOnlyNote, "Read-only host"
 		case !e.CanPaste():
@@ -481,15 +489,10 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	// 🔴 A TEAM HOST'S TERMINAL IS READ-ONLY (team sharing 2b.3): live keys
-	// are typing, 2b.4's. The plugin's access refuses them on a team host
-	// too; this answers before the upgrade, with a status.
-	if !readOnly && onTeamHost(r) {
-		op.finish("team_read_only")
-		viewEnded(r, openViewTerminal, "team_read_only", since)
-		http.Error(w, MirrorTeamOwnOnlyRefusal, http.StatusForbidden)
-		return
-	}
+	// A TEAM HOST'S LIVE KEYS (team sharing 2b.4) are an operator's: the
+	// route gate (mirrorTeamViewOrKeys) refused a viewer's interactive mode
+	// and registered this socket at operator for the sweep; the step-up below
+	// is the member's own sign-in, and the plugin's access checks both again.
 	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in
 	// from the last stepup.Window, whatever the page decided. 403 rather than an
 	// in-socket error, so nothing is attached and the refusal has a status a
