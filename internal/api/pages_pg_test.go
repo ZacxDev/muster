@@ -878,6 +878,9 @@ func TestTheShellDrawsTheBrandAsEveryBrandedSurface(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Branded", `[{"type":"markdown","text":"x"}]`)
 	l := f.liveLink(t, f.owner, id)
+	// page_create's "Page ready" push reads the branding (its icon) on its
+	// own goroutine: let it finish before the cases swap the branding store.
+	f.srv.WaitForPushes()
 	for _, c := range []struct {
 		name    string
 		b       branding.Branding
