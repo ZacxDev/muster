@@ -28,10 +28,9 @@ type Self struct {
 	OwnerID    int64  `json:"owner_id"`
 	OwnerLogin string `json:"owner_login"`
 	// OwnerKind is "team" for a team viewer plugin's token (team sharing
-	// 2b.3b; TeamName its team's name), "person" or "" (an older muster) for
-	// a person's.
+	// 2b.3b; OwnerLogin is then the team's name), "person" or "" (an older
+	// muster) for a person's.
 	OwnerKind    string   `json:"owner_kind"`
-	TeamName     string   `json:"team_name"`
 	Capabilities []string `json:"capabilities"`
 }
 

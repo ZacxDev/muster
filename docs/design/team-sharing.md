@@ -2581,8 +2581,8 @@ by re-checking the migration number (D). The slices ship **in order**.
    >     carry no `owner=` from any caller (the sidebar's highlight matches).
 3b. **2b.3b: team plugins and team previews** (operator ruling,
    2026-11-15: its own slice, after 2b.3 merges and before 2b.4). **Built;
-   the fork below was decided (ii), and the two sign-offs accepted — see
-   "As built in 2b.3b" at its end.**
+   the orchestrator decided the fork below (ii) and accepted the two
+   sign-offs — see "As built in 2b.3b" at its end.**
    - **What exists.** A viewer plugin is a person's: minted on their own form
      (`pluginCreateInput`), owned by them, read at operator under 0127
      (`plugins` is shared, read 2, write 3). A plugin's token is refused for a
@@ -2639,9 +2639,13 @@ by re-checking the migration number (D). The slices ship **in order**.
      Recommendation: **(ii)**. The gateway change is small and in this repo,
      and without it (i) ships a button that opens nothing on a team session.
 
-   > **As built in 2b.3b (no migration).** Operator: (ii); both sign-offs
-   > accepted (a viewer opening a preview writes the hand-off as the team; a
-   > team plugin token is served the redeem and `/self` alone).
+   > **As built in 2b.3b (no migration).** Who decided what (#696 round 0):
+   > the OPERATOR ruled that a team session's previews run on the TEAM's
+   > plugins, never a viewer's, and that this is its own slice, next. The
+   > ORCHESTRATOR decided the fork (ii: teach the gateway team owners in this
+   > slice) and accepted both sign-offs (a viewer opening a preview writes the
+   > hand-off as the team; a team plugin token is served the redeem and
+   > `/self` alone).
    > - **The token.** `plugins.PGStore.Authenticate` admits an enabled person
    >   or a team (`users.EnabledPersonOrTeamIDs`; users-read ledger
    >   `readEnabledPersonOrTeam`) and reports `Plugin.OwnerTeam`. `ViaPlugin`
@@ -2652,8 +2656,9 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   (`TeamPluginRouteRefusal`; `TestATeamPluginTokenIsServedOnlyRedeemAndSelf`,
    >   pinned to routes.golden, fails when the set grows or shrinks).
    >   `githubapp.Admits` is untouched: `ViaPlugin` is not in `teamAppDoors`.
-   > - **`/self`** answers `owner_kind` (`person` / `team`) and, for a team,
-   >   `team_name`. The gateway (`internal/previewgw`) parses both;
+   > - **`/self`** answers `owner_kind` (`person` / `team`); a team's
+   >   `owner_login` is its name (no separate field: #696 round 0, D1). The
+   >   gateway (`internal/previewgw`) parses it;
    >   `ResolveOwner` takes `team:<id>` for a team, matching only an answer
    >   whose owner IS that team, and a login never matches a team's answer
    >   (`TestResolveOwnerNamesATeamByItsID`). The manual
@@ -2672,14 +2677,23 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   plugin (`TestATeamSessionsPreviewRunsOnTheTeamsPlugin`).
    > - 🔴 **Found while building: personal plugin paths read team rows.** A
    >   member's session reads their teams' `plugins` rows (shared, read at
-   >   operator), so a team's viewer plugin would have been a chip of a
-   >   member's OWN window and listed, revocable and reconfigurable on their
-   >   own `/plugins` page. Each personal path now keeps the principal's own:
-   >   the chips (`liveViewerPluginsOf`), the page list, revoke, draft
-   >   checks and deliver-to (`ownsPlugin`), and the mint (`HandoffIn.Owner`,
-   >   filtered in SQL). An operator could not mint a team plugin's hand-off
-   >   anyway (the mint's `FOR UPDATE` needs the write role), a MANAGER
-   >   could; the test uses a manager.
+   >   operator) and a manager's writes them, so a team's viewer plugin would
+   >   have been a chip of a member's OWN window and listed, revocable and
+   >   reconfigurable on their own `/plugins` page. **One owner filter, in the
+   >   store** (#696 round 0, D2): `plugins.ownedByPrincipal` (`owner_id =`
+   >   the principal) is in every listing and change a page reaches — List,
+   >   Revoke, SetDraftChecks, SetDeliverTo, MintHandoff — so a new personal
+   >   path is filtered by default; the five open-coded API checks and both
+   >   ownership helpers are gone (`TestEveryPersonalPluginPathKeepsThePrincipalsOwn`;
+   >   `TestEveryPluginRowReadSaysWhoseRowsItReads` classes every other read).
+   >   A team's rows are reached only under the team acting principal.
+   > - **Round 0 (#696):** `/self` has no `team_name` (D1); the plugins page
+   >   answers a no-longer-manager with its own notice (`teamManagerPage`); a
+   >   team hand-off is audited `team.plugin.handoff`, naming the member who
+   >   opened it (an audit row, not a column: no migration). ⚠ **Not built:**
+   >   a rotate mark on a team plugin token when the manager who saw it
+   >   leaves needs a `plugins` column (migration 0134); stopped for a
+   >   decision.
 
 4. **2b.4: operators.**
    - Typing and step-up through `access`.

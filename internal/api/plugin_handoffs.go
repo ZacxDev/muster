@@ -95,16 +95,19 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		s.writeJSON(w, code, map[string]any{"error": msg})
 	}
 	// 🔴 WHOSE PLUGIN, ON WHOSE WINDOW (team sharing 2b.3b). The principal's
-	// own window takes the principal's own plugin (Owner: a member's session
-	// also reads their teams' plugin rows). A TEAM host's window takes the
+	// own window takes the principal's own plugin (the store's one owner
+	// filter: never a team's, which a member's session can also read). A TEAM
+	// host's window takes the
 	// TEAM's plugin, never the viewer's: after a fresh viewer read
 	// (teamViewerPlugins), the window is resolved over the team's hosts and
-	// the hand-off minted AS THE TEAM (teamPreviewPrincipal; the operator's
-	// ruling). A team with no viewer plugin is refused with TeamNoViewerPlugin.
-	owner, mctx := requestOwner(r.Context()), r.Context()
+	// the hand-off minted AS THE TEAM (teamPreviewPrincipal; the orchestrator's
+	// sign-off on the operator's ruling), and the member who opened it is
+	// recorded in the team's audit (team.plugin.handoff). A team with no
+	// viewer plugin is refused with TeamNoViewerPlugin.
+	mctx := r.Context()
 	var target plugins.MirrorTarget
 	ok := false
-	if in.Owner > 0 && in.Owner != owner {
+	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
 		ps, member := s.teamViewerPlugins(r.Context(), in.Owner, in.Target.Mirror.Window)
 		if !member {
 			refused(http.StatusNotFound, PluginHandoffNoWindow)
@@ -115,7 +118,7 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		target, ok = handoffTargetIn(s.teamHostsOf(r.Context(), in.Owner), in.Target.Mirror.Host, in.Target.Mirror.Window)
-		owner, mctx = in.Owner, s.teamPreviewPrincipal(r.Context(), in.Owner)
+		mctx = s.teamPreviewPrincipal(r.Context(), in.Owner)
 	} else {
 		target, ok = s.handoffMirrorTarget(r, in.Target.Mirror.Host, in.Target.Mirror.Window)
 	}
@@ -124,7 +127,6 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	code, p, err := s.ext.Plugins.MintHandoff(mctx, in.Plugin, plugins.HandoffIn{
-		Owner:   owner,
 		Target:  plugins.HandoffTarget{Mirror: &target},
 		Purpose: plugins.PurposeView,
 		// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field.
@@ -151,6 +153,12 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "minted").Inc()
+	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
+		// The member who opened the TEAM's hand-off (#696 round 0, (c)): the
+		// row is the team's, so the team's audit names the person.
+		s.auditTeam(r.Context(), actorOf(r), in.Owner, "team.plugin.handoff", "plugin:"+strconv.FormatInt(p.ID, 10),
+			map[string]any{"host": target.Host, "window": target.Window})
+	}
 	// The entry URL was validated at mint to carry no query; build it anyway.
 	u, err := url.Parse(*p.EntryURL)
 	if err != nil {

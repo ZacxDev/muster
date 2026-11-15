@@ -19,7 +19,7 @@ import (
 // this page the team's MANAGER mints one (its token shown once), and revokes
 // one.
 //
-// 🔴 MANAGERS ONLY, AS THE TEAM — the hosts page's gate (teamHostsWrite: the
+// 🔴 MANAGERS ONLY, AS THE TEAM — the hosts page's gate (teamManagerPage: the
 // request's memberships, then a FRESH role read) and its step-up on every
 // write, audited as the manager (team.plugin.create, team.plugin.revoke). The
 // row is written AS THE TEAM with the `viewer` capability and NOTHING ELSE: no
@@ -38,11 +38,18 @@ const (
 	TeamPluginsStepUp   = "Adding or revoking a team viewer plugin needs a recent sign-in. Confirm it's you, then try again."
 	TeamPluginsOff      = "This server does not offer viewer plugins (plugins are off, or MUSTER_PLUGIN_ORIGINS is unset)."
 	TeamPluginsNoPlugin = "That plugin does not exist, is not this team's, or is already revoked."
+	TeamPluginsManager  = "Only a manager of the team manages its viewer plugins."
 	teamPluginsAbout    = "A team viewer plugin opens a team session's previews for every member who can see the session, viewers included. Its token redeems preview hand-offs and nothing else. To serve previews, the preview gateway's admin adds this token to the gateway's PLUGIN_TOKENS_FILE and mints the team's host tokens there as team:<id>."
 )
 
+// teamPluginsWrite is the page's gate: teamManagerPage, with this page's own
+// notice for a caller who is no longer a manager.
+func (s *Server) teamPluginsWrite(w http.ResponseWriter, r *http.Request) (int64, context.Context, bool) {
+	return s.teamManagerPage(w, r, "Team plugins", TeamPluginsManager)
+}
+
 func (s *Server) handleTeamPluginsPage(w http.ResponseWriter, r *http.Request) {
-	team, tctx, ok := s.teamHostsWrite(w, r)
+	team, tctx, ok := s.teamPluginsWrite(w, r)
 	if !ok {
 		return
 	}
@@ -80,7 +87,7 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 	b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Plugins</h2><ul class="flex flex-col gap-2" id="team-plugins">`)
 	live := 0
 	for _, p := range list {
-		if p.OwnerID != team || p.RevokedAt != nil {
+		if p.RevokedAt != nil {
 			continue
 		}
 		live++
@@ -128,7 +135,7 @@ func (s *Server) teamPluginsFresh(w http.ResponseWriter, r *http.Request, team i
 // mint a team viewer plugin AS THE TEAM — capability viewer and nothing else
 // — show its token once, and audit it as the manager.
 func (s *Server) handleTeamPluginMint(w http.ResponseWriter, r *http.Request) {
-	team, tctx, ok := s.teamHostsWrite(w, r)
+	team, tctx, ok := s.teamPluginsWrite(w, r)
 	if !ok || !s.teamPluginsFresh(w, r, team, tctx) {
 		return
 	}
@@ -162,7 +169,7 @@ func (s *Server) handleTeamPluginMint(w http.ResponseWriter, r *http.Request) {
 // handleTeamPluginRevoke is POST /teams/{id}/plugins/{plugin}/revoke: revoke
 // one of the team's plugins AS THE TEAM, and audit it as the manager.
 func (s *Server) handleTeamPluginRevoke(w http.ResponseWriter, r *http.Request) {
-	team, tctx, ok := s.teamHostsWrite(w, r)
+	team, tctx, ok := s.teamPluginsWrite(w, r)
 	if !ok || !s.teamPluginsFresh(w, r, team, tctx) {
 		return
 	}
@@ -172,7 +179,9 @@ func (s *Server) handleTeamPluginRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 	pid, err := strconv.ParseInt(r.PathValue("plugin"), 10, 64)
 	found := false
-	if err == nil && pid > 0 && s.teamOwnsPlugin(tctx, team, pid) {
+	if err == nil && pid > 0 {
+		// The team's own only: Revoke runs as the team, under the store's
+		// one owner filter.
 		found, err = s.ext.Plugins.Revoke(tctx, pid)
 	}
 	if err != nil {
@@ -184,19 +193,4 @@ func (s *Server) handleTeamPluginRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.plugin.revoke", "plugin:"+strconv.FormatInt(pid, 10), nil, true)
 	http.Redirect(w, r, "/teams/"+strconv.FormatInt(team, 10)+"/plugins", http.StatusSeeOther)
-}
-
-// teamOwnsPlugin reports whether plugin pid is team's own (read under tctx,
-// the team acting principal).
-func (s *Server) teamOwnsPlugin(tctx context.Context, team, pid int64) bool {
-	list, err := s.ext.Plugins.List(tctx)
-	if err != nil {
-		return false
-	}
-	for _, p := range list {
-		if p.ID == pid {
-			return p.OwnerID == team
-		}
-	}
-	return false
 }

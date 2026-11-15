@@ -71,11 +71,6 @@ type HandoffIn struct {
 	// stored origin and entry URL must still pass ValidViewerLink against it,
 	// or the mint is ErrViewerOriginRetired.
 	Origins []OriginPattern
-	// Owner, when set, is whose plugin it must be (team sharing 2b.3b): since
-	// a team viewer plugin exists, a member's session READS their team's
-	// plugin rows too (plugins is shared, read at operator), so "a plugin the
-	// principal can see" is no longer "the principal's own". 0: no filter.
-	Owner int64
 }
 
 // Handoff is a redeemed code.
@@ -129,7 +124,7 @@ func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn,
 		var err error
 		p, err = scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins
 			WHERE id = $1 AND revoked_at IS NULL AND 'viewer' = ANY (capabilities)
-			  AND ($2::bigint = 0 OR owner_id = $2::bigint) FOR UPDATE`, pluginID, in.Owner))
+			  AND `+ownedByPrincipal+` FOR UPDATE`, pluginID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

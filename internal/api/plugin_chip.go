@@ -43,17 +43,11 @@ func (s *Server) viewerPlugins(ctx context.Context, window string) []plugins.Plu
 // (mirrorCards) share. With plugins off or MUSTER_PLUGIN_ORIGINS unset nothing
 // is read.
 //
-// 🔴 THE PRINCIPAL'S OWN ONLY (team sharing 2b.3b): a member's session also
-// reads their teams' plugin rows (plugins is shared), and a team's viewer
-// plugin on a person's own window would hand the person's window to the
-// team's plugin. A team's are teamViewerPlugins'.
+// They are ctx's principal's OWN (the store's one owner filter,
+// plugins.ownedByPrincipal): a person's under their session, a team's under
+// the team acting principal (teamViewerPlugins) — never a team's on a
+// member's own window.
 func (s *Server) liveViewerPlugins(ctx context.Context) []plugins.Plugin {
-	return s.liveViewerPluginsOf(ctx, requestOwner(ctx))
-}
-
-// liveViewerPluginsOf is owner's live viewer plugins, read under ctx: the
-// owner's own principal, or the team acting principal for a team.
-func (s *Server) liveViewerPluginsOf(ctx context.Context, owner int64) []plugins.Plugin {
 	if s.ext.Plugins == nil || len(s.ext.PluginOrigins) == 0 {
 		return nil
 	}
@@ -64,7 +58,7 @@ func (s *Server) liveViewerPluginsOf(ctx context.Context, owner int64) []plugins
 	}
 	var out []plugins.Plugin
 	for _, p := range all {
-		if p.OwnerID != owner || p.RevokedAt != nil || !p.Has(plugins.CapViewer) || p.Origin == nil || p.EntryURL == nil {
+		if p.RevokedAt != nil || !p.Has(plugins.CapViewer) || p.Origin == nil || p.EntryURL == nil {
 			continue
 		}
 		if _, err := plugins.ValidViewerLink(s.ext.PluginOrigins, *p.Origin, *p.EntryURL); err != nil {
@@ -160,13 +154,14 @@ func (s *Server) teamViewerPlugins(ctx context.Context, team int64, window strin
 	if mirror.ValidWindowID(window) != nil || !s.teamMemberNow(ctx, requestOwner(ctx), team, authz.TeamViewer) {
 		return nil, false
 	}
-	return s.liveViewerPluginsOf(s.teamPreviewPrincipal(ctx, team), team), true
+	return s.liveViewerPlugins(s.teamPreviewPrincipal(ctx, team)), true
 }
 
 // teamPreviewPrincipal is ctx acting as team through authz.ViaPlugin, the
 // team plugin door: how a member's preview reads the team's viewer plugins
 // and writes its hand-off (plugins is read at operator, plugin_handoffs
-// written at manager — the operator's ruling: a viewer opening a preview
+// written at manager — the orchestrator's sign-off on the operator's ruling
+// that team previews run on the team's plugins: a viewer opening a preview
 // writes it as the team). Called only after teamMemberNow. internal/authz's
 // withPrincipalLedger lists it.
 func (s *Server) teamPreviewPrincipal(ctx context.Context, team int64) context.Context {

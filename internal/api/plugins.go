@@ -258,16 +258,15 @@ var teamPluginRoutes = map[string]bool{
 const TeamPluginRouteRefusal = "this is a team's viewer plugin token: it redeems preview hand-offs and reads /self, and nothing else"
 
 // pluginSelf is GET /plugin/v1/self's answer: who the presented token is.
-// OwnerKind is "person" or "team" (team sharing 2b.3b), and TeamName the
-// team's name for a team (OwnerLogin is then that name too): a preview
-// gateway names a team owner as team:<id> (internal/previewgw ResolveOwner).
+// OwnerKind is "person" or "team" (team sharing 2b.3b; a team's OwnerLogin
+// is its name): a preview gateway names a team owner as team:<id>
+// (internal/previewgw ResolveOwner).
 type pluginSelf struct {
 	PluginID     int64                `json:"plugin_id"`
 	PluginName   string               `json:"plugin_name"`
 	OwnerID      int64                `json:"owner_id"`
 	OwnerLogin   string               `json:"owner_login"`
 	OwnerKind    string               `json:"owner_kind"`
-	TeamName     string               `json:"team_name,omitempty"`
 	Capabilities []plugins.Capability `json:"capabilities"`
 	DeliverTo    *string              `json:"deliver_to"`
 }
@@ -281,7 +280,7 @@ func (s *Server) handlePluginSelf(w http.ResponseWriter, r *http.Request) {
 	self := pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
 		OwnerLogin: p.OwnerLogin, OwnerKind: "person", Capabilities: p.Capabilities, DeliverTo: p.DeliverTo}
 	if p.OwnerTeam {
-		self.OwnerKind, self.TeamName = "team", p.OwnerLogin
+		self.OwnerKind = "team"
 	}
 	s.writeJSON(w, http.StatusOK, self)
 }
@@ -455,12 +454,8 @@ func (s *Server) handlePluginCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePluginRevoke(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	found := false
-	// 🔴 THE PRINCIPAL'S OWN PLUGIN ONLY (team sharing 2b.3b): a manager's
-	// session can write their team's plugin rows too (plugins is managed); a
-	// team's plugin is revoked on /teams/<id>/plugins, as the team, audited.
-	if err == nil && id > 0 && !s.ownsPlugin(r.Context(), id) {
-		id = 0
-	}
+	// The principal's OWN plugin only — the store's one owner filter: a
+	// team's is revoked on /teams/<id>/plugins, as the team, audited.
 	if err == nil && id > 0 {
 		found, err = s.ext.Plugins.Revoke(r.Context(), id)
 		if err != nil {
@@ -476,21 +471,6 @@ func (s *Server) handlePluginRevoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, pluginsPath, http.StatusSeeOther)
 }
 
-// ownsPlugin reports whether plugin id is ctx's principal's own (team sharing
-// 2b.3b: a member's session also lists their teams' plugins).
-func (s *Server) ownsPlugin(ctx context.Context, id int64) bool {
-	list, err := s.ext.Plugins.List(ctx)
-	if err != nil {
-		return false
-	}
-	for _, p := range list {
-		if p.ID == id {
-			return p.OwnerID == requestOwner(ctx)
-		}
-	}
-	return false
-}
-
 // handlePluginDraftChecksToggle is POST /plugins/{id}/draft-checks {on: "1"
 // turns it on, anything else off}: the owner turns Checks replies (plugins.CapDraftChecks) on or off
 // for one of their LIVE plugins, keeping its token and its row
@@ -503,8 +483,7 @@ func (s *Server) ownsPlugin(ctx context.Context, id int64) bool {
 func (s *Server) handlePluginDraftChecksToggle(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	on := r.PostFormValue("on")
-	// The principal's own only (ownsPlugin): never a team's.
-	if err != nil || id <= 0 || !s.ownsPlugin(r.Context(), id) {
+	if err != nil || id <= 0 {
 		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such plugin.")
 		return
 	}
@@ -562,15 +541,8 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		s.logger.Printf("plugins: page list: %v", err)
 		problem = "The plugin list could not be read."
 	}
-	// The principal's OWN plugins (team sharing 2b.3b): a team's are on
-	// /teams/<id>/plugins.
-	own := list[:0:0]
-	for _, p := range list {
-		if p.OwnerID == requestOwner(r.Context()) {
-			own = append(own, p)
-		}
-	}
-	list = own
+	// The principal's OWN plugins (the store's one owner filter): a team's
+	// are on /teams/<id>/plugins.
 	queued, err := s.ext.Plugins.QueuedCounts(r.Context())
 	if err != nil {
 		s.logger.Printf("plugins: page queued counts: %v", err)

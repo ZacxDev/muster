@@ -307,8 +307,8 @@ and its capabilities:
 
 `owner_login` is the owner's email, or the account's display name when it has
 no email. `owner_kind` is `person`, or `team` for a **team viewer plugin**
-(minted by a team's manager on `/teams/<id>/plugins`), whose answer also
-carries `team_name`. A team's token is served this route and the hand-off
+(minted by a team's manager on `/teams/<id>/plugins`), whose `owner_login`
+is the team's name. A team's token is served this route and the hand-off
 redeem only, and refused `403` at every other plugin route whatever its
 capabilities ([previews.md](previews.md#team-previews-manual-step-for-the-gateways-admin)). A revoked token or a disabled owner gets the `401` above, so calling
 this route is how a plugin learns of either.

@@ -356,8 +356,18 @@ func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (
 	return tok, p, nil
 }
 
+// ownedByPrincipal is THE ONE OWNER FILTER of the plugin rows a principal
+// lists or changes (team sharing 2b.3b, #696 round 0, D2): the principal's
+// OWN rows — a person's, or a team's under the team acting principal — never
+// a team's that a member's session can also read (0127 shares plugins at
+// operator). Every path a person's page or a manager's team page reaches
+// carries it (List, Revoke, SetDraftChecks, SetDeliverTo, MintHandoff), so a
+// new listing or change of plugin rows is filtered by default;
+// TestEveryPluginRowReadSaysWhoseRowsItReads classes every other read.
+const ownedByPrincipal = `owner_id = ` + principalOwner
+
 func (s *PGStore) List(ctx context.Context) ([]Plugin, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+pluginCols+` FROM plugins ORDER BY id DESC`)
+	rows, err := s.pool.Query(ctx, `SELECT `+pluginCols+` FROM plugins WHERE `+ownedByPrincipal+` ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +395,7 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 	found := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var revoked *time.Time
-		err := tx.QueryRow(ctx, `SELECT revoked_at FROM plugins WHERE id = $1 FOR UPDATE`, id).Scan(&revoked)
+		err := tx.QueryRow(ctx, `SELECT revoked_at FROM plugins WHERE id = $1 AND `+ownedByPrincipal+` FOR UPDATE`, id).Scan(&revoked)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -428,7 +438,7 @@ const ChecksOffDetail = "the plugin's Checks replies was turned off before it ch
 // plugin.draft.check_lapsed per draft.
 func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL FOR UPDATE`, id))
+		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL AND `+ownedByPrincipal+` FOR UPDATE`, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

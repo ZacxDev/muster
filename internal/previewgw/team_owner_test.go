@@ -10,13 +10,13 @@ import (
 // named team:<id>, and only a live answer whose owner IS that team matches —
 // never a person whose login spells the team's name, and a login never
 // matches a team's answer. The team's answer is muster's /self for a team
-// viewer plugin (owner_kind "team", team_name), parsed from its JSON.
+// viewer plugin (owner_kind "team"), parsed from its JSON.
 //
 // 🔴 RED at 595f5df0: team:<id> was a login no one had, so no host token
 // could be minted for a team.
 func TestResolveOwnerNamesATeamByItsID(t *testing.T) {
 	var team Self
-	if err := json.Unmarshal([]byte(`{"plugin_id":4,"plugin_name":"tv","owner_id":9041,"owner_login":"platform","owner_kind":"team","team_name":"platform","capabilities":["viewer"]}`), &team); err != nil {
+	if err := json.Unmarshal([]byte(`{"plugin_id":4,"plugin_name":"tv","owner_id":9041,"owner_login":"platform","owner_kind":"team","capabilities":["viewer"]}`), &team); err != nil {
 		t.Fatal(err)
 	}
 	if !team.IsTeam() {

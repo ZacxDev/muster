@@ -148,8 +148,7 @@ func (s *Server) setDeliverTo(ctx context.Context, id int64, deliverTo string) (
 // the /plugins card's form (revoke's gate). It answers the page again.
 func (s *Server) handlePluginDeliverToForm(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	// The principal's own only (ownsPlugin): never a team's.
-	if err != nil || id <= 0 || !s.ownsPlugin(r.Context(), id) {
+	if err != nil || id <= 0 {
 		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such live plugin.")
 		return
 	}

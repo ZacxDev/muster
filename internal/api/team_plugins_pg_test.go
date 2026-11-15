@@ -12,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -164,8 +166,11 @@ func TestATeamPluginTokenIsServedOnlyRedeemAndSelf(t *testing.T) {
 	code, body := f.pluginCall("GET", "/plugin/v1/self", "", tok)
 	var self map[string]any
 	_ = json.Unmarshal([]byte(body), &self)
-	if code != http.StatusOK || self["owner_id"] != float64(f.team) || self["owner_kind"] != "team" || self["team_name"] != "tplug-"+f.w.suffix {
+	if code != http.StatusOK || self["owner_id"] != float64(f.team) || self["owner_kind"] != "team" || self["owner_login"] != "tplug-"+f.w.suffix {
 		t.Fatalf("the team token's /self: %d %s; want 200 naming the team (owner_kind team)", code, body)
+	}
+	if _, has := self["team_name"]; has {
+		t.Errorf("/self carries team_name: %s; owner_login already names the team (#696 round 0, D1)", body)
 	}
 	msg := `{"external_id":"tplug-1","sender":"s","subject":"x","body":"x"}`
 	if code, body := f.pluginCall("POST", "/plugin/v1/messages", msg, tok); code != http.StatusForbidden || !strings.Contains(body, TeamPluginRouteRefusal) {
@@ -275,6 +280,11 @@ func TestATeamSessionsPreviewRunsOnTheTeamsPlugin(t *testing.T) {
 	if err := w.pool.QueryRow(w.sys, `SELECT owner_id FROM plugin_handoffs WHERE plugin_id = $1 ORDER BY minted_at DESC LIMIT 1`, teamPlugin.ID).Scan(&owner); err != nil || owner != f.team {
 		t.Errorf("the hand-off's owner: %d %v; want the team %d", owner, err, f.team)
 	}
+	// The member who opened it is in the team's audit (#696 round 0, (c)).
+	var opened int
+	if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM audit_log WHERE team_id = $1 AND action = 'team.plugin.handoff' AND user_id = $2`, f.team, f.cal).Scan(&opened); err != nil || opened != 1 {
+		t.Errorf("team.plugin.handoff audit rows naming cal: %d %v; want 1", opened, err)
+	}
 	if code, body := mint(f.cal, calPlugin.ID); code != http.StatusNotFound {
 		t.Errorf("cal's OWN plugin minted for the team's window: %d %s; want 404", code, body)
 	}
@@ -318,5 +328,33 @@ func TestATeamSessionsPreviewRunsOnTheTeamsPlugin(t *testing.T) {
 	}
 	if code, body := mint(f.cal, calPlugin.ID); code != http.StatusNotFound || !strings.Contains(body, TeamNoViewerPlugin) {
 		t.Errorf("cal's mint with the team's plugin revoked: %d %s; want 404 %q", code, body, TeamNoViewerPlugin)
+	}
+}
+
+// TestATeamPluginsPageAnswersAStaleManagerWithItsOwnNotice (#696 round 0,
+// (a)): A's request was admitted as a manager; she is made an operator before
+// the page's fresh role read. The plugins page answers 403 with ITS notice,
+// never the hosts page's.
+//
+// 🔴 RED at b26416f4: the page shared the hosts page's gate and its notice
+// ("Only a manager of the team manages its host tokens.").
+func TestATeamPluginsPageAnswersAStaleManagerWithItsOwnNotice(t *testing.T) {
+	f := newTPlug(t)
+	w := f.w
+	stale := stepup.WithAuthTime(authz.WithPrincipal(context.Background(), w.srv.principalFor(context.Background(), w.a.uid, authz.ViaSession)), time.Now())
+	if err := f.store.SetTeamMember(w.sys, f.admin, f.team, w.b.uid, authz.TeamManager); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetTeamMember(w.sys, f.admin, f.team, w.a.uid, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	id := strconv.FormatInt(f.team, 10)
+	r := httptest.NewRequest("GET", "/teams/"+id+"/plugins", nil).WithContext(stale)
+	r.SetPathValue("id", id)
+	rec := httptest.NewRecorder()
+	w.srv.handleTeamPluginsPage(rec, r)
+	body := rec.Body.String()
+	if rec.Code != http.StatusForbidden || !strings.Contains(body, html.EscapeString(TeamPluginsManager)) || strings.Contains(body, "host tokens") {
+		t.Fatalf("a stale manager on the plugins page: %d %q; want 403 %q", rec.Code, truncate(body, 300), TeamPluginsManager)
 	}
 }

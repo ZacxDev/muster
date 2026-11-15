@@ -158,8 +158,8 @@ the gateway's admin does it by hand, once per team.
    shown once; the manager gives it to the gateway's admin out of band.
 2. The gateway's admin appends that token to the gateway's
    `PLUGIN_TOKENS_FILE` (one token per line) and restarts the gateway, or
-   waits for its next re-read. Its `/self` answers `owner_kind` `team` and
-   the team's `team_name`.
+   waits for its next re-read. Its `/self` answers `owner_kind` `team`, its
+   `owner_login` the team's name.
 3. The admin mints each team host's host token as `team:<id>` (step 4
    above) and installs it on that machine for the Unix user the team shares.
 4. A member's Preview on a team session then opens on the team's plugin. With

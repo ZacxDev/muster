@@ -80,18 +80,27 @@ const (
 // by the caller (the request's memberships, then a FRESH read), and the
 // team-acting context the token rows are read and written under.
 func (s *Server) teamHostsWrite(w http.ResponseWriter, r *http.Request) (int64, context.Context, bool) {
+	return s.teamManagerPage(w, r, "Team hosts", TeamHostsManager)
+}
+
+// teamManagerPage is a manager page's gate (the hosts page's, the plugins
+// page's): team {id}, managed by the caller (the request's memberships, then
+// a FRESH read), and the team-acting context its rows are read and written
+// under. A caller the fresh read finds is not a manager is answered the
+// page's OWN notice (title, notManager).
+func (s *Server) teamManagerPage(w http.ResponseWriter, r *http.Request, title, notManager string) (int64, context.Context, bool) {
 	team, ok := s.managedTeam(w, r)
 	if !ok {
 		return 0, nil, false
 	}
 	tctx, err := s.teamAdminContext(r.Context(), team)
 	if errors.Is(err, ErrNotTeamManager) {
-		s.renderNotice(w, r, http.StatusForbidden, "Team hosts", TeamHostsManager)
+		s.renderNotice(w, r, http.StatusForbidden, title, notManager)
 		return 0, nil, false
 	}
 	if err != nil {
-		s.logger.Printf("teams: hosts of team %d: %v", team, err)
-		s.renderNotice(w, r, http.StatusInternalServerError, "Team hosts", "Your team role could not be read just now. Try again.")
+		s.logger.Printf("teams: %s of team %d: %v", title, team, err)
+		s.renderNotice(w, r, http.StatusInternalServerError, title, "Your team role could not be read just now. Try again.")
 		return 0, nil, false
 	}
 	return team, tctx, true
