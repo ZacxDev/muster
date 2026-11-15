@@ -100,6 +100,15 @@ class Fallback(unittest.TestCase):
                 self.assertEqual(r["fallback"], f"{path}: {why}")
                 self.assertEqual(r["selected_tests"], r["total_tests"])
 
+    def test_the_fallback_list_is_exactly_this(self):
+        # Literal, so deleting a rule from goselect.py fails here (the loop above
+        # derives its cases from the list itself and cannot see a deletion).
+        self.assertEqual([r for r, _ in goselect.FALLBACK], [
+            "go.mod", "go.sum", "package.json", "package-lock.json", "e2e/package.json", "e2e/package-lock.json",
+            "flake.nix", "flake.lock", ".github/", "tests/", "Makefile", "docker-compose.test.yml",
+            "internal/dbtest/", "internal/db/migrations/", "cmd/muster-migrate/"])
+        self.assertTrue(all(why for _, why in goselect.FALLBACK))
+
     def test_a_prefix_rule_is_a_directory_not_a_string_prefix(self):
         self.assertIsNone(goselect.fallback_for("testsuite/x.go"))
         self.assertIsNone(goselect.fallback_for("go.modfoo"))
@@ -115,12 +124,23 @@ class Fallback(unittest.TestCase):
         self.assertIsNone(sel(["leaf/leaf.go"], counts=counts)["fallback"])
 
     def test_the_selector_failing_falls_back(self):
+        import subprocess
+        here = os.getcwd()
         with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
             out = f"{d}/s.json"
-            with redirect_stdout(io.StringIO()):
-                goselect.cmd_select(SimpleNamespace(base="", head="HEAD", out=out))
-            r = json.loads(Path(out).read_text())
-            self.assertTrue(r["fallback"].startswith("selector error: no base revision"))
+            try:
+                for base, want in (("", "selector error: no base revision"), ("0000000", "selector error: no base revision")):
+                    os.chdir(d)
+                    with redirect_stdout(io.StringIO()):
+                        goselect.cmd_select(SimpleNamespace(base=base, head="HEAD", out=out))
+                    self.assertTrue(json.loads(Path(out).read_text())["fallback"].startswith(want), base)
+                os.chdir(tempfile.gettempdir())  # not a repository: still a fallback, never a raise
+                with redirect_stdout(io.StringIO()):
+                    goselect.cmd_select(SimpleNamespace(base="HEAD~1", head="HEAD", out=out))
+                self.assertTrue(json.loads(Path(out).read_text())["fallback"].startswith("selector error:"))
+            finally:
+                os.chdir(here)
 
 
 class AlwaysRun(unittest.TestCase):

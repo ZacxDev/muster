@@ -212,9 +212,9 @@ def run(*args: str, cwd: str | None = None) -> str:
 
 
 def cmd_select(a) -> int:
-    root = run("git", "rev-parse", "--show-toplevel").strip()
     res: dict = {"base": a.base, "head": a.head}
     try:
+        root = run("git", "rev-parse", "--show-toplevel").strip()
         if not a.base or set(a.base) == {"0"}:
             raise RuntimeError("no base revision (a new branch, or a run that is full by design)")
         changed = [f for f in run("git", "diff", "--no-renames", "--name-only", "-z", a.base, a.head, cwd=root).split("\0") if f]
