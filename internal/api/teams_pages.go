@@ -118,7 +118,8 @@ func (s *Server) renderTeamPage(w http.ResponseWriter, r *http.Request, team int
 		`<p class="text-sm"><a class="text-accent underline" id="team-chief-link" href="/teams/` + id + `/chief">Open the team's chief</a></p></section>`)
 	// The team's host tokens (team_hosts_page.go, team sharing 2b.2).
 	b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Team hosts</h2>` +
-		`<p class="text-sm"><a class="text-accent underline" id="team-hosts-link" href="/teams/` + id + `/hosts">Manage the team's host tokens</a></p></section>`)
+		`<p class="text-sm"><a class="text-accent underline" id="team-hosts-link" href="/teams/` + id + `/hosts">Manage the team's host tokens</a></p>` +
+		`<p class="text-sm"><a class="text-accent underline" id="team-plugins-link" href="/teams/` + id + `/plugins">Manage the team's viewer plugins</a></p></section>`)
 	if entries, err := s.gt.Accounts.TeamAudit(ctx, team, 25); err == nil && len(entries) > 0 {
 		b.WriteString(`<section class="` + adminCard + `"><h2 class="text-base font-semibold text-fg">Recent team activity</h2><ul class="flex flex-col gap-1 text-sm text-fg2" id="team-audit">`)
 		for _, e := range entries {

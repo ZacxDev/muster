@@ -242,14 +242,29 @@ func (g *Gateway) enterPreview(w http.ResponseWriter, r *http.Request, id string
 		g.renderCode(w, http.StatusForbidden, codeEntryUsed)
 		return
 	}
-	v, err := g.sign.mintOwnerCookie(id, who, g.clock.Now())
+	ttl := g.ownerCookieTTL(who)
+	v, err := g.sign.mintOwnerCookie(id, who, g.clock.Now(), ttl)
 	if err != nil {
 		g.m.refused(codeInternal)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, ownerCookieHeader(v, r.Header.Get("Sec-Fetch-Dest")))
+	http.SetCookie(w, ownerCookieHeader(v, r.Header.Get("Sec-Fetch-Dest"), ttl))
 	http.Redirect(w, r, checkPath, http.StatusSeeOther)
+}
+
+// ownerCookieTTL is how long owner's cookie lasts: TeamOwnerCookieTTL when
+// muster's /self names the owner a team (a live token's owner_kind), else
+// OwnerCookieTTL.
+func (g *Gateway) ownerCookieTTL(owner int64) time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, ts := range g.tokens {
+		if ts.owner == owner && ts.team {
+			return TeamOwnerCookieTTL
+		}
+	}
+	return OwnerCookieTTL
 }
 
 // continueTo is /__muster/check's answer for an admitted owner: a page whose

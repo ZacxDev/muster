@@ -48,7 +48,7 @@ var doorAdmitsATeam = map[authz.Via]bool{
 	authz.ViaMirrorHost: true,  // a mirror host: a TEAM HOST's token (2b.2) acts as the team, through teamHostTools
 	authz.ViaPageLink:   false, // a page share link
 	authz.ViaDevice:     false, // a paired phone
-	authz.ViaPlugin:     false, // a plugin (team plugins are phase 3)
+	authz.ViaPlugin:     true,  // a plugin: a TEAM VIEWER PLUGIN's token (2b.3b) acts as the team, through teamPluginRoutes
 }
 
 // TestOnlyTheAgentDoorsAdmitATeam is the ledger over every authenticated

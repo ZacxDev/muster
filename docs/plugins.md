@@ -299,14 +299,18 @@ and its capabilities:
 
 ```json
 {"plugin_id": 3, "plugin_name": "example-inbox", "owner_id": 1,
- "owner_login": "owner@example.invalid", "capabilities": ["messages"],
- "deliver_to": null}
+ "owner_login": "owner@example.invalid", "owner_kind": "person",
+ "capabilities": ["messages"], "deliver_to": null}
 ```
 
 `deliver_to` is `"officer:<id>"` for a plugin [bound to an officer](#a-plugin-bound-to-an-officer).
 
 `owner_login` is the owner's email, or the account's display name when it has
-no email. A revoked token or a disabled owner gets the `401` above, so calling
+no email. `owner_kind` is `person`, or `team` for a **team viewer plugin**
+(minted by a team's manager on `/teams/<id>/plugins`), whose `owner_login`
+is the team's name. A team's token is served this route and the hand-off
+redeem only, and refused `403` at every other plugin route whatever its
+capabilities ([previews.md](previews.md#team-previews-manual-step-for-the-gateways-admin)). A revoked token or a disabled owner gets the `401` above, so calling
 this route is how a plugin learns of either.
 
 ### `POST /plugin/v1/messages`: an inbound message

@@ -69,6 +69,9 @@ func (s *Server) requirePluginViewersOn(next http.HandlerFunc) http.HandlerFunc 
 // window are read from the target: the session is the hub's.
 type pluginHandoffMintIn struct {
 	Plugin int64 `json:"plugin"`
+	// Owner, when set and not the principal's own, is the TEAM whose host the
+	// window is on (team sharing 2b.3b): the plugin must be that team's.
+	Owner  int64 `json:"owner"`
 	Target struct {
 		Mirror *struct {
 			Host   string `json:"host"`
@@ -91,12 +94,39 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "refused").Inc()
 		s.writeJSON(w, code, map[string]any{"error": msg})
 	}
-	target, ok := s.handoffMirrorTarget(r, in.Target.Mirror.Host, in.Target.Mirror.Window)
+	// 🔴 WHOSE PLUGIN, ON WHOSE WINDOW (team sharing 2b.3b). The principal's
+	// own window takes the principal's own plugin (the store's one owner
+	// filter: never a team's, which a member's session can also read). A TEAM
+	// host's window takes the
+	// TEAM's plugin, never the viewer's: after a fresh viewer read
+	// (teamViewerPlugins), the window is resolved over the team's hosts and
+	// the hand-off minted AS THE TEAM (teamPreviewPrincipal; the orchestrator's
+	// sign-off on the operator's ruling), and the member who opened it is
+	// recorded in the team's audit (team.plugin.handoff). A team with no
+	// viewer plugin is refused with TeamNoViewerPlugin.
+	mctx := r.Context()
+	var target plugins.MirrorTarget
+	ok := false
+	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
+		ps, member := s.teamViewerPlugins(r.Context(), in.Owner, in.Target.Mirror.Window)
+		if !member {
+			refused(http.StatusNotFound, PluginHandoffNoWindow)
+			return
+		}
+		if len(ps) == 0 {
+			refused(http.StatusNotFound, TeamNoViewerPlugin)
+			return
+		}
+		target, ok = handoffTargetIn(s.teamHostsOf(r.Context(), in.Owner), in.Target.Mirror.Host, in.Target.Mirror.Window)
+		mctx = s.teamPreviewPrincipal(r.Context(), in.Owner)
+	} else {
+		target, ok = s.handoffMirrorTarget(r, in.Target.Mirror.Host, in.Target.Mirror.Window)
+	}
 	if !ok {
 		refused(http.StatusNotFound, PluginHandoffNoWindow)
 		return
 	}
-	code, p, err := s.ext.Plugins.MintHandoff(r.Context(), in.Plugin, plugins.HandoffIn{
+	code, p, err := s.ext.Plugins.MintHandoff(mctx, in.Plugin, plugins.HandoffIn{
 		Target:  plugins.HandoffTarget{Mirror: &target},
 		Purpose: plugins.PurposeView,
 		// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field.
@@ -123,6 +153,12 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "minted").Inc()
+	if in.Owner > 0 && in.Owner != requestOwner(r.Context()) {
+		// The member who opened the TEAM's hand-off (#696 round 0, (c)): the
+		// row is the team's, so the team's audit names the person.
+		s.auditTeam(r.Context(), actorOf(r), in.Owner, "team.plugin.handoff", "plugin:"+strconv.FormatInt(p.ID, 10),
+			map[string]any{"host": target.Host, "window": target.Window})
+	}
 	// The entry URL was validated at mint to carry no query; build it anyway.
 	u, err := url.Parse(*p.EntryURL)
 	if err != nil {
@@ -137,10 +173,19 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 // hosts as the hub lists them now: the host must be the principal's and list a
 // window with exactly that tmux id. The session is the listing's.
 func (s *Server) handoffMirrorTarget(r *http.Request, host, window string) (plugins.MirrorTarget, bool) {
-	if s.ext.Mirror == nil || mirror.ValidHost(host) != nil || mirror.ValidWindowID(window) != nil {
+	if s.ext.Mirror == nil {
 		return plugins.MirrorTarget{}, false
 	}
-	for _, h := range s.ext.Mirror.Hosts(r.Context()) {
+	return handoffTargetIn(s.ext.Mirror.Hosts(r.Context()), host, window)
+}
+
+// handoffTargetIn resolves (host, window) against hosts: the host must list a
+// window with exactly that tmux id. The session is the listing's.
+func handoffTargetIn(hosts []mirror.HostView, host, window string) (plugins.MirrorTarget, bool) {
+	if mirror.ValidHost(host) != nil || mirror.ValidWindowID(window) != nil {
+		return plugins.MirrorTarget{}, false
+	}
+	for _, h := range hosts {
 		if h.Host != host {
 			continue
 		}

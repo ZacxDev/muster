@@ -715,6 +715,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/hosts":                classParam,
 	"POST /teams/{id}/hosts/{token}/revoke": classParam,
 	"POST /teams/{id}/hosts/replace":        classParam,
+	// A team's viewer plugins (2b.3b): {id} is a team A manages.
+	"GET /teams/{id}/plugins":                  classParam,
+	"POST /teams/{id}/plugins":                 classParam,
+	"POST /teams/{id}/plugins/{plugin}/revoke": classParam,
 	// Host officer spawns and their team lend (phase 3): the list shows the
 	// caller's own (and those lent to their teams); {id} is A's spawn.
 	"GET /officers/spawns":                 classList,
@@ -1612,14 +1616,14 @@ type isoObjs struct {
 	// mirrorOwner, when set, is a TEAM whose host the mirror routes name
 	// (`owner=`, team sharing 2b.3): the team-host leg of teamRoleWalks.
 	mirrorOwner int64
-	queued                         int64  // a queued message's id (0019)
-	upload                         string // a file attachment's public id (0024)
-	route                          string // a session route's id (0021)
-	pluginMsg                      int64  // a plugin message's id (its retry route)
-	refWrite                       int64  // a write queued on a plugin task reference (0072)
-	refTask                        int64  // the reference refWrite is on (its retry/dismiss routes' {id})
-	ask                            int64  // an attention ask's id (0025)
-	standing                       int64  // a shared approval's id (0043)
+	queued      int64  // a queued message's id (0019)
+	upload      string // a file attachment's public id (0024)
+	route       string // a session route's id (0021)
+	pluginMsg   int64  // a plugin message's id (its retry route)
+	refWrite    int64  // a write queued on a plugin task reference (0072)
+	refTask     int64  // the reference refWrite is on (its retry/dismiss routes' {id})
+	ask         int64  // an attention ask's id (0025)
+	standing    int64  // a shared approval's id (0043)
 	// Routing rules (0107): one per write route, so the walk's order cannot
 	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
 	// disabled (Enable's), ruleDel active (Delete's).

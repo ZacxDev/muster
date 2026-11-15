@@ -189,6 +189,13 @@ func (s *Server) requirePluginToken(next http.HandlerFunc, need plugins.Capabili
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the plugin token"})
 			return
 		}
+		// 🔴 A TEAM's token (team sharing 2b.3b) is served teamPluginRoutes'
+		// kept routes alone — the hand-off redeem and /self — WHATEVER ITS
+		// ROW'S CAPABILITIES SAY: the door, not the row, is the guard.
+		if p.OwnerTeam && !teamPluginRoutes[r.Pattern] {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamPluginRouteRefusal})
+			return
+		}
 		if need != pluginCapAny && !p.Has(need) {
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PluginCapabilityRefusal(need)})
 			return
@@ -225,12 +232,41 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 	return true
 }
 
+// teamPluginRoutes is EVERY /plugin/v1 route a TEAM's plugin token is served
+// (team sharing 2b.3b): true, kept; false, refused at the door. The pairing
+// routes take no token and are not here. TestATeamPluginTokenIsServedOnlyRedeemAndSelf
+// pins this table to routes.golden, failing when it grows or shrinks.
+var teamPluginRoutes = map[string]bool{
+	"POST /plugin/v1/handoffs/redeem":              true,
+	"GET /plugin/v1/self":                          true,
+	"GET /plugin/v1/drafts/checks":                 false,
+	"GET /plugin/v1/tasks":                         false,
+	"POST /plugin/v1/drafts/claim":                 false,
+	"POST /plugin/v1/drafts/{id}/check":            false,
+	"POST /plugin/v1/drafts/{id}/media":            false,
+	"POST /plugin/v1/drafts/{id}/renew":            false,
+	"POST /plugin/v1/drafts/{id}/result":           false,
+	"POST /plugin/v1/messages":                     false,
+	"POST /plugin/v1/messages/{id}/owner-answered": false,
+	"POST /plugin/v1/task-writes/claim":            false,
+	"POST /plugin/v1/task-writes/{id}/result":      false,
+	"POST /plugin/v1/tasks":                        false,
+}
+
+// TeamPluginRouteRefusal answers a team plugin token anywhere but the
+// hand-off redeem and /self.
+const TeamPluginRouteRefusal = "this is a team's viewer plugin token: it redeems preview hand-offs and reads /self, and nothing else"
+
 // pluginSelf is GET /plugin/v1/self's answer: who the presented token is.
+// OwnerKind is "person" or "team" (team sharing 2b.3b; a team's OwnerLogin
+// is its name): a preview gateway names a team owner as team:<id>
+// (internal/previewgw ResolveOwner).
 type pluginSelf struct {
 	PluginID     int64                `json:"plugin_id"`
 	PluginName   string               `json:"plugin_name"`
 	OwnerID      int64                `json:"owner_id"`
 	OwnerLogin   string               `json:"owner_login"`
+	OwnerKind    string               `json:"owner_kind"`
 	Capabilities []plugins.Capability `json:"capabilities"`
 	DeliverTo    *string              `json:"deliver_to"`
 }
@@ -241,8 +277,12 @@ type pluginSelf struct {
 // the door's 401, which is how a plugin learns either within one call.
 func (s *Server) handlePluginSelf(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
-	s.writeJSON(w, http.StatusOK, pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
-		OwnerLogin: p.OwnerLogin, Capabilities: p.Capabilities, DeliverTo: p.DeliverTo})
+	self := pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
+		OwnerLogin: p.OwnerLogin, OwnerKind: "person", Capabilities: p.Capabilities, DeliverTo: p.DeliverTo}
+	if p.OwnerTeam {
+		self.OwnerKind = "team"
+	}
+	s.writeJSON(w, http.StatusOK, self)
 }
 
 // handlePluginMessage is POST /plugin/v1/messages: store one inbound message
@@ -414,6 +454,8 @@ func (s *Server) handlePluginCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePluginRevoke(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	found := false
+	// The principal's OWN plugin only — the store's one owner filter: a
+	// team's is revoked on /teams/<id>/plugins, as the team, audited.
 	if err == nil && id > 0 {
 		found, err = s.ext.Plugins.Revoke(r.Context(), id)
 		if err != nil {
@@ -499,6 +541,8 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		s.logger.Printf("plugins: page list: %v", err)
 		problem = "The plugin list could not be read."
 	}
+	// The principal's OWN plugins (the store's one owner filter): a team's
+	// are on /teams/<id>/plugins.
 	queued, err := s.ext.Plugins.QueuedCounts(r.Context())
 	if err != nil {
 		s.logger.Printf("plugins: page queued counts: %v", err)

@@ -161,8 +161,8 @@ func TestAViewerOnlyTokenIsRefusedOnTheMessagesRoutes(t *testing.T) {
 func TestPluginSelfNamesTheTokensPluginAndOwner(t *testing.T) {
 	_, h, personal := newPluginsDoorServer(t, &countingPlugins{})
 	for tok, want := range map[string]string{
-		pgnTok:       `{"plugin_id":3,"plugin_name":"example-inbox","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["messages"],"deliver_to":null}`,
-		pgnViewerTok: `{"plugin_id":4,"plugin_name":"example-viewer","owner_id":1,"owner_login":"owner@example.invalid","capabilities":["viewer"],"deliver_to":null}`,
+		pgnTok:       `{"plugin_id":3,"plugin_name":"example-inbox","owner_id":1,"owner_login":"owner@example.invalid","owner_kind":"person","capabilities":["messages"],"deliver_to":null}`,
+		pgnViewerTok: `{"plugin_id":4,"plugin_name":"example-viewer","owner_id":1,"owner_login":"owner@example.invalid","owner_kind":"person","capabilities":["viewer"],"deliver_to":null}`,
 	} {
 		rec := pServe(h, "GET", "/plugin/v1/self", "", pBearer(tok))
 		if rec.Code != http.StatusOK {

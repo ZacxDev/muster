@@ -29,13 +29,18 @@ var actsAsTeam = map[Via]bool{
 	// the team (internal/api serves it teamHostTools only), and the question
 	// watcher reads a team host's window as the team.
 	ViaMirrorHost: true, ViaAsk: true,
+	// A TEAM VIEWER PLUGIN (team sharing 2b.3b): its token's door acts as the
+	// team (internal/api serves it teamPluginRoutes only), and a member's
+	// preview of a team session reads the team's plugins and writes its
+	// hand-off as the team (teamPreviewPrincipal).
+	ViaPlugin: true,
 	// A team-owned gateway agent's turn: NOT a team door in phase 4.
 	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
 	ViaKickoff: false, ViaAgentMessage: false,
 	// Never a team.
 	ViaSession: false, ViaDevice: false, ViaToken: false, ViaHook: false, ViaService: false,
-	ViaRunner: false, ViaPlugin: false, ViaPageLink: false,
+	ViaRunner: false, ViaPageLink: false,
 	ViaQueue: false, ViaFocus: false,
 }
 
@@ -97,7 +102,7 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 12 {
+	if accepted != 13 {
 		t.Fatalf("accepted a team at %d doors; the ledger names 12", accepted)
 	}
 }

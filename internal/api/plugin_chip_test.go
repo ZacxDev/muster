@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/ZacxDev/muster/internal/authz"
 	"net/http"
 	"regexp"
 	"strings"
@@ -45,7 +46,9 @@ func viewerRow(id int64, label, origin, entry string, caps ...plugins.Capability
 	if len(caps) == 0 {
 		caps = []plugins.Capability{plugins.CapViewer}
 	}
-	p := plugins.Plugin{ID: id, Name: "p" + label, Label: label, Capabilities: caps}
+	// The page's viewer (user 1) owns it: since team sharing 2b.3b the chips
+	// keep the principal's OWN plugins only (liveViewerPluginsOf).
+	p := plugins.Plugin{ID: id, OwnerID: authz.OperatorUserID, Name: "p" + label, Label: label, Capabilities: caps}
 	if origin != "" {
 		p.Origin, p.EntryURL = &origin, &entry
 	}

@@ -27,6 +27,13 @@ const (
 	OwnerCookie = "__Host-mp"
 	// OwnerCookieTTL is how long an owner cookie admits its owner.
 	OwnerCookieTTL = 8 * time.Hour
+	// TeamOwnerCookieTTL is how long it admits a TEAM owner (team sharing
+	// 2b.3b; #696 round 1, 🟡3): the gateway knows nothing of membership, so
+	// a member muster removes keeps a team preview they opened until their
+	// cookie expires. A team's cookie is therefore short, and each renewal
+	// goes back through muster's Preview button, where the member's role is
+	// read fresh.
+	TeamOwnerCookieTTL = 15 * time.Minute
 	// PageTokenTTL is how long a session page's token works; a reload or an
 	// expired token means clicking muster's chip again.
 	PageTokenTTL = 15 * time.Minute
@@ -87,9 +94,9 @@ type ownerClaim struct {
 }
 
 // mintOwnerCookie is the signed value of an owner cookie for (preview, owner),
-// expiring OwnerCookieTTL after now.
-func (s signer) mintOwnerCookie(preview string, owner int64, now time.Time) (string, error) {
-	return s.seal(kindOwnerCookie, ownerClaim{Preview: preview, Owner: owner, Expires: now.Add(OwnerCookieTTL).Unix()})
+// expiring ttl after now (OwnerCookieTTL, or TeamOwnerCookieTTL for a team).
+func (s signer) mintOwnerCookie(preview string, owner int64, now time.Time, ttl time.Duration) (string, error) {
+	return s.seal(kindOwnerCookie, ownerClaim{Preview: preview, Owner: owner, Expires: now.Add(ttl).Unix()})
 }
 
 // checkOwnerCookie reports whether v admits owner to preview at now: signed
@@ -117,8 +124,8 @@ func (s signer) checkOwnerCookie(v, preview string, owner int64, now time.Time) 
 //     site, so a page a preview opens on its own never carries it.
 //   - anything else (document: a new tab; or a browser that sends no
 //     Fetch Metadata): SameSite=Strict, not partitioned.
-func ownerCookieHeader(value, secFetchDest string) *http.Cookie {
-	c := &http.Cookie{Name: OwnerCookie, Value: value, Path: "/", MaxAge: int(OwnerCookieTTL / time.Second),
+func ownerCookieHeader(value, secFetchDest string, ttl time.Duration) *http.Cookie {
+	c := &http.Cookie{Name: OwnerCookie, Value: value, Path: "/", MaxAge: int(ttl / time.Second),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode}
 	if secFetchDest == "iframe" {
 		c.SameSite = http.SameSiteNoneMode
