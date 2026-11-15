@@ -543,6 +543,7 @@ var agentReadCallers = map[string]string{
 	"GetByName officerFleet.Reprompt":            "machine: an officer's door",
 	"GetByName officerFleet.Start":               "machine: an officer's door",
 	"GetByName officerFleet.Stop":                "machine: an officer's door",
+	"GetByName Server.teardownInstances":         "machine: an officer's door (a deleted DB-declared officer's instances, read as its owner)",
 }
 
 // TestEveryAgentReadCallerIsClassified is agentReadCallers' walk: every

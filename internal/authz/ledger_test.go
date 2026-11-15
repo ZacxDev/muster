@@ -266,6 +266,14 @@ var (
 		"internal/api.(*Server).SweepOfficerAttention",
 		"internal/api.(*Server).handleOfficerDefPut",
 		"internal/api.(*Server).handleTeamOfficerDefPut",
+		// …the same escalate_to check on the declared-officer API's create and
+		// replace (officer_declared.go, migration 0135), answering only which
+		// of the caller's own ids are missing; and its roster loader, which
+		// reads every owner's DB-declared officer rows (the runtime fields, no
+		// charter) to run each as its owner — as the scheduler below reads
+		// every owner's due schedules.
+		"internal/api.(*Server).escalationRefusal",
+		"internal/api.(*Server).reloadDeclaredOfficers",
 		// …and its scheduler (#503 slice 8): FireDue reads every owner's due
 		// schedules and fires each with a compare-and-set, inserting the item
 		// with that schedule's own owner_id.

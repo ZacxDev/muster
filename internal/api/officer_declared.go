@@ -283,8 +283,12 @@ func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (ru
 // what EnableOfficers refuses an env pod officer without.
 func (s *Server) podRuntimeRefusal() string {
 	switch {
-	case s.ext.Agents == nil || s.ext.Provisioner == nil:
-		return "this muster has no agent provisioner (pods need the Kubernetes agent plane)"
+	// 🔴 dispatchServed, NOT "a provisioner": a pod officer's instance is a
+	// DISPATCH (createAndDispatchAgent), and the Compose chief's provisioner
+	// runs the chief alone — it must answer no here, as it does for every
+	// dispatch.
+	case s.ext.Agents == nil || !s.dispatchServed():
+		return "this muster has no agent provisioner that dispatches agents (pods need the Kubernetes agent plane)"
 	case !s.ext.kindEnabled(agents.KindClaudeCode):
 		return "MUSTER_AGENT_KINDS does not enable " + string(agents.KindClaudeCode)
 	case s.officerRT == nil || !s.officerRT.sessionInstalled:
