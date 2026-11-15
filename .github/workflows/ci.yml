@@ -45,11 +45,12 @@ on:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
-  # 🔴 NIGHTLY, UNCACHED: the `test` shards restore no Go cache on this event,
-  # so it is the full verdict on main that a cache-replayed (or, once enforced,
-  # a test-selected) green is checked against. Runs on the default branch only.
-  schedule:
-    - cron: '23 7 * * *'
+  # ⚠ NO `schedule` (nightly) TRIGGER, ON PURPOSE (PR #691): a scheduled run
+  # lands on main's HEAD sha, and the downstream release tool refuses a sha
+  # unless EVERY CI run for it succeeded (see the tag filter above) — so one
+  # flaky nightly would block releasing that sha. The `schedule` branches in
+  # the `test` job (restore no cache) are ready for a nightly that does not
+  # count against a release; adding one is the operator's call.
 
 # 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
 # CANCELLED OR DROPPED. A newer commit on a PR supersedes the older run of the
