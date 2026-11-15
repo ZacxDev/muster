@@ -1348,9 +1348,12 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 | field | default | |
 |---|---|---|
 | `stage` | **required** | `draft` (open DRAFT pull requests only, in one to three repositories — [The draft stage](#the-draft-stage)), `shepherd` (act on OTHER officers' pull requests only: fast-forward pushes, comments, update-branch, mark ready — [The shepherd stage](#the-shepherd-stage)), `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
-| `repos` | none | `draft` and `shepherd` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
+| `repos` | none | `draft` and `shepherd` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?, public?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
 | `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
+| `docs_only` | none | `draft` only: `{allowed_paths, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
+| `public` | `false` | `draft` and `shepherd` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches (their names included) and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). A shepherd's pushes are scanned only where ITS OWN block marks the repository public. |
+| `internal_patterns_file` | none | `draft` and `shepherd` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
 | `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. On the `draft` stage it is **pinned**: any value but `officer/` is refused at boot, because the target repositories' own checks select officer pull requests by that prefix. |
 | `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
@@ -1571,6 +1574,114 @@ each draft officer's branches, older than 7 days by their head commit, that no
 pull request (in any state, found by the branch) was opened from — a refused
 proposal leaves one — logs them and posts them to HQ's notices route. The
 report deletes nothing.
+
+### Docs-only drafts
+
+A `draft` officer whose job is documentation gets a narrower wall: a
+`docs_only` block, and `public: true` on each repository anyone can read.
+Both only **add** refusals to the draft stage's above; neither lifts one, and
+both are boot refusals on every other stage. They run inside the same
+comparison check, so they hold at create, at every `PATCH`, after every push
+and on every sweep, and a hit is answered the same way (409 and an HQ notice
+at create or `PATCH`; the pull request closed, and its branch deleted on a
+content hit, after a push or on a sweep).
+
+```json
+"ship": {"stage": "draft", "notice": {"channel": "ch/example-docs"},
+  "docs_only": {"allowed_paths": ["**/*.md", ".claude/skills/**/*.md", "claudedocs/**"],
+                "max_diff_lines": 200, "max_files": 5, "max_prs_per_day": 2},
+  "internal_patterns_file": "/etc/muster/internal-patterns.txt",
+  "repos": [
+    {"repo": "example-org/example-infra", "github_app": {"id": 123456, "account": "example-org:7654321"},
+     "forbidden_paths": ["docs/officers/**", "OFFICERS.md", "CLAUDE.md", ".claude/**"]},
+    {"repo": "example-org/example-docs", "public": true, "github_app": {"id": 123456, "account": "example-org:7654321"}}]}
+```
+
+| `docs_only` field | default | |
+|---|---|---|
+| `allowed_paths` | **required** (1–64) | Globs in `forbidden_paths` syntax with one difference: a pattern with no `/` matches the file's **own name** only, never a directory, so `*.md` allows `docs/a.md` and not `notes.md/run.go`. An entry that would allow an obvious code path (`main.go`, `Makefile`, `scripts/run.sh`, a workflow file — so `*` and `**`) is a boot refusal. |
+| `max_diff_lines` | `300` (1–5000) | The comparison's added plus removed lines. |
+| `max_files` | `10` (1–100) | The comparison's changed files. |
+| `max_prs_per_day` | the stage's 3 | Pull requests opened per UTC day across the officer's repositories; it can only lower the stage's limit. |
+
+**The allowlist.** Every changed, added or removed path, **and** every path a
+rename or copy came from, must be clean and match an allowed glob. One path
+outside refuses the **whole** pull request: a `.go` file beside a `.md` file
+is refused, never half-admitted. A path with an empty, `.` or `..` segment, a
+backslash, a leading `/` or a control character is refused whatever it
+matches: git stores none, so it is a trick, not a path. The forbidden paths
+still apply on top: a `.md` file under one (an officer charter, say) is
+refused. A rename from code to `.md` is refused by its old path.
+
+**No command edits**, and no switch lifts the rule (an unknown key such as
+`allow_command_edits` is a boot refusal). A changed file that is
+not Markdown (`.md`, `.markdown`; not `.mdx`, which holds code) is refused
+whole: an allowed `claudedocs/notes.sh` is a command file. In a Markdown
+file, a changed line — added or removed — that sits inside a fenced code
+block, or is a fence line itself, is refused. The fences are read from the
+**whole** file, at the comparison's merge base for removed lines and at the
+head for added ones, so a hunk that starts inside a block is judged right.
+Four readings are unioned, and a line any of them puts in a block is in one:
+each of strict (at most three spaces of indentation) and loose (any
+indentation), read both container-aware and container-blind. Container-aware
+strips `>` blockquote markers and list markers such as `- `, `* `, `1. ` or
+`1) ` (so `- ```sh` opens a block) and closes a block only on a fence line at
+the blockquote depth that opened it and carrying no list marker (a `> ````
+line inside an unquoted block is content, and `- ```` starts a new item and a
+new block). Container-blind strips only the `>` markers and closes at any
+depth; it is what catches a block that CommonMark opens after an unindented
+line ends a list item, or an unquoted line ends a quote, and the fence with
+it. No single reading errs toward "in a block" everywhere; the union is never
+narrower than any one of them, and over-marking is the error it accepts
+(a false refusal is the safe one): prose after a list item's fence, for one,
+is refused. A leading YAML front matter block (line
+1 `---` through the next `---`, or the end of the file) counts as a block too:
+an agent's `tools:` or a skill's `allowed-tools:` is configuration. A file that
+cannot be read, or a changed line the file does not have, refuses (fail
+closed). ⚠ Indented (four-space) code blocks and HTML `<pre>`
+are not read as code.
+
+**Public repositories.** For a repository marked `public`, muster scans the
+**branch name** of every push before forwarding it (a name is public the
+moment GitHub has it, and the pull request page keeps showing it after the
+branch is deleted, so a matching name is refused, never pushed), the diff's
+**added** lines, its new paths, every commit's message and author and
+committer identity, and the pull request's title, body and comments, with the
+patterns of `internal_patterns_file`: one RE2 expression per line, matched
+case-insensitively, blank lines and `#` comments skipped. A line that does not
+compile, one that matches the empty string, or a file with no pattern is a
+boot refusal; the file is read again at every check (so it can be updated in
+place) and a check that cannot read it refuses. A refusal names the pattern's
+**line number**, never the pattern or the text it matched. Removing a line
+that matches is admitted: that is a cleanup. **The patterns stay out of every
+repository muster ships to**: keep the file in a private repository and mount
+it into muster-server.
+
+🔴 **A public branch is public before any pull request.** After a push to a
+public repository's officer branch with **no** open pull request, muster
+checks the branch at once (for a private repository, a branch with no pull
+request waits for its create). A content hit deletes the branch and posts a
+notice saying the content was public until then — GitHub can still serve the
+commit by its sha — so treat it as a leak: rotate what leaked, never rewrite
+history. 🔴 **Fail closed**: nothing else reads such a branch again (the sweep
+walks open pull requests only), so a check that cannot run — a comparison
+GitHub will not give or truncates (300 files, 250 commits), an unreadable
+`forbidden_paths_file` or pattern file — deletes the branch as well, with a
+notice calling it a possible leak; the officer keeps its commits and pushes
+again. An unreadable `forbidden_paths_file` never stops the internal-details
+scan: a leak next to it is still found and named.
+
+A **shepherd** pushing into a pull request of a public repository is scanned
+the same way before its push lands (and again when it marks the pull request
+ready), and its comments are scanned before they are forwarded, but only when
+the shepherd's own `ship` block marks that repository `public` with an
+`internal_patterns_file`: muster does not read another officer's `public`
+flag. Mark every public repository a shepherd ships. 🔴 **A refused shepherd
+push was still public**: GitHub stored it at its scratch ref
+(`refs/muster/shepherd/<nonce>`) before muster checked it, and deleting the
+ref does not stop GitHub serving its commits by sha. In a public repository
+the refusal notice says so: treat it as a leak, rotate what leaked, never
+rewrite history.
 
 ### The shepherd stage
 
