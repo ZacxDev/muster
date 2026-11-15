@@ -698,8 +698,16 @@ func shipGrantsDescription(o officers.Officer) string {
 	if len(o.ReadRepos) > 0 {
 		read = "; reads of " + strings.Join(o.ReadRepos, ", ") + " with the deployment App's READ-ONLY token"
 	}
+	if o.GitHubActionsRead {
+		read = actionsReadScope + read
+	}
 	return shipStageGrants(o) + read
 }
+
+// actionsReadScope is what an officer's github_actions_read adds to a grant's
+// description (grantsDescription, shipGrantsDescription): the one sentence,
+// so the two cannot word the same grant differently.
+const actionsReadScope = "; its own repository's token also carries Actions READ (workflow runs and job logs), never Actions write"
 
 // shipStageGrants is shipGrantsDescription's stage-specific part: what the
 // officer's own App may do in its ship repositories.

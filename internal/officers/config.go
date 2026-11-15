@@ -115,6 +115,14 @@ type Officer struct {
 	// default branch), ReadAtRelease names muster's own release tag
 	// (ReleaseTag). Accepted only with ReadGrantStanding.
 	ReadAt string `json:"read_at,omitempty"`
+	// GitHubActionsRead (`github_actions_read`) adds `actions: read` — never
+	// write — to the GitHub App token minted for the officer's OWN repository
+	// (Repo, and on a shipping officer its ship repositories, minted by its own
+	// App), so its instances can read workflow runs and job logs
+	// (connectors.Caller.ActionsRead, set by internal/api callerOf from
+	// ActionsRead). Needs Repo. False for every other officer, whose tokens
+	// ask for no Actions permission at all.
+	GitHubActionsRead bool `json:"github_actions_read,omitempty"`
 	// ReleaseTag is the git tag of the muster release this server runs
 	// ("v0.221.0"), stamped by StampReleaseTag for an officer with ReadAt
 	// ReadAtRelease; "" when the build's version is not a release.
@@ -247,6 +255,8 @@ type declared struct {
 	ReadGrant    string   `json:"read_grant"`
 	ReadAt       string   `json:"read_at"`
 	Connectors   []string `json:"connectors"`
+	// GitHubActionsRead needs Repo (Officer.GitHubActionsRead).
+	GitHubActionsRead bool `json:"github_actions_read"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
 	// CILogs is parsed by parseCILogs (cilogs.go); it needs Ship.
@@ -328,6 +338,9 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 	// 0125) its grants hang on, each decided by the owner per request, and
 	// they are used through MCP tools muster runs server-side
 	// (postgres_query) — no token reaches the session.
+	if d.GitHubActionsRead {
+		refused = append(refused, "github_actions_read (it widens the github connector's App token, which a host session never holds)")
+	}
 	if len(d.ReadRepos) > 0 {
 		refused = append(refused, "read_repos (further repositories are read through the github connector's HTTP proxy, "+
 			"which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host)")
@@ -753,6 +766,16 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	}
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
+	}
+	// 🔴 ACTIONS READ NEEDS THE OFFICER'S OWN REPOSITORY: it is added to the
+	// token minted for Repo and nothing else, so without one it would widen
+	// nothing and only read as granted.
+	if d.GitHubActionsRead {
+		if o.Repo == "" {
+			return Officer{}, fmt.Errorf("officer %s: github_actions_read needs `repo`: Actions read is added to the token "+
+				"minted for the officer's own repository, and it has none", o.ID)
+		}
+		o.GitHubActionsRead = true
 	}
 	grant, at, err := parseReadGrant(o, d)
 	if err != nil {

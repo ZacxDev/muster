@@ -14,7 +14,10 @@ With the App configured:
   In the default write mode the token has exactly `contents: write`,
   `pull_requests: write`, `checks: read` and `statuses: read`; in
   [read-only mode](#read-only-mode) (`MUSTER_GITHUB_APP_ACCESS=read`) all four
-  are `read`. Both add the `metadata: read` that GitHub always adds. muster caches each token in memory until five minutes before it
+  are `read`. Both add the `metadata: read` that GitHub always adds. The one
+  opt-in is an officer's [`github_actions_read`](officers.md#actions-read-github_actions_read),
+  which adds `actions: read` (never write) to its own repository's token — the
+  App must then hold Actions read. muster caches each token in memory until five minutes before it
   expires (GitHub issues them for one hour), and drops it early if GitHub
   answers 401. It is never stored, logged or given to the agent.
 - **Other repositories are reached anonymously.** With an approved grant, all

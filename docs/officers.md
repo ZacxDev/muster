@@ -64,6 +64,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. Needs no `repo` with `read_grant: "standing"`. |
 | `read_grant` | none (per-instance approval) | `"standing"`: the `read_repos` are read with **no approval**, anonymously, reads only, each checked PUBLIC with GitHub — see [A standing public read](#a-standing-public-read-read_grant-standing). A **builtin** officer only: on an HQ officer, without `read_repos`, or any other value, a boot refusal naming the officer. |
 | `read_at` | none (default branch) | `"release"`: a standing read is pointed at muster's own release tag (`v<the server's version>`), named in the first message. Needs `read_grant: "standing"`; any other value is a boot refusal. |
+| `github_actions_read` | `false` | `true` adds **`actions: read`** — never write — to the GitHub App token minted for the officer's **own** repository (`repo`, and on a [shipping officer](#shipping-officers) its ship repositories, minted by its own App), so its instances can read workflow runs and job logs through the `github` connector: [Actions read](#actions-read-github_actions_read). This officer only: every other officer's token asks for no Actions permission at all. Needs `repo` (without one it is a boot refusal naming the officer); refused on a `host` officer. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -610,6 +611,46 @@ The App is an admin's: an `owner` who is not an admin is offered the stored
 `github` connector instead, and the App mints nothing for them. (A
 [standing public read](#a-standing-public-read-read_grant-standing) is not a
 shared approval: it is no grant at all, and carries no credential.)
+
+#### Actions read (`github_actions_read`)
+
+An officer that watches CI needs a job's log, and GitHub serves
+`GET /repos/{owner}/{repo}/actions/jobs/{id}/logs` only to a token carrying
+**Actions read** (anonymously it is a 403). muster's tokens carry no Actions
+permission, so an officer opts in:
+
+```json
+{"id": "ci-watch:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "repo": "example-org/example-web", "github_actions_read": true}
+```
+
+- The officer's instances (both pools) are proxied with
+  `connectors.Caller.ActionsRead`, and the GitHub App adds `"actions": "read"`
+  to the mint for the officer's **own** repository — `repo`, or a ship
+  repository through a shipping officer's own App. It is `read` in every
+  access mode; nothing reaches Actions write.
+- A token for one of its `read_repos` stays the four read levels, with no
+  Actions: the opt-in widens the own repository's token and nothing else.
+- Every other officer, and every task agent, mints exactly the body it did
+  before (`actions` is absent, not `"none"`). A token minted with Actions is
+  cached apart from one without, so neither is served for the other.
+- The approve card and `connector_requests_list` say the officer's token also
+  carries Actions read.
+
+🔴 **The App must hold the permission first.** A mint that asks for a
+permission the App was not granted is refused by GitHub, so EVERY token of
+that officer fails until the App has it. Order: grant **Actions: Read-only**
+on the App (GitHub → the App's settings → Permissions & events → Repository
+permissions), have an owner of each installed account **accept the new
+permission** on the installation (GitHub asks for it on the installation's
+page), and only then deploy the declaration.
+
+⚠ **The log itself is a redirect.** GitHub answers the logs request with a
+`302` to a short-lived download URL on another host. muster's connector proxy
+never hands an off-allowlist `Location` to a client (it would carry the
+agent's muster token there), so through the proxy that request is a `502`
+today; runs, jobs and their steps (JSON) read normally. Reading the log body
+needs muster to follow that one redirect itself, which this option does not do.
 
 #### A standing public read (`read_grant: "standing"`)
 
@@ -1380,7 +1421,9 @@ requests **read and write** (open and edit its pull requests, comment, merge),
 Checks **read** and Commit statuses **read** (the gates), and Metadata read
 (implicit). No Workflows, Administration, Actions or Issues. muster mints
 every token with exactly Contents and Pull requests write, Checks and Commit
-statuses read, for the one repository.
+statuses read, for the one repository — plus Actions **read** for an officer
+that declares [`github_actions_read`](#actions-read-github_actions_read), whose
+App must then also be granted Actions read.
 
 ### The push gate
 

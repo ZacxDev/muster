@@ -181,7 +181,9 @@ func (g *PushGate) Credential(ctx context.Context, caller connectors.Caller, hos
 				if g.ReadCred == nil {
 					return "", true, nil
 				}
-				caller.Repo, caller.ReadOnly = rr, true
+				// Never Actions on a read repository: that opt-in is the
+				// ship repositories' (the officer App's) only.
+				caller.Repo, caller.ReadOnly, caller.ActionsRead = rr, true, false
 				return g.ReadCred(ctx, caller, host, rest)
 			}
 		}

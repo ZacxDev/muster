@@ -112,6 +112,13 @@ type Caller struct {
 	// an officer instance (api.Server.callerOf). A stored connector ignores
 	// it: its secret is whatever the operator stored.
 	ReadOnly bool
+	// ActionsRead asks a virtual connector that mints a credential (the GitHub
+	// App) to add `actions: read` — never write — to the credential for the
+	// caller's OWN repository (Repo), so it can read workflow runs and job
+	// logs. Never for a read repository. Set for an instance of an officer
+	// that declares github_actions_read (api.Server.callerOf); false for every
+	// other caller. A stored connector ignores it.
+	ActionsRead bool
 	// Gate, when set, REPLACES the connector's own credential for this caller
 	// and decides every request before a credential exists (see [Gate]). Set
 	// for an officer instance that ships code (api.Server.callerOf); nil for

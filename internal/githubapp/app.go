@@ -31,7 +31,10 @@
 // instance) is minted in read mode whatever the App's mode (accessFor), and the
 // mode is part of the token cache's key. Nothing wider is ever asked for on an
 // agent's behalf: the request body is a fixed struct (mintRequest), pinned
-// literally by the tests for each mode.
+// literally by the tests for each mode. The one addition is opt-in and READ:
+// a caller marked ActionsRead (connectors.Caller.ActionsRead — an officer
+// declaring github_actions_read) also gets `actions: read` on its own
+// repository's token, in either mode, never on a read repository's.
 //
 // 🔴 THE TOKEN NEVER LEAVES MUSTER. It is injected by the connector proxy
 // (internal/connectors, /connect/github/...) on the way out, exactly as a stored
@@ -148,7 +151,7 @@ func ParseAccess(v string) (Access, error) {
 // It is derived from the same permission levels the mint asks for, so the text
 // cannot claim a level the token does not carry.
 func (m Access) Scope() string {
-	p := agentMintRequest("", m).Permissions
+	p := agentMintRequest("", m, false).Permissions
 	if p.Contents == "read" && p.PullRequests == "read" && p.Checks == "read" && p.Statuses == "read" {
 		return "READ ONLY: Contents, Pull requests, Checks and Commit statuses read — no push, no merge, no pull-request write"
 	}
@@ -233,6 +236,10 @@ type tokenKey struct {
 	agent  int64
 	repo   string
 	access Access
+	// actions marks a token minted with `actions: read`
+	// (connectors.Caller.ActionsRead), so one is never served to a request
+	// that did not ask for it, nor a plain one to a request that did.
+	actions bool
 }
 
 type token struct {
@@ -390,17 +397,18 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", connectors.ErrTargetRefused, err)
 	}
-	access := a.accessFor(caller)
+	access, actions := a.accessFor(caller), caller.ActionsRead
 	if scoped && !strings.EqualFold(target, repo) {
 		read, ok := readRepo(caller, target)
 		if !ok {
 			return "", true, nil // another repository: anonymous, never the App token
 		}
 		// One of the caller's read repositories (an officer's read_repos): a
-		// token for THAT repository, READ ONLY whatever the App's mode.
-		repo, access = read, AccessRead
+		// token for THAT repository, READ ONLY whatever the App's mode, and
+		// never with Actions: that opt-in is the own repository's.
+		repo, access, actions = read, AccessRead, false
 	}
-	tok, err := a.repoToken(ctx, caller.AgentID, repo, access)
+	tok, err := a.repoToken(ctx, caller.AgentID, repo, access, actions)
 	a.mu.Lock()
 	if err != nil {
 		a.problems[caller.AgentID] = err.Error()
@@ -484,16 +492,24 @@ type mintPermissions struct {
 	PullRequests string `json:"pull_requests"`
 	Checks       string `json:"checks"`
 	Statuses     string `json:"statuses"`
+	// Actions is "read" for a caller that opted in (agentMintRequest) and
+	// absent otherwise: omitempty keeps every other mint's body byte-identical.
+	Actions string `json:"actions,omitempty"`
 }
 
-// agentMintRequest is the agent mint's body for repoName in mode access. 🔴
+// agentMintRequest is the agent mint's body for repoName in mode access, with
+// `actions: read` when actions is set (connectors.Caller.ActionsRead). 🔴
 // ANYTHING BUT AccessWrite GETS READ: the write levels are reachable only by
 // naming the write mode, so an unexpected value (New refuses one anyway) can
-// never widen a token.
-func agentMintRequest(repoName string, access Access) mintRequest {
+// never widen a token. 🔴 ACTIONS IS READ IN EVERY MODE: it is a literal here,
+// never derived from access, so no mode reaches actions write.
+func agentMintRequest(repoName string, access Access, actions bool) mintRequest {
 	p := mintPermissions{Contents: "read", PullRequests: "read", Checks: "read", Statuses: "read"}
 	if access == AccessWrite {
 		p.Contents, p.PullRequests = "write", "write"
+	}
+	if actions {
+		p.Actions = "read"
 	}
 	return mintRequest{Repositories: []string{repoName}, Permissions: p}
 }
@@ -505,13 +521,13 @@ func agentMintRequest(repoName string, access Access) mintRequest {
 var listingMintRequest = map[string]any{"permissions": map[string]string{"metadata": "read"}}
 
 // repoToken returns a cached or freshly minted token for agentID's repo, in
-// mode access.
-func (a *App) repoToken(ctx context.Context, agentID int64, repo string, access Access) (string, error) {
+// mode access, with Actions read when actions is set.
+func (a *App) repoToken(ctx context.Context, agentID int64, repo string, access Access, actions bool) (string, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return "", fmt.Errorf("%w: %q is not owner/name", connectors.ErrTargetRefused, repo)
 	}
-	key := tokenKey{agent: agentID, repo: strings.ToLower(repo), access: access}
+	key := tokenKey{agent: agentID, repo: strings.ToLower(repo), access: access, actions: actions}
 	if t, ok := a.cached(key); ok {
 		return t, nil
 	}
@@ -524,7 +540,7 @@ func (a *App) repoToken(ctx context.Context, agentID int64, repo string, access 
 	if err != nil {
 		return "", err
 	}
-	t, err := a.mint(ctx, inst, agentMintRequest(name, access), "minting a token for "+repo)
+	t, err := a.mint(ctx, inst, agentMintRequest(name, access, actions), "minting a token for "+repo)
 	if err != nil {
 		return "", err
 	}
@@ -917,7 +933,7 @@ func (a *App) PullRequestCommits(ctx context.Context, repo string, n int64) ([]s
 // ListPullRequests lists agentID's own repository's pull requests with that
 // agent's repository token (server-side; the worker tool returns only the list).
 func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error) {
-	tok, err := a.repoToken(ctx, agentID, repo, a.cfg.Access)
+	tok, err := a.repoToken(ctx, agentID, repo, a.cfg.Access, false)
 	if err != nil {
 		return nil, err
 	}
@@ -963,5 +979,5 @@ func (a *App) CreatedAt(ctx context.Context) (time.Time, error) {
 // never injected into an agent's request: the proxy takes its credential from
 // Credential (or a connectors.Gate), not from here.
 func (a *App) RepoToken(ctx context.Context, repo string) (string, error) {
-	return a.repoToken(ctx, 0, repo, a.cfg.Access)
+	return a.repoToken(ctx, 0, repo, a.cfg.Access, false)
 }

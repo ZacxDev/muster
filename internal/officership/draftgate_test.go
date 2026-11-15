@@ -488,6 +488,36 @@ func TestADraftOfficersCredentialIsPerRepository(t *testing.T) {
 	}
 }
 
+// TestActionsReadReachesTheOfficerAppOnly: a caller with ActionsRead (an
+// officer declaring github_actions_read) keeps it on the way to the officer
+// App's credential (its ship repositories, and a request naming none) and
+// LOSES it on the way to the deployment's read-only credential for a read
+// repository: the opt-in widens the officer's own repositories' tokens only.
+func TestActionsReadReachesTheOfficerAppOnly(t *testing.T) {
+	r := newDraftRig()
+	caller := connectors.Caller{AgentName: "officer-x-1", Repo: fxRepo, ReadRepos: []string{"example-org/flags-state"}, ReadOnly: true, ActionsRead: true}
+	for _, c := range []struct {
+		rest    string
+		officer bool
+	}{
+		{"repos/" + dInfra + "/actions/jobs/9/logs", true},
+		{"repos/" + fxRepo + "/actions/runs", true},
+		{"user", true},
+		{"repos/example-org/flags-state/actions/runs", false},
+	} {
+		r.creds, r.readCreds = nil, nil
+		if _, _, err := r.g.Credential(context.Background(), caller, "api.github.com", c.rest); err != nil {
+			t.Fatalf("%s: %v", c.rest, err)
+		}
+		if c.officer && (len(r.creds) != 1 || !r.creds[0].ActionsRead) {
+			t.Errorf("%s: officer creds %+v, want one carrying ActionsRead", c.rest, r.creds)
+		}
+		if !c.officer && (len(r.readCreds) != 1 || r.readCreds[0].ActionsRead) {
+			t.Errorf("%s: read creds %+v, want one WITHOUT ActionsRead", c.rest, r.readCreds)
+		}
+	}
+}
+
 // TestTheOtherStagesAreUnchanged (an INVARIANT guard, not a regression test:
 // the pre-v2 gate never had these rules): a release-stage gate admits a
 // pull request with no draft field and no body, never lists pull requests and

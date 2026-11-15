@@ -136,7 +136,10 @@ const appNoRepoNote = "approving grants NOTHING usable: this agent was dispatche
 // readRepos are the requester's further read-only repositories (agentReadRepos,
 // an officer's `read_repos`): every one of them is listed, each marked READ
 // ONLY, so the owner sees the whole set the approval grants.
-func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, readRepos []string, officer bool) (string, string) {
+//
+// actions is agentActionsRead's answer for the requester: its own
+// repository's token then also carries Actions read, and the scope says so.
+func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, readRepos []string, officer, actions bool) (string, string) {
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok && connectors.IsKubeRead(vc) {
 		return s.kubeGrantsDescription(ctx, g), ""
 	}
@@ -147,6 +150,9 @@ func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k co
 		scope := githubAppScope(vc)
 		if officer {
 			scope = githubapp.AccessRead.Scope() + "; an officer's token is always read-only"
+		}
+		if actions {
+			scope += actionsReadScope
 		}
 		desc := "the GitHub App: each request to " + repo + " (this agent's own repository) carries a 1-hour token limited to it (" +
 			scope + ")"
@@ -188,7 +194,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 	for _, g := range pending {
 		v := connectorRequestView{ID: g.ID, AgentID: g.AgentID, Agent: g.AgentName, Connector: g.Connector,
 			Reason: g.Reason, Requested: g.RequestedAt}
-		officer := false
+		officer, actions := false, false
 		shipNote := ""
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
 			v.Agent, v.TaskID, v.Repo = s.agentName(ctx, a).Text, a.NoteID, s.agentRepo(a)
@@ -197,6 +203,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 			}
 			var o officers.Officer
 			o, _, officer = s.officerOf(a)
+			actions = s.agentActionsRead(a)
 			if officer && o.Ship != nil {
 				shipNote = shipGrantsDescription(o)
 			}
@@ -205,7 +212,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		switch {
 		case err == nil:
 			v.Exists, v.Hosts = true, k.Hosts
-			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, v.ReadRepos, officer)
+			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, v.ReadRepos, officer, actions)
 			if shipNote != "" && g.Connector == officers.GitHubConnector {
 				v.Grants, v.Problem = shipNote, ""
 			}
@@ -322,7 +329,7 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 				if rr := s.agentReadRepos(a); len(rr) > 0 {
 					out["read_repos"] = rr
 				}
-				out["grants"], _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer)
+				out["grants"], _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer, s.agentActionsRead(a))
 				if officer && o.Ship != nil && g.Connector == officers.GitHubConnector {
 					out["grants"] = shipGrantsDescription(o)
 				}

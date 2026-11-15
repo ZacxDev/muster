@@ -223,10 +223,22 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 // before any credential exists, and is served with the officer's OWN App
 // token — never the deployment App's — so ReadOnly then has nothing left to
 // limit, and stays set.
+//
+// ActionsRead is set for an instance of an officer that declares
+// github_actions_read (agentActionsRead), and for no other caller.
 func (s *Server) callerOf(a agents.Agent) connectors.Caller {
 	_, _, officer := s.officerOf(a)
 	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadRepos: s.agentReadRepos(a),
-		PublicReadRepos: s.agentPublicReadRepos(a), ReadOnly: officer, Gate: s.shipGate(a)}
+		PublicReadRepos: s.agentPublicReadRepos(a), ReadOnly: officer, ActionsRead: s.agentActionsRead(a), Gate: s.shipGate(a)}
+}
+
+// agentActionsRead is THE rule for whether agent a's GitHub App token for its
+// own repository carries `actions: read`: an instance of a declared officer
+// whose officer sets github_actions_read (officers.Officer.GitHubActionsRead);
+// false for every other agent. callerOf and the grant's description both ask it.
+func (s *Server) agentActionsRead(a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	return ok && o.GitHubActionsRead
 }
 
 // --- the proxy ------------------------------------------------------------------------
@@ -651,7 +663,7 @@ func (s *Server) requestCardGrants(ctx context.Context, g connectors.Grant) stri
 	if officer && o.Ship != nil {
 		desc = shipGrantsDescription(o)
 	} else {
-		desc, _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer)
+		desc, _ = s.grantsDescription(ctx, g, k, s.agentRepo(a), s.agentReadRepos(a), officer, s.agentActionsRead(a))
 	}
 	if strings.HasPrefix(desc, "approving grants ") {
 		return "A" + strings.TrimPrefix(desc, "a") + "."
