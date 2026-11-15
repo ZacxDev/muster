@@ -23,18 +23,23 @@ import (
 //   - readPerson: it yields a user to act as, notify, authenticate a credential
 //     for or look up by name, so it must be persons only. Outside this
 //     package it must use PersonIDs; inside, `kind = 'person'`.
-//   - readEnabledPerson: readPerson for a credential honoured on every use
-//     with no sign-in behind it, or a per-owner loop that must skip a disabled
-//     account, so it must also refuse a DISABLED owner, through
-//     EnabledPersonIDs (#681: a disabled person's mirror tokens kept
-//     connecting because Authenticate filtered through PersonIDs alone).
+//   - readEnabledPerson: readPerson whose SQL must also drop a DISABLED owner
+//     — a credential honoured on every use with no sign-in behind it (mirror,
+//     flow runner, plugin tokens), a per-owner loop that must skip a disabled
+//     account (focus, chiefnudge), or a lookup by name that must not resolve
+//     to one (plugin pairing) — through EnabledPersonIDs (#681: a disabled
+//     person's mirror tokens kept connecting because Authenticate filtered
+//     through PersonIDs alone). ⚠ apitokens and devices Authenticate stay
+//     readPerson: they SELECT disabled_at and refuse a disabled owner in Go
+//     with their own error (ErrUserDisabled, ownerRefusal), so a disabled
+//     owner is not "no such token" there.
 //   - readTeam: it reads teams on purpose (teams.go).
 //   - readByID: it reads one row by an id it was handed (a principal being
 //     built, a row being locked, a disabled check) and returns no new user.
 var usersReads = map[string]string{
 	"internal/apitokens PGStore.Authenticate":              readPerson,
 	"internal/apitokens PGStore.Create":                    readByID,
-	"internal/chiefnudge PG.Owners":                        readPerson,
+	"internal/chiefnudge PG.Owners":                        readEnabledPerson,
 	"internal/devices PGStore.Redeem":                      readByID,
 	"internal/devices PGStore.Authenticate":                readPerson,
 	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,
@@ -42,8 +47,8 @@ var usersReads = map[string]string{
 	"internal/mirror PGStore.Authenticate":                 readEnabledPerson,
 	"internal/mirror PGStore.TokenLive":                    readEnabledPerson, // a live connection's recheck: Authenticate's rule
 	"internal/officers/builtin Store.UsersExist":           readPerson,
-	"internal/plugins PGStore.CreatePairRequest":           readPerson,
-	"internal/plugins PGStore.Authenticate":                readPerson,
+	"internal/plugins PGStore.CreatePairRequest":           readEnabledPerson,
+	"internal/plugins PGStore.Authenticate":                readEnabledPerson,
 	"internal/push PGStore.ForOwner":                       readPerson,
 	"internal/users emailTaken":                            readByID, // uniqueness over every row; a team has no email
 	"internal/users PGStore.RedeemInvite":                  readByID, // a count by GoTrue subject; a team has none
