@@ -348,8 +348,9 @@ func TestATeamConnectorApprovalIsRefusedBelowAFreshManager(t *testing.T) {
 
 	tw.w.srv.ext.GitHubAppTeams = nil
 	tw.w.srv.ext.Connectors = connectors.WithVirtual(tw.w.srv.ext.Connectors, appVirtual{}, githubapp.Admits(nil))
-	if rec := tw.decide("approve", id, tw.w.a.uid, time.Now()); rec.Code != http.StatusConflict {
-		t.Errorf("A approving on an UNLISTED team: %d %s; want 409", rec.Code, truncate(rec.Body.String(), 300))
+	if rec := tw.decide("approve", id, tw.w.a.uid, time.Now()); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "not lent the deployment&#39;s GitHub App") {
+		t.Errorf("A approving on an UNLISTED team: %d %s; want 409 saying the team is not lent the App", rec.Code, truncate(rec.Body.String(), 600))
 	}
 	pending("A approving on an unlisted team")
 

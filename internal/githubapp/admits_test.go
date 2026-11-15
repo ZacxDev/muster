@@ -43,6 +43,13 @@ func TestAdmitsIsAnAdminOrAListedTeamsOwnPrincipal(t *testing.T) {
 			t.Errorf("%s: admitted %v; want %v", name, got, c.want)
 		}
 	}
+	// A PERSON whose id is on the list (a misconfiguration boot refuses:
+	// checkTeamsOnGitHubApp) is still not admitted: the rule is the TEAM
+	// acting principal, never an id match alone.
+	person := authz.WithPrincipal(bg, authz.Principal{UserID: 21, Role: authz.RoleMember, Via: authz.ViaAgent})
+	if Admits(map[int64]bool{12: true, 21: true})(person) {
+		t.Error("a person whose id is on the list was admitted")
+	}
 	if Admits(nil)(team(12, authz.ViaAgent)) {
 		t.Error("with no list, a team was admitted")
 	}
