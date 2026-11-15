@@ -200,7 +200,10 @@ and managers type into its hosts' sessions, each with their own fresh sign-in
     cancels it on every team. Only the queuer edits, retries or sends now
     their row; a manager may also cancel or delete anyone's. A paired
     phone's answer to a team's question needs an operator or a manager, on a
-    fresh read; a viewer's is refused by name (`not_operator`).
+    fresh read; a viewer's is refused by name (`not_operator`). A team
+    chief's card to END one of the team's sessions is ended by an operator
+    or a manager from a browser with a fresh sign-in, never from a phone, and
+    the session ended is the team's.
   - **The rotate mark.** When an operator or a manager is removed, drops to
     viewer or is **disabled**, the team's unrevoked host tokens are marked
     rotate (`mirror_tokens.rotate_at`), in the same transaction. Nothing is

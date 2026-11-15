@@ -1026,7 +1026,7 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 				if onTask {
 					k = ownerAskedUngated
 				}
-				return errTaskDispatch(ownerAskedRefusal(why, k))
+				return errTaskDispatch(s.ownerTurnRefusal(ctx, a, why, sayUseOf(k)))
 			}
 			detail["owner_message"] = msg.ID
 		}
