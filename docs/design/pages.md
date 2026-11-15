@@ -261,6 +261,13 @@ SDK answers `{preview: true}` and records nothing.
 4. An answer in the session (the owner typing to the agent) settles the card
    without the hook: the link stays `pending` and serves nothing.
 
+That is `MUSTER_PAGES_AGENT_SHARE=ask`, the default. With `auto` none of the
+above happens: `page_share_request` makes the page's link live at once (the
+page's one reusable link when the server has a link key, else a new hash-only
+link), files no card, returns `status: "live"` and the address, and pushes the
+owner (`page_published`). The owner's door is not consulted, by the deployer's
+choice; see the threat model.
+
 The owner's **Mint link** and **Revoke** on the Pages screen need a signed-in,
 same-origin request, like every other owner write.
 
@@ -300,9 +307,9 @@ label. Viewer data is never logged.
 | Page script acts as muster | opaque origin by HTTP header; no cookies readable; no network | none known |
 | Page script reaches a muster route with the viewer's cookies | `connect-src 'none'`; `Origin: null` refused by `requireSameOrigin`; no CORS for `null` | a top-level **navigation** is not possible (no `allow-top-navigation`); a `GET` subresource is blocked by CSP |
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
-| The link leaks | 256 bits, stored only as its sha256 (a database read yields no live link); `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push | whoever it was given to |
-| A link outlives intent | revoke on the Pages screen or with `page_link_revoke`; checked on every request | until revoked |
-| An agent shares without the owner | only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer` | the owner approving what they did not preview |
+| The link leaks | 256 bits, looked up only by its sha256; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push. A page's **reusable** link (the Share button's) also keeps its token **encrypted** (AES-256-GCM, a key derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY`, bound to the row's owner, page and hash), wiped when it stops being live: a database read alone yields no live link, a database read **plus** that key yields each page's current Share link. Without the key, links are hash-only as before | whoever it was given to; anyone holding both the database and the key |
+| A link outlives intent | revoke on the Pages screen, on the page card's ⋯ (Revoke link, New link), or with `page_link_revoke`; checked on every request | until revoked |
+| An agent shares without the owner | **`ask` (the default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **`auto` (`MUSTER_PAGES_AGENT_SHARE=auto`, the deployer's choice):** there is **no** owner gate — the agent's request makes the page's link live at once and hands the agent its address. The controls left are scope and notice: only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed ("Page shared"), the chat's page card and the page's screen say who made it live without asking, and Revoke is one tap | `ask`: the owner approving what they did not preview. `auto`: **anything the agent publishes can be public before the owner looks** — content, a phishing form, a leak of the owner's data the agent can read — until the owner revokes it |
 | Prompt injection through responses | fenced DATA with a preface; the push carries no viewer text | the agent's own judgement |
 | Malicious uploads | sniffed type; served only through `SetServeHeaders` (attachment, sandbox CSP, `nosniff`); never inline on the shell or content | none known |
 | Exhaustion | [limits](../pages.md#limits) | bandwidth |

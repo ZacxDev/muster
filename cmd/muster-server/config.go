@@ -311,6 +311,12 @@ const (
 	// The bytes one page's files may hold in all (pages.DefaultUploadBytesPerPage
 	// when unset), a byte count from 1 MiB to 100 GiB.
 	envPagesUploadBytes = "MUSTER_PAGES_UPLOAD_BYTES"
+	// What an agent's page_share_request does: "ask" (the default — a pending
+	// link and an owner card; only the owner's own door makes it live) or
+	// "auto" (the page's link goes live at once and the agent gets its
+	// address; the owner is told, and can revoke it). Anything else refuses
+	// to boot.
+	envPagesAgentShare = "MUSTER_PAGES_AGENT_SHARE"
 
 	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
 	// account usage"; ccusage_config.go parses them): its switch (off by
@@ -897,6 +903,8 @@ type config struct {
 	Pages bool
 	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES (0: the default).
 	PagesUploadBytes int64
+	// PagesAgentShareAuto is MUSTER_PAGES_AGENT_SHARE=auto (false: ask).
+	PagesAgentShareAuto bool
 
 	// CCUsage is the Claude account usage poller's (ccusage_config.go).
 	CCUsage ccUsageConfig
@@ -1950,6 +1958,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.PagesUploadBytes = n
 	}
+	if c.PagesAgentShareAuto, err = parsePagesAgentShare(getenv(envPagesAgentShare)); err != nil {
+		return config{}, err
+	}
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
 		return config{}, err
 	}
@@ -2385,6 +2396,27 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	}
 	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts, c.GitHubAppAccess = n, k, parsed, access
 	return nil
+}
+
+// The two values of MUSTER_PAGES_AGENT_SHARE.
+const (
+	pagesAgentShareAsk  = "ask"
+	pagesAgentShareAuto = "auto"
+)
+
+// parsePagesAgentShare reads MUSTER_PAGES_AGENT_SHARE: unset or "ask" is
+// false (the owner approves every agent's link), "auto" true; anything else
+// is a boot error, never a silent default — a typo of "auto" must not leave
+// an operator believing links go live when they wait, nor the reverse.
+func parsePagesAgentShare(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", pagesAgentShareAsk:
+		return false, nil
+	case pagesAgentShareAuto:
+		return true, nil
+	}
+	return false, fmt.Errorf("invalid %s %q: want %q (the owner approves each agent's link; the default) or %q (an agent's link goes live at once, and the owner is told)",
+		envPagesAgentShare, v, pagesAgentShareAsk, pagesAgentShareAuto)
 }
 
 // decodeEncryptionKey decodes a 32-byte AES key (the connector store's).

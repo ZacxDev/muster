@@ -183,7 +183,7 @@ func (f *pageFixture) create(t *testing.T, a agents.Agent, title, blocks string)
 // liveLink mints a live link to page id as its owner; its token.
 func (f *pageFixture) liveLink(t *testing.T, owner, id int64) pages.Link {
 	t.Helper()
-	l, err := f.pages.CreateLink(f.as(owner, authz.ViaSession), id, pages.LinkLive, "you")
+	l, err := f.pages.CreateLink(f.as(owner, authz.ViaSession), id, pages.LinkLive, "you", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 		if to[i] != f.owner {
 			t.Errorf("a push went to user %d", to[i])
 		}
-		if strings.HasPrefix(p.Tag, "page-") {
+		if strings.HasPrefix(p.Tag, "page-") && strings.HasSuffix(p.Tag, "-response") {
 			sent = append(sent, p)
 		}
 		// The share request reached the owner's phone as an ask, with its two
@@ -452,11 +452,18 @@ func pageToolText(v map[string]any) string {
 // (the one door an agent reaches), another principal — and an answer that is
 // not one of its two options; each leaves the link pending and the card open.
 // Not now denies it for good.
+//
+// It is MUSTER_PAGES_AGENT_SHARE=ask's guard (the default), so it says so:
+// auto mode files no card at all (TestAutoModeSharesAtOnceWithNoCard).
 func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
 	f := newPageFixture(t)
+	f.srv.ext.PagesAgentShareAuto = false
 	id := f.create(t, f.agent, "Approve me", `[{"type":"markdown","text":"x"}]`)
 	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
 	askID := pnum(req["ask_id"])
+	if req["status"] != "pending" || askID <= 0 {
+		t.Fatalf("ask mode's request: %v", req)
+	}
 	pending := func(why string) {
 		t.Helper()
 		ls, _ := f.pages.Links(f.as(f.owner, authz.ViaSession), id)
@@ -617,8 +624,8 @@ func TestEveryRefusedLinkIsTheSameAnswer(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Refusals", formBlocks)
 	ctx := f.as(f.owner, authz.ViaSession)
-	pending, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x")
-	denied, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x")
+	pending, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x", true)
+	denied, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x", true)
 	_, _ = f.pages.DecideLink(ctx, denied.ID, false)
 	revoked := f.liveLink(t, f.owner, id)
 	_, _ = f.pages.RevokeLink(ctx, id, revoked.ID)

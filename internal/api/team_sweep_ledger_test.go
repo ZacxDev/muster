@@ -32,6 +32,8 @@ var teamSweepClasses = map[string]string{
 	"team_dispatch.go Server.pushTeamDispatch":             "never withdrawn: information only, replaced by its tag (a team start; its card is an ask)",
 	"connectors.go Server.onConnectorRequested":            "never: connector requests are personal (connectors are never shared)",
 	"pages.go Server.pageResponded":                        "never: pages are personal",
+	"page_tools.go Server.pagePublished":                   "never: pages are personal",
+	"page_tools.go Server.pageShareAuto":                   "never: pages are personal",
 	"plugin_drafts.go Server.notifyDraftRefused":           "never withdrawn: information only",
 	"plugin_drafts.go Server.notifyOfficerNotTold":         "never withdrawn: information only",
 	"plugin_pairing.go Server.pairRequested":               "never: pairing requests are personal",

@@ -156,6 +156,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /pages/{id}/versions/{v}/content",
 		"POST /pages/{id}/links",
 		"POST /pages/{id}/links/{link}/revoke",
+		"POST /pages/{id}/share",
+		"POST /pages/{id}/share/rotate",
+		"POST /pages/{id}/share/revoke",
+		"GET /pages/{id}/card",
 		"POST /pages/{id}/rollback",
 		"POST /pages/{id}/delete",
 		// Routing rules (routing_rules.go) and the usage page (usage.go).

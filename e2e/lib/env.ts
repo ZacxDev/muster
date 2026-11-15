@@ -431,6 +431,13 @@ export const pagesPort = port + 400;
 export const pagesFakeS3Port = port + 401;
 export const pagesRouterPort = port + 402;
 export const pagesMirrorMCPPort = port + 403;
+// tests/pages-share.spec.ts: shareable pages in auto mode
+// (MUSTER_PAGES_AGENT_SHARE=auto, a link key) — its own server and its fake
+// host's loopback MCP endpoint, and the connect listener a link key needs
+// beside it. (+405 to +407: clear of the block above.)
+export const pagesSharePort = port + 405;
+export const pagesShareMirrorMCPPort = port + 406;
+export const pagesShareConnectPort = port + 407;
 // tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
 // 127.0.0.1) whose instance document and icon the spec controls.
 export const serverSwitcherStubPort = port + 404;

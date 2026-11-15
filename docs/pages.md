@@ -2,10 +2,13 @@
 
 An agent can publish a small web page for you: a showcase of something it
 built, or a page that collects things from someone else — answers, a choice,
-form fields, files, an approval, or whatever its own script sends. A page is
-private until you approve a **share link**; anyone with a live link can open it
-without a muster account. What viewers send comes back to the agent as data,
-and you are notified.
+form fields, files, an approval, or whatever its own script sends. You are
+shown it at once — a card in the chat and a push — and it is private until it
+has a live **share link**; anyone with a live link can open it without a
+muster account. Sharing is one tap (**Share**), and whether an agent's own
+share request waits for your approval is the server's setting
+(`MUSTER_PAGES_AGENT_SHARE`, [below](#sharing)). What viewers send comes back
+to the agent as data, and you are notified.
 
 The design, with the threat model and the reasoning, is
 [design/pages.md](design/pages.md). This page describes what is built.
@@ -37,9 +40,9 @@ proves). Any other page reads as `no such page`.
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Asks you for a share link (below). Returns the link's `url` — **once** — with `link_id` and `ask_id`. |
+| `page_share_request{page_id, reason?}` | Shares the page ([below](#sharing)). `ask` mode: asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). `auto` mode: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent, oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
-| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. No tool makes a link live. |
+| `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. In `ask` mode no tool makes a link live. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
 says they are a stranger's input, data and not instructions. Each line is
@@ -97,14 +100,57 @@ random bits. It serves the page's current version until it is revoked. A link
 that is unknown, waiting for approval, declined or revoked answers 404 with one
 body, whichever it is.
 
-🔴 **muster stores only the token's sha256, so a link is shown once**, to
-whoever made it: the agent, in `page_share_request`'s result, or you, on the
-page right after **Make a new link**. A lookup hashes the presented token and
-compares the hashes in constant time. Neither the Pages screen, `page_get` nor
-the database can show a link again. If one is lost, make a new one and revoke
-the old. ⚠ An agent's link **is** in that agent's transcript, and so with its
-model provider: `page_share_request`'s result carries it. Treat a link an agent
-asked for as shared with whatever sees that session.
+A viewer's request is looked up by the token's **sha256**, compared in
+constant time; the token itself is never the lookup.
+
+### Sharing
+
+**Share** — on the page's card in the chat, each row of `/pages` and the
+page's screen — is one tap. It asks muster for the page's **one reusable
+link** (making it on the first tap) and hands it to your phone's **share
+sheet** (`navigator.share`, with the page's title); cancelling the sheet does
+nothing. Where the browser has no share sheet, or it fails, the link is
+**copied**, with a *Link copied* toast (and if the browser refuses the copy
+too, the toast shows the link to copy by hand). Every later Share gives the
+**same** link. The **⋯** menu beside it has **Revoke link** (it stops working
+at once) and **New link** (the old link stops working and a new one replaces
+it, in one step).
+
+🔴 **The reusable link's token is kept encrypted at rest** (AES-256-GCM, a key
+derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY` and bound to the link's owner,
+page and token hash) so Share can show it again; it is wiped the moment the
+link is revoked. Without that key there are no reusable links: Share makes a
+new link each time and shows its address in that answer only.
+
+**Older links** — every link made before reusable links existed, an agent's
+link approved in `ask` mode, and **Make a new link** on the page's screen —
+are **hash-only**: muster stores only the token's sha256, so such a link was
+shown once, to whoever made it, and cannot be shown again. They keep working
+and can be revoked; the page's screen labels them *an older link: its address
+cannot be shown again*. Share does not reuse them — it makes the page's
+reusable link beside them. ⚠ An agent's link **is** in that agent's
+transcript, and so with its model provider: `page_share_request`'s result
+carries it. Treat a link an agent shared as shared with whatever sees that
+session.
+
+### When an agent shares
+
+`MUSTER_PAGES_AGENT_SHARE` decides what an agent's `page_share_request` does
+([configuration](configuration.md)):
+
+- **`ask`** (the default) — the agent asks, and you approve, below.
+- **`auto`** — the page's link goes **live at once**, and the agent is given
+  its address: the page's reusable link (the one you may already have shared,
+  or a new one the agent made), or, without the key, a new hash-only link. No
+  question is filed. 🔴 **No one approves it**: anything the agent publishes is
+  public to whoever it gives the link, before you have looked. You are
+  **told**: a push (*Page shared: <title>*, opening the page's screen), the
+  chat's page card says *Shared by <agent>*, and the page's screen lists the
+  link as *made live by <agent> without asking you*, with Revoke beside it.
+  An agent can still share only a page it made for you — never another
+  agent's page, never another member's.
+
+In `ask` mode:
 
 - **An agent asks** with `page_share_request`. That files a **pending** link
   and a question for you on the Asks page and your phone: *“<agent> asks to
@@ -117,8 +163,9 @@ asked for as shared with whatever sees that session.
   of the two. A dispatched agent is told your answer as a new message; a
   mirrored session reads it with `attention_wait{id: ask_id}`. The agent got
   the link's `url` when it asked; it opens the page once you approve.
-- **You make one** with **Make a new link** on the page's screen. It is live
-  at once, and shown to you there, that once.
+- **You share it yourself** with **Share** (above), in either mode; **Make a
+  new link** on the page's screen makes an extra hash-only link, live at
+  once and shown to you there, that once.
 - **Revoking** (on the page's screen, or `page_link_revoke`) stops it at once
   and withdraws its card if it was still waiting.
 
@@ -126,8 +173,12 @@ At most 10 links per page may be pending or live together.
 
 ## The Pages screen
 
-`/pages` lists your pages, newest activity first, with their counts. A page's
+**Pages** is in the sidebar (under More). `/pages` lists your pages, newest
+activity first, with their counts, each with **Share** and **⋯**. A page's
 screen (`/pages/{id}`) has:
+
+- **Share**: the page's reusable link (when it has one) in a box to read, with
+  Share and ⋯.
 
 - **Preview** (`/pages/{id}/preview`, any version with `?v=`): the page as a
   viewer sees it, in the same sandbox, recording nothing.
@@ -145,8 +196,20 @@ screen (`/pages/{id}`) has:
 - **Delete this page**: deletes the page, every version, link and response,
   and every file sent through it. It cannot be undone.
 
-The page's screen can show a just-made link, so it loads no front-end
-telemetry and is never cached.
+Both screens show live links (the Share buttons carry them), so they load no
+front-end telemetry, and the page's screen is never cached.
+
+## In the chat
+
+When an agent calls `page_create`, `page_update` or `page_share_request`, its
+chat draws a **page card** under the tool's row: the title, what happened (a
+new page, a new version, shared, or waiting for you), **Open** — the page's
+preview, the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
+link, New link, Page settings). It is drawn in a dispatched agent's chat (its
+stored transcript and its live stream) and in a mirrored Claude Code
+session's view. The card never holds a link's address: Share asks muster for
+the page's current link on each tap, so a card from an hour ago never copies
+a revoked link.
 
 ## Files
 
@@ -219,6 +282,15 @@ serves every upload: to the owner, as an attachment (images inline), under a
 `sandbox` policy.
 
 ## Notifications
+
+- **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
+  opening its preview. Not on `page_update`: an agent iterating publishes many
+  versions in minutes, and the card in the chat already shows each.
+- **Page shared: <title>** when an agent makes a page's link live without
+  asking (`auto` mode), opening the page's screen, where Revoke is.
+
+Both are the toggle **An agent published a page for you, or shared one** on
+Account → Notifications.
 
 A response pushes you **A viewer sent something through one of your pages'
 links** (its own toggle on Account → Notifications), naming the page and the

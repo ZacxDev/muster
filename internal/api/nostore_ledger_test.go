@@ -104,6 +104,9 @@ var noStoreLiterals = map[string]string{
 	"handleAgentHeader":         "an agent page's status strip, ⋯ menu and notices, live",
 	"handleSessionTagsList":     "a session's tags: the viewer's own, private, and changed by any tab",
 	"refusePageLink":            "a refused share link: one answer for unknown, revoked and expired alike",
+	"handlePageShare":           "the Share button's answer: a page's live link, a bearer capability",
+	"handlePageShareRotate":     "New link's answer: a page's new live link, a bearer capability",
+	"handlePageCard":            "a page card: its page's title and share state, the owner's",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.

@@ -1,0 +1,258 @@
+import { execFileSync, spawn, ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { Browser, BrowserContext, Page } from '@playwright/test';
+import { test, expect } from '../lib/fixtures';
+import { signIn } from '../lib/signin';
+import { binDir, dsn, pagesShareConnectPort, pagesShareMirrorMCPPort, pagesSharePort, repoRoot, versionTerm } from '../lib/env';
+import { serverBinary, startServer, Running } from '../lib/server';
+
+// SHAREABLE PAGES, INSTANT SHARE (docs/pages.md#sharing, #in-the-chat), every
+// hop real, on a server in AUTO mode (MUSTER_PAGES_AGENT_SHARE=auto) with a
+// link key (MUSTER_CONNECTOR_ENCRYPTION_KEY) — pages.spec.ts is the ask mode:
+//
+//   a Claude Code session in a mirrored window publishes a page through its
+//   host's loopback MCP endpoint (page_create) → the call and its result land
+//   in the session's transcript, as the CLI writes them → the mirrored view
+//   draws the PAGE CARD → the owner taps Share:
+//     - on a desktop browser with no share sheet, the page's link is on the
+//       clipboard and "Link copied" shows; a second Share copies the SAME link;
+//     - on a phone, navigator.share is called with the page's title and that
+//       same link;
+//   → a signed-out browser opens the link and sees the page → the agent's own
+//   page_share_request is live at once and returns that same link.
+//
+// Every value below is an obvious fake.
+
+const origin = `http://localhost:${pagesSharePort}`;
+const stamp = Date.now().toString(36);
+const host = 'e2e-pshare-' + stamp;
+const mirrorBin = path.join(binDir, 'muster-mirror-e2e');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pagesshare-'));
+const tr = path.join(dir, 'eeeeeeee-' + stamp + '.jsonl');
+const fakeTMUX = '/tmp/muster-e2e-fake-tmux/default,1,0';
+const mcpSecretFile = path.join(dir, 'mcp-secret');
+const localMCP = `http://127.0.0.1:${pagesShareMirrorMCPPort}/mcp`;
+const TITLE = 'Launch notes ' + stamp;
+let server: Running | undefined;
+let mirrorProc: ChildProcess | undefined;
+let mirrorLog = '';
+
+const rec = (o: object) => JSON.stringify(o) + '\n';
+
+test.use({ storageState: { cookies: [], origins: [] } });
+
+test.beforeAll(async () => {
+  test.setTimeout(240_000);
+  execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
+  server = await startServer(versionTerm, pagesSharePort, {
+    MUSTER_MIRROR: '1',
+    MUSTER_FOCUS_INTERVAL: '0',
+    MUSTER_PAGES: '1',
+    MUSTER_PAGES_AGENT_SHARE: 'auto',
+    MUSTER_PUBLIC_URL: origin,
+    MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
+    // A link key is the connector key, and that one needs its listener.
+    MUSTER_CONNECT_PORT: String(pagesShareConnectPort),
+    MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${pagesShareConnectPort}`,
+  });
+  const token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], { env: { ...process.env, DATABASE_URL: dsn } })
+    .toString()
+    .trim();
+  expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
+  fs.writeFileSync(tr, rec({ type: 'user', message: { role: 'user', content: 'make a page for the client' } }));
+  const windows = path.join(dir, 'windows');
+  fs.writeFileSync(windows, `work|@1|0|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  mirrorProc = spawn(mirrorBin, [], {
+    env: {
+      ...process.env,
+      MUSTER_MIRROR_URL: origin,
+      MUSTER_MIRROR_ALLOW_HTTP: '1',
+      MUSTER_MIRROR_TOKEN: token,
+      MUSTER_MIRROR_HOST: host,
+      MUSTER_MIRROR_INTERACTIVE: '1',
+      MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
+      MUSTER_MIRROR_MCP_LISTEN: `127.0.0.1:${pagesShareMirrorMCPPort}`,
+      MUSTER_MIRROR_MCP_SECRET_FILE: mcpSecretFile,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  mirrorProc.stdout?.on('data', (d) => (mirrorLog += d));
+  mirrorProc.stderr?.on('data', (d) => (mirrorLog += d));
+});
+
+test.afterAll(async () => {
+  if (mirrorProc && mirrorProc.exitCode === null) {
+    const done = new Promise((r) => mirrorProc!.once('exit', r));
+    mirrorProc.kill('SIGTERM');
+    await done;
+  }
+  await server?.stop();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+type ToolResult = { isError: boolean; text: string; body: Record<string, unknown> };
+
+// call is one tools/call through the host's loopback endpoint as the pane's
+// session (pages.spec.ts's).
+async function call(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  let last = '';
+  for (let i = 0; i < 60; i++) {
+    if (fs.existsSync(mcpSecretFile)) {
+      const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+      const r = await fetch(localMCP, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      }).catch((e) => ({ status: 0, text: async () => String(e) }) as unknown as Response);
+      last = await r.text();
+      if (r.status === 200) {
+        const j = JSON.parse(last) as { result?: { isError?: boolean; content: { text: string }[] }; error?: unknown };
+        const text = j.result?.content?.[0]?.text ?? '';
+        if (!(j.result?.isError && /lists no window running Claude session|no Claude Code session runs in pane/.test(text))) {
+          expect(j.error, last).toBeUndefined();
+          return { isError: !!j.result?.isError, text, body: JSON.parse(text) as Record<string, unknown> };
+        }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`the host's MCP endpoint never answered ${name}: ${last}\n${mirrorLog}`);
+}
+
+// The page the agent publishes, and the transcript lines its call leaves: the
+// call (mcp__muster__page_create, as the CLI names an MCP tool) and its result.
+let pageID = 0;
+async function publish(): Promise<void> {
+  if (pageID) return;
+  const created = await call('page_create', { title: TITLE, blocks: [{ type: 'markdown', text: '# Launch notes\n\nShipped today.' }] });
+  expect(created.isError, created.text).toBe(false);
+  pageID = created.body.page_id as number;
+  const id = 'toolu_pshare_' + stamp;
+  fs.appendFileSync(
+    tr,
+    rec({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'mcp__muster__page_create', input: { title: TITLE } }] } }) +
+      rec({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: created.text }] }] } }),
+  );
+}
+
+// openCard signs page in, opens the session's mirrored view and returns the
+// page card the view drew.
+async function openCard(page: Page) {
+  await signIn(page, origin);
+  await page.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
+  const card = page.locator(`[data-page-card][data-page-id="${pageID}"]`);
+  await expect(card, `the page card is drawn (mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
+  await expect(card.locator('[data-page-card-title]')).toHaveText(TITLE);
+  await expect(card.getByRole('link', { name: `Open “${TITLE}”` })).toHaveAttribute('href', `/pages/${pageID}/preview`);
+  return card;
+}
+
+const linkRE = new RegExp(`^${origin}/s/[A-Za-z0-9_-]{43}$`);
+let sharedURL = '';
+
+// strangerSees opens url in a fresh, signed-out context and sees the page.
+async function strangerSees(browser: Browser, url: string) {
+  const stranger = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  try {
+    const sp = await stranger.newPage();
+    const res = await sp.goto(url);
+    expect(res?.status()).toBe(200);
+    await expect(sp.locator('[data-page-title]')).toHaveText(TITLE);
+    await expect(sp.frameLocator('iframe#page').locator('h1')).toHaveText('Launch notes');
+  } finally {
+    await stranger.close();
+  }
+}
+
+test('desktop: Share on the page card copies the page link, the same one twice, and a stranger opens it', async ({ browser }) => {
+  test.setTimeout(120_000);
+  await publish();
+  let ctx: BrowserContext | undefined;
+  try {
+    ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['clipboard-read', 'clipboard-write'], baseURL: origin });
+    // A desktop browser with no share sheet: the copy path.
+    await ctx.addInitScript(() => {
+      try {
+        delete (Navigator.prototype as unknown as { share?: unknown }).share;
+      } catch {
+        /* none to delete */
+      }
+    });
+    const page = await ctx.newPage();
+    const card = await openCard(page);
+    const share = card.getByRole('button', { name: `Share “${TITLE}”` });
+    await share.click();
+    await expect(page.locator('[data-page-toast]').filter({ hasText: 'Link copied' })).toBeVisible();
+    const first = await page.evaluate(() => navigator.clipboard.readText());
+    expect(first).toMatch(linkRE);
+    // A second Share: the SAME link (the page's one reusable link).
+    await page.evaluate(() => navigator.clipboard.writeText('cleared'));
+    await share.click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(first);
+    sharedURL = first;
+    await strangerSees(browser, first);
+  } finally {
+    await ctx?.close();
+  }
+});
+
+test('phone: Share opens the native share sheet with the title and the same link', async ({ browser }) => {
+  test.setTimeout(120_000);
+  await publish();
+  let ctx: BrowserContext | undefined;
+  try {
+    ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, baseURL: origin });
+    // The share sheet, stubbed: what the page asked it to share. A first call
+    // that the user CANCELS (AbortError) must say nothing and copy nothing.
+    await ctx.addInitScript(() => {
+      const w = window as unknown as { __shared: unknown[]; __cancelNext: boolean };
+      w.__shared = [];
+      w.__cancelNext = false;
+      Object.defineProperty(Navigator.prototype, 'share', {
+        configurable: true,
+        value: (d: unknown) => {
+          w.__shared.push(d);
+          if (w.__cancelNext) {
+            w.__cancelNext = false;
+            return Promise.reject(new DOMException('cancelled', 'AbortError'));
+          }
+          return Promise.resolve();
+        },
+      });
+      Object.defineProperty(Navigator.prototype, 'canShare', { configurable: true, value: () => true });
+    });
+    const page = await ctx.newPage();
+    const card = await openCard(page);
+    const share = card.getByRole('button', { name: `Share “${TITLE}”` });
+    await share.tap();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared.length)).toBe(1);
+    const got = await page.evaluate(() => (window as unknown as { __shared: { title: string; url: string }[] }).__shared[0]);
+    expect(got.title).toBe(TITLE);
+    expect(got.url).toMatch(linkRE);
+    if (sharedURL) expect(got.url, 'the same link the desktop copied').toBe(sharedURL);
+    // Cancelled: silence (no toast).
+    await page.evaluate(() => ((window as unknown as { __cancelNext: boolean }).__cancelNext = true));
+    await share.tap();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared.length)).toBe(2);
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-page-toast]')).toHaveCount(0);
+    await strangerSees(browser, got.url);
+    sharedURL = got.url;
+  } finally {
+    await ctx?.close();
+  }
+});
+
+test('auto mode: the agent’s share request is live at once and returns the page’s same link', async () => {
+  await publish();
+  const req = await call('page_share_request', { page_id: pageID, reason: 'for the client' });
+  expect(req.isError, req.text).toBe(false);
+  expect(req.body.status).toBe('live');
+  expect(req.body.ask_id).toBeUndefined();
+  expect(req.body.url).toMatch(linkRE);
+  if (sharedURL) expect(req.body.url, "the owner's Share link").toBe(sharedURL);
+  const again = await call('page_share_request', { page_id: pageID });
+  expect(again.body.url).toBe(req.body.url);
+});

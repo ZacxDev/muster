@@ -231,6 +231,12 @@ type Extensions struct {
 	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES: the bytes one page's
 	// files may hold in all; 0 is pages.DefaultUploadBytesPerPage.
 	PagesUploadBytes int64
+	// PagesAgentShareAuto is MUSTER_PAGES_AGENT_SHARE=auto: an agent's
+	// page_share_request makes the page's link live at once (no owner card)
+	// and hands the agent its address; the owner is told by push and on the
+	// page's card. false (the default, "ask"): a pending link and an owner
+	// card, decided only at the owner's own door (page_share.go).
+	PagesAgentShareAuto bool
 
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the

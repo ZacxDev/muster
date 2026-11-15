@@ -144,6 +144,7 @@ GET /mirror/view/ws
 GET /officers/spawns
 GET /pages
 GET /pages/{id}
+GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
 GET /plugin/v1/drafts/checks
@@ -315,6 +316,9 @@ POST /pages/{id}/delete
 POST /pages/{id}/links
 POST /pages/{id}/links/{link}/revoke
 POST /pages/{id}/rollback
+POST /pages/{id}/share
+POST /pages/{id}/share/revoke
+POST /pages/{id}/share/rotate
 POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check

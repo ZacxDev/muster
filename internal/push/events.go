@@ -21,6 +21,9 @@ const (
 	// EventPage: a viewer sent something through a shareable page's link
 	// (internal/pages) — at most one push per page a minute.
 	EventPage = "page"
+	// EventPagePublished: an agent published a new page for its owner, or made
+	// one's share link live without asking (MUSTER_PAGES_AGENT_SHARE=auto).
+	EventPagePublished = "page_published"
 )
 
 // Event is one toggle.
@@ -41,6 +44,7 @@ var Events = []Event{
 	{EventAttention, "An agent asks you something, or a session is waiting on you"},
 	{EventAgentOutcome, "An agent you started finished, failed or went quiet"},
 	{EventPage, "Someone sent a response through one of your pages' links"},
+	{EventPagePublished, "An agent published a page for you, or shared one"},
 }
 
 // KnownEvent reports whether name is in Events.
