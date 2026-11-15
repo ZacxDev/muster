@@ -2470,6 +2470,10 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   (`ViaPlugin` is not a team door), so the plugin could not redeem the
    >   hand-off. Building it needs a manager's mint surface, a decision on
    >   that door, and a server-side read of the team's viewer plugins.
+   >   **Operator ruling (2026-11-15):** team plugins and team previews are
+   >   their OWN slice, built next — after #690 merges, before 2b.4. 2b.3
+   >   merges with the preview own-only: a team session draws no Preview
+   >   button, and `GET /ui/mirror/preview-button` is `mirrorTeamOwnOnly`.
    > - **The pages.** On a team session the terminal and the Rendered view
    >   leave out everything that is the viewer's own and keyed by host name or
    >   conversation (recents, tags, pins, names, focus history, drafts, the
