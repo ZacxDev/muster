@@ -663,7 +663,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	// This machine's attempt code, when its muster-mirror left one: the server
 	// tells a held team host machine by it, whatever the addresses (team
 	// sharing 2b.2). Sent only to the token's own server (above).
-	code := d.attemptCode()
+	code, codePath := d.attemptCode()
 	if code != "" {
 		req.Header.Set(attemptcode.Header, code)
 	}
@@ -678,6 +678,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Interactive bool   `json:"interactive"`
 		OtherToken  bool   `json:"other_token"`
 		Held        bool   `json:"held"`
+		HeldUnknown bool   `json:"held_unknown"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -693,6 +694,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		// The server says held only for the code this request presented.
 		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; give this code to a team manager: %s", h.Host, code),
 			"a manager of the team types this code on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
+	case h.HeldUnknown:
+		d.add(name, statusFail, fmt.Sprintf("team host %q is connected and other machines are held for it, but this machine's attempt code (%s) is missing, unreadable or not the live connection's: this may be a held machine", h.Host, codePath),
+			"run doctor as the user muster-mirror runs as, with its settings ("+envMirrorAttemptCodeFile+" in "+d.mirrorEnv+" if it is set); restart muster-mirror so it writes a fresh code; then run doctor again")
 	case h.OtherToken:
 		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
 			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")
@@ -1033,27 +1037,28 @@ func (d *doctorRun) checkFeatures() {
 // (its -attempt-code-file; else internal/mirrorpath's default).
 const envMirrorAttemptCodeFile = "MUSTER_MIRROR_ATTEMPT_CODE_FILE"
 
-// attemptCode is this machine's running muster-mirror's attempt code, in its
-// canonical XXXX-XXXX-XXXX form, or "" when it left none (an old
-// muster-mirror, or none running) or the file holds no well-formed code.
-func (d *doctorRun) attemptCode() string {
+// attemptCode is this machine's running muster-mirror's attempt code, as it
+// wrote it (XXXX-XXXX-XXXX), and the file it was read from; code is "" when
+// it left none (an old muster-mirror, or none running) or the file holds no
+// well-formed code.
+func (d *doctorRun) attemptCode() (code, path string) {
 	_, vals := d.mirrorEnvValues()
-	path := expandHome(strings.TrimSpace(vals[envMirrorAttemptCodeFile]), d.a.homeDir)
+	path = expandHome(strings.TrimSpace(vals[envMirrorAttemptCodeFile]), d.a.homeDir)
 	if path == "" {
 		path = mirrorpath.DefaultAttemptCodeFile()
 	}
 	if path == "" {
-		return ""
+		return "", ""
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", path
 	}
-	code := strings.TrimSpace(string(raw))
+	code = strings.TrimSpace(string(raw))
 	if _, ok := attemptcode.Normalize(code); !ok {
-		return ""
+		return "", path
 	}
-	return code
+	return code, path
 }
 
 // The agent ask tool's defaults (docs/features.md#agent-ask-tool).

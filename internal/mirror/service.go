@@ -72,6 +72,11 @@ type Service struct {
 type connToken struct {
 	id  int64
 	gen uint64
+	// team and code: the connection is a team host's, presenting this attempt
+	// code's hash (nil: none) — how `muster doctor` on the LIVE machine is
+	// told from a held one (teamhold.go, HeldHere).
+	team bool
+	code *[32]byte
 }
 
 // HostToken is the id of the token the viewing principal's host is
@@ -238,8 +243,8 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// so the live connection's token stays the one tracked, and the held one
 	// is sent nothing — until a manager confirms it.
 	peer := clientAddr(r)
+	code := attemptCodeOf(r)
 	if tok.Team {
-		code := attemptCodeOf(r)
 		if admit, announce := s.hub.admitPinned(key, peer, code); !admit {
 			s.refuseHeld(r, ws, tok, peer, code, announce)
 			return
@@ -257,7 +262,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		s.connTok = map[hostKey]connToken{}
 	}
 	s.connGen++
-	mine := connToken{id: tok.ID, gen: s.connGen}
+	mine := connToken{id: tok.ID, gen: s.connGen, team: tok.Team, code: code}
 	s.connTok[key] = mine
 	s.connMu.Unlock()
 	defer func() {
@@ -274,7 +279,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 // refuseHeld answers a held team host connection (teamhold.go): its hello
 // first, as every refusal reads it, so the host reads the refusal as muster's
 // answer to its registration. Logged, and the team's views nudged, only when
-// announce (at most once per heldAnnounceEvery per attempt): a machine in a
+// announce (at most once per heldAnnounceEvery per host): a machine in a
 // tight retry loop is counted on the card, not announced each time. The log
 // names the attempt's code by its fingerprint only (internal/attemptcode).
 func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, code *[32]byte, announce bool) {

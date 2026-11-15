@@ -273,17 +273,19 @@ func TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash(t *testing.T) {
 }
 
 // TestDoctorsQuestionIsAnsweredByTheCode: Service.HeldHere for a request
-// presenting a code — what `muster doctor` sends — is true exactly for the
-// held code, though every connection shares the loopback address; with no
-// code it is never held.
+// presenting a code — what `muster doctor` sends — though every connection
+// shares the loopback address:
+//   - the held machine's code: held;
+//   - the LIVE machine's own code: neither (it is the connected one);
+//   - no code, or a code that is neither (a stale file): UNKNOWN, because
+//     machines are held and this one cannot be named (#688 round 1, Y1: the
+//     doctor said "connected" here);
+//   - CONTROL: with nothing held, no code is neither held nor unknown.
 func TestDoctorsQuestionIsAnsweredByTheCode(t *testing.T) {
 	const team = 900331
 	r := newRig(t)
 	tok, _ := liveCoded(t, r, team, "build-31")
-	if held, _ := r.attempt(t, team, "build-31", tok, codeA, "moved"); !held {
-		t.Fatal("A was not held")
-	}
-	ask := func(code string) bool {
+	ask := func(code string) (bool, bool) {
 		req := httptest.NewRequest(http.MethodGet, "/mirror/host", nil)
 		req.RemoteAddr = "127.0.0.1:40000"
 		if code != "" {
@@ -291,13 +293,54 @@ func TestDoctorsQuestionIsAnsweredByTheCode(t *testing.T) {
 		}
 		return r.svc.HeldHere(asUser(team), "build-31", req)
 	}
-	if !ask(codeA) {
-		t.Fatal("the held machine's code is not told it is held")
+	if held, unknown := ask(""); held || unknown {
+		t.Fatalf("CONTROL: nothing held, no code: held %v unknown %v; want neither", held, unknown)
 	}
-	if ask(codeLive) {
-		t.Fatal("the LIVE machine's code is told it is held")
+	if held, _ := r.attempt(t, team, "build-31", tok, codeA, "moved"); !held {
+		t.Fatal("A was not held")
 	}
-	if ask("") {
-		t.Fatal("a request with no code is told it is held")
+	for _, c := range []struct {
+		code          string
+		held, unknown bool
+	}{
+		{codeA, true, false},
+		{codeLive, false, false},
+		{"", false, true},
+		{"ST4L-E000-0000", false, true},
+	} {
+		if held, unknown := ask(c.code); held != c.held || unknown != c.unknown {
+			t.Errorf("code %q: held %v unknown %v; want held %v unknown %v", c.code, held, unknown, c.held, c.unknown)
+		}
+	}
+}
+
+// TestAHeldMachinePrintsItsCodeOncePerProcess (#688 round 1, Y2): one
+// muster-mirror process held twice prints its code ONCE; the second hold
+// says only that `muster doctor` shows it.
+func TestAHeldMachinePrintsItsCodeOncePerProcess(t *testing.T) {
+	const team = 900337
+	r := newRig(t)
+	tok, _ := liveCoded(t, r, team, "build-37")
+	b := &fakeBackend{}
+	b.set("moved")
+	buf := &syncBuf{}
+	c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: tok, AttemptCode: codeA, Host: "build-37", Backend: b,
+		Interactive: true, AllowHTTP: true, Refresh: 30 * time.Millisecond, ViewPoll: 20 * time.Millisecond, Logger: log.New(buf, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.RunOnce(ctx)
+		cancel()
+		if !isHeld(err) {
+			t.Fatalf("attempt %d = %v; want held", i+1, err)
+		}
+	}
+	if n := strings.Count(buf.String(), codeA); n != 1 {
+		t.Fatalf("the code is in the log %d time(s) after two holds; want once:\n%s", n, buf.String())
+	}
+	if !strings.Contains(buf.String(), "`muster doctor` shows this machine's code") {
+		t.Fatalf("the second hold does not point at muster doctor:\n%s", buf.String())
 	}
 }

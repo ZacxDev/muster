@@ -94,12 +94,17 @@ type MirrorHostReport struct {
 	// token, and a manager must confirm this one on /teams/<id>/hosts by that
 	// code. Online is false then, though the token matches.
 	Held bool `json:"held,omitempty"`
+	// HeldUnknown: a team host is live, machines are held for it, and this
+	// request's attempt code is neither held nor the live connection's (or it
+	// sent none): this machine may be a held one, so the doctor must not say
+	// "connected" (#688 round 1, Y1).
+	HeldUnknown bool `json:"held_unknown,omitempty"`
 }
 
 // mirrorHeldReader is the mirror plugin's held-attempt check
 // (mirror.Service.HeldHere), asserted so a fake without it reports no hold.
 type mirrorHeldReader interface {
-	HeldHere(ctx context.Context, host string, r *http.Request) bool
+	HeldHere(ctx context.Context, host string, r *http.Request) (held, unknown bool)
 }
 
 func (s *Server) registerDoctorRoutes(mux Mux) {
@@ -130,8 +135,13 @@ func (s *Server) handleMirrorHost(w http.ResponseWriter, r *http.Request) {
 		}
 		// 🔴 A HELD team host machine shares the live one's token, so the
 		// token match above says Online for it: it is not.
-		if hr, ok := s.ext.Mirror.(mirrorHeldReader); ok && rep.Online && hr.HeldHere(r.Context(), t.Host, r) {
-			rep.Online, rep.Interactive, rep.Held = false, false, true
+		if hr, ok := s.ext.Mirror.(mirrorHeldReader); ok && rep.Online {
+			switch held, unknown := hr.HeldHere(r.Context(), t.Host, r); {
+			case held:
+				rep.Online, rep.Interactive, rep.Held = false, false, true
+			case unknown:
+				rep.HeldUnknown = true
+			}
 		}
 	}
 	s.writeJSON(w, http.StatusOK, rep)

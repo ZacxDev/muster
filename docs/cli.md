@@ -215,8 +215,10 @@ INSTALL.md's Step 10 passes `--api-url` there.
   doctor reads the code muster-mirror left (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`
   in the settings file, else `muster-mirror/attempt-code` in the user config
   directory) and sends it, with the token, to the same server only, which
-  answers whether that code is held. With no code (an older muster-mirror) the
-  server cannot tell this machine is held, so doctor does not say so.
+  answers whether that code is held, is the live connection's, or neither.
+  When machines are held for the team host and this machine's code is
+  missing, unreadable or neither (`held_unknown`), it FAILs naming the code
+  file ("this may be a held machine") rather than PASS "connected".
 - **Flags:** `--skip <check>[,<check>…]`, `--mirror-env`, `--mirror-unit` (default
   `muster-mirror.service`), `--mirror-label` (default
   `io.github.zacxdev.muster-mirror`).

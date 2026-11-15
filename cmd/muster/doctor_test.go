@@ -120,6 +120,9 @@ type fakeMuster struct {
 	// heldCode: /mirror/host answers held for a request presenting this
 	// attempt code (X-Muster-Attempt-Code); sawCode is the last one presented.
 	heldCode, sawCode string
+	// heldUnknown: /mirror/host answers held_unknown for any request not
+	// presenting heldCode (#688 round 1, Y1).
+	heldUnknown bool
 }
 
 // fakeMirrorToken is the mirror token runDoctorAgainst writes for the machine.
@@ -208,8 +211,8 @@ func (f *fakeMuster) handler() http.Handler {
 			writeJSON(w, http.StatusOK, `{"host":"alpha","online":false,"interactive":false,"held":true}`)
 		default:
 			f.sawCode = r.Header.Get("X-Muster-Attempt-Code")
-			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t,"other_token":%t}`,
-				f.hostOnline && !f.otherToken, f.hostOnline && !f.otherToken, f.otherToken))
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t,"other_token":%t,"held_unknown":%t}`,
+				f.hostOnline && !f.otherToken, f.hostOnline && !f.otherToken, f.otherToken, f.heldUnknown))
 		}
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
@@ -986,5 +989,25 @@ func TestDoctorShowsAHeldMachinesCode(t *testing.T) {
 	none.heldCode = code
 	if r := run(none, false); r.status("this-host") != statusPass || none.sawCode != "" {
 		t.Fatalf("CONTROL: a machine with no code file: this-host %s, sent %q; want PASS, no code sent", r.status("this-host"), none.sawCode)
+	}
+}
+
+// TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine (#688 round 1,
+// Y1): the server answers held_unknown — machines are held for this team
+// host, and this machine's code is missing or not the live one's. doctor
+// FAILs this-host naming the code file it read, instead of PASSing
+// "connected". The CONTROL is the same machine without held_unknown: PASS.
+//
+// Red at e58c086f: doctor ignored held_unknown and PASSed.
+func TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine(t *testing.T) {
+	m := healthyMuster()
+	m.heldUnknown = true
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{})
+	c := r.check("this-host")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "this may be a held machine") || !strings.Contains(c.Detail, filepath.Join("muster-mirror", "attempt-code")) {
+		t.Fatalf("this-host with held_unknown = %+v; want a FAIL naming the code file and that this may be held", c)
+	}
+	if r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{}); r.status("this-host") != statusPass {
+		t.Fatalf("CONTROL: without held_unknown this-host = %s; want PASS", r.status("this-host"))
 	}
 }

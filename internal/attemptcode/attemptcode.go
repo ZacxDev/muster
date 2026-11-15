@@ -5,6 +5,7 @@
 package attemptcode
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -101,6 +102,21 @@ func Hash(code string) ([32]byte, bool) {
 	return sha256.Sum256([]byte("muster attempt code v1\x00" + n)), true
 }
 
-// Fingerprint is the short hex of a code's hash that logs and audit rows
-// carry: enough to match a log line to an audit row, never the code.
-func Fingerprint(h [32]byte) string { return hex.EncodeToString(h[:8]) }
+// fingerprintKey keys Fingerprint: drawn once per PROCESS, kept nowhere.
+var fingerprintKey = func() []byte {
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		panic("attemptcode: no randomness for the fingerprint key: " + err.Error())
+	}
+	return k
+}()
+
+// Fingerprint is the short hex that logs and audit rows carry for a code's
+// hash: an HMAC under a per-process random key (#688 round 1, Z1), so it
+// matches a log line to an audit row written by the SAME server process, and
+// a log or audit reader cannot test guesses against it offline.
+func Fingerprint(h [32]byte) string {
+	m := hmac.New(sha256.New, fingerprintKey)
+	m.Write(h[:])
+	return hex.EncodeToString(m.Sum(nil)[:8])
+}

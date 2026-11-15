@@ -1882,11 +1882,15 @@ server and its own `muster-mirror`.
   muster-mirror: held: team host build-01 is already connected from another machine; give this code to a team manager: K7QM-2XWD-9RTB
   ```
 
-  and `muster doctor` there reports "held: … give this code to a team
-  manager: K7QM-2XWD-9RTB". The code is also in the file
+  once per process (later holds say "`muster doctor` shows this machine's
+  code"), and `muster doctor` there reports "held: … give this code to a
+  team manager: K7QM-2XWD-9RTB". 🔴 Anyone who can read that log (the
+  user's journal, an admin, wherever it is shipped) can learn the code. The
+  code is also in the file
   `-attempt-code-file` names (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`, else
-  `muster-mirror/attempt-code` in the user config directory, mode 0600),
-  removed when muster-mirror exits. The manager types it on the hosts page
+  `muster-mirror/attempt-code` in the user config directory, mode 0600;
+  `-attempt-code-file=` on the command line writes none), removed when
+  muster-mirror exits. The manager types it on the hosts page
   (case, dashes and spaces do not matter): that code's next attempt takes
   over within 3 minutes, and no other connection does, whatever its
   address. A restart draws a new code, so type the one the running process

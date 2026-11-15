@@ -2224,12 +2224,29 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   step-up'd, trusted manager can type a code, and a guess gains no one
    >   anything) and a structural constant-time test (the compared values
    >   are hashes); the `subtle.ConstantTimeCompare` call stays.
-   >   ⚠ **Not closed:** a kept token can still spray fresh codes. Past
-   >   `maxHeldAttempts` (16) per host the oldest-seen attempt is forgotten,
-   >   and a forgotten attempt's correct code then simply answers "no such
-   >   code" until the moved machine's next retry records it again (at most a
-   >   minute); the answer to a sprayer is still revoke and re-mint. The code
-   >   is per process, so a restart of the moved machine draws a new one.
+   >   **Round 1 (#688):** past `maxHeldAttempts` (16) per host the attempt
+   >   forgotten is the oldest seen only ONCE, else the oldest, and never
+   >   the confirmed one; a real muster-mirror retries with one code, so
+   >   once the moved machine has retried, a spray of fresh codes (each seen
+   >   once) evicts only sprayed ones. Holds are announced at most once per
+   >   `heldAnnounceEvery` per (team, host), not per code. The live
+   >   connection's code hash is kept with its token, so `GET /mirror/host`
+   >   answers held, connected, or `held_unknown` (machines are held and the
+   >   request's code is missing or neither), and doctor FAILs on unknown
+   >   rather than PASS "connected". muster-mirror prints the code once per
+   >   process; later holds point at `muster doctor`. Fingerprints are an
+   >   HMAC under a per-process key, so a log or audit reader cannot test
+   >   guesses offline (they match only within one server process).
+   >   `heldCode` honours `heldRetention` like `ConfirmCode`.
+   >   ⚠ **Not closed:** a kept token can still spray. Before the moved
+   >   machine's SECOND attempt its record is seen once, so a spray can
+   >   evict it, and its correct code then answers "no such code" until its
+   >   next retry (at most a minute) records it again; the answer to a
+   >   sprayer is still revoke and re-mint. The code is per process, so a
+   >   restart of the moved machine draws a new one. Anyone who can read the
+   >   moved machine's muster-mirror log (its user's journal, admins, any log
+   >   shipping) sees the code once; with it, a kept copy retrying fast can
+   >   race the moved machine inside the confirm window.
    >   Tests: `TestASecondTeamHostConnectionWaitsForAManager`,
    >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
    >   `TestACodeConfirmAdmitsTheMachineShowingItAndNoOther`,
@@ -2245,8 +2262,8 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   (`cmd/muster-mirror`); `TestACodeIsTypeableAndTypedFormsAgree`
    >   (`internal/attemptcode`).
    >   Held attempts are logged and nudge members' views at most once per
-   >   `heldAnnounceEvery` (30 s) per address (G2); every attempt is still
-   >   counted on the card.
+   >   `heldAnnounceEvery` (30 s) per (team, host) since #688 (G2 bounded it
+   >   per address); every attempt is still counted on the card.
    >   🔴 **The hold guards the tunnel only (G1).** A held machine, or any
    >   kept copy of the token, can still call `/mirror/mcp` and `/mirror/ask`
    >   as any session the LIVE host lists: those doors bind a call to the live

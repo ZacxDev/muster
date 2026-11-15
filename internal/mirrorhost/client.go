@@ -221,6 +221,9 @@ type Client struct {
 	// asks for an immediate listing.
 	curMu sync.Mutex
 	cur   *hostSide
+
+	// heldLogged: the attempt code was already printed (logHeld).
+	heldLogged atomic.Bool
 }
 
 // beforeRefreshHook, when set (tests), runs on a connection after its hello
@@ -364,8 +367,17 @@ func (c *Client) RunOnce(ctx context.Context) error {
 
 // logHeld says, when muster holds this connection for a team manager, what
 // the manager needs: the code this machine shows (Config.AttemptCode).
+//
+// 🔴 THE CODE IS PRINTED ONCE PER PROCESS (#688 round 1, Y2): it is the
+// bearer of a manager's confirm, and this log is read by whoever reads the
+// user's journal (or wherever it is shipped). Later holds say only that
+// `muster doctor` shows it (from its 0600 file).
 func (c *Client) logHeld() {
 	if c.cfg.AttemptCode == "" {
+		return
+	}
+	if c.heldLogged.Swap(true) {
+		c.log.Printf("muster-mirror: still held: team host %s is connected from another machine; `muster doctor` shows this machine's code", c.cfg.Host)
 		return
 	}
 	c.log.Printf("muster-mirror: held: team host %s is already connected from another machine; give this code to a team manager: %s", c.cfg.Host, c.cfg.AttemptCode)

@@ -195,9 +195,14 @@ releases (team sharing 2b.3 and 2b.4).
     **whatever its address**, so this holds behind a proxy or a Kubernetes
     NodePort, where every machine shares one address. A kept copy of the
     token, on another machine, draws its own code, which the manager never
-    types. muster keeps and logs only a hash of the code (audit rows and logs
-    carry a 16-hex fingerprint). A wrong code arms nothing and is audited as
-    `team.host.replace.refused`.
+    types. The server keeps only a hash of the code; its logs and audit rows
+    carry a 16-hex fingerprint, an HMAC under a per-process key, so they
+    cannot be tested against guesses. A wrong code arms nothing and is
+    audited as `team.host.replace.refused`. 🔴 **The moved machine's own
+    muster-mirror log shows the code**, once per process: anyone who can
+    read that log (its user's journal, an admin of that machine, wherever
+    the log is shipped) can learn it, and a kept copy of the token
+    presenting it inside the confirm window would be taken.
   - **A `muster-mirror` that sends no code** (older than the code) cannot be
     confirmed at all: an address tells no machines apart behind a proxy or a
     Kubernetes NodePort (measured on a NodePort deployment: every host showed
@@ -206,6 +211,9 @@ releases (team sharing 2b.3 and 2b.4).
     host", and the card says the same. Stopping the live host lets the next
     connection in at once, code or no code.
   - `muster doctor` on a held machine says it is held and shows its code.
+    Where machines are held and doctor cannot read this machine's code, or
+    the code is not the live connection's, it FAILs ("this may be a held
+    machine") rather than report it connected.
   - 🔴 **The hold guards the tunnel only.** A held machine, or anyone keeping
     a copy of the token, can still call `/mirror/mcp` and `/mirror/ask` as
     any session the connected host lists (those doors believe the session a

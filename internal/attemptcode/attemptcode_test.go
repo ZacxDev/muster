@@ -1,6 +1,7 @@
 package attemptcode
 
 import (
+	"encoding/hex"
 	"regexp"
 	"testing"
 )
@@ -35,5 +36,22 @@ func TestACodeIsTypeableAndTypedFormsAgree(t *testing.T) {
 	}
 	if fp := Fingerprint(want); len(fp) != 16 {
 		t.Fatalf("fingerprint %q; want 16 hex characters", fp)
+	}
+}
+
+// TestTheFingerprintIsKeyed (#688 round 1, Z1): the fingerprint depends on
+// the per-process key — another key gives another fingerprint for the same
+// hash — and is not the unkeyed hash prefix a log reader could test guesses
+// against offline. Within one key it is stable (a log line matches its
+// audit row).
+func TestTheFingerprintIsKeyed(t *testing.T) {
+	h, _ := Hash("K1T0-ABCD-9XYZ")
+	a, again := Fingerprint(h), Fingerprint(h)
+	saved := fingerprintKey
+	t.Cleanup(func() { fingerprintKey = saved })
+	fingerprintKey = []byte("another key, not the process's own")
+	b := Fingerprint(h)
+	if a != again || a == b || a == hex.EncodeToString(h[:8]) || len(a) != 16 {
+		t.Fatalf("fingerprints %q, %q (same key), %q (another key); want stable per key, different across keys, 16 hex, not the hash prefix", a, again, b)
 	}
 }

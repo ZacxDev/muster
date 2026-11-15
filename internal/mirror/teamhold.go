@@ -124,10 +124,8 @@ type heldAttempt struct {
 	code  [32]byte
 	first time.Time
 	last  time.Time
-	// attempts counts them; announced is when this attempt's hold was last
-	// logged and nudged.
-	attempts  int
-	announced time.Time
+	// attempts counts them.
+	attempts int
 }
 
 // admits reports whether a reconnect presenting code (nil: none) is the
@@ -153,6 +151,10 @@ type held struct {
 	// (its attemptKey), good until then (zero: none).
 	confirmed      string
 	confirmedUntil time.Time
+	// announced is when this host's holds were last logged and nudged: ONE
+	// bound per (team, host), so a token spraying fresh codes is counted, not
+	// announced once per code.
+	announced time.Time
 }
 
 // admitPinned decides a TEAM host connection's arrival for key from addr,
@@ -160,7 +162,13 @@ type held struct {
 // offline, or a manager's confirm of THIS code is armed (and is now spent) —
 // and false when it is held (the attempt is recorded). announce reports, for
 // a held attempt, whether to log it and nudge the views now: at most once per
-// heldAnnounceEvery per attempt.
+// heldAnnounceEvery per (team, host).
+//
+// Past maxHeldAttempts the attempt evicted is one seen only ONCE (the oldest
+// such), else the oldest: a real muster-mirror retries with the same code, so
+// its count grows, while a sprayed code is seen once — the moved machine's
+// attempt survives a spray once it has retried. The confirmed attempt is
+// never evicted.
 func (h *Hub) admitPinned(key hostKey, addr string, code *[32]byte) (admit, announce bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -187,13 +195,7 @@ func (h *Hub) admitPinned(key hostKey, addr string, code *[32]byte) (admit, anno
 	a := hd.attempts[ak]
 	if a == nil || now.Sub(a.last) > heldRetention {
 		if a == nil && len(hd.attempts) >= maxHeldAttempts {
-			oldest := ""
-			for k, v := range hd.attempts {
-				if k != hd.confirmed && (oldest == "" || v.last.Before(hd.attempts[oldest].last)) {
-					oldest = k
-				}
-			}
-			delete(hd.attempts, oldest)
+			delete(hd.attempts, hd.evictee())
 		}
 		a = &heldAttempt{first: now}
 		if code != nil {
@@ -204,11 +206,32 @@ func (h *Hub) admitPinned(key hostKey, addr string, code *[32]byte) (admit, anno
 	a.addr = addr
 	a.last = now
 	a.attempts++
-	if a.announced.IsZero() || now.Sub(a.announced) >= heldAnnounceEvery {
-		a.announced = now
+	if hd.announced.IsZero() || now.Sub(hd.announced) >= heldAnnounceEvery {
+		hd.announced = now
 		return false, true
 	}
 	return false, false
+}
+
+// evictee is the attempt admitPinned forgets when hd is full: the oldest-seen
+// attempt seen only once, else the oldest-seen; never the confirmed one.
+func (hd *held) evictee() string {
+	once, oldest := "", ""
+	for k, v := range hd.attempts {
+		if k == hd.confirmed {
+			continue
+		}
+		if oldest == "" || v.last.Before(hd.attempts[oldest].last) {
+			oldest = k
+		}
+		if v.attempts == 1 && (once == "" || v.last.Before(hd.attempts[once].last)) {
+			once = k
+		}
+	}
+	if once != "" {
+		return once
+	}
+	return oldest
 }
 
 // HeldReplacements is owner's held second connections, one per attempt, for
@@ -282,12 +305,36 @@ func (h *Hub) ConfirmCode(owner int64, code string) (host, fingerprint string, e
 	return "", fingerprint, ErrNoSuchCode
 }
 
-// heldCode reports whether owner's host has a held attempt presenting code.
+// heldCode reports whether owner's host has a held attempt presenting code,
+// seen within heldRetention (ConfirmCode's own rule: a forgotten attempt is
+// not reported held).
 func (h *Hub) heldCode(owner int64, host string, code [32]byte) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	hd := h.held[hostKey{owner, host}]
-	return hd != nil && hd.attempts[attemptKey("", &code)] != nil
+	if hd == nil {
+		return false
+	}
+	a := hd.attempts[attemptKey("", &code)]
+	return a != nil && h.now().Sub(a.last) <= heldRetention
+}
+
+// hasHolds reports whether owner's host has any held attempt seen within
+// heldRetention.
+func (h *Hub) hasHolds(owner int64, host string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	hd := h.held[hostKey{owner, host}]
+	if hd == nil {
+		return false
+	}
+	now := h.now()
+	for _, a := range hd.attempts {
+		if now.Sub(a.last) <= heldRetention {
+			return true
+		}
+	}
+	return false
 }
 
 // attemptCodeOf is r's attempt code's hash (attemptcode.Header), or nil when
@@ -328,15 +375,37 @@ func (s *Service) ConfirmCode(ctx context.Context, code string) (host, fingerpri
 
 // HeldHere answers, for the machine making r — the viewing principal's host,
 // by the token's (owner, host) — `muster doctor`'s this-host question, which
-// the token alone cannot (a held machine shares the live one's token): held
-// exactly when r presents an attempt code (doctor reads it where muster-mirror
-// leaves it) and an attempt with that code is held. With no code there is
-// nothing to tell this machine by, and it is not reported held.
-func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) bool {
+// the token alone cannot (a held machine shares the live one's token), by the
+// attempt code r presents (doctor reads it where muster-mirror leaves it):
+//   - held: an attempt with that code is held;
+//   - unknown: a TEAM host is live, machines are held for it, and r presents
+//     no code, or a code that is neither held nor the live connection's — so
+//     this machine may be a held one this muster cannot name (#688 round 1,
+//     Y1: the doctor must not say "connected" then);
+//   - neither: r's code is the live connection's, or nothing is held.
+func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) (held, unknown bool) {
 	o, err := owner(ctx)
 	if err != nil {
-		return false
+		return false, false
 	}
 	code := attemptCodeOf(r)
-	return code != nil && s.hub.heldCode(o, host, *code)
+	if code != nil && s.hub.heldCode(o, host, *code) {
+		return true, false
+	}
+	live, ok := s.liveConn(o, host)
+	if !ok || !live.team || !s.hub.hasHolds(o, host) {
+		return false, false
+	}
+	if code != nil && live.code != nil && subtle.ConstantTimeCompare(code[:], live.code[:]) == 1 {
+		return false, false
+	}
+	return false, true
+}
+
+// liveConn is owner's host's live connection as ServeConnect tracks it.
+func (s *Service) liveConn(owner int64, host string) (connToken, bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	c, ok := s.connTok[hostKey{owner, host}]
+	return c, ok
 }
