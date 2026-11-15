@@ -34,8 +34,8 @@
 #     marker appears in the signed-in sidebar; NEGATIVE CONTROL: the same
 #     binary refuses http to a non-loopback address, naming cleartext;
 #   * with COMPOSE_UP_BROWSERS=1: e2e/localhost's Playwright projects
-#     (Chromium and WebKit) sign in on http://localhost:<port> and open the
-#     board.
+#     (Chromium and WebKit) sign in on http://localhost:<port>, and each
+#     browser sends its session cookie back (a session-tier route opens).
 # Then the .env stack below, which is an install from BEFORE generated
 # secrets: it must boot exactly as it did (its .env's password, token and push
 # keys; muster-init generates nothing for it).
@@ -241,7 +241,7 @@ phase_zero() {
     MUSTER_LOCAL_URL="$base" MUSTER_LOCAL_PASSWORD="$pw" \
       npx --prefix "$ROOT/e2e" playwright test -c "$ROOT/e2e/localhost/playwright.config.ts" --reporter=list ||
       zfail "the Playwright sign-in on $base failed (Chromium or WebKit; output above)"
-    echo "ok   [zero-config] Chromium and WebKit sign in on $base and open the board"
+    echo "ok   [zero-config] Chromium and WebKit sign in on $base, and each browser sends its session cookie back"
   else
     echo "note [zero-config] the browser check did not run (COMPOSE_UP_BROWSERS=1; CI does)"
   fi
