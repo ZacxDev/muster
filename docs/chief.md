@@ -287,7 +287,9 @@ are refused for a team). The say-so is a member's, never the chief's:
 - **An approval card** is answered only in muster in a browser, by an operator
   or a manager of the team with a fresh sign-in. The phone's notification
   action and the paired phone's answer route refuse it by name, and the card
-  stays open. A member removed after their tap approves nothing.
+  stays open. A member removed after their tap, or signed out everywhere since,
+  approves nothing. A line typed into the chief's chat never settles a team's
+  dispatch card: it stays open to be approved on the card.
 - **A team's task is not the team's say-so.** On a person's own task, the
   task is the owner's say-so and a start needs nothing more; on a team's task
   (any member may file one, or move one there) a start with no counting typed
@@ -309,7 +311,8 @@ manager of the team, with a fresh sign-in, can open a team agent's terminal: a
 shell in a pod that holds the team's credentials, on the server pool the shared
 Claude account's token. Anyone who opens it can read them. This is accepted
 under the same trust model; rotate the agent's credentials when a member who
-could open it leaves.
+could open it leaves. An open terminal closes when its member is removed from
+the team, made a viewer, disabled or signed out.
 A start or a restart the team could not run (the team dropped from the pool, the
 `claude-code` kind off) is refused before anything is stopped, and the page
 hides Start and Restart and says why. A manager also starts, stops and

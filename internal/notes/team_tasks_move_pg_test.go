@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
 )
@@ -40,7 +41,7 @@ func TestAFinishedLinkDoesNotRefuseAMove(t *testing.T) {
 		reservation++
 		if finished {
 			exec(`INSERT INTO attention_asks (owner_id, mirror_host, mirror_session, question, expires_at, task_id, status, answer, answered_by, resolved_at, delivery)
-				VALUES ($1, 'h', 's', 'answered?', now() + interval '1 hour', $2, 'answered', 'yes', 'operator', now(), 'pull')`, w.a, id)
+				VALUES ($1, 'h', 's', 'answered?', now() + interval '1 hour', $2, 'answered', 'yes', 'operator', now(), 'waited')`, w.a, id)
 			exec(`INSERT INTO attention_asks (owner_id, mirror_host, mirror_session, question, expires_at, task_id, status, resolved_at)
 				VALUES ($1, 'h', 's', 'cancelled?', now() + interval '1 hour', $2, 'cancelled', now())`, w.a, id)
 			exec(`INSERT INTO attention_asks (owner_id, mirror_host, mirror_session, question, created_at, expires_at, task_id)
@@ -106,5 +107,60 @@ func TestAFinishedLinkDoesNotRefuseAMove(t *testing.T) {
 	_ = w.pool.QueryRow(sys, `SELECT owner_id FROM notes WHERE id = $1`, live.ID).Scan(&owner)
 	if owner != w.a {
 		t.Errorf("a refused move left the task owned by %d; want A %d", owner, w.a)
+	}
+}
+
+// TestAnAnswerStillOnItsWayRefusesAMove: an answered ask whose delivery can
+// still act — queued or delivering, UNCONFIRMED (RetryDelivery queues it
+// again) or PULL (a mirrored session's attention_wait still reads it) — is
+// live and refuses the move, naming the ask. CONTROL: the same answered ask
+// with a FINISHED delivery (delivered, waited) or none (a system asker's)
+// moves (and TestAFinishedLinkDoesNotRefuseAMove).
+//
+// 🔴 RED at 1637bb29 for unconfirmed and pull: the live predicate was
+// "delivery IN ('queued', 'delivering')", so either let the task move while
+// its answer could still be delivered or read.
+func TestAnAnswerStillOnItsWayRefusesAMove(t *testing.T) {
+	w := newTeamTaskWorld(t)
+	actx := w.as(t, w.a)
+	sys := authz.System(context.Background())
+	t.Cleanup(func() { _, _ = w.pool.Exec(sys, `DELETE FROM attention_asks WHERE owner_id = $1`, w.a) })
+	answered := func(id int64, delivery string) {
+		t.Helper()
+		var d any
+		if delivery != "" {
+			d = delivery
+		}
+		var claimed, lease any
+		if delivery == "delivering" {
+			claimed, lease = "test", time.Now().Add(time.Hour)
+		}
+		if _, err := w.pool.Exec(sys, `INSERT INTO attention_asks (owner_id, mirror_host, mirror_session, question, expires_at, task_id, status, answer,
+				answered_by, resolved_at, delivery, delivery_claimed_by, delivery_lease_until)
+			VALUES ($1, 'h', 's', 'answered?', now() + interval '1 hour', $2, 'answered', 'yes', 'operator', now(), $3, $4, $5)`,
+			w.a, id, d, claimed, lease); err != nil {
+			t.Fatalf("insert an answered ask with delivery %q: %v", delivery, err)
+		}
+	}
+	for _, c := range []struct {
+		delivery string
+		live     bool
+	}{
+		{"queued", true}, {"delivering", true}, {"unconfirmed", true}, {"pull", true},
+		{"delivered", false}, {"waited", false}, {"", false},
+	} {
+		n, err := w.store.Create(actx, Note{Title: "delivery " + c.delivery, Body: "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		answered(n.ID, c.delivery)
+		err = w.store.MoveToTeam(sys, n.ID, w.a, w.t)
+		var blocked *MoveBlockedError
+		switch {
+		case c.live && (!errors.As(err, &blocked) || !strings.Contains(err.Error(), MoveRefusals["attention_asks.task_id"].Reason+" (attention_asks: 1)")):
+			t.Errorf("an answered ask with delivery %q: %v; want the move refused, naming the ask", c.delivery, err)
+		case !c.live && err != nil:
+			t.Errorf("an answered ask with delivery %q (finished): %v; want the task moved", c.delivery, err)
+		}
 	}
 }

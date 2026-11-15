@@ -38,7 +38,10 @@ import (
 //     card stays open on a refusal). The phone's notification action and the
 //     paired-phone answer route are refused by name. When the chief completes
 //     the start, the answerer is read again (teamCardAnswerer): a member
-//     removed since is refused.
+//     removed, made a viewer, disabled or signed out since is refused. The
+//     card is committed WITH its hold (raiseHeldCard), so it is never
+//     answerable as "not a dispatch card", and a line typed into the chat
+//     never settles it (teamDispatchCardKept).
 //   - THE VERBATIM ATTENTION ANSWER as an agent's instructions (ownerAnswer):
 //     muster records no sign-in time on an answer, so on a team's task it is
 //     never taken as instructions on its own — the chief's brief goes on an
@@ -62,8 +65,14 @@ const (
 
 // The chief's sentences when a team's card answer does not hold up when the
 // start is completed (teamCardAnswerer).
-const agentDispatchTeamCardAnswerer = "the member who approved that card is no longer an operator of your team, so muster cannot " +
-	"take it as the team's approval; do not start it, and ask the team again with a new request_key"
+const (
+	agentDispatchTeamCardAnswerer = "the member who approved that card is no longer an operator of your team, so muster cannot " +
+		"take it as the team's approval; do not start it, and ask the team again with a new request_key"
+	agentDispatchTeamCardAnswererSignedOut = "the member who approved that card was signed out of every session since, so muster " +
+		"cannot take it as the team's approval; do not start it, and ask the team again with a new request_key"
+	agentDispatchTeamCardUnverifiable = "the member who approved that card could not be read just now, so the start was not " +
+		"made; try again"
+)
 
 // teamCardRefusal is the answer path's gate for a TEAM's dispatch card (one
 // whose hold the team's chief filed): handled reports that ask id is one, and
@@ -155,24 +164,47 @@ func (s *Server) teamCardHold(ctx context.Context, a attention.Ask) (bool, error
 	return true, nil
 }
 
+// teamDispatchCardKept reports whether a typed line must leave ask open: it
+// is a TEAM's dispatch card (teamCardHold, the answer path's and the push's
+// one test). A hold that cannot be read keeps it too (fail closed: the card
+// stays answerable on the card). Every other ask — a person's, a team's
+// ordinary owner card — is settled as before.
+func (s *Server) teamDispatchCardKept(ctx context.Context, a attention.Ask) bool {
+	if !a.OwnerCard || a.Owner <= 0 || !s.ownerIsTeam(ctx, a.Owner) {
+		return false
+	}
+	card, err := s.teamCardHold(ctx, a)
+	return card || err != nil
+}
+
 // teamCardAnswerer is "" when ask — a card the chief's completing call binds
 // to — is not a team's, or was answered by a person who is STILL an operator
-// or above of the team; else the chief's refusal. Read when the
-// start is completed, so a member removed (or made a viewer) after their tap
-// approves nothing. The answer's freshness was the answer path's
-// (teamCardRefusal); it is not recorded, so it is not read again here.
+// or above of the team and has not been signed out since; else the chief's
+// refusal. Read when the start is completed, so a member removed (or made a
+// viewer, or disabled) after their tap approves nothing, and neither does one
+// signed out everywhere — or whose sessions were cut off — at or after the
+// answer (signedOutSince on the answer's resolved_at, the typer's rule).
+// The answer's step-up freshness was the answer path's (teamCardRefusal); it
+// is not recorded, so it is not read again here.
 func (s *Server) teamCardAnswerer(ctx context.Context, ask attention.Ask) string {
 	// Its DOOR and its sign-in are not re-judged here: every answer that
 	// chooses a card's option is recorded through answerAskFrom, which runs
 	// approvalSurfaceRefusal → teamCardRefusal BEFORE it records anything — so
 	// a team's card is answered only from a browser session, by an operator
 	// or above, with a fresh sign-in, or not at all. What can change after
-	// the answer is the answerer's role, which is read again here.
+	// the answer is the answerer's role and their sign-in, read again here.
 	if !s.ownerIsTeam(ctx, ask.Owner) {
 		return ""
 	}
 	if !s.teamOperatorNow(ctx, ask.AnsweredByUser, ask.Owner) {
 		return agentDispatchTeamCardAnswerer
+	}
+	switch cut, err := s.signedOutSince(ctx, ask.AnsweredByUser, ask.ResolvedAt); {
+	case err != nil:
+		s.logger.Printf("team dispatch: read the answerer %d of card %d: %v", ask.AnsweredByUser, ask.ID, err)
+		return agentDispatchTeamCardUnverifiable
+	case cut:
+		return agentDispatchTeamCardAnswererSignedOut
 	}
 	return ""
 }

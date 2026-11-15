@@ -851,6 +851,13 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	if in.WorkerPool != "" {
 		detail["worker_pool"] = in.WorkerPool
 	}
+	// The PERSON whose say-so the start is (team sharing 4.7): for a person's
+	// own chief, the owner — on every path, their own task included — unless
+	// a card's answer or a typed turn below names who, which for a person is
+	// the owner too. A TEAM's start names only a member a check below read.
+	if !teamOwned {
+		detail[DetailRequestedByUser] = owner
+	}
 	if byTap {
 		// The hold this start consumes (single use), and the card the owner
 		// approved the whole request on.
@@ -927,8 +934,6 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			// team's chief the member who typed it (team sharing 4.7).
 			if msg.TypedBy > 0 {
 				detail[DetailRequestedByUser] = msg.TypedBy
-			} else if !teamOwned {
-				detail[DetailRequestedByUser] = owner
 			}
 		}
 		if !onTask {

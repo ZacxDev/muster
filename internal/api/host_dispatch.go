@@ -457,29 +457,41 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	// (proposalCardFiled, as a proposal's): its notification cannot show the
 	// brief, so a tap on the lock screen must open the whole card, never
 	// answer it. It is notified only once its hold is filed.
-	var (
-		ask attention.Ask
-		err error
-	)
+	//
+	// 🔴 THE CARD AND ITS HOLD COMMIT TOGETHER (raiseHeldCard): the hold is
+	// written in the card's own transaction, naming it, so there is no moment
+	// a reader sees the card and no hold — the moment a team's card was
+	// answered as "not a dispatch card" (PR #682 round 1).
+	//
 	// 🔴 THE CARD WAITS AS LONG AS ITS HOLD, AND A LITTLE LONGER
 	// (plugins.CardAskOutlives): the hold lapses first, and the sweep then
 	// withdraws the card and tells the chief (withdrawLapsedHoldCards).
-	if approval {
-		ask, err = s.raiseProposalCard(ctx, a, question, labels, holdCardWait)
-	} else {
-		ask, err = s.raiseOwnerCard(ctx, a, question, labels, "", holdCardWait)
+	holdID, err := plugins.NewHoldObject()
+	if err != nil {
+		s.logger.Printf("agent_dispatch: mint a hold id: %v", err)
+		return refuse("the dispatch could not be held for your owner's answer; try again")
 	}
+	d := heldDetail{Door: cardHoldDoor, RequestKey: in.RequestKey, HeldHash: dispatchRequestHash(held, prompt), Target: held.Target,
+		Blanks: blanks, Options: values, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger, Refile: req.refile,
+		CloneDecision: decision}
+	hold := &attention.WithAudit{Action: plugins.ActionDispatchHeld, Object: holdID, Detail: func(askID int64) map[string]any {
+		d.AskID = askID
+		var detail map[string]any
+		raw, _ := json.Marshal(d)
+		_ = json.Unmarshal(raw, &detail)
+		return detail
+	}}
+	ask, err := s.raiseHeldCard(ctx, a, question, labels, approval, hold)
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
 	}
-	d := heldDetail{Door: cardHoldDoor, RequestKey: in.RequestKey, HeldHash: dispatchRequestHash(held, prompt), Target: held.Target,
-		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger, Refile: req.refile,
-		CloneDecision: decision}
-	var detail map[string]any
-	raw, _ := json.Marshal(d)
-	_ = json.Unmarshal(raw, &detail)
-	if _, err := s.ext.ChiefDispatch.FileDispatchHold(ctx, detail); err != nil {
-		s.logger.Printf("agent_dispatch: file a held dispatch: %v", err)
+	// The hold is read back as every completing call reads it: a store that
+	// did not write it (or a row that does not name this card) is no hold, and
+	// the card is withdrawn rather than left answerable.
+	var back heldDetail
+	if h, err := s.ext.ChiefDispatch.DispatchHold(ctx, holdID); err != nil || json.Unmarshal(h.Detail, &back) != nil || back.AskID != ask.ID ||
+		back.Door != cardHoldDoor {
+		s.logger.Printf("agent_dispatch: the held dispatch of card %d did not read back: %v", ask.ID, err)
 		_, _ = s.cancelAsk(ctx, ask.ID)
 		return refuse("the dispatch could not be held for your owner's answer; try again")
 	}

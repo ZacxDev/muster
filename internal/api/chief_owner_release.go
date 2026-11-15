@@ -291,9 +291,12 @@ func (s *Server) typerSpeaksForOwner(ctx context.Context, a agents.Agent, typedB
 // only). An account that cannot be read, a team, a viewer or a DISABLED
 // person is false: a disable keeps the team membership, so the role alone
 // would still read operator. Every team say-so re-check is this one call —
-// the typer's (typerSpeaksForOwner, at typing and when the chief calls), the
-// card answerer's (teamCardRefusal at the answer, teamCardAnswerer when the
-// start completes) and the terminal's.
+// the typer's (typerSpeaksForOwner, at typing and when the chief calls) and
+// the card answerer's (teamCardRefusal at the answer, teamCardAnswerer when
+// the start completes). The terminal's DOOR is the request principal's role
+// (refuseTeamAgentRoute); this is its re-read once the socket is registered
+// for the membership sweep (teamTerminalOpen), closing a change that lands
+// between the two.
 func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 	if person <= 0 || team <= 0 || person == team {
 		return false
@@ -338,21 +341,35 @@ func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 // sign-out and the typing, inside the step-up window, is the exposure.
 // Both clocks are Postgres's. Unreadable: unverifiable (fail closed).
 func (s *Server) typerSignedOutSince(ctx context.Context, typer int64, msg agents.ChatMessage) string {
-	pn, ok := s.ext.Users.(personNamer)
-	if !ok {
-		return chiefReleaseUnverifiable
-	}
-	u, err := pn.ByID(ctx, typer)
-	if err != nil {
-		s.logger.Printf("task routing: read the typer %d of message %d: %v", typer, msg.ID, err)
-		return chiefReleaseUnverifiable
-	}
 	// A DISABLED typer is teamOperatorNow's (it runs first, through
 	// typerSpeaksForOwner); a disable also moves sessions_not_before.
-	if atOrBefore(msg.CreatedAt, u.SessionsNotBefore) || atOrBefore(msg.CreatedAt, u.SignedOutAt) {
+	switch cut, err := s.signedOutSince(ctx, typer, msg.CreatedAt); {
+	case err != nil:
+		s.logger.Printf("task routing: read the typer %d of message %d: %v", typer, msg.ID, err)
+		return chiefReleaseUnverifiable
+	case cut:
 		return chiefReleaseTyperSignedOut
 	}
 	return ""
+}
+
+// signedOutSince is THE sign-out cutoff test of a team say-so given at `at`
+// (a member's typed row's created_at, a card answer's resolved_at): true when
+// person's sessions were cut off (users.sessions_not_before: a disable, a
+// password reset) or signed out everywhere (users.signed_out_at) at or after
+// it, in whole seconds — the send queue's rule (atOrBefore). err: the person
+// could not be read (each caller fails closed). The typer's (typerSignedOutSince)
+// and the card answerer's (teamCardAnswerer) are this one call.
+func (s *Server) signedOutSince(ctx context.Context, person int64, at time.Time) (bool, error) {
+	pn, ok := s.ext.Users.(personNamer)
+	if !ok {
+		return false, errors.New("no person reader")
+	}
+	u, err := pn.ByID(ctx, person)
+	if err != nil {
+		return false, err
+	}
+	return atOrBefore(at, u.SessionsNotBefore) || atOrBefore(at, u.SignedOutAt), nil
 }
 
 // gateRelease is a release agent_dispatch has verified and will apply once the

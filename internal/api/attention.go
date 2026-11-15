@@ -2383,7 +2383,14 @@ func (s *Server) askerAddressedBy(ctx context.Context, asker attention.Asker, me
 	if s.ext.Attention == nil || asker.Valid() != nil {
 		return
 	}
-	asks, err := s.ext.Attention.AnswerInSession(context.WithoutCancel(ctx), asker, message, queueID)
+	// 🔴 A TYPED LINE NEVER SETTLES A TEAM'S DISPATCH CARD (PR #682 round 1):
+	// it is approved only on the card, by an operator with a fresh sign-in
+	// (teamCardRefusal), and a line typed into the team's room — by a stale
+	// or any other member — would close it as answered in the chat, leaving
+	// nothing to approve. It stays open (teamDispatchCardKept).
+	bg := context.WithoutCancel(ctx)
+	asks, err := s.ext.Attention.AnswerInSession(bg, asker, message, queueID,
+		func(a attention.Ask) bool { return s.teamDispatchCardKept(bg, a) })
 	if err != nil {
 		s.logger.Printf("attention: answered in session by a message to %s: %v", askerName(asker), err)
 		return

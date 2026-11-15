@@ -142,14 +142,22 @@ const TeamAgentManagerOnly = "this is a team agent: only a manager of its team s
 // oracle); any other read error is a 500 — the gate cannot decide, so it
 // does not let the request through.
 func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bool {
+	refused, _ := s.teamAgentGate(w, r)
+	return refused
+}
+
+// teamAgentGate is refuseTeamAgentRoute, and the team whose agent's terminal
+// it let a member through to (0 for anything else): admit registers that
+// socket for the membership sweep (teamTerminalOpen).
+func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, int64) {
 	rule, ok := teamAgentRoutes[r.Pattern]
 	if !ok || rule == teamAgentRead || s.ext.Agents == nil {
-		return false
+		return false, 0
 	}
 	ctx := r.Context()
 	p, ok := authz.From(ctx)
 	if !ok || p.All() || p.TeamScope() == "" {
-		return false
+		return false, 0
 	}
 	var a agents.Agent
 	var err error
@@ -164,30 +172,30 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 			a, err = s.ext.Agents.Get(ctx, sess.AgentID)
 		}
 	} else {
-		return false
+		return false, 0
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false
+		return false, 0
 	case err != nil:
 		s.logger.Printf("team agents: %s: read the agent: %v", r.Pattern, err)
 		http.Error(w, "could not load the agent", http.StatusInternalServerError)
-		return true
+		return true, 0
 	}
 	if a.OwnerID <= 0 || a.OwnerID == p.UserID {
-		return false
+		return false, 0
 	}
 	role, in := p.TeamScope().RoleIn(a.OwnerID)
 	if !in {
-		return false // not a team agent of theirs: row-level security decided
+		return false, 0 // not a team agent of theirs: row-level security decided
 	}
 	switch {
 	case rule == teamAgentChat && role.AtLeast(authz.TeamOperator):
-		return false
+		return false, 0
 	case rule == teamAgentManage && role == authz.TeamManager:
-		return false
+		return false, 0
 	case rule == teamAgentTerminal && role.AtLeast(authz.TeamOperator) && stepup.Fresh(ctx, s.stepUpNow()):
-		return false
+		return false, a.OwnerID
 	}
 	msg := TeamAgentRouteRefusal
 	switch rule {
@@ -204,7 +212,73 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 		}
 	}
 	http.Error(w, msg, http.StatusForbidden)
-	return true
+	return true, 0
+}
+
+// teamTerminalSet is every open team-agent terminal socket a member holds,
+// by team and member: each socket's cancel.
+type teamTerminalSet struct {
+	mu   sync.Mutex
+	open map[[2]int64]map[*context.CancelCauseFunc]struct{}
+}
+
+// errTeamTerminalClosed is the cause a member's open team terminal is
+// cancelled with when they leave the team or its operators.
+var errTeamTerminalClosed = errors.New("team terminal closed: no longer an operator of the team")
+
+// teamTerminalOpen registers r — person's terminal socket on an agent of team,
+// let through by the door — so closeTeamTerminals can end it, and returns the
+// request to serve under, with its unregister. Then it reads the person's
+// role in the team AGAIN, fresh (teamOperatorNow): the door judged the
+// request's principal, resolved before a removal or downgrade that may have
+// landed since — and that change's sweep ran before this socket registered,
+// so it would never close it. Not an operator now: 403, and nil.
+//
+// 🔴 A MEMBER'S TERMINAL CLOSES WHEN THEY STOP BEING AN OPERATOR (PR #682
+// round 1). The shell holds the team's credentials; the door alone checked
+// it only when it opened. A disable and a sign-out end it already (the
+// session tier's live requests, accounts.go); a removal and a downgrade
+// below operator end it here (teamMembershipEnded, teamRoleSet).
+func (s *Server) teamTerminalOpen(w http.ResponseWriter, r *http.Request, team int64) (*http.Request, func()) {
+	p, _ := authz.From(r.Context())
+	key := [2]int64{team, p.UserID}
+	ctx, cancel := context.WithCancelCause(r.Context())
+	t := &s.teamTerminals
+	t.mu.Lock()
+	if t.open == nil {
+		t.open = map[[2]int64]map[*context.CancelCauseFunc]struct{}{}
+	}
+	if t.open[key] == nil {
+		t.open[key] = map[*context.CancelCauseFunc]struct{}{}
+	}
+	t.open[key][&cancel] = struct{}{}
+	t.mu.Unlock()
+	done := func() {
+		t.mu.Lock()
+		delete(t.open[key], &cancel)
+		if len(t.open[key]) == 0 {
+			delete(t.open, key)
+		}
+		t.mu.Unlock()
+		cancel(nil)
+	}
+	if !s.teamOperatorNow(ctx, p.UserID, team) {
+		done()
+		http.Error(w, TeamAgentTerminalOperator, http.StatusForbidden)
+		return nil, nil
+	}
+	return r.WithContext(ctx), done
+}
+
+// closeTeamTerminals ends every open terminal socket person holds on team's
+// agents.
+func (s *Server) closeTeamTerminals(team, person int64) {
+	t := &s.teamTerminals
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c := range t.open[[2]int64{team, person}] {
+		(*c)(errTeamTerminalClosed)
+	}
 }
 
 // memberOnTeamAgent reports whether ctx is a PERSON acting on agent a, which
