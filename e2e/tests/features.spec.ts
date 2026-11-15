@@ -102,12 +102,14 @@ for (const size of [
       await expect(gateway.locator('[data-feature-kubernetes]')).toContainText('needs Kubernetes (in-cluster dispatch)');
       await expect(gateway.locator('[data-feature-enable]')).toHaveCount(0);
       // Officers run in the Compose stack too (as host-spawned sessions,
-      // docs/design/officers-on-hosts.md): an .env line, no Kubernetes hint.
+      // docs/design/officers-on-hosts.md), and with a database they are ON
+      // whether or not MUSTER_OFFICERS declares any: an officer can be
+      // declared in the database (migration 0135). No Kubernetes hint.
       const officers = row(page, 'officers');
-      await expect(officers).toHaveAttribute('data-state', 'off');
+      await expect(officers).toHaveAttribute('data-state', 'on');
       await expect(officers.locator('[data-feature-kubernetes]')).toHaveCount(0);
-      await expect(officers.locator('[data-feature-reason]')).toHaveText('MUSTER_OFFICERS declares none');
-      await expect(officers.locator('[data-feature-enable]')).toHaveText('MUSTER_OFFICERS=<JSON array>');
+      await expect(officers.locator('[data-feature-reason]')).toHaveText('MUSTER_OFFICERS declares none; officers declared in the database run');
+      await expect(officers.locator('[data-feature-enable]')).toHaveCount(0);
       await expect(officers).toContainText('as host-spawned sessions on one of your machines');
       await expect(row(page, 'attachments')).toHaveAttribute('data-state', 'off');
       await expect(row(page, 'connectors')).toHaveAttribute('data-state', 'off');
