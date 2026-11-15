@@ -2579,6 +2579,65 @@ by re-checking the migration number (D). The slices ship **in order**.
    >     answers 413 itself (`TestAnOversizedScrollIsRefusedBeforeItIsRead`);
    >   - `Service.Hosts` gives every entry Owner 0, so an own entry's URLs
    >     carry no `owner=` from any caller (the sidebar's highlight matches).
+3b. **2b.3b: team plugins and team previews** (operator ruling,
+   2026-11-15: its own slice, after 2b.3 merges and before 2b.4). **Design
+   delta, not built; stopped on the fork below.**
+   - **What exists.** A viewer plugin is a person's: minted on their own form
+     (`pluginCreateInput`), owned by them, read at operator under 0127
+     (`plugins` is shared, read 2, write 3). A plugin's token is refused for a
+     team at `admit` (`ViaPlugin` is neither in `teamAgentDoors` nor in
+     `authz.teamActingVias`), and `plugins.PGStore.Authenticate` admits enabled
+     persons only (`users.EnabledPersonIDs`). The hand-off mint
+     (`POST /plugin-handoffs`) resolves the window over the principal's OWN
+     hosts and the plugin under its own principal. The preview gateway
+     (`cmd/muster-preview`, `internal/previewgw`) learns each token's owner
+     from `GET /plugin/v1/self` and mints host tokens by the owner's
+     **login** (`ResolveOwner`), and routes a hand-off to a host tunnel by
+     `(owner, host)`.
+   - **(a) Mint.** `/teams/{id}/plugins` (GET; POST mint, revoke): managers
+     only, a fresh role read (`teamAdminContext`), step-up on mint and revoke,
+     audited as the manager (`team.plugin.create`, `.revoke`). The row is
+     written AS THE TEAM, capability `viewer` and nothing else (no messages,
+     no draft checks, no `deliver_to`); the origin and entry URL pass
+     `plugins.ValidViewerLink` as a person's do.
+   - **(b) The door.** `ViaPlugin` joins `teamAgentDoors` and
+     `teamActingVias` (13 → 14 doors) for a team-owned token, and
+     `Authenticate` admits a team through `users.EnabledPersonOrTeamIDs`
+     (users-read ledger: `readEnabledPersonOrTeam`). A new ledger,
+     `teamPluginRoutes`, classes every `/plugin/v1` route for a team token:
+     the redeem and `/self` are kept, every other route is refused at the
+     door whatever capabilities the row claims. `githubapp.Admits` stays shut
+     there: `ViaPlugin` is not in `teamAppDoors`
+     (`TestAdmitsLendsAListedTeamTheAppOnlyAtItsAgentAndManagerDoors`).
+   - **(c) The read.** On a team session the server reads the team's live
+     viewer plugins AS THE TEAM (the team acting principal), after a fresh
+     viewer check of the member (`teamMemberNow`) — never the viewer's own.
+   - **(d) The preview.** `GET /ui/mirror/preview-button` becomes
+     `mirrorTeamView`; on a team session it draws the button over the team's
+     plugins, and with none it draws "This team has no viewer plugin set up;
+     a manager adds one on the team's plugins page." The mint takes `owner=`,
+     re-checks the member at viewer, resolves the window over the team's
+     hosts, and writes the hand-off AS THE TEAM (a viewer's action writing a
+     team-owned `plugin_handoffs` row through the team acting principal — the
+     ruling's "a team viewer may open it"). Redeem answers `owner_id` = the
+     team. With no team plugin the mint is a 404 with the same sentence.
+   - **No migration** (re-checked against `main` at `2789489a`: the newest is
+     0133; 0134 is unused): every column and policy above exists.
+   - 🔴 **FORK (stopped here):** muster's half alone does not make a team
+     preview open. The gateway resolves a host token's owner by LOGIN, and a
+     team has none, so no gateway host token can be minted for a team host,
+     and no hand-off for `(team, host)` reaches a tunnel. Either:
+     - **(i)** this slice is muster's half only (a–d), and the gateway's team
+       owners are the next PR: the Preview button works end to end only
+       after it; or
+     - **(ii)** this slice also teaches the gateway team owners: `/self`
+       answers the owner's kind and team name, and `host-token create`
+       takes `team:<id>` (still the gateway admin's assertion, as for a
+       person). The team plugin's token goes in the gateway's
+       `PLUGIN_TOKENS_FILE` by the gateway's admin, out of band.
+     Recommendation: **(ii)**. The gateway change is small and in this repo,
+     and without it (i) ships a button that opens nothing on a team session.
+
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
    - `ViaQueue` becomes team-acting **and** `sendQueueOwnerRefusal` reads
