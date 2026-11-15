@@ -183,7 +183,13 @@ const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
 //
 // Every other door — a person's, a shared machine token's, a plugin's, a
 // device's, a share link's — refuses a team.
-var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true, authz.ViaMirrorHost: true}
+//
+// And, since team sharing 2b.3b, a TEAM VIEWER PLUGIN's token (ViaPlugin:
+// requirePluginToken), which a manager mints on /teams/<id>/plugins: it is
+// served the hand-off redeem and /self only (teamPluginRoutes), whatever
+// capabilities its row claims — refused at the door before admit.
+var teamAgentDoors = map[authz.Via]bool{authz.ViaAgent: true, authz.ViaConnect: true, authz.ViaRelay: true, authz.ViaMirrorHost: true,
+	authz.ViaPlugin: true}
 
 // AccountUnreadableRefusal is what every door answers when the request's
 // account could not be read (admit: fail closed).

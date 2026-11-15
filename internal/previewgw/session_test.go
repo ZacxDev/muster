@@ -348,7 +348,7 @@ func TestTheOwnerCookieIsBoundToItsPreviewAndOwner(t *testing.T) {
 	if a := e.do(t, "GET", pHost(other), "/", withCookie(cookie), ""); a.status != http.StatusForbidden {
 		t.Fatalf("another preview's cookie: HTTP %d; want 403", a.status)
 	}
-	forged, err := e.g.sign.mintOwnerCookie(id, 2, e.clock.Now())
+	forged, err := e.g.sign.mintOwnerCookie(id, 2, e.clock.Now(), OwnerCookieTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,7 +63,8 @@ const usage = `usage:
   muster-preview host-token create [<owner>] <host>
                                                mint a host token; <owner> is a login muster's
                                                GET /plugin/v1/self names for a token in
-                                               PLUGIN_TOKENS_FILE (optional with one owner)
+                                               PLUGIN_TOKENS_FILE (optional with one owner),
+                                               or team:<id> for a team host
   muster-preview host-token ls
   muster-preview host-token revoke <id>
   muster-preview version

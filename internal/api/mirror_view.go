@@ -127,13 +127,18 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// history (G4: no focus titles); no chief mode, succession or suggested
 	// replies (each would send the transcript to the viewer's own model or
 	// chief — G4, D-1113 #10; their routes answer 403 there,
-	// mirrorTeamRoutes); no tags, asks block or preview (the viewer's own,
-	// keyed by host name). Its Attention asks are on the Attention page.
+	// mirrorTeamRoutes); no tags or asks block (the viewer's own, keyed by
+	// host name). Its preview runs on the TEAM's plugins (2b.3b). Its
+	// Attention asks are on the Attention page.
 	if team {
 		v.TeamNote, v.FocusHistory = MirrorTeamComposerNote, ""
 		v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e)})
 		v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
 		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
+		// The TEAM's viewer plugins (team sharing 2b.3b), never the viewer's.
+		vp, _ := s.teamViewerPlugins(op.begin("plugins"), e.Owner, e.Window)
+		v.Plugins = pluginChips(vp, e)
+		allowSameOriginFrame(w, viewerFrameSrc(vp))
 		viewDocument(w)
 		op.serverTiming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

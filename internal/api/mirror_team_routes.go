@@ -34,9 +34,9 @@ import (
 //     every role.
 //   - mirrorTeamOwnOnly: own sessions only in this release — typing (a send,
 //     a queued send, an answer typed into the pane, the composer's catalog)
-//     is slice 2b.4's, with its step-up and its queue checks; the preview
-//     button reads the viewer's PERSONAL viewer plugins. A member is answered
-//     403; anyone else 404.
+//     is slice 2b.4's, with its step-up and its queue checks. A member is
+//     answered 403; anyone else 404. (The preview button is a view since
+//     2b.3b: it reads the TEAM's viewer plugins.)
 //   - mirrorTeamHostDoor: a host's own door (its mirror token): the owner is
 //     the token's, and no owner= is read.
 //
@@ -80,7 +80,7 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"GET /mirror/view/suggest":        mirrorTeamRefused,
 	"POST /mirror/view/suggest/event": mirrorTeamRefused,
 
-	"GET /ui/mirror/preview-button":           mirrorTeamOwnOnly, // the viewer's personal viewer plugins
+	"GET /ui/mirror/preview-button":           mirrorTeamView,    // on the TEAM's viewer plugins (2b.3b), never the viewer's
 	"GET /mirror/view/complete":               mirrorTeamOwnOnly, // the composer's catalog: operator (2b.4)
 	"GET /mirror/terminal/send":               mirrorTeamOwnOnly,
 	"POST /mirror/terminal/send":              mirrorTeamOwnOnly,
@@ -111,8 +111,8 @@ const (
 	// MirrorTeamExtraRefusal: a model-backed extra (mirrorTeamRefused).
 	MirrorTeamExtraRefusal = "this is a team session: the chief panel, proposals, succession and suggested replies are off on team sessions " +
 		"(they would send its transcript to a person's model or chief)"
-	// MirrorTeamOwnOnlyRefusal: typing, and the preview (mirrorTeamOwnOnly).
-	MirrorTeamOwnOnlyRefusal = "this is a team session: you can watch it here; typing into it, and its preview, are not available yet"
+	// MirrorTeamOwnOnlyRefusal: typing (mirrorTeamOwnOnly).
+	MirrorTeamOwnOnlyRefusal = "this is a team session: you can watch it here; typing into it is not available yet"
 )
 
 // mirrorOwnerParam is the request's owner= (the query; for a POST, its form

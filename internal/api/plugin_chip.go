@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/authz"
+	"html"
 	"net/http"
 	"strings"
 
@@ -40,6 +42,11 @@ func (s *Server) viewerPlugins(ctx context.Context, window string) []plugins.Plu
 // the session views (through viewerPlugins) and the sidebar's preview mark
 // (mirrorCards) share. With plugins off or MUSTER_PLUGIN_ORIGINS unset nothing
 // is read.
+//
+// They are ctx's principal's OWN (the store's one owner filter,
+// plugins.ownedByPrincipal): a person's under their session, a team's under
+// the team acting principal (teamViewerPlugins) — never a team's on a
+// member's own window.
 func (s *Server) liveViewerPlugins(ctx context.Context) []plugins.Plugin {
 	if s.ext.Plugins == nil || len(s.ext.PluginOrigins) == 0 {
 		return nil
@@ -87,7 +94,7 @@ func pluginChips(ps []plugins.Plugin, e mirror.SessionView) *ui.PluginChips {
 	if len(ps) == 0 {
 		return nil
 	}
-	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews}
+	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews}
 	for _, p := range ps {
 		label := p.Label
 		if label == "" {
@@ -113,10 +120,50 @@ func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	q := r.URL.Query()
 	_, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
-	if !ok || !listed || e.Window == "" || e.Previews.IsZero() || len(s.viewerPlugins(r.Context(), e.Window)) == 0 {
+	if !ok || !listed || e.Window == "" || e.Previews.IsZero() {
+		return
+	}
+	if onTeamHost(r) {
+		// A TEAM host's window (team sharing 2b.3b): the TEAM's plugins,
+		// never the viewer's; with none, the sentence that says so.
+		ps, member := s.teamViewerPlugins(r.Context(), e.Owner, e.Window)
+		if !member {
+			return
+		}
+		if len(ps) == 0 {
+			_, _ = w.Write([]byte(`<p class="text-sm text-fg2" data-team-no-viewer-plugin>` + html.EscapeString(TeamNoViewerPlugin) + `</p>`))
+			return
+		}
+	} else if len(s.viewerPlugins(r.Context(), e.Window)) == 0 {
 		return
 	}
 	if err := ui.RenderPreviewButton(w, e.Previews, ui.PreviewPlaceOf(q.Get("place"))); err != nil {
 		s.logger.Printf("preview button: render: %v", err)
 	}
+}
+
+// TeamNoViewerPlugin is what a team session's Preview says when the team has
+// no live viewer plugin (team sharing 2b.3b): it never falls back to the
+// viewer's own.
+const TeamNoViewerPlugin = "This team has no viewer plugin set up, so its previews do not open here. A manager of the team adds one on the team's plugins page."
+
+// teamViewerPlugins is team's live viewer plugins for window, read AS THE
+// TEAM (teamPreviewPrincipal) after a FRESH read that ctx's person is still
+// a viewer of it (teamMemberNow) — member false, and nothing, otherwise.
+func (s *Server) teamViewerPlugins(ctx context.Context, team int64, window string) ([]plugins.Plugin, bool) {
+	if mirror.ValidWindowID(window) != nil || !s.teamMemberNow(ctx, requestOwner(ctx), team, authz.TeamViewer) {
+		return nil, false
+	}
+	return s.liveViewerPlugins(s.teamPreviewPrincipal(ctx, team)), true
+}
+
+// teamPreviewPrincipal is ctx acting as team through authz.ViaPlugin, the
+// team plugin door: how a member's preview reads the team's viewer plugins
+// and writes its hand-off (plugins is read at operator, plugin_handoffs
+// written at manager — the orchestrator's sign-off on the operator's ruling
+// that team previews run on the team's plugins: a viewer opening a preview
+// writes it as the team). Called only after teamMemberNow. internal/authz's
+// withPrincipalLedger lists it.
+func (s *Server) teamPreviewPrincipal(ctx context.Context, team int64) context.Context {
+	return authz.WithPrincipal(ctx, teamActingPrincipal(team, authz.ViaPlugin))
 }
