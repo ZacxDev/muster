@@ -1150,6 +1150,18 @@ rule the later phases' rows will meet.
     as the team, because `host_dispatches` is personal). The phone's door is
     refused by name. The completing call re-reads `answered_by_user` and
     refuses a removed answerer.
+  - **A team's task is not its say-so (operator decision Q1):** on a team's
+    task, a dispatch with no counting typed turn needs the approval card, as
+    one with no task does (`teamTaskNeedsCard`); with no `request_key` it is
+    refused. A person's own task is still their say-so.
+  - **The marker ends with the typer's sign-in:** `ownerTurnFor` refuses a
+    member's marker when the typer is disabled, or their
+    `sessions_not_before` / `signed_out_at` is at or after the typed row's
+    `created_at` (`typerSignedOutSince`; the send queue's whole-second rule).
+  - **Push:** a team's dispatch card's push has no chips or signed actions and
+    says to open it in a browser (`teamDispatchCardPush`, the same hold test,
+    `teamCardHold`, as the phone-door refusal). No "Change repo" on a team's
+    card until 4.8.
   - **Verbatim attention answer as instructions:** no `answered_stepup_at`
     column was added, so on a team's task the path is closed (fail closed):
     the chief's brief goes on an approval card instead.

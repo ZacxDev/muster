@@ -409,6 +409,9 @@ const (
 	// A team's chief: the member who typed it is no longer an operator.
 	ownerAskedNoTaskTyperNotOperator = "owner_asked: the member who typed the message you are answering is no longer an " +
 		"operator of your team, so muster cannot take this as the team's request"
+	// A team's chief: the member who typed it was signed out everywhere since.
+	ownerAskedNoTaskTyperSignedOut = "owner_asked: the member who typed the message you are answering was signed out of " +
+		"every session since, so muster cannot take this as the team's request"
 
 	ownerAskedUngatedTail = "; or use task_route_attention"
 )
@@ -426,6 +429,7 @@ var ownerAskedNoTaskSibling = map[string]string{
 	chiefReleaseUnverifiable:     ownerAskedNoTaskUnverifiable,
 	chiefReleaseChanged:          ownerAskedNoTaskChanged,
 	chiefReleaseTyperNotOperator: ownerAskedNoTaskTyperNotOperator,
+	chiefReleaseTyperSignedOut:   ownerAskedNoTaskTyperSignedOut,
 }
 
 // DetailRequestedByUser is the reservation detail key (task.chief_dispatch)
@@ -733,7 +737,18 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	byTap := comp.approvedByTap()
 	// needCard: the owner must approve this request on a card — it is not in
 	// their typed turn, and nothing else of theirs covers it.
-	needCard := !typed && !byTap && in.RequestKey != "" && (!onTask || in.OwnerAsked)
+	//
+	// 🔴 A TEAM'S TASK IS NOT THE TEAM'S SAY-SO (team sharing 4.7, operator
+	// decision Q1: "every team dispatch needs a fresh typed turn from an
+	// operator+ or an approval card answered with a fresh sign-in, on a task
+	// too"). A PERSON's own task is their say-so (docs/chief.md: the chief
+	// starts on one of your tasks); a team's task speaks for no one person
+	// (another member, the chief or a move may have put it there), so a TEAM
+	// owner's dispatch with no counting typed turn goes to the card on a task
+	// exactly as off one (teamTaskNeedsCard), and with no request_key it is
+	// refused below (agentDispatchTeamTaskNoKey).
+	teamTaskCard := teamTaskNeedsCard(teamOwned, onTask, typed, byTap)
+	needCard := !typed && !byTap && in.RequestKey != "" && (!onTask || in.OwnerAsked || teamTaskCard)
 	// 🔴 WITHOUT owner_asked (only possible on a task), A PROMPT IS ONLY EVER THE
 	// OWNER'S OWN WORDS: verbatim, the owner's answer to an attention ask linked
 	// to THIS task (ownerAnswer) — today's task_dispatch rule — or a brief the
@@ -750,6 +765,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			}
 			needCard = true
 		}
+	}
+	// A team's task with no counting typed turn and no request_key: no card
+	// can be raised, so nothing starts (after ownerAnswer, whose sentence for
+	// a bare answer on a team's task is the more specific one).
+	if teamTaskCard && !in.OwnerAsked && in.RequestKey == "" {
+		return refuse(agentDispatchTeamTaskNoKey)
 	}
 	// 🔴 THE OWNER'S CLICK BINDS THE TARGET: on a task whose newest owner
 	// answer is one of task_route_attention's per-target options, a dispatch

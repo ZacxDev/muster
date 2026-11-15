@@ -122,15 +122,37 @@ func (s *Server) teamDispatchCard(ctx context.Context, id int64) (int64, bool, e
 	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
 		return 0, false, nil
 	}
-	_, err = st.CardHoldByAsk(s.attentionPrincipal(ctx, a.Owner), id)
+	card, err := s.teamCardHold(ctx, a)
 	switch {
-	case errors.Is(err, plugins.ErrHoldNotFound):
-		return 0, false, nil
 	case err != nil:
-		s.logger.Printf("team dispatch: read the hold of team %d's card %d: %v", a.Owner, id, err)
 		return a.Owner, false, errReleaseRefused(teamCardUnreadable)
+	case !card:
+		return 0, false, nil
 	}
 	return a.Owner, true, nil
+}
+
+// teamCardHold is THE test of whether owner card a — an ask of a team's — is
+// a team's DISPATCH card: an agent_dispatch hold names it. The hold is read as
+// the team (attentionPrincipal), never as ctx's person (see teamDispatchCard).
+// Both doors that must agree on a team's card call it: the answer path
+// (teamDispatchCard → teamCardRefusal, refuseTeamDispatchCardOnPhone) and the
+// push (teamDispatchCardPush). err is a hold that could not be read; each
+// caller fails closed on it.
+func (s *Server) teamCardHold(ctx context.Context, a attention.Ask) (bool, error) {
+	st := s.hostDispatches()
+	if st == nil || !a.OwnerCard || a.ID <= 0 {
+		return false, nil
+	}
+	_, err := st.CardHoldByAsk(s.attentionPrincipal(ctx, a.Owner), a.ID)
+	switch {
+	case errors.Is(err, plugins.ErrHoldNotFound):
+		return false, nil
+	case err != nil:
+		s.logger.Printf("team dispatch: read the hold of team %d's card %d: %v", a.Owner, a.ID, err)
+		return false, err
+	}
+	return true, nil
 }
 
 // teamCardAnswerer is "" when ask — a card the chief's completing call binds
@@ -140,10 +162,12 @@ func (s *Server) teamDispatchCard(ctx context.Context, id int64) (int64, bool, e
 // approves nothing. The answer's freshness was the answer path's
 // (teamCardRefusal); it is not recorded, so it is not read again here.
 func (s *Server) teamCardAnswerer(ctx context.Context, ask attention.Ask) string {
-	// Its DOOR is not re-judged here: completeHeld already refused every
-	// answer that is not an owner's door (agentDispatchHeldDoor) and the
-	// phone's on an approval card (agentDispatchHeldPushAction), which leaves
-	// the browser.
+	// Its DOOR and its sign-in are not re-judged here: every answer that
+	// chooses a card's option is recorded through answerAskFrom, which runs
+	// approvalSurfaceRefusal → teamCardRefusal BEFORE it records anything — so
+	// a team's card is answered only from a browser session, by an operator
+	// or above, with a fresh sign-in, or not at all. What can change after
+	// the answer is the answerer's role, which is read again here.
 	if !s.ownerIsTeam(ctx, ask.Owner) {
 		return ""
 	}
@@ -151,6 +175,22 @@ func (s *Server) teamCardAnswerer(ctx context.Context, ask attention.Ask) string
 		return agentDispatchTeamCardAnswerer
 	}
 	return ""
+}
+
+// agentDispatchTeamTaskNoKey refuses, on a TEAM's task, a dispatch with no
+// counting typed turn and no request_key: the team's task is not its say-so,
+// and without a key no approval card can be raised.
+const agentDispatchTeamTaskNoKey = "a team's task is not the team's say-so: a start on it needs a message an operator or a " +
+	"manager of your team typed with a recent sign-in (owner_asked: true), or their approval on a card — call again with a " +
+	"request_key, and muster asks the team to approve it"
+
+// teamTaskNeedsCard is THE rule that a TEAM's task is not the team's say-so
+// (operator decision Q1): on a task, a team owner's dispatch that no counting
+// typed turn (typed) and no approved card (byTap) covers needs the approval
+// card, as a dispatch with no task does. For a PERSON it is false: their own
+// task is their say-so (docs/chief.md), unchanged.
+func teamTaskNeedsCard(teamOwned, onTask, typed, byTap bool) bool {
+	return teamOwned && onTask && !typed && !byTap
 }
 
 // agentDispatchTeamAnswerNotInstructions refuses, on a TEAM's task, a prompt

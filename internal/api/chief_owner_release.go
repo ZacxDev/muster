@@ -236,6 +236,11 @@ const (
 	// no longer an operator (or above) of the team on a fresh read.
 	chiefReleaseTyperNotOperator = "owner_asked: the member who typed the message you are answering is no longer an operator " +
 		"of your team, so muster cannot release the gate on their word; use task_route_attention"
+	// chiefReleaseTyperSignedOut: a TEAM's chief, on a marker whose typer was
+	// disabled, reset or signed out everywhere since they typed it
+	// (typerSignedOutSince).
+	chiefReleaseTyperSignedOut = "owner_asked: the member who typed the message you are answering was signed out of every " +
+		"session since, so muster cannot release the gate on their word; use task_route_attention"
 )
 
 // ---------------------------------------------------------------------------
@@ -296,6 +301,37 @@ func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 	}
 	role, in := acct.Teams.RoleIn(team)
 	return in && role.AtLeast(authz.TeamOperator)
+}
+
+// typerSignedOutSince is "" when the member who typed msg (a member's marker on
+// a TEAM's chief) still stands signed in as they were when they typed it; else
+// ownerTurnFor's refusal. The marker is the step-up stamp (see above), but a
+// sign-in fresh at typing can be ended before the chief calls: the account
+// disabled or its password reset (users.sessions_not_before) or signed out
+// everywhere (users.signed_out_at). Either at or after the row was written
+// ends the turn's say-so — the send queue's rule (sendQueueOwnerRefusal,
+// "at or before, in whole seconds"), judged on the row's created_at, which no
+// sign-in that typed it can postdate. No column holds that sign-in's time, so
+// one bounded gap remains: a cutoff falling AFTER the sign-in but BEFORE the
+// typing is not seen here. The session tier is what refuses that typing
+// request — sessions_not_before durably; a sign-out everywhere through its
+// in-memory cutoff (gotrueState.notBefore), so a restart between that
+// sign-out and the typing, inside the step-up window, is the exposure.
+// Both clocks are Postgres's. Unreadable: unverifiable (fail closed).
+func (s *Server) typerSignedOutSince(ctx context.Context, typer int64, msg agents.ChatMessage) string {
+	pn, ok := s.ext.Users.(personNamer)
+	if !ok {
+		return chiefReleaseUnverifiable
+	}
+	u, err := pn.ByID(authz.System(ctx), typer)
+	if err != nil {
+		s.logger.Printf("task routing: read the typer %d of message %d: %v", typer, msg.ID, err)
+		return chiefReleaseUnverifiable
+	}
+	if u.Disabled() || atOrBefore(msg.CreatedAt, u.SessionsNotBefore) || atOrBefore(msg.CreatedAt, u.SignedOutAt) {
+		return chiefReleaseTyperSignedOut
+	}
+	return ""
 }
 
 // gateRelease is a release agent_dispatch has verified and will apply once the
@@ -422,6 +458,13 @@ func (s *Server) ownerTurnFor(ctx context.Context, chief agents.Agent) (agents.C
 		s.logger.Printf("task routing: %s's owner turn names user %d, but message %d was typed by %d", chief.Name, turn.By, msg.ID, msg.TypedBy)
 		return agents.ChatMessage{}, chiefReleaseUnverifiable
 	}
+	// ...and their sign-in still stands: no disable, password reset or sign-out
+	// everywhere since the row was typed (typerSignedOutSince).
+	if turn.By != agentOwnerID(chief) {
+		if why := s.typerSignedOutSince(ctx, turn.By, msg); why != "" {
+			return agents.ChatMessage{}, why
+		}
+	}
 	holder, err := s.ext.Agents.KickoffClaimHolder(ctx, chief.ID)
 	if err != nil {
 		s.logger.Printf("task routing: read %s's session claim: %v", chief.Name, err)
@@ -500,6 +543,16 @@ var errGateNotRemoved = errors.New("the gate tag could not be removed")
 // ownerReleasePushBodyMax bounds the owner's words quoted in the release push.
 const ownerReleasePushBodyMax = 80
 
+// teamGateReleasePushBody is a TEAM's gate-release push: the start's sentence
+// (teamDispatchPushBody, built once), then the gate — released on the member's
+// words, or, when stuck, that its tag could not be removed.
+func teamGateReleasePushBody(started, words string, stuck bool) string {
+	if stuck {
+		return started + ", but its gate tag could not be removed"
+	}
+	return started + "; muster released its gate: " + mirror.OneLine(words, ownerReleasePushBodyMax)
+}
+
 // applyGateRelease removes rel's gates from task taskID once agentName was
 // started on it, records the release as a comment and tells the owner with a
 // push. The agent already runs, so nothing here undoes the start: a gate that
@@ -525,12 +578,8 @@ func (s *Server) applyGateRelease(ctx context.Context, chief agents.Agent, taskI
 	// A TEAM's chief: the push names the member whose message it was
 	// (team_dispatch.go's sentence, then the gate).
 	if owner := agentOwnerID(chief); rel.msg.TypedBy > 0 && rel.msg.TypedBy != owner {
-		pushBody = teamDispatchPushBody(s.personName(ctx, rel.msg.TypedBy), s.teamNames(ctx, []int64{owner})[owner], agentName, taskID) +
-			"; muster released its gate: " + mirror.OneLine(rel.msg.Content, ownerReleasePushBodyMax)
-		if failed != nil {
-			pushBody = teamDispatchPushBody(s.personName(ctx, rel.msg.TypedBy), s.teamNames(ctx, []int64{owner})[owner], agentName, taskID) +
-				", but its gate tag could not be removed"
-		}
+		pushBody = teamGateReleasePushBody(teamDispatchPushBody(s.personName(ctx, rel.msg.TypedBy),
+			s.teamNames(ctx, []int64{owner})[owner], agentName, taskID), rel.msg.Content, failed != nil)
 	}
 	s.pushTask(agentOwnerID(chief), push.EventAgent, RouterNotification{
 		Type: taskNotificationType, ID: id, Title: title, Body: pushBody, Tag: "task-" + id + "-gate-released",

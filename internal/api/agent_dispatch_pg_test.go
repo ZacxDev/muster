@@ -368,6 +368,7 @@ func TestOwnerAskedRefusalWalksEveryRow(t *testing.T) {
 		{chiefReleaseUnverifiable, "owner_asked: your owner's turn could not be read, so nothing was started; try again later"},
 		{chiefReleaseChanged, "owner_asked: your owner's turn changed while the start was being checked; call again"},
 		{chiefReleaseTyperNotOperator, "owner_asked: the member who typed the message you are answering is no longer an operator of your team, so muster cannot take this as the team's request"},
+		{chiefReleaseTyperSignedOut, "owner_asked: the member who typed the message you are answering was signed out of every session since, so muster cannot take this as the team's request"},
 	}
 	if len(rows) != len(ownerAskedNoTaskSibling) {
 		t.Fatalf("the table has %d rows, the mapping %d: a sentence ownerTurnFor can return is missing a sibling here or there",

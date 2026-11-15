@@ -288,8 +288,17 @@ are refused for a team). The say-so is a member's, never the chief's:
   or a manager of the team with a fresh sign-in. The phone's notification
   action and the paired phone's answer route refuse it by name, and the card
   stays open. A member removed after their tap approves nothing.
+- **A team's task is not the team's say-so.** On a person's own task, the
+  task is the owner's say-so and a start needs nothing more; on a team's task
+  (any member may file one, or move one there) a start with no counting typed
+  message goes to an approval card, exactly as a start with no task does, and
+  without a `request_key` it is refused.
 - On a team's task, an Attention answer is never taken as an agent's
   instructions by itself; the chief's brief goes on an approval card instead.
+- A typed message stops counting when its typer is signed out everywhere,
+  disabled or has their password reset after typing it.
+- A team's dispatch card's push carries **no answer buttons**: it says to open
+  the card in muster in a browser. A team's card has no "Change repo" yet.
 
 Every start's `task.chief_dispatch` audit row is the team's and names the
 person (`requested_by_user`), and its push reads "<name> asked <team>'s chief
