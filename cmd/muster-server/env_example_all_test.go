@@ -20,15 +20,32 @@ var envExampleLine = regexp.MustCompile(`^#?([A-Z_][A-Z0-9_]*)=(.*)$`)
 // readEnvExample is every example in deploy/.env.example UNCOMMENTED
 // TOGETHER, as Compose reads a .env: a later line for a name replaces an
 // earlier one, and one pair of surrounding double quotes is taken off.
-func readEnvExample(t *testing.T) map[string]string {
+//
+// It also returns the file's "pick ONE" blocks (#706 round 0, F2): names set
+// in more than one block, of which "together" keeps only the LAST, so every
+// earlier block (the stt-cohere one) would never be loaded. A block is a
+// paragraph (lines between blank lines); blocks sharing a repeated name are
+// one set of alternatives, each to be loaded on its own.
+func readEnvExample(t *testing.T) (map[string]string, []envAlternatives) {
 	t.Helper()
 	raw, err := os.ReadFile("../../deploy/.env.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		m := envExampleLine.FindStringSubmatch(strings.TrimRight(line, "\r"))
+	type setting struct {
+		name, value string
+		line, para  int
+	}
+	var all []setting
+	env, count := map[string]string{}, map[string]int{}
+	para := 0
+	for i, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			para++
+			continue
+		}
+		m := envExampleLine.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
@@ -37,8 +54,76 @@ func readEnvExample(t *testing.T) map[string]string {
 			v = v[1 : len(v)-1]
 		}
 		env[m[1]] = v
+		count[m[1]]++
+		all = append(all, setting{m[1], v, i + 1, para})
 	}
-	return env
+	// Each paragraph's repeated-name settings; then paragraphs joined into
+	// sets by the names they share (union-find over paragraph numbers).
+	blocks := map[int]map[string]envSetting{}
+	parent := map[int]int{}
+	var find func(int) int
+	find = func(p int) int {
+		if parent[p] != p {
+			parent[p] = find(parent[p])
+		}
+		return parent[p]
+	}
+	firstPara := map[string]int{}
+	for _, s := range all {
+		if count[s.name] < 2 {
+			continue
+		}
+		if blocks[s.para] == nil {
+			blocks[s.para], parent[s.para] = map[string]envSetting{}, s.para
+		}
+		if prev, dup := blocks[s.para][s.name]; dup {
+			t.Fatalf("deploy/.env.example sets %s twice in one block (lines %d and %d): not alternatives", s.name, prev.Line, s.line)
+		}
+		blocks[s.para][s.name] = envSetting{Value: s.value, Line: s.line}
+		if p, ok := firstPara[s.name]; ok {
+			parent[find(s.para)] = find(p)
+		} else {
+			firstPara[s.name] = s.para
+		}
+	}
+	sets := map[int]*envAlternatives{}
+	var roots []int
+	for _, s := range all { // file order, so the sets and blocks are too
+		b, ok := blocks[s.para]
+		if !ok || b == nil {
+			continue
+		}
+		r := find(s.para)
+		set := sets[r]
+		if set == nil {
+			set = &envAlternatives{Names: map[string]bool{}}
+			sets[r] = set
+			roots = append(roots, r)
+		}
+		for n := range b {
+			set.Names[n] = true
+		}
+		set.Blocks = append(set.Blocks, b)
+		blocks[s.para] = nil // once per paragraph
+	}
+	var out []envAlternatives
+	for _, r := range roots {
+		out = append(out, *sets[r])
+	}
+	return env, out
+}
+
+// envAlternatives is one set of "pick ONE" blocks: the repeated names they
+// set, and each block's own settings of them.
+type envAlternatives struct {
+	Names  map[string]bool
+	Blocks []map[string]envSetting
+}
+
+// envSetting is one line's value, and its line number in deploy/.env.example.
+type envSetting struct {
+	Value string
+	Line  int
 }
 
 // composeInterpolate is Compose's variable interpolation over s with env:
@@ -184,7 +269,7 @@ func TestComposeInterpolationIsCompose(t *testing.T) {
 // for a name the file no longer has, and a placeholder the file has with no
 // fill, both fail — so neither can drift silently.
 func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
-	env := readEnvExample(t)
+	env, alternatives := readEnvExample(t)
 	if len(env) < 100 || env["MUSTER_BROWSER_PORT"] == "" || env["MUSTER_CHIEF_RUNTIME"] != chiefRuntimeCompose {
 		t.Fatalf("instrument check FAILED: %d example(s) read, browser port %q, chief runtime %q",
 			len(env), env["MUSTER_BROWSER_PORT"], env["MUSTER_CHIEF_RUNTIME"])
@@ -306,6 +391,67 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 		}
 		seen[l.port] = l.name
 	}
+	// Each "pick ONE" block on its own (#706 round 0, F2): "together" kept
+	// only the last block of each set (dictation's OpenAI one), so the
+	// stt-cohere block was never loaded. Each block replaces its set's names
+	// (a name it does not set is unset, as uncommenting only that block
+	// leaves it), placeholders filled as above. Ledgered: every line of every
+	// repeated name is loaded by exactly one block, and dictation's set has
+	// its three blocks (the positive control: the reader sees the set).
+	loaded := 0
+	for _, set := range alternatives {
+		for _, block := range set.Blocks {
+			altEnv := without(allDrops...)
+			var lines []string
+			for n := range set.Names {
+				delete(altEnv, n)
+			}
+			for n, s := range block {
+				altEnv[n] = s.Value
+				if placeholder(n, s.Value) {
+					fill, ok := fills[n]
+					if !ok {
+						t.Errorf("deploy/.env.example:%d: placeholder %s has no fill", s.Line, n)
+					}
+					altEnv[n] = fill
+				}
+				lines = append(lines, fmt.Sprintf("%s (line %d)", n, s.Line))
+				loaded++
+			}
+			sort.Strings(lines)
+			if _, err := loadComposeExample(t, altEnv); err != nil {
+				t.Errorf("the block setting %s, on its own with the rest, does not load and validate: %v", strings.Join(lines, ", "), err)
+			}
+		}
+	}
+	// The ledger's other side, counted independently of the reader: every
+	// example line whose name the file sets more than once.
+	raw, err := os.ReadFile("../../deploy/.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perName := map[string]int{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if m := envExampleLine.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
+			perName[m[1]]++
+		}
+	}
+	occurrences, sttBlocks := 0, 0
+	for _, n := range perName {
+		if n > 1 {
+			occurrences += n
+		}
+	}
+	for _, set := range alternatives {
+		if set.Names["MUSTER_STT_URL"] {
+			sttBlocks = len(set.Blocks)
+		}
+	}
+	if sttBlocks != 3 || loaded != occurrences || loaded == 0 {
+		t.Errorf("instrument check FAILED: dictation's set has %d block(s), want 3; %d of %d alternative line(s) loaded",
+			sttBlocks, loaded, occurrences)
+	}
+
 	// And the excluded examples with the rest, their other side off: every
 	// example but the chief block's. Without the chief this stack has no
 	// agent connect URL, so the GitHub App block (which needs the agent
