@@ -217,12 +217,15 @@ func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request
 // the response to r: MUSTER_SECURE_COOKIES, EXCEPT on a page this machine
 // serves itself over plain http on its loopback interface (loopbackHTTPPage).
 //
-// 🔴 WHY THE EXCEPTION, AND WHY IT IS SAFE. Chrome and Firefox keep a Secure
-// cookie set over http://localhost (a loopback origin is a secure context),
-// but WebKit — Safari, and every iOS browser — does not, so a Secure session
-// cookie there signs nobody in. The Compose stack sets MUSTER_SECURE_COOKIES=1
-// by default and listens on 127.0.0.1, so the first thing a new install does
-// (open http://localhost:8105) would fail on a Mac. Dropping Secure there
+// 🔴 WHY THE EXCEPTION, AND WHY IT IS SAFE. Chromium keeps a Secure cookie set
+// over http://localhost (a loopback origin is a secure context); WebKit drops
+// it, so a Secure session cookie there signs nobody in. MEASURED, not assumed:
+// e2e/localhost's measure test logs it on every CI run (Playwright's Chromium
+// KEPT, its WebKit DROPPED; that is Playwright's WebKit build on Linux — Safari
+// on macOS itself is not measured there). The Compose stack sets
+// MUSTER_SECURE_COOKIES=1 by default and listens on 127.0.0.1, so the first
+// thing a new install does (open http://localhost:8105) would fail in a WebKit
+// browser, and its sign-in is checked in both engines. Dropping Secure there
 // costs nothing: Secure keeps a cookie off plain-http requests, and EVERY
 // request to that origin is plain http on the loopback interface, which never
 // leaves the machine. Anywhere else — https, a LAN address, a proxy in front
