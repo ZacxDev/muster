@@ -304,13 +304,10 @@ var routeOwnerAskedSibling = map[string]string{
 }
 
 // routeOwnerAskedRefusal is why (an ownerTurnFor refusal) as a text route's
-// refusal; a sentence with no route wording is passed through as it is.
-func routeOwnerAskedRefusal(why string) string {
-	msg, ok := routeOwnerAskedSibling[why]
-	if !ok {
-		msg = why
-	}
-	return routeRefusal(RefusedNotOwnersTurn, msg)
+// refusal, for chief: ownerTurnWords' route sentence (a sentence with no
+// route wording is passed through as it is).
+func (s *Server) routeOwnerAskedRefusal(ctx context.Context, chief agents.Agent, why string) string {
+	return routeRefusal(RefusedNotOwnersTurn, s.ownerTurnRefusal(ctx, chief, why, sayRoute))
 }
 
 // routeTarget is where a route goes, resolved and checked BEFORE anything is
@@ -416,7 +413,7 @@ func (s *Server) toolRouteToSession(ctx context.Context, chief agents.Agent, arg
 		msg, why := s.ownerTurnFor(ctx, chief)
 		if why != "" {
 			s.logger.Printf("routes: agent %d: a request route REFUSED: %s", chief.ID, why)
-			return routeOwnerAskedRefusal(why)
+			return s.routeOwnerAskedRefusal(ctx, chief, why)
 		}
 		it.req = &routedRequest{text: text, owner: msg}
 	case in.MessageID > 0 && s.ext.Plugins == nil:

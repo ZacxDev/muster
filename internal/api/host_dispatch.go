@@ -1026,6 +1026,9 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 				if onTask {
 					k = ownerAskedUngated
 				}
+				// A PERSON's chief's words: a team's chief never reaches a host
+				// dispatch (toolAgentDispatch refuses it agentDispatchTeamHost
+				// first; TestATeamChiefsGateReleaseIsWordedForTheTeam).
 				return errTaskDispatch(ownerAskedRefusal(why, k))
 			}
 			detail["owner_message"] = msg.ID
