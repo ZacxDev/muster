@@ -73,6 +73,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
 		GitHubApp:       stubGitHubApp{},
+		GitHubAppTeams:  map[int64]bool{12: true},
 		Users:           stubUsers{},
 		APITokens:       stubAPITokens{},
 		SessionLiveness: stubLiveness{},

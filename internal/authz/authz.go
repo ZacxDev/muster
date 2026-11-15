@@ -259,10 +259,12 @@ var requestVias = map[Via]bool{
 //     approving its own draft, and internal/api's draftDeciderRefusal says
 //     so first.
 //
-//   - a TEAM MANAGER's lifecycle door (ViaTeamAdmin, phase 4 slice 4.5): a
-//     manager, after a fresh role read, stops, starts, destroys or rotates the
+//   - a TEAM MANAGER's door (ViaTeamAdmin, phase 4 slice 4.5): a manager,
+//     after a fresh role read, stops, starts, destroys or rotates the
 //     credentials of a team agent, or provisions the team's chief — as the
-//     team, so the team's credentials are the ones used (internal/api's
+//     team, so the team's credentials are the ones used — and (slice 4.8)
+//     reads and decides the team agents' connector requests, which live in
+//     the personal connector tables the team owns (internal/api's
 //     teamAdminContext, the one site);
 //
 //   - a TEAM HOST (team sharing phase 2b.2): a muster-mirror connected with a

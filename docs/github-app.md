@@ -78,6 +78,44 @@ configured. Their agents do not see the App connector, their `github` requests
 cannot be approved onto it (whoever clicks Approve), and they have no connected
 repositories: a member cannot dispatch a claude-code agent into a repository.
 
+**Teams an admin lists.** `MUSTER_TEAMS_ON_GITHUB_APP=<team ids>` lends the App
+to those [teams](design/team-sharing.md)' own agents, as an admin's agents use
+it: the team's chief sees the App's repositories and can start a team agent
+in one, and the team's agents see the App-backed `github` connector. It is
+the team's, never its members': a member of a listed team still has no
+repositories for their own chief or agents. A listed id that is a person, or
+names nobody, refuses to boot, as does the list with no App.
+
+- **A manager approves each repository once for the team.** A team agent's
+  `github` request waits on the team's **Connectors** page
+  (`/teams/<id>/connectors`, linked from the team chief's page). Only a
+  manager of the team approves it, and approving needs a recent sign-in
+  (Confirm it's you). The approval is the team's for that repository: the
+  team's later agents on the same repository are approved when they ask; an
+  agent on another repository asks again. A manager may deny without
+  signing in again. A team agent's request is pushed to the team's
+  managers, linking that page. Each decision is in the team's audit log,
+  naming the manager.
+- **A manager revokes an approved repository.** The same page lists the
+  repositories approved for the team, each with **Revoke** (a manager, with
+  a recent sign-in). A revoke ends the team's approval of that repository
+  and every agent grant it gave, so the team's next agent there asks again.
+  It is in the team's audit log (`connector.revoke`), naming the manager.
+  **Unlisting a team only pauses its approvals:** while the team is not in
+  `MUSTER_TEAMS_ON_GITHUB_APP` the App is not its connector and none of its
+  agents is served, and listing it again restores the approvals it had.
+  Revoke is the way to remove one.
+- **The repository picker is the object's owner's.** On a team's task the
+  picker lists the repositories the team's agents may use, whoever opens it
+  (an operator or above of the team): a listed team's App repositories, and
+  none for a team that is not listed, even to an admin. It decides what the
+  form offers, and it is not a secrecy boundary: every member of a listed
+  team, a viewer included, can already see the App's repository names, on
+  the team's repo card and through the team chief's `repos_list`.
+- **Team members have to trust each other.** A team agent's token reaches
+  its own repository with the App's access (`MUSTER_GITHUB_APP_ACCESS`), and
+  everything a team agent prints is readable by every member of the team.
+
 ## Register the App
 
 Sign in to GitHub as the account that will **own** the App (a personal

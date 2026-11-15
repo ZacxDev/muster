@@ -409,6 +409,25 @@ func taskOwnerGroups(groups []TaskOwnerGroup) g.Node {
 	return Div(g.Attr("data-tasks-flat", ""), Class("flex flex-col gap-4"), g.Group(nodes))
 }
 
+// repoOptionsURL is the repository picker's options URL for a task owned by
+// owner: the list is decided by the TASK's owner, never the viewer (api's
+// handleAgentRepoOptions). owner <= 0 is the viewer's own.
+func repoOptionsURL(owner int64) string {
+	if owner <= 0 {
+		return "/ui/agents/repos"
+	}
+	return "/ui/agents/repos?owner=" + strconv.FormatInt(owner, 10)
+}
+
+// ownerFollow is the new-task form's repository picker's follow selector:
+// the Owner select (taskOwnerSelect) when the form has one.
+func ownerFollow(owners []TaskOwnerOption) string {
+	if len(owners) == 0 {
+		return ""
+	}
+	return "#task-owner"
+}
+
 // taskOwnerSelect is the create form's Owner select: you (the default), or a
 // team you are at least an operator in. Nothing renders without such a team.
 func taskOwnerSelect(owners []TaskOwnerOption) g.Node {
@@ -2002,7 +2021,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			labelledField("Directory", directoryCombobox(v.Directories, n.Directory, v.DirectoriesFailed)),
 			labelledField("Model", modelFieldFor(n.Model, "")),
 			labelledField("Repository",
-				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", n.Repo, n.Repo)),
+				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", repoOptionsURL(n.OwnerID), "repos", n.Repo, n.Repo)),
 			labelledField("Branch",
 				Input(
 					Type("text"),
@@ -2093,7 +2112,7 @@ func NotesModalBodyFor(directories []string, directoriesFailed bool, prefill str
 			advancedDisclosure(
 				labelledField("Directory", directoryCombobox(directories, "", directoriesFailed)),
 				labelledField("Model", modelField()),
-				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
+				labelledField("Repository", lazyComboboxFollowing("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", "", "", ownerFollow(owners))),
 			),
 			// labelledFieldFor (not labelledField): the file input had NO associated
 			// label at all, which axe reports as a CRITICAL `label` violation — an

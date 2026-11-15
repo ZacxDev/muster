@@ -59,7 +59,9 @@
 //
 // 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaced
 // (since removed) was one GitHub account per muster user; the App is the
-// deployment's. So it is offered only to admin-role principals: the `github`
+// deployment's. So it is offered only to admin-role principals — and to the
+// TEAMS an admin lists in MUSTER_TEAMS_ON_GITHUB_APP, through their own acting
+// principal (team sharing slice 4.8) — by ONE predicate, Admits: the `github`
 // connector is presented to them alone (connectors.WithVirtual's allow), and
 // internal/api's github_source.go gives the App's repositories to them alone. A
 // member keeps their stored connectors and has no connected repositories.
