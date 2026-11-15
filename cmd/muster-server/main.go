@@ -1835,6 +1835,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		}
 		l.Printf("connector store: ENABLED — %s is set; secrets are sealed with AES-256-GCM and agents use them "+
 			"only through the proxy. %s; %s", envConnectorEncKey, listener, agentsTold)
+	} else if ext.Credentials != nil && a.cfg.AgentConnectURL == "" {
+		l.Printf("connector store: MEMBERS' CREDENTIALS ONLY — %s is set, so each member's own Claude and OpenRouter "+
+			"credentials are stored (Account → Credentials); %s. Until then every connector route answers 503 and "+
+			"the Connectors tab is hidden", envConnectorEncKey, agentConnectorsOff())
 	} else {
 		l.Printf("connector store: DISABLED — %s is unset, so every connector route answers 503, the "+
 			"Connectors tab is hidden, and %s / %s have no effect", envConnectorEncKey, envConnectPort, envAgentConnectURL)

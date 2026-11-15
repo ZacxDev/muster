@@ -105,7 +105,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+			s.refuseCrossOrigin(w, r)
 			return
 		}
 		next(w, r)
@@ -123,7 +123,7 @@ func (s *Server) requireAdminRole(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+			s.refuseCrossOrigin(w, r)
 			return
 		}
 		next(w, r)

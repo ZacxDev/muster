@@ -261,7 +261,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		// Login CSRF: a cross-site form could otherwise sign the victim's
 		// browser into the ATTACKER'S account. Every browser sends Origin on
 		// a form POST, and muster's own form is same-origin.
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -351,7 +351,7 @@ func (s *Server) admitFreshSession(ctx context.Context, sess gotrue.Session) (us
 // and the cookies.
 func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	scope := gotrue.ScopeLocal
@@ -581,7 +581,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {

@@ -53,6 +53,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/agent_dispatch.go (*Server).startReserved dispatchServed()":                1, // agent_dispatch's and dispatch_approve's start
 	"internal/api/task_actions.go (*Server).chiefDispatchDeploymentRefusal dispatchServed()": 1, // agent_dispatch's refusal, the task actions' offer
 	"cmd/muster-server/features.go (*app).featureStatuses Provisioner!=nil":                  2, // Dispatch and Claude Code agents, each in the arm AFTER the ComposeChief one
+	"cmd/muster-server/features.go connectorsStatus Provisioner!=nil":                        1, // the key without the agent connect URL is MISCONFIGURED only where agents are dispatched (no ComposeChief clause: that arm has no connect URL, which the Compose chief always has)
 
 	// --- LIFECYCLE: a provisioner is enough (the chief's own, or an agent that exists) ---
 	"cmd/muster-server/features.go (*app).featureStatuses Provisioner==nil":                  1, // the Chief entry: no runtime at all

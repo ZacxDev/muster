@@ -545,7 +545,8 @@ package main
 // ---------------------------------------------------------------------------
 // 6. NOT A SEAM: WHAT IS NIL HERE ON PURPOSE AND CLOSES NOTHING.
 //
-//   - api.Extensions.Connectors is nil without MUSTER_CONNECTOR_ENCRYPTION_KEY.
+//   - api.Extensions.Connectors is nil without MUSTER_CONNECTOR_ENCRYPTION_KEY
+//     (and without MUSTER_AGENT_CONNECT_URL, when only members' credentials are on).
 //     There is deliberately no generate-a-key-if-unset branch: an ephemeral key
 //     makes every stored secret undecryptable after a restart, with nothing in
 //     the log. Unset means the store is not built, which the missing Connectors

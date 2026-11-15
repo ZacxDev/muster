@@ -104,6 +104,34 @@ type PairResult struct {
 	Replaced string
 }
 
+// ErrNoRegistration is Pair's error when none of the registration files
+// exists: opencode's background service (opencode 2 or later) writes one when
+// it runs, and opencode 1 has no such service. The caller says which case it is
+// (it can run `opencode --version`; MinMajorVersion, MajorVersion).
+var ErrNoRegistration = errors.New("no opencode service registration file")
+
+// MinMajorVersion is the oldest opencode major version muster works with: the
+// one with the background service and the v2 server API muster pairs with.
+const MinMajorVersion = 2
+
+// MajorVersion is the major version in `opencode --version`'s output
+// ("opencode v2.0.32+6ec5682", "1.19.5"), and false when there is none.
+func MajorVersion(v string) (int, bool) {
+	v = NormalizeVersion(v)
+	end := 0
+	for end < len(v) && v[end] >= '0' && v[end] <= '9' {
+		end++
+	}
+	if end == 0 || end > 6 || (end < len(v) && v[end] != '.') {
+		return 0, false
+	}
+	n := 0
+	for _, c := range v[:end] {
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
 // Pair mints a token from the server named by the first of registrations
 // that exists and writes it to tokenFile (WriteTokenFile).
 func Pair(ctx context.Context, registrations []string, tokenFile string) (PairResult, error) {
@@ -125,7 +153,7 @@ func Pair(ctx context.Context, registrations []string, tokenFile string) (PairRe
 		}
 	}
 	if path == "" {
-		return PairResult{}, fmt.Errorf("no opencode service registration file at %q: is the opencode background service running (opencode service status)?", registrations)
+		return PairResult{}, fmt.Errorf("%w at %q", ErrNoRegistration, registrations)
 	}
 	password := reg.Password
 	// NewClient refuses a url that is not loopback, before any request.

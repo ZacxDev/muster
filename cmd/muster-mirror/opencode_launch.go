@@ -121,6 +121,8 @@ func parseLaunchArgs(args []string) (launchArgs, error) {
 			a.standalone = true
 		case arg == "--print-logs":
 			a.printLogs = true
+		case arg == "-h" || arg == "-help" || arg == "--help":
+			return a, errLaunchHelp
 		case strings.HasPrefix(arg, "-"):
 			return a, fmt.Errorf("unknown flag %q (the launcher passes on only -s/--session, --prompt, --auto, -c/--continue, --standalone, --server, --log-level, --print-logs; --opencode-bin is its own)", arg)
 		case openCodeSubcommandNames[arg]:
@@ -195,9 +197,40 @@ func versionMismatchText(tui, service string) string {
 		"Run `opencode service restart` so the service runs the same version, then start it again.", tui, service)
 }
 
+// errLaunchHelp is parseLaunchArgs's answer to -h/-help/--help.
+var errLaunchHelp = errors.New("help requested")
+
+// openCodeLaunchUsage is `muster-mirror opencode -h`.
+const openCodeLaunchUsage = `usage: muster-mirror opencode [flags] [<directory>]
+
+Starts the opencode TUI (opencode 2 or later) on a session it names and records
+which, so this host's muster-mirror can send to that pane. Outside tmux, or when
+it cannot bind (no token from muster-mirror opencode-pair, the service not
+reachable, --standalone, --server, -c), it starts opencode unbound and says why.
+
+Flags passed on to opencode:
+  -s, --session <id>   the session to open (created when it does not exist)
+  --prompt <text>      the first prompt
+  --auto               opencode's --auto
+  -c, --continue       resume the last session (starts unbound)
+  --standalone         run opencode's own server (starts unbound)
+  --server <url>       use another server (starts unbound)
+  --log-level <level>  opencode's log level
+  --print-logs         print opencode's logs to stderr
+The launcher's own flag:
+  --opencode-bin <abs path>  exec exactly this opencode binary (host spawns)
+  -h, --help           this help
+
+See docs/mirroring.md ("opencode windows").
+`
+
 // runOpenCodeLaunch is `muster-mirror opencode`.
 func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 	a, err := parseLaunchArgs(args)
+	if errors.Is(err, errLaunchHelp) {
+		fmt.Fprint(stderr, openCodeLaunchUsage)
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "muster-mirror opencode: %v\n", err)
 		return 2

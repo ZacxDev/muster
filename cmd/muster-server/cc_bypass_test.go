@@ -134,6 +134,7 @@ func TestTheGitHubGrantVetoIsWiredFromTheConnectorStore(t *testing.T) {
 	cc.AgentCCBypassPools = []string{"pr-review"}
 	cc.Database = "postgres://wiring-test.invalid/muster"
 	cc.ConnectorEncKey = []byte("0123456789abcdef0123456789abcdef")
+	cc.AgentConnectURL = "http://muster.example.test:18191"
 	if !cc.connectorStoreConfigured() {
 		t.Fatal("fixture: the config does not configure a connector store")
 	}
