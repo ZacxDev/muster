@@ -154,8 +154,12 @@ const (
 )
 
 // pageCardTitle is a page title as muster draws it, never empty.
-func pageCardTitle(t string) string {
-	if t = textplain.Title(t); t != "" {
+//
+// 🔴 IT IS THE ONE PLACE A PAGE'S TITLE IS PLAINED ON ITS WAY TO THE CARD AND
+// THE SHARE CONTROLS (a plaining helper in textplain's sink ledger), so every
+// caller passes the RAW title: plaining it first would apply Title twice.
+func pageCardTitle(raw string) string {
+	if t := textplain.Title(raw); t != "" {
 		return t
 	}
 	return "Untitled page"

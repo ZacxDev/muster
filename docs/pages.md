@@ -319,7 +319,7 @@ component, never what was sent; at most one a minute per page.
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`, `auto`) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 
