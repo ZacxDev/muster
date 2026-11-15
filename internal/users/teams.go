@@ -416,6 +416,11 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	if err := endLends(ctx, tx, team, user); err != nil {
 		return err
 	}
+	// Team sharing 2b.4: what they queued into the team's windows is
+	// cancelled with them (team_queue.go).
+	if _, err := CancelQueuedByTx(ctx, tx, team, user, time.Time{}, QueueCancelLeftTeam); err != nil {
+		return err
+	}
 	// Team sharing 2b.2: an operator or a manager leaving marks the team's
 	// host tokens rotate (team_hosts.go), in this transaction.
 	if holdsTokenRole(role) {
@@ -520,6 +525,11 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	}
 	if role == authz.TeamViewer {
 		if err := endLends(ctx, tx, team, user); err != nil {
+			return err
+		}
+		// Team sharing 2b.4: a viewer queues nothing, so what they queued as
+		// an operator is cancelled (team_queue.go).
+		if _, err := CancelQueuedByTx(ctx, tx, team, user, time.Time{}, QueueCancelToViewer); err != nil {
 			return err
 		}
 		// Team sharing 2b.2: an operator or a manager dropping to viewer
