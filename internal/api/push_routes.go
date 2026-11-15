@@ -149,7 +149,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("push: device %s moved from owner=%d to owner=%d (a different user signed in on it)",
 			push.Short(sub.Endpoint), prev, owner)
 	}
-	s.setPushDeviceCookie(w, push.EndpointHash(sub.Endpoint))
+	s.setPushDeviceCookie(w, r, push.EndpointHash(sub.Endpoint))
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -172,7 +172,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the subscription could not be removed"})
 		return
 	}
-	s.clearPushDeviceCookie(w)
+	s.clearPushDeviceCookie(w, r)
 	s.writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
@@ -331,7 +331,7 @@ func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid in
 	if hash == "" {
 		return
 	}
-	s.clearPushDeviceCookie(w)
+	s.clearPushDeviceCookie(w, r)
 	if !s.pushServed() || uid <= 0 {
 		return
 	}
@@ -345,18 +345,18 @@ func (s *Server) forgetPushDevice(w http.ResponseWriter, r *http.Request, uid in
 	}
 }
 
-func (s *Server) setPushDeviceCookie(w http.ResponseWriter, hash string) {
+func (s *Server) setPushDeviceCookie(w http.ResponseWriter, r *http.Request, hash string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: pushDeviceCookie, Value: hash, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.auth.SecureCookies || s.auth.goTrueMode(),
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(),
 		MaxAge: int((400 * 24 * time.Hour) / time.Second),
 	})
 }
 
-func (s *Server) clearPushDeviceCookie(w http.ResponseWriter) {
+func (s *Server) clearPushDeviceCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: pushDeviceCookie, Value: "", Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.auth.SecureCookies || s.auth.goTrueMode(), MaxAge: -1,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.passwordCookieSecure(r) || s.auth.goTrueMode(), MaxAge: -1,
 	})
 }
 

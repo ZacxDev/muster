@@ -1173,7 +1173,7 @@ jobs:
           echo "f45e4cb687df8b48a57f656097ce7175fa8e8bef70be407b011e29ff663f475f  /tmp/docker-compose-2.20.3" | sha256sum -c -
           chmod +x /tmp/docker-compose-2.20.3
           COMPOSE_CHECK_OLD=/tmp/docker-compose-2.20.3 tests/compose-check.sh | tee /tmp/compose-check.log
-          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 5
+          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 6
 
       # The tag-only jobs' decision logic, without a tag or GitHub writes:
       # release-publish.sh against a fake `gh` (create, draft, no-op, refusals)
@@ -1183,18 +1183,45 @@ jobs:
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
 
-      # The default stack, then the s3, stt and chief profiles with the .env
-      # lines docs/features.md gives. espeak-ng speaks the stt phase's test
-      # clips. The chief phase runs this run's claude-code-agent image against
-      # a fake model behind muster's LLM proxy (tests/compose-chief.override.yml,
+      # Node and the two browsers the zero-config phase signs in with
+      # (e2e/localhost: Chromium and WebKit on http://localhost).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # The zero-config stack first (NO .env: muster-init's generated secrets,
+      # the localhost cookie in Chromium and WebKit, a muster-mirror on
+      # http://localhost with no -allow-http), then the .env stack (an install
+      # from before generated secrets, unchanged) and the fail-fast check,
+      # then the s3, stt and chief profiles with the .env lines
+      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
+      # The chief phase runs this run's claude-code-agent image against a fake
+      # model behind muster's LLM proxy (tests/compose-chief.override.yml,
       # tests/fake-llm): real CLI turns and real muster tool calls, no key.
       - name: bring the compose stack up from this run's images
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng tmux >/dev/null
+          (cd e2e && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium webkit)
           python3 tests/fake-llm/fake_llm_test.py
           make image IMAGE=muster-local VERSION=0.0.0
           docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
-          tests/compose-up.sh muster-local 0.0.0
+          go build -o /tmp/muster-mirror ./cmd/muster-mirror
+          COMPOSE_UP_MIRROR=/tmp/muster-mirror COMPOSE_UP_BROWSERS=1 tests/compose-up.sh muster-local 0.0.0
+
+      # THE ONE-LINER, as a person runs it: `curl -fsSL <release>/install.sh |
+      # sh`, from the 0.0.0 assets built above (served on loopback, so the
+      # release's own checksums.txt verifies every download) and this run's
+      # image. As a FRESH user with a real systemd user manager (linger): a
+      # container has no user manager, so the user service — the step under
+      # test — could not run in one. It must exit 0 (the doctor passed), the
+      # mirror service must be active and this machine connected; run again it
+      # must change nothing (same password, same token) and keep a hand-added
+      # settings line; and it must refuse, changing nothing, a second install
+      # under the same project name and a ~/muster it did not make.
+      - name: install.sh end to end (a fresh user), twice, and its refusals
+        run: tests/install-sh.sh dist muster-local
 
       # setup-python, not the runner's system python: that one is
       # "externally managed" (PEP 668) and refuses `pip install`.
@@ -1405,6 +1432,18 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             .
 
+      # The `main` CHANNEL: what deploy/docker-compose.yml defaults to in the
+      # repository, so a clone of main runs main's newest image. Moved only
+      # while this commit is still main's head (a slower run of an older
+      # commit must not move it back). Versions and commit tags never move
+      # (.github/scripts/ghcr-push.sh `channel`).
+      - name: move the main channel tag (main push only, still main's head)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          head="$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)"
+          if [ "$head" != "$GITHUB_SHA" ]; then echo "main moved on to $head; the channel is that run's to move"; exit 0; fi
+          .github/scripts/ghcr-push.sh channel '${{ steps.tag.outputs.ref }}' "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster:main"
+
   image-claude-code-agent:
     name: claude-code-agent image (GHCR)
     # 🔴 `!cancelled()` + an explicit result check, NEVER the implicit success(): see publish-gate.
@@ -1498,6 +1537,18 @@ jobs:
         env:
           GHCR_REVISION: ${{ github.sha }}
         run: .github/scripts/ghcr-push.sh retag '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.release_ref }}'
+
+      # The `main` CHANNEL: what deploy/docker-compose.yml defaults to in the
+      # repository, so a clone of main runs main's newest image. Moved only
+      # while this commit is still main's head (a slower run of an older
+      # commit must not move it back). Versions and commit tags never move
+      # (.github/scripts/ghcr-push.sh `channel`).
+      - name: move the main channel tag (main push only, still main's head)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          head="$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)"
+          if [ "$head" != "$GITHUB_SHA" ]; then echo "main moved on to $head; the channel is that run's to move"; exit 0; fi
+          .github/scripts/ghcr-push.sh channel '${{ steps.tag.outputs.ref }}' "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/claude-code-agent:main"
 
   # ---------------------------------------------------------------------------
   # THE DICTATION SERVER IMAGE (ghcr.io/<owner>/muster-stt-cohere:<X.Y.Z>).
@@ -1698,7 +1749,8 @@ jobs:
             echo
             echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
             echo
-            echo "Server: download \`docker-compose.yml\` and \`env.example\` (save it as \`.env\`), fill in the CHANGE-ME values, then \`docker compose up -d --wait\`."
+            echo "This machine, in one line: \`curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/install.sh | sh\` (docs/quickstart-local.md)."
+            echo "Server by hand: download \`docker-compose.yml\` and \`docker compose up -d --wait\` (no .env needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own)."
             echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
             echo
           } > "$RUNNER_TEMP/notes-header.md"

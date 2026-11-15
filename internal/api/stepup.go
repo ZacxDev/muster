@@ -159,7 +159,7 @@ func (s *Server) stepUpWithPassword(w http.ResponseWriter, r *http.Request, pass
 	if s.auth.goTrueMode() {
 		return s.confirmGoTrue(w, r, password)
 	}
-	return s.confirmOperatorPassword(w, password)
+	return s.confirmOperatorPassword(w, r, password)
 }
 
 // confirmGoTrue re-checks the session user's password with a GoTrue password
@@ -419,7 +419,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 
 // confirmOperatorPassword is the password-mode confirm: the operator password
 // again, a new session cookie issued now.
-func (s *Server) confirmOperatorPassword(w http.ResponseWriter, password string) stepUpOutcome {
+func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
 	if !s.loginRate.allow(now, loginRateBurst, loginRateWindow) {
 		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
@@ -428,7 +428,7 @@ func (s *Server) confirmOperatorPassword(w http.ResponseWriter, password string)
 		s.logger.Printf("stepup: rejected an operator-password confirm")
 		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
-	s.setPasswordSessionCookie(w)
+	s.setPasswordSessionCookie(w, r)
 	// SignSession stamps whole seconds; report what the cookie will read as.
 	issued := time.Unix(now.Unix(), 0)
 	return stepUpOutcome{Status: http.StatusOK, At: issued, FreshFor: issued.Add(stepup.Window()).Sub(now).Milliseconds()}

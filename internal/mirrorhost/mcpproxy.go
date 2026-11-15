@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/noredirect"
@@ -119,7 +120,8 @@ type MCPProxy struct {
 	// URL is muster's base URL (as Config.URL); Token this host's mirror token.
 	URL   string
 	Token string
-	// AllowHTTP permits a plain http:// URL (tests and local development).
+	// AllowHTTP permits a plain http:// URL to another machine (tests only);
+	// plain http to this machine's loopback interface is accepted without it.
 	AllowHTTP bool
 	// Secret is what a local caller must present.
 	Secret string
@@ -323,7 +325,7 @@ func MCPTarget(base string, allowHTTP bool) (string, error) {
 	}
 	switch {
 	case u.Scheme == "https":
-	case u.Scheme == "http" && allowHTTP:
+	case u.Scheme == "http" && (allowHTTP || loopback.Host(u.Host)):
 	default:
 		return "", fmt.Errorf("muster-mirror: muster URL %q must be https:// (or http:// with -allow-http)", base)
 	}

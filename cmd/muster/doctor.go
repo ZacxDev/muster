@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ZacxDev/muster/internal/attemptcode"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/tmuxver"
 )
@@ -54,6 +55,9 @@ const (
 	loginRoute     = "/login"
 	transcribePath = "/transcribe"
 	pushKeyRoute   = "/api/push/vapid-public-key"
+
+	// addPhoneDoc is where a local (loopback) install learns to add the phone.
+	addPhoneDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#add-your-phone"
 
 	// defaultMirrorUnit and defaultMirrorLabel are the service names INSTALL.md
 	// installs muster-mirror under.
@@ -435,6 +439,14 @@ func (d *doctorRun) checkServer(ctx context.Context) {
 		return
 	}
 	d.reachable = true
+	// Plain http to THIS machine (internal/loopback) is the local quickstart:
+	// it works in this machine's browser, which treats a loopback origin as
+	// secure. Only the phone needs https, so that is a note, not a failure.
+	if loopback.HTTPURL(d.base) {
+		d.add(name, statusPass, fmt.Sprintf("%s answers on this machine (muster %s). Your phone needs HTTPS to reach it: "+
+			"add it with Tailscale (%s)", d.base, h.Version, addPhoneDoc), "")
+		return
+	}
 	if u, _ := url.Parse(d.base); u == nil || u.Scheme != "https" {
 		d.add(name, statusFail, fmt.Sprintf("%s answers (muster %s) but over plain http", d.base, h.Version),
 			"phones allow the microphone, the install and notifications on https only: run `tailscale serve --bg 8105` "+
@@ -817,10 +829,21 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 	form := url.Values{"password": {d.password}}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, d.base+loginRoute, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// The sign-in page's own Origin, as a browser sends it: the server sets the
+	// cookie for that page (on a loopback http page, without Secure).
+	req.Header.Set("Origin", d.base)
 	resp, _, err := d.do(req)
 	if err != nil {
 		d.add(name, statusFail, "POST /login: "+err.Error(), "retry")
 		return
+	}
+	// Whether the session cookie came back Secure on a plain-http URL: such a
+	// cookie is never sent back, so the session cannot open a page (below).
+	secureOverHTTP := false
+	if u, _ := url.Parse(d.base); u != nil && u.Scheme == "http" {
+		for _, c := range resp.Cookies() {
+			secureOverHTTP = secureOverHTTP || c.Secure
+		}
 	}
 	switch {
 	case resp.StatusCode == http.StatusSeeOther && len(resp.Cookies()) > 0:
@@ -846,6 +869,13 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 		code := 0
 		if resp != nil {
 			code = resp.StatusCode
+		}
+		if secureOverHTTP {
+			d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d): the server set a Secure "+
+				"session cookie on a plain-http URL, and a Secure cookie is never sent back over http", code),
+				"serve muster over https (`tailscale serve --bg 8105`, then use its https://… URL), or open it on this machine "+
+					"as http://localhost:8105; on a plain-http LAN port set MUSTER_SECURE_COOKIES=0 in the server's .env")
+			return
 		}
 		d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d)", code),
 			"a proxy in front of muster is dropping the session cookie: use `tailscale serve` with nothing else in between")
@@ -974,6 +1004,13 @@ func (d *doctorRun) print() int {
 // qrencode when this machine has it; the URL itself is printed either way.
 func (d *doctorRun) printQR(ctx context.Context) {
 	w := d.a.stderr
+	// A loopback URL is this machine only: a phone that scanned it would open
+	// its OWN localhost. No code; say how a phone gets in instead.
+	if loopback.HTTPURL(d.base) {
+		fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser).\n"+
+			"To use it from your phone, add HTTPS with Tailscale: %s\n", d.base, addPhoneDoc)
+		return
+	}
 	fmt.Fprintf(w, "\nOpen muster on your phone (it must be on the same tailnet): %s\n", d.base)
 	path, err := d.sys.lookPath("qrencode")
 	if err != nil {

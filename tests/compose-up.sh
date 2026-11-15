@@ -13,6 +13,33 @@
 # the .env lines docs/features.md gives for it. (stt-cohere needs a GPU and is
 # not brought up here.)
 #
+# FIRST, THE ZERO-CONFIG STACK (the local quickstart): the compose file with NO
+# .env at all — only MUSTER_IMAGE/MUSTER_VERSION/MUSTER_HTTP_PORT in the
+# process environment, which point it at the local image and a free port.
+# Asserts:
+#   * `up --wait` returns 0 and /readyz is 200;
+#   * muster-init printed a generated sign-in password exactly once, and
+#     `exec muster /muster-server show-secret ui-password` shows the same one;
+#     it signs in (a wrong one does not); the generated hook token opens
+#     /api/doctor; push is ON with the generated keypair and the subject
+#     mailto:muster@localhost (never the http URL);
+#   * the session cookie of a sign-in from the http://localhost page (its
+#     Origin) is NOT Secure, and one without an Origin (curl) IS (the
+#     MUSTER_SECURE_COOKIES=1 default);
+#   * `down` + `up` (the volume kept) keeps the password, and muster-init then
+#     prints none;
+#   * with COMPOSE_UP_MIRROR=<muster-mirror binary> (and tmux): a mirror
+#     pointed at http://localhost:<port> with NO -allow-http connects, the
+#     server sees the host online, and a tmux session named with a fresh
+#     marker appears in the signed-in sidebar; NEGATIVE CONTROL: the same
+#     binary refuses http to a non-loopback address, naming cleartext;
+#   * with COMPOSE_UP_BROWSERS=1: e2e/localhost's Playwright projects
+#     (Chromium and WebKit) sign in on http://localhost:<port> and open the
+#     board.
+# Then the .env stack below, which is an install from BEFORE generated
+# secrets: it must boot exactly as it did (its .env's password, token and push
+# keys; muster-init generates nothing for it).
+#
 # Asserts, after `docker compose up -d --wait` returned 0:
 #   * both containers report health "healthy";
 #   * GET /health is 200 and reports the image's version;
@@ -25,8 +52,15 @@
 #     web tier refuses itself while /readyz stays 200, and only the
 #     healthcheck's /login probe turns that into "unhealthy";
 #   * NEGATIVE CONTROL: MUSTER_HOOK_TOKEN=CHANGE-ME (a public admin bearer)
-#     must make muster refuse to boot;
+#     must make muster refuse to boot — muster-init refuses it, naming it;
+#   * FAIL FAST: a setting the server refuses at boot (an http push subject)
+#     makes `up --wait` fail within COMPOSE_UP_FAIL_FAST_BOUND seconds (45),
+#     muster-init's log ends with the server's `config:` refusal naming the
+#     variable, and muster itself never started;
 #   * muster did not restart on the fresh volume (the Postgres init race);
+#   * the .env install gets NO generated secret (the secrets volume holds
+#     only Postgres's password and DATABASE_URL), and muster-init says it
+#     generated nothing;
 #   * Web Push keys minted with `docker compose run … vapid generate` reach
 #     muster: the signed-in key route serves the generated public key;
 #   * with no optional variable, dictation and attachments log plain OFF (not
@@ -102,11 +136,128 @@ cleanup() {
     --env-file "$tmp/env" -p "$PROJECT" --profile chief down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
-trap cleanup EXIT
+trap 'zero_cleanup; cleanup' EXIT
 
 fail() { echo "FAIL: $1"; dc ps -a || true; dc logs --no-color --tail 40 muster || true; exit 1; }
 
 echo "compose-up: project $PROJECT, port $PORT, image $IMAGE:$TAG"
+
+# --- the zero-config stack: no .env at all -----------------------------------
+# dz: the compose file as a clone runs it. `env -i` so nothing of this shell
+# reaches it but the three test-harness lines (and docker's own variables);
+# --env-file /dev/null so no deploy/.env, even one a developer has, is read.
+dz() {
+  env -i PATH="$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+    MUSTER_IMAGE="$IMAGE" MUSTER_VERSION="$TAG" MUSTER_HTTP_PORT="$PORT" \
+    docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file /dev/null -p "$PROJECT-zero" "$@"
+}
+zfail() { echo "FAIL [zero-config]: $1"; dz ps -a || true; dz logs --no-color --tail 40 muster-init muster || true; exit 1; }
+zero_cleanup() { dz down -v --remove-orphans >/dev/null 2>&1 || true; }
+phase_zero() {
+  local base="http://localhost:$PORT" start
+  start=$(date +%s)
+  dz up -d --wait --wait-timeout 180 || zfail "docker compose up -d --wait with no .env did not succeed"
+  echo "compose-up: [zero-config] --wait returned 0 after $(( $(date +%s) - start ))s, no .env"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' "$base/readyz")" = 200 ] || zfail "/readyz is not 200"
+  echo "ok   [zero-config] /readyz: 200"
+  local init pw shown
+  init="$(dz logs --no-color muster-init 2>&1)"
+  pw="$(dz exec -T muster /muster-server show-secret ui-password)" || zfail "show-secret ui-password failed"
+  [ "${#pw}" -ge 12 ] || zfail "the generated password is ${#pw} characters"
+  shown="$(grep -c -F -- "$pw" <<<"$init" || true)"
+  [ "$shown" = 1 ] || zfail "muster-init printed the password $shown time(s), want exactly once"
+  grep -q 'show-secret ui-password' <<<"$init" || zfail "muster-init does not say how to show the password again"
+  echo "ok   [zero-config] muster-init printed the generated password once; show-secret shows the same one"
+  local login
+  login="$(curl -sS -o /dev/null -D - -X POST -H "Origin: $base" --data-urlencode "password=$pw" "$base/login" | tr -d '\r')"
+  grep -qi '^set-cookie: muster_session=' <<<"$login" || zfail "the generated password does not sign in: $login"
+  if grep -i '^set-cookie: muster_session=' <<<"$login" | grep -qi '; *secure'; then
+    zfail "a sign-in from the http://localhost page got a Secure cookie (WebKit drops it): $login"
+  fi
+  local curlish
+  curlish="$(curl -sS -o /dev/null -D - -X POST --data-urlencode "password=$pw" "$base/login" | tr -d '\r')"
+  grep -i '^set-cookie: muster_session=' <<<"$curlish" | grep -qi '; *secure' ||
+    zfail "a sign-in with no Origin got a cookie that is not Secure (the MUSTER_SECURE_COOKIES=1 default): $curlish"
+  if curl -sS -o /dev/null -D - -X POST -H "Origin: $base" --data-urlencode "password=not-$pw" "$base/login" | grep -qi '^set-cookie: muster_session='; then
+    zfail "a WRONG password signed in"
+  fi
+  echo "ok   [zero-config] it signs in (a wrong one does not); the localhost page's cookie is not Secure, curl's is"
+  local hook
+  hook="$(dz exec -T muster /muster-server show-secret hook-token)" || zfail "show-secret hook-token failed"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $hook" "$base/api/doctor")" = 200 ] ||
+    zfail "the generated hook token does not open /api/doctor"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer not-$hook" "$base/api/doctor")" != 200 ] ||
+    zfail "a WRONG hook token opens /api/doctor"
+  echo "ok   [zero-config] the generated hook token opens /api/doctor (a wrong one does not)"
+  local boot cookie key
+  boot="$(dz logs --no-color muster 2>&1)"
+  grep -q 'web push: ENABLED .*(subject "mailto:muster@localhost")' <<<"$boot" ||
+    zfail "push is not ON with the mailto: subject: $(grep 'web push:' <<<"$boot")"
+  cookie="$(grep -i '^set-cookie: muster_session=' <<<"$login" | head -1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]*).*/\1/')"
+  key="$(curl -fsS -H "Cookie: $cookie" "$base/api/push/vapid-public-key")" || zfail "the push key route did not answer"
+  grep -q '"key":"B' <<<"$key" || zfail "the push key route served $key"
+  echo "ok   [zero-config] push is ON with the generated keypair, subject mailto:muster@localhost"
+
+  # The mirror, on loopback http with no flag.
+  if [ -n "${COMPOSE_UP_MIRROR:-}" ]; then
+    command -v tmux >/dev/null 2>&1 || zfail "COMPOSE_UP_MIRROR is set but tmux is not installed"
+    local sock="cu-$$-$RANDOM" marker="cu-mark-$RANDOM$RANDOM" mtok="$tmp/mirror-token" mpid i nav out
+    (umask 077; dz exec -T muster /muster-server mirror token create cu-host > "$mtok") || zfail "could not mint a mirror token"
+    tmux -L "$sock" new-session -d -s "$marker" 'sleep 600'
+    env -u MUSTER_MIRROR_ALLOW_HTTP "$COMPOSE_UP_MIRROR" -url "$base" -token-file "$mtok" -host cu-host -tmux-socket "$sock" \
+      > "$tmp/mirror.log" 2>&1 &
+    mpid=$!
+    i=0
+    until curl -fsS -H "Authorization: Bearer $(cat "$mtok")" "$base/mirror/host" 2>/dev/null | grep -q '"online":true'; do
+      i=$((i + 1))
+      if [ "$i" -gt 30 ] || ! kill -0 "$mpid" 2>/dev/null; then
+        cat "$tmp/mirror.log"; kill "$mpid" 2>/dev/null; tmux -L "$sock" kill-server 2>/dev/null
+        zfail "muster-mirror on $base (no -allow-http) did not connect"
+      fi
+      sleep 1
+    done
+    i=0
+    until nav="$(curl -fsS -H "Cookie: $cookie" "$base/ui/nav/agents")" && grep -q -- "$marker" <<<"$nav"; do
+      i=$((i + 1))
+      if [ "$i" -gt 20 ]; then
+        kill "$mpid" 2>/dev/null; tmux -L "$sock" kill-server 2>/dev/null
+        zfail "the mirrored tmux session $marker never appeared in the sidebar"
+      fi
+      sleep 1
+    done
+    kill "$mpid" 2>/dev/null; wait "$mpid" 2>/dev/null || true; tmux -L "$sock" kill-server 2>/dev/null || true
+    echo "ok   [zero-config] muster-mirror on $base with no -allow-http connected; tmux session $marker is in the sidebar"
+    # NEGATIVE CONTROL: plain http to another machine (TEST-NET-1) is refused.
+    out="$(env -u MUSTER_MIRROR_ALLOW_HTTP timeout 10 "$COMPOSE_UP_MIRROR" -url http://192.0.2.10:8105 -token-file "$mtok" -host cu-host 2>&1)" &&
+      zfail "muster-mirror ran against http://192.0.2.10 with no -allow-http"
+    grep -q cleartext <<<"$out" || zfail "muster-mirror's refusal of http://192.0.2.10 does not say cleartext: $out"
+    echo "ok   [zero-config] NEGATIVE CONTROL: muster-mirror refuses http to a non-loopback address, naming cleartext"
+  else
+    echo "note [zero-config] the mirror check did not run (set COMPOSE_UP_MIRROR to a muster-mirror binary; CI does)"
+  fi
+
+  # Real browsers: Chromium AND WebKit sign in on http://localhost.
+  if [ "${COMPOSE_UP_BROWSERS:-}" = 1 ]; then
+    MUSTER_LOCAL_URL="$base" MUSTER_LOCAL_PASSWORD="$pw" \
+      npx --prefix "$ROOT/e2e" playwright test -c "$ROOT/e2e/localhost/playwright.config.ts" --reporter=list ||
+      zfail "the Playwright sign-in on $base failed (Chromium or WebKit; output above)"
+    echo "ok   [zero-config] Chromium and WebKit sign in on $base and open the board"
+  else
+    echo "note [zero-config] the browser check did not run (COMPOSE_UP_BROWSERS=1; CI does)"
+  fi
+
+  # Kept across a restart: the same password, and none printed again.
+  dz down --remove-orphans >/dev/null 2>&1
+  dz up -d --wait --wait-timeout 180 >/dev/null 2>&1 || zfail "the second up --wait (volumes kept) failed"
+  [ "$(dz exec -T muster /muster-server show-secret ui-password)" = "$pw" ] || zfail "the password changed across a restart"
+  if dz logs --no-color muster-init 2>&1 | grep -q 'generated'; then zfail "muster-init generated something on the second start"; fi
+  curl -fsS -o /dev/null -X POST -H "Origin: $base" --data-urlencode "password=$pw" "$base/login" || zfail "the kept password no longer signs in"
+  echo "ok   [zero-config] down + up keeps the password, and muster-init generates and prints nothing"
+  zero_cleanup
+}
+phase_zero
+
+# --- the .env stack: an install from before generated secrets ---------------
 # Web Push keys, minted the way .env.example tells a user to: the image's own
 # generator through compose, appended to the env file.
 dc run --rm --no-deps muster vapid generate >> "$tmp/env" 2>/dev/null || fail "vapid generate through compose failed"
@@ -128,6 +279,12 @@ done
 rc="$(docker inspect -f '{{.RestartCount}}' "$(dc ps -q muster)")"
 [ "$rc" = 0 ] || fail "muster restarted $rc time(s) during a fresh bring-up"
 echo "ok   muster: 0 restarts on a fresh volume"
+# An .env install from before generated secrets: nothing is generated for it.
+held="$(dc exec -T postgres ls /run/muster-secrets | LC_ALL=C sort | tr '\n' ' ')"
+[ "$held" = "database_url postgres_password " ] ||
+  fail "the .env install's secrets volume holds '$held', want only database_url and postgres_password (nothing generated)"
+if dc logs --no-color muster-init 2>&1 | grep -q generated; then fail "muster-init generated something for an .env install"; fi
+echo "ok   .env install: muster-init generated nothing (the volume holds only Postgres's password and DATABASE_URL)"
 
 base="http://127.0.0.1:$PORT"
 body="$(curl -fsS "$base/health")" || fail "/health"
@@ -207,15 +364,36 @@ sed -i -e "s/^MUSTER_UI_PASSWORD=.*/MUSTER_UI_PASSWORD=$PASSWORD/" -e "s/^MUSTER
 if dc up -d --wait --wait-timeout 90 >/dev/null 2>&1; then
   fail "up --wait SUCCEEDED with MUSTER_HOOK_TOKEN=CHANGE-ME (a public admin bearer)"
 fi
-logs="$(dc logs --no-color muster 2>&1)"
+logs="$(dc logs --no-color muster-init muster 2>&1)"
 grep -q 'MUSTER_HOOK_TOKEN is the placeholder' <<<"$logs" ||
-  fail "muster's log does not say MUSTER_HOOK_TOKEN is the placeholder"
-echo "ok   placeholder hook token: muster refuses to boot, naming MUSTER_HOOK_TOKEN"
+  fail "muster-init's log does not say MUSTER_HOOK_TOKEN is the placeholder"
+echo "ok   placeholder hook token: muster refuses to boot (muster-init), naming MUSTER_HOOK_TOKEN"
+
+# FAIL FAST: a boot refusal fails `up --wait` in seconds, not after a timeout.
+# (Before muster-init, muster restart-looped and `up --wait` sat until the
+# healthcheck gave up: at least start_period 20s + 6 x 10s, and 8 minutes
+# measured on a blind install.)
+dc down -v --remove-orphans >/dev/null 2>&1
+sed -i "s/^MUSTER_HOOK_TOKEN=.*/MUSTER_HOOK_TOKEN=hook-token-fixture-$RANDOM/" "$tmp/env"
+cp "$tmp/env" "$tmp/env.ff"; echo "MUSTER_VAPID_SUBJECT=http://127.0.0.1:8105" >> "$tmp/env"
+bound="${COMPOSE_UP_FAIL_FAST_BOUND:-45}"
+start=$(date +%s)
+if dc up -d --wait --wait-timeout 300 >/dev/null 2>&1; then
+  fail "up --wait SUCCEEDED with an http push subject (muster refuses it at boot)"
+fi
+took=$(( $(date +%s) - start ))
+[ "$took" -le "$bound" ] || fail "up --wait took ${took}s to fail on a boot refusal, over the ${bound}s bound"
+last="$(dc logs --no-color muster-init 2>&1 | tail -n 3)"
+grep -q 'config: .*MUSTER_VAPID_SUBJECT.*must be mailto' <<<"$last" ||
+  fail "muster-init's last lines are not the server's refusal naming MUSTER_VAPID_SUBJECT: $last"
+[ -z "$(dc ps -a -q muster)" ] || [ "$(docker inspect -f '{{.State.StartedAt}}' "$(dc ps -a -q muster)")" = 0001-01-01T00:00:00Z ] ||
+  fail "muster was started although muster-init refused"
+echo "ok   fail fast: a boot refusal fails up --wait in ${took}s (bound ${bound}s), muster-init's last line names MUSTER_VAPID_SUBJECT, muster never started"
+mv "$tmp/env.ff" "$tmp/env"
 
 # The optional phases start from the good settings again, with a public URL
 # this machine can open (the agent links are written on it).
 dc down -v --remove-orphans >/dev/null 2>&1
-sed -i "s/^MUSTER_HOOK_TOKEN=.*/MUSTER_HOOK_TOKEN=hook-token-fixture-$RANDOM/" "$tmp/env"
 echo "MUSTER_PUBLIC_URL=$base" >> "$tmp/env"
 cp "$tmp/env" "$tmp/env.core"
 

@@ -57,6 +57,11 @@ func TestTheFeatureRegistryPinsItsIDs(t *testing.T) {
 // Every other documented muster-server variable must be named by a registry
 // entry (as one that turns it on, or one of its settings).
 var featureLedgerExempt = map[string]string{
+	envDatabaseFile:           "a _FILE twin (secretfiles.go): where its variable's value is read from, so it belongs to whatever that variable belongs to, and gates nothing of its own",
+	envUIPasswordFile:         "a _FILE twin (secretfiles.go): where its variable's value is read from, so it belongs to whatever that variable belongs to, and gates nothing of its own",
+	envHookTokenFile:          "a _FILE twin (secretfiles.go): where its variable's value is read from, so it belongs to whatever that variable belongs to, and gates nothing of its own",
+	envVAPIDPublicKeyFile:     "a _FILE twin (secretfiles.go): where its variable's value is read from, so it belongs to whatever that variable belongs to, and gates nothing of its own",
+	envVAPIDPrivateKeyFile:    "a _FILE twin (secretfiles.go): where its variable's value is read from, so it belongs to whatever that variable belongs to, and gates nothing of its own",
 	envDatabase:               "the database is required (config.validate refuses a boot without it), so it can never be off: not a feature (#441 round 0, D2)",
 	envHookToken:              "the machine token is core and `muster doctor`'s hook-token check owns its state (#441 round 0, D2)",
 	envPort:                   "the listen port: no feature is on or off with it",

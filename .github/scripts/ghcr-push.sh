@@ -12,6 +12,10 @@
 #       point <dst-ref> at <src-ref>'s exact manifest (a registry-side copy, no
 #       rebuild). <src-ref> must exist. <dst-ref> already present: kept when it
 #       is the same digest, or (as `release`) when this commit built it; else FAIL
+#   ghcr-push.sh channel <src-ref> <dst-ref>
+#       point the CHANNEL tag <dst-ref> at <src-ref>'s exact manifest, MOVING it
+#       if it points elsewhere. <dst-ref>'s tag must be one of CHANNELS below:
+#       never a version or a commit tag, which this script never moves.
 #   ghcr-push.sh buildx <remote-ref> reuse|refuse|release <platforms> -- <docker buildx build args…>
 #       the same probe, then a MULTI-ARCH `docker buildx build --platform
 #       <platforms> --push -t <remote-ref> <args…>`. A multi-platform image
@@ -25,6 +29,14 @@
 # tags that name a commit (the same commit gives the same source, so the
 # existing image stands); `refuse` is for a release version, where a second
 # image under one version is a mistake to stop on, not to paper over.
+#
+# 🔴 THE ONE EXCEPTION IS A CHANNEL, AND IT IS NAMED, NOT INFERRED: `main` is
+# the tag deploy/docker-compose.yml defaults to in the repository, so a clone
+# of main runs the newest image main published (a release's compose file is
+# stamped with its own version instead). A channel tag says "whatever is newest
+# on this branch" and moves by definition; a deploy that must not move pins a
+# version or a commit tag. `channel` refuses any other tag name.
+CHANNELS="main"
 #
 # 🔴 `release` IS `refuse` MADE IDEMPOTENT, FOR THE vX.Y.Z TAG RUNS. A tag can be
 # pushed again, a tag run can be re-run (`gh run rerun --failed` after a flaky
@@ -119,6 +131,21 @@ case "$cmd" in
     echo "ghcr-push: pushed $ref@$d"
     summary "- \`$ref@$d\` (pushed)"
     ;;
+  channel)
+    [ $# -eq 3 ] || die "usage: $0 channel <src-ref> <dst-ref>" 2
+    src="$2"; ref="$3"; tag="${ref##*:}"
+    case " $CHANNELS " in *" $tag "*) ;; *) die "channel: '$tag' is not a channel tag ($CHANNELS); versions and commit tags never move" 2 ;; esac
+    [ "$(probe "$src")" = present ] || die "channel source $src is not published"
+    sd="$(digest_of "$src")"
+    if [ "$(probe "$ref")" = present ] && [ "$(digest_of "$ref")" = "$sd" ]; then
+      echo "ghcr-push: $ref already points at $src ($sd) — kept"; exit 0
+    fi
+    docker buildx imagetools create -t "$ref" "$src"
+    d="$(digest_of "$ref")"
+    [ "$d" = "$sd" ] || die "channel produced $ref@$d, not the source digest $sd"
+    echo "ghcr-push: moved the channel $ref to $src@$d"
+    summary "- \`$ref@$d\` (channel, moved to \`$src\`)"
+    ;;
   buildx)
     [ $# -ge 5 ] && [ "$5" = "--" ] || die "usage: $0 buildx <remote-ref> reuse|refuse|release <platforms> -- <build args…>" 2
     ref="$2"; mode="$3"; platforms="$4"; shift 5
@@ -150,6 +177,6 @@ case "$cmd" in
     summary "- \`$ref@$d\` (retagged from \`$src\`, unchanged since)"
     ;;
   *)
-    die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse|release | buildx <remote-ref> reuse|refuse|release <platforms> -- <args…>" 2
+    die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse|release | channel <src-ref> <dst-ref> | buildx <remote-ref> reuse|refuse|release <platforms> -- <args…>" 2
     ;;
 esac
