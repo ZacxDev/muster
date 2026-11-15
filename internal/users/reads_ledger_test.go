@@ -45,6 +45,7 @@ var usersReads = map[string]string{
 	"internal/apitokens PGStore.Authenticate":              readPerson,
 	"internal/apitokens PGStore.Create":                    readByID,
 	"internal/chiefnudge PG.Owners":                        readEnabledPerson,
+	"internal/chiefnudge PG.TeamHostOwners":                readTeam, // the session-state pass's team arm (2b.3): teams holding an unrevoked mirror token
 	"internal/devices PGStore.Redeem":                      readByID,
 	"internal/devices PGStore.Authenticate":                readPerson,
 	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,

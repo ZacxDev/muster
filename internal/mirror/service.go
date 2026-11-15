@@ -117,10 +117,14 @@ func (s *Service) SetWaitingNotify(fn func(owner int64)) { s.hub.SetWaitingNotif
 func (s *Service) SetStatusNotify(fn func(owner int64)) { s.hub.SetStatusNotify(fn) }
 
 // SetSpawnReplyNotify installs the hub's late-reply hook (Hub.SetSpawnReplyNotify).
-func (s *Service) SetSpawnReplyNotify(fn func(owner int64, host string, m Msg)) { s.hub.SetSpawnReplyNotify(fn) }
+func (s *Service) SetSpawnReplyNotify(fn func(owner int64, host string, m Msg)) {
+	s.hub.SetSpawnReplyNotify(fn)
+}
 
 // SetListingNotify installs the hub's listing hook (Hub.SetListingNotify).
-func (s *Service) SetListingNotify(fn func(owner int64, host string, windows []Window)) { s.hub.SetListingNotify(fn) }
+func (s *Service) SetListingNotify(fn func(owner int64, host string, windows []Window)) {
+	s.hub.SetListingNotify(fn)
+}
 
 // SetOutcomesNotify installs the hub's outcomes hook (Hub.SetOutcomesNotify).
 func (s *Service) SetOutcomesNotify(fn func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)) {
@@ -130,7 +134,7 @@ func (s *Service) SetOutcomesNotify(fn func(owner int64, host string, seq uint64
 // SpawnAgent asks one of the viewing principal's hosts to start an agent for
 // host dispatch dispatch. See Hub.SpawnAgent.
 func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, req AgentSpawnReq) (AgentSpawned, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return AgentSpawned{}, err
 	}
@@ -140,7 +144,7 @@ func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, r
 // CloseAgent asks ctx's principal's host to end the agent in window req
 // (agentclose.go).
 func (s *Service) CloseAgent(ctx context.Context, host string, req AgentCloseReq) (AgentCloseResult, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return AgentCloseResult{}, err
 	}
@@ -382,7 +386,9 @@ func (s *Service) watchToken(ctx context.Context, cancel context.CancelCauseFunc
 	}
 }
 
-// owner is the viewing principal's user, or ErrNoPrincipal.
+// owner is the viewing principal's OWN user, or ErrNoPrincipal: the
+// own-only methods' read (Hosts, the token and hold reads). A target owner on
+// ctx (ForOwner) is not read here.
 //
 // 🔴 authz.System IS NOT A VIEWER. Its UserID is 0, and a host's sessions belong
 // to a user; "everyone's" is not a view this plugin offers.
@@ -394,14 +400,105 @@ func owner(ctx context.Context) (int64, error) {
 	return p.UserID, nil
 }
 
-// Hosts is the viewing principal's hosts: connected, or recently disconnected.
-// Another user's hosts are never in it.
+// targetKey carries the owner a request's mirror calls are about (ForOwner).
+type targetKey struct{}
+
+// ForOwner is ctx with its mirror calls aimed at owner's hub entries rather
+// than the principal's own. 🔴 IT GRANTS NOTHING: every owner-taking method
+// still decides through access, which answers owner only when the principal
+// IS owner or holds the method's role in owner's team (Principal.TeamScope).
+// internal/api sets it in one place, its mirror route gate (mirrorTeamGate),
+// for the routes mirrorTeamRoutes lets a member onto; the gate's caller
+// ledger (TestOnlyTheMirrorTeamGateAimsAMirrorCall) pins that.
+func ForOwner(ctx context.Context, owner int64) context.Context {
+	return context.WithValue(ctx, targetKey{}, owner)
+}
+
+// TargetOwner is the owner ctx's mirror calls are aimed at (ForOwner), 0 for
+// none: the principal's own.
+func TargetOwner(ctx context.Context) int64 {
+	o, _ := ctx.Value(targetKey{}).(int64)
+	return o
+}
+
+// teamNeedsOpen is the roles a member's request may act on a TEAM host's
+// entries with, in this release. Team sharing 2b.3 opens viewing only: a
+// member watches, reads and scrolls a team session. Typing into one (an
+// interactive attach, a paste, an answer, a spawn) is 2b.4's, with its
+// step-up and queue checks, and until then access refuses it whatever the
+// member's role — so no route can reach it by setting a target.
+var teamNeedsOpen = map[authz.TeamRole]bool{authz.TeamViewer: true}
+
+// access is THE ONE CHOKEPOINT (team sharing 2b.3; docs/design/team-sharing.md
+// A, "The chokepoint") deciding whose hub entries an owner-taking method acts
+// on: the request's target (TargetOwner; none = the principal's own) when the
+// principal IS that owner, or holds need in it through its team memberships
+// (Principal.TeamScope: the browser session and a paired phone only), and need
+// is one teamNeedsOpen opens. Anything else is ErrNoPrincipal — the error a
+// missing session gets — so a refusal is no oracle for whether the team host
+// exists. The team acting principal (UserID = the team) is its own owner.
+// serviceNeeds (TestEveryServiceMethodSaysItsNeed) is each method's need.
+func access(ctx context.Context, need authz.TeamRole) (int64, error) {
+	own, err := owner(ctx)
+	if err != nil {
+		return 0, err
+	}
+	t := TargetOwner(ctx)
+	if t <= 0 || t == own {
+		return own, nil
+	}
+	p, _ := authz.From(ctx)
+	role, in := p.TeamScope().RoleIn(t)
+	if !in || !role.AtLeast(need) || !teamNeedsOpen[need] {
+		return 0, ErrNoPrincipal
+	}
+	return t, nil
+}
+
+// Hosts is the viewing principal's OWN hosts: connected, or recently
+// disconnected. Another user's hosts are never in it, and nor are its teams'.
+//
+// 🔴 IT STAYS OWN-ONLY (team sharing 2b.3). About fifty callers pick an entry
+// from it by host NAME alone; with a team's build-01 listed beside the
+// principal's own build-01 each would take whichever came first. The
+// team-aware listing is VisibleHosts, for a ledgered set of callers.
+//
+// Each entry's Owner is 0, "the principal's own" (#690 round 1, 🟢3): an own
+// entry's URLs carry no owner= (ui.MirrorRef), as before teams. Only
+// VisibleHosts names owners.
 func (s *Service) Hosts(ctx context.Context) []HostView {
 	o, err := owner(ctx)
 	if err != nil {
 		return nil
 	}
-	return s.hub.Hosts(o)
+	hs := s.hub.Hosts(o)
+	for i := range hs {
+		hs[i].Owner = 0
+	}
+	return hs
+}
+
+// VisibleHosts is the principal's own hosts, then each of its teams' hosts
+// where it is at least a viewer (Principal.TeamScope, read with the request:
+// a person's browser session or phone; every other door carries no team), team
+// by team in id order. Each HostView carries its Owner, and a caller acts on
+// an entry it picks by that owner (ForOwner, then access) — never by its name
+// alone. Its callers are a ledger (internal/api visibleHostsCallers,
+// TestEveryVisibleHostsCallerIsClassified).
+func (s *Service) VisibleHosts(ctx context.Context) []HostView {
+	o, err := owner(ctx)
+	if err != nil {
+		return nil
+	}
+	out := s.hub.Hosts(o)
+	p, _ := authz.From(ctx)
+	for _, m := range p.TeamScope().List() {
+		if m.Team == o || !m.Role.AtLeast(authz.TeamViewer) {
+			continue
+		}
+		out = append(out, s.hub.Hosts(m.Team)...)
+	}
+	return out
 }
 
 // Attach attaches a terminal to one of the viewing principal's host sessions.
@@ -418,7 +515,11 @@ func (s *Service) Attach(ctx context.Context, host, session string, readOnly boo
 // AttachWindow is Attach on one window of the session (its tmux window id);
 // window == "" is the session's active window. See Hub.AttachWindow.
 func (s *Service) AttachWindow(ctx context.Context, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
-	o, err := owner(ctx)
+	need := authz.TeamOperator // live keys type into the pane
+	if readOnly {
+		need = authz.TeamViewer
+	}
+	o, err := access(ctx, need)
 	if err != nil {
 		return err
 	}
@@ -437,7 +538,7 @@ func (s *Service) Watch(ctx context.Context, host, session, gen string, offset i
 // WatchWindow is Watch on one window of the session; window == "" is the
 // session's active window. See Hub.WatchWindow.
 func (s *Service) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(Msg) error) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return err
 	}
@@ -453,7 +554,7 @@ func (s *Service) Paste(ctx context.Context, host, session, text string, target 
 // PasteWindow is Paste into one window of the session; window == "" is the
 // session's active window. See Hub.PasteWindow.
 func (s *Service) PasteWindow(ctx context.Context, host, session, window, text string, target PasteTarget, opts ...PasteOption) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return err
 	}
@@ -465,7 +566,7 @@ func (s *Service) PasteWindow(ctx context.Context, host, session, window, text s
 // is the session's active window. See Hub.ScrollWindow — and why it needs no
 // fresh sign-in.
 func (s *Service) ScrollWindow(ctx context.Context, host, session, window string, lines int) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return err
 	}
@@ -477,7 +578,7 @@ func (s *Service) ScrollWindow(ctx context.Context, host, session, window string
 // window): its commands and skills, as the host reports them. See Hub.CatalogWindow. No step-up: it reads names and descriptions,
 // and types nothing.
 func (s *Service) CatalogWindow(ctx context.Context, host, session, window string) (Catalog, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return Catalog{}, err
 	}

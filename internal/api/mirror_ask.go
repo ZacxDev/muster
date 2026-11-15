@@ -300,13 +300,22 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var vs []ui.MirrorAskLiveView
+	// 🔴 A TEAM HOST'S WINDOW (team sharing 2b.3): its questions are the
+	// TEAM's (the hook registers them under the token's owner), read by the
+	// request's target, and drawn UNANSWERABLE — an answer typed into the pane
+	// is typing, 2b.4's (its routes are own-only, mirrorTeamRoutes).
+	team := onTeamHost(r)
 	// An opencode window's ask, read live from its host (mirror_opencode_ask.go).
-	if p, ok := openCodePending(h, e); ok {
+	if p, ok := openCodePending(h, e); ok && !team {
 		vs = append(vs, s.openCodeLiveCard(r, h, e, p))
 	}
 	if e.ClaudeSession != "" {
-		for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
-			vs = append(vs, questionCard(h, e, x))
+		for _, x := range s.asks.ForSession(mirrorTarget(r), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
+			c := questionCard(h, e, x)
+			if team {
+				c.Unanswerable, c.CanCancel, c.Retry, c.Message = MirrorTeamAskNote, false, false, false
+			}
+			vs = append(vs, c)
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -315,6 +324,10 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("mirror: render question cards: %v", err)
 	}
 }
+
+// MirrorTeamAskNote is what a team host's question card says in place of its
+// answer controls (team sharing 2b.3).
+const MirrorTeamAskNote = "This is a team session: answering its question from muster is not available yet."
 
 // askPartlyFilled ends a failure note when muster may have typed part of the
 // answer before it stopped.

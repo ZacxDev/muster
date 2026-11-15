@@ -165,10 +165,21 @@ releases (team sharing 2b.3 and 2b.4).
     instance's connector tools. So a team host never answers or decides
     anything — no team ask, no dispatch card — and files no step-up card. A
     team token's **remote** call (`X-Muster-Client: remote`) is refused 401:
-    it would be served unbound to any listed session. A team token's
-    session-state episodes are not opened until 2b.3.
+    it would be served unbound to any listed session. Its waiting and done
+    windows are the team's episodes (2b.3): pushed to its operators and
+    managers, with no stall classifier.
   - **Its asks.** A team host session's `attention_ask` is the team's, and
     shows on every member's Attention (viewer and up). Members answer it there.
+  - **Who watches it (2b.3).** The team host's sessions are listed to the
+    team's members (viewer and up), on a browser session or a paired phone
+    only — never through a personal API token, an agent or a background
+    loop — and a member reads them read-only. One table decides what each
+    mirror route does with a team session (`mirrorTeamRoutes`): watch it,
+    refuse it (the chief panel, proposals, succession and suggested replies:
+    403 at every role), or serve the member's own sessions only (typing,
+    until team operators). Anyone not a member is answered 404, as for a host
+    that does not exist. A member's open views and event stream end within
+    10 seconds of leaving the team.
   - **The rotate mark.** When an operator or a manager is removed, drops to
     viewer or is **disabled**, the team's unrevoked host tokens are marked
     rotate (`mirror_tokens.rotate_at`), in the same transaction. Nothing is

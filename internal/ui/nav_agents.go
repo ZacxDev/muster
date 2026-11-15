@@ -183,7 +183,8 @@ func navCurrent(raw string, list []AgentCardView) SwitcherCurrent {
 		if q.Get("host") == "" {
 			return SwitcherCurrent{}
 		}
-		return SwitcherCurrent{Mirror: MirrorRef{Host: q.Get("host"), Session: q.Get("session"), Window: q.Get("window")}}
+		owner, _ := strconv.ParseInt(q.Get("owner"), 10, 64)
+		return SwitcherCurrent{Mirror: MirrorRef{Owner: owner, Host: q.Get("host"), Session: q.Get("session"), Window: q.Get("window")}}
 	}
 	return SwitcherCurrent{}
 }
@@ -200,7 +201,15 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	// the command palette finds it by on a page with no switcher (palette.go).
 	items := switcherItems(es, cur, now)
 	var rows, idle, superseded []g.Node
+	var teams []navTeam
 	for i, e := range es {
+		// A TEAM host's session (team sharing 2b.3) is drawn in its team's
+		// group, below the viewer's own: two entries named alike — the
+		// viewer's build-01 and the team's — are never one list.
+		if e.mirror != nil && e.mirror.Owner != 0 {
+			teams = navTeamAdd(teams, e.mirror.Owner, e.mirror.Team, navAgentRow(e, items[i], now))
+			continue
+		}
 		if e.superseded() && !e.waiting() && !items[i].Current {
 			superseded = append(superseded, navAgentRow(e, items[i], now))
 			continue
@@ -213,9 +222,48 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	}
 	return g.Group{
 		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
+		navTeamGroups(teams),
 		navSupersededGroup(superseded),
 		navIdleGroup(idle),
 	}
+}
+
+// navTeam is one team's group of rows in the sidebar.
+type navTeam struct {
+	owner int64
+	name  string
+	rows  []g.Node
+}
+
+// navTeamAdd adds row to owner's group, opening one (in first-seen order) for
+// a team not seen yet.
+func navTeamAdd(teams []navTeam, owner int64, name string, row g.Node) []navTeam {
+	for i := range teams {
+		if teams[i].owner == owner {
+			teams[i].rows = append(teams[i].rows, row)
+			return teams
+		}
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "Team " + strconv.FormatInt(owner, 10)
+	}
+	return append(teams, navTeam{owner: owner, name: name, rows: []g.Node{row}})
+}
+
+// navTeamGroups is each team's group: its name as a heading, then its team
+// hosts' sessions. Nothing when the viewer sees no team host.
+func navTeamGroups(teams []navTeam) g.Node {
+	var out g.Group
+	for _, t := range teams {
+		id := "sidebar-team-" + strconv.FormatInt(t.owner, 10)
+		out = append(out, Div(
+			g.Attr("data-nav-team", strconv.FormatInt(t.owner, 10)),
+			Class("mt-1 border-t border-line pt-1"),
+			P(ID(id), Class("flex min-h-[44px] items-center px-3 text-xs font-medium uppercase tracking-wide text-muted"), g.Text(t.name)),
+			Ul(g.Attr("aria-labelledby", id), Class("flex flex-col gap-0.5"), g.Group(t.rows)),
+		))
+	}
+	return out
 }
 
 // NavSupersededID is the sidebar's Superseded group (navSupersededGroup).

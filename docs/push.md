@@ -144,9 +144,9 @@ member's comment on a team task (below).
   `reason="team_read_failed"` when the owner is known to be a team (a
   dropped team push), and `reason="owner_kind_unread"` when muster had not
   yet read the owner's kind (a person's push did go; a team's did not).
-- A waiting or done push for a session on a **team host** comes with team
-  hosts ([design](design/team-sharing.md#phase-2b-design-team-hosts-decided-2026-11-14),
-  slice 2b.3).
+- A waiting or done push for a session on a **team host** is the team's
+  episode, pushed to its operators and managers once each, through the same
+  fan-out (never a viewer). No stall classifier runs for a team's session.
 
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and

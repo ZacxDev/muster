@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/ZacxDev/muster/internal/sessionname"
+	"strconv"
 
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +23,10 @@ import (
 // AgentCardView with fields switched off. (The name is the retired Agents
 // list card's.)
 type MirrorCardView struct {
+	// Owner is a TEAM host's owner, 0 for the viewer's own (MirrorRef.Owner);
+	// Team is that team's name, the sidebar group the row is drawn in.
+	Owner   int64
+	Team    string
 	Host    string
 	Session string
 	// Window is the tmux window id the entry is ("@12"); "" = a per-session
@@ -150,11 +155,16 @@ type MirrorCardView struct {
 	Superseded bool
 }
 
+// Ref is the entry's address.
+func (m MirrorCardView) Ref() MirrorRef {
+	return MirrorRef{Owner: m.Owner, Host: m.Host, Session: m.Session, Window: m.Window}
+}
+
 // MirrorCardHref is where a mirrored entry opens: the rendered view for a
 // Claude Code pane or an opencode one with a known session, the terminal for
 // anything else.
 func MirrorCardHref(m MirrorCardView) string {
-	ref := MirrorRef{Host: m.Host, Session: m.Session, Window: m.Window}
+	ref := m.Ref()
 	if m.Claude || m.AgentView {
 		return ref.ViewPath()
 	}
@@ -169,18 +179,28 @@ func MirrorCardHref(m MirrorCardView) string {
 // Window == "" is "the session's ACTIVE window": the only address a
 // per-session host has, and what every URL from before windows were
 // addressable means.
+//
+// Owner is a TEAM host's owner (team sharing 2b.3), 0 for the viewer's own
+// host: two entries named alike are told apart by it, and every URL of a team
+// host's entry carries it as `owner=` (the server's mirrorTeamRoutes decide
+// what each route does with it).
 type MirrorRef struct {
+	Owner   int64
 	Host    string
 	Session string
 	Window  string
 }
 
-// query is the ref as URL parameters. `window` is present only when set, so a
-// per-session entry's URLs are byte-identical to what they always were.
+// query is the ref as URL parameters. `window` and `owner` are present only
+// when set, so a per-session entry's URLs, and every own entry's, are
+// byte-identical to what they always were.
 func (r MirrorRef) query() string {
 	v := url.Values{"host": {r.Host}, "session": {r.Session}}
 	if r.Window != "" {
 		v.Set("window", r.Window)
+	}
+	if r.Owner != 0 {
+		v.Set("owner", strconv.FormatInt(r.Owner, 10))
 	}
 	return v.Encode()
 }
@@ -220,6 +240,11 @@ func mirrorCardID(m MirrorCardView) string {
 	key := m.Host + "\x00" + m.Session
 	if m.Window != "" {
 		key += "\x00" + m.Window
+	}
+	if m.Owner != 0 {
+		// A team host's entry, told apart from the viewer's own of the same
+		// address (team sharing 2b.3); an own entry's id is unchanged.
+		key += "\x00owner:" + strconv.FormatInt(m.Owner, 10)
 	}
 	sum := sha256.Sum256([]byte(key))
 	return "mirror-" + hex.EncodeToString(sum[:6])

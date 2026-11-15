@@ -242,5 +242,16 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 		}
 		defer done()
 	}
+	// A mirror route naming a TEAM host's entry (owner=) is decided by the
+	// route's team rule (mirror_team_routes.go mirrorTeamRoutes): one place
+	// for every mirror route. A member's view is aimed at the team's hub
+	// entries and registered for the membership sweep (team_live.go).
+	r, viewDone, ok := s.mirrorTeamGate(w, r)
+	if !ok {
+		return
+	}
+	if viewDone != nil {
+		defer viewDone()
+	}
 	next(w, r)
 }

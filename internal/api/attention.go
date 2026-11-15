@@ -317,7 +317,14 @@ type attentionCard struct {
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
 // the hub's change nudge (which names only an owner) reads that owner's
 // windows. internal/authz's withPrincipalLedger lists it.
-func (s *Server) attentionPrincipal(ctx context.Context, owner int64) context.Context {
+//
+// knownTeam (the session-state pass's team arm, #690 round 1, 🟡4) says the
+// caller's own list names owner a TEAM: the team acting principal is built
+// from that, with no account read — a failed read would build a member.
+func (s *Server) attentionPrincipal(ctx context.Context, owner int64, knownTeam ...bool) context.Context {
+	if len(knownTeam) > 0 && knownTeam[0] {
+		return authz.WithPrincipal(ctx, teamActingPrincipal(owner, authz.ViaAttention))
+	}
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAttention))
 }
 
@@ -938,12 +945,10 @@ func (s *Server) attentionChanged(owner int64, key string) {
 		return
 	}
 	s.attention.wakeFor(owner).signal()
+	// A TEAM's item reaches its members' open pages through their own event
+	// streams, which subscribe to each of their teams (team sharing 2b.3,
+	// streamOwners) — one event, no member read here.
 	s.broadcastTo(owner, EventAttentionChanged, key)
-	// A TEAM's item: its operators' and managers' open Attention and ask
-	// pages refresh too (teamViewRecipients; replaced by 2b.3's streams).
-	for _, m := range s.teamViewRecipients(owner) {
-		s.broadcastTo(m, EventAttentionChanged, key)
-	}
 }
 
 // attentionNotify pushes one new item to owner's devices, under the
@@ -1243,16 +1248,13 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	// push them as new now — except one whose episode is still HELD
 	// (episodeHandedOver).
 	var episodePushed map[string]bool
-	// 🔴 NO EPISODE FOR A TEAM OWNER, UNTIL 2b.3 (team sharing 2b.2;
-	// TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff). The state pass that
-	// settles and pushes an episode iterates persons only
-	// (sessionstate.PG.Owners), so an episode opened here for a team host's
-	// window would be left open forever, and no operator told. A team's
-	// waiting windows take today's diff path below instead, whose push is the
-	// team fan-out (goNotify). 2b.3 removes this branch with the state pass's
-	// team arm. An owner whose account could not be read is not known to be a
-	// team (principalFor's fallback), and keeps the person path.
-	if s.sessionStateOn() && !authz.MustFrom(octx).Team {
+	// A TEAM host's waiting window is an episode like a person's (team
+	// sharing 2b.3): the state pass visits every team holding a mirror token
+	// (sessionstate.PG.Owners' team arm), settles the episode and pushes it as
+	// the team, and the push fan-out reaches the team's operators and
+	// managers once each. (2b.2 kept a team's waits on the diff path until
+	// that arm existed.)
+	if s.sessionStateOn() {
 		// 🔴 SESSION STATE ON: A WAITING WINDOW THAT SESSION STATE KEYS
 		// (episodeCover) — WHATEVER IT WAITS ON, AN ANSWERABLE ASK TOO — IS AN
 		// EPISODE, opened from here and pushed once per stop, claimed — held

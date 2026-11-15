@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/authz"
 	"sort"
 )
 
@@ -56,8 +57,15 @@ func RanksByRegistration(tokens []Token) map[string]int {
 // every call, uncached, like the rest of the sidebar's per-render reads. A
 // failed read is logged and answers nil: the caller's fallback (ui.HostIconFor's
 // hash) still draws an icon.
+//
+// 🔴 ONLY THE OWNER'S OWN TOKENS ARE RANKED (team sharing 2b.3): since 0127
+// mirror_tokens is a managed table, so a member's browser session also reads
+// their teams' tokens, and ranking those beside their own moved their own
+// hosts' icons. The owner is access's (a team host's page ranks the team's
+// tokens; anyone else's own).
 func (s *Service) HostRanks(ctx context.Context) map[string]int {
-	if _, err := owner(ctx); err != nil {
+	o, err := access(ctx, authz.TeamViewer)
+	if err != nil {
 		return nil
 	}
 	toks, err := s.store.ListTokens(ctx)
@@ -65,7 +73,18 @@ func (s *Service) HostRanks(ctx context.Context) map[string]int {
 		s.logger.Printf("mirror: host ranks: %v", err)
 		return nil
 	}
-	return RanksByRegistration(toks)
+	return RanksByRegistration(ownedBy(toks, o))
+}
+
+// ownedBy is the tokens of toks that owner holds.
+func ownedBy(toks []Token, owner int64) []Token {
+	out := toks[:0:0]
+	for _, t := range toks {
+		if t.OwnerID == owner {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // LiveTokenHosts is the viewing principal's hosts that hold at least one
@@ -73,14 +92,15 @@ func (s *Service) HostRanks(ctx context.Context) map[string]int {
 // what `muster doctor` checks the connected set against (GET /api/doctor). A
 // host whose every token is revoked is not expected, whatever its rank.
 func (s *Service) LiveTokenHosts(ctx context.Context) ([]string, error) {
-	if _, err := owner(ctx); err != nil {
+	o, err := owner(ctx)
+	if err != nil {
 		return nil, err
 	}
 	toks, err := s.store.ListTokens(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return liveHosts(toks), nil
+	return liveHosts(ownedBy(toks, o)), nil
 }
 
 // liveHosts is the sorted, de-duplicated hosts of the unrevoked tokens.

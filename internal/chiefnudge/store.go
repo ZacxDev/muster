@@ -188,8 +188,9 @@ func auditDetail(d Decision) map[string]any {
 
 // sys is the store's one system-scope helper (internal/authz's ledger names
 // it): the sweep's three cross-owner reads — the owners it visits, the global
-// hourly count and the live decisions in flight. Every one of those decisions
-// is then acted on as its own owner, never under System.
+// hourly count and the live decisions in flight — and the session-state
+// pass's team owners (TeamHostOwners). Every one of those decisions is then
+// acted on as its own owner, never under System.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 // Owners implements Store.
@@ -208,6 +209,38 @@ func (p *PG) Owners(ctx context.Context) ([]Owner, error) {
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// TeamHost is one team the session-state pass visits (TeamHostOwners): Live
+// when it holds an unrevoked mirror token.
+type TeamHost struct {
+	ID   int64
+	Live bool
+}
+
+// TeamHostOwners is every TEAM the session-state pass's team arm visits
+// (internal/sessionstate PG.OwnerKinds, team sharing 2b.3), by id: each team
+// holding an unrevoked mirror token (Live), and each that holds none but still
+// has an open episode or a shown, uncleared one — its last token revoked
+// mid-wait (#690 round 1, 🟡2), so its pass ends and withdraws them. NOT the
+// nudge sweep's owners (Owners stays persons only: a team session gets no
+// chief nudge until a team chief binds to team hosts).
+func (p *PG) TeamHostOwners(ctx context.Context) ([]TeamHost, error) {
+	rows, err := p.pool.Query(sys(ctx), `SELECT u.id,
+			EXISTS (SELECT 1 FROM mirror_tokens t WHERE t.owner_id = u.id AND t.revoked_at IS NULL)
+		FROM users u WHERE u.kind = 'team' AND (
+			EXISTS (SELECT 1 FROM mirror_tokens t WHERE t.owner_id = u.id AND t.revoked_at IS NULL)
+			OR EXISTS (SELECT 1 FROM session_episodes e WHERE e.owner_id = u.id
+				AND (e.ended_at IS NULL OR (e.pushed_at IS NOT NULL AND e.cleared_at IS NULL))))
+		ORDER BY u.id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TeamHost, error) {
+		var t TeamHost
+		err := r.Scan(&t.ID, &t.Live)
+		return t, err
+	})
 }
 
 // Decided implements Store.
