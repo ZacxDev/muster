@@ -97,7 +97,9 @@ if grep -q 'minted' /tmp/install-2.log; then fail "the second run minted a token
 echo "ok   second run: exit 0, same password, same token, the hand-added line kept"
 
 # --- refusals, each changing nothing ----------------------------------------------
-before="$(docker ps -a --format '{{.Names}} {{.Status}}' | sort)"
+# The containers by id, name and state: a recreated or restarted one differs.
+# (Not .Status, whose "Exited (0) 4 seconds ago" changes by itself.)
+before="$(docker ps -a --format '{{.ID}} {{.Names}} {{.State}} {{.CreatedAt}}' | sort)"
 if one_liner "$U" 'MUSTER_DIR=$HOME/elsewhere' > /tmp/install-3.log 2>&1; then fail "a second install under the same project was NOT refused"; fi
 grep -q 'compose project named muster already runs from' /tmp/install-3.log || { cat /tmp/install-3.log; fail "the same-project refusal does not say why"; }
 as "$U" 'test ! -e ~/elsewhere' || fail "the refused run created ~/elsewhere"
@@ -111,7 +113,7 @@ as "$U2" 'rm -rf ~/muster && mkdir -p ~/.config/muster-mirror && echo MUSTER_MIR
 if one_liner "$U2" 'MUSTER_PROJECT=other' > /tmp/install-5.log 2>&1; then fail "muster-mirror settings someone else wrote were NOT refused"; fi
 grep -q 'already set up' /tmp/install-5.log || { cat /tmp/install-5.log; fail "the foreign-mirror refusal does not say why"; }
 as "$U2" 'test ! -e ~/muster' || fail "the refused run created ~/muster"
-[ "$(docker ps -a --format '{{.Names}} {{.Status}}' | sort | sed 's/ Up .*//')" = "$(sed 's/ Up .*//' <<<"$before")" ] ||
+[ "$(docker ps -a --format '{{.ID}} {{.Names}} {{.State}} {{.CreatedAt}}' | sort)" = "$before" ] ||
   fail "a refused run changed the containers"
 echo "ok   refused: a ~/muster and muster-mirror settings it did not make, nothing changed"
 echo "install-sh: PASS"
