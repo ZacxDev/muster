@@ -21,9 +21,8 @@ import (
 //   - docs_only: every changed path AND every renamed-from path must be clean
 //     (officers.CleanRepoPath) and match an allowed glob
 //     (officers.MatchAllowed). ONE path outside refuses the whole pull
-//     request: there is no partial admission. Then, unless
-//     allow_command_edits: a changed file that is not Markdown is refused
-//     whole, and so is a Markdown file one of whose changed lines (added or
+//     request: there is no partial admission. Then (no switch lifts this):
+//     a changed file that is not Markdown is refused whole, and so is a Markdown file one of whose changed lines (added or
 //     removed) sits inside a fenced code block of the file it belongs to —
 //     read whole at the base (removed lines) and at the head (added lines),
 //     so a hunk that starts inside a fence is judged right. And the size
@@ -87,11 +86,11 @@ func (g *PushGate) docsWall(ctx context.Context, sr officers.ShipRepo, gh GitHub
 					outside = true
 				}
 			}
-			if outside || d.AllowCommandEdits {
+			if outside {
 				continue
 			}
 			if !isMarkdown(f.Path) || (f.Previous != "" && !isMarkdown(f.Previous)) {
-				hit(f.Path, "not a Markdown file: its whole content is treated as commands, which docs_only does not let an officer edit (allow_command_edits)")
+				hit(f.Path, "not a Markdown file: its whole content is treated as commands, which docs_only does not let an officer edit")
 				continue
 			}
 			fenced, err := fencedChange(ctx, gh, cmp, f, base, head)
@@ -99,7 +98,7 @@ func (g *PushGate) docsWall(ctx context.Context, sr officers.ShipRepo, gh GitHub
 			case err != nil:
 				miss(f.Path, fmt.Sprintf("its fenced code blocks could not be checked: %v", err))
 			case fenced > 0:
-				hit(f.Path, fmt.Sprintf("line %d changes a fenced code block (a command), which docs_only does not let an officer edit (allow_command_edits)", fenced))
+				hit(f.Path, fmt.Sprintf("line %d changes a fenced code block (a command), which docs_only does not let an officer edit", fenced))
 			}
 		}
 	}

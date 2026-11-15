@@ -591,9 +591,7 @@ func docsOnlyNote(o Officer) string {
 		out += fmt.Sprintf(`
 DOCS ONLY: every path your pull request changes, adds, removes or renames from must match one of %s (and no forbidden path); one path outside refuses the whole pull request. At most %d files and %d changed lines per pull request.`,
 			strings.Join(d.AllowedPaths, ", "), d.MaxFiles, d.MaxDiffLines)
-		if !d.AllowCommandEdits {
-			out += " Never change a line inside a fenced code block (a command) and never change a file that is not Markdown: muster refuses both. Propose a command change as text in the pull request body instead."
-		}
+		out += " Never change a line inside a fenced code block (a command) and never change a file that is not Markdown: muster refuses both. Propose a command change as text in the pull request body instead."
 	}
 	var public []string
 	for _, r := range s.RepoList(o.Repo) {

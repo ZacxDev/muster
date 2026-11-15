@@ -1351,7 +1351,7 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 | `repos` | none | `draft` and `shepherd` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?, public?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
 | `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
-| `docs_only` | none | `draft` only: `{allowed_paths, allow_command_edits?, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
+| `docs_only` | none | `draft` only: `{allowed_paths, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
 | `public` | `false` | `draft` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). |
 | `internal_patterns_file` | none | `draft` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
@@ -1600,7 +1600,6 @@ content hit, after a push or on a sweep).
 | `docs_only` field | default | |
 |---|---|---|
 | `allowed_paths` | **required** (1–64) | Globs in `forbidden_paths` syntax with one difference: a pattern with no `/` matches the file's **own name** only, never a directory, so `*.md` allows `docs/a.md` and not `notes.md/run.go`. An entry that would allow an obvious code path (`main.go`, `Makefile`, `scripts/run.sh`, a workflow file — so `*` and `**`) is a boot refusal. |
-| `allow_command_edits` | `false` | Lifts the fenced-code and non-Markdown rules below. |
 | `max_diff_lines` | `300` (1–5000) | The comparison's added plus removed lines. |
 | `max_files` | `10` (1–100) | The comparison's changed files. |
 | `max_prs_per_day` | the stage's 3 | Pull requests opened per UTC day across the officer's repositories; it can only lower the stage's limit. |
@@ -1614,7 +1613,8 @@ matches: git stores none, so it is a trick, not a path. The forbidden paths
 still apply on top: a `.md` file under one (an officer charter, say) is
 refused. A rename from code to `.md` is refused by its old path.
 
-**No command edits** (unless `allow_command_edits`). A changed file that is
+**No command edits**, and no switch lifts the rule (an unknown key such as
+`allow_command_edits` is a boot refusal). A changed file that is
 not Markdown (`.md`, `.markdown`; not `.mdx`, which holds code) is refused
 whole: an allowed `claudedocs/notes.sh` is a command file. In a Markdown
 file, a changed line — added or removed — that sits inside a fenced code

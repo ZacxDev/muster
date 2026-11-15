@@ -22,9 +22,10 @@ import (
 //   - `docs_only`: an ALLOWLIST. Every path a pull request changes, adds,
 //     removes or renames from must match one of `allowed_paths` (and still
 //     match no forbidden path); one path outside it refuses the WHOLE pull
-//     request. Unless `allow_command_edits`, no changed line may sit inside a
-//     fenced code block, and a changed file that is not Markdown is refused
-//     whole. `max_diff_lines`, `max_files` and `max_prs_per_day` cap it.
+//     request. No changed line may sit inside a fenced code block, and a
+//     changed file that is not Markdown is refused whole: there is no
+//     switch that lifts either. `max_diff_lines`, `max_files` and
+//     `max_prs_per_day` cap it.
 //   - `public: true` on a repository: the diff's added lines, its new paths,
 //     its commit messages and the pull request's title, body and comments
 //     are scanned with the patterns of `internal_patterns_file` — a file on
@@ -50,9 +51,6 @@ type DocsOnly struct {
 	// AllowedPaths are globs; every path a pull request touches must match
 	// one (MatchAllowed).
 	AllowedPaths []string
-	// AllowCommandEdits lets a changed line sit inside a fenced code block,
-	// and a changed file be other than Markdown.
-	AllowCommandEdits bool
 	// MaxDiffLines caps the comparison's added+removed lines; MaxFiles its
 	// changed files; MaxPRsPerDay the pull requests opened per UTC day
 	// (never above MaxNewPRsPerDay).
@@ -66,11 +64,10 @@ type DocsOnly struct {
 var codeProbes = []string{"main.go", "cmd/app/main.go", "Makefile", "scripts/run.sh", ".github/workflows/ci.yml", "src/index.ts"}
 
 type declaredDocsOnly struct {
-	AllowedPaths      []string `json:"allowed_paths"`
-	AllowCommandEdits bool     `json:"allow_command_edits"`
-	MaxDiffLines      int      `json:"max_diff_lines"`
-	MaxFiles          int      `json:"max_files"`
-	MaxPRsPerDay      int      `json:"max_prs_per_day"`
+	AllowedPaths []string `json:"allowed_paths"`
+	MaxDiffLines int      `json:"max_diff_lines"`
+	MaxFiles     int      `json:"max_files"`
+	MaxPRsPerDay int      `json:"max_prs_per_day"`
 }
 
 // NewPRsPerDay is how many pull requests the officer may open per UTC day:
@@ -90,7 +87,7 @@ func parseDocsOnly(raw json.RawMessage) (*DocsOnly, error) {
 	if err := dec.Decode(&d); err != nil {
 		return nil, fmt.Errorf("ship: docs_only: %w", err)
 	}
-	o := &DocsOnly{AllowCommandEdits: d.AllowCommandEdits, MaxDiffLines: d.MaxDiffLines, MaxFiles: d.MaxFiles, MaxPRsPerDay: d.MaxPRsPerDay}
+	o := &DocsOnly{MaxDiffLines: d.MaxDiffLines, MaxFiles: d.MaxFiles, MaxPRsPerDay: d.MaxPRsPerDay}
 	if n := len(d.AllowedPaths); n < 1 || n > maxAllowedPaths {
 		return nil, fmt.Errorf("ship: docs_only.allowed_paths needs 1..%d globs, got %d: an allowlist with nothing on it has no default", maxAllowedPaths, n)
 	}

@@ -44,7 +44,7 @@ func TestParseReadsADocsOnlyDraftShip(t *testing.T) {
 	}
 	s := list[0].Ship
 	d := s.DocsOnly
-	if d == nil || len(d.AllowedPaths) != 2 || d.MaxDiffLines != 120 || d.MaxFiles != 4 || d.MaxPRsPerDay != 2 || d.AllowCommandEdits {
+	if d == nil || len(d.AllowedPaths) != 2 || d.MaxDiffLines != 120 || d.MaxFiles != 4 || d.MaxPRsPerDay != 2 {
 		t.Fatalf("docs_only = %+v", d)
 	}
 	if s.NewPRsPerDay() != 2 {
@@ -106,6 +106,11 @@ func TestParseRefusesABadDocsOnlyShip(t *testing.T) {
 		"an unknown key": {func(_ *testing.T, m map[string]any) {
 			m["docs_only"] = map[string]any{"allowed_paths": []string{"**/*.md"}, "allow_code": true}
 		}, "unknown field"},
+		// There is no switch that lifts the fenced-code and non-Markdown rules:
+		// the removed allow_command_edits key is refused, never read.
+		"allow_command_edits": {func(_ *testing.T, m map[string]any) {
+			m["docs_only"] = map[string]any{"allowed_paths": []string{"**/*.md"}, "allow_command_edits": true}
+		}, `unknown field "allow_command_edits"`},
 		"a per-day cap above the stage's": {func(_ *testing.T, m map[string]any) {
 			m["docs_only"] = map[string]any{"allowed_paths": []string{"**/*.md"}, "max_prs_per_day": officers.MaxNewPRsPerDay + 1}
 		}, "can only lower"},
@@ -189,5 +194,21 @@ func TestMatchAllowedIsAnAllowlistMatcher(t *testing.T) {
 		if got := officers.MatchAllowed(c.pat, c.p); got != c.want {
 			t.Errorf("MatchAllowed(%q, %q) = %v, want %v", c.pat, c.p, got, c.want)
 		}
+	}
+}
+
+// TestADocsOnlyKickoffForbidsCommandEdits: a docs-only draft officer's first
+// message carries the whole DOCS ONLY note, its fenced-code and non-Markdown
+// sentence included. No configuration drops that sentence: docs_only has no
+// allow_command_edits.
+func TestADocsOnlyKickoffForbidsCommandEdits(t *testing.T) {
+	list, err := parseDecl(t, draftDecl(docsShip(t)), shipEnv(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const note = "\nDOCS ONLY: every path your pull request changes, adds, removes or renames from must match one of **/*.md, claudedocs/** (and no forbidden path); one path outside refuses the whole pull request. At most 4 files and 120 changed lines per pull request." +
+		" Never change a line inside a fenced code block (a command) and never change a file that is not Markdown: muster refuses both. Propose a command change as text in the pull request body instead.\n"
+	if got := officers.KickoffText(list[0], 1); !strings.Contains(got, note) {
+		t.Fatalf("docs-only kickoff lacks the whole DOCS ONLY note:\n%s\n--- want it to contain ---\n%s", got, note)
 	}
 }

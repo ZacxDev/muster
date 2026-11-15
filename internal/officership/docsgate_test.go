@@ -180,8 +180,8 @@ func TestTrickPathsCannotEscapeAllowedPaths(t *testing.T) {
 // TestAFencedCodeEditIsRefused: a changed line inside a fenced block (or a
 // fence line itself) is refused, read from the WHOLE file so a hunk that
 // starts inside a fence is caught; so is a non-Markdown allowed file.
-// Controls: the line right after the closing fence (the boundary), prose,
-// and allow_command_edits.
+// Controls: the line right after the closing fence (the boundary) and prose.
+// No switch lifts the rule (docs_only has no allow_command_edits).
 func TestAFencedCodeEditIsRefused(t *testing.T) {
 	refused := map[string]struct {
 		base, head string
@@ -227,14 +227,6 @@ func TestAFencedCodeEditIsRefused(t *testing.T) {
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -7,3 +7,3 @@\n ```\n-\n+Note.\n The end."})
 	if err := r.create(goodCreate()); err != nil {
 		t.Errorf("control: the line after the closing fence was refused: %v", err)
-	}
-	r = docsRig(t)
-	r.g.Ship.DocsOnly.AllowCommandEdits = true
-	c := refused["a hunk that starts inside the fence"]
-	r.content("README.md", c.base, c.head)
-	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: c.patch}, File{Path: "claudedocs/plan.json", Status: "modified", Changes: 2, Patch: "@@ -1 +1 @@\n-{}\n+{\"a\": 1}"})
-	if err := r.create(goodCreate()); err != nil {
-		t.Errorf("control: allow_command_edits still refused a fenced edit: %v", err)
 	}
 	// Fail closed: the head cannot be read.
 	r = docsRig(t)
