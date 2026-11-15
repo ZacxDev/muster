@@ -2461,7 +2461,15 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   🔴 **Deviation:** the role table gives a viewer "open a preview that
    >   is already running". The Preview button reads the viewer's PERSONAL
    >   viewer plugins, so it is `mirrorTeamOwnOnly` here, and a team session
-   >   draws none; whose plugin a team preview runs on is its own decision.
+   >   draws none. **Operator ruling (#690 round 0, Q1, 2026-11-15):** a team
+   >   viewer may open it, on the TEAM's plugins, never the viewer's; a team
+   >   with none is refused with a sentence. ⚠ **NOT BUILT YET — stopped on a
+   >   fork:** no surface mints a team-owned plugin (a plugin is minted by a
+   >   person, owned by them), `plugins` is read at operator (0127), not
+   >   viewer, and a team-owned plugin's token is refused at `admit`
+   >   (`ViaPlugin` is not a team door), so the plugin could not redeem the
+   >   hand-off. Building it needs a manager's mint surface, a decision on
+   >   that door, and a server-side read of the team's viewer plugins.
    > - **The pages.** On a team session the terminal and the Rendered view
    >   leave out everything that is the viewer's own and keyed by host name or
    >   conversation (recents, tags, pins, names, focus history, drafts, the
@@ -2508,7 +2516,7 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   conversations are not episodes in its pass — the arm visits only teams
    >   holding a mirror token, so including them would give team agents
    >   stall pushes only where the team happens to own a host token. ⚠ Not
-   >   pinned by a test.
+   >   pinned by a test. **Kept by the operator (#690 round 0, Q2).**
    > - **Tests:** `TestHostsNeverListsATeamHost` (invariant),
    >   `TestAccessReachesATeamHostOnlyAsFarAsTheMembership`,
    >   `TestEveryServiceMethodSaysItsNeed`,
@@ -2524,10 +2532,22 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `TestEveryVisibleHostsCallerIsClassified`,
    >   `TestOnlyTheMirrorTeamGateAimsAMirrorCall` (`internal/api`).
    >   `TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff` is removed.
-   >   🔴 **Deviation:** the isolation walk (`isolation_test.go`) gains no
-   >   team-host rows; the end-to-end tests above run a REAL mirror plugin
-   >   with two REAL `muster-mirror` clients (an own and a team `build-01`)
-   >   over Postgres instead.
+   >   The end-to-end tests above run a REAL mirror plugin with two REAL
+   >   `muster-mirror` clients (an own and a team `build-01`) over Postgres.
+   > - **The isolation walk's team-host leg** (#690 round 0, D1;
+   >   `teamRoleWalks`): the walk's plugin lists a TEAM host, named with the
+   >   team's canary, to the team's members only (`isoMirror.teamVisible`,
+   >   by `TeamScope`), online for every route. In each of B's roles (none,
+   >   viewer, operator, manager) every mirror route is walked again naming
+   >   that host (`owner=`): as a non-member B sees its canary on no route
+   >   (the main walk's sidebar included) and is answered exactly as for a
+   >   host the team does not have; as a member B sees it on at least one
+   >   (control). Shown red: a listing that ignores membership puts the
+   >   team's canary in a non-member's sidebar (`GET /ui/nav/agents`).
+   >   ⚠ The membership decision there is the walk's fake plugin's, as for
+   >   every mirror row of the walk; the real plugin's is pinned in
+   >   `internal/mirror` (`TestHostsNeverListsATeamHost`, mutant M3).
+   > - `teamNeedsOpen` is kept (#690 round 0, D2): it fails closed.
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
    - `ViaQueue` becomes team-acting **and** `sendQueueOwnerRefusal` reads
