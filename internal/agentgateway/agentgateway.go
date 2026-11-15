@@ -179,6 +179,9 @@ type Gateway struct {
 	// failover is the account failover (UseFailover); nil = none.
 	failoverMu sync.RWMutex
 	failover   AccountFailover
+	// noAccount says an agent runs on none of the shared Claude accounts
+	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
+	noAccount func(context.Context, agents.Agent) bool
 }
 
 // AccountFailover is what the gateway tells after a typed `rate_limited` /
@@ -197,6 +200,34 @@ func (g *Gateway) UseFailover(f AccountFailover) {
 	g.failoverMu.Lock()
 	defer g.failoverMu.Unlock()
 	g.failover = f
+}
+
+// UseNoAccount installs the rule for which agents run on none of the shared
+// Claude accounts although their row names one: a claude-code agent whose
+// model calls go through muster's LLM proxy (internal/api
+// Server.NoClaudeAccount: an officer pool's instance on the proxy, or the
+// chief on the LLM route). Such an agent's typed `rate_limited` /
+// `auth_failed` is not a Claude account's: the proxy passes an upstream
+// provider's 429 back as it is. So it marks no account and moves the agent
+// nowhere; a spent provider key must not cool down, or fail over from, an
+// account other agents run on. cmd/muster-server installs it once, after the
+// api server is built; a second call replaces the first.
+func (g *Gateway) UseNoAccount(f func(context.Context, agents.Agent) bool) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.noAccount = f
+}
+
+// AccountOf is the shared Claude account agent a's turns run on: its row's,
+// or "" when UseNoAccount's rule says it runs on none.
+func (g *Gateway) AccountOf(ctx context.Context, a agents.Agent) string {
+	g.failoverMu.RLock()
+	f := g.noAccount
+	g.failoverMu.RUnlock()
+	if f != nil && f(ctx, a) {
+		return ""
+	}
+	return a.CCAccount
 }
 
 // New validates the configuration and builds the gateway.
@@ -284,8 +315,10 @@ func (g *Gateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message 
 type Target struct {
 	ep     provision.Endpoint
 	bearer string
-	// kind and account are the agent's, so Send can apply the kind's turn budget
-	// and mark the account a typed failure came from.
+	// kind is the agent's, so Send can apply the kind's turn budget; account
+	// is the Claude account a typed failure is marked against (AccountOf): the
+	// row's, or "" for an agent with no account (not claude-code) and for a
+	// claude-code agent on the LLM proxy (UseNoAccount).
 	kind    string
 	account string
 	owner   int64
@@ -306,7 +339,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID, agentID: a.ID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.AccountOf(ctx, a), owner: a.OwnerID, agentID: a.ID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
@@ -351,11 +384,13 @@ func (g *Gateway) clientFor(kind string) *http.Client {
 // ⚠ THE MARK IS WRITTEN ON A CONTEXT DETACHED FROM THE TURN'S, so a caller that
 // hangs up the moment the error arrives does not also cancel the record of why.
 func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
-	// ⚠ t.account IS THE ONLY KIND TEST, AND IT IS SUFFICIENT: migration 0003's
-	// agents_cc_account_matches_kind makes "has an account" and "is claude-code"
-	// the same row property. A second `t.kind` conjunct was unreachable — the
-	// mutation sweep showed it could be deleted with every test green — so it
-	// is not here pretending to guard something.
+	// ⚠ AN EMPTY t.account MEANS "MARK NOTHING", FOR TWO REASONS: the agent is
+	// not claude-code (migration 0003's agents_cc_account_matches_kind makes
+	// "has an account" and "is claude-code" the same row property), or it is a
+	// claude-code agent on the LLM proxy, which runs on no shared account
+	// (AccountOf, UseNoAccount). No separate `t.kind` conjunct: it was
+	// unreachable — the mutation sweep showed it could be deleted with every
+	// test green — so it is not here pretending to guard something.
 	if err == nil || g.accounts == nil || t.account == "" {
 		return err
 	}

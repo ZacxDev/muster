@@ -616,6 +616,50 @@ func (s *Server) logOfficerBackend(o officers.Officer) {
 	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
 }
 
+// NoClaudeAccount is THE rule for whether claude-code agent a runs on none of
+// the shared Claude accounts although its row names one, because its model
+// calls go through muster's LLM proxy:
+//
+//   - an instance of a declared officer's pool on the proxy
+//     (instanceOnNoClaudeAccount);
+//   - the chief on the LLM route (the spec builder's own predicate,
+//     ChiefLLM.Routed, which places no Claude token in that chief's pod).
+//
+// 🔴 SUCH AN AGENT'S rate_limited / auth_failed MARKS NO ACCOUNT AND MOVES THE
+// AGENT NOWHERE: the proxy passes an upstream provider's 429 back as it is, so
+// it is not the account's. cmd/muster-server installs this on the agent
+// gateway (agentgateway.Gateway.UseNoAccount), and failoverJob asks it, so a
+// turn's marks and a job's failover follow one rule.
+//
+// ⚠ A ROUTE THAT CANNOT BE DECIDED COUNTS AS "NO ACCOUNT" (logged). The two
+// wrong answers are not equal: "no account" for a chief that is in fact on its
+// account skips one mark and one failover for that chief alone; "its account"
+// for a chief on the proxy cools, or fails over from, an account every other
+// agent on it shares, on a fault that was not the account's.
+func (s *Server) NoClaudeAccount(ctx context.Context, a agents.Agent) bool {
+	if s.instanceOnNoClaudeAccount(a) {
+		return true
+	}
+	if s.chiefLLM == nil || s.chiefLLM.routed == nil {
+		return false
+	}
+	routed, err := s.chiefLLM.routed(ctx, a)
+	if err != nil {
+		s.logger.Printf("agents: %s: deciding whether it is on the LLM route: %v; marking no Claude account for its failure", a.Name, err)
+		return true
+	}
+	return routed
+}
+
+// instanceOnNoClaudeAccount is true for an instance of a declared officer's
+// pool on the LLM proxy, false for every other agent. It is the accounts'
+// attribution answer (officerPoolOf, officers.ProxyAgent), so a turn's
+// account marks and the usage credited to an account follow one rule.
+func (s *Server) instanceOnNoClaudeAccount(a agents.Agent) bool {
+	_, _, onProxy, ok := s.officerPoolOf(a.Name)
+	return ok && onProxy
+}
+
 // officerOf is THE binding rule: the declared officer agent a is an instance
 // of, and which instance. Not an officer instance → ok false. The officer is
 // the instance's pool (officers.Registry.ForAgentName): a tiered officer's
