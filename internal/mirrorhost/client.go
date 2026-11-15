@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/noredirect"
 )
@@ -54,6 +55,13 @@ type Config struct {
 	URL string
 	// Token is this host's mirror token (mirror.TokenPrefix…).
 	Token string
+	// AttemptCode is this PROCESS's attempt code (attemptcode.New),
+	// sent on every connect as attemptcode.Header: when a team host's
+	// connection is held for a manager, the manager confirms THIS machine by
+	// typing it (mirror/teamhold.go). Printed in the log when held. "" sends
+	// none (an older muster-mirror's behaviour): such a held connection
+	// cannot be confirmed (ErrHeldNoCode).
+	AttemptCode string
 	// Host is this host's name; it must be the host the token was minted for.
 	Host    string
 	Backend Backend
@@ -213,6 +221,9 @@ type Client struct {
 	// asks for an immediate listing.
 	curMu sync.Mutex
 	cur   *hostSide
+
+	// heldLogged: the attempt code was already printed (logHeld).
+	heldLogged atomic.Bool
 }
 
 // beforeRefreshHook, when set (tests), runs on a connection after its hello
@@ -354,6 +365,24 @@ func (c *Client) RunOnce(ctx context.Context) error {
 	return err
 }
 
+// logHeld says, when muster holds this connection for a team manager, what
+// the manager needs: the code this machine shows (Config.AttemptCode).
+//
+// 🔴 THE CODE IS PRINTED ONCE PER PROCESS (#688 round 1, Y2): it is the
+// bearer of a manager's confirm, and this log is read by whoever reads the
+// user's journal (or wherever it is shipped). Later holds say only that
+// `muster doctor` shows it (from its 0600 file).
+func (c *Client) logHeld() {
+	if c.cfg.AttemptCode == "" {
+		return
+	}
+	if c.heldLogged.Swap(true) {
+		c.log.Printf("muster-mirror: still held: team host %s is connected from another machine; `muster doctor` shows this machine's code", c.cfg.Host)
+		return
+	}
+	c.log.Printf("muster-mirror: held: team host %s is already connected from another machine; give this code to a team manager: %s", c.cfg.Host, c.cfg.AttemptCode)
+}
+
 // versionRefusal is a v1 muster refusing this host's newer tunnel version.
 type versionRefusal struct{ msg string }
 
@@ -362,6 +391,9 @@ func (v *versionRefusal) Error() string { return "muster refused the registratio
 func (c *Client) runOnce(ctx context.Context, version int) error {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.Token)
+	if c.cfg.AttemptCode != "" {
+		hdr.Set(attemptcode.Header, c.cfg.AttemptCode)
+	}
 	dctx, dcancel := context.WithTimeout(ctx, 20*time.Second)
 	// This connect's wire counter: what the transport's next dial counts into.
 	wire := &wireCounter{}
@@ -452,6 +484,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	if welcome.Error != "" {
 		if version > 1 && strings.HasPrefix(welcome.Error, mirror.V1RefusalPrefix) {
 			return &versionRefusal{msg: welcome.Error}
+		}
+		if welcome.Error == mirror.ErrHeldForManager.Error() {
+			c.logHeld()
 		}
 		return fmt.Errorf("muster refused the registration: %s", welcome.Error)
 	}

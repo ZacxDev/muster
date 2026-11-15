@@ -1135,6 +1135,110 @@ rule the later phases' rows will meet.
     agent's start/stop, with no `chief_preferences` row for the team. No
     "replace".
 
+- **Slice 4.7: team dispatch.** A team's chief starts team-owned
+  `pod/claude-code` agents (owner: the team; only on a team task, by the
+  composite key onto notes). The blanket refusal of 4.5 is gone; the host,
+  gateway and worker-pool refusals stay.
+  - **Typed turn (`owner_asked`):** `markOwnerTurn` marks a member's turn on a
+    team agent when the typer is a person who is an operator or above on a
+    fresh read and their sign-in is fresh **at typing** (`stepup.Fresh` on the
+    typing request). The marker *is* the step-up stamp: it exists only for a
+    fresh typer, so no column records the time. `ownerTurnFor` re-reads the
+    typer's role when the chief calls, and the lane checks are unchanged (one
+    room). Anything failing falls back to the approval card (with a
+    `request_key`).
+  - **Approval card:** answering a team's dispatch card needs a browser
+    session, an operator or above on a fresh read, and a fresh sign-in at the
+    answer (`teamCardRefusal`, before anything is recorded; it reads the hold
+    as the team, because `host_dispatches` is personal). The phone's door is
+    refused by name. The completing call re-reads `answered_by_user` and
+    refuses a removed answerer.
+  - **A team's task is not its say-so (operator decision Q1):** on a team's
+    task, a dispatch with no counting typed turn needs the approval card, as
+    one with no task does (`teamTaskNeedsCard`); with no `request_key` it is
+    refused. A person's own task is still their say-so.
+  - **The marker ends with the typer's sign-in:** `ownerTurnFor` refuses a
+    member's marker when the typer's `sessions_not_before` / `signed_out_at`
+    is at or after the typed row's `created_at` (`typerSignedOutSince`; the
+    send queue's whole-second rule).
+  - **A disabled member speaks for no team:** `teamOperatorNow`, the one
+    role re-check behind the typer, the card answerer (at the answer and when
+    the start completes) and the terminal, also refuses a disabled person — a
+    disable keeps the membership row.
+  - **Push:** a team's dispatch card's push has no chips or signed actions and
+    says to open it in a browser (`teamDispatchCardPush`, the same hold test,
+    `teamCardHold`, as the phone-door refusal). No "Change repo" on a team's
+    card until 4.8 (4.8: only on a team lent the GitHub App).
+  - **Verbatim attention answer as instructions:** no `answered_stepup_at`
+    column was added, so on a team's task the path is closed (fail closed):
+    the chief's brief goes on an approval card instead.
+  - **Audit and push:** `task.chief_dispatch` detail carries
+    `requested_by_user`; the push names the person. Fan-out is 2b's.
+  - **Terminal:** open to an operator or above with a fresh sign-in
+    (`teamAgentTerminal`). The shell holds the team's credentials; accepted
+    under the trust model (docs/chief.md).
+  - **Move to a team (4.3 limitation (a)):** a finished link no longer
+    refuses: an ask that is answered (delivery settled), cancelled or
+    expired; a session route that is finished; a host dispatch that ended.
+    Those rows stay their owner's. Agents (a composite key) and a plugin's
+    queue still refuse.
+
+- **Slice 4.8: the GitHub App for team agents** (operator decision: "yes;
+  managers approve each repository once for the team, with step-up").
+  - **`MUSTER_TEAMS_ON_GITHUB_APP=<team ids>`** lends the deployment's GitHub
+    App to each listed team, with `MUSTER_TEAMS_ON_SERVER_POOL`'s boot check:
+    a person's id or an unknown id refuses to boot, and so does the list with
+    no App. One predicate, `githubapp.Admits` (an admin, or the team acting
+    principal of a listed team), is both the `github` virtual connector's
+    `allow` and `githubApp`'s gate, so the team's chief sees the App's
+    repositories (`repos_list`, `agent_dispatch`'s connected-repository
+    check, the default branch) and the team's agents see the App-backed
+    `github` connector. A member's own principal is never admitted, a
+    member of a listed team included: a member's personal chief and agents
+    still have no repositories.
+  - **Pages decide by the object's owner, never the viewer**
+    (`githubAppForOwner`): the task forms' repository picker asks
+    `/ui/agents/repos?owner=<owner>` (the edit modal its task's owner, the
+    new-task form its Owner select), answered with a team's repositories
+    only to an operator or above of a listed team; an admin on an unlisted
+    team's task gets none. A listed team's approval card offers "Change
+    repo"; its repo card lists the App's repositories as the team and is a
+    team dispatch card like the approval card (browser, operator or above,
+    fresh sign-in).
+  - **`/teams/{id}/connectors`:** a manager reads the team agents' pending
+    connector requests and approves (`github` only, with a fresh sign-in) or
+    denies them. It runs through `teamAdminContext` (`ViaTeamAdmin`, a fresh
+    manager read) rather than a System handler: the connector tables are
+    personal, and the team acting principal is their owner, so it reads and
+    writes the team's rows and no one else's. The decision is THE operator
+    decision (`decideConnectorGrant`), so the approval is shared as the
+    team's standing grant for (`github`, the App, the repository): the
+    team's later agents on that repository are approved when they ask, and
+    one on another repository asks again. Every decision writes the team's
+    audit row (`connector.approve`, `connector.deny`) naming the manager.
+  - **A manager revokes** (round-0 ruling: "add a manager revoke in this
+    slice"): the page lists the team's approved repositories, each with
+    Revoke, through the same door with a fresh sign-in. The revoke runs
+    `RevokeStandingGrant` as the team, so row-level security limits it to
+    the team's own standing grants (another team's or a person's is a
+    404), and it ends every agent grant the standing grant gave: the
+    team's next agent on that repository asks again. It writes the team's
+    audit row `connector.revoke` naming the manager. **Unlisting a team
+    pauses its approvals and re-listing restores them**: while unlisted the
+    App is not the team's connector, so its agents' grants re-open and
+    nothing is served, but the team's standing grants stay, and once the
+    team is listed again its agents are approved from them. Revoke is the
+    way to remove an approval.
+  - **A team agent's request is pushed to the team's managers only**
+    (an operator cannot decide it), linking `/teams/{id}/connectors`: a
+    member's `/connectors` lists only their own grants.
+  - **`githubapp.Admits` admits a team only at an explicit set of doors**
+    (its agents' tokens, the connect proxy, the manager's door). A team
+    host (`ViaMirrorHost`), the question watcher, the approval relay, a
+    team officer and the background loops are refused, so a team-host
+    tool added later does not inherit the App.
+  - **Not done:** no migration.
+
 ### Later: consent-based team invites
 
 A manager's email add (2a) puts a person in a team without asking them. A
@@ -1175,7 +1279,7 @@ the next step. Each question below is decided as stated.
 
 ## Phase 2b design: team hosts (decided 2026-11-14)
 
-**Status: decided; slice 2b.1 built (see its "as built" note in F).** The operator accepted every recommendation in
+**Status: decided; slices 2b.1, 2b.2 and 2b.3 built (see their "as built" notes in F).** The operator accepted every recommendation in
 [G](#g-operator-decided-2026-11-14), and commit `5f848980` records the
 decisions. The build waits for phase 4.5 (PR #680) to merge. This section is
 the design for phase 2b. It replaces the bullet list under
@@ -2063,6 +2167,231 @@ by re-checking the migration number (D). The slices ship **in order**.
    yet. Its **asks** do appear: `attention_asks` is read at viewer, so a team
    host's question shows on members' Attention from this slice on, and an
    operator may answer it there (D-1113 #11).
+
+   > **As built in 2b.2 (no migration; 0133's `rotate_at` is its column).**
+   > - **The token lookup.** `mirror.PGStore.Authenticate` and `TokenLive`
+   >   filter owners through a NEW constant, `users.EnabledPersonOrTeamIDs` =
+   >   `EnabledPersonIDs` + a team arm (`UNION ALL … kind = 'team'`).
+   >   🔴 **Deviation:** `EnabledPersonIDs` itself is not widened. On main it
+   >   also filters the focus refresher's owners, the flow runner token and
+   >   plugin tokens and pairing, none of which may yield a team (G4, and the
+   >   users-read ledger). `TestTheTeamArmKeepsThePersonRule` pins the new
+   >   constant to the person rule plus that arm, and the users-read ledger
+   >   gains the class "enabled persons, or teams". `Authenticate` also
+   >   reports `Token.Team`, which pins the connection (below).
+   > - **The doors.** `admit`'s team arm (`teamAgentDoors`) gains
+   >   `ViaMirrorHost`; `teamActingVias` gains `ViaMirrorHost` and `ViaAsk`
+   >   (12 doors). `ViaMirrorHost` also fronts `GET /mirror/host` (the
+   >   doctor's this-host check), which a team token now opens too: it names
+   >   only the token's own host. `askPrincipal` acts as the team.
+   >   🔴 **Deviation:** D's table says `stepUpPrincipal` stays
+   >   `refusedByWithPrincipal`. It uses `ViaMirrorHost`, so WithPrincipal no
+   >   longer refuses a team there; `stepUpPrincipal` now refuses a team
+   >   itself (`stepUpTeamRefusal`, a panic — unreachable: a team host files
+   >   no card), and its per-owner row is the new class `refusedStepUpNoTeam`.
+   > - **`teamHostTools`** (`internal/api/team_host_tools.go`): 19 kept
+   >   (the three attention tools, the four task tools, `agent_report_done`,
+   >   the 11 officer instance tools), 29 refused, as A lists them. A team
+   >   token's `tools/list` is the kept tools only (also over the opencode
+   >   set, for an opencode session on a team host). 🔴 That listing filter is
+   >   the ONE guard (#685 round 1, G3): serveMCP runs a listed name only, so
+   >   a refused or unclassified name never reaches the call; serveMCP's
+   >   disabled hook only words the refusal (`teamHostToolRefusal`) instead of
+   >   "unknown tool". There is no second check at the call. Being unlisted,
+   >   a refused name never reaches `hostOfficerMirrorTool` or the step-up
+   >   gate.
+   > - **Remote mode** answers 401 `TeamHostRemoteRefusal` to every
+   >   remote-marked request of a team token (initialize and tools/list
+   >   included), before serveMCP.
+   > - **The agent-read seam** (`TestNoMirrorDoorAgentReaderIsReachableByATeamToken`,
+   >   `mirrorDoorAgentReaders`): the nine ledger entries that serve a mirror
+   >   tool name the `teamHostTools` refusal, or, for the officer reads, what
+   >   they read on a team host. ⚠ Its growth check is a convention (an entry
+   >   whose line names the mirror door must be listed), not a call graph.
+   > - **The second connection** (`internal/mirror/teamhold.go`). For a team
+   >   token, `ServeConnect` asks the hub before it touches the connection's
+   >   token record: with `(team, host)` live and no confirm armed, the
+   >   connection is refused at once (`ErrHeldForManager`, "pending a
+   >   manager's confirmation") and the attempt recorded.
+   >   🔴 **Deviation from "held, not swapped in … on a confirm the hub
+   >   takes the new connection":** the held socket is refused, not parked,
+   >   because muster-mirror waits 15 s for a welcome and would otherwise
+   >   churn. Each held attempt is recorded by its TCP peer address, with
+   >   when it was first and last seen, and the card lists every one. A
+   >   manager's confirm names ONE attempt by its address and arms a one-shot
+   >   replacement for `ReplaceConfirmWindow` (3 min; muster-mirror retries at
+   >   most a minute apart) that admits only a reconnect from that address;
+   >   it replaces the live one the way a newer connection does today. There
+   >   is no confirm without an address (#685 round 0: a blanket confirm let
+   >   a kept token retrying every 2 s win the race). ⚠ The address is the
+   >   TCP peer, not X-Forwarded-For: behind a proxy chain every machine is
+   >   one address, and the binding cannot tell them apart. No protocol
+   >   change. A connection while the host is offline is taken at once; a
+   >   personal host keeps newer-replaces. `muster doctor` on a held machine
+   >   reports `held` (`GET /mirror/host`, `Service.HeldHere`: an attempt
+   >   from its address is held and the live connection is from another),
+   >   not `online`.
+   >   🔴 **Round 1 (Y1), measured on a NodePort deployment: every host
+   >   showed as the same pod-network address.** So in the supported deployments (a proxy chain or
+   >   a NodePort) the address binding tells NO machines apart: the held
+   >   machine and the live host are one address. A confirm for an attempt
+   >   whose address equals the live connection's is therefore REFUSED
+   >   (`ErrIndistinguishable`), and the card says "this machine can't be told
+   >   apart from the live host by address; stop the live host first, or
+   >   replace the token". `muster doctor` there reports `held_unsure` (FAIL:
+   >   the server cannot tell which of the two this machine is), not online.
+   >   A per-attempt code that binds the confirm to one machine is a separate
+   >   follow-up PR, not built here.
+   >   🔴 **The follow-up (#688): the ATTEMPT CODE, and the address binding
+   >   above is GONE (no migration; the hold is in memory).** Round 1's
+   >   proposal, built, then cut down by its own round 0 (D1 to D3).
+   >   `internal/attemptcode` (a stdlib-only leaf, so the CLI links it
+   >   without the mirror package) draws a code per muster-mirror PROCESS:
+   >   12 Crockford base32 characters (60 bits from crypto/rand), shown
+   >   `XXXX-XXXX-XXXX`; typed forms (case, dashes, spaces, I/L/O)
+   >   normalise. muster-mirror sends it on every `/mirror/connect` as
+   >   `X-Muster-Attempt-Code` (no tunnel protocol change), logs "held: …
+   >   give this code to a team manager: <code>" when held, and writes it
+   >   0600 to `-attempt-code-file` (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`,
+   >   default `internal/mirrorpath.DefaultAttemptCodeFile`), removed at exit
+   >   while it is still its own. The hub records a coded attempt by the
+   >   code's SHA-256 (domain-separated), never the code: `heldAttempt.code`
+   >   is the hash, the map key is its hex, and logs and the audit row carry
+   >   `attemptcode.Fingerprint` (16 hex). The card has no per-row button; one
+   >   field takes a typed code (`POST …/hosts/replace` with `code`, same
+   >   route, same step-up), and `Hub.ConfirmCode` arms the held coded
+   >   attempt with that hash; `heldAttempt.admits` then lets in only a
+   >   reconnect presenting that code, one-shot, within
+   >   `ReplaceConfirmWindow`. A wrong code arms nothing and is audited
+   >   `team.host.replace.refused` (with the typed code's fingerprint).
+   >   🔴 **No code, no confirm:** an attempt with no code (or a malformed
+   >   one) for a LIVE team host is held with `ErrHeldNoCode` ("upgrade
+   >   muster-mirror on this machine, or stop the live host"), and the card
+   >   says the same; nothing can confirm it. #685's address confirm
+   >   (`ConfirmReplacement`, `SameAsLive`, `ErrIndistinguishable`, the
+   >   per-row address form, `Service.SetPeerAddr`) and doctor's
+   >   `held_unsure` are deleted: in the supported deployments it always
+   >   refused, and team hosts had never shipped, so no older muster-mirror
+   >   needs it. Offline arrival is unchanged, code or no code. `muster
+   >   doctor` sends the code it reads from the file to the token's own
+   >   server on `GET /mirror/host`, and `Service.HeldHere` answers by the
+   >   code alone; with no code it answers not held.
+   >   Round 0 also deleted a per-team wrong-code rate limit (only a
+   >   step-up'd, trusted manager can type a code, and a guess gains no one
+   >   anything) and a structural constant-time test (the compared values
+   >   are hashes); the `subtle.ConstantTimeCompare` call stays.
+   >   **Round 1 (#688):** past `maxHeldAttempts` (16) per host the attempt
+   >   forgotten is the oldest seen only ONCE, else the oldest, and never
+   >   the confirmed one; a real muster-mirror retries with one code, so
+   >   once the moved machine has retried, a spray of fresh codes (each seen
+   >   once) evicts only sprayed ones. Holds are announced at most once per
+   >   `heldAnnounceEvery` per (team, host), not per code. The live
+   >   connection's code hash is kept with its token, so `GET /mirror/host`
+   >   answers held, connected, or `held_unknown` (machines are held and the
+   >   request's code is missing or neither), and doctor FAILs on unknown
+   >   rather than PASS "connected". muster-mirror prints the code once per
+   >   process; later holds point at `muster doctor`. Fingerprints are an
+   >   HMAC under a per-process key, so a log or audit reader cannot test
+   >   guesses offline (they match only within one server process).
+   >   `heldCode` honours `heldRetention` like `ConfirmCode`.
+   >   ⚠ **Not closed:** a kept token can still spray. Before the moved
+   >   machine's SECOND attempt its record is seen once, so a spray can
+   >   evict it, and its correct code then answers "no such code" until its
+   >   next retry (at most a minute) records it again; the answer to a
+   >   sprayer is still revoke and re-mint. The code is per process, so a
+   >   restart of the moved machine draws a new one. Anyone who can read the
+   >   moved machine's muster-mirror log (its user's journal, admins, any log
+   >   shipping) sees the code once; with it, a kept copy retrying fast can
+   >   race the moved machine inside the confirm window.
+   >   Tests: `TestASecondTeamHostConnectionWaitsForAManager`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
+   >   `TestACodeConfirmAdmitsTheMachineShowingItAndNoOther`,
+   >   `TestAWrongCodeArmsNothing`,
+   >   `TestACodelessAttemptIsHeldAndCannotBeConfirmed`,
+   >   `TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash`,
+   >   `TestDoctorsQuestionIsAnsweredByTheCode` — over the REAL loopback
+   >   peer, every connection one address — and
+   >   `TestTheHubKeepsOnlyTheCodesHash` (`internal/mirror`);
+   >   `TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine`
+   >   (`internal/api`); `TestDoctorShowsAHeldMachinesCode`
+   >   (`cmd/muster`); `TestTheAttemptCodeFileIsPrivateAndOnlyItsOwnerRemovesIt`
+   >   (`cmd/muster-mirror`); `TestACodeIsTypeableAndTypedFormsAgree`
+   >   (`internal/attemptcode`).
+   >   Held attempts are logged and nudge members' views at most once per
+   >   `heldAnnounceEvery` (30 s) per (team, host) since #688 (G2 bounded it
+   >   per address); every attempt is still counted on the card.
+   >   🔴 **The hold guards the tunnel only (G1).** A held machine, or any
+   >   kept copy of the token, can still call `/mirror/mcp` and `/mirror/ask`
+   >   as any session the LIVE host lists: those doors bind a call to the live
+   >   host's listing, and the session id is the caller's claim. The rotate
+   >   mark (revoke and re-mint) is the answer to a kept token.
+   > - **`/teams/{id}/hosts`** (`team_hosts_page.go`): GET, `POST` (mint),
+   >   `POST …/{token}/revoke`, `POST …/replace`. Managers only (the request's
+   >   memberships, then `teamAdminContext`'s fresh read), and the token rows
+   >   are read and written AS THE TEAM. Mint, revoke **and the replace
+   >   confirm** need step-up (the design was silent on the confirm; it decides
+   >   who receives every member's sends). Each is audited as the manager
+   >   (`team.host.token.create`, `.revoke`, `team.host.replace`). Linked from
+   >   `/teams/{id}`.
+   > - **`muster-server mirror token create <host> --team <id>`**:
+   >   `mirror.PGStore.CreateTeamToken` under System, which mints only when
+   >   the id names a team (`ErrNotATeam`), with the team's audit row
+   >   (`via = cli`) in the mint's own transaction. `mirror token ls` still
+   >   lists the operator's tokens only; a team's are on its page.
+   > - **Rotate marks** (`internal/users/team_hosts.go`): `removeMemberTx`
+   >   (an operator or a manager), `setMemberTx` (operator or manager →
+   >   viewer) and `SetDisabledAs` (an operator or manager of any team) set
+   >   `rotate_at = now()` on the team's unrevoked tokens in their own
+   >   transaction. A later trigger moves the mark forward, so the page names
+   >   the latest reason. The reason (`TeamRotateReason`, under System: a
+   >   `user.disable` row names no team) is the newest of the three triggering
+   >   audit rows **written in the mark's own transaction** (`at =
+   >   rotate_at`, round 1 G4: "the newest row before it" showed a stale
+   >   disable of someone who was a viewer then), each condition reading the
+   >   row's own role, never today's membership. A disable through
+   >   `SetDisabled` with no actor writes no audit row; the page then says
+   >   "rotate (marked <date>)".
+   > - **No episode for a team owner** (`attentionMirrorChanged`): with
+   >   session state on, a team's waiting windows take today's diff path, not
+   >   the episode one. An owner whose account could not be read keeps the
+   >   person path. 2b.3 removes the branch.
+   > - **The phase 4.7 seam (agreed with that session):** 2b.2 adds no answer
+   >   path for team asks. `attention_answer` is refused to a team token, and
+   >   `attention_wait` / `attention_cancel` are bound to the session's own
+   >   asks; `askPrincipal`'s callers only read transcripts.
+   >   `TestATeamHostCannotAnswerATeamAskThatIsNotItsOwn` pins it over a
+   >   dispatch-shaped System card, a team agent's ask and another session's.
+   > - **Tests:** `TestATeamMirrorTokenAuthenticatesAsTheTeam`,
+   >   `TestAuthenticateSaysWhetherTheOwnerIsATeam`,
+   >   `TestTheCLIMintsATeamTokenOnlyForATeam`,
+   >   `TestASecondTeamHostConnectionWaitsForAManager`,
+   >   `TestATeamHostReconnectingWhileOfflineIsTakenAtOnce`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen` (`internal/mirror`;
+   >   rewritten for codes in #688, which deleted the address tests
+   >   `TestAConfirmForOneAddressDoesNotLetAnotherIn`,
+   >   `TestAHeldMachineIsToldItIsHeld`,
+   >   `TestAnAttemptFromTheLiveAddressCannotBeConfirmed`,
+   >   `TestTheReplaceConfirmNamesOneHeldMachine` and
+   >   `TestTheCardCannotConfirmAMachineAtTheLiveAddress`);
+   >   `TestDoctorTellsAHeldMachineItIsHeld` (`internal/api`);
+   >   `TestRemovingAnOperatorMarksTheTeamsHostTokensRotate`,
+   >   `TestDowngradingAnOperatorToViewerMarksTheTeamsHostTokensRotate`,
+   >   `TestDisablingAnOperatorMarksTheTeamsHostTokensRotate`,
+   >   `TestTheRotateReasonIsReadFromTheTeamsAudit`,
+   >   `TestTheTeamArmKeepsThePersonRule` (`internal/users`);
+   >   `TestEveryMirrorToolIsClassifiedForATeamHost`,
+   >   `TestATeamHostIsListedOnlyItsKeptTools`,
+   >   `TestATeamHostRefusesEachRefusedToolAtTheCall`,
+   >   `TestATeamHostCannotAnswerATeamAskThatIsNotItsOwn`,
+   >   `TestATeamTokenIsNotServedRemotely`,
+   >   `TestNoMirrorDoorAgentReaderIsReachableByATeamToken`,
+   >   `TestATeamHostsQuestionIsWatchedAsTheTeam`,
+   >   `TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff`,
+   >   `TestTheTeamHostsPageIsTheManagersAndRunsAsTheTeam` (`internal/api`);
+   >   and the ledgers `TestOnlyTheAgentDoorsAdmitATeam` (`ViaMirrorHost` →
+   >   true), `TestTheTeamActingViasAreExactlyTheListedDoors` (12),
+   >   `TestEveryPerOwnerPrincipalSiteIsTeamSafe` (`askPrincipal` acts; 10
+   >   act, 4 refuse).
 3. **2b.3: viewers.**
    - `access()`, the new `VisibleHosts` and its caller ledger (`Hosts` stays
      own-only), the read routes and `mirrorTeamRoutes`.
@@ -2079,6 +2408,177 @@ by re-checking the migration number (D). The slices ship **in order**.
    - A personal host that reconnects with a team token starts the team's view
      empty. Nothing of its history moves (G5). This slice's docs say so, and
      recommend two daemons.
+
+   > **As built in 2b.3 (no migration).**
+   > - **The chokepoint** (`internal/mirror/service.go`). `access(ctx, need)`
+   >   decides every owner-taking Service method: the request's TARGET
+   >   (`mirror.ForOwner`; none = the principal's own) when the principal is
+   >   that owner, or holds `need` in it through `Principal.TeamScope`, and
+   >   `need` is one `teamNeedsOpen` opens — viewer only in 2b.3, so an
+   >   interactive attach, a paste, an answer or a spawn on a team host is
+   >   refused (`ErrNoPrincipal`, no oracle) at every role until 2b.4 adds
+   >   operator. 🔴 **Deviation:** D says "every Service method takes the owner
+   >   explicitly". The owner rides the context instead (`ForOwner`), set in
+   >   ONE place, the route gate below — so ~75 own-only callers and ~20 test
+   >   fakes are untouched, and a caller that sets nothing is own-only by
+   >   construction. The design's `TestEveryMirrorServiceCallerNamesItsOwn`
+   >   is two ledgers instead: `serviceNeeds`
+   >   (`TestEveryServiceMethodSaysItsNeed`, `internal/mirror`: every method
+   >   that reads its owner, by its need or "own") and `mirrorTargetSetters`
+   >   (`TestOnlyTheMirrorTeamGateAimsAMirrorCall`, `internal/api`: the gate
+   >   is `ForOwner`'s only caller). ⚠ `role.AtLeast(need)` above viewer is
+   >   unreachable while `teamNeedsOpen` is viewer-only; its half of the
+   >   membership arm is redundant with `!in` for a non-member (mutation
+   >   M2 removes both).
+   > - **`Hosts` stays own-only; `VisibleHosts`** adds each team host where
+   >   `TeamScope` is viewer and up, and `HostView`/`SessionView` carry
+   >   `Owner`. `visibleHostsCallers` (`TestEveryVisibleHostsCallerIsClassified`)
+   >   is two: `mirrorEntry` (only for a request the gate aimed at a team) and
+   >   `teamMirrorCards` (the sidebar's and switcher's team groups).
+   > - **A 2b.2-era bug, fixed here:** `HostRanks` and `LiveTokenHosts` ranked
+   >   and listed every token the session reads, and since 0127 a member reads
+   >   their teams' tokens (`mirror_tokens` is managed), so a member's own
+   >   host icons moved. Both now take the owner's own tokens only
+   >   (`TestHostRanksRankOnlyTheOwnersTokens`).
+   > - **The routes** (`internal/api/mirror_team_routes.go`).
+   >   `mirrorTeamRoutes` classes every `/mirror/`, `/ui/mirror/` and
+   >   `/send-queue` route (`TestEveryMirrorRouteHasATeamRule`, against
+   >   routes.golden): `mirrorTeamView` (the two pages, the read-only
+   >   terminal socket, the Rendered socket, subagents, the question cards,
+   >   the scroll), `mirrorTeamRefused` (chief, chief log, proposal,
+   >   successor, suggest, suggest event: 403 at every role),
+   >   `mirrorTeamOwnOnly` (typing, the queue, the composer's catalog: 403 to
+   >   a member until 2b.4) and `mirrorTeamHostDoor` (the token doors).
+   >   `mirrorTeamGate` runs in `admit`; a non-member naming a team is 404 on
+   >   every route. A member's view is aimed at the team (`ForOwner`) and
+   >   registered for the stream sweep. 🔴 **The gate reads a POST body only
+   >   on a view route (the scroll):** parsing every POST's form ahead of its
+   >   handler spent bodies the handlers bound themselves (it broke the
+   >   "too-large" answer path, `TestEveryAnswerPathRecordsOneRow`). An
+   >   `owner=` in any other route's body is refused by `mirrorEntry`, which
+   >   never resolves an owner the gate did not aim the request at (404) — so a
+   >   POST to a refused route with `owner=` only in its body is 404, not 403.
+   >   🔴 **Deviation:** the role table gives a viewer "open a preview that
+   >   is already running". The Preview button reads the viewer's PERSONAL
+   >   viewer plugins, so it is `mirrorTeamOwnOnly` here, and a team session
+   >   draws none. **Operator ruling (#690 round 0, Q1, 2026-11-15):** a team
+   >   viewer may open it, on the TEAM's plugins, never the viewer's; a team
+   >   with none is refused with a sentence. ⚠ **NOT BUILT YET — stopped on a
+   >   fork:** no surface mints a team-owned plugin (a plugin is minted by a
+   >   person, owned by them), `plugins` is read at operator (0127), not
+   >   viewer, and a team-owned plugin's token is refused at `admit`
+   >   (`ViaPlugin` is not a team door), so the plugin could not redeem the
+   >   hand-off. Building it needs a manager's mint surface, a decision on
+   >   that door, and a server-side read of the team's viewer plugins.
+   >   **Operator ruling (2026-11-15):** team plugins and team previews are
+   >   their OWN slice, built next — after #690 merges, before 2b.4. 2b.3
+   >   merges with the preview own-only: a team session draws no Preview
+   >   button, and `GET /ui/mirror/preview-button` is `mirrorTeamOwnOnly`.
+   > - **The pages.** On a team session the terminal and the Rendered view
+   >   leave out everything that is the viewer's own and keyed by host name or
+   >   conversation (recents, tags, pins, names, focus history, drafts, the
+   >   queue, chief mode, succession, suggestions, the asks block, plugins),
+   >   draw the composer disabled (`MirrorTeamComposerNote`), and do not
+   >   settle the team's episode on a view (`episodeViewedMirror` is not
+   >   called: the stop settles when the window moves on; the design was
+   >   silent). The terminal socket refuses live keys before the upgrade
+   >   (403). The question cards are the TEAM's (read by the target) and drawn
+   >   unanswerable. Every link of a team entry carries `owner=`
+   >   (`ui.MirrorRef.Owner`; an own entry's URLs are byte-identical), card
+   >   ids include the owner, and a team row offers no pin/tag menu. ⚠ Not
+   >   pinned one by one: the page leave-outs, the Rendered socket's
+   >   suggestion skip and the home filter (below).
+   > - **The sidebar.** Team host sessions are drawn in a group per team, under
+   >   the team's name, below the viewer's own rows (`navTeamGroups`), added
+   >   after every decorator that reads the viewer's own pins, names, tags,
+   >   attention, idle state or succession. Home (`/`) never lands on a team
+   >   session.
+   > - **Streams follow the membership** (`internal/api/team_live.go`).
+   >   🔴 **Deviation:** not `gotrueState.live` but a server-level registry,
+   >   `teamLive`, by (team, person) with the role each request needs, so it
+   >   also runs in password mode. It replaces 4.7's team-terminal set (a
+   >   team agent's terminal is registered at operator in it). A removal or
+   >   a role change in this process ends what the new role no longer reaches
+   >   at once (`teamMembershipEnded`, `teamRoleSet`); `sweepTeamLive` re-reads
+   >   every registered person's memberships in one query
+   >   (`users.PGStore.MembershipsAmong`, under System) each
+   >   `DisableSweepInterval`, for a removal made elsewhere.
+   > - **SSE team subscriptions.** `/events` subscribes to its person and each
+   >   of their teams at viewer and up (`streamOwners`; the bus subscribes to
+   >   several owners, and the board document's mark reads the same list), and
+   >   registers each team for the sweep, so leaving a team ends the stream
+   >   and the page reconnects with the teams as they are. A viewer's stream
+   >   now carries the team's events (ids only); 2b.1's `teamViewRecipients`
+   >   (operators and managers, read per change) is deleted, and
+   >   `TestATeamItemRefreshesItsMembersPages` now expects the viewer too.
+   > - **The state pass's team arm.** `sessionstate.PG.Owners` adds every
+   >   team with an unrevoked mirror token (`chiefnudge.PG.TeamHostOwners`,
+   >   under System; users-read ledger `readTeam`). A team's pass runs no
+   >   classifier and no live chief judging, whatever chief the team has (G4).
+   >   2b.2's "no episode for a team" branch in `attentionMirrorChanged` is
+   >   removed. 🔴 **Decision (the design was silent):** a team's AGENTS'
+   >   conversations are not episodes in its pass — the arm visits only teams
+   >   holding a mirror token, so including them would give team agents
+   >   stall pushes only where the team happens to own a host token. ⚠ Not
+   >   pinned by a test. **Kept by the operator (#690 round 0, Q2).**
+   > - **Tests:** `TestHostsNeverListsATeamHost` (invariant),
+   >   `TestAccessReachesATeamHostOnlyAsFarAsTheMembership`,
+   >   `TestEveryServiceMethodSaysItsNeed`,
+   >   `TestHostRanksRankOnlyTheOwnersTokens` (`internal/mirror`);
+   >   `TestATeamSessionWaitingPushesItsOperatorsOnce`,
+   >   `TestTheStatePassRunsNoClassifierForATeam`,
+   >   `TestATeamHostIsWatchedByItsMembersAndNoOneElse`,
+   >   `TestATeamsEventsReachItsMembersStreams`,
+   >   `TestARemovedOperatorsTerminalClosesWithinTheSweep` (a read-only
+   >   terminal and `/events`; the Rendered socket is registered by the same
+   >   gate and is not separately tested), and the ledgers
+   >   `TestEveryMirrorRouteHasATeamRule`,
+   >   `TestEveryVisibleHostsCallerIsClassified`,
+   >   `TestOnlyTheMirrorTeamGateAimsAMirrorCall` (`internal/api`).
+   >   `TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff` is removed.
+   >   The end-to-end tests above run a REAL mirror plugin with two REAL
+   >   `muster-mirror` clients (an own and a team `build-01`) over Postgres.
+   > - **The isolation walk's team-host leg** (#690 round 0, D1;
+   >   `teamRoleWalks`): the walk's plugin lists a TEAM host, named with the
+   >   team's canary, to the team's members only (`isoMirror.teamVisible`,
+   >   by `TeamScope`), online for every route. In each of B's roles (none,
+   >   viewer, operator, manager) every mirror route is walked again naming
+   >   that host (`owner=`): as a non-member B sees its canary on no route
+   >   (the main walk's sidebar included) and is answered exactly as for a
+   >   host the team does not have; as a member B sees it on at least one
+   >   (control). Shown red: a listing that ignores membership puts the
+   >   team's canary in a non-member's sidebar (`GET /ui/nav/agents`).
+   >   ⚠ The membership decision there is the walk's fake plugin's, as for
+   >   every mirror row of the walk; the real plugin's is pinned in
+   >   `internal/mirror` (`TestHostsNeverListsATeamHost`, mutant M3).
+   > - `teamNeedsOpen` is kept (#690 round 0, D2): it fails closed.
+   > - **Round 1 (#690), all fixed:**
+   >   - a member who leaves, drops to viewer or is disabled is sent the
+   >     withdrawal of the team's shown episode pushes (`withdrawableTeamKinds`
+   >     gains "session episodes"; `TestLeavingATeamWithdrawsItsEpisodePushes`);
+   >   - a team keeps being visited while it has an open or shown episode, its
+   >     last token revoked: its pass then ends every open episode 'gone' and
+   >     clears it (`chiefnudge.PG.TeamHostOwners` reports `Live`;
+   >     `TestRevokingATeamsLastTokenEndsItsEpisodes`);
+   >   - team-ness comes from the owner LIST (`sessionstate.PG.OwnerKinds`):
+   >     a team's pass runs as the team acting principal built from its row,
+   >     never from an account read, whose failure would build a member
+   >     (`TestAFailedAccountReadNeverRunsATeamsPassAsAPerson`). Two halves
+   >     say "team" (the principal and the pass's flag); either alone keeps
+   >     the classifier off, so mutating one survives and both together dies;
+   >   - a team episode's tap opens the TEAM's window (`owner=`), and its
+   >     Attention row is drawn only for the team's operators and managers —
+   >     whom its push reaches, never a viewer — named over the team's hosts,
+   >     never the member's own same-named one (`teamEpisodeShown`,
+   >     `teamHostsOf`; `TestATeamEpisodeOpensTheTeamSessionForItsOperators`);
+   >   - `mirrorEntry`'s owner filter is pinned by a manager with her own
+   >     `build-01` opening the team's;
+   >   - a view and an event stream read the role again after registering, as
+   >     the team terminal does (`TestARemovalJustBeforeAViewIsNotMissed`);
+   >   - the gate reads the scroll's body under the handler's 4 KiB bound and
+   >     answers 413 itself (`TestAnOversizedScrollIsRefusedBeforeItIsRead`);
+   >   - `Service.Hosts` gives every entry Owner 0, so an own entry's URLs
+   >     carry no `owner=` from any caller (the sidebar's highlight matches).
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
    - `ViaQueue` becomes team-acting **and** `sendQueueOwnerRefusal` reads

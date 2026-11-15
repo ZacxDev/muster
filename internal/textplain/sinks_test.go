@@ -160,15 +160,19 @@ var apiExempt = map[string]exemption{
 	"admin_teams.go Server.renderAdminTeams u.DisplayName":           {1, whyPerson},
 	"teams_pages.go Server.renderTeamPage m.DisplayName":             {1, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
-	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
-	"plugin_pairing.go Server.pairSectionHTML p.Label":               {1, "a pairing request's label (the plugin's name to be), not a title"},
-	"pages.go Server.renderPagesList p.Creator.Label":                {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
-	"pages.go Server.renderPageDetail l.Label":                       {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
-	"pages.go Server.renderPageDetail p.Creator.Label":               {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
-	"push_routes.go Server.pushPreferencesForm e.Label":              {1, whyStatic},
-	"features.go featureRow f.Description":                           {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
-	"cc_usage.go Server.writeCCUsageSection a.Source":                {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
-	"officer_ask_context.go officerContextHTML c.Source":             {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},
+	// A team dispatch's push names the member whose say-so it was (team
+	// sharing 4.7): cut to one line and sanitised by teamDispatchPushBody.
+	"team_dispatch.go Server.personName u.DisplayName":         {2, whyPerson},
+	"plugins.go Server.renderPluginsPage p.Label":              {1, "a plugin's configured label (its name), not a title"},
+	"plugin_pairing.go Server.pairSectionHTML p.Label":         {1, "a pairing request's label (the plugin's name to be), not a title"},
+	"pages.go Server.renderPagesList p.Creator.Label":          {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"pages.go Server.renderPageDetail l.Label":                 {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
+	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
+	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
+	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
+	"team_connectors.go Server.renderTeamConnectors sg.Source": {1, "a standing grant's credential source, compared with connectors.SourceApp to pick the App's rows; never drawn"},
+	"officer_ask_context.go officerContextHTML c.Source":       {1, "an officer ask's source MESSAGE (attention.ItemContext.Source, a struct), not a title: its fields are sanitised by attention.Clean and escaped where drawn"},
 }
 
 // pushEmitters are the only functions that may hand a notification to a push

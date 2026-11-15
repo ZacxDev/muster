@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -50,7 +49,9 @@ const teamPushPrefixSep = " · "
 // owner the read cannot classify — logged; a team has no devices, so for a
 // team that sends nothing, exactly as before 2b); the team's recipients and
 // "<team> · " for a team. skip is left out (a team task comment's author).
-func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event string, skip int64) ([]int64, string) {
+// managers narrows a team's recipients to its managers (Managers: switch on),
+// for a push only a manager can act on; it never touches a person.
+func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event string, skip int64, managers bool) ([]int64, string) {
 	r, ok := s.ext.Users.(teamPushReader)
 	if !ok {
 		return []int64{owner}, ""
@@ -79,8 +80,11 @@ func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event stri
 	}
 	s.teamOwners.Store(owner, struct{}{})
 	who := t.Notify
-	if event == push.EventResolved {
+	switch {
+	case event == push.EventResolved:
 		who = t.Withdraw
+	case managers:
+		who = t.Managers
 	}
 	out := make([]int64, 0, len(who))
 	for _, m := range who {
@@ -89,38 +93,6 @@ func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event stri
 		}
 	}
 	return out, mirror.OneLine(t.Name, users.TeamNameMax) + teamPushPrefixSep
-}
-
-// teamViewRecipients is whose open pages a change to an item owner owns also
-// refreshes (attentionChanged's team arm): for a TEAM, its current operators
-// and managers — the fan-out's own read (TeamPushTargets.Withdraw), with no
-// notify switch, since a page refresh is not a push; nobody for a person,
-// whose own page attentionChanged already refreshes. A person's id is
-// remembered as one (users.kind never changes, 0126), so their changes read
-// nothing after the first. Team sharing phase 2b.1 (operator decision on
-// #683's round 0, Q1): it restores #671's per-member Attention refresh for
-// team items until 2b.3's stream subscriptions replace it.
-func (s *Server) teamViewRecipients(owner int64) []int64 {
-	r, ok := s.ext.Users.(teamPushReader)
-	if !ok || owner <= 0 {
-		return nil
-	}
-	if _, person := s.personOwners.Load(owner); person {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	t, err := r.TeamPushTargets(ctx, owner)
-	if err != nil {
-		s.logger.Printf("attention: read owner %d's team members for a page refresh: %v", owner, err)
-		return nil
-	}
-	if !t.Team {
-		s.personOwners.Store(owner, struct{}{})
-		return nil
-	}
-	s.teamOwners.Store(owner, struct{}{})
-	return t.Withdraw
 }
 
 // teamAuditor is the users store's team-scoped audit writer

@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -61,10 +62,16 @@ const (
 	teamAgentManage
 	// teamAgentRefused: no member, at any role. Settings (model, name) are
 	// not a team agent's to change here. New threads are refused because a
-	// team chief has ONE shared room (operator decision 4). The terminal is a
-	// shell in a pod holding the team's credentials and needs a fresh step-up
-	// (slice 4.7).
+	// team chief has ONE shared room (operator decision 4).
 	teamAgentRefused
+	// teamAgentTerminal: the terminal's socket — an operator or above WITH A
+	// FRESH SIGN-IN (stepup.Fresh; plan §6, slice 4.7). The shell is in a pod
+	// that holds the team's credentials — on the server pool, the shared
+	// Claude account's token — and every member who opens it can read them:
+	// ACCEPTED under the team trust model ("team members have to trust each
+	// other"; docs/chief.md), with credential rotation as the remedy. The
+	// step-up bounds it to a person who just proved it is them.
+	teamAgentTerminal
 )
 
 // teamAgentRoutes is EVERY route whose pattern names an agent ("agents/{") or
@@ -95,7 +102,7 @@ var teamAgentRoutes = map[string]teamAgentRule{
 	"POST /agents/{id}/stop":                     teamAgentManage,
 	"DELETE /agents/{id}":                        teamAgentManage,
 	"POST /agents/{id}/credentials/rotate":       teamAgentManage,
-	"GET /agents/{name}/terminal/ws":             teamAgentRefused,
+	"GET /agents/{name}/terminal/ws":             teamAgentTerminal,
 	"POST /agents/{id}/model":                    teamAgentRefused,
 	"POST /agents/{id}/name":                     teamAgentRefused,
 	"POST /agents/{id}/sessions":                 teamAgentRefused,
@@ -112,7 +119,13 @@ const TeamAgentViewerRefusal = "this is a team agent: you can read its chat; wri
 // TeamAgentRouteRefusal is what any member is answered on a route a team agent
 // does not take from a member in this release.
 const TeamAgentRouteRefusal = "this is a team agent: a member cannot do that to it here (its settings are not changed here, " +
-	"its terminal needs a fresh sign-in, and a team chief has one shared conversation)"
+	"and a team chief has one shared conversation)"
+
+// What a member is answered on a team agent's terminal (teamAgentTerminal).
+const (
+	TeamAgentTerminalOperator = "this is a team agent: its terminal opens for an operator or a manager of its team"
+	TeamAgentTerminalStepUp   = "this is a team agent: opening its terminal needs a recent sign-in. Confirm it's you, then open it again"
+)
 
 // TeamAgentManagerOnly is what an operator or a viewer is answered on a team
 // agent's lifecycle route (teamAgentManage).
@@ -129,14 +142,22 @@ const TeamAgentManagerOnly = "this is a team agent: only a manager of its team s
 // oracle); any other read error is a 500 — the gate cannot decide, so it
 // does not let the request through.
 func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bool {
+	refused, _ := s.teamAgentGate(w, r)
+	return refused
+}
+
+// teamAgentGate is refuseTeamAgentRoute, and the team whose agent's terminal
+// it let a member through to (0 for anything else): admit registers that
+// socket for the membership sweep (teamTerminalOpen).
+func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, int64) {
 	rule, ok := teamAgentRoutes[r.Pattern]
 	if !ok || rule == teamAgentRead || s.ext.Agents == nil {
-		return false
+		return false, 0
 	}
 	ctx := r.Context()
 	p, ok := authz.From(ctx)
 	if !ok || p.All() || p.TeamScope() == "" {
-		return false
+		return false, 0
 	}
 	var a agents.Agent
 	var err error
@@ -151,28 +172,30 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 			a, err = s.ext.Agents.Get(ctx, sess.AgentID)
 		}
 	} else {
-		return false
+		return false, 0
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false
+		return false, 0
 	case err != nil:
 		s.logger.Printf("team agents: %s: read the agent: %v", r.Pattern, err)
 		http.Error(w, "could not load the agent", http.StatusInternalServerError)
-		return true
+		return true, 0
 	}
 	if a.OwnerID <= 0 || a.OwnerID == p.UserID {
-		return false
+		return false, 0
 	}
 	role, in := p.TeamScope().RoleIn(a.OwnerID)
 	if !in {
-		return false // not a team agent of theirs: row-level security decided
+		return false, 0 // not a team agent of theirs: row-level security decided
 	}
 	switch {
 	case rule == teamAgentChat && role.AtLeast(authz.TeamOperator):
-		return false
+		return false, 0
 	case rule == teamAgentManage && role == authz.TeamManager:
-		return false
+		return false, 0
+	case rule == teamAgentTerminal && role.AtLeast(authz.TeamOperator) && stepup.Fresh(ctx, s.stepUpNow()):
+		return false, a.OwnerID
 	}
 	msg := TeamAgentRouteRefusal
 	switch rule {
@@ -180,9 +203,16 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 		msg = TeamAgentViewerRefusal
 	case teamAgentManage:
 		msg = TeamAgentManagerOnly
+	case teamAgentTerminal:
+		msg = TeamAgentTerminalOperator
+		if role.AtLeast(authz.TeamOperator) {
+			// The role is enough; the sign-in is not recent.
+			w.Header().Set("X-Muster-Step-Up", "required")
+			msg = TeamAgentTerminalStepUp
+		}
 	}
 	http.Error(w, msg, http.StatusForbidden)
-	return true
+	return true, 0
 }
 
 // memberOnTeamAgent reports whether ctx is a PERSON acting on agent a, which

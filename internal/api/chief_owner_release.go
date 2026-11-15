@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/stepup"
 )
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ const ownerTurnWriteTimeout = 10 * time.Second
 // So no marker outlives its turn — on success, error, cancellation or timeout.
 func (s *Server) markOwnerTurn(ctx context.Context, a agents.Agent, msg agents.ChatMessage, typedBy int64) (context.Context, func()) {
 	st, ok := s.ext.Agents.(ownerTurnStore)
-	if !ok || typedBy <= 0 || typedBy != agentOwnerID(a) || msg.ID <= 0 {
+	if !ok || msg.ID <= 0 || !s.typerSpeaksForOwner(ctx, a, typedBy, true) {
 		return ctx, func() {}
 	}
 	bctx := context.WithoutCancel(ctx)
@@ -231,7 +232,145 @@ const (
 	chiefReleaseUnverifiable = "owner_asked: your owner's turn could not be read, so the gate was not released; " +
 		"try again later or use task_route_attention"
 	chiefReleaseChanged = "owner_asked: your owner's turn or the task's gate changed while the start was being checked; call again"
+	// chiefReleaseTyperNotOperator: a TEAM's chief, on a marker whose typer is
+	// no longer an operator (or above) of the team on a fresh read.
+	chiefReleaseTyperNotOperator = "owner_asked: the member who typed the message you are answering is no longer an operator " +
+		"of your team, so muster cannot release the gate on their word; use task_route_attention"
+	// chiefReleaseTyperSignedOut: a TEAM's chief, on a marker whose typer's
+	// sessions were cut off (a password reset) or signed out everywhere since
+	// they typed it (typerSignedOutSince). A disabled typer is
+	// chiefReleaseTyperNotOperator's (teamOperatorNow).
+	chiefReleaseTyperSignedOut = "owner_asked: the member who typed the message you are answering was signed out of every " +
+		"session since, so muster cannot release the gate on their word; use task_route_attention"
 )
+
+// ---------------------------------------------------------------------------
+// A TEAM'S TYPED TURN (team sharing phase 4, slice 4.7; operator decision 4: "a
+// member's own typed message counts (with a fresh sign-in, else an approval
+// card); ONE SHARED ROOM"). No person is ever a team's id, so for a team's
+// agent "the owner typed it" becomes: a PERSON who is an operator (or above)
+// of the team typed it — on a FRESH read of their role, both when the marker is
+// set and again when owner_asked is checked — and their sign-in was inside the
+// step-up window (stepup.Fresh) WHEN THEY TYPED IT.
+//
+// 🔴 THE STEP-UP STAMP IS THE MARKER ITSELF. The sign-in time is judged at the
+// moment the line is typed (markOwnerTurn runs on the typing request, before
+// the turn waits for the runtime), and a member's marker is set ONLY when it
+// was fresh then — so no column holds the time: a marker on a team agent
+// exists only for a fresh typer. A stale typer's line is still sent and still
+// stored with typed_by; it just marks nothing, so an owner_asked call on it is
+// refused and agent_dispatch falls back to the approval card (with a
+// request_key), whose answer needs its own fresh sign-in (teamCardRefusal).
+// The other checks — the lane, the session claim, MCP only — are the owner's,
+// unchanged: in the one shared room there is one lane.
+// ---------------------------------------------------------------------------
+
+// typerSpeaksForOwner reports whether a turn typed by typedBy speaks for agent
+// a's owner: typedBy IS the owner (a person's own agent), or a's owner is a
+// TEAM and typedBy is a person who is an operator or above of it now (fresh
+// read, under System) — and, when atTyping, whose request's sign-in is fresh
+// now (the step-up stamp; see above). Anything unreadable is false.
+func (s *Server) typerSpeaksForOwner(ctx context.Context, a agents.Agent, typedBy int64, atTyping bool) bool {
+	owner := agentOwnerID(a)
+	switch {
+	case typedBy <= 0 || owner <= 0:
+		return false
+	case typedBy == owner:
+		return true
+	case !s.ownerIsTeam(ctx, owner):
+		return false
+	case !s.teamOperatorNow(ctx, typedBy, owner):
+		return false
+	}
+	return !atTyping || stepup.Fresh(ctx, s.stepUpNow())
+}
+
+// teamOperatorNow reports whether person is an ENABLED PERSON who is an
+// operator or a manager of team, on a fresh read of their account
+// (accountOfChecked, under System) and of their row (personNamer.ByID, persons
+// only). An account that cannot be read, a team, a viewer or a DISABLED
+// person is false: a disable keeps the team membership, so the role alone
+// would still read operator. Every team say-so re-check is this one call —
+// the typer's (typerSpeaksForOwner, at typing and when the chief calls) and
+// the card answerer's (teamCardRefusal at the answer, teamCardAnswerer when
+// the start completes). The terminal's DOOR is the request principal's role
+// (refuseTeamAgentRoute); this is its re-read once the socket is registered
+// for the membership sweep (teamTerminalOpen), closing a change that lands
+// between the two.
+func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
+	if person <= 0 || team <= 0 || person == team {
+		return false
+	}
+	acct, err := s.accountOfChecked(ctx, person)
+	if err != nil {
+		s.logger.Printf("team dispatch: read user %d's role in team %d: %v (not an operator)", person, team, err)
+		return false
+	}
+	if acct.Team {
+		return false
+	}
+	if role, in := acct.Teams.RoleIn(team); !in || !role.AtLeast(authz.TeamOperator) {
+		return false
+	}
+	pn, ok := s.ext.Users.(personNamer)
+	if !ok {
+		return false
+	}
+	u, err := pn.ByID(ctx, person)
+	if err != nil {
+		s.logger.Printf("team dispatch: read user %d (team %d): %v (not an operator)", person, team, err)
+		return false
+	}
+	return !u.Disabled()
+}
+
+// typerSignedOutSince is "" when the member who typed msg (a member's marker on
+// a TEAM's chief) still stands signed in as they were when they typed it; else
+// ownerTurnFor's refusal. The marker is the step-up stamp (see above), but a
+// sign-in fresh at typing can be ended before the chief calls: the account
+// disabled or its password reset (users.sessions_not_before) or signed out
+// everywhere (users.signed_out_at). ByID reads under System itself (users
+// package), persons only. Either at or after the row was written
+// ends the turn's say-so — the send queue's rule (sendQueueOwnerRefusal,
+// "at or before, in whole seconds"), judged on the row's created_at, which no
+// sign-in that typed it can postdate. No column holds that sign-in's time, so
+// one bounded gap remains: a cutoff falling AFTER the sign-in but BEFORE the
+// typing is not seen here. The session tier is what refuses that typing
+// request — sessions_not_before durably; a sign-out everywhere through its
+// in-memory cutoff (gotrueState.notBefore), so a restart between that
+// sign-out and the typing, inside the step-up window, is the exposure.
+// Both clocks are Postgres's. Unreadable: unverifiable (fail closed).
+func (s *Server) typerSignedOutSince(ctx context.Context, typer int64, msg agents.ChatMessage) string {
+	// A DISABLED typer is teamOperatorNow's (it runs first, through
+	// typerSpeaksForOwner); a disable also moves sessions_not_before.
+	switch cut, err := s.signedOutSince(ctx, typer, msg.CreatedAt); {
+	case err != nil:
+		s.logger.Printf("task routing: read the typer %d of message %d: %v", typer, msg.ID, err)
+		return chiefReleaseUnverifiable
+	case cut:
+		return chiefReleaseTyperSignedOut
+	}
+	return ""
+}
+
+// signedOutSince is THE sign-out cutoff test of a team say-so given at `at`
+// (a member's typed row's created_at, a card answer's resolved_at): true when
+// person's sessions were cut off (users.sessions_not_before: a disable, a
+// password reset) or signed out everywhere (users.signed_out_at) at or after
+// it, in whole seconds — the send queue's rule (atOrBefore). err: the person
+// could not be read (each caller fails closed). The typer's (typerSignedOutSince)
+// and the card answerer's (teamCardAnswerer) are this one call.
+func (s *Server) signedOutSince(ctx context.Context, person int64, at time.Time) (bool, error) {
+	pn, ok := s.ext.Users.(personNamer)
+	if !ok {
+		return false, errors.New("no person reader")
+	}
+	u, err := pn.ByID(ctx, person)
+	if err != nil {
+		return false, err
+	}
+	return atOrBefore(at, u.SessionsNotBefore) || atOrBefore(at, u.SignedOutAt), nil
+}
 
 // gateRelease is a release agent_dispatch has verified and will apply once the
 // agent exists: the gate tags to remove and the owner's message it rests on.
@@ -337,13 +476,32 @@ func (s *Server) ownerTurnFor(ctx context.Context, chief agents.Agent) (agents.C
 	if turn.MessageID <= 0 {
 		return agents.ChatMessage{}, chiefReleaseNoOwnerTurn
 	}
-	if owner := agentOwnerID(chief); owner <= 0 || turn.By != owner {
+	if owner := agentOwnerID(chief); owner <= 0 || !s.typerSpeaksForOwner(ctx, chief, turn.By, false) {
+		if owner > 0 && turn.By != owner && s.ownerIsTeam(ctx, owner) {
+			// A member's marker whose typer is no longer an operator of the team
+			// (removed, made a viewer or disabled since they typed it).
+			return agents.ChatMessage{}, chiefReleaseTyperNotOperator
+		}
 		return agents.ChatMessage{}, chiefReleaseNotOwnersTurn
 	}
 	msg, err := st.ChatMessage(ctx, turn.MessageID)
 	if err != nil || msg.AgentID != chief.ID || msg.Role != "user" {
 		s.logger.Printf("task routing: %s's owner turn names message %d, which is not its own user row (%v)", chief.Name, turn.MessageID, err)
 		return agents.ChatMessage{}, chiefReleaseUnverifiable
+	}
+	// A member's marker on a team's chief names the person who typed the row
+	// it points at (runEnteredTurn writes both from one typedBy): the person a
+	// dispatch's audit names (requested_by_user) is the row's typer.
+	if turn.By != agentOwnerID(chief) && msg.TypedBy != turn.By {
+		s.logger.Printf("task routing: %s's owner turn names user %d, but message %d was typed by %d", chief.Name, turn.By, msg.ID, msg.TypedBy)
+		return agents.ChatMessage{}, chiefReleaseUnverifiable
+	}
+	// ...and their sign-in still stands: no disable, password reset or sign-out
+	// everywhere since the row was typed (typerSignedOutSince).
+	if turn.By != agentOwnerID(chief) {
+		if why := s.typerSignedOutSince(ctx, turn.By, msg); why != "" {
+			return agents.ChatMessage{}, why
+		}
 	}
 	holder, err := s.ext.Agents.KickoffClaimHolder(ctx, chief.ID)
 	if err != nil {
@@ -423,6 +581,16 @@ var errGateNotRemoved = errors.New("the gate tag could not be removed")
 // ownerReleasePushBodyMax bounds the owner's words quoted in the release push.
 const ownerReleasePushBodyMax = 80
 
+// teamGateReleasePushBody is a TEAM's gate-release push: the start's sentence
+// (teamDispatchPushBody, built once), then the gate — released on the member's
+// words, or, when stuck, that its tag could not be removed.
+func teamGateReleasePushBody(started, words string, stuck bool) string {
+	if stuck {
+		return started + ", but its gate tag could not be removed"
+	}
+	return started + "; muster released its gate: " + mirror.OneLine(words, ownerReleasePushBodyMax)
+}
+
 // applyGateRelease removes rel's gates from task taskID once agentName was
 // started on it, records the release as a comment and tells the owner with a
 // push. The agent already runs, so nothing here undoes the start: a gate that
@@ -445,6 +613,12 @@ func (s *Server) applyGateRelease(ctx context.Context, chief agents.Agent, taskI
 	}
 	s.logger.Printf("task routing: task %d's gate %v released on owner message %d in %s's chat (removed: %v)", taskID, rel.gates, rel.msg.ID, chief.Name, failed == nil)
 	s.broadcast(ctx, EventTaskChanged, id)
+	// A TEAM's chief: the push names the member whose message it was
+	// (team_dispatch.go's sentence, then the gate).
+	if owner := agentOwnerID(chief); rel.msg.TypedBy > 0 && rel.msg.TypedBy != owner {
+		pushBody = teamGateReleasePushBody(teamDispatchPushBody(s.personName(ctx, rel.msg.TypedBy),
+			s.teamNames(ctx, []int64{owner})[owner], agentName, taskID), rel.msg.Content, failed != nil)
+	}
 	s.pushTask(agentOwnerID(chief), push.EventAgent, RouterNotification{
 		Type: taskNotificationType, ID: id, Title: title, Body: pushBody, Tag: "task-" + id + "-gate-released",
 	})

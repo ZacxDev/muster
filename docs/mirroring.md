@@ -1838,6 +1838,107 @@ for a bound caller. For example, `attention_answer` records
 `answered_via_host` and `answered_via_session`, and `dispatch_request`'s hold
 row records the host and session.
 
+## Team hosts
+
+A **team host** is a `muster-mirror` connected with a **team host token**: a
+mirror token owned by a team (team sharing phase 2b.2). Run it on a machine, or
+a dedicated Unix user on one, that the team treats as shared, with its own tmux
+server and its own `muster-mirror`.
+
+- **Getting a token.** A manager of the team mints one on `/teams/<id>/hosts`
+  (it is shown once), or the server's shell mints it:
+
+  ```sh
+  muster-server mirror token create build-01 --team 12
+  ```
+
+  Put it in the token file of that Unix user's `muster-mirror` and restart the
+  unit. Host names are unique per owner: `build-01` may be a team host and a
+  member's personal host at the same time, and the two never mix.
+- **What it reaches.** The host registers under the team, and its sessions'
+  `AskUserQuestion` prompts are the team's questions. Its sessions' MCP door
+  offers the session's own asks, the tasks it created and `agent_report_done`
+  only; every owner-authority tool, estate read and page tool is refused
+  ([auth.md](auth.md#teams), "Team hosts"). A team host token is never served
+  to another muster instance's remote calls.
+- **What members see (team sharing 2b.3).** Every member — viewer and up —
+  sees the team host's sessions in the sidebar and the session switcher,
+  under the team's name, below their own; a member's own host of the same
+  name is a separate entry. A team session's pages and sockets name the team
+  (`owner=<team id>` beside `host=&session=&window=`). A member can open the
+  Rendered view and the terminal **read-only**, see its subagents and its
+  questions, and scroll its terminal (which moves it for every watcher). A
+  team host session's `attention_ask` shows on every member's Attention, and
+  an operator answers it there.
+- **Not on a team session in this version.** Typing — the composer, live
+  keys, the send queue, answering a question in the pane — comes with team
+  operators in a later release; the composer is drawn disabled and says so.
+  The chief panel, proposals, succession and suggested replies are **off** on
+  team sessions (they would send the team's transcript to a person's model or
+  chief), and their routes answer 403. A team session has no focus title, no
+  Preview button, and none of the viewer's own pins, tags or names. Opening
+  a team session does not settle its waiting stop: it settles when the window
+  moves on.
+- **Waiting and done pushes.** A team host session that waits on a prompt,
+  or stops, is an episode of the team's, like a person's: its operators and
+  managers get one push each (never a viewer), under each member's own
+  notify switch, mutes and rate cap. No stall classifier runs for a team.
+- **Leaving a team ends what you hold open.** A member removed from the team
+  (here, on another replica, or from the CLI) has the team host's pages,
+  sockets and their event stream ended within 10 seconds; the page
+  reconnects with the teams they are in then. A member who is added sees the
+  team's sessions from their next page load.
+- **A personal host becoming a team host.** That is the same machine
+  reconnecting with a team token: its personal entry goes offline and a team
+  entry comes online, and the team's view of its sessions **starts empty**.
+  Nothing the sessions had moves: their history, asks, queued sends, names,
+  pins and tags stay the personal owner's. To keep both, run two
+  `muster-mirror` daemons on two tmux servers on the machine, one personal and
+  one team; they show as two hosts, and neither's sessions appear under the
+  other owner.
+- **One connection at a time.** While the team host is connected, a second
+  connection with its token is held for a manager's confirmation on
+  `/teams/<id>/hosts`, instead of replacing it (a personal host's newer
+  connection replaces the older one). The held `muster-mirror` logs "pending
+  a manager's confirmation" and keeps retrying.
+- **Moving the host: give the manager the code.** Each `muster-mirror`
+  process draws an **attempt code** when it starts and sends it on every
+  connect (the `X-Muster-Attempt-Code` header; the tunnel protocol is
+  unchanged). A held one logs
+
+  ```
+  muster-mirror: held: team host build-01 is already connected from another machine; give this code to a team manager: K7QM-2XWD-9RTB
+  ```
+
+  once per process (later holds say "`muster doctor` shows this machine's
+  code"), and `muster doctor` there reports "held: … give this code to a
+  team manager: K7QM-2XWD-9RTB". 🔴 Anyone who can read that log (the
+  user's journal, an admin, wherever it is shipped) can learn the code. The
+  code is also in the file
+  `-attempt-code-file` names (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`, else
+  `muster-mirror/attempt-code` in the user config directory, mode 0600;
+  `-attempt-code-file=` on the command line writes none), removed when
+  muster-mirror exits. The manager types it on the hosts page
+  (case, dashes and spaces do not matter): that code's next attempt takes
+  over within 3 minutes, and no other connection does, whatever its
+  address. A restart draws a new code, so type the one the running process
+  shows.
+- **A `muster-mirror` that sends no code** (older than the code) cannot be
+  confirmed: behind a proxy or a Kubernetes NodePort every machine shares one
+  address, so nothing tells it apart. It is held with "upgrade muster-mirror
+  on this machine, or stop the live host"; the hosts page says the same.
+  Upgrade it, or stop the live host (the next connection is then taken at
+  once).
+- A held machine (or any kept copy of the token) can still use `/mirror/mcp`
+  and `/mirror/ask` as any session the connected host lists; revoking and
+  re-minting the token is what stops it. A host that disconnected first (a
+  restart) is taken back at once. A muster-mirror whose old connection is
+  half-open waits for the keepalive to end it, and then reconnects.
+- **Leaving.** A manager revokes the token: the connection ends at the next
+  recheck and the team's sessions on that host vanish. When an operator or a
+  manager leaves, drops to viewer or is disabled, the team's tokens are marked
+  rotate on that page: revoke and re-mint them.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends

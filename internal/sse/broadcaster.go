@@ -99,10 +99,22 @@ type Broadcaster struct {
 	seq   map[int64]uint64
 }
 
-// subscriber is one registered stream and the user it streams for.
+// subscriber is one registered stream and the owners it streams for: its
+// user, and — since team sharing 2b.3 — the teams that user was a member of
+// when it subscribed (internal/api's handleEvents; a removal ends the stream,
+// so a reconnect subscribes to the teams as they are then).
 type subscriber struct {
-	owner int64
-	ch    chan Event
+	owners []int64
+	ch     chan Event
+}
+
+func (s subscriber) streams(owner int64) bool {
+	for _, o := range s.owners {
+		if o == owner {
+			return true
+		}
+	}
+	return false
 }
 
 // New returns a Broadcaster. buffer is the per-subscriber channel buffer
@@ -142,21 +154,32 @@ func New(buffer int) *Broadcaster {
 //
 // ⚠ An event dropped for a full buffer is still counted: the mark is about what
 // was published, not about what one subscriber received.
-func (b *Broadcaster) Mark(owner int64) string {
+//
+// A mark of SEVERAL owners (a stream subscribed to its user's teams too) is
+// each owner and each count, in the order given, joined by ".": it equals
+// another only for the same owners, in the same order, at the same counts.
+// For one owner it is exactly the one-owner form.
+func (b *Broadcaster) Mark(owners ...int64) string {
+	ids := make([]string, len(owners))
+	ns := make([]string, len(owners))
 	b.seqMu.Lock()
-	n := b.seq[owner]
+	for i, o := range owners {
+		ids[i] = strconv.FormatInt(o, 10)
+		ns[i] = strconv.FormatUint(b.seq[o], 10)
+	}
 	b.seqMu.Unlock()
-	return b.epoch + "-" + strconv.FormatInt(owner, 10) + "-" + strconv.FormatUint(n, 10)
+	return b.epoch + "-" + strings.Join(ids, ".") + "-" + strings.Join(ns, ".")
 }
 
-// Subscribe registers a new subscriber streaming for user owner and returns
-// its receive channel plus an id used to Unsubscribe. The channel is buffered.
-// A subscriber whose owner is not positive receives nothing.
-func (b *Broadcaster) Subscribe(owner int64) (uint64, <-chan Event) {
+// Subscribe registers a new subscriber streaming for owners — a user, and any
+// teams of theirs (see subscriber) — and returns its receive channel plus an
+// id used to Unsubscribe. The channel is buffered. An owner that is not
+// positive receives nothing.
+func (b *Broadcaster) Subscribe(owners ...int64) (uint64, <-chan Event) {
 	ch := make(chan Event, b.buffer)
 	id := atomic.AddUint64(&b.nextID, 1)
 	b.mu.Lock()
-	b.subs[id] = subscriber{owner: owner, ch: ch}
+	b.subs[id] = subscriber{owners: append([]int64(nil), owners...), ch: ch}
 	b.mu.Unlock()
 	return id, ch
 }
@@ -172,7 +195,8 @@ func (b *Broadcaster) Unsubscribe(id uint64) {
 	b.mu.Unlock()
 }
 
-// Broadcast delivers ev to every current subscriber of ev.OwnerID. Delivery
+// Broadcast delivers ev to every current subscriber of ev.OwnerID (each
+// stream that names it among its owners). Delivery
 // is non-blocking: if a subscriber's buffer is full the event is dropped for
 // that subscriber so one slow consumer cannot stall the rest.
 //
@@ -190,7 +214,7 @@ func (b *Broadcaster) Broadcast(ev Event) bool {
 	b.seq[ev.OwnerID]++
 	b.seqMu.Unlock()
 	for _, sub := range b.subs {
-		if sub.owner != ev.OwnerID {
+		if !sub.streams(ev.OwnerID) {
 			continue
 		}
 		select {

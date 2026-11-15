@@ -64,8 +64,10 @@ import json
 import sys
 
 
-def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
+def main(stream, echo: str, out=None, require: list[str] | None = None,
+         results_out: str | None = None) -> int:
     out = out if out is not None else sys.stdout
+    results: dict[str, str] = {}
     verdicts: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
@@ -102,6 +104,7 @@ def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
             # <unwritable dir>`: every test passes, the package event is `pass`,
             # go exits 1, and this is the only failure in the stream.
             failed_builds.append(e.get("ImportPath", "?"))
+            results[e.get("ImportPath", "?").split(" [", 1)[0].removesuffix(".test") + "\t"] = "fail"
             continue
 
         if not test:
@@ -110,6 +113,7 @@ def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
                 out.write(e.get("Output", ""))
             elif action == "fail":
                 failed_pkgs.append(pkg)
+                results[pkg + "\t"] = "fail"
             continue
 
         name = f"{pkg}.{test}"
@@ -119,6 +123,7 @@ def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
             else:
                 buffered.setdefault(name, []).append(e.get("Output", ""))
         elif action in ("pass", "fail", "skip"):
+            results[f"{pkg}\t{test}"] = action
             if action == "skip":
                 skipped.append(name)
             else:
@@ -133,6 +138,14 @@ def main(stream, echo: str, out=None, require: list[str] | None = None) -> int:
     # its output is the only account of why, so it is not dropped.
     for text in buffered.values():
         out.write("".join(text))
+
+    if results_out:
+        # Every test's last verdict, "<package>\t<test>" -> pass|fail|skip, plus
+        # "<package>\t" -> fail for a package-level or build failure, for
+        # the test-selection ledger (tests/goselect.py ledger). Written before
+        # any refusal below, so a red run still leaves its record.
+        with open(results_out, "w") as f:
+            json.dump(results, f, sort_keys=True)
 
     if lines == 0:
         print("verdict: COULD NOT RUN — stdin was empty. Pipe `go test -json` into this.",
@@ -210,5 +223,7 @@ if __name__ == "__main__":
                     help="how much of the human-readable log to re-render")
     ap.add_argument("--require", action="append", default=[], metavar="TEST",
                     help="a test name that must be in the run and pass (repeatable)")
+    ap.add_argument("--results-out", metavar="FILE",
+                    help="also write every test's verdict as JSON (for tests/goselect.py ledger)")
     args = ap.parse_args()
-    raise SystemExit(main(sys.stdin, args.echo, require=args.require))
+    raise SystemExit(main(sys.stdin, args.echo, require=args.require, results_out=args.results_out))

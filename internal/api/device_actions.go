@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
 )
 
@@ -256,6 +258,61 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := s.answerAskFrom(r.Context(), id, body.Answer, attention.AnswerSource{})
 	s.askActionResult(w, r, c, a, err)
+}
+
+// refuseTeamDispatchCardOnPhone is THE phone-door refusal of a TEAM's
+// dispatch card (team sharing 4.7, plan §4): such a card is answered only in
+// muster in a browser, with a fresh sign-in, so a paired phone's answer to it
+// — this route's, handleDeviceAskAnswer, which reaches it through
+// answerAskFrom → approvalSurfaceRefusal → teamCardRefusal, before anything is
+// recorded — is refused by name (TeamCardNotFromPhone) and the card stays
+// open. A card whose hold cannot be read is refused too (fail closed). Any
+// other ask: nil. ONE function, so every phone door that answers a team's ask
+// (phase 2b.4's team phone answer route included) refuses alike.
+func (s *Server) refuseTeamDispatchCardOnPhone(ctx context.Context, id int64) error {
+	_, card, err := s.teamDispatchCard(ctx, id)
+	switch {
+	case err != nil:
+		return err
+	case card:
+		return errReleaseRefused(TeamCardNotFromPhone)
+	}
+	return nil
+}
+
+// TeamCardPushBody leads a TEAM's dispatch card's push (teamDispatchCardPush):
+// what the lock screen says in place of answer chips.
+const TeamCardPushBody = "A team's dispatch card: open it in muster in a browser to approve it (not from the phone)"
+
+// teamDispatchCardPush is THE PUSH half of refuseTeamDispatchCardOnPhone: ask
+// a's notification item it, made fit for a phone that may not answer it. When
+// a is a TEAM's dispatch card (teamCardHold, the same test the answer path
+// runs), the push carries NO answer actions — no chips, no options line, no
+// signed answer action, no suggested replies — and its body says to open it in
+// muster in a browser; every phone door would refuse an answer anyway
+// (TeamCardNotFromPhone), so a chip on the lock screen could only fail. A hold
+// that cannot be read is taken as a card (fail closed: a push loses its chips,
+// never gains one). Any other ask: it, unchanged. askPushItem, the one item
+// every ask push is built from (askFiled, proposalCardFiled, officerAskFiled,
+// repushAsk), calls it.
+//
+// It recognises a card by its HOLD, so a card must be notified after its hold
+// is filed. Every team card is today: a team's dispatch cards are the
+// approval card and — for a team lent the GitHub App (slice 4.8), after
+// "Change repo" — the repo card (no host, so no host or runtime card); both
+// are approval-blank cards, which fileHeldDispatch notifies
+// (proposalCardFiled) only after raiseHeldCard committed the card with its
+// hold. A team card pushed before its hold must be notified the same way.
+func (s *Server) teamDispatchCardPush(ctx context.Context, a attention.Ask, it attentionItem) attentionItem {
+	if !a.OwnerCard || a.Owner <= 0 || !s.ownerIsTeam(ctx, a.Owner) {
+		return it
+	}
+	if card, err := s.teamCardHold(ctx, a); err == nil && !card {
+		return it
+	}
+	it.noActions, it.Options, it.suggestions = true, nil, nil
+	it.pushText = TeamCardPushBody + ". " + mirror.OneLine(a.Question, 1<<20)
+	return it
 }
 
 // handleDeviceAskCancel is POST /api/device/actions/attention/asks/{id}/cancel.

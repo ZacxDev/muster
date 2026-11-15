@@ -80,6 +80,11 @@ var (
 	//   - accountOfChecked (and roleOf through principalFor): the request principal's ROLE, kind and team memberships, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{
+		// `muster-server mirror token create <host> --team <id>` (team sharing
+		// 2b.2): a TEAM host token, minted from the server's shell — which can
+		// already do anything — with the team's audit row in the same
+		// transaction; it mints only for an id that names a team.
+		"cmd/muster-server.mirrorCreateTeamToken",
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",
@@ -658,6 +663,12 @@ func loadPass(root, tags string) (pass, error) {
 		args = append(args, "-tags", tags)
 	}
 	args = append(args, "./...")
+	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE: what the `go` subprocess below reads
+	// (every package of the module) is invisible to the cache, which keys a result
+	// only on the test binary and the files and variables the test process itself
+	// touched. ci.yml gives MUSTER_TEST_NOCACHE a per-run value, and reading it
+	// puts that value in the key (cmd/go: "env" lines of the test log).
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	var stderr bytes.Buffer

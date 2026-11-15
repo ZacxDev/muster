@@ -283,7 +283,15 @@ func (s *Server) approvalCardFor(ctx context.Context, a agents.Agent, blank, hos
 	if blank == blankApprove {
 		c.labels = []string{approveLabel}
 		c.values[approveLabel] = approveValue
-		if r.repoChangeable() {
+		// On a TEAM's card only when the team is lent the GitHub App
+		// (MUSTER_TEAMS_ON_GITHUB_APP, slice 4.8; githubAppForOwner, decided
+		// by the card's OWNER): the repo card lists repositories through the
+		// App, so for any other team a tap could only end in
+		// chiefDispatchNoGitHub — fail closed, but a dead button. The repo
+		// card is a team dispatch card like the approval card (its hold names
+		// it): answered only in a browser, by an operator or above, with a
+		// fresh sign-in (teamCardRefusal).
+		if owner := agentOwnerID(a); r.repoChangeable() && (!s.ownerIsTeam(ctx, owner) || s.githubAppForOwner(ctx, owner) != nil) {
 			// The repo card in this one's place: the connected repositories,
 			// ranked, every guard of a picked repository (completeHeld).
 			c.labels = append(c.labels, changeRepoLabel)
@@ -459,6 +467,10 @@ func (s *Server) approvalSurfaceRefusal(ctx context.Context, id int64) error {
 	st := s.hostDispatches()
 	if st == nil {
 		return nil
+	}
+	// A TEAM's dispatch card has its own, stricter door (team_dispatch.go).
+	if handled, err := s.teamCardRefusal(ctx, id); handled {
+		return err
 	}
 	p, ok := authz.From(ctx)
 	if !ok || p.Via != authz.ViaDevice {

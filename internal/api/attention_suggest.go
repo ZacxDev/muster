@@ -71,7 +71,9 @@ func (s *Server) proposalCardFiled(a attention.Ask) {
 func (s *Server) askPushItem(ctx context.Context, a attention.Ask) attentionItem {
 	items := []attentionItem{s.askItemNow(ctx, a)}
 	s.withFocusAges(ctx, items)
-	return items[0]
+	// A TEAM's dispatch card: no answer actions on any phone
+	// (teamDispatchCardPush, refuseTeamDispatchCardOnPhone's push half).
+	return s.teamDispatchCardPush(ctx, a, items[0])
 }
 
 // startAskSuggestions generates ask a's suggested replies in the background

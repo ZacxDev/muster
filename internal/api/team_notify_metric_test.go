@@ -47,7 +47,7 @@ func TestADroppedTeamPushIsCounted(t *testing.T) {
 		return testutil.ToFloat64(team) - t0, testutil.ToFloat64(unread) - u0
 	}
 	ask := func(owner int64) ([]int64, string) {
-		return s.teamPushRecipients(context.Background(), owner, "plugin", 0)
+		return s.teamPushRecipients(context.Background(), owner, "plugin", 0, false)
 	}
 
 	// An owner never read before, whose read fails.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -321,7 +322,7 @@ func (h *Hub) AnswerOpenCodeForm(ctx context.Context, owner int64, host, session
 // OpenCodeForm is Hub.OpenCodeForm for the viewing principal's host. No
 // step-up: it reads, and answers nothing.
 func (s *Service) OpenCodeForm(ctx context.Context, host, session, window, promptID string) (OpenCodeForm, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return OpenCodeForm{}, err
 	}
@@ -331,7 +332,7 @@ func (s *Service) OpenCodeForm(ctx context.Context, host, session, window, promp
 // AnswerOpenCodeForm is Hub.AnswerOpenCodeForm for the viewing principal's
 // host.
 func (s *Service) AnswerOpenCodeForm(ctx context.Context, host, session, window string, form OpenCodeForm, picks []OpenCodePick) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return err
 	}

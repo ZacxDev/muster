@@ -182,7 +182,7 @@ func HomeHref(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) 
 			if r.AgentID != 0 && e.agent != nil && e.agent.ID == r.AgentID {
 				return e.agent.PageHref()
 			}
-			if r.AgentID == 0 && e.mirror != nil && (MirrorRef{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window}) == r.Mirror {
+			if r.AgentID == 0 && e.mirror != nil && e.mirror.Ref() == r.Mirror {
 				return MirrorCardHref(*e.mirror)
 			}
 		}

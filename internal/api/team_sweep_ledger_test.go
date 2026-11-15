@@ -22,13 +22,14 @@ var teamSweepClasses = map[string]string{
 	"push_task.go Server.notifyTaskDone":                   "tasks in review",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "officer cap holds",
 	"server.go Server.goNotify":                            "never: the sink; it builds no push of its own",
-	"session_push.go Server.episodeNotification":           "never: a session episode is personal until 2b.3's state-pass arm runs for teams",
+	"session_push.go Server.episodeNotification":           "session episodes",
 	"host_dispatch_done.go Server.announceHostOutcome":     "never: host dispatches are personal (host_dispatches is personal)",
 	"succession.go Server.armSuccessionPush":               "never: succession is a person's chief's; refused on team sessions (G4)",
 	"session_route_notify.go Server.notifyChiefRouted":     "never withdrawn: information only, replaced by its tag",
 	"dispatch_hold_tools.go Server.pushSessionDispatch":    "never withdrawn: information only, replaced by its tag",
 	"agent_outcome.go Server.pushOutcome":                  "never withdrawn: an outcome is replaced by the next under its tag",
 	"chief_owner_release.go Server.applyGateRelease":       "never withdrawn: information only",
+	"team_dispatch.go Server.pushTeamDispatch":             "never withdrawn: information only, replaced by its tag (a team start; its card is an ask)",
 	"connectors.go Server.onConnectorRequested":            "never: connector requests are personal (connectors are never shared)",
 	"pages.go Server.pageResponded":                        "never: pages are personal",
 	"plugin_drafts.go Server.notifyDraftRefused":           "never withdrawn: information only",
@@ -45,8 +46,8 @@ func TestEveryPushIsClassifiedForTheTeamSweep(t *testing.T) {
 	for _, k := range withdrawableTeamKinds {
 		kinds[k.name] = true
 	}
-	if len(kinds) < 4 {
-		t.Fatalf("positive control: %d withdrawable kinds; want the four 2b.1 ships", len(kinds))
+	if len(kinds) < 5 {
+		t.Fatalf("positive control: %d withdrawable kinds; want 2b.1's four and 2b.3's session episodes", len(kinds))
 	}
 	var want []string
 	for f := range codenameFirstSurfaces {

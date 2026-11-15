@@ -71,6 +71,9 @@ type mirrorCall struct {
 // belongs to user 1 only: Hosts and Attach act for ctx's principal, as
 // mirror.Service does.
 type fakeMirror struct {
+	// teamHost, when set, is a TEAM id whose principal this fake treats as
+	// owning "ws" as well (team sharing 2b.2's team host tests).
+	teamHost    int64
 	mu          sync.Mutex
 	online      bool
 	interactive bool
@@ -136,6 +139,18 @@ type fakeMirror struct {
 	noHosts bool
 	// shown is the mirror.ShownSession each PasteWindow named, in order.
 	shown []string
+	// teamHosts is what VisibleHosts lists beside nothing of the fake's own
+	// (team sharing 2b.3): team hosts, each with its Owner.
+	teamHosts []mirror.HostView
+}
+
+// VisibleHosts is the fake's TEAM hosts only (f.teamHosts, as given, for
+// every principal): its callers read their own entries through Hosts, and a
+// test of a team host's view sets this.
+func (f *fakeMirror) VisibleHosts(context.Context) []mirror.HostView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]mirror.HostView(nil), f.teamHosts...)
 }
 
 // HostToken answers f.hostTok for the host's owner.
@@ -177,6 +192,11 @@ func (f *fakeMirror) user(ctx context.Context) int64 {
 	p, ok := authz.From(ctx)
 	if !ok || p.All() {
 		return 0
+	}
+	if f.teamHost != 0 && p.UserID == f.teamHost {
+		// The team host fixture (team sharing 2b.2): the TEAM's principal
+		// owns "ws" too, so a team token's calls bind to its windows.
+		return 1
 	}
 	return p.UserID
 }

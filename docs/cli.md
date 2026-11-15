@@ -209,7 +209,16 @@ INSTALL.md's Step 10 passes `--api-url` there.
   else: when doctor is checking a different URL, this check SKIPs and names
   the mirror's server. A refused token is a FAIL; so is a connection under this
   host's name made with another token (two machines minted under one name). It
-  SKIPs on a machine with no settings file.
+  SKIPs on a machine with no settings file. On a **team host** machine whose
+  connection is held for a manager ([mirroring.md](mirroring.md#team-hosts)),
+  it FAILs with "held: … give this code to a team manager: XXXX-XXXX-XXXX":
+  doctor reads the code muster-mirror left (`MUSTER_MIRROR_ATTEMPT_CODE_FILE`
+  in the settings file, else `muster-mirror/attempt-code` in the user config
+  directory) and sends it, with the token, to the same server only, which
+  answers whether that code is held, is the live connection's, or neither.
+  When machines are held for the team host and this machine's code is
+  missing, unreadable or neither (`held_unknown`), it FAILs naming the code
+  file ("this may be a held machine") rather than PASS "connected".
 - **Flags:** `--skip <check>[,<check>…]`, `--mirror-env`, `--mirror-unit` (default
   `muster-mirror.service`), `--mirror-label` (default
   `io.github.zacxdev.muster-mirror`).
@@ -281,7 +290,7 @@ claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude
 
 | binary | what it is |
 |---|---|
-| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`. |
+| `muster-server` | The service. Subcommands: `mirror token create <host>`, `mirror token create <host> --team <id>` (a team host token, audited in the team's log; [mirroring.md](mirroring.md#team-hosts)), `mirror token ls`, `mirror token revoke <id>`, `vapid generate`, `invite --claim-admin`, `user disable <id>`, `user enable <id>`. |
 | `muster-migrate` | Applies the schema to `DATABASE_URL`. The server also migrates itself at boot. `--rls-off` and `--rls-on` are the row-level-security rollback tools ([schema.md](schema.md)). |
 | `muster-mirror` | The host agent for [mirrored sessions](mirroring.md). |
 | `ccd` | The supervisor inside the `claude-code` agent image ([provisioner.md](provisioner.md)). |

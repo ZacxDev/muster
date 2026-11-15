@@ -274,6 +274,10 @@ type TeamPushTargets struct {
 	// disabled. A viewer, someone who has left, a disabled person and a member
 	// who turned the switch off get nothing.
 	Notify []int64
+	// Managers is the MANAGERS among Notify (switch on): who a push only a
+	// manager can act on reaches (a team agent's connector request, team
+	// sharing 4.8: only a manager approves it).
+	Managers []int64
 	// Withdraw is who a withdrawal (a "resolved" notification) reaches: the
 	// same operators and managers WHATEVER their switch says (operator
 	// decision G1: "the team's current operators and managers"), so a member
@@ -294,7 +298,7 @@ func (s *PGStore) TeamPushTargets(ctx context.Context, owner int64) (TeamPushTar
 		return TeamPushTargets{}, err
 	}
 	t.Team = true
-	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id, m.notify FROM team_members m JOIN users u ON u.id = m.user_id
+	rows, err := s.pool.Query(sys(ctx), `SELECT m.user_id, m.notify, m.role FROM team_members m JOIN users u ON u.id = m.user_id
 		WHERE m.team_id = $1 AND m.role IN ('operator', 'manager') AND u.kind = 'person' AND u.disabled_at IS NULL
 		ORDER BY m.user_id`, owner)
 	if err != nil {
@@ -304,12 +308,16 @@ func (s *PGStore) TeamPushTargets(ctx context.Context, owner int64) (TeamPushTar
 	for rows.Next() {
 		var id int64
 		var notify bool
-		if err := rows.Scan(&id, &notify); err != nil {
+		var role string
+		if err := rows.Scan(&id, &notify, &role); err != nil {
 			return TeamPushTargets{}, err
 		}
 		t.Withdraw = append(t.Withdraw, id)
 		if notify {
 			t.Notify = append(t.Notify, id)
+			if authz.TeamRole(role) == authz.TeamManager {
+				t.Managers = append(t.Managers, id)
+			}
 		}
 	}
 	return t, rows.Err()
@@ -339,6 +347,31 @@ func (s *PGStore) MyTeams(ctx context.Context, user int64) ([]MyTeam, error) {
 		m.Role = authz.TeamRole(role)
 		return m, err
 	})
+}
+
+// MembershipsAmong is every team membership of each of persons, in ONE query:
+// the team stream sweep's read (internal/api team_live.go), every
+// DisableSweepInterval, of the people who hold an open team stream. A person
+// with no row in the answer is in no team now. Under System: team_members is
+// self-read, and the sweep reads other people's rows.
+func (s *PGStore) MembershipsAmong(ctx context.Context, persons []int64) (map[int64][]authz.Membership, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT user_id, team_id, role FROM team_members WHERE user_id = ANY($1) ORDER BY user_id, team_id`, persons)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]authz.Membership{}
+	for rows.Next() {
+		var user int64
+		var m authz.Membership
+		var role string
+		if err := rows.Scan(&user, &m.Team, &role); err != nil {
+			return nil, err
+		}
+		m.Role = authz.TeamRole(role)
+		out[user] = append(out[user], m)
+	}
+	return out, rows.Err()
 }
 
 // SetTeamNotify sets person user's OWN notify switch in team (0133): it
@@ -380,6 +413,13 @@ func removeMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64) 
 	}
 	if err := endLends(ctx, tx, team, user); err != nil {
 		return err
+	}
+	// Team sharing 2b.2: an operator or a manager leaving marks the team's
+	// host tokens rotate (team_hosts.go), in this transaction.
+	if holdsTokenRole(role) {
+		if err := markTeamTokensRotateTx(ctx, tx, team); err != nil {
+			return err
+		}
 	}
 	return auditInsertFor(ctx, tx, by, team, "team.member.remove", TeamObject(team), map[string]any{"user": user, "role": role})
 }
@@ -479,6 +519,13 @@ func setMemberTx(ctx context.Context, tx pgx.Tx, by Actor, team, user int64, rol
 	if role == authz.TeamViewer {
 		if err := endLends(ctx, tx, team, user); err != nil {
 			return err
+		}
+		// Team sharing 2b.2: an operator or a manager dropping to viewer
+		// marks the team's host tokens rotate (team_hosts.go).
+		if before != nil && holdsTokenRole(*before) {
+			if err := markTeamTokensRotateTx(ctx, tx, team); err != nil {
+				return err
+			}
 		}
 	}
 	detail := map[string]any{"user": user, "role": string(role)}

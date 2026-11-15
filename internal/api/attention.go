@@ -317,7 +317,14 @@ type attentionCard struct {
 // attentionPrincipal is ctx acting as owner, through authz.ViaAttention: how
 // the hub's change nudge (which names only an owner) reads that owner's
 // windows. internal/authz's withPrincipalLedger lists it.
-func (s *Server) attentionPrincipal(ctx context.Context, owner int64) context.Context {
+//
+// knownTeam (the session-state pass's team arm, #690 round 1, 🟡4) says the
+// caller's own list names owner a TEAM: the team acting principal is built
+// from that, with no account read — a failed read would build a member.
+func (s *Server) attentionPrincipal(ctx context.Context, owner int64, knownTeam ...bool) context.Context {
+	if len(knownTeam) > 0 && knownTeam[0] {
+		return authz.WithPrincipal(ctx, teamActingPrincipal(owner, authz.ViaAttention))
+	}
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaAttention))
 }
 
@@ -938,12 +945,10 @@ func (s *Server) attentionChanged(owner int64, key string) {
 		return
 	}
 	s.attention.wakeFor(owner).signal()
+	// A TEAM's item reaches its members' open pages through their own event
+	// streams, which subscribe to each of their teams (team sharing 2b.3,
+	// streamOwners) — one event, no member read here.
 	s.broadcastTo(owner, EventAttentionChanged, key)
-	// A TEAM's item: its operators' and managers' open Attention and ask
-	// pages refresh too (teamViewRecipients; replaced by 2b.3's streams).
-	for _, m := range s.teamViewRecipients(owner) {
-		s.broadcastTo(m, EventAttentionChanged, key)
-	}
 }
 
 // attentionNotify pushes one new item to owner's devices, under the
@@ -1243,6 +1248,12 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	// push them as new now — except one whose episode is still HELD
 	// (episodeHandedOver).
 	var episodePushed map[string]bool
+	// A TEAM host's waiting window is an episode like a person's (team
+	// sharing 2b.3): the state pass visits every team holding a mirror token
+	// (sessionstate.PG.Owners' team arm), settles the episode and pushes it as
+	// the team, and the push fan-out reaches the team's operators and
+	// managers once each. (2b.2 kept a team's waits on the diff path until
+	// that arm existed.)
 	if s.sessionStateOn() {
 		// 🔴 SESSION STATE ON: A WAITING WINDOW THAT SESSION STATE KEYS
 		// (episodeCover) — WHATEVER IT WAITS ON, AN ANSWERABLE ASK TOO — IS AN
@@ -2383,7 +2394,14 @@ func (s *Server) askerAddressedBy(ctx context.Context, asker attention.Asker, me
 	if s.ext.Attention == nil || asker.Valid() != nil {
 		return
 	}
-	asks, err := s.ext.Attention.AnswerInSession(context.WithoutCancel(ctx), asker, message, queueID)
+	// 🔴 A TYPED LINE NEVER SETTLES A TEAM'S DISPATCH CARD (PR #682 round 1):
+	// it is approved only on the card, by an operator with a fresh sign-in
+	// (teamCardRefusal), and a line typed into the team's room — by a stale
+	// or any other member — would close it as answered in the chat, leaving
+	// nothing to approve. It stays open (teamDispatchCardKept).
+	bg := context.WithoutCancel(ctx)
+	asks, err := s.ext.Attention.AnswerInSession(bg, asker, message, queueID,
+		func(a attention.Ask) bool { return s.teamDispatchCardKept(bg, a) })
 	if err != nil {
 		s.logger.Printf("attention: answered in session by a message to %s: %v", askerName(asker), err)
 		return

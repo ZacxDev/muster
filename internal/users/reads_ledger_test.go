@@ -33,6 +33,11 @@ import (
 //     readPerson: they SELECT disabled_at and refuse a disabled owner in Go
 //     with their own error (ErrUserDisabled, ownerRefusal), so a disabled
 //     owner is not "no such token" there.
+//   - readEnabledPersonOrTeam: readEnabledPerson WIDENED BY TEAMS, through
+//     EnabledPersonOrTeamIDs — a credential a TEAM may own (a team host's
+//     mirror token, team sharing 2b.2). Its person arm is EnabledPersonIDs
+//     itself (TestTheTeamArmKeepsThePersonRule), so a disabled person stays
+//     out.
 //   - readTeam: it reads teams on purpose (teams.go).
 //   - readByID: it reads one row by an id it was handed (a principal being
 //     built, a row being locked, a disabled check) and returns no new user.
@@ -40,12 +45,15 @@ var usersReads = map[string]string{
 	"internal/apitokens PGStore.Authenticate":              readPerson,
 	"internal/apitokens PGStore.Create":                    readByID,
 	"internal/chiefnudge PG.Owners":                        readEnabledPerson,
+	"internal/chiefnudge PG.TeamHostOwners":                readTeam, // the session-state pass's team arm (2b.3): teams holding an unrevoked mirror token
 	"internal/devices PGStore.Redeem":                      readByID,
 	"internal/devices PGStore.Authenticate":                readPerson,
 	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,
 	"internal/focus PGStore.Owners":                        readEnabledPerson,
-	"internal/mirror PGStore.Authenticate":                 readEnabledPerson,
-	"internal/mirror PGStore.TokenLive":                    readEnabledPerson, // a live connection's recheck: Authenticate's rule
+	"internal/mirror PGStore.Authenticate":                 readEnabledPersonOrTeam, // a team host's token (2b.2) or an enabled person's; Team says which
+	"internal/mirror PGStore.TokenLive":                    readEnabledPersonOrTeam, // a live connection's recheck: Authenticate's rule
+	"internal/mirror PGStore.CreateTeamToken":              readTeam,                // the CLI's --team mint: the owner must name a team
+	"internal/users PGStore.TeamRotateReason":              readByID,                // the name of the person an audit row of the team names, for the rotate line
 	"internal/officers/builtin Store.UsersExist":           readPerson,
 	"internal/plugins PGStore.CreatePairRequest":           readEnabledPerson,
 	"internal/plugins PGStore.Authenticate":                readEnabledPerson,
@@ -77,8 +85,10 @@ var usersReads = map[string]string{
 const (
 	readPerson        = "persons only"
 	readEnabledPerson = "enabled persons only"
-	readTeam          = "teams on purpose"
-	readByID          = "one row by an id it was handed"
+	// readEnabledPersonOrTeam: see usersReads.
+	readEnabledPersonOrTeam = "enabled persons, or teams"
+	readTeam                = "teams on purpose"
+	readByID                = "one row by an id it was handed"
 )
 
 var readsUsers = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?users\b`)
@@ -120,7 +130,7 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 					}
 					// A read whose only users-table SQL is the shared PersonIDs
 					// subquery spells no "FROM users" of its own: count it too.
-					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "PersonIDs" || sel.Sel.Name == "EnabledPersonIDs") {
+					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "PersonIDs" || sel.Sel.Name == "EnabledPersonIDs" || sel.Sel.Name == "EnabledPersonOrTeamIDs") {
 						if id, ok := sel.X.(*ast.Ident); ok && id.Name == "users" {
 							hit = true
 						}
@@ -191,4 +201,21 @@ func funcName(fd *ast.FuncDecl) string {
 		return id.Name + "." + fd.Name.Name
 	}
 	return fd.Name.Name
+}
+
+// TestTheTeamArmKeepsThePersonRule: EnabledPersonOrTeamIDs is the person rule
+// (EnabledPersonIDs, disabled clause included) plus a team arm, and nothing
+// else — so widening the mirror token's owner set to teams (2b.2) cannot
+// re-admit a disabled person by spelling the person rule a second time.
+func TestTheTeamArmKeepsThePersonRule(t *testing.T) {
+	arm, ok := strings.CutPrefix(EnabledPersonOrTeamIDs, EnabledPersonIDs)
+	if !ok {
+		t.Fatalf("EnabledPersonOrTeamIDs = %q; want EnabledPersonIDs (%q) plus a team arm", EnabledPersonOrTeamIDs, EnabledPersonIDs)
+	}
+	if want := " UNION ALL SELECT id FROM public.users WHERE kind = 'team'"; arm != want {
+		t.Fatalf("the team arm = %q; want %q", arm, want)
+	}
+	if !strings.Contains(EnabledPersonIDs, "disabled_at IS NULL") || !strings.Contains(EnabledPersonIDs, "kind = 'person'") {
+		t.Fatalf("EnabledPersonIDs lost the person rule: %q", EnabledPersonIDs)
+	}
 }

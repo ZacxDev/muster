@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"path/filepath"
 	"strings"
 	"time"
@@ -233,7 +234,7 @@ func (h *Hub) agentClonesListed(hc *hostConn, m Msg) {
 // AgentClones asks one of the viewing principal's hosts for its clones of
 // repo. See Hub.AgentClones.
 func (s *Service) AgentClones(ctx context.Context, host, repo string) ([]AgentClone, error) {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return nil, err
 	}

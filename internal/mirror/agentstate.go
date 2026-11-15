@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"time"
 )
 
@@ -148,7 +149,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 
 // AgentState is Hub.AgentState for the viewing principal's host.
 func (s *Service) AgentState(ctx context.Context, host, session, window string) AgentState {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamViewer)
 	if err != nil {
 		return AgentState{Unknown: err}
 	}

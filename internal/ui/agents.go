@@ -696,6 +696,15 @@ func lazyCombobox(fieldName, label, placeholder, hiddenName, optionsURL, recents
 // a normal option). When presetValue is empty it renders EXACTLY like the plain
 // lazyCombobox (the task-less path stays byte-for-byte unchanged).
 func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, presetValue, presetLabel string) g.Node {
+	return lazyComboboxFollowing(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, presetValue, presetLabel, "")
+}
+
+// lazyComboboxFollowing is lazyComboboxPreselect whose options are fetched
+// with the value of the control follow (a CSS selector, "" for none) and
+// fetched again when it changes: the new-task form's repository picker
+// follows its Owner select, so the list is the chosen owner's
+// (/ui/agents/repos?owner=). "" renders exactly lazyComboboxPreselect.
+func lazyComboboxFollowing(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, presetValue, presetLabel, follow string) g.Node {
 	listID := "combobox-list-" + fieldName
 	wrapAttrs := []g.Node{g.Attr("data-combobox", ""), Class("relative")}
 	if recentsKey != "" {
@@ -735,7 +744,8 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 			// Lazy-load the options when the modal opens (load fires on swap-in);
 			// the skeleton shows until they arrive.
 			hx("hx-get", optionsURL),
-			hx("hx-trigger", "load"),
+			hx("hx-trigger", comboboxTrigger(follow)),
+			g.If(follow != "", hx("hx-include", follow)),
 			// Target THIS <ul> explicitly. htmx hx-target is inherited by
 			// descendants, and this combobox lives inside a dispatch form whose
 			// hx-target is the task's card (the task-scoped one) — without this,
@@ -749,6 +759,15 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 		),
 	)
 	return Div(wrapAttrs...)
+}
+
+// comboboxTrigger is a lazy combobox's hx-trigger: on load, and again when
+// the control it follows changes.
+func comboboxTrigger(follow string) string {
+	if follow == "" {
+		return "load"
+	}
+	return "load, change from:" + follow
 }
 
 func displayOr(a, b string) string {

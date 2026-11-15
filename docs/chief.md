@@ -272,8 +272,47 @@ the team on `/teams/{id}/chief`, as the team. It is a `claude-code` agent named
 only when an admin lists the team in `MUSTER_TEAMS_ON_SERVER_POOL`; otherwise
 the page says the team has no Claude account and provisioning is refused. Its
 instructions tell it that its owner is a team, that several people talk to it,
-and that every member reads what it prints. A team's chief cannot start agents
-yet: `agent_dispatch` refuses it until team dispatch arrives in a later release.
+and that every member reads what it prints.
+
+A team's chief starts **team-owned** `pod/claude-code` agents on the team's
+tasks, or from a request, once an admin lists the team in
+`MUSTER_CHIEF_DISPATCH_OWNERS` (host targets, the gateway kind and worker pools
+are refused for a team). The say-so is a member's, never the chief's:
+
+- **A typed message counts** when an operator or a manager of the team typed
+  it in a browser with a **fresh sign-in** (inside the step-up window). muster
+  checks the sign-in when the line is typed, re-reads the member's role when
+  the chief calls, and runs the owner's lane checks. A stale sign-in still sends
+  the message; it just does not count, and the start goes to an approval card.
+- **An approval card** is answered only in muster in a browser, by an operator
+  or a manager of the team with a fresh sign-in. The phone's notification
+  action and the paired phone's answer route refuse it by name, and the card
+  stays open. A member removed after their tap, or signed out everywhere since,
+  approves nothing. A line typed into the chief's chat never settles a team's
+  dispatch card: it stays open to be approved on the card.
+- **A team's task is not the team's say-so.** On a person's own task, the
+  task is the owner's say-so and a start needs nothing more; on a team's task
+  (any member may file one, or move one there) a start with no counting typed
+  message goes to an approval card, exactly as a start with no task does, and
+  without a `request_key` it is refused.
+- On a team's task, an Attention answer is never taken as an agent's
+  instructions by itself; the chief's brief goes on an approval card instead.
+- A typed message stops counting when its typer is signed out everywhere,
+  disabled or has their password reset after typing it.
+- A team's dispatch card's push carries **no answer buttons**: it says to open
+  the card in muster in a browser. A team's card has no "Change repo" yet.
+
+Every start's `task.chief_dispatch` audit row is the team's and names the
+person (`requested_by_user`), and its push reads "<name> asked <team>'s chief
+to start <agent> on task #N".
+
+🔴 **A team agent's terminal holds the team's Claude token.** An operator or a
+manager of the team, with a fresh sign-in, can open a team agent's terminal: a
+shell in a pod that holds the team's credentials, on the server pool the shared
+Claude account's token. Anyone who opens it can read them. This is accepted
+under the same trust model; rotate the agent's credentials when a member who
+could open it leaves. An open terminal closes when its member is removed from
+the team, made a viewer, disabled or signed out.
 A start or a restart the team could not run (the team dropped from the pool, the
 `claude-code` kind off) is refused before anything is stopped, and the page
 hides Start and Restart and says why. A manager also starts, stops and

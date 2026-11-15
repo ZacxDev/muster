@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -104,14 +104,10 @@ const (
 	agentDispatchPoolNoTask = "a worker_pool agent serves machine jobs and takes no task_id"
 	agentDispatchPoolKind   = "worker_pool %q: only a claude-code agent can be a machine-job worker"
 	// A TEAM's chief (team sharing phase 4): pod/claude-code agents only.
-	agentDispatchTeamHost    = "a team's agents run on the cluster only: a host target is not available to a team yet (team hosts are a later phase); use pod/claude-code"
+	agentDispatchTeamHost    = "a team's agents run on the cluster only: a team's chief cannot dispatch onto a host yet, a team host included (a later phase); use pod/claude-code"
 	agentDispatchTeamGateway = "a team's agents are Claude Code agents: use pod/claude-code (a Standard agent is not available to a team)"
 	agentDispatchTeamPool    = "worker_pool: a team's agents are not machine-job workers"
-	// AgentDispatchTeamLater is every other agent_dispatch from a TEAM's chief:
-	// team dispatch, with its step-up stamps and typed-turn gates, is slice 4.7.
-	AgentDispatchTeamLater = "a team's chief cannot start agents yet: team dispatch arrives in a later release. Nothing was started; " +
-		"tell the members who asked, and a team manager can start or stop the team's existing agents from their pages"
-	agentDispatchPoolName   = "worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'"
+	agentDispatchPoolName    = "worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'"
 )
 
 var (
@@ -410,6 +406,12 @@ const (
 		"show muster that your owner typed this; ask your owner to start it from the dispatch form"
 	ownerAskedNoTaskUnverifiable = "owner_asked: your owner's turn could not be read, so nothing was started; try again later"
 	ownerAskedNoTaskChanged      = "owner_asked: your owner's turn changed while the start was being checked; call again"
+	// A team's chief: the member who typed it is no longer an operator.
+	ownerAskedNoTaskTyperNotOperator = "owner_asked: the member who typed the message you are answering is no longer an " +
+		"operator of your team, so muster cannot take this as the team's request"
+	// A team's chief: the member who typed it was signed out everywhere since.
+	ownerAskedNoTaskTyperSignedOut = "owner_asked: the member who typed the message you are answering was signed out of " +
+		"every session since, so muster cannot take this as the team's request"
 
 	ownerAskedUngatedTail = "; or use task_route_attention"
 )
@@ -417,16 +419,24 @@ const (
 // ownerAskedNoTaskSibling maps each sentence ownerTurnFor can return (today's, worded
 // for a task the chief gated) to its no-task sibling.
 var ownerAskedNoTaskSibling = map[string]string{
-	chiefReleaseNoOwnerTurn:    ownerAskedNoTaskNoOwnerTurn,
-	chiefReleaseNotOwnersTurn:  ownerAskedNoTaskNotOwnersTurn,
-	chiefReleaseOutsideTurn:    ownerAskedNoTaskOutsideTurn,
-	chiefReleaseOtherCLIBusy:   ownerAskedNoTaskOtherCLIBusy,
-	chiefReleaseUnaccountedCLI: ownerAskedNoTaskUnaccountedCLI,
-	chiefReleaseCLIsUnknown:    ownerAskedNoTaskCLIsUnknown,
-	chiefReleaseNotOverMCP:     ownerAskedNoTaskNotOverMCP,
-	chiefReleaseUnverifiable:   ownerAskedNoTaskUnverifiable,
-	chiefReleaseChanged:        ownerAskedNoTaskChanged,
+	chiefReleaseNoOwnerTurn:      ownerAskedNoTaskNoOwnerTurn,
+	chiefReleaseNotOwnersTurn:    ownerAskedNoTaskNotOwnersTurn,
+	chiefReleaseOutsideTurn:      ownerAskedNoTaskOutsideTurn,
+	chiefReleaseOtherCLIBusy:     ownerAskedNoTaskOtherCLIBusy,
+	chiefReleaseUnaccountedCLI:   ownerAskedNoTaskUnaccountedCLI,
+	chiefReleaseCLIsUnknown:      ownerAskedNoTaskCLIsUnknown,
+	chiefReleaseNotOverMCP:       ownerAskedNoTaskNotOverMCP,
+	chiefReleaseUnverifiable:     ownerAskedNoTaskUnverifiable,
+	chiefReleaseChanged:          ownerAskedNoTaskChanged,
+	chiefReleaseTyperNotOperator: ownerAskedNoTaskTyperNotOperator,
+	chiefReleaseTyperSignedOut:   ownerAskedNoTaskTyperSignedOut,
 }
+
+// DetailRequestedByUser is the reservation detail key (task.chief_dispatch)
+// naming the PERSON whose say-so started the agent: the owner, or on a team's
+// chief the member who typed the turn or answered the approval card (team
+// sharing phase 4, slice 4.7). The audit row's user_id is the team.
+const DetailRequestedByUser = "requested_by_user"
 
 // ownerAskedRefusal is THE one place the three sets of owner_asked sentences
 // meet: why (an ownerTurnFor / verifyGateRelease refusal, always today's
@@ -619,12 +629,16 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	// A HOST target — or "mirrored", which is host/?/? — is mirrored dispatch
 	// (host_dispatch.go): its own flow, the same guards in the same order.
 	//
-	// 🔴 A TEAM'S CHIEF STARTS NO AGENT YET (team sharing phase 4, slice 4.5;
-	// team dispatch is 4.7): a host target is refused for a team — team hosts
-	// are phase 2b — and so are the gateway kind and a worker pool (gateway and
-	// worker-pool agents are not team agents in phase 4), each with its own
-	// sentence, and then every other dispatch (AgentDispatchTeamLater), all
-	// before anything is reserved.
+	// 🔴 A TEAM'S CHIEF STARTS pod/claude-code AGENTS ONLY (team sharing phase
+	// 4): a host target is refused for a team — team hosts are phase 2b — and
+	// so are the gateway kind and a worker pool (gateway and worker-pool agents
+	// are not team agents in phase 4), each with its own sentence, before
+	// anything is reserved. Everything else is the person's path, with the
+	// say-so made team-aware (slice 4.7): a typed turn counts when a member who
+	// is an operator or above typed it with a fresh sign-in
+	// (typerSpeaksForOwner), and an approval card only when such a member
+	// answered it in a browser with a fresh sign-in (teamCardRefusal,
+	// teamCardAnswerer).
 	teamOwned := s.ownerIsTeam(ctx, owner)
 	if t, ok := parseHostTarget(in.Target); ok {
 		if teamOwned {
@@ -646,15 +660,6 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	if teamOwned && in.WorkerPool != "" {
 		return refuse(agentDispatchTeamPool)
-	}
-	// 🔴 AND EVERY OTHER DISPATCH FROM A TEAM'S CHIEF IS REFUSED, before
-	// anything is reserved: a member typing into the shared room could
-	// otherwise steer the chief into starting agents AS THE TEAM, with none of
-	// the step-up stamps and typed-turn gates slice 4.7 brings. The refusals
-	// above stay first, so each still names its own reason. NOT a boot refusal
-	// of team ids in MUSTER_CHIEF_DISPATCH_OWNERS: 4.7 uses that list.
-	if teamOwned {
-		return refuse(AgentDispatchTeamLater)
 	}
 	if in.RequestKey != "" && !requestKeyRE.MatchString(in.RequestKey) {
 		return refuse(agentDispatchKeyShape)
@@ -732,7 +737,18 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	byTap := comp.approvedByTap()
 	// needCard: the owner must approve this request on a card — it is not in
 	// their typed turn, and nothing else of theirs covers it.
-	needCard := !typed && !byTap && in.RequestKey != "" && (!onTask || in.OwnerAsked)
+	//
+	// 🔴 A TEAM'S TASK IS NOT THE TEAM'S SAY-SO (team sharing 4.7, operator
+	// decision Q1: "every team dispatch needs a fresh typed turn from an
+	// operator+ or an approval card answered with a fresh sign-in, on a task
+	// too"). A PERSON's own task is their say-so (docs/chief.md: the chief
+	// starts on one of your tasks); a team's task speaks for no one person
+	// (another member, the chief or a move may have put it there), so a TEAM
+	// owner's dispatch with no counting typed turn goes to the card on a task
+	// exactly as off one (teamTaskNeedsCard), and with no request_key it is
+	// refused below (agentDispatchTeamTaskNoKey).
+	teamTaskCard := teamTaskNeedsCard(teamOwned, onTask, typed, byTap)
+	needCard := !typed && !byTap && in.RequestKey != "" && (!onTask || in.OwnerAsked || teamTaskCard)
 	// 🔴 WITHOUT owner_asked (only possible on a task), A PROMPT IS ONLY EVER THE
 	// OWNER'S OWN WORDS: verbatim, the owner's answer to an attention ask linked
 	// to THIS task (ownerAnswer) — today's task_dispatch rule — or a brief the
@@ -749,6 +765,12 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			}
 			needCard = true
 		}
+	}
+	// A team's task with no counting typed turn and no request_key: no card
+	// can be raised, so nothing starts (after ownerAnswer, whose sentence for
+	// a bare answer on a team's task is the more specific one).
+	if teamTaskCard && !in.OwnerAsked && in.RequestKey == "" {
+		return refuse(agentDispatchTeamTaskNoKey)
 	}
 	// 🔴 THE OWNER'S CLICK BINDS THE TARGET: on a task whose newest owner
 	// answer is one of task_route_attention's per-target options, a dispatch
@@ -829,10 +851,20 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	if in.WorkerPool != "" {
 		detail["worker_pool"] = in.WorkerPool
 	}
+	// The PERSON whose say-so the start is (team sharing 4.7): for a person's
+	// own chief, the owner — on every path, their own task included — unless
+	// a card's answer or a typed turn below names who, which for a person is
+	// the owner too. A TEAM's start names only a member a check below read.
+	if !teamOwned {
+		detail[DetailRequestedByUser] = owner
+	}
 	if byTap {
 		// The hold this start consumes (single use), and the card the owner
 		// approved the whole request on.
 		detail[plugins.DetailHeld], detail["approved_on_card"] = comp.hold.ID, comp.detail.AskID
+		if comp.answeredBy > 0 {
+			detail[DetailRequestedByUser] = comp.answeredBy
+		}
 	}
 	if prompt != "" {
 		detail["instructions"] = prompt
@@ -898,6 +930,11 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			}
 			// Written into the reservation's row, which is inserted after check.
 			detail["owner_message"] = msg.ID
+			// The PERSON whose typed turn is the say-so: the owner, or on a
+			// team's chief the member who typed it (team sharing 4.7).
+			if msg.TypedBy > 0 {
+				detail[DetailRequestedByUser] = msg.TypedBy
+			}
 		}
 		if !onTask {
 			if needCard {
@@ -1055,6 +1092,11 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		}
 		s.advanceTaskToInProgress(ctx, in.TaskID)
 		s.attentionChanged(owner, "task-routed-"+strconv.FormatInt(in.TaskID, 10))
+	}
+	// A TEAM's start names the person whose say-so it was, in its push
+	// (team_dispatch.go); a gate release's push already said so.
+	if person, _ := detail[DetailRequestedByUser].(int64); teamOwned && person > 0 && rel == nil {
+		s.pushTeamDispatch(ctx, owner, person, rec, in.TaskID)
 	}
 	if in.WorkerPool != "" {
 		out["worker_pool"] = in.WorkerPool
