@@ -194,7 +194,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Officers, Name: "Officers",
 			Description: "Long-running workers that take items from a queue (HQ, or muster's built-in backend), in pods or as host-spawned sessions on one of your machines.",
 			Enable:      []features.Var{v(envOfficers, "JSON array")},
-			Settings: []string{officers.TokenEnvPrefix + "<NAME>", officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>",
+			Settings: []string{officers.TokenEnvPrefix + "<NAME>", officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>", officers.CredentialEnvPrefix + "<NAME>",
 				officers.KubeEndpointEnvPrefix + "<CLUSTER>", officers.KubeCAEnvPrefix + "<CLUSTER>", officers.KubeMinterEnvPrefix + "<CLUSTER>",
 				officers.KubeAllowlistEnvPrefix + "<CLUSTER>", officers.ImageRegistriesEnv, envOfficerImagePullSecret}},
 	}
