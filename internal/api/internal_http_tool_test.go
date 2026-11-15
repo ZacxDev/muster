@@ -30,13 +30,45 @@ const ihToolToken = "fixture-tool-token-41d0e2"
 // panic (the nil embedded interface).
 type ihGrantStore struct {
 	connectors.Store
-	status   string
+	status string
+	// repo is the grant's recorded scope (connectors.Grant.Repo): for an
+	// internal_http grant, the destination it was approved for.
+	repo     string
 	mu       sync.Mutex
 	standing []string
+	reopened int
 }
 
 func (s *ihGrantStore) LatestGrant(_ context.Context, agent int64, name string) (connectors.Grant, error) {
-	return connectors.Grant{ID: 1, AgentID: agent, Connector: name, Status: s.status, Source: connectors.SourceApp}, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return connectors.Grant{ID: 1, AgentID: agent, Connector: name, Status: s.status, Source: connectors.SourceApp,
+		Repo: s.repo}, nil
+}
+func (s *ihGrantStore) GetGrant(ctx context.Context, id int64) (connectors.Grant, error) {
+	g, err := s.LatestGrant(ctx, 3, "app-driver")
+	g.ID = id
+	return g, err
+}
+func (s *ihGrantStore) ReopenGrant(_ context.Context, id int64) (connectors.Grant, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status != connectors.StatusApproved {
+		return connectors.Grant{ID: id, Status: s.status}, false, nil
+	}
+	s.status = connectors.StatusPending
+	s.reopened++
+	return connectors.Grant{ID: id, Connector: "app-driver", Status: s.status}, true, nil
+}
+func (s *ihGrantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, _, source, repo string,
+	_ connectors.DecisionSource) (connectors.Grant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status, s.repo = connectors.StatusDenied, repo
+	if approve {
+		s.status = connectors.StatusApproved
+	}
+	return connectors.Grant{ID: id, AgentID: 3, Connector: "app-driver", Status: s.status, Source: source, Repo: repo}, nil
 }
 func (s *ihGrantStore) Audit(context.Context, connectors.AuditEntry) error { return nil }
 func (s *ihGrantStore) GetConnector(_ context.Context, name string) (connectors.Connector, error) {
@@ -66,6 +98,8 @@ type ihToolFixture struct {
 	got  atomic.Value // last request: method + " " + RequestURI + " " + Authorization
 	a    agents.Agent
 	gs   *ihGrantStore
+	// svcURL is the fake service's base URL.
+	svcURL string
 }
 
 func newIHToolFixture(t *testing.T, status string) *ihToolFixture {
@@ -78,11 +112,12 @@ func newIHToolFixture(t *testing.T, status string) *ihToolFixture {
 		_, _ = io.WriteString(w, `{"ok":true,"auth":"`+r.Header.Get("Authorization")+`"}`)
 	}))
 	t.Cleanup(svc.Close)
+	f.svcURL = svc.URL
 	ih, err := connectors.NewInternalHTTP(connectors.InternalHTTPSettings{Name: "app-driver", BaseURL: svc.URL}, ihToolToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.gs = &ihGrantStore{status: status}
+	f.gs = &ihGrantStore{status: status, repo: ih.Destination()}
 	store := connectors.WithVirtual(f.gs, ih, authz.IsAdmin)
 	f.s = &Server{logger: log.New(io.Discard, "", 0)}
 	f.s.ext.Connectors = store

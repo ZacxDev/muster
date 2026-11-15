@@ -314,6 +314,8 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 	}
 	if ih, ok := connectors.InternalHTTPOf(ctx, s.ext.Connectors, g.Connector); ok {
 		// Likewise an internal_http connector: no repository is involved.
+		// Its description names no address (internalHTTPGrantsDescription):
+		// this answer goes to a model session.
 		kube = true
 		if approve {
 			out["grants"] = internalHTTPGrantsDescription(ih)

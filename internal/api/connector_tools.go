@@ -64,8 +64,10 @@ func connectorToolDefs() []agents.ToolDef {
 		fn(internalHTTPToolName, "Call an internal_http connector this agent has an approved grant for (ask with "+
 			"connector_request first). The connector's service and its credential are set by the server's admin: you "+
 			"choose only the method and a path under the connector's prefix (default /v1/), never a URL or a host. "+
-			"Returns {status, content_type, body (text) or body_base64 (anything else, e.g. an image), bytes, max_bytes, "+
-			"duration_ms}. A response over the connector's size cap is refused, not cut.",
+			"Returns {status, content_type, body (text) or body_base64 (anything else), bytes, max_bytes, duration_ms, "+
+			"images?}. Over MCP an image comes back as an image you can see, not as base64 text: an image body, and each "+
+			"top-level *_base64 field of a JSON body that holds a PNG, JPEG, GIF or WebP (e.g. png_base64), whose value "+
+			"is then a placeholder; images counts them. A response over the connector's size cap is refused, not cut.",
 			objSchema(map[string]any{
 				"connector": strProp("The internal_http connector's name."),
 				"method": map[string]any{"type": "string", "enum": connectors.InternalHTTPMethods,
@@ -92,10 +94,15 @@ func internalHTTPManagedNote(ih *connectors.InternalHTTP) string {
 }
 
 // internalHTTPGrantsDescription says what approving a request for an
-// internal_http connector grants.
+// internal_http connector grants. 🔴 IT NAMES NO ADDRESS: it is read by a
+// model — connector_requests_list and connector_request_decide answer the
+// owner's mirrored session — so it says "the connector's configured service"
+// and the prefix, never the base URL. The owner's human view, the Connectors
+// tab (internalHTTPManagedNote), names the service.
 func internalHTTPGrantsDescription(ih *connectors.InternalHTTP) string {
-	return internalHTTPToolName + " for this agent only: GET, POST and DELETE requests to " + ih.BaseURL() + " under " +
-		ih.PathPrefix() + ", carrying the connector's bearer token (added by muster-server, never shown to the agent); " +
+	return internalHTTPToolName + " for this agent only: GET, POST and DELETE requests to " + ih.Name() +
+		"'s configured service (its address is on the Connectors tab) under " + ih.PathPrefix() +
+		", carrying the connector's bearer token (added by muster-server, never shown to the agent); " +
 		"the agent chooses only the method and the path"
 }
 
@@ -157,6 +164,15 @@ func (s *Server) toolInternalHTTP(ctx context.Context, a agents.Agent, arguments
 	var herr *connectors.InternalHTTPError
 	switch {
 	case err == nil:
+		// 🔴 AN IMAGE IS RETURNED AS AN IMAGE where the caller can be handed
+		// one (an MCP door: toolImagesFrom): a screenshot as megabytes of
+		// base64 text is unreadable to the model and overruns its client's
+		// output limit. Elsewhere the result is the whole answer as text.
+		if images := toolImagesFrom(ctx); images != nil {
+			var imgs []connectors.InternalHTTPImage
+			res, imgs = res.SplitImages()
+			images.add(imgs...)
+		}
 		return toolJSON(res)
 	case errors.As(err, &herr):
 		return toolErr("%s [%s]", herr.Message, herr.Class)

@@ -1109,6 +1109,10 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 		// re-opens the grant (connectors.ReconcileGrant), as does a change of its
 		// `read_repos` (the set, connectors.RepoScope; a reordering does not).
 		repo = s.agentRepoScope(a)
+		// For an internal_http connector it is the connector's destination
+		// instead (connectors.GrantScope): a restart that points the name at
+		// another service re-opens the approval.
+		repo = connectors.GrantScope(ctx, s.ext.Connectors, g.Connector, repo)
 	}
 	g, err := s.ext.Connectors.DecideGrantFrom(ctx, id, approve, "operator", src, repo, via)
 	if err != nil {

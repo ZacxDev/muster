@@ -269,7 +269,7 @@ principal. A member's agent finds no connector of that name.
 
 ```
 internal_http_request {connector, method, path, query?, body?}
-→ {status, content_type, body | body_base64, bytes, max_bytes, duration_ms}
+→ {status, content_type, body | body_base64, bytes, max_bytes, duration_ms, images?}
 ```
 
 - **The arguments are exactly those five.** Any other key is refused, not
@@ -293,16 +293,36 @@ internal_http_request {connector, method, path, query?, body?}
   `application/json`. The limit is 1 MiB.
 - **The answer** contains the status, the `Content-Type` and the body.
   A text body (`text/*`, JSON or XML that is valid UTF-8) comes back as
-  `body`. Any other body, such as an image, comes back as `body_base64`.
+  `body`. Any other body comes back as `body_base64`.
   No other response header is returned. A redirect is returned as it is and
   never followed.
+- **Images over MCP.** When the tool is called through an MCP door, an image
+  is returned as an MCP image content block after the text, so the model can
+  see it. This applies to an image body, and to each top-level `*_base64`
+  field of a JSON body (for example `png_base64`) that holds an image. The
+  type is detected from the bytes, and only PNG, JPEG, GIF and WebP count. The
+  field's value is replaced with a placeholder that names the image, and
+  `images` gives the count. Every other response is unchanged. The in-process
+  agent runtime returns text only, so there the whole answer stays as text.
 
 **The token stays in muster-server.** muster-server adds
-`Authorization: Bearer <token>` to each call, and removes the token from every
-response body. The token never appears in a tool result, an error, a log line,
-an audit row, the agent's environment or the agent's view of the connector.
-That view does not include the service's address either. The proxy refuses
-`/connect/<name>/…` (403), naming the tool.
+`Authorization: Bearer <token>` to each call. Before a response's body and
+`Content-Type` are returned, they go through the same redactor as the HTTP
+proxy. It replaces the token in its plain form (ignoring case), its URL, hex
+and JSON-escaped forms, and its base64 at every alignment, including inside a
+larger base64 value. This is defence in depth against a service that echoes
+the request back. It does not catch an encoding it does not know, such as a
+double encoding or compressed data. muster-server never puts the token in an
+error, a log line, an audit row or the agent's environment.
+
+**The service's address stays in muster-server too.** The agent's view of the
+connector does not include it. A failed connection gives a fixed message,
+such as "the connection was refused or failed" or "its name did not resolve",
+and never the dial error's text, which would name the host and port. The
+`connector_requests_list` and `connector_request_decide` answers to the
+owner's session describe the grant without the address. Only the Connectors
+tab and the boot log show it. The proxy refuses `/connect/<name>/…` (403),
+naming the tool.
 
 ### The grant
 
@@ -316,6 +336,12 @@ pending request on first use as every connector.
 for it. Each agent that asks is approved by hand. A repository change does not
 re-open the grant, because what the connector reaches is configuration, not a
 repository.
+
+**An approval is for one destination.** The approval records a fingerprint of
+the connector's `base_url` and `path_prefix`. If either changes and
+muster-server restarts, the grant is re-opened and the owner is asked again.
+The same configuration after a restart leaves it approved, and so does a new
+token.
 
 An officer instance may use it only if its officer lists the connector in
 `connectors` ([officers.md](officers.md#configuration)).
@@ -331,7 +357,8 @@ one line to muster-server's log. A refused call is included. The row holds:
 - a detail line: `internal_http bytes=N duration=Nms class=…`.
 
 The class is one of `ok`, `method`, `path`, `query`, `body`, `too_large`,
-`timeout`, `connect` and `refused`. The row never holds a query value, a body
+`timeout`, `connect` and `refused`. Every timeout is `timeout`: the call's own
+deadline, the HTTP client's timeout, or a transport deadline. The row never holds a query value, a body
 or the token.
 
 ### Setting one up

@@ -23,23 +23,35 @@ package connectors
 // proxy and every other connector kind keep refusing private addresses
 // (TestOtherConnectorKindsStillRefusePrivateAddresses).
 //
-// 🔴 THE TOKEN NEVER REACHES THE AGENT. It lives only in this process: it is
-// added to the outgoing request's Authorization header, removed from every
-// byte of the response body (redacted), and never appears in a result, an
-// error, a log line or an audit row. Only the response's status, its
-// Content-Type and its body are returned — no other header.
+// 🔴 THE TOKEN IS NEVER HANDED TO THE AGENT. It lives only in this process and
+// is added to the outgoing request's Authorization header. Only the
+// response's status, its Content-Type and its body are returned — no other
+// header — and both the body and the Content-Type go through the HTTP
+// proxy's redactor (secretForms, newRedactor) first: the token's plain form
+// (case-insensitively), its URL, hex and JSON-escaped forms, and its base64 at
+// every alignment (inside a larger blob too) are replaced. Like the proxy's,
+// that is DEFENCE IN DEPTH against a service that reflects the request, not a
+// proof: a transformation it does not know (a double encoding, compression,
+// hashing) is not caught (see secretForms). No error, log line or audit row
+// carries the token, and no error carries the service's address (callError).
 //
 // It is presented through the connector store as a virtual connector
 // (WithVirtual), to admins' agents only, so an agent's request for it is
 // filed and approved by the owner like any connector grant. An approval is
-// that one agent's: it is never shared (api.perAgentConnector). The HTTP
+// that one agent's: it is never shared (api.perAgentConnector). 🔴 AN APPROVAL
+// IS FOR ONE DESTINATION: it records the connector's Destination (its base
+// URL and path prefix, fingerprinted), and a restart with either changed
+// re-opens it (ReconcileGrant, GrantScope) — the owner approved reaching THAT
+// service, not whatever the name later points at. The HTTP
 // proxy refuses it (/connect/<name>/… reaches nothing): the
 // internal_http_request tool is its only door.
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,6 +120,7 @@ type InternalHTTP struct {
 	maxBytes int
 	timeout  time.Duration
 	token    string
+	red      *redactor
 	client   *http.Client
 	// Logger receives one line per call; nil logs nothing.
 	Logger *log.Logger
@@ -233,7 +246,8 @@ func NewInternalHTTP(d InternalHTTPSettings, token string) (*InternalHTTP, error
 	if err := ValidateSecret(token); err != nil {
 		return nil, fmt.Errorf("internal_http connector %q: %s: %w", name, InternalHTTPTokenEnv(name), err)
 	}
-	ih := &InternalHTTP{name: name, base: base, prefix: prefix, maxBytes: maxBytes, timeout: timeout, token: token}
+	ih := &InternalHTTP{name: name, base: base, prefix: prefix, maxBytes: maxBytes, timeout: timeout, token: token,
+		red: newRedactor(secretForms(Connector{Scheme: SchemeBearer}, token))}
 	ih.client = &http.Client{
 		Timeout: timeout,
 		// 🔴 A REDIRECT IS RETURNED, NEVER FOLLOWED: following one would send
@@ -256,8 +270,11 @@ func NewInternalHTTP(d InternalHTTPSettings, token string) (*InternalHTTP, error
 // Name is the connector's name.
 func (ih *InternalHTTP) Name() string { return ih.name }
 
-// BaseURL is the configured base URL (operator-facing only: the Connectors tab
-// and the boot log; never an agent's view).
+// BaseURL is the configured base URL. Operator-facing only: the Connectors tab
+// (a human's page) and the boot log. No tool answer carries it — not an
+// agent's view, and not the owner's mirrored session's either
+// (connector_requests_list / connector_request_decide describe the grant
+// without it: api.internalHTTPGrantsDescription).
 func (ih *InternalHTTP) BaseURL() string { return ih.base.String() }
 
 // PathPrefix is the configured path prefix.
@@ -269,10 +286,25 @@ func (ih *InternalHTTP) MaxResponseBytes() int { return ih.maxBytes }
 // Timeout is the per-call timeout.
 func (ih *InternalHTTP) Timeout() time.Duration { return ih.timeout }
 
+// destinationPrefix starts every Destination, so one is never mistaken for a
+// repository name (owner/name has no ':').
+const destinationPrefix = "internal_http:"
+
+// Destination is the fingerprint of where the connector's calls go: its base
+// URL and its path prefix. An approval records it (GrantScope) and
+// ReconcileGrant re-opens one recorded for another. It is a hash, so the grant
+// row and any line quoting it never carry the address itself. The token is
+// deliberately not in it: rotating the token changes no destination.
+func (ih *InternalHTTP) Destination() string {
+	sum := sha256.Sum256([]byte(ih.base.String() + "\n" + ih.prefix))
+	return destinationPrefix + hex.EncodeToString(sum[:12])
+}
+
 // --- the Virtual face ------------------------------------------------------------
 
-// Describe names no host: the agent's view of the connector never carries the
-// base URL, and the proxy has nothing to allowlist.
+// Describe names no host: no model's view of the connector (an agent's, or
+// the owner's mirrored session's) carries the base URL, and the proxy has
+// nothing to allowlist.
 func (ih *InternalHTTP) Describe() Connector {
 	return Connector{Name: ih.name, Platform: "internal HTTP (run by muster-server)", Scheme: SchemeInternalHTTP,
 		CreatedAt: VirtualCreatedAt}
@@ -325,6 +357,102 @@ type InternalHTTPResult struct {
 	Bytes       int    `json:"bytes"`
 	MaxBytes    int    `json:"max_bytes"`
 	DurationMS  int64  `json:"duration_ms"`
+	// Images is how many images SplitImages took out of the response, each
+	// returned beside this result as an image (an MCP image content block).
+	Images int `json:"images,omitempty"`
+}
+
+// InternalHTTPImage is one image a response carried (SplitImages).
+type InternalHTTPImage struct {
+	MIMEType string
+	Data     []byte
+}
+
+// internalHTTPImageTypes are the image types SplitImages returns as images:
+// what a model client shows (MCP image content). The type is SNIFFED from the
+// bytes (http.DetectContentType), never taken from a field name or a header.
+var internalHTTPImageTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// imageType is b's sniffed image type, or "" when it is not one of
+// internalHTTPImageTypes.
+func imageType(b []byte) string {
+	if t := http.DetectContentType(b); internalHTTPImageTypes[t] {
+		return t
+	}
+	return ""
+}
+
+// SplitImages takes the images out of r, for a caller that can show them
+// (the MCP door: api.toolInternalHTTP), and returns r without them. A JSON
+// text of several megabytes of base64 is unreadable to a model and overruns
+// its client's output limit, while an image block is what it can SEE.
+//
+//   - A binary body (BodyBase64) whose bytes are an image: the image, and
+//     BodyBase64 is emptied.
+//   - A JSON body whose TOP-LEVEL object has a string field named `*_base64`
+//     (a screenshot service's `png_base64`) that decodes, as standard base64,
+//     to an image: that image, and the field's value becomes a placeholder
+//     naming the image's position, type and size. Every other field is kept
+//     (the object is re-encoded, its keys sorted).
+//
+// Anything else is returned unchanged with no image: another body, a field
+// that does not decode or decodes to something not an image, a nested field.
+// Images is set to the count. The bytes are the already-redacted body's.
+func (r InternalHTTPResult) SplitImages() (InternalHTTPResult, []InternalHTTPImage) {
+	if r.BodyBase64 != "" {
+		raw, err := base64.StdEncoding.DecodeString(r.BodyBase64)
+		if t := imageType(raw); err == nil && t != "" {
+			r.BodyBase64, r.Images = "", 1
+			return r, []InternalHTTPImage{{MIMEType: t, Data: raw}}
+		}
+		return r, nil
+	}
+	if r.Body == "" || !isJSON(r.ContentType) {
+		return r, nil
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal([]byte(r.Body), &obj) != nil || obj == nil {
+		return r, nil
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		if strings.HasSuffix(k, "_base64") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var imgs []InternalHTTPImage
+	for _, k := range keys {
+		var v string
+		if json.Unmarshal(obj[k], &v) != nil {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(v)
+		t := imageType(raw)
+		if err != nil || t == "" {
+			continue
+		}
+		imgs = append(imgs, InternalHTTPImage{MIMEType: t, Data: raw})
+		ph, _ := json.Marshal(fmt.Sprintf("[image %d of this result: %s, %d bytes, returned as an image]", len(imgs), t, len(raw)))
+		obj[k] = ph
+	}
+	if len(imgs) == 0 {
+		return r, nil
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(obj) != nil {
+		return r, nil
+	}
+	r.Body, r.Images = strings.TrimSuffix(buf.String(), "\n"), len(imgs)
+	return r, imgs
+}
+
+// isJSON reports whether a Content-Type is JSON.
+func isJSON(ct string) bool {
+	mt, _, err := mime.ParseMediaType(ct)
+	return err == nil && (mt == "application/json" || strings.HasSuffix(mt, "+json"))
 }
 
 // InternalHTTPError is a refusal or a failed call, with its audit class. Its
@@ -478,10 +606,7 @@ func (ih *InternalHTTP) do(ctx context.Context, req InternalHTTPRequest) (Intern
 	}
 	resp, err := ih.client.Do(hreq)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-			return res, path, 0, refusal("timeout", "the service did not answer within %s", ih.timeout)
-		}
-		return res, path, 0, refusal("connect", "could not reach the connector's service: %s", ih.redactString(errText(err)))
+		return res, path, 0, ih.callError(ctx, err)
 	}
 	defer resp.Body.Close()
 	// A declared length over the cap is refused before a byte is read; the
@@ -500,9 +625,9 @@ func (ih *InternalHTTP) do(ctx context.Context, req InternalHTTPRequest) (Intern
 	if len(raw) > ih.maxBytes {
 		return res, path, resp.StatusCode, refusal("too_large", "the response is over the connector's %d-byte cap", ih.maxBytes)
 	}
-	raw = ih.redact(raw)
+	raw = ih.red.replace(raw)
 	res.Status = resp.StatusCode
-	res.ContentType = resp.Header.Get("Content-Type")
+	res.ContentType = string(ih.red.replace([]byte(resp.Header.Get("Content-Type"))))
 	res.Bytes = len(raw)
 	if isTextual(res.ContentType) && utf8.Valid(raw) {
 		res.Body = string(raw)
@@ -512,14 +637,30 @@ func (ih *InternalHTTP) do(ctx context.Context, req InternalHTTPRequest) (Intern
 	return res, path, resp.StatusCode, nil
 }
 
-// errText is an http.Client error without the URL it quotes: the URL is the
-// connector's base, which the agent is never shown.
-func errText(err error) string {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		err = ue.Err
+// callError is a failed http.Client.Do as a refusal: its class and a message
+// that names a KIND of failure, never the error's own text.
+//
+// 🔴 NO ADDRESS: a dial error quotes the host and port it dialled (`dial tcp
+// <ip>:<port>: connect: connection refused`) and a lookup error the name
+// (`lookup <host>: no such host`), so the error text itself is never
+// returned — only the class's fixed sentence.
+//
+// A TIMEOUT IS "timeout" HOWEVER IT SURFACES: the call's context expiring,
+// the client's own Client.Timeout, or any net.Error whose Timeout() is true
+// (a transport or dial deadline) — never "connect".
+func (ih *InternalHTTP) callError(ctx context.Context, err error) *InternalHTTPError {
+	var ne net.Error
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()):
+		return refusal("timeout", "the service did not answer within %s", ih.timeout)
+	case errors.As(err, &dnsErr):
+		return refusal("connect", "could not reach the connector's service: its name did not resolve")
+	case errors.As(err, &opErr) && opErr.Op == "dial":
+		return refusal("connect", "could not reach the connector's service: the connection was refused or failed")
 	}
-	return err.Error()
+	return refusal("connect", "could not reach the connector's service: the request failed before an answer")
 }
 
 // isTextual reports whether a Content-Type is returned as text.
@@ -534,17 +675,6 @@ func isTextual(ct string) bool {
 		return true
 	}
 	return false
-}
-
-// redact removes the token from b. 🔴 Every response body goes through it
-// before it is returned: an upstream that reflects the request (an echo, an
-// error quoting its Authorization header) never hands the token back.
-func (ih *InternalHTTP) redact(b []byte) []byte {
-	return bytes.ReplaceAll(b, []byte(ih.token), []byte("[redacted]"))
-}
-
-func (ih *InternalHTTP) redactString(s string) string {
-	return strings.ReplaceAll(s, ih.token, "[redacted]")
 }
 
 // audit records one call: who, which connector, the method, the validated path

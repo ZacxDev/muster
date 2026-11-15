@@ -334,7 +334,7 @@ func TestTheTokenNeverReachesTheCaller(t *testing.T) {
 			t.Errorf("the token is in the %s: %s", what, s)
 		}
 	}
-	if !strings.Contains(res.Body, "[redacted]") {
+	if !strings.Contains(res.Body, connectors.RedactedMarker) {
 		t.Fatalf("the reflected token was not redacted: %s", res.Body)
 	}
 	if strings.Contains(string(desc), strings.TrimPrefix(svc.srv.URL, "http://")) {
@@ -482,8 +482,9 @@ func TestOtherConnectorKindsStillRefusePrivateAddresses(t *testing.T) {
 // TestAnInternalHTTPGrantIsNotReopenedWhenTheRepoChanges: what an
 // internal_http connector reaches is the server's configuration, never a
 // repository, so ReconcileGrant leaves its grant approved when the agent's
-// repository changed. CONTROL: the App's github grant under the same change
-// IS re-opened.
+// repository changed (the grant records the connector's destination:
+// GrantScope). CONTROL: the App's github grant under the same change IS
+// re-opened.
 func TestAnInternalHTTPGrantIsNotReopenedWhenTheRepoChanges(t *testing.T) {
 	svc := newIHService(t)
 	ih := newIH(t, svc.srv.URL, connectors.InternalHTTPSettings{})
@@ -491,12 +492,14 @@ func TestAnInternalHTTPGrantIsNotReopenedWhenTheRepoChanges(t *testing.T) {
 	for _, c := range []struct {
 		connector string
 		v         connectors.Virtual
+		recorded  string
 		want      bool
-	}{{"app-driver", ih, false}, {"github", &stubVirtual{hosts: []string{"api.github.com"}}, true}} {
+	}{{"app-driver", ih, ih.Destination(), false},
+		{"github", &stubVirtual{hosts: []string{"api.github.com"}}, "example-org/widget", true}} {
 		base := &reopenStub{}
 		s := connectors.WithVirtual(base, c.v, allowAll)
 		g := connectors.Grant{ID: 21, Connector: c.connector, Status: connectors.StatusApproved, Source: connectors.SourceApp,
-			Repo: "example-org/widget"}
+			Repo: c.recorded}
 		_, why, err := connectors.ReconcileGrant(ctx, s, g, "example-org/other")
 		if reopened := why != ""; err != nil || reopened != c.want {
 			t.Errorf("%s: reopened=%q err=%v, want reopened %v", c.connector, why, err, c.want)
