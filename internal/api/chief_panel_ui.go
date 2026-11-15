@@ -139,7 +139,7 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	// hides it once the reply is stored (chat_log_live.go).
 	s.withChatLogLive(ctx, &chat, active)
 	// The chat bar (chief_chats.go): the panel is the chief's by construction.
-	chat.ChiefChat = chiefChatBarFor(a, active)
+	chat.ChiefChat = chiefChatBarFor(ctx, a, active)
 	write(ui.ChiefPanelView{
 		Configured:      true,
 		ThreadsFailed:   listErr != nil,

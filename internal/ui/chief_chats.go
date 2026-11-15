@@ -49,6 +49,14 @@ type ChiefChatBar struct {
 	Primary bool
 	// Archived: this chat is archived (an old primary, or a side chat put away).
 	Archived bool
+	// SharedRoom: the viewer is a member on a TEAM's chief, which has ONE
+	// shared conversation (internal/api memberOnTeamAgent). The server refuses
+	// a member every chat-making and chat-managing route on it (New side chat,
+	// Fresh primary, Make primary, Archive, Unarchive: internal/api
+	// teamAgentRoutes), so the chief PAGE's Chats tab draws none of them: the
+	// chats are listed to switch between, and that is all. (The chief PANEL
+	// never opens a team's chief: it is the viewer's own, chiefAgent.)
+	SharedRoom bool
 }
 
 // The chats' data attributes: what both test tiers read.
@@ -189,7 +197,7 @@ func chiefChatsPanel(v AgentDetailView) g.Node {
 	kind, _ := chiefChatKind(*b)
 	var live, archived []g.Node
 	for _, sess := range v.Sessions {
-		row := chiefChatRow(v.Name, b.AgentID, b.SessionID, sess)
+		row := chiefChatRow(v.Name, b.AgentID, b.SessionID, sess, b.SharedRoom)
 		// The chat on screen is never hidden in the collapsed group, archived
 		// or not (chiefChatViews lists an open archived chat with the side ones).
 		if sess.Archived && !sess.Active {
@@ -218,11 +226,11 @@ func chiefChatsPanel(v AgentDetailView) g.Node {
 				Ul(g.Attr("aria-label", "Archived chats"), Class("mt-1 flex flex-col gap-2"), g.Group(archived)),
 			)),
 		),
-		Div(
+		g.If(!b.SharedRoom, Div(
 			Class("flex flex-none flex-wrap items-center gap-2 border-t border-line px-3 py-2"),
 			ChiefSideChatButton(b.AgentID, ChatSurfacePage),
 			g.If(kind == ChiefChatKindPrimary, chiefFreshPrimaryButton(b.AgentID, ChatSurfacePage)),
-		),
+		)),
 	)
 }
 
@@ -231,7 +239,10 @@ func chiefChatsPanel(v AgentDetailView) g.Node {
 // on screen, with the Primary badge and the unread dot — and, when the chat has
 // any, its ⋯ menu BESIDE the link, never inside it: a form in a link is not
 // valid HTML, and a tap meant to open the chat must not archive it.
-func chiefChatRow(name string, agentID, current int64, sess SessionView) g.Node {
+//
+// shared (ChiefChatBar.SharedRoom): no ⋯ menu, whose every action the server
+// refuses a member on a team's chief.
+func chiefChatRow(name string, agentID, current int64, sess SessionView, shared bool) g.Node {
 	title := textplain.Title(sess.Title)
 	if title == "" {
 		title = "New chat"
@@ -256,7 +267,7 @@ func chiefChatRow(name string, agentID, current int64, sess SessionView) g.Node 
 				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 			),
 		),
-		chiefChatRowMenu(agentID, current, sess),
+		g.If(!shared, chiefChatRowMenu(agentID, current, sess)),
 	)
 }
 
