@@ -243,9 +243,10 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 // Without it, re-enabling the user brought every old token back to life —
 // including one that leaked, which is often WHY the user was disabled. An
 // enable revokes nothing and restores nothing: the user mints new tokens.
-// The user's MIRROR HOST tokens are revoked the same way, in the same
-// transaction (revokeMirrorTokensTx; #681), and their hosts' open connections
-// end at the next token recheck (mirror.TokenRecheck).
+// The user's MIRROR HOST tokens and FLOW RUNNER tokens are revoked the same
+// way, in the same transaction (revokeMirrorTokensTx, revokeRunnerTokensTx;
+// #681), and their hosts' open mirror connections end at the next token
+// recheck (mirror.TokenRecheck).
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
 	return s.SetDisabledAs(ctx, nil, id, disabled)
 }
@@ -387,6 +388,10 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := revokeMirrorTokensTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}
+		// And every live flow runner token, in THIS transaction.
+		if err := revokeRunnerTokensTx(ctx, tx, id); err != nil {
+			return User{}, err
+		}
 	}
 	if by != nil {
 		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {
@@ -421,6 +426,17 @@ func revokeAPITokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 // revokeAPITokensTx reason: internal/mirror imports this package.
 func revokeMirrorTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	_, err := tx.Exec(ctx, `UPDATE mirror_tokens SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, id)
+	return err
+}
+
+// revokeRunnerTokensTx revokes every live flow runner token (internal/flows)
+// user id owns inside tx, so a re-enable brings none of them back (the rule
+// above SetDisabled). flows.AuthenticateRunner refuses a disabled owner's
+// token on its own (users.EnabledPersonIDs); this is what keeps the token dead
+// AFTER the enable. Raw SQL for the revokeAPITokensTx reason: internal/flows
+// imports this package.
+func revokeRunnerTokensTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx, `UPDATE flow_runner_tokens SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, id)
 	return err
 }
 
