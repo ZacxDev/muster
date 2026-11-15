@@ -55,6 +55,14 @@ const (
 	endSessionNoOwner = "ending a session needs your owner's own request: a message they sent from that session's view, or one " +
 		"they typed in your chat — the message you are answering is neither (a plugin message, a session's words or muster's " +
 		"note never counts)"
+	// endSessionTyperNotOperator / endSessionTyperSignedOut: a TEAM's chief
+	// (team sharing 2b.4, operator decision 2026-11-15: the team dispatch
+	// rule), on a member's line whose typer is no longer an operator of the
+	// team on a fresh read, or was signed out everywhere since they typed it.
+	endSessionTyperNotOperator = "ending a session needs a request typed by an operator or a manager of your team: the member " +
+		"who typed the message you are answering is no longer one, so muster files no card; ask the team in the chat"
+	endSessionTyperSignedOut = "ending a session needs a request typed by an operator or a manager of your team: the member " +
+		"who typed the message you are answering was signed out of every session since, so muster files no card; ask the team again in the chat"
 	endSessionNotTheirs = "%s is not one of your owner's sessions muster can see now: name a mirrored session by its key, or one " +
 		"of your owner's agents as agent:<name>"
 	endSessionNoClose = "host %q cannot end sessions (its muster-mirror is older, or not -interactive): ask your owner to close it there"
@@ -65,6 +73,20 @@ const (
 		"conversation now): nothing was ended; ask your chief again"
 	endSessionNoAgent = "this muster cannot stop agents (no provisioner)"
 )
+
+// endSessionOwnerRefusal is ownerTurnFor's refusal why as end_session_propose
+// words: a team chief's member refusals name themselves (as agent_dispatch's
+// and a route's do — ONE predicate, ownerTurnFor, decides all of them), and
+// every other one is endSessionNoOwner.
+func endSessionOwnerRefusal(why string) string {
+	switch why {
+	case chiefReleaseTyperNotOperator:
+		return endSessionTyperNotOperator
+	case chiefReleaseTyperSignedOut:
+		return endSessionTyperSignedOut
+	}
+	return endSessionNoOwner
+}
 
 // endSessionOffered reports whether end_session_propose is offered: exactly
 // where succession_propose is (successionOffered: the chief's dispatch, the
@@ -117,7 +139,7 @@ func (s *Server) toolEndSessionPropose(ctx context.Context, a agents.Agent, argu
 	// (2): a line the owner typed in the chief's own chat, naming the session.
 	msg, why := s.ownerTurnFor(ctx, a)
 	if why != "" {
-		return refuse(endSessionNoOwner)
+		return refuse(endSessionOwnerRefusal(why))
 	}
 	key := strings.TrimPrefix(strings.TrimSpace(in.Session), string(focus.KindMirror)+":")
 	if name, ok := strings.CutPrefix(key, "agent:"); ok {

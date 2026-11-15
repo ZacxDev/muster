@@ -2829,6 +2829,27 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `owner=` in its action, keeps no draft (drafts are keyed by host name)
    >   and has no paperclip (an upload is the uploader's own file);
    >   dictation stays.
+   > - **A team chief's other say-so (operator decision 2026-11-15, its own
+   >   PR).** On a team's chief, end_session_propose, a text route and
+   >   agent_dispatch's gate release take a typed turn on the team dispatch
+   >   rule: a fresh typed turn from an operator or above of the team (the
+   >   marker is set only then), the role re-read when the chief calls, else
+   >   the call's own card path. The base already sent all four uses through
+   >   ONE predicate, `ownerTurnFor` (`typerSpeaksForOwner`,
+   >   `typerSignedOutSince`); it is now pinned as a caller ledger
+   >   (`TestEverySaySoIsTheOneTypedTurnPredicate`: `ownerTurnFor`'s five
+   >   callers, `typerSpeaksForOwner`'s two). The one behaviour change:
+   >   end_session_propose collapsed every refusal into "your owner's own
+   >   request", which a team's chief cannot act on; it now names the team's
+   >   typer refusals as agent_dispatch and a route do
+   >   (`endSessionOwnerRefusal`; `TestATeamChiefsEndAndRouteTakeTheTeamDispatchRule`,
+   >   red at base on those words).
+   >   ⚠ **Not built:** the END CARD itself on a team's chief. Its accept
+   >   (`acceptEndSession`) resolves the agent and the window by the
+   >   ANSWERER's id (`requestOwner`), so a member's tap on a team's end card
+   >   does not reach the team's session, and no rule says who may tap one
+   >   (the dispatch card's is an operator with a fresh browser sign-in). It
+   >   needs its own decision.
    > - ⚠ **Known, not changed:** an answer typed into a team window's picker
    >   records its `ask_attempts` row as the member's own (the table's
    >   `owner_id` default), keyed by host name, so it shows on the member's
