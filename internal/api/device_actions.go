@@ -297,11 +297,12 @@ const TeamCardPushBody = "A team's dispatch card: open it in muster in a browser
 // repushAsk), calls it.
 //
 // It recognises a card by its HOLD, so a card must be notified after its hold
-// is filed. Every team card is today: a team's only dispatch card is the
-// approval card (no host, so no host or runtime card; no "Change repo", so no
-// repo card), which fileHeldDispatch notifies after FileDispatchHold. A team
-// card pushed before its hold (slice 4.8's repo card, if it comes back) must
-// be notified the same way.
+// is filed. Every team card is today: a team's dispatch cards are the
+// approval card and — for a team lent the GitHub App (slice 4.8), after
+// "Change repo" — the repo card (no host, so no host or runtime card); both
+// are approval-blank cards, which fileHeldDispatch notifies
+// (proposalCardFiled) only after raiseHeldCard committed the card with its
+// hold. A team card pushed before its hold must be notified the same way.
 func (s *Server) teamDispatchCardPush(ctx context.Context, a attention.Ask, it attentionItem) attentionItem {
 	if !a.OwnerCard || a.Owner <= 0 || !s.ownerIsTeam(ctx, a.Owner) {
 		return it

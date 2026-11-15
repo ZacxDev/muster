@@ -546,6 +546,11 @@ func (s *Server) reconcileGrant(ctx context.Context, a agents.Agent, g connector
 // who approves it — so the nudge reaches that owner's Connectors tab and the
 // push goes to that owner's own devices (and to the router's only when that
 // owner is an admin — goNotify / routerServes).
+//
+// 🔴 A TEAM's request (its agent's owner is the team: the team acting
+// principal) links the team's own page, /teams/{id}/connectors — a member's
+// /connectors lists only their own grants, so it would be empty — and goes to
+// the team's MANAGERS only (managersOnly): an operator cannot decide it.
 func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	s.logger.Printf("connector request created id=%d agent=%q connector=%q", g.ID, g.AgentName, g.Connector)
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(g.ID, 10))
@@ -556,13 +561,18 @@ func (s *Server) onConnectorRequested(ctx context.Context, g connectors.Grant) {
 	if g.Reason != "" {
 		body += " — " + g.Reason
 	}
+	link, team := "/connectors", false
+	if p, ok := authz.From(ctx); ok && p.Team && !p.All() && p.UserID > 0 {
+		link, team = "/teams/"+strconv.FormatInt(p.UserID, 10)+"/connectors", true
+	}
 	s.goNotify(requestOwner(ctx), push.EventConnector, RouterNotification{
-		Type:  "connector",
-		ID:    strconv.FormatInt(g.ID, 10),
-		Title: "Connector request: " + g.AgentName,
-		Body:  body,
-		Tag:   "connector-" + strconv.FormatInt(g.ID, 10),
-		Data:  map[string]string{"url": "/connectors"},
+		Type:         "connector",
+		ID:           strconv.FormatInt(g.ID, 10),
+		Title:        "Connector request: " + g.AgentName,
+		Body:         body,
+		Tag:          "connector-" + strconv.FormatInt(g.ID, 10),
+		Data:         map[string]string{"url": link},
+		managersOnly: team,
 	}, func(n int) {
 		s.logger.Printf("push: delivered connector request id=%d owner=%d to %d device(s)", g.ID, requestOwner(ctx), n)
 	})
@@ -1045,7 +1055,9 @@ func (e errConnectorMissing) Error() string {
 // OWNER: a user can read (and so decide) only grants on their own agents, so
 // another owner's request is connectors.ErrNotFound, exactly as a missing one.
 // For a member `github` is never the App here (connectors.WithVirtual's allow is
-// authz.IsAdmin): a member cannot approve their agent onto the App. Measured: an
+// githubapp.Admits: an admin, or a LISTED TEAM's acting principal): a member
+// cannot approve their agent onto the App. A team's requests are decided here
+// as the team, by a manager through teamAdminContext (team_connectors.go). Measured: an
 // operator session cannot even read a member's grant
 // (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
 //

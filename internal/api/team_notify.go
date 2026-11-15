@@ -49,7 +49,9 @@ const teamPushPrefixSep = " · "
 // owner the read cannot classify — logged; a team has no devices, so for a
 // team that sends nothing, exactly as before 2b); the team's recipients and
 // "<team> · " for a team. skip is left out (a team task comment's author).
-func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event string, skip int64) ([]int64, string) {
+// managers narrows a team's recipients to its managers (Managers: switch on),
+// for a push only a manager can act on; it never touches a person.
+func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event string, skip int64, managers bool) ([]int64, string) {
 	r, ok := s.ext.Users.(teamPushReader)
 	if !ok {
 		return []int64{owner}, ""
@@ -78,8 +80,11 @@ func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event stri
 	}
 	s.teamOwners.Store(owner, struct{}{})
 	who := t.Notify
-	if event == push.EventResolved {
+	switch {
+	case event == push.EventResolved:
 		who = t.Withdraw
+	case managers:
+		who = t.Managers
 	}
 	out := make([]int64, 0, len(who))
 	for _, m := range who {

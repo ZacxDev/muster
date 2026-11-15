@@ -531,6 +531,11 @@ type RouterNotification struct {
 	// the person whose own action it reports (a team task comment's author,
 	// teamTaskCommented). 0 for none; it never touches a personal owner.
 	skip int64
+	// managersOnly sends a TEAM-owned notification to the team's managers
+	// alone (teamPushRecipients): a push only a manager can act on, a team
+	// agent's connector request (onConnectorRequested). It never touches a
+	// personal owner.
+	managersOnly bool
 	// wait, when set, is Done once this notification has been handed to every
 	// recipient's devices (or refused): the disable sweep waits on it before
 	// the disable deletes the person's phones (team_withdraw.go).
@@ -713,6 +718,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerOfficerSpawnPages(mux)
 	s.registerTeamOfficerPages(mux)
 	s.registerTeamChiefPages(mux)
+	s.registerTeamConnectorPages(mux)
 	// A team's host tokens (team sharing 2b.2, team_hosts_page.go).
 	s.registerTeamHostPages(mux)
 	// Instance branding (branding.go): the public instance document and
@@ -1538,7 +1544,7 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
-		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip)
+		recipients, prefix := s.teamPushRecipients(ctx, owner, event, n.skip, n.managersOnly)
 		for _, to := range recipients {
 			// Each recipient decides on its own copy (a declared
 			// RouterNotification, so the push-title ledgers see it).

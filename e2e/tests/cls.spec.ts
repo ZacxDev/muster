@@ -84,6 +84,9 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // The same team's chief (team_admin.go, team sharing phase 4): the team is
   // not on the server pool there, so the page states the chief's status and why.
   'GET /teams/{id}/chief': { where: 'signed-in', url: 'TEAM_CHIEF', ready: '#team-chief-status' },
+  // The same team's connector requests (team_connectors.go, slice 4.8): the
+  // team is not lent the GitHub App there, so the page says so over an empty list.
+  'GET /teams/{id}/connectors': { where: 'signed-in', url: 'TEAM_CONNECTORS', ready: '#team-connector-requests' },
   // The same team's host tokens (team_hosts_page.go, team sharing 2b.2): a new
   // team has none, so the empty state is what it draws — or, on a server with
   // the mirror plugin off (this spec's signed-in server), the page's own
@@ -852,7 +855,8 @@ test.describe('signed-in pages in gotrue mode', () => {
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;
           const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers`
-            : p.url === 'TEAM_CHIEF' ? `/teams/${teamID}/chief` : p.url === 'TEAM_HOSTS' ? `/teams/${teamID}/hosts` : p.url;
+            : p.url === 'TEAM_CHIEF' ? `/teams/${teamID}/chief`
+            : p.url === 'TEAM_CONNECTORS' ? `/teams/${teamID}/connectors` : p.url === 'TEAM_HOSTS' ? `/teams/${teamID}/hosts` : p.url;
           const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
