@@ -123,6 +123,13 @@ var (
 		// rows (account health: timestamp, limit message, token fingerprint),
 		// and only for an owner the Source puts on the shared pool.
 		"internal/ccpool.(*Pool).markScope",
+		// The Claude account usage poller (team sharing phase 4, round 0): it
+		// reads the server pool's accounts as the pool's OWNER, which is
+		// derived (credentials.Plane.EnvPoolOwner: the lowest-id enabled
+		// admin) rather than fixed at user 1, so no fixed principal is its own.
+		// Every usage-store and marks query names that owner, so the system
+		// scope reaches the pool owner's readings and marks and nobody else's.
+		"internal/ccusage.(*Poller).Run",
 		// The mirror plugin's token lookup and its 30 s recheck: a host's token
 		// must be found by its hash before anyone is known (mirror_tokens is
 		// under RLS). What it yields — the token's owner — scopes everything after.
@@ -318,10 +325,6 @@ var (
 		// serves the operator's agents and must be handed nobody else's. Running as
 		// the operator (not the system) is what makes row-level security say so.
 		"internal/memorelay.(*Relay).Run",
-		// The Claude account usage poller: it reads the OPERATOR's environment
-		// pool and keeps the readings as the operator's rows, so row-level
-		// security says they are nobody else's.
-		"internal/ccusage.(*Poller).Run",
 		// The consumer usage collector (MUSTER_CC_CONSUMER_USAGE): it reads the
 		// instances on the OPERATOR's pool accounts and their failover history,
 		// so it acts as the operator and row-level security keeps every other

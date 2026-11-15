@@ -122,6 +122,24 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 	}
 }
 
+// FirstAdmin is the lowest-id ENABLED admin PERSON: the owner the server's
+// Claude pool keeps its shared account state under — its rate-limit and
+// auth-failure marks and the usage poller's readings
+// (credentials.Plane.EnvPoolOwner). An admin's own Claude accounts ARE that
+// pool, so nothing personal of theirs is ever kept under the same id. It is
+// derived rather than fixed at user 1, so a demoted user 1's own accounts are
+// not steered by the pool's marks. guardLastAdmin keeps at least one enabled
+// admin, so ErrNotFound is a database with none at all.
+func (s *PGStore) FirstAdmin(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(sys(ctx),
+		`SELECT id FROM users WHERE kind = 'person' AND role = 'admin' AND disabled_at IS NULL ORDER BY id LIMIT 1`).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return id, err
+}
+
 // Account reads users.role and users.kind and the person's team_members rows
 // in one statement. Like Role, the api package calls it under authz.System:
 // it is how a request LEARNS who it is. An unknown role or team role is an

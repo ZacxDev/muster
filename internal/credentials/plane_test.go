@@ -64,6 +64,8 @@ func (r fakeRoles) Role(ctx context.Context, id int64) (authz.Role, error) {
 	return "", errors.New("no such user")
 }
 
+func (fakeRoles) FirstAdmin(context.Context) (int64, error) { return admin, nil }
+
 type noMarks struct{}
 
 func (noMarks) Marks(context.Context, int64) (map[string]ccpool.Mark, error) { return nil, nil }
@@ -323,3 +325,5 @@ func (teamRoles) Role(_ context.Context, id int64) (authz.Role, error) {
 	}
 	return authz.RoleMember, nil
 }
+
+func (teamRoles) FirstAdmin(context.Context) (int64, error) { return admin, nil }

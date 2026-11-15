@@ -531,8 +531,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if credStore != nil {
 		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
 	}
-	// The Claude account usage poller (internal/ccusage): the operator's
-	// environment pool, read through the plane (the one place tokens come
+	// The Claude account usage poller (internal/ccusage): the environment
+	// pool, as its owner (plane.EnvPoolOwner, the owner its marks are kept
+	// under), read through the plane (the one place tokens come
 	// from), every MUSTER_CC_USAGE_POLL_INTERVAL. Off unless MUSTER_CC_USAGE_POLL.
 	if reason := cfg.ccUsageRefusal(a.pool != nil); reason != "" {
 		a.Close()
@@ -540,8 +541,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if cfg.CCUsage.On {
 		a.ccUsage = &ccusage.Poller{Source: plane, Store: ccusage.NewPG(a.pool),
-			Fetch: ccusage.HTTPFetcher{Client: &http.Client{Timeout: 15 * time.Second}},
-			Owner: authz.OperatorUserID, Interval: cfg.CCUsage.Interval, Logger: logger}
+			Fetch:    ccusage.HTTPFetcher{Client: &http.Client{Timeout: 15 * time.Second}},
+			Interval: cfg.CCUsage.Interval, Logger: logger}
 		ext.CCUsageInterval = cfg.CCUsage.Interval
 	}
 	// The focus summarizer: ScaleDown through OpenRouter, on the OWNER's
@@ -832,7 +833,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.ccUsage.AfterPass = (&ccusage.Pusher{URL: push.URL, Token: push.Token, Logger: logger,
 			Client: &http.Client{Timeout: ccusage.PushTimeout},
 			Body: func(ctx context.Context, now time.Time) ([]byte, error) {
-				return srv.CCUsagePushBody(ctx, authz.OperatorUserID, push.Instance, now)
+				// The owner the pass just read (the poller reads the plane's
+				// EnvPoolOwner: ccusage.PoolOwned).
+				owner, ok := plane.EnvPoolOwner(ctx)
+				if !ok {
+					return nil, errors.New("the server pool has no owner to read (no enabled admin could be read)")
+				}
+				return srv.CCUsagePushBody(ctx, owner, push.Instance, now)
 			}}).PushAfterPass
 	}
 	if cfg.goTrueConfigured() && a.pool != nil {

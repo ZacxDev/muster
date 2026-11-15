@@ -72,7 +72,8 @@ var usersReads = map[string]string{
 	"internal/users PGStore.AddTeamMemberByEmailAsManager": readPerson,
 	"internal/users lockPerson":                            readPerson,
 	"internal/users PGStore.Role":                          readByID,
-	"internal/users PGStore.Account":                       readByID, // returns the kind; admit refuses a team
+	"internal/users PGStore.FirstAdmin":                    readPerson, // the server pool's marks owner: the lowest-id enabled admin person (its own SQL drops a disabled one)
+	"internal/users PGStore.Account":                       readByID,   // returns the kind; admit refuses a team
 	"internal/users PGStore.BySub":                         readPerson,
 	"internal/users PGStore.ByID":                          readPerson,
 	"internal/users PGStore.IDByEmail":                     readPerson,

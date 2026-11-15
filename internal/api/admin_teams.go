@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -38,12 +40,18 @@ const AdminTeamsShares = "A team owns shared work, and its members see it by rol
 
 // adminTeamCredentials is team's line on /admin/teams: whether its agents
 // can run on the server's Claude pool (teamChiefRefusal: the same answer the
-// team's Chief page gives) and whether they may use the GitHub App.
+// team's Chief page gives) and whether they may use the GitHub App. A team
+// LISTED on the server pool on a server with no Claude pool says so, rather
+// than "not on the server pool" (credentials.TeamPoolNotConfigured).
 func (s *Server) adminTeamCredentials(ctx context.Context, team int64) string {
 	pool := "Claude: on the server pool."
-	if why := s.teamChiefRefusal(ctx, team); why == TeamChiefPoolRefusal {
+	switch why := s.teamChiefRefusal(ctx, team); {
+	case why == TeamChiefPoolRefusal && s.ext.Kinds != nil &&
+		s.ext.Kinds.Unavailable(ctx, team)[agents.KindClaudeCode] == credentials.TeamPoolNotConfigured:
+		pool = "Claude: listed on the server pool, but this server has no Claude pool configured, so its agents cannot run."
+	case why == TeamChiefPoolRefusal:
 		pool = "Claude: not on the server pool, so its agents cannot run."
-	} else if why != "" {
+	case why != "":
 		pool = "Claude: " + why
 	}
 	app := " GitHub App: not listed, so its agents work in no repository."

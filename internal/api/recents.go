@@ -25,9 +25,11 @@ import (
 // row is the viewer's own, and its owner must own the agent it names (0018's
 // trigger): a member's visit to the team chief was refused by Postgres on every
 // page load (SQLSTATE 23514) and logged as an error each time. The row is not
-// written under the team either — the team cannot sign in, so it has no strip
-// to show it in, and a row there would record which member looked at what in a
-// table every member's door can reach. The team agent stays in the member's
+// written under the team either: a team has no recents strip (it cannot sign
+// in, and recents is personal-only — owner_isolation, internal/db's share
+// ledger personalOwned — so no member's door reads a team's rows), and
+// recording one would only log which member looked
+// at what. The team agent stays in the member's
 // sidebar under its team; it is simply not in their "recently viewed".
 func (s *Server) recordAgentVisit(ctx context.Context, a agents.Agent) {
 	if s.ext.Recents == nil || memberOnTeamAgent(ctx, a) {

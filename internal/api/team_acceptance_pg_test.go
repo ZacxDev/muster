@@ -219,3 +219,43 @@ func TestAdminTeamsSaysWhatATeamShares(t *testing.T) {
 		t.Errorf("the unlisted team's line = %q; want %q", got, want)
 	}
 }
+
+// TestAdminTeamsSaysAListedTeamHasNoPoolToRunOn (round 0, item 5): on a server
+// with no Claude pool configured, a team LISTED on the server pool is not "not
+// on the server pool" — its line says it is listed and there is no pool. An
+// unlisted team's line is unchanged (the control: the two lines differ, so the
+// listing is what the line reads).
+//
+// 🔴 RED at 0740e0cb: the listed team's line read "Claude: not on the server
+// pool, so its agents cannot run."
+func TestAdminTeamsSaysAListedTeamHasNoPoolToRunOn(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	other := tw.newChieflessTeam(t)
+	plane := poolPlane(t, w)
+	env := plane.EnvClaude
+	plane.EnvClaude = nil
+	plane.TeamsOnServerPool = map[int64]bool{tw.team: true}
+	t.Cleanup(func() { plane.EnvClaude, plane.TeamsOnServerPool = env, nil })
+
+	rec := w.do(w.h, "GET", "/admin/teams", "", cred{sessionUser: w.op.uid})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the admin's /admin/teams: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	line := func(team int64) string {
+		_, after, ok := strings.Cut(body, `data-team-id="`+strconv.FormatInt(team, 10)+`"`)
+		if !ok {
+			t.Fatalf("/admin/teams lists no team %d", team)
+		}
+		_, after, _ = strings.Cut(after, `data-team-credentials>`)
+		got, _, _ := strings.Cut(after, `</p>`)
+		return got
+	}
+	if got, want := line(tw.team), "Claude: listed on the server pool, but this server has no Claude pool configured, so its agents cannot run. GitHub App: none is configured."; got != want {
+		t.Errorf("the listed team's line = %q; want %q", got, want)
+	}
+	if got, want := line(other), "Claude: not on the server pool, so its agents cannot run. GitHub App: none is configured."; got != want {
+		t.Errorf("the unlisted team's line = %q; want %q", got, want)
+	}
+}
