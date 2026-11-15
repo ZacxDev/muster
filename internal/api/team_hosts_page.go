@@ -54,7 +54,7 @@ type teamHostTokens interface {
 // (*mirror.Service, asserted from ext.Mirror).
 type teamHostHub interface {
 	HeldReplacements(ctx context.Context) []mirror.HeldReplacement
-	ConfirmReplacement(ctx context.Context, host string) bool
+	ConfirmReplacement(ctx context.Context, host, addr string) bool
 	HostToken(ctx context.Context, host string) (int64, bool)
 }
 
@@ -68,7 +68,7 @@ type teamRotateReader interface {
 const (
 	TeamHostsStepUp   = "Minting, revoking or replacing a team host needs a recent sign-in. Confirm it's you, then try again."
 	TeamHostsNoStore  = "This muster has no mirror plugin, so it has no host tokens."
-	TeamHostsNoHeld   = "No second connection is waiting for that host now (or it is no longer connected, and the next connection is taken anyway)."
+	TeamHostsNoHeld   = "No connection from that address is waiting for that host now. Choose one held machine by its address, or the host is no longer connected and its next connection is taken anyway."
 	TeamHostsNoToken  = "That token does not exist or is already revoked."
 	TeamHostsManager  = "Only a manager of the team manages its host tokens."
 	teamHostsThreat   = "A viewer reads everything on a team host's screens and transcripts, including any secret a command printed. An operator who types runs commands as the host's Unix user: an operator on a team host has a shell there. Team members have to trust each other."
@@ -150,15 +150,18 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 	held := hub.HeldReplacements(tctx)
 	if len(held) > 0 {
 		b.WriteString(`<section class="` + adminCard + `" id="team-host-held"><h2 class="text-base font-semibold text-fg">Replace the connected host?</h2>
-<p class="text-sm text-fg2">A second machine presented this team's token for a host that is already connected. It is held: it receives nothing and shows nothing until you confirm. Confirm only if you moved the host; otherwise revoke the token and mint a new one.</p><ul class="flex flex-col gap-2">`)
+<p class="text-sm text-fg2">Another machine presented this team's token for a host that is already connected. Each such machine is listed below by the address it connected from. It is held: it receives nothing and shows nothing until you confirm. Confirm only the machine you moved the host to, by its address. Only that address is let in, and any other machine using the token stays held. If you do not recognise an address, revoke the token and mint a new one. Machines behind one proxy share its address and cannot be told apart.</p><ul class="flex flex-col gap-2">`)
 		for _, h := range held {
-			b.WriteString(`<li class="flex flex-wrap items-center gap-2" data-held-host="` + html.EscapeString(h.Host) + `" data-confirmed="` + strconv.FormatBool(h.Confirmed) + `">` +
-				`<span class="text-sm text-fg">` + html.EscapeString(h.Host) + `</span><span class="text-sm text-fg2">` + strconv.Itoa(h.Attempts) + ` attempt(s), last ` + fmtTime(h.Last) + `</span>`)
+			b.WriteString(`<li class="flex flex-wrap items-center gap-2" data-held-host="` + html.EscapeString(h.Host) + `" data-held-addr="` + html.EscapeString(h.Addr) +
+				`" data-confirmed="` + strconv.FormatBool(h.Confirmed) + `">` +
+				`<span class="text-sm text-fg">` + html.EscapeString(h.Host) + ` from ` + html.EscapeString(h.Addr) + `</span><span class="text-sm text-fg2">` +
+				strconv.Itoa(h.Attempts) + ` attempt(s), first ` + fmtTime(h.First) + `, last ` + fmtTime(h.Last) + `</span>`)
 			if h.Confirmed {
-				b.WriteString(`<span class="text-sm text-fg2">Confirmed: its next attempt replaces the connected host.</span>`)
+				b.WriteString(`<span class="text-sm text-fg2">Confirmed: this machine's next attempt replaces the connected host.</span>`)
 			} else {
 				b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/replace"><input type="hidden" name="host" value="` + html.EscapeString(h.Host) + `">` +
-					`<button type="submit" class="` + adminButton + `">Replace</button></form>`)
+					`<input type="hidden" name="addr" value="` + html.EscapeString(h.Addr) + `">` +
+					`<button type="submit" class="` + adminButton + `">Replace with this machine</button></form>`)
 			}
 			b.WriteString(`</li>`)
 		}
@@ -311,12 +314,14 @@ func (s *Server) handleTeamHostReplace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	host := strings.TrimSpace(r.FormValue("host"))
-	if mirror.ValidHost(host) != nil || !hub.ConfirmReplacement(tctx, host) {
+	// 🔴 THE CONFIRM NAMES ONE HELD ATTEMPT, by its address: there is no
+	// confirm without one (mirror/teamhold.go, #685 round 0).
+	host, addr := strings.TrimSpace(r.FormValue("host")), strings.TrimSpace(r.FormValue("addr"))
+	if mirror.ValidHost(host) != nil || addr == "" || !hub.ConfirmReplacement(tctx, host, addr) {
 		s.renderTeamHosts(w, r, team, tctx, http.StatusConflict, TeamHostsNoHeld, "")
 		return
 	}
-	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.replace", "host:"+host, nil, true)
+	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.replace", "host:"+host, map[string]any{"addr": addr}, true)
 	s.logger.Printf("teams: manager %d confirmed replacing team %d's host %s", actorOf(r).UserID, team, host)
 	http.Redirect(w, r, "/teams/"+strconv.FormatInt(team, 10)+"/hosts", http.StatusSeeOther)
 }

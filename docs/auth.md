@@ -177,9 +177,14 @@ releases (team sharing 2b.3 and 2b.4).
     connected, a second connection presenting its token is **held**: refused
     as pending a manager's confirmation, sent nothing and shown to no one,
     while the connected host keeps serving. The manager sees "Replace the
-    connected host?" on `/teams/<id>/hosts`; confirming lets the held
-    machine's next attempt (muster-mirror retries at most a minute apart)
-    replace the connected one. A connection arriving while the host is
+    connected host?" on `/teams/<id>/hosts`, with **each held machine listed
+    by the address it connected from** (first and last seen). The manager
+    confirms ONE of them: only that address's next attempt (muster-mirror
+    retries at most a minute apart) replaces the connected host, within 3
+    minutes, and any other machine presenting the token stays held. There is
+    no confirm that names no machine. ⚠ Machines behind one proxy share its
+    address and cannot be told apart. `muster doctor` on a held machine says
+    it is held, not connected. A connection arriving while the host is
     offline is taken at once, as for a personal host, so a restart of the
     real host is unaffected. This does not close the offline window: only
     rotation does.

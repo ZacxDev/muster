@@ -669,6 +669,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Online      bool   `json:"online"`
 		Interactive bool   `json:"interactive"`
 		OtherToken  bool   `json:"other_token"`
+		Held        bool   `json:"held"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -680,6 +681,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
 	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
 		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case h.Held:
+		d.add(name, statusFail, fmt.Sprintf("held: another connection is live for team host %q; a manager must confirm this machine", h.Host),
+			"a manager of the team confirms this machine, by its address, on the team's hosts page (/teams/<id>/hosts); if this is not the host's new machine, stop its muster-mirror")
 	case h.OtherToken:
 		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
 			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")

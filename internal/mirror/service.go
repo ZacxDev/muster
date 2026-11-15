@@ -65,12 +65,18 @@ type Service struct {
 	// for HostToken; gen tells a connection's own entry from its successor's.
 	connMu  sync.Mutex
 	connTok map[hostKey]connToken
+	// peerFn, when set, reads a request's peer address instead of clientAddr
+	// (SetPeerAddr; tests). Under connMu.
+	peerFn func(*http.Request) string
 	connGen uint64
 }
 
 type connToken struct {
 	id  int64
 	gen uint64
+	// addr is the connection's peer address (peerAddr): how a held team host
+	// attempt is told from the live one (teamhold.go, HeldHere).
+	addr string
 }
 
 // HostToken is the id of the token the viewing principal's host is
@@ -236,8 +242,9 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// (team, host) is refused as held — BEFORE it touches connTok or the hub,
 	// so the live connection's token stays the one tracked, and the held one
 	// is sent nothing — until a manager confirms it.
-	if tok.Team && !s.hub.admitPinned(key) {
-		s.logger.Printf("mirror: team host %s (owner %d): a second connection is held for a manager's confirmation", tok.Host, tok.OwnerID)
+	peer := s.peerAddr(r)
+	if tok.Team && !s.hub.admitPinned(key, peer) {
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer)
 		// Its hello first, as every refusal reads it: the host then reads the
 		// refusal as muster's answer to its registration.
 		_, _ = readHello(r.Context(), ws)
@@ -257,7 +264,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		s.connTok = map[hostKey]connToken{}
 	}
 	s.connGen++
-	mine := connToken{id: tok.ID, gen: s.connGen}
+	mine := connToken{id: tok.ID, gen: s.connGen, addr: peer}
 	s.connTok[key] = mine
 	s.connMu.Unlock()
 	defer func() {

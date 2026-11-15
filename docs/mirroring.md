@@ -1872,8 +1872,11 @@ server and its own `muster-mirror`.
   connection with its token is held for a manager's confirmation on
   `/teams/<id>/hosts`, instead of replacing it (a personal host's newer
   connection replaces the older one). The held `muster-mirror` logs "pending
-  a manager's confirmation" and keeps retrying; once a manager confirms, its
-  next attempt takes over. A host that disconnected first (a restart) is taken
+  a manager's confirmation" and keeps retrying, and `muster doctor` there
+  reports "held: another connection is live for this team host". The page
+  lists each held machine by the address it connected from; once a manager
+  confirms that machine, its next attempt from that address takes over, and
+  no other machine's does. Machines behind one proxy share its address. A host that disconnected first (a restart) is taken
   back at once. A muster-mirror whose old connection is half-open waits for
   the keepalive to end it, and then reconnects.
 - **Leaving.** A manager revokes the token: the connection ends at the next

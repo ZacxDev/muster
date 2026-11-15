@@ -2109,12 +2109,21 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   🔴 **Deviation from "held, not swapped in … on a confirm the hub
    >   takes the new connection":** the held socket is refused, not parked,
    >   because muster-mirror waits 15 s for a welcome and would otherwise
-   >   churn. A manager's confirm arms a one-shot replacement for
-   >   `ReplaceConfirmWindow` (3 min; muster-mirror retries at most a minute
-   >   apart), and the held machine's next attempt replaces the live one the
-   >   way a newer connection does today. No protocol change. A connection
-   >   while the host is offline is taken at once; a personal host keeps
-   >   newer-replaces.
+   >   churn. Each held attempt is recorded by its TCP peer address, with
+   >   when it was first and last seen, and the card lists every one. A
+   >   manager's confirm names ONE attempt by its address and arms a one-shot
+   >   replacement for `ReplaceConfirmWindow` (3 min; muster-mirror retries at
+   >   most a minute apart) that admits only a reconnect from that address;
+   >   it replaces the live one the way a newer connection does today. There
+   >   is no confirm without an address (#685 round 0: a blanket confirm let
+   >   a kept token retrying every 2 s win the race). ⚠ The address is the
+   >   TCP peer, not X-Forwarded-For: behind a proxy chain every machine is
+   >   one address, and the binding cannot tell them apart. No protocol
+   >   change. A connection while the host is offline is taken at once; a
+   >   personal host keeps newer-replaces. `muster doctor` on a held machine
+   >   reports `held` (`GET /mirror/host`, `Service.HeldHere`: an attempt
+   >   from its address is held and the live connection is from another),
+   >   not `online`.
    > - **`/teams/{id}/hosts`** (`team_hosts_page.go`): GET, `POST` (mint),
    >   `POST …/{token}/revoke`, `POST …/replace`. Managers only (the request's
    >   memberships, then `teamAdminContext`'s fresh read), and the token rows
@@ -2152,7 +2161,12 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `TestAuthenticateSaysWhetherTheOwnerIsATeam`,
    >   `TestTheCLIMintsATeamTokenOnlyForATeam`,
    >   `TestASecondTeamHostConnectionWaitsForAManager`,
-   >   `TestATeamHostReconnectingWhileOfflineIsTakenAtOnce` (`internal/mirror`);
+   >   `TestATeamHostReconnectingWhileOfflineIsTakenAtOnce`,
+   >   `TestAConfirmForOneAddressDoesNotLetAnotherIn`,
+   >   `TestTwoHeldAttemptsArmNothingUntilOneIsChosen`,
+   >   `TestAHeldMachineIsToldItIsHeld` (`internal/mirror`);
+   >   `TestTheReplaceConfirmNamesOneHeldMachine`,
+   >   `TestDoctorTellsAHeldMachineItIsHeld` (`internal/api`);
    >   `TestRemovingAnOperatorMarksTheTeamsHostTokensRotate`,
    >   `TestDowngradingAnOperatorToViewerMarksTheTeamsHostTokensRotate`,
    >   `TestDisablingAnOperatorMarksTheTeamsHostTokensRotate`,
