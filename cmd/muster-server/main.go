@@ -46,7 +46,6 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -424,10 +423,24 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				a.Close()
 				return nil, fmt.Errorf("github app: %w", err)
 			}
+			// MUSTER_TEAMS_ON_GITHUB_APP: every id must be a team, read before
+			// the App is lent to it (checkTeamsOnGitHubApp).
+			appTeams, err := checkTeamsOnGitHubApp(ctx, users.NewPG(pool), cfg.TeamsOnGitHubApp)
+			if err != nil {
+				a.Close()
+				return nil, err
+			}
+			if len(appTeams) > 0 {
+				logger.Printf("team GitHub App: ON — %s: these teams' agents may use the deployment's GitHub App "+
+					"(a manager approves each repository once): %s", envTeamsOnGitHubApp, teamListLine(appTeams))
+			}
 			ext.GitHubApp = gapp
+			ext.GitHubAppTeams = cfg.TeamsOnGitHubApp
 			if ext.Connectors != nil {
-				// Admins only: the App is the deployment's (connectors.WithVirtual).
-				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, authz.IsAdmin)
+				// Admins, and the listed teams' own agents: the App is the
+				// deployment's (connectors.WithVirtual). ONE predicate,
+				// githubapp.Admits, which api's githubApp also applies.
+				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, githubapp.Admits(cfg.TeamsOnGitHubApp))
 			}
 			// Backgrounded: a boot that blocks on a third party is a boot that
 			// party's outage can stop. Its outcome is logged and
@@ -500,13 +513,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, err
 	}
 	if len(poolTeams) > 0 {
-		ids := make([]string, 0, len(poolTeams))
-		for id, name := range poolTeams {
-			ids = append(ids, fmt.Sprintf("%d (%s)", id, name))
-		}
-		sort.Strings(ids)
 		logger.Printf("team server pool: ON — %s: these teams' Claude Code agents run on the server's Claude pool: %s",
-			envTeamsOnServerPool, strings.Join(ids, ", "))
+			envTeamsOnServerPool, teamListLine(poolTeams))
 	}
 	plane, err := buildCredentialPlane(cfg, personal, roles, logger)
 	if err != nil {

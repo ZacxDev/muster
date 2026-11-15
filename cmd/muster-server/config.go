@@ -241,6 +241,13 @@ const (
 	// slice 4.5; credentials.Plane.TeamsOnServerPool). Boot is refused when an
 	// id is a person or names nobody, so a typo cannot lend a member the pool.
 	envTeamsOnServerPool = "MUSTER_TEAMS_ON_SERVER_POOL"
+	// envTeamsOnGitHubApp is the TEAMS (ids, comma-separated) whose agents may
+	// use the deployment's GitHub App, as an admin's do (team sharing phase 4,
+	// slice 4.8; githubapp.Admits): its repositories for a dispatch, and the
+	// `github` connector a manager approves once per repository for the team.
+	// Boot is refused when an id is a person or names nobody, as for
+	// MUSTER_TEAMS_ON_SERVER_POOL, and when no GitHub App is configured.
+	envTeamsOnGitHubApp = "MUSTER_TEAMS_ON_GITHUB_APP"
 	// envChiefDispatchModels is the OpenRouter models a mirrored opencode
 	// dispatch's model card offers (docs/design/chief-dispatch.md 2.8,
 	// decision 15): comma-separated <vendor>/<model> ids, or "none".
@@ -839,6 +846,10 @@ type config struct {
 	// refuses one that does not parse; boot refuses an id that is not a team,
 	// checkTeamsOnServerPool).
 	TeamsOnServerPool map[int64]bool
+	// TeamsOnGitHubApp is MUSTER_TEAMS_ON_GITHUB_APP, parsed (loadConfig
+	// refuses one that does not parse or has no App; boot refuses an id that
+	// is not a team, checkTeamsOnGitHubApp).
+	TeamsOnGitHubApp map[int64]bool
 	// ChiefDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS, parsed
 	// (parseDispatchModels): the model card's OpenRouter models.
 	ChiefDispatchModels []string
@@ -1905,6 +1916,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.TeamsOnServerPool, err = parseOwnerIDs(strings.TrimSpace(getenv(envTeamsOnServerPool))); err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v (want team ids, comma-separated)", envTeamsOnServerPool, err)
 	}
+	if c.TeamsOnGitHubApp, err = parseOwnerIDs(strings.TrimSpace(getenv(envTeamsOnGitHubApp))); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want team ids, comma-separated)", envTeamsOnGitHubApp, err)
+	}
 	if c.ChiefDispatchModels, err = parseDispatchModels(getenv(envChiefDispatchModels)); err != nil {
 		return config{}, err
 	}
@@ -1976,6 +1990,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 
 	if err := c.loadGitHubApp(getenv); err != nil {
 		return config{}, err
+	}
+	// 🔴 A TEAM LIST WITH NO APP REFUSES TO BOOT: it would promise the listed
+	// teams' managers repositories nothing could serve.
+	if len(c.TeamsOnGitHubApp) > 0 && c.GitHubAppID == 0 {
+		return config{}, fmt.Errorf("%s is set but %s is not: the list lends the deployment's GitHub App to "+
+			"each team, and there is no App. Configure the App, or unset %s", envTeamsOnGitHubApp, envGitHubAppID, envTeamsOnGitHubApp)
 	}
 	if v := strings.TrimSpace(getenv(envCheckoutWaitTimeout)); v != "" {
 		d, err := time.ParseDuration(v)

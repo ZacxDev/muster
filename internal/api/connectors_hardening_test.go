@@ -31,6 +31,9 @@ var connectorOperatorWrites = []string{
 	"DELETE /connectors/{name}",
 	"POST /connectors",
 	"POST /connectors/{name}/rotate",
+	// A team manager's decision on the team agents' requests (slice 4.8).
+	"POST /teams/{id}/connectors/{grant}/approve",
+	"POST /teams/{id}/connectors/{grant}/deny",
 	"POST /ui/connector-requests/{id}/approve",
 	"POST /ui/connector-requests/{id}/deny",
 }

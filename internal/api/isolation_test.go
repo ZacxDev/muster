@@ -691,23 +691,28 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/members/{user}/remove": classParam,
 	// Account -> Teams (phase 2b.1): the caller's own teams (list), and the
 	// notify switch of a team {id} A is a member of (param).
-	"GET /account/teams":                     classList,
-	"POST /account/teams/{id}/notify":        classParam,
+	"GET /account/teams":              classList,
+	"POST /account/teams/{id}/notify": classParam,
 	// A team's officers (phase 3): {id} is a team A manages, {key} and
 	// {officer} A's team's type and officer.
-	"GET /teams/{id}/officers":                  classParam,
-	"POST /teams/{id}/officers/types/{key}":     classParam,
-	"POST /teams/{id}/officers/defs/{officer}":  classParam,
-	"GET /teams/{id}/chief":                     classParam,
-	"POST /teams/{id}/chief/provision":          classParam,
-	"POST /teams/{id}/chief/stop":               classParam,
-	"POST /teams/{id}/chief/restart":            classParam,
-	"POST /agents/{id}/credentials/rotate":      classParam,
+	"GET /teams/{id}/officers":                 classParam,
+	"POST /teams/{id}/officers/types/{key}":    classParam,
+	"POST /teams/{id}/officers/defs/{officer}": classParam,
+	"GET /teams/{id}/chief":                    classParam,
+	"POST /teams/{id}/chief/provision":         classParam,
+	"POST /teams/{id}/chief/stop":              classParam,
+	"POST /teams/{id}/chief/restart":           classParam,
+	// A team's connector requests (slice 4.8): {id} is a team A manages,
+	// {grant} one of that team's requests.
+	"GET /teams/{id}/connectors":                  classParam,
+	"POST /teams/{id}/connectors/{grant}/approve": classParam,
+	"POST /teams/{id}/connectors/{grant}/deny":    classParam,
+	"POST /agents/{id}/credentials/rotate":        classParam,
 	// Host officer spawns and their team lend (phase 3): the list shows the
 	// caller's own (and those lent to their teams); {id} is A's spawn.
-	"GET /officers/spawns":                      classList,
-	"POST /officers/spawns/{id}/share":          classParam,
-	"POST /officers/spawns/{id}/unshare":        classParam,
+	"GET /officers/spawns":                 classList,
+	"POST /officers/spawns/{id}/share":     classParam,
+	"POST /officers/spawns/{id}/unshare":   classParam,
 	"GET /pages/{id}/preview":              classParam,
 	"GET /pages/{id}/versions/{v}/content": classParam,
 	"POST /pages/{id}/links":               classParam,

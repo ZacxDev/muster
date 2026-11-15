@@ -1045,7 +1045,9 @@ func (e errConnectorMissing) Error() string {
 // OWNER: a user can read (and so decide) only grants on their own agents, so
 // another owner's request is connectors.ErrNotFound, exactly as a missing one.
 // For a member `github` is never the App here (connectors.WithVirtual's allow is
-// authz.IsAdmin): a member cannot approve their agent onto the App. Measured: an
+// githubapp.Admits: an admin, or a LISTED TEAM's acting principal): a member
+// cannot approve their agent onto the App. A team's requests are decided here
+// as the team, by a manager through teamAdminContext (team_connectors.go). Measured: an
 // operator session cannot even read a member's grant
 // (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
 //

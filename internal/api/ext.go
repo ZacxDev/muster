@@ -198,6 +198,12 @@ type Extensions struct {
 	// cannot disagree about whether it is configured). nil: muster has no
 	// GitHub identity, and every repository check answers errNoGitHub.
 	GitHubApp GitHubApp
+	// GitHubAppTeams is MUSTER_TEAMS_ON_GITHUB_APP (team sharing phase 4,
+	// slice 4.8): the teams whose agents may use GitHubApp, as an admin's do —
+	// githubapp.Admits, the rule Connectors' virtual `github` was built with
+	// from the same set. Every id was checked at boot to be a team. nil: the
+	// App is the admins' alone.
+	GitHubAppTeams map[int64]bool
 
 	// Push is muster's own Web Push (internal/push; push_routes.go). nil: no
 	// VAPID keys are configured — no Enable button is drawn, the key route

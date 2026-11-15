@@ -37,6 +37,9 @@ import (
 //     refused an operator and a viewer at the door).
 //   - Every manager action writes an audit_log row owned by the team, naming
 //     the manager (auditTeam), as phase 3's charter edits do.
+//   - The team agents' connector requests (/teams/{id}/connectors, slice 4.8,
+//     team_connectors.go) are read and decided through the same door: the
+//     connector tables are personal, and the team is their owner.
 // ---------------------------------------------------------------------------
 
 // ErrNotTeamManager is a manager's door used by someone who is not — or is no
@@ -430,6 +433,7 @@ func (s *Server) renderTeamChief(w http.ResponseWriter, r *http.Request, team in
 			b.WriteString(`<form method="POST" action="/teams/` + id + `/chief/stop"><button type="submit" class="` + adminQuiet + `">Turn off</button></form>`)
 		}
 		b.WriteString(`</div>`)
+		b.WriteString(`<p class="text-sm"><a class="text-accent underline" id="team-connectors-link" href="/teams/` + id + `/connectors">The team agents' connector requests</a></p>`)
 		if refusal != "" {
 			// Why Start and Restart are not offered (the same sentence as the
 			// credentials line above, for the manager reading the controls).

@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -320,9 +321,15 @@ func callerID(ctx context.Context) int64 {
 
 // handleAgentRepoOptions serves /ui/agents/repos: the repo combobox <li> options
 // (slow — hits the GitHub API), swapped in over the skeleton.
+//
+// ?owner=<id> names WHOSE object the picker is for (a team task's edit modal,
+// the new-task form's Owner select): the list is then the repositories THAT
+// owner's agents may use (githubAppForOwner), never the viewer's. A team is
+// answered only to an operator or above in it (the role that files and edits
+// its tasks); anyone else, and any other owner, gets an empty list.
 func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) {
 	repos := make([]ui.RepoView, 0)
-	if list, err := s.githubRepos(r.Context()); err == nil {
+	if list, err := s.repoPickerRepos(r.Context(), r.URL.Query().Get("owner")); err == nil {
 		for _, rp := range list {
 			repos = append(repos, ui.RepoView{FullName: rp.FullName, Private: rp.Private})
 		}
@@ -331,6 +338,24 @@ func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) 
 	if err := ui.RenderRepoOptions(w, repos); err != nil {
 		s.logger.Printf("agents: render repo options: %v", err)
 	}
+}
+
+// repoPickerRepos is the repository picker's list for the object owner names
+// ("" or the viewer: the viewer's own; see handleAgentRepoOptions).
+func (s *Server) repoPickerRepos(ctx context.Context, owner string) ([]github.Repo, error) {
+	owner = strings.TrimSpace(owner)
+	p := authz.MustFrom(ctx)
+	if owner == "" || owner == strconv.FormatInt(p.UserID, 10) {
+		return s.githubReposForOwner(ctx, p.UserID)
+	}
+	id, err := strconv.ParseInt(owner, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, errNoGitHub
+	}
+	if role, in := p.TeamScope().RoleIn(id); !in || !role.AtLeast(authz.TeamOperator) {
+		return nil, errNoGitHub
+	}
+	return s.githubReposForOwner(ctx, id)
 }
 
 // handleAgentStatusIcon serves GET /ui/agents/{id}/status: the bare status icon

@@ -85,7 +85,7 @@ func featureCatalog() []features.Feature {
 			Description: "muster's own GitHub identity: per-repository, one-hour tokens for agents.",
 			Enable: []features.Var{v(envGitHubAppID, "App ID"), v(envGitHubAppKey, "App private key (PEM)"),
 				v(envGitHubAppAccounts, "login:id,…")},
-			Settings: []string{envGitHubAppAccess}},
+			Settings: []string{envGitHubAppAccess, envTeamsOnGitHubApp}},
 		{ID: features.Dispatch, Kubernetes: true, Name: "Agent dispatch",
 			Description: "Start, stop and destroy agents in their own Kubernetes pods.",
 			Enable:      provisioner,

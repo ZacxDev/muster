@@ -252,6 +252,11 @@ var routeVias = map[authz.Via][]string{
 		"POST /teams/{id}/chief/provision",
 		"POST /teams/{id}/chief/stop",
 		"POST /teams/{id}/chief/restart",
+		// A team's connector requests (slice 4.8, team_connectors.go): the
+		// same door, the manager check and teamAdminContext after it.
+		"GET /teams/{id}/connectors",
+		"POST /teams/{id}/connectors/{grant}/approve",
+		"POST /teams/{id}/connectors/{grant}/deny",
 		"POST /agents/{id}/credentials/rotate",
 		"GET /officers/spawns",
 		"POST /officers/spawns/{id}/share",

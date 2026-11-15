@@ -90,11 +90,27 @@ type teamNamer interface {
 // nil (no database) with a non-empty list refuses too: nothing could check it.
 // It returns the teams' names for the boot line.
 func checkTeamsOnServerPool(ctx context.Context, names teamNamer, ids map[int64]bool) (map[int64]string, error) {
+	return checkTeamList(ctx, names, ids, envTeamsOnServerPool, "the server's Claude pool")
+}
+
+// checkTeamsOnGitHubApp is MUSTER_TEAMS_ON_GITHUB_APP's boot refusal, the
+// same rule as checkTeamsOnServerPool's (checkTeamList): 🔴 the list lends the
+// deployment's GitHub App — its repositories and the `github` connector's
+// tokens (githubapp.Admits) — to every id in it, so a person's id would hand
+// that member the admin's repositories.
+func checkTeamsOnGitHubApp(ctx context.Context, names teamNamer, ids map[int64]bool) (map[int64]string, error) {
+	return checkTeamList(ctx, names, ids, envTeamsOnGitHubApp, "the deployment's GitHub App")
+}
+
+// checkTeamList is the one "every id is a team" boot check behind the team
+// lists (checkTeamsOnServerPool, checkTeamsOnGitHubApp): env names the
+// variable, lends what it lends, both for the refusal.
+func checkTeamList(ctx context.Context, names teamNamer, ids map[int64]bool, env, lends string) (map[int64]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	if names == nil {
-		return nil, fmt.Errorf("%s is set but there is no database to check that each id is a team; unset it", envTeamsOnServerPool)
+		return nil, fmt.Errorf("%s is set but there is no database to check that each id is a team; unset it", env)
 	}
 	list := make([]int64, 0, len(ids))
 	for id := range ids {
@@ -103,7 +119,7 @@ func checkTeamsOnServerPool(ctx context.Context, names teamNamer, ids map[int64]
 	sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
 	got, err := names.TeamNames(ctx, list)
 	if err != nil {
-		return nil, fmt.Errorf("%s: reading which ids are teams: %w", envTeamsOnServerPool, err)
+		return nil, fmt.Errorf("%s: reading which ids are teams: %w", env, err)
 	}
 	var bad []string
 	for _, id := range list {
@@ -112,11 +128,21 @@ func checkTeamsOnServerPool(ctx context.Context, names teamNamer, ids map[int64]
 		}
 	}
 	if len(bad) > 0 {
-		return nil, fmt.Errorf("%s lists %s, which %s not a team (a person, or no one): the list lends the server's "+
-			"Claude pool to each id, so it must name teams only. Correct it or unset it", envTeamsOnServerPool,
-			strings.Join(bad, ", "), map[bool]string{true: "is", false: "are"}[len(bad) == 1])
+		return nil, fmt.Errorf("%s lists %s, which %s not a team (a person, or no one): the list lends %s "+
+			"to each id, so it must name teams only. Correct it or unset it", env,
+			strings.Join(bad, ", "), map[bool]string{true: "is", false: "are"}[len(bad) == 1], lends)
 	}
 	return got, nil
+}
+
+// teamListLine is a team list's boot line body: "<id> (<name>), …", sorted.
+func teamListLine(teams map[int64]string) string {
+	ids := make([]string, 0, len(teams))
+	for id, name := range teams {
+		ids = append(ids, fmt.Sprintf("%d (%s)", id, name))
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ", ")
 }
 
 // teamOwnerLookup is agentprovision.Adapter.UseTeamOwner's lookup over the

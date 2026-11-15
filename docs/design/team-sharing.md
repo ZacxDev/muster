@@ -1168,7 +1168,7 @@ rule the later phases' rows will meet.
   - **Push:** a team's dispatch card's push has no chips or signed actions and
     says to open it in a browser (`teamDispatchCardPush`, the same hold test,
     `teamCardHold`, as the phone-door refusal). No "Change repo" on a team's
-    card until 4.8.
+    card until 4.8 (4.8: only on a team lent the GitHub App).
   - **Verbatim attention answer as instructions:** no `answered_stepup_at`
     column was added, so on a team's task the path is closed (fail closed):
     the chief's brief goes on an approval card instead.
@@ -1182,6 +1182,45 @@ rule the later phases' rows will meet.
     expired; a session route that is finished; a host dispatch that ended.
     Those rows stay their owner's. Agents (a composite key) and a plugin's
     queue still refuse.
+
+- **Slice 4.8: the GitHub App for team agents** (operator decision: "yes;
+  managers approve each repository once for the team, with step-up").
+  - **`MUSTER_TEAMS_ON_GITHUB_APP=<team ids>`** lends the deployment's GitHub
+    App to each listed team, with `MUSTER_TEAMS_ON_SERVER_POOL`'s boot check:
+    a person's id or an unknown id refuses to boot, and so does the list with
+    no App. One predicate, `githubapp.Admits` (an admin, or the team acting
+    principal of a listed team), is both the `github` virtual connector's
+    `allow` and `githubApp`'s gate, so the team's chief sees the App's
+    repositories (`repos_list`, `agent_dispatch`'s connected-repository
+    check, the default branch) and the team's agents see the App-backed
+    `github` connector. A member's own principal is never admitted, a
+    member of a listed team included: a member's personal chief and agents
+    still have no repositories.
+  - **Pages decide by the object's owner, never the viewer**
+    (`githubAppForOwner`): the task forms' repository picker asks
+    `/ui/agents/repos?owner=<owner>` (the edit modal its task's owner, the
+    new-task form its Owner select), answered with a team's repositories
+    only to an operator or above of a listed team; an admin on an unlisted
+    team's task gets none. A listed team's approval card offers "Change
+    repo"; its repo card lists the App's repositories as the team and is a
+    team dispatch card like the approval card (browser, operator or above,
+    fresh sign-in).
+  - **`/teams/{id}/connectors`:** a manager reads the team agents' pending
+    connector requests and approves (`github` only, with a fresh sign-in) or
+    denies them. It runs through `teamAdminContext` (`ViaTeamAdmin`, a fresh
+    manager read) rather than a System handler: the connector tables are
+    personal, and the team acting principal is their owner, so it reads and
+    writes the team's rows and no one else's. The decision is THE operator
+    decision (`decideConnectorGrant`), so the approval is shared as the
+    team's standing grant for (`github`, the App, the repository): the
+    team's later agents on that repository are approved when they ask, and
+    one on another repository asks again. Every decision writes the team's
+    audit row (`connector.approve`, `connector.deny`) naming the manager.
+  - **Not done:** a team agent's request notifies nobody beyond what the
+    team owner's push fan-out (2b) sends; the page has no revoke of a
+    team's approved repository yet (unsetting the variable re-opens every
+    App approval of the team: its credential source changes); no
+    migration.
 
 ### Later: consent-based team invites
 

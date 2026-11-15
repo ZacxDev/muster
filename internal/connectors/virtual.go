@@ -30,8 +30,9 @@ import (
 // grant keyed on SourceApp and the repository: StandingRepo, migration 0043).
 //
 // 🔴 IT EXISTS ONLY FOR THE PRINCIPALS allow ADMITS. The App is the
-// deployment's, so on a multi-user muster it is the admin's alone (cmd/
-// muster-server passes authz.IsAdmin): every reader runs under the principal of
+// deployment's, so on a multi-user muster it is the admin's — and the listed
+// teams' own (cmd/muster-server passes githubapp.Admits: an admin, or the team
+// acting principal of a team in MUSTER_TEAMS_ON_GITHUB_APP): every reader runs under the principal of
 // the user it acts for — the agent's OWNER on the agent routes and the proxy,
 // the approver on the approve route, who row-level security makes the grant's
 // owner — and a member sees exactly the store beneath, as if no App were
