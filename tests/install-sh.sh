@@ -43,14 +43,17 @@ fresh_user() {
   sudo usermod -aG docker "$u"
   sudo loginctl enable-linger "$u"
   local uid; uid="$(id -u "$u")"
-  for _ in $(seq 30); do [ -S "/run/user/$uid/bus" ] && return 0; sleep 1; done
-  echo "install-sh: $u's user manager did not start" >&2; return 1
+  # systemd's own socket, not the D-Bus one: `systemctl --user` talks to the
+  # manager over $XDG_RUNTIME_DIR/systemd/private, and the runner has no
+  # D-Bus user session (on the runner /run/user/<uid>/bus did not appear in 30s).
+  for _ in $(seq 60); do [ -S "/run/user/$uid/systemd/private" ] && return 0; sleep 1; done
+  echo "install-sh: $u's user manager did not start: $(ls -la "/run/user/$uid" 2>&1); $(systemctl status "user@$uid.service" --no-pager 2>&1 | head -5)" >&2; return 1
 }
 # as <user> <command>: a login-like shell of that user with its user manager.
 as() {
   local u="$1"; shift
   local uid; uid="$(id -u "$u")"
-  sudo -u "$u" -H env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+  sudo -u "$u" -H env XDG_RUNTIME_DIR="/run/user/$uid" \
     MUSTER_RELEASE_BASE="$REL" MUSTER_IMAGE="$IMAGE" PATH="/usr/local/bin:/usr/bin:/bin" \
     bash -c "cd ~ && $*"
 }
