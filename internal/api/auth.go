@@ -307,6 +307,13 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 // CrossOriginRefusal is the error requireSameOrigin answers.
 const CrossOriginRefusal = "cross-origin request refused: this action must come from muster's own pages"
 
+// NoOriginRefusalHint is appended to CrossOriginRefusal when the request
+// carried NEITHER Origin nor Referer — a script, not a browser — so the
+// refusal names the header the check reads instead of leaving the caller to
+// guess. It loosens nothing: the request is refused all the same.
+const NoOriginRefusalHint = "the same-origin check found neither an Origin nor a Referer header; a browser sends Origin " +
+	"itself, and a script must send this server's own origin as Origin"
+
 // requireSameOrigin refuses a state-changing request whose Origin (or, when the
 // browser sent none, Referer) is not muster's own host (wsAllowedOrigins).
 //
@@ -332,8 +339,21 @@ func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.logger.Printf("refused a cross-origin %s %s (Origin %q)", r.Method, r.URL.Path, r.Header.Get("Origin"))
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	}
+}
+
+// refuseCrossOrigin writes the ONE same-origin refusal every door answers
+// (requireSameOrigin, the admin and passkey doors, step-up, sign-in): a 403
+// whose JSON error is CrossOriginRefusal, plus NoOriginRefusalHint when the
+// request carried neither header the check reads — the case a script hits, and
+// the one a bare "cross-origin" leaves unexplained.
+func (s *Server) refuseCrossOrigin(w http.ResponseWriter, r *http.Request) {
+	msg := CrossOriginRefusal
+	if strings.TrimSpace(r.Header.Get("Origin")) == "" && strings.TrimSpace(r.Header.Get("Referer")) == "" {
+		msg += " (" + NoOriginRefusalHint + ")"
+	}
+	s.writeJSON(w, http.StatusForbidden, map[string]any{"error": msg})
 }
 
 // isSameOrigin reports whether r's Origin — or Referer when Origin is absent —
