@@ -17,7 +17,8 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// ErrBadToken is the refusal for a mirror token that is unknown or revoked.
+// ErrBadToken is the refusal for a mirror token that is unknown or revoked, or
+// whose owner is not an enabled person (a team, or a disabled user).
 var ErrBadToken = errors.New("mirror: unknown or revoked mirror token")
 
 // Token is one minted mirror token's record. The token itself is never stored:
@@ -44,7 +45,8 @@ type Token struct {
 type Store interface {
 	// Authenticate resolves a presented token to its record, or ErrBadToken.
 	Authenticate(ctx context.Context, token string) (Token, error)
-	// TokenLive reports whether token id is still unrevoked.
+	// TokenLive reports whether token id is still unrevoked and its owner
+	// still an enabled person (Authenticate's rule).
 	TokenLive(ctx context.Context, id int64) (bool, error)
 	// CreateToken mints a token for host, owned by ctx's user, and returns it
 	// ONCE, with its record.
@@ -98,6 +100,12 @@ func scanToken(row pgx.Row) (Token, error) {
 // Authenticate looks the token up by hash among unrevoked tokens and stamps its
 // last use.
 //
+// 🔴 A TOKEN WHOSE OWNER IS DISABLED IS REFUSED AS IF UNKNOWN (#681), on every
+// call: the owner set is users.EnabledPersonIDs. A disable also revokes the
+// rows (users.SetDisabledAs), but this read is the guarantee — it holds for a
+// token that revoke missed, and it is the same read TokenLive makes, so a
+// disable also ends the owner's live connections.
+//
 // 🔴 A TOKEN WHOSE OWNER IS A TEAM (users.kind = 'team', migration 0126) IS
 // REFUSED AS IF UNKNOWN: a team never signs in, and this door attaches no
 // request principal for internal/api's admit to refuse. Nothing mints such a
@@ -115,7 +123,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	t, err := scanToken(s.pool.QueryRow(ctx, `
 		UPDATE mirror_tokens SET last_used_at = now()
 		WHERE token_hash = $1 AND revoked_at IS NULL
-			AND owner_id IN (`+users.PersonIDs+`)
+			AND owner_id IN (`+users.EnabledPersonIDs+`)
 		RETURNING `+tokenCols, HashToken(token)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken
@@ -123,9 +131,15 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 	return t, err
 }
 
+// TokenLive is the live connection's recheck (Service.watchToken): whether
+// token id would still authenticate. It applies Authenticate's owner rule
+// (users.EnabledPersonIDs), so a connection whose owner is disabled — or is
+// not a person — ends at its next recheck, exactly as a revoked one does
+// (#681).
 func (s *PGStore) TokenLive(ctx context.Context, id int64) (bool, error) {
 	var live bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mirror_tokens WHERE id = $1 AND revoked_at IS NULL)`, id).Scan(&live)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mirror_tokens WHERE id = $1 AND revoked_at IS NULL
+			AND owner_id IN (`+users.EnabledPersonIDs+`))`, id).Scan(&live)
 	return live, err
 }
 

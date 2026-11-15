@@ -408,7 +408,7 @@ func (s *PGStore) Owners(ctx context.Context) ([]int64, error) {
 	// on an account that cannot sign in to read the result.
 	rows, err := s.pool.Query(sys(ctx), `SELECT o FROM (SELECT owner_id AS o FROM agents
 			UNION SELECT owner_id FROM mirror_tokens WHERE revoked_at IS NULL) x
-		JOIN users u ON u.id = x.o WHERE u.disabled_at IS NULL AND u.id IN (`+users.PersonIDs+`) ORDER BY 1`)
+		JOIN users u ON u.id = x.o WHERE u.id IN (`+users.EnabledPersonIDs+`) ORDER BY 1`)
 	if err != nil {
 		return nil, errf("owners: %w", err)
 	}
