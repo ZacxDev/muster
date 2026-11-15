@@ -102,10 +102,17 @@ func TestEveryPersonalPluginPathKeepsThePrincipalsOwn(t *testing.T) {
 	}
 }
 
-// pluginRowReads classes EVERY function of this package whose SQL reads or
-// changes `plugins` rows: "own" functions must carry ownedByPrincipal (the one
+// pluginRowReads classes every function declaration of THIS package
+// (internal/plugins) whose body spells `FROM plugins`, `UPDATE plugins` or
+// `INTO plugins`: "own" functions must carry ownedByPrincipal (the one
 // filter); the others say why they read rows a principal does not own, or
-// need no filter. It fails when the set grows or shrinks.
+// need no filter. It fails when that set grows or shrinks.
+//
+// 🔴 ITS REACH (#696 round 1): it sees no other package, no `JOIN plugins`,
+// and no SQL held in a package-level constant. The reads it does not see
+// (internal/api's drafts, routes, retry and unrouted joins; internal/notes'
+// ref lookups; internal/users' rotate marks) are not personal plugin pages:
+// TestEveryPersonalPluginPathKeepsThePrincipalsOwn pins those by behaviour.
 var pluginRowReads = map[string]string{
 	"PGStore.List":            "own",
 	"PGStore.Revoke":          "own",

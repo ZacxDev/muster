@@ -343,6 +343,68 @@ func TestATeamSessionsPreviewRunsOnTheTeamsPlugin(t *testing.T) {
 	}
 }
 
+// TestATeamPreviewReadsTheMembersRoleFresh (#696 round 1, M8b): cal's
+// request was admitted while she was a viewer of the team — its principal's
+// cached memberships still say so — and she is removed before the preview
+// gate's read. teamViewerPlugins reads her role FRESH (teamMemberNow) and
+// refuses her; the cached TeamScope would admit her. CONTROL: the same
+// request context before the removal is admitted.
+//
+// A GUARD PIN, not a regression test: the fresh read is in c47718e1 already
+// (green there); the test is what kills the mutant that swaps it for the
+// cached memberships.
+func TestATeamPreviewReadsTheMembersRoleFresh(t *testing.T) {
+	f := newTPlug(t)
+	w := f.w
+	f.viewerPlugin(t, f.teamCtx(), "tplug-fr-"+w.suffix, "https://t.viewer.example.net/e")
+	stale := authz.WithPrincipal(context.Background(), w.srv.principalFor(context.Background(), f.cal, authz.ViaSession))
+	if role, in := authz.MustFrom(stale).TeamScope().RoleIn(f.team); !in || !role.AtLeast(authz.TeamViewer) {
+		t.Fatalf("instrument check FAILED: cal's principal does not carry her viewer membership (%v %v)", role, in)
+	}
+	if ps, member := w.srv.teamViewerPlugins(stale, f.team, "@7"); !member || len(ps) != 1 {
+		t.Fatalf("CONTROL: cal, a viewer, before her removal: member %v, %d plugins; want admitted with the team's one", member, len(ps))
+	}
+	if err := f.store.RemoveTeamMember(w.sys, f.admin, f.team, f.cal); err != nil {
+		t.Fatal(err)
+	}
+	if ps, member := w.srv.teamViewerPlugins(stale, f.team, "@7"); member || len(ps) != 0 {
+		t.Errorf("cal, removed after her request's memberships were read: member %v, %d plugins; want refused", member, len(ps))
+	}
+}
+
+// TestATeamHandoffTakesTheTeamsWindowNotTheMembersOwn (#696 round 1, M11):
+// cal has a host of her OWN named build-01 with a window @7 (session
+// "own-main"), listed BEFORE the team's build-01 @7 (session "main"). Her
+// hand-off on the team's plugin for the team's window targets the TEAM's
+// session: the mint resolves the window over the team's hosts alone
+// (teamHostsOf), never over every host she can see.
+//
+// A GUARD PIN: c47718e1 already resolves over teamHostsOf (green there); the
+// test is what kills the mutant that resolves over all VisibleHosts.
+func TestATeamHandoffTakesTheTeamsWindowNotTheMembersOwn(t *testing.T) {
+	f := newTPlug(t)
+	w := f.w
+	_, teamPlugin := f.viewerPlugin(t, f.teamCtx(), "tplug-tw-"+w.suffix, "https://t.viewer.example.net/e")
+	host := func(owner int64, session string) mirror.HostView {
+		return mirror.HostView{Owner: owner, Host: "build-01", Online: true, Interactive: true, Rendered: true,
+			Windows:  []mirror.Window{{Session: session, ID: "@7", Index: 1, Active: true}},
+			Previews: map[string]mirror.WindowPreviews{"@7": {Offered: 1}}}
+	}
+	w.srv.ext.Mirror = &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, teamHosts: []mirror.HostView{host(f.cal, "own-main"), host(f.team, "main")}}
+	body, _ := json.Marshal(map[string]any{"plugin": teamPlugin.ID, "owner": f.team, "target": map[string]any{"mirror": map[string]string{"host": "build-01", "window": "@7"}}})
+	if rec := w.do(w.h, "POST", "/plugin-handoffs", string(body), cred{sessionUser: f.cal}); rec.Code != http.StatusOK {
+		t.Fatalf("cal's hand-off on the team's plugin: %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	var owner int64
+	var session string
+	if err := w.pool.QueryRow(w.sys, `SELECT owner_id, target->'mirror'->>'session' FROM plugin_handoffs WHERE plugin_id = $1 ORDER BY minted_at DESC LIMIT 1`, teamPlugin.ID).Scan(&owner, &session); err != nil {
+		t.Fatal(err)
+	}
+	if owner != f.team || session != "main" {
+		t.Errorf("the hand-off: owner %d, session %q; want the team %d's session \"main\" (never cal's own \"own-main\")", owner, session, f.team)
+	}
+}
+
 // TestATeamPluginsPageAnswersAStaleManagerWithItsOwnNotice (#696 round 0,
 // (a)): A's request was admitted as a manager; she is made an operator before
 // the page's fresh role read. The plugins page answers 403 with ITS notice,

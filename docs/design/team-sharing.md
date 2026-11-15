@@ -2687,7 +2687,9 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   Revoke, SetDraftChecks, SetDeliverTo, MintHandoff — so a new personal
    >   path is filtered by default; the five open-coded API checks and both
    >   ownership helpers are gone (`TestEveryPersonalPluginPathKeepsThePrincipalsOwn`;
-   >   `TestEveryPluginRowReadSaysWhoseRowsItReads` classes every other read).
+   >   `TestEveryPluginRowReadSaysWhoseRowsItReads` classes every other
+   >   `FROM`/`UPDATE`/`INTO plugins` function of `internal/plugins`, and
+   >   no `JOIN`, package constant or other package: #696 round 1).
    >   A team's rows are reached only under the team acting principal.
    > - **Round 0 (#696):** `/self` has no `team_name` (D1); the plugins page
    >   answers a no-longer-manager with its own notice (`teamManagerPage`); a
@@ -2699,6 +2701,22 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `/teams/<id>/plugins` with the hosts page's reason
    >   (`TestLeavingATeamMarksItsViewerPluginsRotate`). The slice is
    >   therefore NOT migration-free: 0134 is its one migration.
+   > - **Round 1 (#696):** the gateway reads `PLUGIN_TOKENS_FILE` only at
+   >   start, so adding or rotating a team's token takes a gateway restart
+   >   (docs/previews.md). A removed member keeps a team preview they opened
+   >   until its owner cookie expires: for a team owner (`/self` `owner_kind`
+   >   `team`) that cookie is **shortened to 15 minutes**
+   >   (`previewgw.TeamOwnerCookieTTL`; `TestATeamOwnersCookieIsShort`), and
+   >   renewing it goes through muster's Preview button, where the role is
+   >   read fresh. The hand-off cap (60 a minute) and the gateway's entry-code
+   >   cap (64) are per owner, so per TEAM, shared by its members; every team
+   >   hand-off writes a `team.plugin.handoff` row, and the team page shows
+   >   the last 25. 0134's rollback revokes the team's plugin rows before the
+   >   image rollback (its header). Two guard pins:
+   >   `TestATeamPreviewReadsTheMembersRoleFresh` (the fresh role read, not
+   >   the request's cached memberships) and
+   >   `TestATeamHandoffTakesTheTeamsWindowNotTheMembersOwn` (the window over
+   >   the team's hosts alone).
 
 4. **2b.4: operators.**
    - Typing and step-up through `access`.

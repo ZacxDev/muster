@@ -13,7 +13,18 @@
 -- Inert without its code: the column is nullable and nothing older reads it.
 -- Must apply after its predecessor, 0133 (the contiguity test refuses a gap).
 --
--- ROLLBACK (after rolling the image back; an older image never reads it):
+-- ROLLBACK, in this order:
+--   1. BEFORE the image rollback, revoke every team's plugin rows. An image
+--      older than 2b.3b has no owner filter on its personal plugin paths, so
+--      a team's rows (which a member's session reads and a manager's writes)
+--      would show on members' own /plugins pages and as chips of their own
+--      windows, and a manager could revoke them, toggle draft_checks or bind
+--      them to an officer there, unaudited:
+--        UPDATE public.plugins SET revoked_at = now()
+--         WHERE revoked_at IS NULL
+--           AND owner_id IN (SELECT id FROM public.users WHERE kind = 'team');
+--   2. Roll the image back.
+--   3. Then (an older image never reads the column):
 --   ALTER TABLE public.plugins DROP COLUMN IF EXISTS rotate_at;
 --   DELETE FROM schema_migrations WHERE version = 134;
 

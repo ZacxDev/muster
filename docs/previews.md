@@ -78,7 +78,9 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
 2. **A viewer plugin token:** on `/plugins`, mint a token with `viewer` (and
    not `messages`), origin `https://*.<zone>`, entry URL
    `https://w.<zone>/__muster/enter`. Put it in the gateway's
-   `PLUGIN_TOKENS_FILE`.
+   `PLUGIN_TOKENS_FILE`. 🔴 The gateway reads that file **only when it
+   starts** (`internal/previewgw/config.go`): adding, replacing or removing a
+   token takes a gateway restart.
 3. **The gateway:** `MUSTER_URL`, `MUSTER_PUBLIC_URL`, `PLUGIN_TOKENS_FILE`,
    `PREVIEW_DOMAIN`, `STATE_DIR`, `PREVIEW_SIGNING_KEY` (at least 32 bytes),
    `PREVIEW_LISTEN`, and `PREVIEW_MESH_LISTEN` for the mesh endpoint. The
@@ -157,9 +159,9 @@ the gateway's admin does it by hand, once per team.
    URL `https://w.<zone>/__muster/enter`, as step 2 above). The token is
    shown once; the manager gives it to the gateway's admin out of band.
 2. The gateway's admin appends that token to the gateway's
-   `PLUGIN_TOKENS_FILE` (one token per line) and restarts the gateway, or
-   waits for its next re-read. Its `/self` answers `owner_kind` `team`, its
-   `owner_login` the team's name.
+   `PLUGIN_TOKENS_FILE` (one token per line) and **restarts the gateway**:
+   the file is read only at start, never re-read. Its `/self` answers
+   `owner_kind` `team`, its `owner_login` the team's name.
 3. The admin mints each team host's host token as `team:<id>` (step 4
    above) and installs it on that machine for the Unix user the team shares.
 4. A member's Preview on a team session then opens on the team's plugin. With
@@ -172,7 +174,26 @@ its row claims. Revoking it on `/teams/<id>/plugins` closes the team's
 previews within the gateway's `/self` re-check. When an operator or a manager
 of the team leaves, drops to viewer or is disabled, the team's plugin is
 marked rotate on that page (as its host tokens are): revoke it, mint another
-and give the gateway's admin the new token.
+and give the gateway's admin the new token, who replaces the old line in
+`PLUGIN_TOKENS_FILE` and restarts the gateway (a restart forgets every open
+preview, of every owner: see [Lifecycle](#lifecycle)).
+
+- **A removed member's open previews.** The gateway knows nothing of a
+  team's membership: a member removed from the team keeps a team preview
+  they already opened until its owner cookie expires. For a team owner
+  (`/self` says `owner_kind` `team`) that cookie lasts **15 minutes**, not
+  8 hours (`TeamOwnerCookieTTL`); renewing it takes a fresh hand-off from
+  muster's Preview button, which reads the member's role fresh. Revoking
+  the team's plugin closes every team preview sooner (the `/self` re-check).
+- **Caps are per TEAM, not per member.** A team is one owner to both caps
+  below: the 60 hand-off codes a minute muster mints for an owner
+  (`HandoffMintsPerMinute`) and the 64 outstanding entry codes the gateway
+  holds per owner (`maxEntryCodesPerOwner`) are shared by all the team's
+  members.
+- **Each hand-off is audited.** Every team hand-off writes a
+  `team.plugin.handoff` row naming the member to the team's audit; the
+  team's page shows the last 25 rows, so busy previewing pushes older
+  entries off that page (the rows stay in the audit log).
 
 ## How it is built
 
@@ -337,7 +358,8 @@ enforces.
   and sends the token as `Authorization: Bearer`. No `w.` response sets a
   cookie (`internal/previewgw/session.go`, `cookie.go`).
 - **The owner cookie** `__Host-mp`: `Secure`, `HttpOnly`, `Path=/`,
-  host-only, HMAC-signed `{preview, owner, expires}`, `Max-Age` **8 hours**,
+  host-only, HMAC-signed `{preview, owner, expires}`, `Max-Age` **8 hours**
+  (**15 minutes** when the owner is a team: [team previews](#team-previews-manual-step-for-the-gateways-admin)),
   **never renewed** except by a fresh hand-off from the Preview panel. Its `SameSite`
   follows `Sec-Fetch-Dest` on the entry request: `iframe` gets
   `SameSite=None; Partitioned`, anything else (a new tab, or a browser
@@ -406,7 +428,7 @@ tokens are a file in `STATE_DIR`.
 |---|---|
 | `preview_open`, or **Open** on an offer | checked against the limits (and, for an offer, probed); recorded; the host is told |
 | `preview_close`, or **Close** on the session page | closed at once: every request, stream and WebSocket of it is cut (WebSockets with close code 1008, reason `preview_closed`); its name answers 404 |
-| the owner cookie expires (8 h) | the requests and WebSockets it admitted are cut at that moment (1008 `session_expired`); the next request gets `403 session_expired` |
+| the owner cookie expires (8 h; 15 min for a team owner) | the requests and WebSockets it admitted are cut at that moment (1008 `session_expired`); the next request gets `403 session_expired` |
 | no request for `PREVIEW_IDLE` (default 2 h; an open WebSocket or stream counts as in use) | closed at the next 30 s sweep; the host is told |
 | open longer than `PREVIEW_TTL` (default 24 h) | closed at the next 30 s sweep, in use or not; reopening mints a new id |
 | its window absent from the host's window listing for 10 min | closed at the next sweep (so 10 to 10.5 min after); the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host neither starts nor clears it |
