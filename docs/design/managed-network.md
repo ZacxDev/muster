@@ -1,8 +1,8 @@
 # Design: a managed muster network
 
-**Status: proposed, revised after round 0.** Nothing on this page is built. It
+**Status: proposed, revised after rounds 0–2.** Nothing on this page is built. It
 is a design proposal for review; the operator decisions it works within are
-listed below, the [changes after round 0](#changes-after-round-0) say what
+listed below, the [changes after rounds 0–2](#changes-after-rounds-02) say what
 moved and why, and the [open questions](#11-open-questions-for-the-operator)
 end with a recommendation each.
 
@@ -25,7 +25,7 @@ hostname, address or price list appears here.
 ## Contents
 
 - [Operator decisions](#operator-decisions)
-- [Changes after round 0](#changes-after-round-0)
+- [Changes after rounds 0–2](#changes-after-rounds-02)
 - [Summary](#summary)
 - [What muster assumes today](#what-muster-assumes-today)
 - [1. Goals, non-goals and user flows](#1-goals-non-goals-and-user-flows)
@@ -80,7 +80,9 @@ Answered in round 0 (the `audit-premise-answers` block on the PR):
 10. **Q5, Pages: offered**, as a **separate, rate-limited name kind that does
     not count as a device** ([§2](#names)).
 
-## Changes after round 0
+## Changes after rounds 0–2
+
+### Round 0
 
 Round 0 ([the audit comment on PR #701](https://github.com/ZacxDev/muster/pull/701))
 found 1 🔴 and 13 🟡 at `8cf94474`. Q1's answer removed the per-device names,
@@ -98,7 +100,7 @@ and with them most of the hard parts. Finding by finding:
 | **F8** PSL timing, CA rate limits | **fixed.** PSL justified on cookie isolation (still needed with one name per server); the PSL entry or a CA rate-limit increase is a **launch gate** | [names](#names), [launch gates](#launch-gates) |
 | **F9** iOS cookie jars and push | **fixed in the flow, measured in phase 0.** On iOS the phone is linked **from inside the installed app**, so the device session lands in the app's own jar whichever way the jars behave; push needs the installed app; re-linking keeps the same name | [§3](#ios), [phase 0](#phase-0-spikes-no-product-change) |
 | **F10** background-built links need a fixed name | **moot** for the UI (one fixed name per server); Pages links use the Pages name | [§9](#9-interaction-with-the-existing-pieces) |
-| **F11** billing and recovery gaps | **fixed.** Server list and Retire, re-key by email, refund and dispute webhooks, deletion with an active subscription, email change and email loss | [§5](#5-billing-and-account-recovery) |
+| **F11** billing and recovery gaps | **fixed.** Server list and Retire, re-key by email (**dropped in round 2**, [below](#round-2)), refund and dispute webhooks, deletion with an active subscription, email change and email loss | [§5](#5-billing-and-account-recovery) |
 | **F12** 1 TB transfer unverified | **fixed.** Read from the provider's API for the only plan matching the node's size and region: 1 TiB included, **outbound only** counted (provider billing FAQ); the cap counts what the relay sends | [§7](#7-cost-model) |
 | **F13** shared IP | **fixed** per Q3: recorded, with its reputation risk and a move trigger | [§6](#shared-ip-and-the-move-to-a-dedicated-one) |
 | PROXY header | **stated:** safe only because the tunnel listener has no network socket | [the relay](#the-relay) |
@@ -123,6 +125,33 @@ mode's lack of Sign out everywhere is [auth.md:527-530](../auth.md).
 constants are at **84, 109, 122, 125** at both `4b087718` and `2a2dde21`
 (`grep -n '^const Max'`), not 85/110/123/126, so those links are unchanged.
 
+### Round 1
+
+Round 1 was the revision above, at `e6bb4cf4`: the design reworked around
+the Q1–Q5 answers, one name per server.
+
+### Round 2
+
+Round 2 audited the delta `8cf94474..e6bb4cf4` and found 0 🔴, 7 🟡 and 5 🟢
+(F1 confirmed fixed; the tunnel numbers and the route walk re-derived and
+sound). With no 🔴 the audit ladder ended there; these fixes are not
+re-audited.
+
+| finding | resolution | where |
+|---|---|---|
+| **🟡 1** "type this code" phishing (RFC 8628); a localhost owner always saw "a different network" | **fixed.** Link device shows a QR code (or Copy link) carrying a short-lived nonce; a pending link needs a live nonce, and its code is accepted only in the session that minted it, with no override. The confirm compares the waiting device with the server's own public address as the relay sees it (the tunnel's source), and shows its approximate location. Threat model and phase-2 tests updated (an attacker-created code typed by the owner is refused without the nonce) | [flow (b)](#flow-b-link-a-device), [§3](#why-the-link-is-bound-to-the-owners-screen), [phase 2](#phase-2-link-device-the-first-user-visible-release) |
+| **🟡 2** relay memory | **fixed.** Fixed 64 KiB `SO_SNDBUF`/`SO_RCVBUF` on visitor sockets (and fixed tunnel socket buffers); a 16 KiB-per-30 s drain floor and a 120-of-300 s stall limit against a trickle; per-address limits on the IPv6 /64; PROXY headers trusted only from Traefik's addresses, plus a `NetworkPolicy`; the stall gauge defined as stalled streams × `W`; the bound recomputed with kernel buffers (~1.9 GiB worst case under 2 GiB, `GOMEMLIMIT` lowered to 1 GiB, a `memory.current` backstop) | [memory](#memory-a-client-that-stops-reading), [the relay](#the-relay), [§7](#node-capacity-estimated) |
+| **🟡 3** stranger lockout through per-name budgets | **fixed.** One address (/24 or /64) gets at most a quarter of every per-name budget; a quarter is reserved for the server's known prefixes; the per-name connection limit is raised to 600/min, above the 300/min per address; the Pages name has its own byte cap; pending links need a nonce; the byte cap's exemption for the owner's devices now goes by those known prefixes, which a blind relay can see. The remaining distributed lockout, and the owner's way back, are stated | [rate limits](#rate-limits) |
+| **🟡 4** the CLI and doctor use tokens the tunnel never serves | **fixed.** The CLI, doctor and mirror-token administration stay on localhost or Tailscale for v1; §9 corrected; a CLI route set behind its own ALPN is listed as a later phase | [§9](#9-interaction-with-the-existing-pieces), [later](#later) |
+| **🟡 5** re-keying is a name takeover with email access alone | **fixed.** Re-keying dropped; recovery is Retire plus a new id | [§5](#the-account-page-servers-recovery-and-deletion), [phase 4](#phase-4-billing-and-recovery) |
+| **🟡 6** invite and reset links bypassed the owner's screen | **fixed (the first option).** Opening one on the network shows a code and no form; the issuing admin (or, for a reset, the user on their own screen) confirms the code; only then is the form served. The "no form without a device session" claim now matches | [§3](#invites-and-password-resets), [§8](#8-threat-model) |
+| **🟡 7** the Pages name was linkable to the UI name by CAA `accounturi` | **fixed (separate account).** The Pages name gets its own ACME account, which is cheap; what stays linkable (the CA, the service, the CT services) is stated | [names](#names), [DNS](#dns) |
+| 🟢 ALPN | the server lists `muster-mirror/1` first, so a ClientHello offering both is served as the machine connection the relay counted | [the relay](#the-relay) |
+| 🟢 the "never served" list | adds `/plugin/v1/*`, `/connect/`, `/llm/`, `/mcp` and `/agent/…`, checked against `routes.golden` | [listeners](#which-routes-the-tunnel-listener-serves) |
+| 🟢 grant binding | the grant names no device; the server binds it to one device session | [§4](#device-grants-honest-counting-for-stock-servers), [§8](#8-threat-model) |
+| 🟢 CT monitoring | both services unreachable is a WARN; the server keeps every key it has used; the privacy page notes what polling reveals | [certificate renewal](#certificate-renewal) |
+| 🟢 Android | `mdv_…` requests carry no device cookie; the `mdv_…` row maps to the grant | [flow (b)](#flow-b-link-a-device), [listeners](#which-routes-the-tunnel-listener-serves) |
+
 ## Summary
 
 The design in one line each:
@@ -145,11 +174,13 @@ The design in one line each:
   **its own ACME client** obtains through DNS-01. The coordination service only
   writes the `_acme-challenge` TXT record the server asks for. The private key
   never leaves the server.
-- **Link device, reversed.** The phone opens the server's address (a QR code
-  of it, or the link copied or shared), shows a short code, and the owner
-  types that code on a screen that is already signed in, with a recent
-  sign-in. The phone gets a **revocable browser device session**, stored
-  hashed and checked on every request.
+- **Link device, reversed, and bound to the owner's screen.** The owner's
+  signed-in screen shows a QR code (or a link to copy) carrying a short-lived
+  **nonce**; the phone opens it, shows a short code, and the owner types that
+  code on the same screen, with a recent sign-in. A code from a phone that did
+  not come through that screen's nonce is refused, which is what stops "type
+  this code for me" phishing. The phone gets a **revocable browser device
+  session**, stored hashed and checked on every request.
 - **The server counts its own devices; the service signs the grants.** A stock
   server links a device only with a **device grant** the coordination service
   signed for its account, so stock servers count correctly. A modified server
@@ -157,6 +188,9 @@ The design in one line each:
 - **On the network, a full session exists only as a linked device.** The
   tunnel listener serves no sign-in that creates a session; a password or
   passkey there only steps up a device already linked.
+- **The `muster` CLI and `muster doctor` stay on localhost or Tailscale for
+  v1.** They present a personal or hook token, which the tunnel never serves
+  ([§9](#9-interaction-with-the-existing-pieces)).
 - **Billing never touches the user's server.** Stripe Checkout and the
   Customer Portal run on the coordination service's own pages.
 - **A lapse never strands the owner.** When payment lapses, grants beyond the
@@ -176,6 +210,8 @@ has to fit.
 | The core needs Tailscale; HTTPS comes from `tailscale serve` | [README.md:150-157](../../README.md), [README.md:211](../../README.md), [INSTALL.md:349-372](../../INSTALL.md) |
 | The README says the server "is reached only over Tailscale" | [README.md:32-38](../../README.md) |
 | `muster doctor` FAILs a server URL that is not `https` | [cmd/muster/doctor.go:438-441](../../cmd/muster/doctor.go) |
+| The `muster` CLI, `muster doctor` included, presents one credential, `MUSTER_TOKEN`: a person's personal API token or the server's hook secret; doctor reads server-side facts from `GET /api/doctor` with it. Mirror tokens are minted by `muster-server mirror token create` on the server machine | [cmd/muster/config.go:43-56](../../cmd/muster/config.go), [cmd/muster/client.go:275](../../cmd/muster/client.go), [cmd/muster/doctor.go:363](../../cmd/muster/doctor.go), [cmd/muster/doctor.go:575](../../cmd/muster/doctor.go) |
+| Agent pods and desktop plugins have their own route families: `/connect/`, `/mcp`, `/llm/` and `/agent/…` on a per-agent token; `/plugin/v1/*` on a plugin token | [internal/api/connectors.go:60](../../internal/api/connectors.go), [internal/api/server.go:852](../../internal/api/server.go), [auth.md:424](../auth.md), [internal/api/testdata/routes.golden](../../internal/api/testdata/routes.golden) |
 | `muster-mirror` refuses a plain `http://` URL unless `-allow-http` ("tests and local development only") | [internal/mirrorhost/client.go:176-182](../../internal/mirrorhost/client.go), [cmd/muster-mirror/main.go:219](../../cmd/muster-mirror/main.go) |
 | INSTALL sets `MUSTER_SECURE_COOKIES=1`; the cookie is Secure only when set (gotrue mode: always) | [INSTALL.md:454](../../INSTALL.md), [internal/api/auth.go:73-77](../../internal/api/auth.go), [internal/api/login.go:210](../../internal/api/login.go), [internal/api/push_routes.go:351](../../internal/api/push_routes.go) |
 | A host dials **out** over one WebSocket to `GET /mirror/connect`; muster never dials in | [internal/mirror/wire.go:16-22](../../internal/mirror/wire.go), [internal/mirror/wire.go:73](../../internal/mirror/wire.go) |
@@ -291,67 +327,112 @@ at `http://localhost:8105` on the hub machine.
 9. **Tunnel.** muster-server dials `wss://tunnel.example-muster.net/v1/connect`,
    proves possession of the server key, and starts serving HTTP/2 on the
    connection. The page shows **Connected**, the certificate's expiry, the
-   server's address with **Copy** and **Share** buttons and a QR code of it,
-   and **Link device**.
-10. `muster doctor` gains a `network` line: tunnel up, certificate valid for
-    more than 14 days, hook token set, no unknown certificate for the name in
-    Certificate Transparency.
+   server's address with **Copy** and **Share** buttons and a QR code of it
+   (to open muster on a device that is **already linked**; on a device that
+   is not, it opens a page that says to use **Link device**), and **Link
+   device**.
+10. `muster doctor`, run on the server machine or over Tailscale as today
+    ([§9](#9-interaction-with-the-existing-pieces)), gains a `network` line:
+    tunnel up, certificate valid for more than 14 days, hook token set, no
+    unknown certificate for the name in Certificate Transparency (WARN when
+    neither CT service answered, [certificate renewal](#certificate-renewal)).
 
 ### Flow (b): link a device
-
-On the phone:
-
-1. Open `https://<id>.example-muster.net`: scan the QR code on the Network
-   page, or open the link the owner copied or shared to themselves (D1). The
-   address is **not a secret**: it is in Certificate Transparency anyway.
-2. The relay sees SNI `<id>.example-muster.net`, finds a claimed server, and
-   opens a stream on its tunnel. The phone completes TLS **with the server**.
-3. The phone has no device session, so the server serves only the **link
-   page** ([§3](#which-routes-the-tunnel-listener-serves)). It creates a
-   **pending link**: a 32-byte secret in a `__Host-muster_link` cookie
-   (stored as its sha256), and a **link code**, 8 characters from the
-   no-confusables alphabet muster already uses
-   ([internal/plugins/pairing.go:45-46](../../internal/plugins/pairing.go)),
-   shown large: `K7MP-3QXR`. It lives 10 minutes. On iOS the page first says
-   to install the app ([iOS](#ios)).
 
 On the screen the owner is already signed in on (the localhost browser, or an
 already-linked device):
 
-4. **Link device** asks for a **recent sign-in** (5 minutes, the credential
-   window, [internal/stepup/stepup.go:64](../../internal/stepup/stepup.go)),
-   then for the code the phone shows, and an optional name.
-5. The server finds the pending link by the code and shows what it knows of
-   the waiting device: its user agent ("Chrome on Android"), when it opened
-   the page, and its network ("from 203.0.113.0/24, the same network as you"
-   or "a different network"). **Link this device?** names it again.
-6. On **Link**, muster-server asks the coordination service for a **device
+1. **Account → Devices → Link device** shows a QR code of
+   `https://<id>.example-muster.net/link#<nonce>`, a **Copy link** button for
+   a device that cannot scan, and a field for the code the device will show.
+   The **nonce** is 32 random bytes, stored as its sha256 with the session
+   that minted it; it lives 10 minutes and is used up by the first link it
+   completes. The page says: "Open this only on the device in your hand.
+   Never send it to anyone." This is what binds linking to the owner's
+   screen being **nearby** ([why](#why-the-link-is-bound-to-the-owners-screen)).
+
+On the phone:
+
+2. Scan the QR code, or open the copied link. The address is **not a
+   secret** (it is in Certificate Transparency anyway); the nonce is, and it
+   sits in the URL's **fragment**, which a browser never sends in a request,
+   so it appears in no log and no `Referer`. The link page's script reads it
+   and sends it in the body of the request that creates the pending link.
+3. The relay sees SNI `<id>.example-muster.net`, finds a claimed server, and
+   opens a stream on its tunnel. The phone completes TLS **with the server**.
+4. The phone has no device session, so the server serves only the **link
+   page** ([§2](#which-routes-the-tunnel-listener-serves)). **With a live
+   nonce** it creates a **pending link** bound to that nonce: a 32-byte
+   secret in a `__Host-muster_link` cookie (stored as its sha256), and a
+   **link code**, 8 characters from the no-confusables alphabet muster
+   already uses
+   ([internal/plugins/pairing.go:45-46](../../internal/plugins/pairing.go)),
+   shown large: `K7MP-3QXR`. It lives 10 minutes. **Without a nonce**, or
+   with an expired, used-up or unknown one, it creates nothing and shows no
+   code: it says "On a screen where you are signed in to this muster, open
+   Link device and scan its code." On iOS the page first says to install the
+   app ([iOS](#ios)).
+
+Back on the owner's screen:
+
+5. The owner types the code. **Link device** asks for a **recent sign-in**
+   if the last one is more than 5 minutes old (the credential window,
+   [internal/stepup/stepup.go:64](../../internal/stepup/stepup.go)). The
+   server accepts the code **only if its pending link was created with a
+   nonce this same session minted**, still live. Otherwise it links nothing
+   and says: "This code is not from a device that opened this screen's
+   link. If someone asked you to type a code, they are trying to get into
+   your muster." There is no override. (A pending link opened from an
+   invite or reset link is confirmed by the people
+   [§3](#invites-and-password-resets) names instead.)
+6. The server shows what it knows of the waiting device: its user agent
+   ("Chrome on Android"), when it opened the page, its **approximate
+   location** (country and region, which the relay looks up from the
+   visitor's address, [the relay](#the-relay)), and its network, compared
+   with two addresses: the server's **own public address as the relay sees
+   it** (the tunnel's source, [tunnel authentication](#how-the-relay-authenticates-a-servers-tunnel))
+   and, when the owner's screen is itself a linked device, that screen's.
+   So it reads "from 203.0.113.0/24, the same network as this server", or
+   "the same network as this screen", or "a different network from this
+   server and this screen" (normal for a phone on mobile data, where the
+   location is the signal that matters). **Link this device?** names it
+   again, with an optional name.
+7. On **Link**, muster-server asks the coordination service for a **device
    grant** ([§4](#4-device-counting)): `POST /v1/servers/<id>/grants`. If the
    account is at its limit the service answers `402` with an upgrade URL and
    the flow goes to [flow (d)](#flow-d-the-free-device-limit-is-reached).
    Otherwise it returns a signed grant.
-7. In one transaction the server verifies the grant, turns the pending link
-   into a **browser device session** bound to that grant, and deletes the
-   link code. The phone's page, which waits on the pending link, reloads
-   signed in.
-8. The phone offers **Install** (Android) as today
+8. In one transaction the server verifies the grant, turns the pending link
+   into a **browser device session** bound to that grant, uses up the nonce,
+   and deletes the link code. The phone's page, which waits on the pending
+   link, reloads signed in.
+9. The phone offers **Install** (Android) as today
    ([INSTALL.md:1037-1042](../../INSTALL.md)); notifications are enabled from
    inside the app as today ([push.md](../push.md)).
-9. **Account → Devices** lists the linked browser beside paired phones: its
-   name, linked when, last seen, and **Unlink**.
+10. **Account → Devices** lists the linked browser beside paired phones: its
+    name, linked when, last seen, and **Unlink**.
 
-**The native Android app** links the same way: the app opens the server's
-address in its WebView and links with the code; then the existing in-app
-pairing (`POST /account/devices/pair`) runs from that device session, and the
-`mdv_…` credential it yields is recorded **under the same grant**. It counts as
-one device, and Unlink ends both.
+**The native Android app** links the same way: its add-server screen takes
+the **Link device** link (scanned, or pasted from **Copy link**), opens it in
+its WebView and links with the code; then the existing in-app pairing
+(`POST /account/devices/pair`) runs from that device session, and the `mdv_…`
+credential it yields is recorded **under the same grant**: the paired-phone
+row stores the grant id. The app's own calls to `/api/device/*` carry the
+`mdv_…` credential and **no browser device cookie**, so on the tunnel
+listener the `mdv_…` credential is what maps to the grant: each such request
+is checked against its row, and refused when the grant is suspended or
+retired, the same per-request check a device session gets. It counts as one
+device, and Unlink ends both.
 
 ### Flow (c): another machine joins
 
 1. On **Account → Network → Machines**, the owner presses **Add a machine**.
    The page shows the same `muster-mirror` setup as INSTALL Step 7, with the
    server's address `https://<id>.example-muster.net` and a mirror token
-   minted as today ([auth.md:422](../auth.md)). No grant: machines are free.
+   minted as today ([auth.md:422](../auth.md)): by
+   `muster-server mirror token create` on the server machine
+   ([cmd/muster/doctor.go:575](../../cmd/muster/doctor.go)), which the
+   network does not change. No grant: machines are free.
 2. `muster-mirror` needs **one change**: on a network URL it offers the ALPN
    token **`muster-mirror/1`** ahead of `http/1.1`. The server serves the
    machine routes (`GET /mirror/connect` and the mirror token's other routes)
@@ -367,7 +448,7 @@ one device, and Unlink ends both.
 ### Flow (d): the free device limit is reached
 
 1. **Link** on an account whose one free grant is in use: the service answers
-   `402 {upgrade_url}` (step 6 of flow (b)). The pending link stays, so the
+   `402 {upgrade_url}` (step 7 of flow (b)). The pending link stays, so the
    phone keeps waiting.
 2. The page says "Your free device is **Pixel (Chrome)**. Link more devices
    with muster network Plus" and offers **Upgrade** and **Unlink Pixel
@@ -379,7 +460,7 @@ one device, and Unlink ends both.
    raises its grant limit.
 5. The original tab polls `GET /v1/servers/<id>/entitlement` (signed, by the
    server) every 5 s while the upgrade tab is open, sees the new limit, and
-   retries step 6 of flow (b) while the pending link is still alive.
+   retries step 7 of flow (b) while the pending link is still alive.
 
 ### Flow (e): unlink, cancel, leave
 
@@ -453,10 +534,31 @@ a new stream on that server's tunnel.
   [internal/mirror/wire.go:125](../../internal/mirror/wire.go)); any other
   against its browser caps. The relay does **not** tell the server what kind a
   connection is: the server reads SNI and the negotiated ALPN from its own TLS
-  handshake and decides itself.
+  handshake and decides itself. So the two must agree on a ClientHello that
+  offers **both** kinds: muster-server's TLS configuration lists
+  `muster-mirror/1` **first** in its ALPN preference (`NextProtos`:
+  `muster-mirror/1`, `h2`, `http/1.1`), and Go's TLS server picks the first
+  protocol in **its own** list that the client offers, so such a connection
+  is served as a machine connection, which is what the relay counted. A
+  phase-1 unit test offers both and asserts the negotiated protocol.
+- **Where the relay gets the client address.** The relay sits behind the
+  node's Traefik ([what runs where](#what-runs-where-on-one-node)), which
+  passes the TCP stream on with a PROXY protocol header. The relay **accepts
+  a PROXY header only from Traefik's own addresses** (a fixed allowlist in
+  its configuration; a connection from any other source is closed, header or
+  not), and a **NetworkPolicy** admits ingress to the relay's passthrough
+  port from Traefik's pods only. Without both, anyone reaching the port
+  directly could claim any client address and walk around every
+  per-address limit.
 - **The client address** is sent on the stream as a PROXY protocol v2 header,
-  ahead of the TLS bytes. muster-server reads it **only on the tunnel
-  listener**, and uses it where it uses `CF-Connecting-IP` today
+  ahead of the TLS bytes, with one extra TLV (from the application-specific
+  range): the visitor's **approximate location**, country and region, which
+  the relay looks up in a GeoIP database it holds. That adds nothing the
+  relay did not already see (the address), and the server uses it only for
+  the link confirm ([flow (b)](#flow-b-link-a-device) step 6); a VPN or a
+  carrier's gateway can make it wrong, and the confirm says "approximate".
+  muster-server reads the header **only on the tunnel listener**, and uses
+  the address where it uses `CF-Connecting-IP` today
   ([auth.md:578-586](../auth.md)), so the throttles keep working per visitor
   rather than per relay. 🔴 **This is safe only because the tunnel listener
   has no network socket:** it is an in-process `net.Listener` whose
@@ -514,29 +616,73 @@ extended to read the values `Serve` and `NewClient` actually use:
 The invariant is kept (connection window > every admitted stream × stream
 window), so a paused reader still cannot stall the tunnel. The price of a
 128 KiB window is per-stream throughput: at most `W / RTT`, about 1.3 MB/s at
-100 ms. That is far above a terminal or a chat page, and slows a large upload;
+100 ms (and the fixed socket buffers below halve that,
+[memory](#memory-a-client-that-stops-reading)). That is far above a terminal or a chat page, and slows a large upload;
 `W` is configuration, so phase 1 measures it.
 
 #### Memory: a client that stops reading
 
-A visitor that opens connections and never reads makes the relay hold bytes.
-Bounds, all enforced by the relay:
+A visitor that opens connections and never reads makes the relay hold bytes,
+in **two** places: the Go heap (x/net's per-stream buffers, goroutines, copy
+buffers) **and the kernel's socket buffers**, which `GOMEMLIMIT` does not see
+but the pod's memory limit does (cgroup v2 charges socket memory to the pod,
+as `sock` in `memory.stat`; **UNVERIFIED** on the node's kernel, read in
+phase 1's slow-reader test). Bounds, all enforced by the relay:
 
-1. **Per-server buffer budget = the download connection window**, ~32 MiB at
-   the numbers above. HTTP/2 flow control means the relay can never hold more
-   unread bytes for one tunnel than that, by construction.
-2. **Per client address: at most 64 concurrent streams across all servers**, so
-   one address can pin at most 64 × 128 KiB = 8 MiB.
-3. **A write-stall timeout on the visitor's socket.** A tunnel stream has no
-   deadlines ([tunnel.go:705-707](../../internal/preview/tunnel/tunnel.go)),
-   so the deadline is on the relay's TCP connection to the visitor: when no
-   byte has been accepted for **30 s** while bytes wait, the relay closes the
-   connection and resets the stream, which returns its window.
-4. **A global gauge** of bytes held for stalled streams; above 1 GiB the relay
-   refuses new visitor connections (by closing them) until it falls.
-5. **A memory limit on the relay pod** (2 GiB, with `GOMEMLIMIT` at 1.6 GiB),
-   so the worst case is the relay restarting, not the node's other services
-   starving. Servers reconnect on their own backoff.
+1. **Fixed, small socket buffers.** Every visitor socket gets
+   `SO_SNDBUF` = `SO_RCVBUF` = 64 KiB, set before the first byte. Linux
+   doubles the requested value for its own bookkeeping (socket(7)), so each
+   is at most 128 KiB of kernel memory, and setting it turns off the
+   kernel's autotuning for that socket (tcp(7)), so it cannot grow. Each
+   tunnel socket gets 128 KiB each way (256 KiB in the kernel, 512 KiB per
+   tunnel). The price is throughput: about 64 KiB per round trip to a
+   visitor (about 650 KB/s at 100 ms, half of `W / RTT`), and about 2.5 MB/s
+   at 50 ms for **all** of one server's traffic together. That is ample for terminals and chat and slows
+   a large upload; both are configuration, and phase 1 measures them.
+2. **Worst case per stream: ~432 KiB.** A stalled stream holds at most `W`
+   = 128 KiB in x/net's buffer, ~48 KiB of goroutines and copy buffer, and
+   2 × 128 KiB in the visitor socket's kernel buffers (both directions full).
+3. **Per server: ~108 MiB.** Its download connection window (~32 MiB, which
+   HTTP/2 flow control enforces by construction), plus 256 streams × (48 KiB
+   heap + 256 KiB kernel), plus its tunnel socket.
+4. **Per client address: at most 64 concurrent streams across all servers**,
+   so one address can pin at most 64 × 432 KiB ≈ **27 MiB**. An "address" is
+   the **/64 for IPv6** (one subscriber typically holds a whole /64, so a
+   per-/128 key would be no limit at all) and the single address for IPv4;
+   every per-address limit on this page is keyed the same way unless it says
+   /24.
+5. **A write-stall timeout and a minimum drain rate on the visitor's
+   socket.** A tunnel stream has no deadlines
+   ([tunnel.go:705-707](../../internal/preview/tunnel/tunnel.go)), so the
+   rules are on the relay's TCP connection to the visitor. While bytes wait
+   for it, the visitor must accept **at least 16 KiB (or everything waiting,
+   if less) in every 30 s**, and a connection may spend **at most 120 s of
+   any 300 s stalled**. Either failure closes the connection and resets the
+   stream, which returns its window. The rate floor is what stops a client
+   that accepts one byte every 29 s from holding its buffers indefinitely
+   by resetting a plain 30 s timeout.
+6. **A global stall gauge = stalled streams × `W`.** A stream is **stalled**
+   while bytes have waited to be written to its visitor for more than 1 s.
+   x/net's per-stream buffers have no API that reports how many bytes they
+   hold, so the gauge counts stalled streams and charges each the most it
+   can hold in user space. Above **256 MiB** (2,048 stalled streams) the
+   relay refuses new visitor connections (by closing them) until it falls.
+7. **Global caps:** at most **6,000 visitor connections** and **1,000
+   tunnels** per relay.
+8. **A memory limit on the relay pod** (2 GiB, with `GOMEMLIMIT` at 1 GiB,
+   lower than a heap-only budget would set it because the kernel buffers
+   share the limit), and a **backstop**: the relay reads its own cgroup's
+   `memory.current` every second and refuses new visitor connections above
+   1.7 GiB. So the worst case is refused connections, then the relay
+   restarting, not the node's other services starving. Servers reconnect on
+   their own backoff.
+
+**The bound, recomputed with kernel buffers:** ~150 MiB base (the binary,
+the registry, the GeoIP database) + 2,048 stalled streams × 432 KiB
+(~864 MiB) + the other ~3,950 connections × ~100 KiB (~390 MiB) + 1,000
+tunnels × 512 KiB of socket buffer (~500 MiB) ≈ **1.9 GiB**, under the
+2 GiB limit; the `memory.current` backstop stops admission before that if
+any figure here is low.
 
 A many-address attack can still exhaust the relay: that is a denial of
 service of the relay, not a breach, and the per-address and global bounds make
@@ -559,7 +705,11 @@ the 15 s heartbeat.
    Ed25519 signature over `"muster-net tunnel v1" ‖ id ‖ nonce ‖ unix time`.
 3. The relay checks the signature against the server key registered with the
    coordination service (cached, refreshed when the registry changes) and that
-   the id is `claimed` and not suspended.
+   the id is `claimed` and not suspended. Its acceptance tells the server
+   **the server's own public address as the relay sees it** (the tunnel's
+   source), which the link confirm compares a waiting device with
+   ([flow (b)](#flow-b-link-a-device) step 6); a localhost owner's own
+   address is always loopback, so it cannot serve that comparison.
 4. **One tunnel per server.** A second authenticated tunnel for the same id
    replaces the first (the old one is closed after its streams drain for
    30 s). muster already runs one replica ([README.md:215-216](../../README.md)),
@@ -569,6 +719,12 @@ the 15 s heartbeat.
 5. The tunnel's inner payload is still each visitor's own TLS, so the relay
    terminating the **outer** TLS reveals the control messages and the byte
    counts, never content.
+6. **Known prefixes.** Every 60 s the relay asks the server, as an ordinary
+   HTTP/2 request on the tunnel (not a `CONNECT` stream), for its **known
+   prefixes**: the /24s and /64s from which an already-linked device or a
+   machine authenticated in the last 24 h. The relay keeps them in memory
+   only, for that server's reserved slots ([rate limits](#rate-limits)), and
+   never sends them to the coordination service.
 
 ### The coordination service
 
@@ -577,7 +733,7 @@ One small Go service with its own Postgres. It owns:
 | table | holds |
 |---|---|
 | `accounts` | email (verified), terms version accepted, Stripe customer id, plan, plan state (`free`, `plus`, `past_due`, `disputed`), created |
-| `servers` | id, account, server public key, ACME account URI, Pages name if any, state (`unclaimed`, `claimed`, `suspended`, `tombstoned`), created, last tunnel seen |
+| `servers` | id, account, server public key, ACME account URI, Pages name and **its own** ACME account URI if any, state (`unclaimed`, `claimed`, `suspended`, `tombstoned`), created, last tunnel seen |
 | `grants` | id, server, state (`active`, `suspended`, `retired`), created, last confirmed (day granularity) |
 | `usage_daily` | per server and name: bytes sent by the relay, connections, distinct client /24s (IPv4) or /48s (IPv6) — counts only, see [retention](#11-open-questions-for-the-operator) |
 | `abuse_reports` | reports, decisions, takedowns |
@@ -599,8 +755,21 @@ site, signed in by an emailed one-time link.
   at the relay ([rate limits](#rate-limits)), and it can be rotated at most
   once a day (rotating retires the old name, which kills every outstanding
   link at once). It is unrelated to `<id>` in the name, and has its own
-  certificate, so Certificate Transparency does not link the two and no
-  browser coalesces a Pages connection onto the UI's.
+  certificate, so no browser coalesces a Pages connection onto the UI's.
+  It also has its **own ACME account**: the server generates a second ACME
+  account key when Pages is turned on, and `<pid>`'s CAA pins that
+  account's URI. With one account, both names' CAA records would carry the
+  same `accounturi`, and anyone reading DNS could link a Pages link to the
+  server's UI name. A second account is cheap: one more key in the
+  server's database and one `newAccount` request, inside the CA's
+  new-account limits for one address. Renewals of the two certificates are
+  jittered independently, so issuance times in CT do not pair them either.
+  **What stays linkable:** the CA sees both accounts' requests come from
+  the same address; the coordination service and the relay hold both names
+  in one `servers` row; and the CT services the server polls see one
+  address ask about both names ([certificate renewal](#certificate-renewal)).
+  So the two names are unlinkable **to the public** (DNS and CT), not to
+  those three.
 - **Flat names only.** Nothing lives below `<id>` but its challenge record, so
   there is no wildcard certificate and no wildcard record ([DNS](#dns)).
 - 🔴 **The product domain goes on the Public Suffix List** (private section,
@@ -633,7 +802,8 @@ site, signed in by an emailed one-time link.
 #### ACME DNS-01: the server's client, the service's TXT
 
 **Chosen:** the server runs its own ACME client (in-process, a maintained Go
-ACME library; which one is a phase 0 choice), under its own ACME account. The
+ACME library; which one is a phase 0 choice), under its own ACME account (a
+second one for the Pages name, [names](#names)). The
 service exposes one narrow write: `PUT/DELETE /v1/servers/<id>/acme-challenge`
 (and `/pages-challenge` for the Pages name), which can write only TXT records
 at exactly `_acme-challenge.<id>.example-muster.net`, at most 2 values at a
@@ -667,7 +837,22 @@ one TXT name (**UNVERIFIED** across providers; true of the common ones).
   renewal shows as a browser certificate error on every device. That is why
   the warnings are on the server and on the owner's phone, not at the relay.
 - After a renewal, and hourly, the server **checks Certificate Transparency**
-  for its names ([§8](#8-threat-model)).
+  for its names ([§8](#8-threat-model)):
+  - **"Its own" means every key it has ever used.** The server keeps, in its
+    database, the public key (SPKI hash) of every certificate it has
+    obtained for each name, never pruned while the name is live, so a
+    renewal or a re-issue does not flag the server's own earlier
+    certificates; anything whose key is not on that list is foreign.
+  - **Neither CT service answering is a WARN, never a PASS.** When Cert
+    Spotter and the crt.sh fallback both fail, the Network page and the
+    doctor `network` line say "CT not checked since" with the time, and after 24 h
+    without a successful check a push goes to the owner. An unchecked name
+    is not a clean one.
+  - **Polling is itself a disclosure.** Each poll is a request from the
+    server's home address naming its own names, so the CT services learn
+    which home address runs which `<id>` (and `<pid>`). The service's
+    privacy page and the Network page say so, and say which services are
+    polled.
 
 #### DNS
 
@@ -685,7 +870,7 @@ explicit, and an unclaimed id is NXDOMAIN.
 | `<id>` | `CAA` | `0 issue "<ca>; accounturi=<server's ACME account>"` | from claim |
 | `<id>` | `CAA` | `0 issuewild ";"` | from claim |
 | `_acme-challenge.<id>` | `TXT` | the challenge value | ≤ 10 min per order |
-| `<pid>` (Pages on) | `A`, `AAAA`, 2 × `CAA` | as for `<id>` | while Pages is on |
+| `<pid>` (Pages on) | `A`, `AAAA`, 2 × `CAA` | as for `<id>`, but `accounturi` is the **Pages** ACME account's | while Pages is on |
 | `_acme-challenge.<pid>` | `TXT` | the challenge value | ≤ 10 min per order |
 
 - **Not a CNAME to the relay.** A CNAME cannot share its owner name with any
@@ -711,11 +896,12 @@ Request** (a coalescing browser then opens a new connection for that name).
 
 | SNI and ALPN | serves | never |
 |---|---|---|
-| `<id>`, `h2`/`http/1.1`, **with** a device session | the full browser UI, as the browser listener does in gotrue mode ([auth.md:26-30](../auth.md)); the device routes for a phone paired under it; step-up sign-in | — |
-| `<id>`, `h2`/`http/1.1`, **without** a device session | the link page, its static assets, the pending-link status, and redeeming an invite or reset link ([§3](#invites-and-password-resets)) | any page that needs a session; a sign-in that creates one |
+| `<id>`, `h2`/`http/1.1`, **with** a device session | the full browser UI, as the browser listener does in gotrue mode ([auth.md:26-30](../auth.md)); step-up sign-in | — |
+| `<id>`, `h2`/`http/1.1`, a request carrying an `mdv_…` credential (the Android app, no browser cookie) | `/api/device/*` only, while the paired row's grant is active ([flow (b)](#flow-b-link-a-device)) | every other route |
+| `<id>`, `h2`/`http/1.1`, **without** a device session | the link page, its static assets, the pending-link status, creating a pending link **only with a live nonce** ([flow (b)](#flow-b-link-a-device)), and opening an invite or reset link, which creates a pending link and serves the invite or reset form only once a signed-in screen has confirmed it ([§3](#invites-and-password-resets)) | any page that needs a session; a sign-in that creates one; an invite or reset form before confirmation |
 | `<id>`, `muster-mirror/1` | the mirror token's routes only: `GET /mirror/connect`, `/mirror/ask`, `POST /mirror/mcp` ([auth.md:422](../auth.md)) | any browser route |
 | `<pid>` | Pages share links (`/s/…`, [pages.md:93-97](../pages.md)), the static assets their shell loads, and the stranger uploads a page accepts | cookies of any kind; any other route |
-| any | — | **the hook routes, `MUSTER_SERVICE_TOKEN` routes, personal API tokens, `/metrics`** ([architecture.md:54-55](../architecture.md)), on every name |
+| any | — | **the hook routes, `MUSTER_SERVICE_TOKEN` routes, personal API tokens (so the `muster` CLI and `GET /api/doctor`, [§9](#9-interaction-with-the-existing-pieces)), `/metrics`** ([architecture.md:54-55](../architecture.md)); **`/plugin/v1/*`** (plugin tokens, [auth.md:424](../auth.md)); and the agent-pod routes **`/connect/`, `/llm/`, `/mcp`** (not to be confused with the mirror's `POST /mirror/mcp`) **and `/agent/…`** (per-agent tokens, [internal/api/connectors.go:60](../../internal/api/connectors.go), [internal/api/server.go:852](../../internal/api/server.go)); on every name. Each prefix was checked against the registered routes in [internal/api/testdata/routes.golden](../../internal/api/testdata/routes.golden), which `RegisterRoutes` ([internal/api/routes.go:54-56](../../internal/api/routes.go)) generates |
 
 The exact route lists are read from the router in phase 1 and pinned by a test
 that walks every registered route and fails on one the tables above do not
@@ -723,17 +909,24 @@ place (so a new route is placed on purpose, not served by accident).
 
 ### Rate limits
 
+An "address" here is an **IPv4 /24 or an IPv6 /64** wherever a limit is a
+share of a per-name budget, and as defined in
+[memory](#memory-a-client-that-stops-reading) everywhere else.
+
+| what | per-name budget | one address's share | where |
+|---|---|---|---|
+| new connections per server name (`<id>`) | 600 / min, burst 300 | 150 / min | relay |
+| new connections per Pages name (`<pid>`) | 60 / min, burst 30 | 15 / min | relay |
+| concurrent browser connections per server | 128 | 32 | relay |
+| concurrent machine (`muster-mirror/1`) connections per server | 64 | 16 | relay |
+| concurrent connections per Pages name | 64 | 16 | relay |
+| pending links per server | 50 live | 12 live, 10 created per min | server |
+
 | what | limit | where |
 |---|---|---|
-| new connections per server name (`<id>`) | 120 / min, burst 60 | relay |
-| new connections per Pages name (`<pid>`) | 60 / min, burst 30 | relay |
-| new connections per client address, all names | 300 / min | relay |
+| new connections per client address, all names | 300 / min (below the 600 per name, so no single address can spend a name's whole budget) | relay |
 | concurrent streams per client address, all names | 64 | relay |
-| concurrent browser connections per server | 128 | relay |
-| concurrent machine (`muster-mirror/1`) connections per server | 64 | relay |
-| concurrent connections per Pages name | 64 | relay |
 | tunnel connects per server | 10 / min, then backoff | relay |
-| pending links per server / per client address | 50 live / 10 per min | server |
 | link-code entries per signed-in session | 10 / min | server |
 | login attempts on the tunnel listener, per name | 10 / min | server |
 | grant requests per server | 20 / hour | service |
@@ -741,15 +934,54 @@ place (so a new route is placed on purpose, not served by accident).
 | ACME TXT writes per server | 30 / day | service |
 | server registrations per client address | 5 / day | service |
 | claim and sign-in emails per address | 5 / hour | service |
-| bytes sent by the relay per server per month | free: 50 GB; Plus: 250 GB (**estimated**, revisit after phase 3 measurements) | relay, enforced by the service |
+| bytes sent by the relay per server per month (the UI name and the machines) | free: 50 GB; Plus: 250 GB (**estimated**, revisit after phase 3 measurements) | relay, enforced by the service |
+| bytes sent by the relay per **Pages name** per month, **separate** from the server's | free: 10 GB; Plus: 50 GB (**estimated**) | relay, enforced by the service |
+
+**Strangers cannot lock the owner out through the per-name budgets.** Each
+per-name budget is a shared resource anyone on the internet can draw on (the
+name is in CT), so:
+
+- **One address gets at most a quarter** of each budget (the table above).
+- **A quarter is reserved for the server's known prefixes**: the /24s and
+  /64s from which a linked device or a machine authenticated in the last
+  24 h, which the server reports to the relay
+  ([tunnel authentication](#how-the-relay-authenticates-a-servers-tunnel)).
+  Unknown addresses together get at most three quarters; known prefixes can
+  use the whole budget.
+- **Pending links need a nonce** from the owner's signed-in screen
+  ([flow (b)](#flow-b-link-a-device)), so a stranger cannot create any, and
+  the per-name pending-link budget cannot be filled by one.
+- **The login bucket cannot be drained by a stranger**: on the tunnel a
+  password only steps up a linked device, so only a device session can
+  submit one ([password mode](#password-mode-on-the-network)).
+- **Pages has its own byte cap**, so a popular or abused Pages link can
+  exhaust only the Pages name, never the owner's own access; and the
+  server's cap never stops Pages.
+
+**What an attacker with many addresses can still do:** a **distributed
+lockout**. Three or more addresses fill the unknown share of the connection
+budgets, and addresses are cheap (one IPv6 /48 holds 65,536 /64s). The
+owner's already-linked devices and machines on known prefixes keep the
+reserved quarter and stay connected; a linked device on a **new** network
+(an unknown prefix) waits with the strangers until the flood stops. The
+owner's way back does not depend on the relay: the hub's own browser on
+localhost, and Tailscale, never pass through it. The Network page shows the
+relay's refusal counts for the name, and the operator's abuse flow
+([§6](#6-abuse)) can block the attacking prefixes at the relay. A
+connection flood against one name is a denial of service of that name; it
+gives the attacker nothing on the server.
 
 **The byte cap counts bytes the relay sends**, in both directions of the
 user's traffic: a byte from a phone goes out to the server's tunnel, and a
 byte from the server goes out to the phone, and each is sent once. That is
-also what the provider bills ([§7](#7-cost-model)). Over the cap, new browser
-and Pages connections are refused for the rest of the month (machine
-connections and connections from the first grant's device keep working, throttled to
-128 KiB/s), and the owner is told by email and on the Network page.
+also what the provider bills ([§7](#7-cost-model)). Over the server's cap,
+new browser connections on `<id>` are refused for the rest of the month
+(machine connections, and connections from the server's known prefixes, keep
+working, throttled to 128 KiB/s: the blind relay cannot tell which device a
+connection is, so it goes by the prefixes the server reported,
+[tunnel authentication](#how-the-relay-authenticates-a-servers-tunnel)).
+Over the Pages name's own cap, new Pages connections are refused and nothing
+else. Either way the owner is told by email and on the Network page.
 
 ### What runs where on one node
 
@@ -759,7 +991,10 @@ connections and connections from the first grant's device keep working, throttle
   object storage), and the DNS provider token and Stripe keys as Secrets.
 - **`:443` is shared with the node's other sites** (Q3). The node's Traefik TCP
   router matches `HostSNI` for the product's names with TLS **passthrough**
-  and sends the TCP stream, with PROXY protocol, to the relay. Because the
+  and sends the TCP stream, with PROXY protocol, to the relay, which trusts
+  that header only from Traefik's addresses; a `NetworkPolicy` in
+  `muster-net` admits ingress to the relay's passthrough port from Traefik's
+  pods only ([the relay](#the-relay)). Because the
   per-server names are explicit, the router matches a regex on the zone (or
   every name under the zone), not one fixed host. `tunnel.example-muster.net`
   and the apex site and API are ordinary TLS-terminated routes. The move to a
@@ -789,12 +1024,40 @@ Reversed, **the secret never leaves the phone**: the phone holds the pending
 link's cookie, and the owner's own signed-in screen picks the phone by a code
 the phone shows. Nothing an onlooker sees is enough to link a device.
 
+### Why the link is bound to the owner's screen
+
+A code shown on one device and typed on another is the **device
+authorization grant**'s shape (RFC 8628), and it carries that flow's known
+phishing risk (RFC 8628 §5.4): an attacker opens the public address on
+their own device, gets a code, and persuades the owner to type it ("muster
+support here, type this code to fix your sync"). The owner's screen then
+links **the attacker's** device. A warning on the confirm is weak on its
+own: an owner on `http://localhost` would always see "a different network"
+under a comparison with their own address, and would learn to ignore it.
+
+So round 2 binds the link to the owner's screen being **nearby**, and adds
+signals that work for a localhost owner:
+
+- **The nonce.** A pending link can be created only with a live nonce from
+  a **Link device** screen, carried in its QR code or its **Copy link**,
+  and its code is accepted only on the session that minted that nonce
+  ([flow (b)](#flow-b-link-a-device) steps 1, 4 and 5). An attacker who
+  opens the bare address gets no code at all; to phish, they now need the
+  owner to send them the Link device link **and** then type the code they
+  send back, which the Link device page tells the owner never to do.
+- **The server's own address, not the owner's.** The confirm compares the
+  waiting device with the server's public address as the relay sees it
+  (the tunnel's source), so a phone on the owner's home Wi-Fi reads "the
+  same network as this server" even when the owner is on localhost.
+- **Approximate location.** The confirm shows the waiting device's country
+  and region, which a phone on mobile data still has.
+
 | property | pairing code today | link code |
 |---|---|---|
 | shown on | the signed-in screen | **the device being linked** |
 | entered on | the phone app | **the owner's signed-in screen** |
-| minted by | any valid signed-in browser session | anyone who opens the server's address (it creates only a pending link) |
-| accepted from | — | a signed-in session with a **sign-in in the last 5 minutes** (Q2) |
+| minted by | any valid signed-in browser session | a device that opened a **Link device** link carrying a live nonce (it creates only a pending link) |
+| accepted from | — | **the session that minted that nonce**, with a **sign-in in the last 5 minutes** (Q2) |
 | lifetime | 60 s | 10 min |
 | use | single | single |
 | stored | sha256 | the code's sha256 and the pending link's cookie sha256, together |
@@ -840,8 +1103,9 @@ Per Q2, password mode is allowed, hardened:
   floor is 12, [auth.md:7-17](../auth.md)).
 - **A recent sign-in to link** (5 minutes): the link code is accepted only from
   a session that signed in that recently.
-- **The routes it never serves:** hook, service-token, personal API tokens and
-  `/metrics` ([listeners](#which-routes-the-tunnel-listener-serves)).
+- **The routes it never serves:** hook, service-token, personal API tokens,
+  `/metrics`, the plugin routes and the agent-pod routes
+  ([listeners](#which-routes-the-tunnel-listener-serves)).
 - Device sessions are stateful in both modes, so password mode gains
   revocation for every linked device, and **Unlink all devices** gives it the
   Sign out everywhere it otherwise lacks ([auth.md:527-530](../auth.md)).
@@ -863,11 +1127,35 @@ Per Q2, password mode is allowed, hardened:
 Reset and invite links are built on `MUSTER_PUBLIC_URL`
 ([internal/api/admin.go:398](../../internal/api/admin.go),
 [internal/api/admin.go:504](../../internal/api/admin.go)). When that is the
-network name, the person who opens one has no device session. **Redeeming an
-invite or a reset on the tunnel listener is a link:** it takes a grant like
-any device (or shows that the owner's plan is full), and yields a device
-session, never a plain session cookie. That keeps the rule whole: on the
-network, a full session exists only as a linked device.
+network name, the person who opens one has no device session, and the link
+arrived by email, so it proves only access to an inbox. On the tunnel
+listener an invite or reset link therefore **does not go around a signed-in
+screen**:
+
+1. **Opening it creates a pending link** bound to the invite or reset, and
+   shows a link code. The invite or reset token stands in for the nonce (an
+   admin minted it on a signed-in screen). **No form is served yet**: not
+   the invite's sign-up, not the reset's new password or passkey.
+2. **The code is confirmed through the normal code entry**, on a screen
+   signed in within the last 5 minutes:
+   - **a reset:** the user's own already-linked device or localhost or
+     Tailscale session, **or** the admin who issued the reset, for the
+     usual case where the user cannot sign in anywhere;
+   - **an invite:** a brand-new user has no screen of their own, so **the
+     admin who sent the invite** types the code, which the invitee reads to
+     them over a channel the admin trusts. The confirm says "This code is
+     for the invite you sent to `<email>`. Type it only if that person just
+     gave it to you."
+
+   Anyone else's entry of that code is refused.
+3. **Only then** is the invite or reset form served to that device, and
+   completing it takes a grant like any device (or shows that the owner's
+   plan is full) and yields a device session, never a plain session cookie.
+
+That keeps the rule whole: on the network, no sign-in or credential form is
+served until a recently-signed-in screen has confirmed the device, and a
+full session exists only as a linked device. Invites and resets opened on
+localhost or Tailscale are unchanged.
 
 ### iOS
 
@@ -877,20 +1165,29 @@ network, a full session exists only as a linked device.
   ([INSTALL.md:1037-1042](../../INSTALL.md)).
 - So on iOS the link page **does not offer a code in Safari**. It says: Share →
   **Add to Home Screen**, then open muster from the icon. The installed app
-  opens the server's address, creates its own pending link with its own
-  cookie, and shows the code there. The device session lands in the app's jar
+  opens the server's address **without the nonce** (the icon does not keep
+  the Link device link's fragment), so its link page offers **Scan**, the
+  camera, to read the QR code on the owner's signed-in screen, and **Paste
+  link**, for the link the owner copied with **Copy link**. Either gives the
+  app the nonce; it then creates its own pending link with its own cookie
+  and shows the code there. The device session lands in the app's jar
   whichever way the jars behave.
+- Camera access from an installed Home Screen app is **UNVERIFIED** on the
+  oldest supported iOS; **Paste link** works without it.
 - Phase 0 measures the jars anyway, on a current iOS and the oldest supported
-  one, because the answer decides whether a Safari tab can ever be linked.
+  one, because the answer decides whether a Safari tab can ever be linked,
+  and measures **Scan** in the installed app on both.
 
 ### Threat model of linking
 
 | threat | what stops it |
 |---|---|
 | **Shoulder-surfing the code** on the phone | the code alone links nothing: only the owner's signed-in, recently-signed-in screen can accept it, and it links **the phone that showed it**, whose cookie the onlooker does not have |
-| **An attacker opens the address and asks the owner to type their code** (social engineering) | the confirm names the waiting device's user agent and network, and says "a different network" when it is; the Network page says plainly to type only a code on a device in your hand |
+| **An attacker opens the address and asks the owner to type their code** (social engineering, the RFC 8628 phishing risk) | **refused**: without a nonce from the owner's Link device screen the attacker's device gets no code, and a code is accepted only in the session that minted the nonce its pending link carries ([why](#why-the-link-is-bound-to-the-owners-screen)). The confirm also shows the device's user agent, approximate location, and network compared with the server's own address |
+| **The owner is talked into sending the Link device link, then typing the code** | not prevented, only made harder: it takes two deliberate steps against the page's own "never send this link" warning, within 10 minutes; the confirm's location and network are the last check; Unlink ends it |
 | **Guessing a code** | there is nothing to gain: a guessed code is accepted only on the owner's own screen. Codes are 8 characters of a 30-letter alphabet (~39 bits) against at most 50 live pending links per server, so a typo matching another pending link is negligible; 10 entries a minute per session |
-| **Flooding pending links** (the address is public) | 10 a minute per address, 50 live per server, 10-minute lifetime |
+| **Flooding pending links** (the address is public) | none can be created without a live nonce; beyond that, 10 a minute and 12 live per address, 50 live per server, 10-minute lifetime |
+| **An invite or reset link intercepted from email** | opening it shows only a code; no form is served until the issuing admin (or, for a reset, the user on their own screen) confirms the code ([invites](#invites-and-password-resets)) |
 | **Two devices waiting at once; the same code entered twice; a code entered as it expires** | each code names one pending link; the turn into a device session is one transaction with a uniqueness check, so exactly one session results, a second entry says "already linked", and an expired one says "expired" (all in the Playwright tests) |
 | **A stale session linking** | the 5-minute recent sign-in (Q2), [internal/stepup/stepup.go:56-64](../../internal/stepup/stepup.go). Pairing a phone over Tailscale keeps today's operator decision, no window ([internal/api/devices.go:211-219](../../internal/api/devices.go)) |
 | **A copied device cookie** | valid only on `<id>` through the tunnel; checked against the database on every request; Unlink ends it |
@@ -905,8 +1202,12 @@ with one name per server, every device's connections look alike to it.
 - A grant is a record the coordination service signs with its own Ed25519 key:
   `{grant id, server id, account, issued at}`. Stock muster-server pins the
   service's public key (shipped in the binary, rotatable through a signed
-  key list).
-- **A stock server links a device only with a valid grant** (flow (b) step 6),
+  key list). **The grant names no device**, so the service never learns one;
+  the binding to a device is the server's: a stock server stores the grant
+  id against exactly one device session (a unique column; the Android app's
+  paired phone is recorded under the same grant as its device session), so
+  one grant cannot link two devices on a stock server.
+- **A stock server links a device only with a valid grant** (flow (b) step 7),
   stores the grant with the device session, and returns it on Unlink. The
   service's count for an account is its grants in state `active`.
 - **Daily confirmation.** Once a day the server sends the list of grant ids
@@ -944,6 +1245,15 @@ and when each grant was created and last confirmed (by day); each
 connection's client address, time, duration and byte counts; and the names.
 **It never learns content, and never a device's name or user agent**: those
 stay on the server. Retention is in open question 5.
+
+Round 2 added two things the **relay** holds, both in memory only and never
+sent to the coordination service: each server's **known prefixes** (the
+/24s and /64s its linked devices and machines connected from in the last
+24 h, for the reserved slots in [rate limits](#rate-limits)), which tell the
+relay which of a name's connections are its owner's rather than strangers';
+and a **GeoIP lookup** of each visitor's address, for the link confirm. The
+CT services the server polls learn its home address and names
+([certificate renewal](#certificate-renewal)).
 
 ### Grace and overage
 
@@ -993,12 +1303,19 @@ None of these ever suspends the server, its machines or the first device.
   a server and retires its grants. This is how a **lost server key** stops
   holding the free slot: a reinstalled server with a new database registers a
   new id, and the owner retires the old one.
-- **Re-key by email.** A server whose key is lost but whose database is not
-  (the key is stored with the device sessions, so this is rare) can be
-  re-attached to its id: the server registers a new key with
-  `POST /v1/servers/<id>/rekey`; the service emails the account; on the
-  emailed confirmation, after a **24-hour delay** during which the old key can
-  cancel it, the new key replaces the old and the devices keep their name.
+- **No re-keying.** A name never moves to a new server key. Round 1's
+  re-key by email (dropped in round 2) let whoever controls the account's
+  inbox attach a key of their own to an existing name, then register their
+  own ACME account, have its CAA rewritten and obtain a certificate: a
+  **name takeover with email access alone**. It was also unneeded: the
+  server key is stored in the server's database with the device sessions,
+  so a restore that brings the devices back brings the key, and a lost
+  database loses the devices anyway. **Recovery is Retire plus a new id**:
+  the reinstalled server registers a new id, the owner retires the old one
+  here (which frees its grants), and each device links again to the new
+  name (a new origin, so it installs the app again). Email access alone can
+  still **retire** the account's servers, a denial of service, but never
+  move a name, so never read anyone's traffic.
 - **Email change.** From the account page: a link to the new address confirms
   it; the old address is told, and can revert the change for 7 days.
 - **Email loss.** A signed request from any of the account's servers can set
@@ -1112,14 +1429,17 @@ server's own machine skips the relay.
   ~600 quiet ones** before overage. Past that, cost grows linearly at about one
   currency unit per TB, so a busy 40 GB server costs a few hundredths of a unit
   a month.
-- **Memory, from the real windows** ([the tunnel](#the-tunnel-reuse-with-changes)):
-  a reading connection holds two goroutines, a 32 KiB copy buffer and its
-  kernel socket buffers, ~64-100 KiB; a **stalled** one adds up to one 128 KiB
-  window. Under the pod's 1.6 GiB `GOMEMLIMIT`: ~16,000-26,000 reading
-  connections, or ~7,000 stalled ones, and the global 1 GiB stall gauge stops
-  admission before that. At ~4-6 connections per server (1 tunnel, a remote
-  host or two, an open device), that is **~3,000 servers by memory**, far past
-  the bandwidth limit.
+- **Memory, from the real windows and the kernel's buffers**
+  ([memory](#memory-a-client-that-stops-reading)): a reading connection holds
+  two goroutines, a 32 KiB copy buffer and its kernel socket buffers,
+  ~64-100 KiB; a **stalled** one up to ~432 KiB, a tunnel up to 512 KiB of
+  socket buffer. The relay's caps (6,000 visitor connections, 2,048 stalled
+  streams by the gauge, 1,000 tunnels) keep the worst case at ~1.9 GiB, under
+  the pod's 2 GiB. At ~4-6 visitor connections per server (a remote host or
+  two, an open device), that is **~1,000 servers by memory** (the tunnel
+  cap), past the bandwidth limit for busy servers and above the ~600 quiet
+  ones; the second relay of the [scale-out](#scale-out) is the next step
+  either way.
   With the preview package's own windows (4 MiB per stream, 276 MiB per
   tunnel), **six** tunnels with paused readers would exhaust the same memory,
   which is why the windows must change.
@@ -1140,13 +1460,14 @@ device forever is affordable and the paid tier is priced on value, not cost.
 | attacker | can | cannot | mitigation |
 |---|---|---|---|
 | **The relay compromised** (alone) | see metadata ([§4](#what-the-relay-can-see-without-decrypting)); drop, delay or misroute connections | read or change content: TLS ends at the server and the relay holds no certificate for any server name; a misrouted visitor sees a certificate error | blindness by construction; the relay process holds no DNS or CA credential; tunnel replacement is logged and shown on the server |
-| **The operator, or a compromise of the node** (relay, coordination service and the DNS token together) | 🔴 **obtain a certificate for a user's name and MITM its devices.** One zone-scoped provider token writes **both** TXT and CAA, so whoever holds it can rewrite the CAA pin and pass DNS-01; with the relay, they can then route a device to themselves. Also: suspend accounts, issue grants | read past traffic (no keys); prevent detection by CT | **only after-the-fact detection protects users**: Certificate Transparency. muster-server queries **Cert Spotter's issuance API** (SSLMate) hourly and after each renewal for its names, with crt.sh as a fallback, and any certificate whose public key is not its own raises a red banner, a push to the owner and a doctor FAIL. Detection takes **up to 24 h** (a CT log's maximum merge delay, plus the hourly poll); it does not prevent the interception in that window. Open-sourcing the service ([open question 2](#11-open-questions-for-the-operator)) makes the rest checkable |
+| **The operator, or a compromise of the node** (relay, coordination service and the DNS token together) | 🔴 **obtain a certificate for a user's name and MITM its devices.** One zone-scoped provider token writes **both** TXT and CAA, so whoever holds it can rewrite the CAA pin and pass DNS-01; with the relay, they can then route a device to themselves. Also: suspend accounts, issue grants | read past traffic (no keys); prevent detection by CT | **only after-the-fact detection protects users**: Certificate Transparency. muster-server queries **Cert Spotter's issuance API** (SSLMate) hourly and after each renewal for its names, with crt.sh as a fallback, and any certificate whose public key is not one of the keys the server has itself used for that name ([certificate renewal](#certificate-renewal)) raises a red banner, a push to the owner and a doctor FAIL; when neither CT service answers, the doctor line is a WARN, never a PASS. Detection takes **up to 24 h** (a CT log's maximum merge delay, plus the hourly poll); it does not prevent the interception in that window. Open-sourcing the service ([open question 2](#11-open-questions-for-the-operator)) makes the rest checkable |
 | **A bug in the challenge endpoint** (it writes a TXT for the wrong name or value) | ask a CA to issue for a name it should not | issue: **CAA with `accounturi`** pins issuance to the server's own ACME account, and the endpoint never writes CAA. This is the case CAA covers, and **only** this one | CAA; the endpoint writes only `_acme-challenge.<id>` from a signed server request |
 | **DNS hijack** (registrar or provider account) | the same as the node compromise for issuance; or point names elsewhere | — | registrar lock, hardware-key 2FA on registrar and DNS accounts, CT monitoring as above, DNSSEC on the zone |
 | **A modified user server** | serve anything on its own name; lie to its own users; over-link devices (accepted, [§4](#what-a-modified-server-can-do-plainly)) | read another server's traffic; get more names; reach the relay's network | [§6](#6-abuse); the PSL keeps it a different site from its neighbours |
-| **A stranger on the internet** (the name is in CT) | open the link page; create pending links (rate-limited); try a mirror token on the machine routes | sign in with a password (no form is served without a device session); reach hook, service-token, API-token routes or `/metrics` | [listeners](#which-routes-the-tunnel-listener-serves); per-name login bucket; pending-link limits |
+| **A stranger on the internet** (the name is in CT) | open the link page; try a mirror token on the machine routes; use up to a quarter of a name's connection budgets per address, and with many addresses the strangers' three quarters (a distributed lockout of new networks, [rate limits](#rate-limits)) | create a pending link (no nonce); get a phished code accepted ([§3](#why-the-link-is-bound-to-the-owners-screen)); see any sign-in or credential form (none is served until a recently-signed-in screen confirms the device, invites and resets included); reach hook, service-token, API-token, plugin or agent-pod routes or `/metrics`; take the reserved quarter from the owner's known prefixes | [listeners](#which-routes-the-tunnel-listener-serves); the nonce; per-address shares and reserved slots; per-name login bucket |
+| **Someone with access to the account's email** | sign in to the service's account page; retire the account's servers (a denial of service); change billing | move a name to a key they hold (there is no re-keying, [§5](#the-account-page-servers-recovery-and-deletion)), so obtain a certificate for it or read its traffic | no re-key route; email change and email loss notify and wait 7 days |
 | **Device theft** | use the linked session until revoked | type into sessions after the step-up window | Unlink, or Unlink all devices, from any other signed-in browser or the localhost one; Sign out everywhere (GoTrue); the device session is checked on every request |
-| **Replay** of a link code, a tunnel handshake, a grant or a signed API call | — | reuse: link codes are single use and bound to the phone's cookie; handshakes sign a fresh nonce; API signatures cover the time (±2 min) and the body hash, with a nonce cache; a grant is bound to one server id and one device session | as stated |
+| **Replay** of a link code, a tunnel handshake, a grant or a signed API call | — | reuse: link codes are single use and bound to the phone's cookie; handshakes sign a fresh nonce; API signatures cover the time (±2 min) and the body hash, with a nonce cache; a grant's signature binds it to one server id, and a stock server stores each grant id against exactly one device session (a unique column; the grant itself has no device field, [§4](#device-grants-honest-counting-for-stock-servers)) | as stated |
 | **An on-path observer** (café Wi-Fi) | learn the server's name from SNI | read anything | names are not secrets; Encrypted Client Hello, with the relay as the client-facing server, would hide them later |
 
 ## 9. Interaction with the existing pieces
@@ -1162,9 +1483,22 @@ device forever is affordable and the paid tier is priced on value, not cost.
   device session with the existing `POST /account/devices/pair`, under the same
   grant; its push and signed actions are unchanged. The app's server switcher
   holds the server's address as a tenant ([design/multi-tenant.md](multi-tenant.md)).
-- **Multi-tenant clients**: a server on the network is just another origin; the
-  CLI's tenant file, `muster-mirror`'s targets and the web server switcher
+- **Multi-tenant clients**: a server on the network is just another origin;
+  `muster-mirror`'s targets and the web server switcher
   ([push.md:276-300](../push.md)) hold `https://<id>.example-muster.net`.
+  **The `muster` CLI's tenant file does not, for v1.** The CLI presents one
+  credential, `MUSTER_TOKEN`, which is a person's personal API token or the
+  hook secret ([cmd/muster/config.go:43-56](../../cmd/muster/config.go),
+  sent at [cmd/muster/client.go:275](../../cmd/muster/client.go)), and the
+  tunnel never serves either ([listeners](#which-routes-the-tunnel-listener-serves)).
+  So **the CLI, `muster doctor` and mirror-token administration stay on
+  localhost or Tailscale for v1**: the CLI and doctor point at the
+  localhost or tailnet URL, and mirror tokens are minted by
+  `muster-server mirror token …` on the server machine as today
+  ([cmd/muster/doctor.go:575](../../cmd/muster/doctor.go)). A token route
+  set for the CLI, served only on connections that negotiate a separate
+  ALPN token (say `muster-cli/1`) with its own caps, is a
+  [later phase](#later).
 - **Push**: unchanged. muster sends to the push services directly from the
   server ([push.md:5](../push.md)) and the phone receives from them directly;
   neither passes through the relay. With one fixed origin per server, a
@@ -1199,14 +1533,19 @@ device forever is affordable and the paid tier is priced on value, not cost.
   `__Host-` prefix and are always `Secure` (the tunnel listener sets it
   regardless of `MUSTER_SECURE_COOKIES`); HSTS comes from the product domain's
   preload entry. Writes keep their `Origin` check.
-- **`muster doctor`**: the `server` check's `https` requirement
-  ([cmd/muster/doctor.go:438-441](../../cmd/muster/doctor.go)) passes on a
-  network URL; a new `network` line reports the tunnel, the certificate's days
-  left, the hook token, and the CT check. Its QR code
-  ([cmd/muster/doctor.go:973-985](../../cmd/muster/doctor.go)) stays the plain
-  server address, which on the network is the name the phone opens to link
-  (D2: no link code in doctor; a machine token cannot mint one anyway,
-  [auth.md:531-532](../auth.md)).
+- **`muster doctor`** stays pointed at the localhost or tailnet URL (above):
+  it reads `GET /api/doctor` with `MUSTER_TOKEN`
+  ([cmd/muster/doctor.go:363](../../cmd/muster/doctor.go)), which the tunnel
+  never serves, so it is **not** run against a network URL in v1. Its
+  `server` check's `https` requirement
+  ([cmd/muster/doctor.go:438-441](../../cmd/muster/doctor.go)) is the
+  localhost mode's question (decision 5), not this design's. A new `network`
+  line, read from the server, reports the tunnel, the certificate's days
+  left, the hook token, and the CT check (WARN when no CT service answered).
+  Its QR code ([cmd/muster/doctor.go:973-985](../../cmd/muster/doctor.go))
+  stays as today, the URL doctor was pointed at; on the network a phone
+  links through **Link device**'s QR code, which carries the nonce (D2: no link code in doctor; a machine token cannot mint one
+  anyway, [auth.md:531-532](../auth.md)).
 - **The mirror** is unchanged on the wire; `muster-mirror` only adds the
   `muster-mirror/1` ALPN token on a network URL.
 
@@ -1231,12 +1570,15 @@ stay in the operator's **private** infrastructure repository.
 - **iOS cookie jars:** on a current iOS and the oldest supported one, does a
   session set in Safari exist in the installed Home Screen app, and the other
   way round? Does push work from the installed app on the network origin?
+  Can the installed app use the camera to **Scan** the Link device QR code?
 - DNS-01 with a staging CA through a scoped TXT endpoint, with CAA
   `accounturi`: issuance succeeds for the right account and **fails** for
   another (the negative control).
 - The DNS provider's per-zone record limit and API write limits, read from its
   documentation.
 - The CT aggregator's API terms and rate limits for hourly polling per server.
+- The GeoIP database for the link confirm's approximate location: its
+  licence for this use, and how it updates.
 - PSL submission opened for the product domain; CA rate-limit request filed.
 - **Exit:** a written results page like [previews-spike.md](previews-spike.md).
 
@@ -1248,25 +1590,45 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
 - The tunnel package: the cap, window and control-stream options, with the
   invariant test reading the configured values.
 - Service: register, claim by email, the server's DNS records, TXT and CAA
-  writes, the server registry. Relay: SNI routing, ALPN caps, tunnel auth,
-  PROXY header, caps, the write-stall timeout, the stall gauge.
+  writes, the server registry. Relay: SNI routing, ALPN caps, tunnel auth
+  (with the tunnel's source address in its acceptance), the PROXY header
+  (trusted only from Traefik's addresses, with the location TLV), the fixed
+  socket buffers, the per-address limits keyed on /64 for IPv6, the per-name
+  shares and the known-prefix reserved slots, the write-stall timeout and
+  the minimum drain rate, the stall gauge, the global caps and the
+  `memory.current` backstop. The operator's private repository adds the
+  `NetworkPolicy` and a check that it admits Traefik's pods only.
 - muster: `MUSTER_NETWORK=1`, the ACME client and renewal, the tunnel
-  listener with its route sets and the Host/SNI 421, the refusals (hook token,
-  password length).
+  listener with its route sets, its ALPN preference order and the Host/SNI
+  421, the known-prefix answer, the refusals (hook token, password length).
 - **Tests:**
   - unit: ClientHello parsing (fuzzed, split records, no SNI, an unknown name,
     an ALPN list with nothing allowed); the PROXY header honoured **only** on
     the tunnel listener (a request on the main listener carrying one is not
-    believed); a request whose `Host` differs from the SNI gets 421;
-    the route walk (every registered route placed in the tunnel table; hook,
-    service-token, API-token routes and `/metrics` answer 404 there, and a
-    route added to the router without placement fails the test); the
-    handshake's nonce and time window; the refusals.
+    believed); the relay closes a connection carrying a PROXY header from an
+    address that is not Traefik's (and passes one from Traefik's, the
+    control); a request whose `Host` differs from the SNI gets 421; a
+    ClientHello offering both `muster-mirror/1` and `h2` negotiates
+    `muster-mirror/1` and is counted as a machine connection; the route walk
+    (every registered route placed in the tunnel table; hook, service-token,
+    API-token, `/plugin/v1/*`, `/connect/`, `/llm/`, `/mcp`, `/agent/…`
+    routes and `/metrics` answer 404 there, `POST /mirror/mcp` answers only
+    on `muster-mirror/1`, and a route added to the router without placement
+    fails the test); the handshake's nonce and time window; the refusals.
   - **slow reader**: a client opens `C` streams to one server and reads
-    nothing while the server writes; the relay's held bytes stay at or under
-    the per-server budget, a second server's streams keep their throughput
-    (the control), the stalled streams are reset after the 30 s write-stall
-    timeout, and a 65th stream from the same address is refused.
+    nothing while the server writes; the relay pod's memory (heap **and**
+    `memory.stat`'s `sock`) stays at or under the per-server bound, a second
+    server's streams keep their throughput (the control), the stalled
+    streams are reset after the 30 s write-stall timeout, and a 65th stream
+    from the same address is refused. **The trickle:** a client that
+    accepts one byte every 29 s is closed by the drain-rate floor within
+    60 s (a plain 30 s timeout would never fire on it; a client draining
+    32 KiB every 30 s is kept, the control). **IPv6:** two addresses in
+    one /64 share one per-address cap.
+  - **lockout:** one unknown /24 is refused its 33rd concurrent browser
+    connection to a name; three unknown /24s fill the strangers' three
+    quarters (3 × 32 = 96 of 128); a fourth unknown address is then refused,
+    while a known prefix still connects (the reserved quarter, the control).
   - **DNS, through public resolvers, on a staging zone:** after a claim,
     `<id>` `A`, `AAAA` and both `CAA` resolve through two public resolvers;
     during an order, `_acme-challenge.<id>` `TXT` resolves; and an unclaimed id
@@ -1281,11 +1643,14 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
 
 ### Phase 2: Link device (the first user-visible release)
 
-- Account → Network (turn on/off, status, copy/share/QR of the address); the
-  link page and pending links; the link code entered on the signed-in screen
-  with the recent sign-in; device grants and their daily confirmation; browser
-  device sessions; Unlink and Unlink all devices; every revocation; invites and
-  resets as links; the iOS install-first page; password-mode hardening (the
+- Account → Network (turn on/off, status, copy/share/QR of the address); Link
+  device with its nonce QR code and Copy link; the link page and pending
+  links; the link code entered on the signed-in screen with the recent
+  sign-in; the confirm's location and its comparison with the server's own
+  address; device grants and their daily confirmation; browser device
+  sessions; the Android app's `mdv_…` mapped to its grant; Unlink and Unlink
+  all devices; every revocation; invites and resets confirmed by code; the
+  iOS install-first page with Scan and Paste link; password-mode hardening (the
   per-name bucket, the 16-character floor); the README change. Hard cap of one
   grant per account (no billing yet).
 - **Tests:** unit: a link code is single use and expires; it is accepted only
@@ -1302,7 +1667,17 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
   at once; exactly one device session exists and the second says "already
   linked". A types B's code just after it expires; "expired", nothing linked.
   A wrong code links nothing. A stale A (signed in 6 minutes ago) is asked to
-  sign in again.
+  sign in again. **Phishing (RFC 8628):** an attacker context E opens the
+  bare address and is shown no code; E creates a pending link by calling
+  the API directly **without a nonce**, or with an expired one, and is
+  refused; a pending link created with a nonce minted by **another**
+  signed-in session A2 has its code typed by A and is refused, nothing
+  linked, while A2 typing the same code links (the control). **Invites and
+  resets:** a context opening an invite link on the network is shown a code
+  and **no** sign-up form; the form appears only after the inviting admin
+  types the code; another signed-in user typing it is refused. **Android:**
+  an `mdv_…` request to `/api/device/*` with no cookie is served while its
+  grant is active and refused once the grant is suspended.
 
 ### Phase 3: machines through the relay
 
@@ -1319,8 +1694,9 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
 
 - Stripe product and prices, Checkout, the Customer Portal, every webhook in
   [§5](#webhooks), grace, suspension, choosing the free device, the nightly
-  reconcile; the account page's server list and Retire, re-key, email change
-  and email loss, account deletion.
+  reconcile; the account page's server list and Retire, email change and
+  email loss, account deletion. No re-key endpoint
+  ([§5](#the-account-page-servers-recovery-and-deletion)).
 - **Tests:** unit: webhook signature verification (a bad signature refused),
   idempotency (a replayed event changes nothing), entitlement derived from
   subscription status; a full refund and a lost dispute each end Plus, a
@@ -1329,21 +1705,29 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
   active lets the link proceed; a `customer.subscription.deleted` webhook
   suspends the second grant, and the stock server refuses that device while
   the first device and the mirror still connect (the control); a retired
-  server's grants free the slot; a re-key cancelled by the old key within 24 h
-  does not happen. Stripe test mode or a local mock; no live keys in CI.
+  server's grants free the slot; and a request to attach a new key to an
+  existing id, signed by that new key and confirmed from the account's
+  email, is refused (there is no such route; the test pins the 404).
+  Stripe test mode or a local mock; no live keys in CI.
 
 ### Phase 5: abuse, trust and Pages
 
-- CT monitoring on the server (Cert Spotter, banner, push, doctor FAIL); the
-  byte caps; the many-networks flag; the takedown tooling; the terms, privacy
+- CT monitoring on the server (Cert Spotter, banner, push, doctor FAIL, the
+  list of the server's own past keys, WARN when unchecked, the privacy-page
+  note); the byte caps, the Pages name's own included; the many-networks flag; the takedown tooling; the terms, privacy
   policy and abuse contact; **Pages over the network** (the Pages name, its
-  certificate and records, its route set, its rate limits, rotation).
+  own ACME account, its certificate and records, its route set, its rate limits, rotation).
 - **Tests:** a CT fixture with a foreign key raises the banner, and one with
-  the server's own key does not; the relay refuses a server's browser
-  connections over its byte cap while its machine connection continues; a
-  Pages name serves `/s/<token>` and refuses every UI route and any cookie;
-  a rotated Pages name is refused at the relay; the Pages name's 61st new
-  connection in a minute is refused.
+  the server's own key does not; after a renewal, the **previous**
+  certificate (an older key of the server's own) is not flagged; with both
+  CT services failing, the doctor line is a WARN, not a PASS; the relay
+  refuses a server's browser connections over its byte cap while its
+  machine connection continues; a Pages name over **its own** cap is
+  refused while the UI name is not (and the other way round); a Pages name
+  serves `/s/<token>` and refuses every UI route and any cookie; the Pages
+  name's `CAA accounturi` differs from `<id>`'s; a rotated Pages name is
+  refused at the relay; the Pages name's 61st new connection in a minute is
+  refused.
 
 ### Phase 6: polish and leaving
 
@@ -1356,7 +1740,10 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
 ### Later
 
 Two relays and dual tunnels; regional relays; ECH; relay-side device
-enforcement if abuse appears (Q1).
+enforcement if abuse appears (Q1); the `muster` CLI and `muster doctor` over
+the network, through a token route set served only on connections that
+negotiate a separate ALPN token (say `muster-cli/1`), with its own caps
+([§9](#9-interaction-with-the-existing-pieces)).
 
 ### Launch gates
 
