@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -28,45 +28,17 @@ func (m *memStore) mintTeam(t *testing.T, team int64, host string) string {
 	return tok
 }
 
-// peerHeader names, in these tests, the address a connection comes from: one
-// process cannot dial from several addresses, so the rig reads it instead of
-// the TCP peer (Service.SetPeerAddr). A request without it is liveAddr.
-const (
-	peerHeader = "X-Test-Peer"
-	liveAddr   = "198.51.100.10" // the real team host
-	movedAddr  = "203.0.113.7"   // the machine the host moved to
-	keptAddr   = "192.0.2.99"    // an ex-operator retrying with a kept token
-)
-
-func newPeerRig(t *testing.T) *rig {
-	t.Helper()
-	r := newRig(t)
-	r.svc.SetPeerAddr(func(req *http.Request) string {
-		if a := req.Header.Get(peerHeader); a != "" {
-			return a
-		}
-		return liveAddr
-	})
-	return r
-}
-
-// connectFrom is a hand-driven host (rawConnect) connecting from addr.
-func (r *rig) connectFrom(t *testing.T, token, addr string, hello mirror.Msg) error {
-	t.Helper()
-	return r.connectFromWith(t, token, addr, nil, hello)
-}
-
-// connectFromWith is connectFrom sending extra headers too.
-func (r *rig) connectFromWith(t *testing.T, token, addr string, extra http.Header, hello mirror.Msg) error {
+// connectRaw is a hand-driven host (rawConnect) presenting attempt code
+// ("" = none), from the loopback peer every test connection shares.
+func (r *rig) connectRaw(t *testing.T, token, code string, hello mirror.Msg) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	hdr := extra.Clone()
-	if hdr == nil {
-		hdr = http.Header{}
-	}
+	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+token)
-	hdr.Set(peerHeader, addr)
+	if code != "" {
+		hdr.Set(attemptcode.Header, code)
+	}
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(r.srv.URL, "http")+mirror.ConnectPath, &websocket.DialOptions{HTTPHeader: hdr})
 	if err != nil {
 		return err
@@ -96,8 +68,10 @@ func (r *rig) connectFromWith(t *testing.T, token, addr string, extra http.Heade
 	return nil
 }
 
+// isHeld: err is a held team host connection's refusal, with a code
+// (ErrHeldForManager) or without one (ErrHeldNoCode).
 func isHeld(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "pending a manager's confirmation")
+	return err != nil && (strings.Contains(err.Error(), mirror.ErrHeldForManager.Error()) || strings.Contains(err.Error(), mirror.ErrHeldNoCode.Error()))
 }
 
 // liveTeamHost connects the real team host (from liveAddr) for team.
@@ -115,8 +89,8 @@ func liveTeamHost(t *testing.T, r *rig, team int64, host string) (tok string, do
 // host's connection is PINNED. With (team, build-01) live, a second
 // connection presenting the team's token is HELD — refused as pending a
 // manager's confirmation, registered nowhere (the live host keeps serving,
-// and nothing it lists shows) — and recorded by its ADDRESS for the
-// manager's card. A manager confirms THAT attempt: its machine's next retry
+// and nothing it lists shows) — and recorded by its attempt code for the
+// manager's card. A manager confirms THAT code: its machine's next retry
 // takes the host, and the old connection is cancelled, as a replacement is
 // today. The confirm is one-shot.
 //
@@ -124,7 +98,8 @@ func liveTeamHost(t *testing.T, r *rig, team int64, host string) (tok string, do
 // The team id is a fixture value no constant in the code equals.
 func TestASecondTeamHostConnectionWaitsForAManager(t *testing.T) {
 	const team = 900233
-	r := newPeerRig(t)
+	const moved = "M0VD-0000-0001"
+	r := newRig(t)
 
 	// CONTROL: a personal host's second connection replaces the first.
 	ptok, _ := r.store.mint(t, 1, "laptop")
@@ -140,7 +115,7 @@ func TestASecondTeamHostConnectionWaitsForAManager(t *testing.T) {
 	<-pdone
 
 	tok, done1 := liveTeamHost(t, r, team, "build-01")
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-01", true, "moved-host")); !isHeld(err) {
+	if err := r.connectRaw(t, tok, moved, hello("build-01", true, "moved-host")); !isHeld(err) {
 		t.Fatalf("a second connection for a live team host = %v; want it held, pending a manager's confirmation", err)
 	}
 	if r.svc.Hub().Online(team, "build-01", "moved-host") || !r.svc.Hub().Online(team, "build-01", "real-host") {
@@ -152,24 +127,24 @@ func TestASecondTeamHostConnectionWaitsForAManager(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	held := r.svc.Hub().HeldReplacements(team)
-	if len(held) != 1 || held[0].Host != "build-01" || held[0].Addr != movedAddr || held[0].Attempts != 1 || held[0].Confirmed {
-		t.Fatalf("the manager's card = %+v; want one unconfirmed hold of build-01 from %s after one attempt", held, movedAddr)
+	if len(held) != 1 || held[0].Host != "build-01" || !held[0].Coded || held[0].Attempts != 1 || held[0].Confirmed {
+		t.Fatalf("the manager's card = %+v; want one unconfirmed coded hold of build-01 after one attempt", held)
 	}
 	if got := r.svc.Hub().HeldReplacements(1); len(got) != 0 {
 		t.Fatalf("the personal owner sees holds %+v; want none (a hold is its team's)", got)
 	}
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-01", true, "moved-host")); !isHeld(err) {
+	if err := r.connectRaw(t, tok, moved, hello("build-01", true, "moved-host")); !isHeld(err) {
 		t.Fatalf("a second attempt with no manager's confirm = %v; want it held", err)
 	}
 	if got := r.svc.Hub().HeldReplacements(team); len(got) != 1 || got[0].Attempts != 2 || got[0].First.After(got[0].Last) {
-		t.Fatalf("after a second attempt from the same address the card = %+v; want one attempt row counting 2", got)
+		t.Fatalf("after a second attempt with the same code the card = %+v; want one attempt row counting 2", got)
 	}
 
-	// The manager chooses that attempt: the chosen machine's next retry takes the host.
-	if !r.svc.Hub().ConfirmReplacement(team, "build-01", movedAddr) {
-		t.Fatal("the confirm of the held attempt found nothing")
+	// The manager types that code: the chosen machine's next retry takes the host.
+	if _, _, err := r.svc.Hub().ConfirmCode(team, moved); err != nil {
+		t.Fatalf("the confirm of the held attempt's code = %v", err)
 	}
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-01", true, "moved-host")); err != nil {
+	if err := r.connectRaw(t, tok, moved, hello("build-01", true, "moved-host")); err != nil {
 		t.Fatalf("the chosen machine's retry after the confirm = %v; want it taken", err)
 	}
 	eventually(t, "the chosen connection replaces the live team host", func() bool {
@@ -180,68 +155,38 @@ func TestASecondTeamHostConnectionWaitsForAManager(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the replaced team host's connection did not end")
 	}
-	// One-shot: the same address again is held.
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-01", true, "third")); !isHeld(err) {
+	// One-shot: the same code again is held.
+	if err := r.connectRaw(t, tok, moved, hello("build-01", true, "third")); !isHeld(err) {
 		t.Fatalf("a connection after the confirm was spent = %v; want it held", err)
 	}
 }
 
-// TestAConfirmForOneAddressDoesNotLetAnotherIn (#685 round 0): the confirm is
-// bound to the CHOSEN attempt. With the moved machine and a kept-token copy
-// both held, a manager confirms the moved machine's address; the kept copy,
-// retrying first inside the window, is still held and the real host keeps
-// serving; only the chosen address then takes the host.
-func TestAConfirmForOneAddressDoesNotLetAnotherIn(t *testing.T) {
-	const team = 900239
-	r := newPeerRig(t)
-	tok, _ := liveTeamHost(t, r, team, "build-03")
-	for _, a := range []string{movedAddr, keptAddr} {
-		if err := r.connectFrom(t, tok, a, hello("build-03", true, "from-"+a)); !isHeld(err) {
-			t.Fatalf("an attempt from %s = %v; want it held", a, err)
-		}
-	}
-	if !r.svc.Hub().ConfirmReplacement(team, "build-03", movedAddr) {
-		t.Fatal("the confirm of the moved machine's attempt found nothing")
-	}
-	if err := r.connectFrom(t, tok, keptAddr, hello("build-03", true, "from-"+keptAddr)); !isHeld(err) {
-		t.Fatalf("the kept copy's retry after a confirm for ANOTHER address = %v; want it still held", err)
-	}
-	if !r.svc.Hub().Online(team, "build-03", "real-host") || r.svc.Hub().Online(team, "build-03", "from-"+keptAddr) {
-		t.Fatal("the kept copy displaced the real host on a confirm meant for another address")
-	}
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-03", true, "from-"+movedAddr)); err != nil {
-		t.Fatalf("the chosen address's retry = %v; want it taken", err)
-	}
-	eventually(t, "the chosen machine takes the host", func() bool {
-		return r.svc.Hub().Online(team, "build-03", "from-"+movedAddr) && !r.svc.Hub().Online(team, "build-03", "real-host")
-	})
-}
-
 // TestTwoHeldAttemptsArmNothingUntilOneIsChosen: two machines are held for
-// one live team host; the card lists BOTH, by address, and nothing is armed:
-// both stay held on retry. A confirm that names no attempt, or an address no
-// attempt came from, arms nothing either. Only a chosen one is let in.
+// one live team host; the card lists BOTH, and nothing is armed: both stay
+// held on retry. A confirm with no code, or a code no attempt presented,
+// arms nothing either.
 func TestTwoHeldAttemptsArmNothingUntilOneIsChosen(t *testing.T) {
 	const team = 900241
-	r := newPeerRig(t)
+	const one, two = "0NE0-1111-1111", "TW00-2222-2222"
+	r := newRig(t)
 	tok, _ := liveTeamHost(t, r, team, "build-04")
-	for _, a := range []string{movedAddr, keptAddr} {
-		if err := r.connectFrom(t, tok, a, hello("build-04", true, "s")); !isHeld(err) {
-			t.Fatalf("an attempt from %s = %v; want it held", a, err)
+	for _, c := range []string{one, two} {
+		if err := r.connectRaw(t, tok, c, hello("build-04", true, "s")); !isHeld(err) {
+			t.Fatalf("an attempt with %s = %v; want it held", c, err)
 		}
 	}
 	held := r.svc.Hub().HeldReplacements(team)
-	if len(held) != 2 || held[0].Addr != keptAddr || held[1].Addr != movedAddr || held[0].Confirmed || held[1].Confirmed {
-		t.Fatalf("the card = %+v; want both attempts, by address, neither confirmed", held)
+	if len(held) != 2 || held[0].Confirmed || held[1].Confirmed {
+		t.Fatalf("the card = %+v; want both attempts, neither confirmed", held)
 	}
-	for _, a := range []string{"", "198.18.0.1"} {
-		if r.svc.Hub().ConfirmReplacement(team, "build-04", a) {
-			t.Fatalf("a confirm naming %q (no held attempt) armed a replacement", a)
+	for _, c := range []string{"", "9999-9999-9999"} {
+		if _, _, err := r.svc.Hub().ConfirmCode(team, c); !errors.Is(err, mirror.ErrNoSuchCode) {
+			t.Fatalf("a confirm naming %q (no held attempt) = %v; want ErrNoSuchCode", c, err)
 		}
 	}
-	for _, a := range []string{movedAddr, keptAddr} {
-		if err := r.connectFrom(t, tok, a, hello("build-04", true, "s")); !isHeld(err) {
-			t.Fatalf("with no attempt chosen, %s's retry = %v; want it held", a, err)
+	for _, c := range []string{one, two} {
+		if err := r.connectRaw(t, tok, c, hello("build-04", true, "s")); !isHeld(err) {
+			t.Fatalf("with no attempt chosen, %s's retry = %v; want it held", c, err)
 		}
 	}
 	if !r.svc.Hub().Online(team, "build-04", "real-host") {
@@ -269,91 +214,5 @@ func TestATeamHostReconnectingWhileOfflineIsTakenAtOnce(t *testing.T) {
 	r.online(t, team, "build-02", "after-restart")
 	if held := r.svc.Hub().HeldReplacements(team); len(held) != 0 {
 		t.Fatalf("a reconnect while offline left a hold: %+v", held)
-	}
-}
-
-// TestAHeldMachineIsToldItIsHeld: Service.HeldHere — what `muster doctor`'s
-// this-host check asks — is true for the machine whose attempt is held (it
-// shares the live host's token, so the token alone says "connected"), and
-// false for the live machine itself, for a machine with no held attempt, and
-// for a held machine that shares the live one's address (indistinguishable).
-func TestAHeldMachineIsToldItIsHeld(t *testing.T) {
-	const team = 900247
-	r := newPeerRig(t)
-	tok, _ := liveTeamHost(t, r, team, "build-05")
-	if err := r.connectFrom(t, tok, keptAddr, hello("build-05", true, "s")); !isHeld(err) {
-		t.Fatalf("the second machine = %v; want it held", err)
-	}
-	ask := func(addr string) bool {
-		held, _ := askHeld(r, team, "build-05", addr)
-		return held
-	}
-	if !ask(keptAddr) {
-		t.Fatal("the held machine is not told it is held")
-	}
-	if ask(liveAddr) {
-		t.Fatal("the LIVE machine is told it is held")
-	}
-	if ask(movedAddr) {
-		t.Fatal("a machine with NO held attempt is told it is held")
-	}
-	// A second machine behind the live one's address (one proxy): held, but
-	// this muster cannot tell the two apart, so neither is told it is held.
-	if err := r.connectFrom(t, tok, liveAddr, hello("build-05", true, "s")); !isHeld(err) {
-		t.Fatalf("a second machine at the live address = %v; want it held", err)
-	}
-	if ask(liveAddr) {
-		t.Fatal("the LIVE machine is told it is held because another machine shares its address")
-	}
-	// …and it is told the server cannot be sure which it is (round 1, Y1).
-	if _, unsure := askHeld(r, team, "build-05", liveAddr); !unsure {
-		t.Fatal("a machine sharing the live address with a held one is not told the server cannot be sure")
-	}
-	if _, unsure := askHeld(r, team, "build-05", movedAddr); unsure {
-		t.Fatal("a machine with no held attempt is told the server cannot be sure")
-	}
-}
-
-// askHeld is Service.HeldHere for a request from addr.
-func askHeld(r *rig, team int64, host, addr string) (held, unsure bool) {
-	req := httptest.NewRequest(http.MethodGet, "/mirror/host", nil)
-	req.Header.Set(peerHeader, addr)
-	return r.svc.HeldHere(asUser(team), host, req)
-}
-
-// TestAnAttemptFromTheLiveAddressCannotBeConfirmed (#685 round 1, Y1): behind
-// a proxy or a NodePort every machine shares one address, so a held attempt
-// from the LIVE connection's own address cannot be told from the live host.
-// The card marks it (SameAsLive), a confirm of it is refused
-// (ErrIndistinguishable) and arms nothing — its retry is still held. The
-// CONTROL is an attempt from another address, which a confirm arms.
-func TestAnAttemptFromTheLiveAddressCannotBeConfirmed(t *testing.T) {
-	const team = 900253
-	r := newPeerRig(t)
-	tok, _ := liveTeamHost(t, r, team, "build-07")
-	for _, a := range []string{liveAddr, movedAddr} {
-		if err := r.connectFrom(t, tok, a, hello("build-07", true, "s")); !isHeld(err) {
-			t.Fatalf("an attempt from %s = %v; want it held", a, err)
-		}
-	}
-	ctx := asUser(team)
-	same := map[string]bool{}
-	for _, h := range r.svc.HeldReplacements(ctx) {
-		same[h.Addr] = h.SameAsLive
-	}
-	if !same[liveAddr] || same[movedAddr] {
-		t.Fatalf("SameAsLive by address = %v; want only %s marked", same, liveAddr)
-	}
-	if err := r.svc.ConfirmReplacement(ctx, "build-07", liveAddr); !errors.Is(err, mirror.ErrIndistinguishable) {
-		t.Fatalf("a confirm of the live address's attempt = %v; want ErrIndistinguishable", err)
-	}
-	if err := r.connectFrom(t, tok, liveAddr, hello("build-07", true, "s")); !isHeld(err) {
-		t.Fatalf("after the refused confirm, the live address's retry = %v; want it still held", err)
-	}
-	if !r.svc.Hub().Online(team, "build-07", "real-host") {
-		t.Fatal("the real host stopped serving")
-	}
-	if err := r.svc.ConfirmReplacement(ctx, "build-07", movedAddr); err != nil {
-		t.Fatalf("CONTROL: a confirm of another address's attempt = %v; want it armed", err)
 	}
 }

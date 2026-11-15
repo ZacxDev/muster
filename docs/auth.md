@@ -196,23 +196,16 @@ releases (team sharing 2b.3 and 2b.4).
     NodePort, where every machine shares one address. A kept copy of the
     token, on another machine, draws its own code, which the manager never
     types. muster keeps and logs only a hash of the code (audit rows and logs
-    carry a 16-hex fingerprint), compares it in constant time, and refuses a
-    team's code confirms for a while after 5 wrong codes in 10 minutes. A
-    wrong code arms nothing and is audited as `team.host.replace.refused`.
-  - **An old `muster-mirror` sends no code.** Its attempt is confirmed by the
-    address it connected from, as before, and the card labels it "cannot be
-    told apart from other machines (old muster-mirror)". 🔴 **An address is
-    all muster can tell such a machine apart by, and behind a proxy or a
-    NodePort every machine shares one** (measured on a NodePort deployment:
-    every host showed as the same pod-network address). A codeless attempt
-    from the live host's own address cannot be confirmed at all: stop the
-    live host first (the next connection is then taken at once), or revoke
-    the token and mint a new one. An address confirm admits only a codeless
-    reconnect, and a code confirm only a reconnect with that code. Upgrade
-    `muster-mirror` on the moved machine to get the code.
-  - `muster doctor` on a held machine says it is held and shows its code. For
-    an old `muster-mirror` whose held and live machines share an address, it
-    says it cannot tell which this machine is.
+    carry a 16-hex fingerprint). A wrong code arms nothing and is audited as
+    `team.host.replace.refused`.
+  - **A `muster-mirror` that sends no code** (older than the code) cannot be
+    confirmed at all: an address tells no machines apart behind a proxy or a
+    Kubernetes NodePort (measured on a NodePort deployment: every host showed
+    as the same pod-network address), so there is nothing to name it by. It
+    is held with "upgrade muster-mirror on this machine, or stop the live
+    host", and the card says the same. Stopping the live host lets the next
+    connection in at once, code or no code.
+  - `muster doctor` on a held machine says it is held and shows its code.
   - 🔴 **The hold guards the tunnel only.** A held machine, or anyone keeping
     a copy of the token, can still call `/mirror/mcp` and `/mirror/ask` as
     any session the connected host lists (those doors believe the session a

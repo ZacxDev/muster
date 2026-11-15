@@ -59,7 +59,8 @@ type Config struct {
 	// sent on every connect as attemptcode.Header: when a team host's
 	// connection is held for a manager, the manager confirms THIS machine by
 	// typing it (mirror/teamhold.go). Printed in the log when held. "" sends
-	// none (an old muster-mirror's behaviour: told apart by address only).
+	// none (an older muster-mirror's behaviour): such a held connection
+	// cannot be confirmed (ErrHeldNoCode).
 	AttemptCode string
 	// Host is this host's name; it must be the host the token was minted for.
 	Host    string

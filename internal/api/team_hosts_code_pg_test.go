@@ -17,12 +17,11 @@ import (
 )
 
 // codePageHub is heldPageHub that also answers code confirms: right is the
-// one code it arms; limited answers every code confirm as rate-limited.
+// one code it arms.
 type codePageHub struct {
 	heldPageHub
-	right   string
-	limited bool
-	typed   []string
+	right string
+	typed []string
 }
 
 func (h *codePageHub) ConfirmCode(_ context.Context, code string) (string, string, error) {
@@ -32,26 +31,24 @@ func (h *codePageHub) ConfirmCode(_ context.Context, code string) (string, strin
 	if ok {
 		fp = attemptcode.Fingerprint(sum)
 	}
-	switch {
-	case h.limited:
-		return "", "", mirror.ErrConfirmRateLimited
-	case ok && code == h.right:
+	if ok && code == h.right {
 		return "build-01", fp, nil
 	}
 	return "", fp, mirror.ErrNoSuchCode
 }
 
 // TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine: with a
-// CODED held machine and an old muster-mirror's codeless one on the card, the
-// coded row has no Replace form (it is named only by its code) and the card
-// has the one code field; the codeless row is labelled "cannot be told apart
-// from other machines (old muster-mirror)" and keeps #685's address form. A
-// typed code confirms (303) and is audited by its FINGERPRINT — the code
-// itself is in no audit row; a wrong code is refused (409), audited as
-// refused, and arms nothing; a rate-limited confirm is 429.
+// CODED held machine and a codeless one on the card, NO row has a Replace
+// form and the card has the one code field; the codeless row says it sends
+// no code, so it cannot be confirmed: upgrade muster-mirror there, or stop
+// the live host. A typed code confirms (303) and is audited by its
+// FINGERPRINT — the code itself is in no audit row or log line; a wrong code,
+// or an address form's fields with no code, is refused (409), audited as
+// refused, and arms nothing.
 //
-// Red at the #685 head (f8313e4f): every row gets an address form and there
-// is no code field.
+// Red at f8313e4f (#685 head: every row gets an address form and there is no
+// code field) and at a21882d4 (this PR's first head: the codeless row keeps
+// #685's address form).
 func TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine(t *testing.T) {
 	const right = "M7Q2-W9XK-4HTR"
 	w := newIsoWorld(t)
@@ -85,11 +82,12 @@ func TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine(t *testing.T
 	if !strings.Contains(body, `id="team-host-code"`) || !strings.Contains(body, `name="code"`) {
 		t.Fatalf("the card has no code field:\n%.2500s", body)
 	}
-	if !strings.Contains(body, `name="addr" value="198.51.100.29"`) || !strings.Contains(body, "cannot be told apart from other machines (old muster-mirror)") {
-		t.Fatalf("the codeless row lost its fallback form or its old-muster-mirror label:\n%.2500s", body)
+	if n := strings.Count(body, `action="/teams/`+id+`/hosts/replace"`); strings.Contains(body, `name="addr"`) || n != 1 {
+		t.Fatalf("the card has %d replace form(s), or an address field; want only the one code form:\n%.2500s", n, body)
 	}
-	if n := strings.Count(body, "cannot be told apart from other machines (old muster-mirror)"); n != 1 {
-		t.Fatalf("%d rows labelled old muster-mirror; want exactly the codeless one", n)
+	const noCode = "sends no attempt code (an older muster-mirror), so it cannot be confirmed: upgrade muster-mirror on that machine, or stop the live host"
+	if n := strings.Count(body, noCode); n != 1 {
+		t.Fatalf("%d rows say they send no code; want exactly the codeless one:\n%.2500s", n, body)
 	}
 	audits := func(action string) []string {
 		t.Helper()
@@ -136,13 +134,12 @@ func TestTheCardTakesATypedCodeAndOffersNoRowButtonForACodedMachine(t *testing.T
 			t.Fatalf("the server's log carries a typed code (%q):\n%s", form, logs.String())
 		}
 	}
-	if len(hub.confirmed) != 0 {
-		t.Fatalf("a code confirm asked the hub for an ADDRESS confirm: %v", hub.confirmed)
+	// #685's address form, posted anyway: no code, so nothing is confirmed.
+	if rec := teamHostsReq(w, w.srv.handleTeamHostReplace, "POST", page+"/replace", url.Values{"host": {"build-01"}, "addr": {"198.51.100.29"}}, w.a.uid, true, ids); rec.Code != http.StatusConflict {
+		t.Fatalf("an address confirm with no code: %d; want 409", rec.Code)
 	}
-	hub.limited = true
-	if rec := teamHostsReq(w, w.srv.handleTeamHostReplace, "POST", page+"/replace", url.Values{"code": {right}}, w.a.uid, true, ids); rec.Code != http.StatusTooManyRequests ||
-		!strings.Contains(rec.Body.String(), "Too many wrong codes") {
-		t.Fatalf("a rate-limited confirm: %d; want 429", rec.Code)
+	if got := audits("team.host.replace"); len(got) != 1 {
+		t.Fatalf("an address confirm with no code was audited as a replace: %v", got)
 	}
 	// A stale sign-in confirms nothing: the step-up stays on the code path.
 	n := len(hub.typed)

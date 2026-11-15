@@ -1890,15 +1890,13 @@ server and its own `muster-mirror`.
   (case, dashes and spaces do not matter): that code's next attempt takes
   over within 3 minutes, and no other connection does, whatever its
   address. A restart draws a new code, so type the one the running process
-  shows. Repeated wrong codes are refused for a while.
-- **An old `muster-mirror` sends no code.** The page lists it by its address,
-  labelled "cannot be told apart from other machines (old muster-mirror)",
-  with #685's address confirm. **Behind a proxy or a Kubernetes NodePort every
-  machine shares one address**, so there such a confirm cannot tell machines
-  apart, and a held machine at the live host's own address cannot be
-  confirmed: stop the live host first, or replace the token, or upgrade its
-  `muster-mirror`. `muster doctor` then says it cannot tell which machine it
-  is.
+  shows.
+- **A `muster-mirror` that sends no code** (older than the code) cannot be
+  confirmed: behind a proxy or a Kubernetes NodePort every machine shares one
+  address, so nothing tells it apart. It is held with "upgrade muster-mirror
+  on this machine, or stop the live host"; the hosts page says the same.
+  Upgrade it, or stop the live host (the next connection is then taken at
+  once).
 - A held machine (or any kept copy of the token) can still use `/mirror/mcp`
   and `/mirror/ask` as any session the connected host lists; revoking and
   re-minting the token is what stops it. A host that disconnected first (a

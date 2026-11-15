@@ -18,7 +18,7 @@ import (
 // Team sharing 2b.2's follow-up: a held team host machine is confirmed by
 // the ATTEMPT CODE it shows (internal/attemptcode), not by its address.
 //
-// 🔴 THESE TESTS USE THE REAL LOOPBACK PEER — no SetPeerAddr. Every
+// 🔴 THESE TESTS USE THE REAL LOOPBACK PEER — no fake addresses. Every
 // connection, the live host's included, arrives from 127.0.0.1: exactly a
 // NodePort or a `tailscale serve` to loopback, where #685's address rule
 // could tell no machine apart (#685 round 1, Y1) and its fake-address tests
@@ -126,8 +126,8 @@ func TestACodeConfirmAdmitsTheMachineShowingItAndNoOther(t *testing.T) {
 		}
 	}
 	card := r.svc.HeldReplacements(asUser(team))
-	if len(card) != 2 || !card[0].Coded || !card[1].Coded || card[0].Addr != card[1].Addr || card[0].SameAsLive || card[1].SameAsLive {
-		t.Fatalf("the card = %+v; want two CODED holds from one address, neither marked indistinguishable", card)
+	if len(card) != 2 || !card[0].Coded || !card[1].Coded || card[0].Addr != card[1].Addr {
+		t.Fatalf("the card = %+v; want two CODED holds from one address", card)
 	}
 	typed := strings.ToLower(strings.ReplaceAll(codeA, "-", ""))
 	host, fp, err := r.svc.ConfirmCode(asUser(team), typed)
@@ -158,13 +158,11 @@ func TestACodeConfirmAdmitsTheMachineShowingItAndNoOther(t *testing.T) {
 	}
 }
 
-// TestAWrongCodeArmsNothingAndGuessesAreLimited: a wrong code — well formed,
-// malformed, the LIVE host's own, or one held for ANOTHER team — arms
-// nothing (ErrNoSuchCode) and the held machine stays held. Past
-// confirmFailLimit (5) wrong codes the team's confirms are refused
-// (ErrConfirmRateLimited) — the RIGHT code included, so guessing gains
-// nothing — while another team's confirm is unaffected (the CONTROL).
-func TestAWrongCodeArmsNothingAndGuessesAreLimited(t *testing.T) {
+// TestAWrongCodeArmsNothing: a wrong code — well formed, malformed, the LIVE
+// host's own, one held for ANOTHER team, or one a character off — arms
+// nothing (ErrNoSuchCode) and the held machine stays held. The CONTROL: the
+// right code then arms it (there is no limit to lock it out).
+func TestAWrongCodeArmsNothing(t *testing.T) {
 	const team, other = 900313, 900317
 	r := newRig(t)
 	tok, _ := liveCoded(t, r, team, "build-13")
@@ -175,7 +173,7 @@ func TestAWrongCodeArmsNothingAndGuessesAreLimited(t *testing.T) {
 	if held, _ := r.attempt(t, other, "build-17", otok, codeB, "o-moved"); !held {
 		t.Fatal("the other team's B was not held")
 	}
-	for i, wrong := range []string{"ZZZZ-ZZZZ-ZZZZ", "not a code", codeLive, codeB, "AAAA-1111-2223"} {
+	for i, wrong := range []string{"ZZZZ-ZZZZ-ZZZZ", "not a code", codeLive, codeB, "AAAA-1111-2223", "", "AAAA-1111-2222-3"} {
 		if _, _, err := r.svc.ConfirmCode(asUser(team), wrong); !errors.Is(err, mirror.ErrNoSuchCode) {
 			t.Fatalf("wrong code %d (%q) = %v; want ErrNoSuchCode", i+1, wrong, err)
 		}
@@ -183,84 +181,58 @@ func TestAWrongCodeArmsNothingAndGuessesAreLimited(t *testing.T) {
 	if held, _ := r.attempt(t, team, "build-13", tok, codeA, "moved"); !held {
 		t.Fatal("after only wrong codes, A was taken")
 	}
-	if _, _, err := r.svc.ConfirmCode(asUser(team), codeA); !errors.Is(err, mirror.ErrConfirmRateLimited) {
-		t.Fatalf("the right code after 5 wrong ones = %v; want ErrConfirmRateLimited", err)
+	if _, _, err := r.svc.ConfirmCode(asUser(team), codeA); err != nil {
+		t.Fatalf("CONTROL: the right code after the wrong ones = %v; want it armed", err)
 	}
-	if held, _ := r.attempt(t, team, "build-13", tok, codeA, "moved"); !held {
-		t.Fatal("a rate-limited confirm armed A anyway")
-	}
-	if _, _, err := r.svc.ConfirmCode(asUser(other), codeB); err != nil {
-		t.Fatalf("CONTROL: another team's right code = %v; want armed (the limit is per team)", err)
+	if held, _ := r.attempt(t, team, "build-13", tok, codeA, "moved"); held {
+		t.Fatal("CONTROL: the armed code's machine was held")
 	}
 }
 
-// TestAnAttemptWithoutACodeFallsBackToTheAddressRule: an old muster-mirror
-// sends no code. Its attempt is recorded by address (Coded false) — at the
-// live loopback address it is marked SameAsLive and its address confirm is
-// refused (ErrIndistinguishable), #685's rule. A typed code cannot name it,
-// and an address confirm cannot name a CODED attempt.
-func TestAnAttemptWithoutACodeFallsBackToTheAddressRule(t *testing.T) {
+// TestACodelessAttemptIsHeldAndCannotBeConfirmed: an attempt that sends no
+// code (a muster-mirror older than the code) for a LIVE team host is held
+// with ErrHeldNoCode — "upgrade muster-mirror on this machine, or stop the
+// live host" — and listed on the card as not coded. Nothing confirms it: a
+// code confirm armed for ANOTHER machine, from the same loopback address,
+// leaves its reconnect held, while the coded machine is then taken (the
+// CONTROL). Offline arrival without a code is unchanged
+// (TestATeamHostReconnectingWhileOfflineIsTakenAtOnce).
+func TestACodelessAttemptIsHeldAndCannotBeConfirmed(t *testing.T) {
 	const team = 900319
 	r := newRig(t)
 	tok, _ := liveCoded(t, r, team, "build-19")
-	if held, _ := r.attempt(t, team, "build-19", tok, "", "old-mirror"); !held {
-		t.Fatal("a codeless second connection was taken")
+	c := r.dialCoded(t, "build-19", tok, "", "old-mirror")
+	select {
+	case err := <-c.done:
+		if err == nil || !strings.Contains(err.Error(), "sends no attempt code, so no manager can confirm it: upgrade muster-mirror on this machine, or stop the live host") {
+			t.Fatalf("a codeless second connection = %v; want the refusal telling it to upgrade or stop the live host", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a codeless second connection was neither refused nor ended")
 	}
 	if held, _ := r.attempt(t, team, "build-19", tok, codeA, "new-mirror"); !held {
 		t.Fatal("A was not held")
 	}
-	var old, coded *mirror.HeldReplacement
 	card := r.svc.HeldReplacements(asUser(team))
-	for i := range card {
-		if card[i].Coded {
-			coded = &card[i]
-		} else {
-			old = &card[i]
-		}
+	coded := map[bool]int{}
+	for _, h := range card {
+		coded[h.Coded]++
 	}
-	if old == nil || coded == nil || !old.SameAsLive || coded.SameAsLive {
-		t.Fatalf("the card = %+v; want one codeless hold marked SameAsLive and one coded hold not", card)
+	if len(card) != 2 || coded[true] != 1 || coded[false] != 1 {
+		t.Fatalf("the card = %+v; want one coded hold and one codeless hold", card)
 	}
-	if err := r.svc.ConfirmReplacement(asUser(team), "build-19", old.Addr); !errors.Is(err, mirror.ErrIndistinguishable) {
-		t.Fatalf("the codeless attempt's address confirm = %v; want ErrIndistinguishable", err)
+	if _, _, err := r.svc.ConfirmCode(asUser(team), codeA); err != nil {
+		t.Fatal(err)
 	}
 	if held, _ := r.attempt(t, team, "build-19", tok, "", "old-mirror"); !held {
-		t.Fatal("after the refused confirm the codeless attempt was taken")
+		t.Fatal("the codeless attempt was taken on a confirm of another machine's code")
 	}
-}
-
-// TestTheFallbackAndTheCodeAdmitOnlyTheirOwnKind (rig with fake addresses, to
-// reach an address confirm that is armed): an address confirm admits only a
-// CODELESS reconnect from that address — a coded one from it stays held —
-// and is refused for an address only a coded attempt came from.
-func TestTheFallbackAndTheCodeAdmitOnlyTheirOwnKind(t *testing.T) {
-	const team = 900323
-	r := newPeerRig(t)
-	tok, _ := liveTeamHost(t, r, team, "build-23")
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-23", true, "old")); !isHeld(err) {
-		t.Fatalf("the codeless attempt = %v; want held", err)
+	if !r.svc.Hub().Online(team, "build-19", "real-host") {
+		t.Fatal("the real host stopped serving after the codeless retry")
 	}
-	if err := r.connectCodedFrom(t, tok, keptAddr, codeB, hello("build-23", true, "kept")); !isHeld(err) {
-		t.Fatalf("B = %v; want held", err)
+	if held, _ := r.attempt(t, team, "build-19", tok, codeA, "new-mirror"); held {
+		t.Fatal("CONTROL: the coded machine was not taken")
 	}
-	if err := r.svc.ConfirmReplacement(asUser(team), "build-23", keptAddr); !errors.Is(err, mirror.ErrNothingHeld) {
-		t.Fatalf("an address confirm of a CODED attempt's address = %v; want ErrNothingHeld", err)
-	}
-	if err := r.svc.ConfirmReplacement(asUser(team), "build-23", movedAddr); err != nil {
-		t.Fatalf("CONTROL: the codeless attempt's address confirm = %v; want armed", err)
-	}
-	if err := r.connectCodedFrom(t, tok, movedAddr, codeB, hello("build-23", true, "kept")); !isHeld(err) {
-		t.Fatalf("a CODED reconnect from the confirmed address = %v; want it held", err)
-	}
-	if err := r.connectFrom(t, tok, movedAddr, hello("build-23", true, "old")); err != nil {
-		t.Fatalf("the codeless reconnect from the confirmed address = %v; want it taken", err)
-	}
-}
-
-// connectCodedFrom is connectFrom presenting an attempt code.
-func (r *rig) connectCodedFrom(t *testing.T, token, addr, code string, h mirror.Msg) error {
-	t.Helper()
-	return r.connectFromWith(t, token, addr, http.Header{attemptcode.Header: {code}}, h)
 }
 
 // TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash: the held muster-mirror
@@ -301,9 +273,9 @@ func TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash(t *testing.T) {
 }
 
 // TestDoctorsQuestionIsAnsweredByTheCode: Service.HeldHere for a request
-// presenting a code — what `muster doctor` sends — is held exactly for the
-// held code, and never "unsure", though every connection shares the loopback
-// address (where the address answer is "unsure": the CONTROL).
+// presenting a code — what `muster doctor` sends — is true exactly for the
+// held code, though every connection shares the loopback address; with no
+// code it is never held.
 func TestDoctorsQuestionIsAnsweredByTheCode(t *testing.T) {
 	const team = 900331
 	r := newRig(t)
@@ -311,7 +283,7 @@ func TestDoctorsQuestionIsAnsweredByTheCode(t *testing.T) {
 	if held, _ := r.attempt(t, team, "build-31", tok, codeA, "moved"); !held {
 		t.Fatal("A was not held")
 	}
-	ask := func(code string) (bool, bool) {
+	ask := func(code string) bool {
 		req := httptest.NewRequest(http.MethodGet, "/mirror/host", nil)
 		req.RemoteAddr = "127.0.0.1:40000"
 		if code != "" {
@@ -319,13 +291,13 @@ func TestDoctorsQuestionIsAnsweredByTheCode(t *testing.T) {
 		}
 		return r.svc.HeldHere(asUser(team), "build-31", req)
 	}
-	if held, unsure := ask(codeA); !held || unsure {
-		t.Fatalf("the held machine's code: held %v unsure %v; want held, sure", held, unsure)
+	if !ask(codeA) {
+		t.Fatal("the held machine's code is not told it is held")
 	}
-	if held, unsure := ask(codeLive); held || unsure {
-		t.Fatalf("the LIVE machine's code: held %v unsure %v; want neither", held, unsure)
+	if ask(codeLive) {
+		t.Fatal("the LIVE machine's code is told it is held")
 	}
-	if _, unsure := ask(""); !unsure {
-		t.Fatal("CONTROL: with no code, the shared loopback address should leave the server unsure")
+	if ask("") {
+		t.Fatal("a request with no code is told it is held")
 	}
 }

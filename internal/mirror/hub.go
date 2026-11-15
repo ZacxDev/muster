@@ -206,9 +206,6 @@ type Hub struct {
 	// held is the TEAM hosts' held second connections (teamhold.go): a
 	// connection for a live (team, host) waits for a manager.
 	held map[hostKey]*held
-	// confirmFails is each team's recent wrong attempt codes (teamhold.go,
-	// ConfirmCode's rate limit).
-	confirmFails map[int64][]time.Time
 	// arrivals numbers every join in the order its hello was accepted
 	// (hostConn.arrival); under mu.
 	arrivals uint64

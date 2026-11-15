@@ -66,18 +66,12 @@ type Service struct {
 	// for HostToken; gen tells a connection's own entry from its successor's.
 	connMu  sync.Mutex
 	connTok map[hostKey]connToken
-	// peerFn, when set, reads a request's peer address instead of clientAddr
-	// (SetPeerAddr; tests). Under connMu.
-	peerFn func(*http.Request) string
 	connGen uint64
 }
 
 type connToken struct {
 	id  int64
 	gen uint64
-	// addr is the connection's peer address (peerAddr): how a held team host
-	// attempt is told from the live one (teamhold.go, HeldHere).
-	addr string
 }
 
 // HostToken is the id of the token the viewing principal's host is
@@ -243,7 +237,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// (team, host) is refused as held — BEFORE it touches connTok or the hub,
 	// so the live connection's token stays the one tracked, and the held one
 	// is sent nothing — until a manager confirms it.
-	peer := s.peerAddr(r)
+	peer := clientAddr(r)
 	if tok.Team {
 		code := attemptCodeOf(r)
 		if admit, announce := s.hub.admitPinned(key, peer, code); !admit {
@@ -263,7 +257,7 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		s.connTok = map[hostKey]connToken{}
 	}
 	s.connGen++
-	mine := connToken{id: tok.ID, gen: s.connGen, addr: peer}
+	mine := connToken{id: tok.ID, gen: s.connGen}
 	s.connTok[key] = mine
 	s.connMu.Unlock()
 	defer func() {
@@ -280,18 +274,22 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 // refuseHeld answers a held team host connection (teamhold.go): its hello
 // first, as every refusal reads it, so the host reads the refusal as muster's
 // answer to its registration. Logged, and the team's views nudged, only when
-// announce (at most once per heldAnnounceEvery per address): a machine in a
+// announce (at most once per heldAnnounceEvery per attempt): a machine in a
 // tight retry loop is counted on the card, not announced each time. The log
 // names the attempt's code by its fingerprint only (internal/attemptcode).
 func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, code *[32]byte, announce bool) {
 	_, _ = readHello(r.Context(), ws)
-	refuse(r.Context(), ws, ErrHeldForManager)
+	if code == nil {
+		refuse(r.Context(), ws, ErrHeldNoCode)
+	} else {
+		refuse(r.Context(), ws, ErrHeldForManager)
+	}
 	if announce {
-		which := "with no attempt code (an old muster-mirror)"
+		which := "with no attempt code (it cannot be confirmed)"
 		if code != nil {
 			which = "with attempt code " + attemptcode.Fingerprint(*code) + " (fingerprint)"
 		}
-		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer, which)
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s %s is held", tok.Host, tok.OwnerID, peer, which)
 		s.hub.changed(tok.OwnerID)
 	}
 }
