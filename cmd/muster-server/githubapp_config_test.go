@@ -150,6 +150,7 @@ func TestBuildAppPresentsTheAppAsTheGitHubConnector(t *testing.T) {
 	cfg := testConfig()
 	cfg.Database = dbtest.DSN(t)
 	cfg.ConnectorEncKey = []byte(strings.Repeat("k", 32))
+	cfg.AgentConnectURL = "http://muster.example.test:18191" // the agent-facing store needs it
 	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAppAccounts = key.GitHubAppID, key.GitHubAppKey, key.GitHubAppAccounts
 	const tok = "wiring-agent-own-token-0123456789"
 	seedRelayAgent(t, cfg.Database, "wiring-agent", tok)

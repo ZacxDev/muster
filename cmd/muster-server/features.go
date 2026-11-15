@@ -80,7 +80,7 @@ func featureCatalog() []features.Feature {
 				v(envBrowserPort, "browser listener port")}},
 		{ID: features.Connectors, Name: "Connectors and credentials",
 			Description: "Stored platform credentials agents use through muster's proxy, and each member's own Claude and OpenRouter credentials.",
-			Enable:      []features.Var{v(envConnectorEncKey, "32-byte base64 key")},
+			Enable:      []features.Var{v(envConnectorEncKey, "32 random bytes, hex or base64")},
 			Settings: []string{envConnectPort, envAgentConnectURL, envInternalHTTPConnectors,
 				connectors.InternalHTTPTokenEnvPrefix + "<NAME>"}},
 		{ID: features.GitHubApp, Name: "GitHub App",
@@ -113,7 +113,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Chief, Name: "Chief",
 			Description: "A fleet agent that reports on your sessions and agents, and routes work to them; the admin turns it on under Account.",
 			Enable: []features.Var{features.ProfileVar("chief"), is(envChiefRuntime, chiefRuntimeCompose),
-				v(envConnectorEncKey, "32 random bytes, base64")},
+				v(envConnectorEncKey, "32 random bytes, hex or base64")},
 			Note:     composeChiefCredentialNote,
 			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
@@ -241,6 +241,40 @@ func openRouterStatus(ext api.Extensions) features.Status {
 	return features.Status{State: features.Off, Reason: needsOpenRouterKey()}
 }
 
+// agentConnectorsOff is why the agent half of the connector store is off when
+// the key is set without MUSTER_AGENT_CONNECT_URL: the ONE sentence the
+// feature's reason and the boot banner's `connector store:` line both use.
+func agentConnectorsOff() string {
+	return "agent connectors are OFF: " + envAgentConnectURL + " is unset, so no agent could reach the store " +
+		"(set it with " + envConnectPort + " to the connect listener's URL to turn them on)"
+}
+
+// connectorsStatus is the connectors feature's state.
+//
+//   - the agent-facing store is wired: ON.
+//   - the key without the agent connect URL (validateConnectors accepts it):
+//     members' own credentials are ON and the agent half is off. With nothing
+//     that could dispatch an agent, that is the whole feature this deployment
+//     can have: ON, the reason saying which half. With an agent provisioner it
+//     is MISCONFIGURED (so `muster doctor` FAILs): agents run here and cannot
+//     use connectors.
+//   - otherwise OFF, naming what is missing.
+func connectorsStatus(c config, ext api.Extensions) features.Status {
+	switch {
+	case ext.Connectors != nil:
+		return features.Status{State: features.On}
+	case ext.Credentials != nil && c.AgentConnectURL == "":
+		why := "members' own credentials only; " + agentConnectorsOff()
+		if ext.Provisioner != nil {
+			return features.Status{State: features.Misconfigured, Reason: why}
+		}
+		return features.Status{State: features.On, Reason: why}
+	case len(c.ConnectorEncKey) > 0 && c.Database == "":
+		return features.Status{State: features.Off, Reason: "there is no database (" + envDatabase + ") to hold it"}
+	}
+	return features.Status{State: features.Off, Reason: envConnectorEncKey + " is unset"}
+}
+
 // chiefMissing is why a feature that acts through the chief cannot, or "": the
 // chief needs an agent provisioner and a runtime to run on (the Chief entry's
 // own predicate, chiefRuntimeMissing).
@@ -346,7 +380,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 
 	st[features.Accounts] = pick(gotrue && c.goTrueConfigured() && a.pool != nil, gotrue,
 		"", envAuthMode+"=gotrue but GoTrue or the database is not configured", envAuthMode+" is not gotrue (the shared password is in use)")
-	st[features.Connectors] = pick(ext.Connectors != nil, false, "", "", envConnectorEncKey+" is unset")
+	st[features.Connectors] = connectorsStatus(c, ext)
 	st[features.GitHubApp] = pick(ext.GitHubApp != nil, false, "", "", envGitHubAppID+" is unset")
 	// The Compose chief's provisioner runs the chief alone: dispatch is off
 	// there, for the reason api.dispatchServed reads it as off.
