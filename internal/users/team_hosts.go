@@ -35,17 +35,28 @@ import (
 
 // markTeamTokensRotateTx marks every unrevoked host token of team rotate,
 // inside tx.
+//
+// And, since 0134 (team sharing 2b.3b), the team's unrevoked viewer PLUGINS:
+// a team plugin's token was shown to a manager once, and is kept as a host
+// token is (plugins.rotate_at).
 func markTeamTokensRotateTx(ctx context.Context, tx pgx.Tx, team int64) error {
-	_, err := tx.Exec(ctx, `UPDATE mirror_tokens SET rotate_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, team)
+	if _, err := tx.Exec(ctx, `UPDATE mirror_tokens SET rotate_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, team); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE plugins SET rotate_at = now() WHERE owner_id = $1 AND revoked_at IS NULL`, team)
 	return err
 }
 
 // markRotateForDisableTx marks rotate the host tokens of every team person
 // user operates or manages, inside the disable's tx.
 func markRotateForDisableTx(ctx context.Context, tx pgx.Tx, user int64) error {
-	_, err := tx.Exec(ctx, `UPDATE mirror_tokens SET rotate_at = now() WHERE revoked_at IS NULL AND owner_id IN (
-		SELECT team_id FROM team_members WHERE user_id = $1 AND role IN ('operator', 'manager'))`, user)
-	return err
+	for _, table := range []string{"mirror_tokens", "plugins"} {
+		if _, err := tx.Exec(ctx, `UPDATE `+table+` SET rotate_at = now() WHERE revoked_at IS NULL AND owner_id IN (
+			SELECT team_id FROM team_members WHERE user_id = $1 AND role IN ('operator', 'manager'))`, user); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // holdsTokenRole reports whether role is one a team host token is a concern

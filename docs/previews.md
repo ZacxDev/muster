@@ -169,7 +169,10 @@ the gateway's admin does it by hand, once per team.
 A team's plugin token is served `POST /plugin/v1/handoffs/redeem` and
 `GET /plugin/v1/self` only, and refused at every other plugin route whatever
 its row claims. Revoking it on `/teams/<id>/plugins` closes the team's
-previews within the gateway's `/self` re-check.
+previews within the gateway's `/self` re-check. When an operator or a manager
+of the team leaves, drops to viewer or is disabled, the team's plugin is
+marked rotate on that page (as its host tokens are): revoke it, mint another
+and give the gateway's admin the new token.
 
 ## How it is built
 

@@ -132,6 +132,10 @@ type Plugin struct {
 	// or its display name when it has none (the admin Users page's spelling).
 	// Set by Authenticate only, for GET /plugin/v1/self.
 	OwnerLogin string `json:"-"`
+	// RotateAt is when a team viewer plugin was marked rotate (0134): an
+	// operator or a manager of its team left, dropped to viewer or was
+	// disabled. nil: not marked (always, for a person's).
+	RotateAt *time.Time `json:"rotateAt,omitempty"`
 	// OwnerTeam: the owner is a TEAM (team sharing 2b.3b: a team viewer
 	// plugin, minted by a manager on /teams/<id>/plugins). Set by
 	// Authenticate only; OwnerLogin is then the team's name.

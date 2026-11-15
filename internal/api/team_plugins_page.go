@@ -96,8 +96,15 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 		if p.EntryURL != nil {
 			entry = *p.EntryURL
 		}
-		b.WriteString(`<li class="flex flex-wrap items-center gap-2" data-team-plugin="` + pid + `"><span class="text-sm text-fg">` + html.EscapeString(p.Name) +
-			`</span><span class="text-sm text-fg2">plugin ` + pid + ` · ` + html.EscapeString(entry) + `</span>` +
+		b.WriteString(`<li class="flex flex-wrap items-center gap-2" data-team-plugin="` + pid + `" data-rotate="` + strconv.FormatBool(p.RotateAt != nil) +
+			`"><span class="text-sm text-fg">` + html.EscapeString(p.Name) +
+			`</span><span class="text-sm text-fg2">plugin ` + pid + ` · ` + html.EscapeString(entry) + `</span>`)
+		if p.RotateAt != nil {
+			// The reason is the hosts page's: the audit row the mark's own
+			// transaction wrote (teamRotateLine).
+			b.WriteString(`<span class="text-sm font-medium text-fg" data-rotate-reason>` + html.EscapeString(s.teamRotateLine(r.Context(), team, *p.RotateAt)) + `</span>`)
+		}
+		b.WriteString(`` +
 			`<form method="POST" action="/teams/` + id + `/plugins/` + pid + `/revoke"><button type="submit" class="` + adminQuiet + `">Revoke</button></form></li>`)
 	}
 	if live == 0 {

@@ -177,13 +177,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to, rotate_at`
 
 // pluginDest is the scan destinations for pluginCols, in its order. THE ONE
 // COPY, as messageDest: every reader of pluginCols scans through it.
 func pluginDest(p *Plugin) []any {
 	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo}
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo, &p.RotateAt}
 }
 
 func scanPlugin(row pgx.Row) (Plugin, error) {

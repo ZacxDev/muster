@@ -224,6 +224,18 @@ func TestOnlyAManagerMintsATeamViewerPlugin(t *testing.T) {
 		t.Errorf("team.plugin.create audit rows naming the manager: %d %v; want 1", audits, err)
 	}
 	pidS := strconv.FormatInt(pid, 10)
+	// B, an operator, leaves: the team's plugin is marked rotate (0134), and
+	// the page says so.
+	if body := teamHostsReq(w, w.srv.handleTeamPluginsPage, "GET", page, nil, w.a.uid, false, ids).Body.String(); !strings.Contains(body, `data-team-plugin="`+pidS+`" data-rotate="false"`) {
+		t.Fatalf("CONTROL: the team's plugin is marked before anyone left:\n%s", truncate(body, 400))
+	}
+	if err := f.store.RemoveTeamMember(w.sys, f.admin, f.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	if body := teamHostsReq(w, w.srv.handleTeamPluginsPage, "GET", page, nil, w.a.uid, false, ids).Body.String(); !strings.Contains(body, `data-team-plugin="`+pidS+`" data-rotate="true"`) ||
+		!strings.Contains(body, "data-rotate-reason") {
+		t.Errorf("after an operator left, the page does not show the team plugin marked rotate:\n%s", truncate(body, 600))
+	}
 	own := w.do(w.h, "GET", "/plugins", "", cred{sessionUser: w.a.uid})
 	if strings.Contains(own.Body.String(), form.Get("name")) {
 		t.Errorf("the manager's OWN plugins page lists the team's plugin")

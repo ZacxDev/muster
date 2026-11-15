@@ -2622,8 +2622,10 @@ by re-checking the migration number (D). The slices ship **in order**.
      team-owned `plugin_handoffs` row through the team acting principal — the
      ruling's "a team viewer may open it"). Redeem answers `owner_id` = the
      team. With no team plugin the mint is a 404 with the same sentence.
-   - **No migration** (re-checked against `main` at `2789489a`: the newest is
-     0133; 0134 is unused): every column and policy above exists.
+   - **No migration for (a)–(d)** (re-checked against `main` at `2789489a`:
+     the newest is 0133): every column and policy above exists. Round 0's
+     rotate mark later added 0134 (`plugins.rotate_at`; see the as-built
+     note).
    - 🔴 **FORK (stopped here):** muster's half alone does not make a team
      preview open. The gateway resolves a host token's owner by LOGIN, and a
      team has none, so no gateway host token can be minted for a team host,
@@ -2639,7 +2641,7 @@ by re-checking the migration number (D). The slices ship **in order**.
      Recommendation: **(ii)**. The gateway change is small and in this repo,
      and without it (i) ships a button that opens nothing on a team session.
 
-   > **As built in 2b.3b (no migration).** Who decided what (#696 round 0):
+   > **As built in 2b.3b (migration 0134, round 0).** Who decided what (#696 round 0):
    > the OPERATOR ruled that a team session's previews run on the TEAM's
    > plugins, never a viewer's, and that this is its own slice, next. The
    > ORCHESTRATOR decided the fork (ii: teach the gateway team owners in this
@@ -2690,10 +2692,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    > - **Round 0 (#696):** `/self` has no `team_name` (D1); the plugins page
    >   answers a no-longer-manager with its own notice (`teamManagerPage`); a
    >   team hand-off is audited `team.plugin.handoff`, naming the member who
-   >   opened it (an audit row, not a column: no migration). ⚠ **Not built:**
-   >   a rotate mark on a team plugin token when the manager who saw it
-   >   leaves needs a `plugins` column (migration 0134); stopped for a
-   >   decision.
+   >   opened it (an audit row, not a column). **(b), approved: migration
+   >   0134** adds `plugins.rotate_at`, set in the same transactions that mark
+   >   the team's host tokens (an operator or a manager removed, dropped to
+   >   viewer or disabled; `users` team_hosts.go), and shown on
+   >   `/teams/<id>/plugins` with the hosts page's reason
+   >   (`TestLeavingATeamMarksItsViewerPluginsRotate`). The slice is
+   >   therefore NOT migration-free: 0134 is its one migration.
 
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
