@@ -601,7 +601,7 @@ DOCS ONLY: every path your pull request changes, adds, removes or renames from m
 	}
 	if len(public) > 0 {
 		out += fmt.Sprintf(`
-PUBLIC repositories: %s. Anyone can read them, including every branch you push. Never put an internal hostname, address, cluster or node name, internal link or item detail into a diff, a commit message, your git author identity, a title, a body or a comment there: muster scans all of them, deletes a pushed branch that matches, and refuses the pull request.`,
+PUBLIC repositories: %s. Anyone can read them, including every branch you push and its name. Never put an internal hostname, address, cluster or node name, internal link or item detail into a branch name, a diff, a commit message, your git author identity, a title, a body or a comment there: muster scans all of them, refuses a push whose branch name matches, deletes a pushed branch whose content matches (or that it cannot check), and refuses the pull request.`,
 			strings.Join(public, ", "))
 	}
 	return out

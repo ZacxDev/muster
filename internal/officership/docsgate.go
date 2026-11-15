@@ -33,8 +33,12 @@ import (
 //     LINE NUMBER, never the pattern or what it matched.
 //
 // FAIL CLOSED: a file that cannot be read for the fence rule, or a pattern
-// file that cannot be read, refuses (unverified: no branch deletion, the
-// sweep retries).
+// file that cannot be read, refuses (unverified: an open pull request is
+// closed with its branch kept, and the sweep retries; a public branch with NO
+// pull request is deleted, since nothing else reads it again —
+// publicBranchCheck). A public repository's branch NAME is scanned before
+// the push is forwarded (allowedRef). A shepherd runs the public half on its
+// own pushes (it has no docs_only).
 // ---------------------------------------------------------------------------
 
 // docsVerdict is the docs-only and public rules' answer over one comparison.
@@ -314,56 +318,99 @@ func fencedChange(ctx context.Context, gh GitHub, cmp Compare, f File, base, hea
 // "```" the strict reading ignores and the loose one opens on), leaving the
 // next real block's lines outside; the union cannot be, because each reading
 // on its own still marks every line it believes fenced.
+//
+// 🔴 OVER-MARKING IS THE SAFE ERROR. A line marked fenced that CommonMark
+// calls prose costs a false refusal; the reverse admits a command edit. So
+// every reading below errs toward fenced:
+//   - a fence opens after any run of blockquote markers AND list markers
+//     ("- ", "* ", "+ ", "1. ", "1) "), so "- ```sh" opens one;
+//   - it closes only on a fence line at the SAME blockquote depth that
+//     carries NO list marker: "> ```" inside an unquoted fence is content
+//     (CommonMark), and "- ```" starts a new list item (a new block), so
+//     neither closes it;
+//   - a leading YAML front matter block (line 1 "---", through the next
+//     "---", or to the end when none closes it) is marked whole: an agent's
+//     tools: or a skill's allowed-tools: is configuration, not prose. YAML's
+//     "..." does not close it here: a reader that closes only on "---" would
+//     read the lines after "..." as front matter.
 func fenceMask(text string) []bool {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	mask := make([]bool, len(lines)+1)
+	if len(lines) > 0 && strings.TrimRight(strings.TrimPrefix(lines[0], "\ufeff"), " \t") == "---" {
+		mask[1] = true
+		for i := 1; i < len(lines); i++ {
+			mask[i+1] = true
+			if strings.TrimRight(lines[i], " \t") == "---" {
+				break
+			}
+		}
+	}
 	for _, loose := range []bool{false, true} {
 		var fch byte
-		flen := 0
+		flen, fdepth := 0, 0
 		for i, l := range lines {
-			c, n, rest, ok := fenceLine(l, loose)
+			f, ok := fenceLine(l, loose)
 			if fch == 0 {
 				if ok {
-					fch, flen = c, n
+					fch, flen, fdepth = f.c, f.n, f.depth
 					mask[i+1] = true
 				}
 				continue
 			}
 			mask[i+1] = true
-			if ok && c == fch && n >= flen && strings.TrimSpace(rest) == "" {
-				fch, flen = 0, 0
+			if ok && f.c == fch && f.n >= flen && f.depth == fdepth && !f.listed && strings.TrimSpace(f.rest) == "" {
+				fch, flen, fdepth = 0, 0, 0
 			}
 		}
 	}
 	return mask
 }
 
-// fenceLine reads l as a fence: its character ('`' or '~'), the run's length
-// (at least 3) and what follows the run. strict allows at most three spaces
-// of indentation after blockquote markers; loose any.
-func fenceLine(l string, loose bool) (byte, int, string, bool) {
-	s := l
+// fence is a line read as a fence: its character ('`' or '~'), the run's
+// length (at least 3), what follows the run, how many blockquote markers
+// precede it and whether a list marker does.
+type fence struct {
+	c      byte
+	n      int
+	rest   string
+	depth  int
+	listed bool
+}
+
+// listMarkerRE is a CommonMark list marker and the one space or tab after it.
+var listMarkerRE = regexp.MustCompile(`^(?:[-*+]|[0-9]{1,9}[.)])[ \t]`)
+
+// fenceLine reads l as a fence. Container markers — blockquote '>' and list
+// markers, in any order and any number — are stripped first; then strict
+// allows at most three spaces of indentation, loose any.
+func fenceLine(l string, loose bool) (fence, bool) {
+	s, depth, listed := l, 0, false
 	for {
 		t := strings.TrimLeft(s, " \t")
-		if !strings.HasPrefix(t, ">") {
-			break
+		if strings.HasPrefix(t, ">") {
+			s, depth = t[1:], depth+1
+			continue
 		}
-		s = t[1:]
+		if m := listMarkerRE.FindString(t); m != "" {
+			s, listed = t[len(m):], true
+			continue
+		}
+		break
 	}
 	indent := len(s) - len(strings.TrimLeft(s, " \t"))
 	if !loose && (indent > 3 || strings.Contains(s[:indent], "\t")) {
-		return 0, 0, "", false
+		return fence{}, false
 	}
 	s = s[indent:]
 	if len(s) < 3 || (s[0] != '`' && s[0] != '~') {
-		return 0, 0, "", false
+		return fence{}, false
 	}
 	c, n := s[0], 0
 	for n < len(s) && s[n] == c {
 		n++
 	}
 	if n < 3 {
-		return 0, 0, "", false
+		return fence{}, false
 	}
-	return c, n, s[n:], true
+	return fence{c: c, n: n, rest: s[n:], depth: depth, listed: listed}, true
 }

@@ -1352,8 +1352,8 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 | `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
 | `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
 | `docs_only` | none | `draft` only: `{allowed_paths, max_diff_lines?, max_files?, max_prs_per_day?}`, an allowlist every changed path must match, the fenced-code rule and the size caps — [Docs-only drafts](#docs-only-drafts). |
-| `public` | `false` | `draft` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). |
-| `internal_patterns_file` | none | `draft` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
+| `public` | `false` | `draft` and `shepherd` only, per repository (on each `repos` entry, or at the top in the single-repository form): the repository is public, so its pull requests, its officer branches (their names included) and their commits are scanned with `internal_patterns_file` — [Docs-only drafts](#docs-only-drafts). A shepherd's pushes are scanned only where ITS OWN block marks the repository public. |
+| `internal_patterns_file` | none | `draft` and `shepherd` only; **required** with any `public` repository and refused without one: an absolute path on muster-server's disk to the internal-details pattern file. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
 | `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. On the `draft` stage it is **pinned**: any value but `officer/` is refused at boot, because the target repositories' own checks select officer pull requests by that prefix. |
 | `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
@@ -1622,14 +1622,24 @@ block, or is a fence line itself, is refused. The fences are read from the
 **whole** file, at the comparison's merge base for removed lines and at the
 head for added ones, so a hunk that starts inside a block is judged right.
 Two readings are unioned: one close to CommonMark (at most three spaces of
-indentation, after any `>` blockquote markers) and one that takes a fence at
-any indentation (inside a list item); a line either puts in a block is in
-one. A file that cannot be read, or a changed line the file does not have,
-refuses (fail closed). ⚠ Indented (four-space) code blocks and HTML `<pre>`
+indentation, after any `>` blockquote markers and list markers such as `- `,
+`* `, `1. ` or `1) `, so `- ```sh` opens a block) and one that takes a fence at
+any indentation; a line either puts in a block is in one. A block closes only
+on a fence line at the blockquote depth that opened it and carrying no list
+marker: a `> ```` line inside an unquoted block is content, and `- ```` starts
+a new item and a new block. Both errors are resolved toward "in a block",
+since a false refusal is the safe one. A leading YAML front matter block (line
+1 `---` through the next `---`, or the end of the file) counts as a block too:
+an agent's `tools:` or a skill's `allowed-tools:` is configuration. A file that
+cannot be read, or a changed line the file does not have, refuses (fail
+closed). ⚠ Indented (four-space) code blocks and HTML `<pre>`
 are not read as code.
 
 **Public repositories.** For a repository marked `public`, muster scans the
-diff's **added** lines, its new paths, every commit's message and author and
+**branch name** of every push before forwarding it (a name is public the
+moment GitHub has it, and the pull request page keeps showing it after the
+branch is deleted, so a matching name is refused, never pushed), the diff's
+**added** lines, its new paths, every commit's message and author and
 committer identity, and the pull request's title, body and comments, with the
 patterns of `internal_patterns_file`: one RE2 expression per line, matched
 case-insensitively, blank lines and `#` comments skipped. A line that does not
@@ -1647,7 +1657,19 @@ checks the branch at once (for a private repository, a branch with no pull
 request waits for its create). A content hit deletes the branch and posts a
 notice saying the content was public until then — GitHub can still serve the
 commit by its sha — so treat it as a leak: rotate what leaked, never rewrite
-history. A comparison that cannot be read is told, not acted on.
+history. 🔴 **Fail closed**: nothing else reads such a branch again (the sweep
+walks open pull requests only), so a check that cannot run — a comparison
+GitHub will not give or truncates (300 files, 250 commits), an unreadable
+`forbidden_paths_file` or pattern file — deletes the branch as well, with a
+notice calling it a possible leak; the officer keeps its commits and pushes
+again. An unreadable `forbidden_paths_file` never stops the internal-details
+scan: a leak next to it is still found and named.
+
+A **shepherd** pushing into a pull request of a public repository is scanned
+the same way before its push lands (and again when it marks the pull request
+ready), but only when the shepherd's own `ship` block marks that repository
+`public` with an `internal_patterns_file`: muster does not read another
+officer's `public` flag. Mark every public repository a shepherd ships.
 
 ### The shepherd stage
 

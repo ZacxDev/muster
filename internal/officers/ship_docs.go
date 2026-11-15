@@ -32,8 +32,9 @@ import (
 //     muster-server's disk, never in any repository muster ships, so the
 //     patterns (which name what is internal) stay private.
 //
-// 🔴 NEITHER WIDENS ANYTHING: both only add refusals to the draft stage's,
-// and both are refused on every other stage rather than accepted and ignored.
+// 🔴 NEITHER WIDENS ANYTHING: both only add refusals. docs_only is refused on
+// every stage but draft, `public` on every stage but draft and shepherd (a
+// shepherd's pushes are scanned), rather than accepted and ignored.
 // ---------------------------------------------------------------------------
 
 // Defaults and bounds of a docs_only block. None widens: each is a cap.
@@ -238,10 +239,19 @@ func parseDocsAndPublic(s *Ship, d declaredShip) error {
 		anyPublic = anyPublic || r.Public
 	}
 	f := strings.TrimSpace(d.InternalPatternsFile)
-	if s.Stage != StageDraft {
-		for name, set := range map[string]bool{"docs_only": hasDocs, "public": anyPublic, "internal_patterns_file": f != ""} {
+	// 🔴 A SHEPHERD PUSHES INTO PULL REQUESTS of the repositories it ships, so
+	// `public` and `internal_patterns_file` are read on its stage too: its
+	// pushes are scanned before they land (officership verifyShepherdPush).
+	// docs_only stays draft-only. The scan runs only for a repository the
+	// SHEPHERD's own block marks public: an author's `public` flag is not read
+	// across officers, so a shepherd of a public repository must mark it.
+	if hasDocs && s.Stage != StageDraft {
+		return fmt.Errorf("ship: docs_only is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, s.Stage)
+	}
+	if s.Stage != StageDraft && s.Stage != StageShepherd {
+		for name, set := range map[string]bool{"public": anyPublic, "internal_patterns_file": f != ""} {
 			if set {
-				return fmt.Errorf("ship: %s is enforced by the %s stage only; stage %s would ignore it — remove it", name, StageDraft, s.Stage)
+				return fmt.Errorf("ship: %s is enforced by the %s and %s stages only; stage %s would ignore it — remove it", name, StageDraft, StageShepherd, s.Stage)
 			}
 		}
 		return nil

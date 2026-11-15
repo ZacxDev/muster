@@ -206,6 +206,27 @@ func TestAFencedCodeEditIsRefused(t *testing.T) {
 		// the real block's line prose; the strict reading must still win.
 		"a desync attempt":              {"    ```\n\ntext\n\n```\nrm x\n```\n", "    ```\n\ntext\n\n```\nrm y\n```\n", "@@ -6 +6 @@\n-rm x\n+rm y"},
 		"a line the file does not have": {readmeBase, readmeHead, "@@ -40 +40 @@\n-ghost\n+ghost2"},
+		// Round 1 finding 1: a fence opened on a list-marker line, bullet and
+		// ordered, nested in a blockquote, and a new block written with the
+		// marker on its fence lines.
+		"a fence opened on a bullet line": {"- ```sh\n  kubectl delete ns prod\n  ```\n\nprose\n", "- ```sh\n  kubectl delete ns dev\n  ```\n\nprose\n",
+			"@@ -2 +2 @@\n-  kubectl delete ns prod\n+  kubectl delete ns dev"},
+		"a fence opened on an ordered line": {"1. ```sh\n   rm x\n   ```\n", "1. ```sh\n   rm y\n   ```\n", "@@ -2 +2 @@\n-   rm x\n+   rm y"},
+		"a fence opened on a 1) line":       {"2) ~~~\n   rm x\n   ~~~\n", "2) ~~~\n   rm y\n   ~~~\n", "@@ -2 +2 @@\n-   rm x\n+   rm y"},
+		"a fence on a list line in a quote": {"> * ```\n>   rm x\n>   ```\n", "> * ```\n>   rm y\n>   ```\n", "@@ -2 +2 @@\n->   rm x\n+>   rm y"},
+		"a new block on list-marker fence lines": {"a\n", "a\n- ```sh\n  rm x\n- ```\n",
+			"@@ -1 +1,4 @@\n a\n+- ```sh\n+  rm x\n+- ```"},
+		// A list-marker fence line inside an open fence starts a new item and
+		// a new fence: it closes nothing, so the line after it is fenced.
+		"a list-marker fence line never closes": {"- ```sh\n- ```\n  rm x\n", "- ```sh\n- ```\n  rm y\n", "@@ -3 +3 @@\n-  rm x\n+  rm y"},
+		// Round 1 finding 4: a '>' line inside an open fence is content
+		// (CommonMark), so it does not close it.
+		"a quoted fence line inside a fence": {"```\n> ```\nrm x\n```\n", "```\n> ```\nrm y\n```\n", "@@ -3 +3 @@\n-rm x\n+rm y"},
+		// Round 1 finding 5: YAML front matter (an agent's tools:, a skill's
+		// allowed-tools:) is configuration, not prose.
+		"front matter":           {"---\nname: x\nallowed-tools: Read\n---\n\n# Skill\n", "---\nname: x\nallowed-tools: Bash\n---\n\n# Skill\n", "@@ -3 +3 @@\n-allowed-tools: Read\n+allowed-tools: Bash"},
+		"front matter's closing": {"---\nname: x\n---\n\n# Skill\n", "---\nname: x\n...\n\n# Skill\n", "@@ -3 +3 @@\n----\n+..."},
+		"adding front matter":    {"# Skill\n", "---\ntools: Bash\n---\n# Skill\n", "@@ -1 +1,4 @@\n+---\n+tools: Bash\n+---\n # Skill"},
 	}
 	for name, c := range refused {
 		r := docsRig(t)
@@ -227,6 +248,24 @@ func TestAFencedCodeEditIsRefused(t *testing.T) {
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -7,3 +7,3 @@\n ```\n-\n+Note.\n The end."})
 	if err := r.create(goodCreate()); err != nil {
 		t.Errorf("control: the line after the closing fence was refused: %v", err)
+	}
+	// Controls for the list-marker, container and front-matter readings: prose
+	// right after each closes, a list item that holds no fence, and a '---'
+	// thematic break that is not on line 1.
+	for name, c := range map[string]struct{ base, head, patch string }{
+		"prose after a list item's fence": {"- ```sh\n  rm x\n  ```\n\nThe end.\n", "- ```sh\n  rm x\n  ```\n\nThe finish.\n",
+			"@@ -5 +5 @@\n-The end.\n+The finish."},
+		"a list item with no fence":      {"- step one\n- step two\n", "- step one\n- step 2\n", "@@ -2 +2 @@\n-- step two\n+- step 2"},
+		"prose after a quoted fence":     {"> ```\n> rm x\n> ```\n\nThe end.\n", "> ```\n> rm x\n> ```\n\nThe finish.\n", "@@ -5 +5 @@\n-The end.\n+The finish."},
+		"prose after front matter":       {"---\nname: x\n---\n\n# Skill\n\nThe end.\n", "---\nname: x\n---\n\n# Skill\n\nThe finish.\n", "@@ -7 +7 @@\n-The end.\n+The finish."},
+		"a thematic break not on line 1": {"# T\n\n---\n\nThe end.\n", "# T\n\n---\n\nThe finish.\n", "@@ -5 +5 @@\n-The end.\n+The finish."},
+	} {
+		r = docsRig(t)
+		r.content("README.md", c.base, c.head)
+		r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: c.patch})
+		if err := r.create(goodCreate()); err != nil {
+			t.Errorf("control: %s was refused: %v", name, err)
+		}
 	}
 	// Fail closed: the head cannot be read.
 	r = docsRig(t)
@@ -393,7 +432,9 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 	if err := os.Remove(r.g.Ship.InternalPatternsFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.create(goodCreate()); !isConflict(err) || !strings.Contains(err.Error(), "could not") {
+	// The branch name is the first thing scanned (allowedRef), so the refusal
+	// may be its 403 rather than the content's 409: refused either way.
+	if err := r.create(goodCreate()); !(isConflict(err) || isGateRefusal(err)) || !strings.Contains(err.Error(), "could not") {
 		t.Errorf("an unreadable pattern file: err = %v, want refused", err)
 	}
 }
@@ -444,23 +485,168 @@ func TestAPushToAPublicBranchWithNoPullRequestIsCheckedAndDeleted(t *testing.T) 
 	}
 }
 
+// TestAPublicBranchNameIsScanned (round 1 finding 2): a branch name goes
+// public on push, and the pull request page keeps showing it after the branch
+// is deleted, so a public repository's ref is scanned BEFORE the push is
+// forwarded: a name matching a pattern is a 403 naming the line, never the
+// text, and nothing is forwarded; an unreadable pattern file refuses too.
+// Controls: a clean name in the public repository, and the same name in a
+// repository not marked public.
+func TestAPublicBranchNameIsScanned(t *testing.T) {
+	leaky := "refs/heads/bot/engineering-example-web/17-db.corp.example"
+	admit := func(r *draftRig, ref string) error {
+		body := pkt(oidA+" "+oidB+" "+ref+"\x00report-status\n") + "0000"
+		_, err := r.g.Admit(httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(body)), "github.com", dInfra+".git/git-receive-pack")
+		return err
+	}
+	r := publicRig(t)
+	err := admit(r, leaky)
+	if !isGateRefusal(err) || !strings.Contains(err.Error(), "internal-details pattern line 2") || strings.Contains(err.Error(), "corp.example") {
+		t.Fatalf("a leaky branch name in a public repository: err = %v, want a 403 naming line 2 and not the text", err)
+	}
+	r = publicRig(t)
+	if err := os.Remove(r.g.Ship.InternalPatternsFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := admit(r, "refs/heads/"+dBranch); !isGateRefusal(err) || !strings.Contains(err.Error(), "could not be scanned") {
+		t.Fatalf("an unreadable pattern file: err = %v, want a 403", err)
+	}
+	if err := admit(publicRig(t), "refs/heads/"+dBranch); err != nil {
+		t.Fatalf("control: a clean branch name in a public repository: %v", err)
+	}
+	r = publicRig(t)
+	r.g.Ship.Repos[1].Public = false
+	if err := admit(r, leaky); err != nil {
+		t.Fatalf("control: the same name in a private repository: %v", err)
+	}
+}
+
+// TestAPublicPushWithNoPullRequestFailsClosed (round 1 finding 3): a push to
+// a public repository's branch with no pull request open from it is checked
+// nowhere else (the sweep walks open pull requests only), so a check that
+// cannot run deletes the officer's branch: a comparison GitHub will not give
+// (a compare error, or a list over its 300-file or 250-commit limit), and an
+// unreadable forbidden_paths_file — which no longer stops the public scan, so
+// a leak beside it is still named. Control: a readable, clean push is kept.
+func TestAPublicPushWithNoPullRequestFailsClosed(t *testing.T) {
+	leak := File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"}
+	for name, c := range map[string]struct {
+		edit        func(r *draftRig)
+		wantDeleted bool
+		says        string
+	}{
+		"no comparison": {func(r *draftRig) { delete(r.infra.compares, "trunk..."+oidB) }, true, "could not be checked"},
+		"an unreadable forbidden list": {func(r *draftRig) {
+			r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile // set, no such file
+		}, true, "could not be read"},
+		"an unreadable list beside a leak": {func(r *draftRig) {
+			r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
+			r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
+			r.docsFiles(leak)
+		}, true, "internal-details pattern line 2"},
+		"clean (control)": {func(*draftRig) {}, false, ""},
+	} {
+		r := publicRig(t)
+		r.infra.all = nil // no pull request from the branch
+		r.infra.branches[dBranch] = oidB
+		c.edit(r)
+		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
+		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dBranch
+		if deleted != c.wantDeleted {
+			t.Errorf("%s: deleted %v, want deleted=%v", name, r.infra.deleted, c.wantDeleted)
+		}
+		if c.wantDeleted && (len(r.notices) != 1 || !strings.Contains(r.notices[0].Summary, c.says) || !strings.Contains(r.notices[0].Summary, "deleted the branch")) {
+			t.Errorf("%s: notices %+v, want one saying %q and that the branch was deleted", name, r.notices, c.says)
+		}
+		if !c.wantDeleted && len(r.notices) != 0 {
+			t.Errorf("%s: notices %+v, want none", name, r.notices)
+		}
+	}
+}
+
+// TestAnUnreadableForbiddenListStillRunsThePublicScan (round 1 finding 3,
+// the open pull request half): the list file cannot be read and an added line
+// leaks; the refusal names the leak's pattern line, not only the list.
+func TestAnUnreadableForbiddenListStillRunsThePublicScan(t *testing.T) {
+	r := publicRig(t)
+	r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
+	r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
+	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"})
+	err := r.create(goodCreate())
+	if !isConflict(err) || !strings.Contains(err.Error(), dListFile) || !strings.Contains(err.Error(), "internal-details pattern line 2") {
+		t.Fatalf("err = %v, want a 409 naming the list file AND the pattern line", err)
+	}
+	// A push into the open pull request: the leak is a content hit, so the
+	// pull request is closed AND its branch deleted. Control: the unreadable
+	// list alone closes it and keeps the branch (nothing wrong is known).
+	for _, leaks := range []bool{true, false} {
+		r := publicRig(t)
+		r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
+		r.infra.all = []PR{r.infra.prs[dPR]}
+		r.infra.listed = r.infra.all
+		r.infra.branches[dBranch] = oidB
+		if leaks {
+			r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
+			r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"})
+		}
+		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
+		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dBranch
+		if len(r.infra.closed) != 1 || deleted != leaks {
+			t.Errorf("leaks=%v: closed %v, deleted %v; want closed, branch deleted=%v", leaks, r.infra.closed, r.infra.deleted, leaks)
+		}
+	}
+}
+
+// TestAShepherdPushIntoAPublicRepositoryIsScanned (round 1 finding 6): a
+// shepherd whose repository is marked public scans its push before it lands;
+// a leak in an added line is "ng" and never moves the branch. Control: the
+// same push in a repository not marked public lands.
+func TestAShepherdPushIntoAPublicRepositoryIsScanned(t *testing.T) {
+	for _, public := range []bool{true, false} {
+		r := newShepRig()
+		p := filepath.Join(t.TempDir(), "internal-patterns.txt")
+		if err := os.WriteFile(p, []byte(internalPatterns), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r.g.Ship.InternalPatternsFile = p
+		r.g.Ship.Repos[0].Public = public
+		out, err := r.push()
+		if err != nil {
+			t.Fatal(err)
+		}
+		scratch, _ := forwarded(t, out)
+		cmp := r.gh.compares["trunk..."+oidB]
+		cmp.Files = []File{{Path: "clusters/prod/apps/x/notes.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+host: db.corp.example"}}
+		r.gh.compares["trunk..."+oidB] = cmp
+		got := answer(t, out, stored(scratch))
+		if public && (len(r.gh.updated) != 0 || !strings.Contains(got, "ng refs/heads/"+sBranch) || !strings.Contains(got, "internal-details pattern line 2") || strings.Contains(got, "corp.example")) {
+			t.Errorf("public: updated %v, told %q; want ng naming line 2, branch unmoved", r.gh.updated, got)
+		}
+		if !public && (len(r.gh.updated) != 1 || !strings.Contains(got, "ok refs/heads/"+sBranch)) {
+			t.Errorf("control (private): updated %v, told %q; want it landed", r.gh.updated, got)
+		}
+	}
+}
+
 // TestAnUnreadablePatternFileFailsClosedOnAPush: the pattern file goes away
-// after boot and a push lands in an open pull request of a public
-// repository: the re-check cannot scan it, so the pull request is closed
-// (fail closed) and its branch kept (nothing wrong is known about it). The
-// title and body are not read here, so only the diff scan can refuse.
+// after the push was admitted (its branch name scanned) and before it lands in
+// an open pull request of a public repository: the re-check cannot scan it,
+// so the pull request is closed (fail closed) and its branch kept (nothing
+// wrong is known about it). The title and body are not read here, so only the
+// diff scan can refuse.
 func TestAnUnreadablePatternFileFailsClosedOnAPush(t *testing.T) {
 	for _, gone := range []bool{false, true} {
 		r := publicRig(t)
 		r.infra.all = []PR{r.infra.prs[dPR]}
 		r.infra.listed = r.infra.all
 		r.infra.branches[dBranch] = oidB
+		after := r.mustPush(t, dInfra, "refs/heads/"+dBranch)
 		if gone {
 			if err := os.Remove(r.g.Ship.InternalPatternsFile); err != nil {
 				t.Fatal(err)
 			}
 		}
-		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
+		after(context.Background(), applied("refs/heads/"+dBranch))
 		if gone && (len(r.infra.closed) != 1 || len(r.infra.deleted) != 0 || len(r.notices) != 1 ||
 			!strings.Contains(r.notices[0].Summary, "internal-details scan could not run")) {
 			t.Errorf("pattern file gone: closed %v, deleted %v, notices %+v; want closed, kept, one notice", r.infra.closed, r.infra.deleted, r.notices)

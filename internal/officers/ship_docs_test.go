@@ -158,9 +158,62 @@ func TestDocsOnlyAndPublicAreDraftOnly(t *testing.T) {
 			m[key] = patternFile(t, "x\n")
 		}
 		_, err := parseShip(t, m, shipEnv(t))
-		if err == nil || !strings.Contains(err.Error(), key+" is enforced by the draft stage only") {
+		want := key + " is enforced by the draft and shepherd stages only"
+		if key == "docs_only" {
+			want = key + " is enforced by the draft stage only"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s on stage %v: err = %v", key, m["stage"], err)
 		}
+	}
+}
+
+// TestAShepherdMayMarkARepositoryPublic (round 1 finding 6): a shepherd
+// pushes into pull requests of the repositories it ships, so `public` and
+// `internal_patterns_file` are read on the shepherd stage too and its pushes
+// are scanned; docs_only stays draft-only, and public still needs a pattern
+// file. Control: shepShip without either parses with no public repository.
+func TestAShepherdMayMarkARepositoryPublic(t *testing.T) {
+	m := shepShip()
+	m["repos"].([]any)[0].(map[string]any)["public"] = true
+	m["internal_patterns_file"] = patternFile(t, "\\.corp\\.example\\b\n")
+	list, err := parseShep(t, shepAuthorDecl(), shepDecl(m))
+	if err != nil {
+		t.Fatalf("a public shepherd repository: %v", err)
+	}
+	s := byID(t, list, shepID).Ship
+	if !s.Repos[0].Public {
+		t.Fatal("the shepherd's repository is not read as public")
+	}
+	if pats, err := s.InternalPatterns(); err != nil || len(pats) != 1 {
+		t.Fatalf("patterns = %+v, %v", pats, err)
+	}
+	delete(m, "internal_patterns_file")
+	if _, err := parseShep(t, shepAuthorDecl(), shepDecl(m)); err == nil || !strings.Contains(err.Error(), "needs internal_patterns_file") {
+		t.Fatalf("public without patterns on a shepherd: err = %v", err)
+	}
+	m = shepShip()
+	m["docs_only"] = map[string]any{"allowed_paths": []string{"**/*.md"}}
+	if _, err := parseShep(t, shepAuthorDecl(), shepDecl(m)); err == nil || !strings.Contains(err.Error(), "docs_only is enforced by the draft stage only") {
+		t.Fatalf("docs_only on a shepherd: err = %v", err)
+	}
+	list, err = parseShep(t, shepAuthorDecl(), shepDecl(shepShip()))
+	if err != nil || byID(t, list, shepID).Ship.Repos[0].Public {
+		t.Fatalf("control: %v", err)
+	}
+}
+
+// TestAPublicKickoffNamesTheBranch (round 1 finding 2): the PUBLIC note lists
+// the branch name among what is scanned, since a branch name is public too.
+func TestAPublicKickoffNamesTheBranch(t *testing.T) {
+	list, err := parseDecl(t, draftDecl(docsShip(t)), shipEnv(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := officers.KickoffText(list[0], 1)
+	const want = "into a branch name, a diff, a commit message, your git author identity, a title, a body or a comment there: muster scans all of them, refuses a push whose branch name matches, deletes a pushed branch whose content matches"
+	if !strings.Contains(got, want) {
+		t.Fatalf("the PUBLIC note does not name the branch:\n%s", got)
 	}
 }
 

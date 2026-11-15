@@ -413,6 +413,14 @@ func (g *PushGate) allowedRef(sr officers.ShipRepo, ref string) error {
 				sr.BranchPrefix, officers.Slug(g.OfficerID))
 		}
 	}
+	// 🔴 A PUBLIC REPOSITORY'S BRANCH NAME IS PUBLIC THE MOMENT GITHUB HAS IT,
+	// and the pull request page keeps showing it after the branch is deleted,
+	// so it is scanned BEFORE the push is forwarded: no after-the-fact check
+	// can take it back. The refusal names the pattern's line, never the name
+	// (which is the leak). Patterns that cannot be read refuse.
+	if why := g.publicTextWhy(sr, "the branch name", branch); why != "" {
+		return refused("a push to a branch of %s: %s", sr.Repo, why)
+	}
 	return nil
 }
 

@@ -747,9 +747,10 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 		return out, err
 	}
 	pass(GateChecks)
-	// checkWall reads only gh (no PushGate state): the same wall a push passes
-	// before it lands, now at the head being marked ready.
-	v := (&PushGate{Repo: sr.Repo}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
+	// checkWall reads only gh and the shepherd's ship (for a public
+	// repository's internal-details scan): the same wall a push passes before
+	// it lands, now at the head being marked ready.
+	v := (&PushGate{Repo: g.Shepherd.Repo, Ship: sp}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
 	switch {
 	case v.Err != nil:
 		return out, refuse(GateWall, "%v, so #%d's head %s cannot be checked against the wall", v.Err, n, short(pr.HeadSHA))
