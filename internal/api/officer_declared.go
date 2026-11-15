@@ -260,9 +260,12 @@ func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (ru
 				return officers.RuntimeHost, h.Host, ""
 			}
 		}
-		s.officerRT.declMu.Lock()
-		prev := s.officerRT.autoHost[d.InstanceSlug]
-		s.officerRT.declMu.Unlock()
+		prev := ""
+		if rt := s.officerRT; rt != nil {
+			rt.declMu.Lock()
+			prev = rt.autoHost[d.InstanceSlug]
+			rt.declMu.Unlock()
+		}
 		if prev != "" && slices.ContainsFunc(opts, func(h hostOption) bool { return h.Host == prev }) {
 			return officers.RuntimeHost, prev, ""
 		}
@@ -377,26 +380,10 @@ func (s *Server) runtimeOptionsFor(ctx context.Context, owner int64, repo string
 	if out.Hosts == nil {
 		out.Hosts = []hostOption{}
 	}
-	switch {
-	case out.Pod.Available:
-		out.Auto.Runtime = officers.RuntimePod
-	case out.HostReason != "":
-		out.Auto.Reason = "pods: " + out.Pod.Reason + "; hosts: " + out.HostReason
-	default:
-		for _, h := range out.Hosts {
-			if h.Qualifies {
-				out.Auto.Runtime, out.Auto.Host = officers.RuntimeHost, h.Host
-				break
-			}
-		}
-		if out.Auto.Runtime == "" {
-			why := "none of your hosts qualifies"
-			if len(out.Hosts) == 0 {
-				why = "you have no mirrored host"
-			}
-			out.Auto.Reason = "pods: " + out.Pod.Reason + "; hosts: " + why
-		}
-	}
+	// 🔴 THE ONE AUTO RULE: what the wake loop's roster load resolves a stored
+	// "auto" to (resolveRuntime), asked of a probe declaration of repo.
+	probe := officers.Declaration{ID: "probe:probe", Owner: owner, Runtime: officers.RuntimeAuto, Repo: strings.TrimSpace(repo), InstanceSlug: "probe-probe"}
+	out.Auto.Runtime, out.Auto.Host, out.Auto.Reason = s.resolveRuntime(ctx, probe)
 	return out
 }
 

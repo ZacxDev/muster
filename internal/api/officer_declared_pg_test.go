@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -573,7 +574,7 @@ func TestRuntimeAutoDetection(t *testing.T) {
 		{"provisioner only", declRigOpts{pods: true}, true, officers.RuntimePod, "", []string{"no mirror hub"}},
 		{"a qualifying host only", declRigOpts{hosts: []mirror.HostView{noClose, good}}, false, officers.RuntimeHost, hostOffHost, []string{"no agent provisioner", "does not close windows"}},
 		{"both", declRigOpts{pods: true, hosts: []mirror.HostView{good}}, true, officers.RuntimePod, "", nil},
-		{"neither", declRigOpts{hosts: []mirror.HostView{noClose}}, false, "", "", []string{"no agent provisioner", "none of your hosts qualifies", "does not close windows"}},
+		{"neither", declRigOpts{hosts: []mirror.HostView{noClose}}, false, "", "", []string{"no agent provisioner", "none of its owner's hosts qualifies", "does not close windows"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newDeclRigOn(t, f, c.opts)
@@ -711,4 +712,58 @@ func TestTheRegistrySwapIsRaceFreeUnderTheWakeLoop(t *testing.T) {
 	if n := len(r.s.officerRT.reg.All()); n != 7 {
 		t.Fatalf("after 15 creates and 8 deletes the registry holds %d officers, want 7", n)
 	}
+}
+
+// TestTheWakeLoopRunsDeclaredOfficersWithNoRestart: the real wake loop (Run)
+// over two owners' scout:main, created through the API after the loop has
+// started: its refresh reads them, each gets its own pass (its own state, by
+// key) and starts its own instance; a pause then stops owner 1's within a
+// tick or two (Reconciler.Due), not a poll interval later.
+func TestTheWakeLoopRunsDeclaredOfficersWithNoRestart(t *testing.T) {
+	r := newDeclRig(t, declRigOpts{pods: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := r.s.officerRT.rec
+	go rec.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		<-rec.Done()
+	})
+	if c := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); c.Code != http.StatusCreated {
+		t.Fatalf("owner 1's create: %d %s", c.Code, c.Body.String())
+	}
+	if c := r.as(declOther, r.s.personalDeclared(r.s.declaredCreate), http.MethodPost, "/api/officers/declared", declPodBody, nil); c.Code != http.StatusCreated {
+		t.Fatalf("the other owner's create: %d %s", c.Code, c.Body.String())
+	}
+	o1, o2 := r.officerFor(t, 1, declID), r.officerFor(t, declOther, declID)
+	r.enqueue(t, 1, declID, "mine")
+	r.enqueue(t, declOther, declID, "theirs")
+	waitAgent := func(name string) agents.Agent {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if a, ok := r.agentNamed(name); ok {
+				return a
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("the wake loop never started %s\n%s", name, r.logs)
+		return agents.Agent{}
+	}
+	a1 := waitAgent(o1.InstanceName(1))
+	waitAgent(o2.InstanceName(1))
+	officerWaitFor(t, func() bool { d, _, _ := r.prov.counts(); return d == 2 })
+	if c := r.hook(t, http.MethodPost, "/api/officers/declared/"+declID+"/pause", ""); c.Code != http.StatusOK {
+		t.Fatalf("pause: %d %s", c.Code, c.Body.String())
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		r.prov.mu.Lock()
+		stopped := slices.Contains(r.prov.stops, a1.ID)
+		r.prov.mu.Unlock()
+		if stopped {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("a paused officer's instance was not stopped within a few ticks\n%s", r.logs)
 }
