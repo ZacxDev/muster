@@ -2569,7 +2569,6 @@ func needsYouLiveCount(c *api.ChiefNudges) int {
 	return n
 }
 
-// declaresKube reports whether any declared officer has a `kube` block.
 // withInternalHTTP presents each internal_http connector through store, to
 // admins' agents ONLY (authz.IsAdmin: the service is the deployment's, and it
 // reaches inside the network), logging one boot line per connector.
@@ -2583,6 +2582,7 @@ func withInternalHTTP(store connectors.Store, list []*connectors.InternalHTTP, l
 	return store
 }
 
+// declaresKube reports whether any declared officer has a `kube` block.
 func declaresKube(list []officers.Officer) bool {
 	for _, o := range list {
 		if o.Kube != nil {
