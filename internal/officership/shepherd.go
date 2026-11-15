@@ -483,6 +483,12 @@ func (g *PushGate) verifyAndLand(ctx context.Context, sr officers.ShipRepo, sp *
 	if tell {
 		summary := fmt.Sprintf("officer %s: muster refused a push to %s (#%d) in %s, %s -> %s, before it landed: %s; the branch was not moved",
 			g.OfficerID, sp.branch, sp.pr.Number, sr.Repo, shortSHA(sp.cmd.oldOID), shortSHA(sp.cmd.newOID), why)
+		// 🔴 A REFUSED PUSH WAS STILL STORED: GitHub holds its objects at the
+		// scratch ref (deleted after this) and can serve its commits by sha, so
+		// in a public repository it was public until then.
+		if sr.Public {
+			summary += fmt.Sprintf("; this is a public repository and GitHub stored the push at %s before muster refused it: muster deletes the ref, but GitHub can still serve its commits by sha, so treat it as a leak (rotate what leaked, never rewrite history)", sp.scratch)
+		}
 		if len(paths) > officers.MaxNoticePaths {
 			summary += fmt.Sprintf(" (+%d more paths)", len(paths)-officers.MaxNoticePaths)
 			paths = paths[:officers.MaxNoticePaths]
@@ -634,6 +640,9 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if redact.HasSecretValue(body) {
 				return g.contentRefusal(r.Context(), sr, n, pr.HeadSHA, pr.HeadRef, nil, "the comment has a credential-shaped value")
 			}
+			if why := g.publicTextWhy(sr, "the comment", body); why != "" {
+				return g.contentRefusal(r.Context(), sr, n, pr.HeadSHA, pr.HeadRef, nil, why)
+			}
 			if line, ok := commandLine(body); ok {
 				return shepherdRefused("a comment on #%d with the line %q, which reads as a command to a bot or a slash command (a line starting with / or @): "+
 					"comment automation in the repository could act on it; reword it so no line starts with / or @", n, truncate(line, 80))
@@ -747,9 +756,10 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 		return out, err
 	}
 	pass(GateChecks)
-	// checkWall reads only gh (no PushGate state): the same wall a push passes
-	// before it lands, now at the head being marked ready.
-	v := (&PushGate{Repo: sr.Repo}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
+	// checkWall reads only gh and the shepherd's ship (for a public
+	// repository's internal-details scan): the same wall a push passes before
+	// it lands, now at the head being marked ready.
+	v := (&PushGate{Repo: g.Shepherd.Repo, Ship: sp}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
 	switch {
 	case v.Err != nil:
 		return out, refuse(GateWall, "%v, so #%d's head %s cannot be checked against the wall", v.Err, n, short(pr.HeadSHA))

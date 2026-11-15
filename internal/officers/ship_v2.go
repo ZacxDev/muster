@@ -93,6 +93,9 @@ type ShipRepo struct {
 	// forbidden globs, one per line; the draft gate reads it from the pull
 	// request's TARGET branch at every check (draftgate.go).
 	ForbiddenPathsFile string
+	// Public marks a public repository: the draft gate scans its pull
+	// requests with the officer's internal-details patterns (ship_docs.go).
+	Public bool
 }
 
 // RepoList is the officer's ship repositories: Repos when parsed, else the one
@@ -153,12 +156,13 @@ type declaredShipRepo struct {
 	} `json:"github_app"`
 	ForbiddenPaths     []string `json:"forbidden_paths"`
 	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
+	Public             bool     `json:"public"`
 }
 
 // parseShipRepo validates one repository's base, prefix, App and forbidden
 // paths. what names it in errors.
 func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
-	r := ShipRepo{Repo: strings.TrimSpace(d.Repo), Base: strings.TrimSpace(d.Base), BranchPrefix: strings.TrimSpace(d.BranchPrefix)}
+	r := ShipRepo{Repo: strings.TrimSpace(d.Repo), Base: strings.TrimSpace(d.Base), BranchPrefix: strings.TrimSpace(d.BranchPrefix), Public: d.Public}
 	if !github.ValidRepoName(r.Repo) {
 		return ShipRepo{}, fmt.Errorf("ship: %srepo %q is not a GitHub owner/name", what, d.Repo)
 	}
@@ -227,7 +231,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s and %s stages only; stage %s would ignore it — remove it", StageDraft, StageShepherd, stage)
 		}
 		r, err := parseShipRepo("", declaredShipRepo{Repo: repo, Base: d.Base, BranchPrefix: d.BranchPrefix, GitHubApp: d.GitHubApp,
-			ForbiddenPaths: d.ForbiddenPaths, ForbiddenPathsFile: d.ForbiddenPathsFile})
+			ForbiddenPaths: d.ForbiddenPaths, ForbiddenPathsFile: d.ForbiddenPathsFile, Public: d.Public})
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +241,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		return []ShipRepo{r}, nil
 	}
 	for name, set := range map[string]bool{"base": strings.TrimSpace(d.Base) != "", "branch_prefix": strings.TrimSpace(d.BranchPrefix) != "",
-		"github_app": d.GitHubApp != nil, "forbidden_paths": d.ForbiddenPaths != nil, "forbidden_paths_file": d.ForbiddenPathsFile != ""} {
+		"github_app": d.GitHubApp != nil, "forbidden_paths": d.ForbiddenPaths != nil, "forbidden_paths_file": d.ForbiddenPathsFile != "", "public": d.Public} {
 		if set {
 			return nil, fmt.Errorf("ship: with repos, set %s on each entry; remove the top-level %s", name, name)
 		}
@@ -246,7 +250,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 	dec.DisallowUnknownFields()
 	var list []declaredShipRepo
 	if err := dec.Decode(&list); err != nil {
-		return nil, fmt.Errorf(`ship: repos must be a list of {"repo", "base"?, "branch_prefix"?, "github_app", "forbidden_paths"?}: %v`, err)
+		return nil, fmt.Errorf(`ship: repos must be a list of {"repo", "base"?, "branch_prefix"?, "github_app", "forbidden_paths"?, "public"?}: %v`, err)
 	}
 	if n := len(list); n < 1 || n > MaxShipRepos {
 		return nil, fmt.Errorf("ship: repos lists %d repositories; 1..%d", n, MaxShipRepos)
