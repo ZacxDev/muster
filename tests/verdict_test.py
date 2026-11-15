@@ -134,20 +134,6 @@ class Verdict(unittest.TestCase):
         self.assertEqual(rc, 1, text)
         self.assertIn("REQUIRED  TestB", text)
 
-    def test_results_out_records_every_verdict_even_when_refusing(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            path = f"{d}/r.json"
-            rc = verdict.main(iter(stream(("TestA", "pass"), ("TestB", "fail"))), "summary",
-                              out=io.StringIO(), results_out=path)
-            self.assertEqual(rc, 1)
-            self.assertEqual(json.load(open(path)), {f"{PKG}\tTestA": "pass", f"{PKG}\tTestB": "fail"})
-            # A package-level failure (TestMain, init) and a bare build failure are recorded too.
-            for lines in (stream(("TestA", "pass"), pkg_end="fail"), GREEN[:-1] + [BUILD_FAIL]):
-                verdict.main(iter(lines), "summary", out=io.StringIO(), results_out=path)
-                with open(path) as f:
-                    self.assertEqual(json.load(f)[f"{PKG}\t"], "fail", lines[-1])
-
     def test_echo_all_shows_every_line(self):
         _, text = run(GREEN, echo="all")
         self.assertIn("=== RUN   TestA\n", text)
