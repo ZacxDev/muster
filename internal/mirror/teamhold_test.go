@@ -266,7 +266,8 @@ func TestATeamHostReconnectingWhileOfflineIsTakenAtOnce(t *testing.T) {
 // TestAHeldMachineIsToldItIsHeld: Service.HeldHere — what `muster doctor`'s
 // this-host check asks — is true for the machine whose attempt is held (it
 // shares the live host's token, so the token alone says "connected"), and
-// false for the live machine itself.
+// false for the live machine itself, for a machine with no held attempt, and
+// for a held machine that shares the live one's address (indistinguishable).
 func TestAHeldMachineIsToldItIsHeld(t *testing.T) {
 	const team = 900247
 	r := newPeerRig(t)
@@ -284,5 +285,16 @@ func TestAHeldMachineIsToldItIsHeld(t *testing.T) {
 	}
 	if ask(liveAddr) {
 		t.Fatal("the LIVE machine is told it is held")
+	}
+	if ask(movedAddr) {
+		t.Fatal("a machine with NO held attempt is told it is held")
+	}
+	// A second machine behind the live one's address (one proxy): held, but
+	// this muster cannot tell the two apart, so neither is told it is held.
+	if err := r.connectFrom(t, tok, liveAddr, hello("build-05", true, "s")); !isHeld(err) {
+		t.Fatalf("a second machine at the live address = %v; want it held", err)
+	}
+	if ask(liveAddr) {
+		t.Fatal("the LIVE machine is told it is held because another machine shares its address")
 	}
 }
