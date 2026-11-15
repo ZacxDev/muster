@@ -1,6 +1,7 @@
 package modulegate
 
 import (
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -85,6 +86,12 @@ func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 // itself excluded (go list -deps, by each package's Standard field).
 func nonStdDepsOf(t *testing.T, root, pattern string) []string {
 	t.Helper()
+	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE: what the `go` subprocess below reads
+	// (every package of the module) is invisible to the cache, which keys a result
+	// only on the test binary and the files and variables the test process itself
+	// touched. ci.yml gives MUSTER_TEST_NOCACHE a per-run value, and reading it
+	// puts that value in the key (cmd/go: "env" lines of the test log).
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
 	cmd := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", pattern)
 	cmd.Dir = root
 	out, err := cmd.Output()

@@ -160,6 +160,12 @@ func TestTheMachineMessageDoorStartsItsTurnThroughGatewayTurn(t *testing.T) {
 // position of each call.
 func scanGatewayTurns(t *testing.T, root string) map[string][]string {
 	t.Helper()
+	// 🔴 NEVER REPLAYED FROM GO'S TEST CACHE: what the `go` subprocess below reads
+	// (every package of the module) is invisible to the cache, which keys a result
+	// only on the test binary and the files and variables the test process itself
+	// touched. ci.yml gives MUSTER_TEST_NOCACHE a per-run value, and reading it
+	// puts that value in the key (cmd/go: "env" lines of the test log).
+	_ = os.Getenv("MUSTER_TEST_NOCACHE")
 	cmd := exec.Command("go", "list", "-export", "-deps", "-json=ImportPath,Dir,GoFiles,Export,Module", "./...")
 	cmd.Dir = root
 	var stderr bytes.Buffer
