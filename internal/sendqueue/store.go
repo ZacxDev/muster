@@ -723,6 +723,20 @@ func (s *PGStore) CancelQueuedBy(ctx context.Context, team, user int64, now time
 	return int(n), nil
 }
 
+// CancelUser cancels everything user still has queued, saying why (detail):
+// their own rows (CancelOwner) and what they queued into every team's windows
+// (CancelQueuedBy, team 0). THE one call a disable and a sign-out everywhere
+// make — the server's and the CLI's — so no path cancels half. Under the
+// system scope.
+func (s *PGStore) CancelUser(ctx context.Context, user int64, now time.Time, detail string) (int, error) {
+	n, err := s.CancelOwner(ctx, user, now, detail)
+	if err != nil {
+		return 0, err
+	}
+	m, err := s.CancelQueuedBy(ctx, 0, user, now, detail)
+	return n + m, err
+}
+
 // clampDetail is detail cut to MaxDetail on a character boundary.
 func clampDetail(detail string) string {
 	if len(detail) > MaxDetail {

@@ -297,7 +297,8 @@ team's, and the list says "Queued by ben." on a message someone else queued.
   enabled, still an operator or a manager of the team, and not signed out of
   every session since. A message that fails is not sent ("Not sent: the
   person who queued it is no longer an operator of the team that owns this
-  session."). A message the team queued as itself is the team's own.
+  session."). A message queued by the team itself, with no person behind
+  it, is not sent either: nothing queues one yet.
 - **Leaving cancels it.** Removing someone from the team, or making them a
   viewer, cancels what they queued into the team's windows at once; a
   disable or a sign-out everywhere cancels it on every team.

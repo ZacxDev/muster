@@ -1192,6 +1192,9 @@ const (
 	// owner nor — the owner being a team — a member of it. No path writes
 	// one (row-level security's insert arm); refused, failing closed.
 	SendQueueQueuerNotMember = "Not sent: it was queued by someone who is not its owner, nor a member of the team that owns it."
+	// SendQueueTeamQueued: a team's row queued by the team itself (no
+	// person). Refused until a team-acting writer exists, with its own check.
+	SendQueueTeamQueued = "Not sent: it was queued by the team itself, not by a member, and muster sends a team's queued message only for a member who is still its operator."
 )
 
 // sendQueueOwnerRefusal is why it may no longer be sent, "" when it may —
@@ -1204,32 +1207,29 @@ const (
 //   - A TEAM's row queued by a member: the member's account checks, and then
 //     the member is still an operator or a manager of that team
 //     (teamOperatorNow: a fresh read of their role, an enabled person).
-//   - A TEAM's own row (the queuer is the team: a row the team queued acting
-//     as itself, such as a team chief's forward): the team's own — no person
-//     check applies, as none applies to a person's own row beyond their own.
+//   - 🔴 A TEAM's row queued by the TEAM ITSELF (queued_by = the team, or no
+//     person): REFUSED (SendQueueTeamQueued). No path queues one today — the
+//     POST route queues as the member, and the team-acting writers (a team
+//     chief's host forward, a route reply) are refused for a team elsewhere
+//     — so a pass here would be open for whichever writer comes first, with
+//     no check behind it. That writer's own change opens it, with its test.
 //
 // 🔴 IT FAILS CLOSED: an owner whose kind cannot be read, or a queuer who is
 // neither the owner nor a member of the owning team, sends nothing.
 func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) string {
-	who := it.Queuer()
-	if who == it.Owner {
-		team, err := s.sendQueueOwnerIsTeam(ctx, it.Owner)
-		switch {
-		case err != nil:
-			s.logger.Printf("sendqueue: message %d: read owner %d's kind: %v", it.ID, it.Owner, err)
-			return SendQueueOwnerUnchecked
-		case team:
-			return ""
-		}
-		return s.sendQueueAccountRefusal(ctx, it, it.Owner)
-	}
 	team, err := s.sendQueueOwnerIsTeam(ctx, it.Owner)
-	switch {
-	case err != nil:
+	if err != nil {
 		s.logger.Printf("sendqueue: message %d: read owner %d's kind: %v", it.ID, it.Owner, err)
 		return SendQueueOwnerUnchecked
+	}
+	who := it.Queuer()
+	switch {
+	case !team && who == it.Owner:
+		return s.sendQueueAccountRefusal(ctx, it, it.Owner)
 	case !team:
 		return SendQueueQueuerNotMember
+	case who == it.Owner:
+		return SendQueueTeamQueued
 	}
 	if why := s.sendQueueAccountRefusal(ctx, it, who); why != "" {
 		return why
@@ -1321,20 +1321,13 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 	if s.ext.SendQueue == nil {
 		return
 	}
-	n, err := s.ext.SendQueue.CancelOwner(ctx, uid, s.sendQueueNow(), detail)
+	n, err := s.ext.SendQueue.CancelUser(ctx, uid, s.sendQueueNow(), detail)
 	if err != nil {
 		// The cancel is not what stops them: the delivery re-checks the
 		// account (sendQueueOwnerRefusal) against the recorded disable or
 		// sign-out.
 		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v (left queued; the delivery's account check refuses them)", uid, err)
 		return
-	}
-	// ...and what they queued into their teams' windows (team sharing 2b.4):
-	// those rows are the TEAM's, so CancelOwner does not reach them.
-	if m, err := s.ext.SendQueue.CancelQueuedBy(ctx, 0, uid, s.sendQueueNow(), detail); err != nil {
-		s.logger.Printf("sendqueue: cancel user %d's queued messages in their teams' windows: %v (left queued; the delivery's account check refuses them)", uid, err)
-	} else {
-		n += m
 	}
 	if n > 0 {
 		s.logger.Printf("sendqueue: cancelled %d queued message(s) of user %d (%s)", n, uid, detail)

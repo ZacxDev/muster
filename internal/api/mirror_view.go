@@ -296,7 +296,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still
 	// running across the reconnect is attributed when its next turn arrives.
-	lkey := ledgerKey{mirrorTarget(r), host, session, window}
+	lkey := ledgerKey{windowOwner(r.Context()), host, session, window}
 	if drawn.Resumed {
 		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
 			drawn.RestoreLedger(l)
@@ -308,7 +308,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// own poll is the fallback.
 	sctx := op.begin("subscribe")
 	if h, e, _, _, ok := s.mirrorEntry(r.WithContext(sctx), host, session, window); ok && e.ClaudeSession != "" {
-		changed, stop := s.askSubscribe(askWatchKey{mirrorTarget(r), h.Host, e.ClaudeSession})
+		changed, stop := s.askSubscribe(askWatchKey{windowOwner(r.Context()), h.Host, e.ClaudeSession})
 		defer stop()
 		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
 			for {

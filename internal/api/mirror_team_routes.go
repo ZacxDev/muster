@@ -236,10 +236,6 @@ func (s *Server) teamMemberNow(ctx context.Context, person, team int64, need aut
 	return !a.Team && in && role.AtLeast(need)
 }
 
-// mirrorTarget is the owner a request's mirror calls are about: its team
-// (mirrorTeamGate aimed it there) or the principal's own.
-func mirrorTarget(r *http.Request) int64 { return windowOwner(r.Context()) }
-
 // windowOwner is whose WINDOWS ctx's mirror calls touch: the team the route
 // gate aimed it at (mirror.TargetOwner), else the principal's own — the team
 // acting principal's own being the team (the send queue's dispatcher on a

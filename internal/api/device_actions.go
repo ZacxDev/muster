@@ -282,11 +282,12 @@ var errTeamAskNotOperator = errors.New(TeamAskPhoneNotOperator)
 // docs/design/team-sharing.md A, "answer the session's Attention asks"): for
 // ask id when it is a TEAM's — one of a team the device's owner is a member
 // of — nil only when that person is an operator or a manager of the team on
-// a FRESH read (teamOperatorNow: an enabled person, their role re-read), and
-// the ask is not the team's dispatch card, which no phone answers
-// (refuseTeamDispatchCardOnPhone, the one phone refusal of it). Any other
-// ask — the person's own, one they cannot read — is nil: the answer path
-// decides it as before.
+// a FRESH read (teamOperatorNow: an enabled person, their role re-read). A
+// team's dispatch card, which no phone answers, is refused on the answer
+// path inside answerAskFrom (teamCardRefusal → refuseTeamDispatchCardOnPhone;
+// TestAStaleTypedTurnFallsBackToTheCardAndTheCardsDoorIsGuarded) and on the
+// dismissal by its handler. Any other ask — the person's own, one they cannot
+// read — is nil: the answer path decides it as before.
 //
 // 🔴 A VIEWER IS REFUSED BY NAME, BEFORE ANYTHING IS RECORDED. Row-level
 // security alone (attention_asks: read at viewer, write at operator) would
@@ -304,9 +305,6 @@ func (s *Server) teamPhoneAskRefusal(ctx context.Context, id int64) error {
 	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
 		return nil
 	}
-	if err := s.refuseTeamDispatchCardOnPhone(ctx, id); err != nil {
-		return err
-	}
 	if !s.teamOperatorNow(ctx, p.UserID, a.Owner) {
 		return errTeamAskNotOperator
 	}
@@ -321,8 +319,8 @@ func (s *Server) teamPhoneAskRefusal(ctx context.Context, id int64) error {
 // recorded — is refused by name (TeamCardNotFromPhone) and the card stays
 // open. A card whose hold cannot be read is refused too (fail closed). Any
 // other ask: nil. ONE function, so every phone door that answers a team's ask
-// refuses alike — 2b.4's team check on this route (teamPhoneAskRefusal) calls
-// it first, by name, before the answer path is reached.
+// refuses alike — the answer path through teamCardRefusal, and the
+// dismissal route (handleDeviceAskCancel) by name.
 func (s *Server) refuseTeamDispatchCardOnPhone(ctx context.Context, id int64) error {
 	_, card, err := s.teamDispatchCard(ctx, id)
 	switch {
@@ -381,6 +379,13 @@ func (s *Server) handleDeviceAskCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	id, c, ok := s.deviceAskAction(w, r, actionAskDismiss, &body, &body.Nonce, &body.Signature, func() []byte { return nil })
 	if !ok {
+		return
+	}
+	// A team's dispatch card is not dismissed from a phone either: the answer
+	// path refuses it inside answerAskFrom (teamCardRefusal), and cancelAsk
+	// has no such check, so it is asked here, by name.
+	if err := s.refuseTeamDispatchCardOnPhone(r.Context(), id); err != nil {
+		s.askActionResult(w, r, c, attention.Ask{}, err)
 		return
 	}
 	if err := s.teamPhoneAskRefusal(r.Context(), id); err != nil {

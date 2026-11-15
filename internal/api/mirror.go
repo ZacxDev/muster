@@ -243,7 +243,7 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	if s.ext.Mirror == nil {
 		return h, e, false, false, false
 	}
-	target := mirrorTarget(r)
+	target := windowOwner(r.Context())
 	if raw := mirrorOwnerParam(r); raw != "" && raw != strconv.FormatInt(target, 10) {
 		return h, e, false, false, false
 	}

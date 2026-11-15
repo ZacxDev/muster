@@ -1449,6 +1449,10 @@ team host ([G4](#g-operator-decided-2026-11-14)).
     team nor a member is refused, and that check fails closed. No such row is
     written in 2b. The rule is stated now so that the chief forward does not
     meet a refusal built for persons.
+    🔴 **Superseded in 2b.4 (round 0, #702 D1):** until a team-acting writer
+    lands, a row queued by the team itself is **refused** at delivery,
+    failing closed; that writer's own change opens the pass, with its own
+    test.
 - **Edits.** Only the person who queued a row may edit it, so
   `edit_stepup_at` always belongs to `queued_by` and needs no `edited_by`
   column. A manager may cancel any row, but not edit it.
@@ -2727,7 +2731,9 @@ by re-checking the migration number (D). The slices ship **in order**.
 
      The red-at-base test names the base's panic, and its fixture bypasses
      the cancelling paths (E).
-   - A row queued by the team itself is the team's own.
+   - A row queued by the team itself is the team's own. **Changed in round 0
+     (#702, D1): refused, failing closed, until a team-acting writer lands
+     with its own test** — no path queues one today.
    - `CancelQueuedBy`, and the edit and cancel rules (the new
      `requireTeamManager`).
    - The pane answer, and the device route.
@@ -2745,9 +2751,14 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   wrote): a person's own row keeps its account checks; a member's row in
    >   a team's queue gets the member's account checks AND
    >   `teamOperatorNow` (an enabled person, operator or above, fresh read);
-   >   the team's own row (`queued_by` = the team) passes; a row whose owner's
-   >   kind cannot be read, or whose queuer is not its owner and whose owner is
-   >   no team, fails closed. `TestATeamSendIsCheckedAgainstWhoQueuedIt`
+   >   a row whose owner's kind cannot be read, or whose queuer is not its
+   >   owner and whose owner is no team, fails closed. 🔴 **Round 0 (#702,
+   >   D1):** a team's row queued by the TEAM ITSELF (`queued_by` = the team)
+   >   is REFUSED too (`SendQueueTeamQueued`), not passed: no writer makes one
+   >   today (the POST route queues as the member; the team-acting writers —
+   >   a team chief's host forward, a route reply — are refused for a team
+   >   elsewhere), so a pass would open for whichever writer came first with
+   >   no check behind it. That writer's change opens it, with its own test. `TestATeamSendIsCheckedAgainstWhoQueuedIt`
    >   changes ben in the database directly (disable; delete his membership)
    >   and, separately, through the real removal (cancel-path words): red at
    >   base with `queuedPrincipal`'s panic, and red on the half-applied mutant
@@ -2787,8 +2798,10 @@ by re-checking the migration number (D). The slices ship **in order**.
    > - **Cancelling on leaving.** `users.CancelQueuedByTx(team, user)` (THE
    >   statement) runs in `removeMemberTx` and in `setMemberTx`'s drop to
    >   viewer; `sendqueue.PGStore.CancelQueuedBy` (team 0 = every team)
-   >   delegates to it and runs beside `CancelOwner` on a disable and a
-   >   sign-out everywhere (`cancelQueuedFor`, and the CLI's disable)
+   >   delegates to it. A disable and a sign-out everywhere make ONE call,
+   >   `sendqueue.PGStore.CancelUser` (`CancelOwner` + `CancelQueuedBy(0, …)`;
+   >   round 0, D3), from the server (`cancelQueuedFor`) and the CLI's disable
+   >   alike
    >   (`TestLeavingATeamCancelsYourQueuedSendsToIt`,
    >   `TestDisablingAMemberCancelsWhatTheyQueuedIntoTheirTeams`).
    > - **Edit and cancel rules.** `requireTeamManager` (a fresh manager read).
@@ -2803,9 +2816,12 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   answer types into the TEAM's picker. A viewer's are drawn unanswerable
    >   (`MirrorTeamAskNote`).
    > - **The device route.** `teamPhoneAskRefusal` runs before the answer
-   >   (and the dismissal): a team's question needs an operator or a manager
-   >   on a fresh read (`teamOperatorNow`), else 403 `not_operator`, and calls
-   >   `refuseTeamDispatchCardOnPhone` first, by name
+   >   and the dismissal: a team's question needs an operator or a manager
+   >   on a fresh read (`teamOperatorNow`), else 403 `not_operator`. A team's
+   >   dispatch card is refused by `refuseTeamDispatchCardOnPhone`: inside
+   >   the answer path (`teamCardRefusal`), and by name on the dismissal,
+   >   which had no such check (⚠ the dismissal's refusal is not pinned by a
+   >   test)
    >   (`TestAPhoneAnswersATeamAskAtOperator`: red at base, where a viewer's
    >   answer met row-level security's filtered write and was told the
    >   question was not open).

@@ -230,10 +230,10 @@ func (s *Server) askWindow(w http.ResponseWriter, r *http.Request, host, session
 }
 
 // askKey is the key of the call tool in e's Claude session, for the window's
-// owner (mirrorTarget: a team host's questions are the team's, registered
+// owner (windowOwner: a team host's questions are the team's, registered
 // under its token's owner — team sharing 2b.4's pane answer).
 func askKey(r *http.Request, h mirror.HostView, e mirror.SessionView, tool string) askq.Key {
-	return askq.Key{Owner: mirrorTarget(r), Source: askSourceMirror, Scope: h.Host, Session: e.ClaudeSession, ToolUseID: tool}
+	return askq.Key{Owner: windowOwner(r.Context()), Source: askSourceMirror, Scope: h.Host, Session: e.ClaudeSession, ToolUseID: tool}
 }
 
 // questionCard is entry x as a card of e's window, h being its host.
@@ -312,7 +312,7 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 		vs = append(vs, s.openCodeLiveCard(r, h, e, p))
 	}
 	if e.ClaudeSession != "" {
-		for _, x := range s.asks.ForSession(mirrorTarget(r), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
+		for _, x := range s.asks.ForSession(windowOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
 			c := questionCard(h, e, x)
 			if watchOnly {
 				c.Unanswerable, c.CanCancel, c.Retry, c.Message = MirrorTeamAskNote, false, false, false

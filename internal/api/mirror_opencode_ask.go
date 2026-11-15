@@ -335,7 +335,7 @@ type openCodeAnswers struct {
 // openCodeAnswerKey is ask promptID of e's window (h its host), for the
 // request's owner.
 func openCodeAnswerKey(r *http.Request, h mirror.HostView, e mirror.SessionView, promptID string) openCodeAnswerKeyT {
-	return openCodeAnswerKeyT{owner: mirrorTarget(r), host: h.Host, session: e.Session, window: e.Window, promptID: promptID}
+	return openCodeAnswerKeyT{owner: windowOwner(r.Context()), host: h.Host, session: e.Session, window: e.Window, promptID: promptID}
 }
 
 func (a *openCodeAnswers) record(k openCodeAnswerKeyT, qs []askq.Question, answers map[string]string, now time.Time) {

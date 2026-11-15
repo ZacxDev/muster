@@ -157,6 +157,15 @@ func (m *memQueue) CancelOwner(_ context.Context, owner int64, _ time.Time, deta
 	return n, nil
 }
 
+func (m *memQueue) CancelUser(ctx context.Context, user int64, now time.Time, detail string) (int, error) {
+	n, err := m.CancelOwner(ctx, user, now, detail)
+	if err != nil {
+		return 0, err
+	}
+	k, err := m.CancelQueuedBy(ctx, 0, user, now, detail)
+	return n + k, err
+}
+
 func (m *memQueue) CancelQueuedBy(_ context.Context, team, user int64, _ time.Time, detail string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

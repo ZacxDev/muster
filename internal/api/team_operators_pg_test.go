@@ -118,6 +118,7 @@ func (o *opsTeam) pastedBody(body string) bool {
 const (
 	opsNotOperator = "Not sent: the person who queued it is no longer an operator of the team that owns this session."
 	opsLeftCancel  = "Cancelled: the person who queued it is no longer a member of the team."
+	opsTeamQueued  = "Not sent: it was queued by the team itself, not by a member, and muster sends a team's queued message only for a member who is still its operator."
 )
 
 // TestATeamSendIsCheckedAgainstWhoQueuedIt: the dispatcher delivers a TEAM's
@@ -129,8 +130,8 @@ const (
 //   - ben removed through the real removal (removeMemberTx): cancelled by the
 //     CANCEL path, whose words differ, so the two guards are told apart;
 //   - CONTROL: ben still an operator: pasted;
-//   - CONTROL: a row the team queued itself (queued_by = the team) is the
-//     team's own: pasted.
+//   - a row the team queued itself (queued_by = the team): no writer makes
+//     one yet, so it is refused, failing closed (round 0, D1).
 //
 // Red at base: the dispatcher panics at queuedPrincipal (ViaQueue is not a
 // team door). Red on the half-applied mutant (ViaQueue admitted, the check
@@ -143,12 +144,6 @@ func TestATeamSendIsCheckedAgainstWhoQueuedIt(t *testing.T) {
 	if st, d := o.rowState(t, ok); st != "sent" || !o.pastedBody("ops: ben, still an operator") {
 		t.Fatalf("CONTROL: ben's row while he is an operator: %s %q, pasted %q", st, d, o.pasted())
 	}
-	own := o.teamRow(t, "@32", "ops: the team's own", o.team)
-	o.tick(t)
-	if st, d := o.rowState(t, own); st != "sent" || !o.pastedBody("ops: the team's own") {
-		t.Fatalf("CONTROL: the team's own row: %s %q, pasted %q", st, d, o.pasted())
-	}
-
 	// (1) disabled, in the database only.
 	disabled := o.teamRow(t, "@33", "ops: ben, disabled", o.ben)
 	dbtest.OwnerExec(t, o.dsn, `UPDATE users SET disabled_at = now() WHERE id = $1`, o.ben)
@@ -180,6 +175,14 @@ func TestATeamSendIsCheckedAgainstWhoQueuedIt(t *testing.T) {
 	if st, d := o.rowState(t, cancelled); st != "cancelled" || d != opsLeftCancel || o.pastedBody("ops: ben, removed by a manager") {
 		t.Fatalf("a member removed through the removal: %s %q, pasted %q; want cancelled %q", st, d, o.pasted(), opsLeftCancel)
 	}
+
+	// A row the TEAM queued as itself (no person): refused, failing closed,
+	// until a team-acting writer exists with its own check.
+	own := o.teamRow(t, "@32", "ops: queued by the team itself", o.team)
+	o.tick(t)
+	if st, d := o.rowState(t, own); st != "failed" || d != opsTeamQueued || o.pastedBody("ops: queued by the team itself") {
+		t.Fatalf("a row the team queued itself: %s %q, pasted %q; want failed %q and nothing pasted", st, d, o.pasted(), opsTeamQueued)
+	}
 }
 
 // TestDisablingAMemberCancelsWhatTheyQueuedIntoTheirTeams: a disable's (and
@@ -191,7 +194,17 @@ func TestDisablingAMemberCancelsWhatTheyQueuedIntoTheirTeams(t *testing.T) {
 	o := newOpsTeam(t)
 	ben := o.teamRow(t, "@41", "ops: ben's, to be cancelled", o.ben)
 	other := o.teamRow(t, "@42", "ops: the manager's, kept", authz.OperatorUserID)
+	// ben's OWN row (his queue, not the team's): the same one call cancels it.
+	dbtest.OwnerExec(t, o.dsn, `INSERT INTO send_queue (owner_id, queued_by, mirror_host, mirror_session, mirror_window, body, stepup_at)
+		VALUES ($1, $1, 'ws', 'main', '@43', 'ops: ben''s own', now())`, o.ben)
+	var personal int64
+	if err := o.pool.QueryRow(authz.System(context.Background()), `SELECT id FROM send_queue WHERE body = 'ops: ben''s own'`).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
 	o.srv.cancelQueuedFor(context.Background(), o.ben, SendQueueCancelDisabled)
+	if st, d := o.rowState(t, personal); st != "cancelled" || d != "Cancelled: the account was disabled." {
+		t.Fatalf("ben's OWN row after his disable's cancel: %s %q", st, d)
+	}
 	if st, d := o.rowState(t, ben); st != "cancelled" || d != "Cancelled: the account was disabled." {
 		t.Fatalf("ben's team row after his disable's cancel: %s %q", st, d)
 	}
@@ -281,7 +294,9 @@ func TestOnlyItsQueuerOrAManagerChangesATeamSend(t *testing.T) {
 		}
 		return id
 	}
-	t.Cleanup(func() { _, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE owner_id = $1`, v.team) })
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE owner_id = $1`, v.team)
+	})
 	state := func(id int64) string {
 		var s string
 		if err := w.pool.QueryRow(w.sys, `SELECT state FROM send_queue WHERE id = $1`, id).Scan(&s); err != nil {
