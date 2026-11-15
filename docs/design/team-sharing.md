@@ -2601,7 +2601,7 @@ by re-checking the migration number (D). The slices ship **in order**.
      no draft checks, no `deliver_to`); the origin and entry URL pass
      `plugins.ValidViewerLink` as a person's do.
    - **(b) The door.** `ViaPlugin` joins `teamAgentDoors` and
-     `teamActingVias` (13 → 14 doors) for a team-owned token, and
+     `teamActingVias` (12 → 13 doors) for a team-owned token, and
      `Authenticate` admits a team through `users.EnabledPersonOrTeamIDs`
      (users-read ledger: `readEnabledPersonOrTeam`). A new ledger,
      `teamPluginRoutes`, classes every `/plugin/v1` route for a team token:
