@@ -216,7 +216,11 @@ var perOwnerSites = map[string]perOwnerSite{
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.askPrincipal(ctx, team)
 		}},
-	"queuedPrincipal": {refusal: refusedByWithPrincipal,
+	// The send queue's dispatcher (send_queue.go): a team host's queued row
+	// is probed and pasted AS THE TEAM (team sharing 2b.4); who may still send
+	// it is its queued_by's, read at delivery
+	// (TestATeamSendIsCheckedAgainstWhoQueuedIt).
+	"queuedPrincipal": {actsAsTeam: true, via: authz.ViaQueue,
 		mint: func(s *Server, ctx context.Context, team int64, _ agents.Agent) context.Context {
 			return s.queuedPrincipal(ctx, team)
 		}},
@@ -422,8 +426,8 @@ func TestEveryPerOwnerPrincipalSiteIsTeamSafe(t *testing.T) {
 			}
 		})
 	}
-	if acting != 11 || refusing != 4 {
-		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 11 and 4", acting, refusing)
+	if acting != 12 || refusing != 3 {
+		t.Fatalf("%d sites acted as the team and %d refused; the ledger names 12 and 3", acting, refusing)
 	}
 
 	// A door OUTSIDE authz's teamActingVias still refuses the team, through

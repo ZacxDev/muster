@@ -214,15 +214,22 @@ func TestATeamHostIsWatchedByItsMembersAndNoOneElse(t *testing.T) {
 			t.Errorf("dee GET %s on the team session: %d; want 404", p, rec.Code)
 		}
 	}
-	// A send naming the team in its URL is refused at the gate (403 to a
-	// member, 404 to anyone else); one naming it only in its body is refused
-	// by the handler's own entry lookup (404) — and never reaches B's own
-	// host of the same name either way: B has none, and nothing is pasted.
+	// A send naming the team in its URL is refused at the gate to a VIEWER
+	// (403; team sharing 2b.4 lets an operator through to the handler's own
+	// gates) and to anyone else (404); one naming it only in its body is
+	// refused by the handler's own entry lookup (404) — and never reaches B's
+	// own host of the same name either way: B has none.
 	sendPath := "/mirror/terminal/send?owner=" + strconv.FormatInt(v.team, 10)
 	body := url.Values{"host": {"build-01"}, "session": {v.shared}, "text": {"hello"}}
-	if rec := w.do(w.h, "POST", sendPath, body.Encode(), cred{sessionUser: w.b.uid}); rec.Code != http.StatusForbidden ||
-		!strings.Contains(rec.Body.String(), MirrorTeamOwnOnlyRefusal) {
-		t.Errorf("B's send into the team session: %d %q; want 403", rec.Code, truncate(rec.Body.String(), 120))
+	if rec := w.do(w.h, "POST", sendPath, body.Encode(), cred{sessionUser: v.cal}); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), MirrorTeamViewerRefusal) {
+		t.Errorf("cal's (viewer) send into the team session: %d %q; want 403 %q", rec.Code, truncate(rec.Body.String(), 120), MirrorTeamViewerRefusal)
+	}
+	if rec := w.do(w.h, "POST", sendPath, body.Encode(), cred{sessionUser: w.b.uid}); rec.Code == http.StatusForbidden || rec.Code == http.StatusNotFound {
+		t.Errorf("B's (operator) send into the team session was refused (%d %q); want it past the gate, to the send's own gates",
+			rec.Code, truncate(rec.Body.String(), 120))
+	} else {
+		t.Logf("B's (operator) send into the team session: %d %q", rec.Code, truncate(rec.Body.String(), 120))
 	}
 	if rec := w.do(w.h, "POST", sendPath, body.Encode(), cred{sessionUser: v.dee}); rec.Code != http.StatusNotFound {
 		t.Errorf("dee's send into the team session: %d; want 404", rec.Code)
@@ -238,9 +245,9 @@ func TestATeamHostIsWatchedByItsMembersAndNoOneElse(t *testing.T) {
 	if rec := w.do(w.h, "POST", "/mirror/terminal/send", own.Encode(), cred{sessionUser: w.a.uid}); rec.Code != http.StatusNotFound {
 		t.Errorf("A's send naming the team in its body, at her own session's address: %d; want 404", rec.Code)
 	}
-	if rec := v.get("/mirror/terminal/ws?mode=rw&"+v.teamQuery.Encode(), w.b.uid); rec.Code != http.StatusForbidden ||
-		!strings.Contains(rec.Body.String(), MirrorTeamOwnOnlyRefusal) {
-		t.Errorf("B's live keys on the team session: %d %q; want 403 %q", rec.Code, truncate(rec.Body.String(), 120), MirrorTeamOwnOnlyRefusal)
+	if rec := v.get("/mirror/terminal/ws?mode=rw&"+v.teamQuery.Encode(), v.cal); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), MirrorTeamViewerRefusal) {
+		t.Errorf("cal's (viewer) live keys on the team session: %d %q; want 403 %q", rec.Code, truncate(rec.Body.String(), 120), MirrorTeamViewerRefusal)
 	}
 }
 

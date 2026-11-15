@@ -539,6 +539,9 @@ type SendQueue interface {
 	// CancelOwner is the system scope's: a disable or a sign-out everywhere
 	// cancels the user's queued messages.
 	CancelOwner(ctx context.Context, owner int64, now time.Time, detail string) (int, error)
+	// CancelQueuedBy is the system scope's too: the same, for the rows user
+	// queued into a team's windows (team 0: every team's; team sharing 2b.4).
+	CancelQueuedBy(ctx context.Context, team, user int64, now time.Time, detail string) (int, error)
 	sendqueue.DispatchStore
 }
 

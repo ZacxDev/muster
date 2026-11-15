@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
@@ -77,6 +78,9 @@ const (
 	actionCodeNotOpen       = "not_open"
 	actionCodeInvalidAnswer = "invalid_answer"
 	actionCodeFailed        = "failed"
+	// actionCodeNotOperator: a TEAM's question, and the device's owner is not
+	// an operator or a manager of the team now (team sharing 2b.4).
+	actionCodeNotOperator = "not_operator"
 )
 
 func (s *Server) registerDeviceActionRoutes(mux Mux) {
@@ -220,6 +224,9 @@ func (s *Server) askActionResult(w http.ResponseWriter, r *http.Request, c devic
 	switch {
 	case err == nil:
 		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": a.ID, "status": a.Status})
+	case errors.Is(err, errTeamAskNotOperator):
+		outcome = actionCodeNotOperator
+		s.actionRefuse(w, http.StatusForbidden, actionCodeNotOperator, TeamAskPhoneNotOperator)
 	case errors.Is(err, attention.ErrNotFound):
 		outcome = actionCodeNotFound
 		s.actionRefuse(w, http.StatusNotFound, actionCodeNotFound, attentionErrText(err, a))
@@ -256,8 +263,54 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := s.teamPhoneAskRefusal(r.Context(), id); err != nil {
+		s.askActionResult(w, r, c, attention.Ask{}, err)
+		return
+	}
 	a, err := s.answerAskFrom(r.Context(), id, body.Answer, attention.AnswerSource{})
 	s.askActionResult(w, r, c, a, err)
+}
+
+// TeamAskPhoneNotOperator is why a paired phone's answer to — or dismissal
+// of — a TEAM's question is refused: its owner is a viewer of the team now.
+const TeamAskPhoneNotOperator = "this is a team's question: only an operator or a manager of the team answers it"
+
+// errTeamAskNotOperator is teamPhoneAskRefusal's refusal of a viewer.
+var errTeamAskNotOperator = errors.New(TeamAskPhoneNotOperator)
+
+// teamPhoneAskRefusal is THE PHONE DOOR'S TEAM CHECK (team sharing 2b.4;
+// docs/design/team-sharing.md A, "answer the session's Attention asks"): for
+// ask id when it is a TEAM's — one of a team the device's owner is a member
+// of — nil only when that person is an operator or a manager of the team on
+// a FRESH read (teamOperatorNow: an enabled person, their role re-read), and
+// the ask is not the team's dispatch card, which no phone answers
+// (refuseTeamDispatchCardOnPhone, the one phone refusal of it). Any other
+// ask — the person's own, one they cannot read — is nil: the answer path
+// decides it as before.
+//
+// 🔴 A VIEWER IS REFUSED BY NAME, BEFORE ANYTHING IS RECORDED. Row-level
+// security alone (attention_asks: read at viewer, write at operator) would
+// let a viewer's phone read the ask and then find its write filtered out —
+// answered as if the question were already closed.
+func (s *Server) teamPhoneAskRefusal(ctx context.Context, id int64) error {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.Team || s.ext.Attention == nil {
+		return nil
+	}
+	a, err := s.ext.Attention.Get(ctx, id)
+	if err != nil || a.Owner <= 0 || a.Owner == p.UserID {
+		return nil
+	}
+	if _, in := p.TeamScope().RoleIn(a.Owner); !in {
+		return nil
+	}
+	if err := s.refuseTeamDispatchCardOnPhone(ctx, id); err != nil {
+		return err
+	}
+	if !s.teamOperatorNow(ctx, p.UserID, a.Owner) {
+		return errTeamAskNotOperator
+	}
+	return nil
 }
 
 // refuseTeamDispatchCardOnPhone is THE phone-door refusal of a TEAM's
@@ -268,7 +321,8 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 // recorded — is refused by name (TeamCardNotFromPhone) and the card stays
 // open. A card whose hold cannot be read is refused too (fail closed). Any
 // other ask: nil. ONE function, so every phone door that answers a team's ask
-// (phase 2b.4's team phone answer route included) refuses alike.
+// refuses alike — 2b.4's team check on this route (teamPhoneAskRefusal) calls
+// it first, by name, before the answer path is reached.
 func (s *Server) refuseTeamDispatchCardOnPhone(ctx context.Context, id int64) error {
 	_, card, err := s.teamDispatchCard(ctx, id)
 	switch {
@@ -327,6 +381,10 @@ func (s *Server) handleDeviceAskCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	id, c, ok := s.deviceAskAction(w, r, actionAskDismiss, &body, &body.Nonce, &body.Signature, func() []byte { return nil })
 	if !ok {
+		return
+	}
+	if err := s.teamPhoneAskRefusal(r.Context(), id); err != nil {
+		s.askActionResult(w, r, c, attention.Ask{}, err)
 		return
 	}
 	a, err := s.cancelAsk(r.Context(), id)

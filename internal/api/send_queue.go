@@ -128,7 +128,8 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 	if as := v.Get(ui.AgentSessionField); mirror.ValidAgentSession(as) {
 		q.agentSession = as
 	}
-	q.t = sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
+	// A team entry's queue is the team's (h.Owner; 0 is the principal's own).
+	q.t = sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window, Owner: h.Owner}
 	q.back = mirrorRef(e).ViewPath()
 	return q, true
 }
@@ -410,6 +411,14 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 	}
 	var v ui.SendQueueListView
 	answered := s.queueAnswered(ctx, items)
+	// A TEAM window's queue (team sharing 2b.4): rows the viewer did not
+	// queue say who did, and offer only what a manager may do to anyone's —
+	// Cancel and Delete — and only to a manager (sendQueueRowRefusal decides
+	// again on every action).
+	me := requestOwner(ctx)
+	team := t.Owner != 0 && t.Owner != me
+	manager := team && s.requireTeamManager(ctx, me, t.Owner)
+	names := map[int64]string{}
 	for _, it := range items {
 		preview := it.Body
 		if len(preview) > sendQueuePreview {
@@ -425,7 +434,19 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
 			Editable: it.State == sendqueue.Queued && !it.MusterOrigin(), Held: it.State == sendqueue.Queued && it.Held,
 			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
-		if row.Held && it.ID == editing.id {
+		if team {
+			row.Owner = t.Owner
+			if q := it.Queuer(); q != me {
+				if _, ok := names[q]; !ok {
+					names[q] = s.queuerName(ctx, q, t.Owner)
+				}
+				row.QueuedBy = names[q]
+				row.Editable, row.Retryable = false, false
+				row.Cancellable = row.Cancellable && manager
+				row.Deletable = row.Deletable && manager
+			}
+		}
+		if row.Held && it.ID == editing.id && row.QueuedBy == "" {
 			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
 				row.Editing, row.HoldToken = true, it.HoldToken
 				row.HoldLeftMS = it.HeldUntil.Sub(s.sendQueueNow()).Milliseconds()
@@ -443,6 +464,77 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 		}
 	}
 	return v
+}
+
+// queuerName is who queued a row of team's queue, as its list says it: the
+// team's own name for a row the team queued as itself, else the person's.
+func (s *Server) queuerName(ctx context.Context, queuer, team int64) string {
+	if queuer == team {
+		if n := s.teamNames(ctx, []int64{team})[team]; n != "" {
+			return n
+		}
+		return "the team"
+	}
+	return s.personName(ctx, queuer)
+}
+
+// requireTeamManager is THE QUEUE'S MANAGER GATE (team sharing 2b.4; the
+// queue's counterpart of requireTaskManager): whether person is a manager of
+// team on a FRESH read of their role (teamMemberNow) — what cancelling or
+// deleting a row SOMEONE ELSE queued into a team window needs. An operator
+// cancels and deletes their own; a manager anyone's; nobody edits, retries
+// or sends now another's (sendQueueRowRefusal).
+func (s *Server) requireTeamManager(ctx context.Context, person, team int64) bool {
+	return person > 0 && team > 0 && person != team && s.teamMemberNow(ctx, person, team, authz.TeamManager)
+}
+
+// sendQueueAct is what a request does to an existing queue row.
+type sendQueueAct int
+
+const (
+	// sendQueueActOwn: edit, retry, send now — the queuer's alone.
+	sendQueueActOwn sendQueueAct = iota
+	// sendQueueActManage: cancel, delete — the queuer's, or a team manager's.
+	sendQueueActManage
+)
+
+// SendQueueNotYours is why a member may not act on a team row someone else
+// queued.
+const SendQueueNotYours = "Not done: someone else queued this message. Only they can edit, retry or send it now, and a manager of the team can cancel or delete it."
+
+// sendQueueRowRefusal is why ctx may not do act to row it: 0 when it may, else
+// the status and its words ("" with 404).
+//
+//   - 🔴 THE ROW MUST BE IN THE QUEUE ctx IS AIMED AT (windowOwner): the
+//     principal's own, or the team the route gate aimed it at (owner=, at
+//     operator). Since 0127 a member's principal READS — and at operator
+//     WRITES — their teams' rows, so a request naming no owner= could
+//     otherwise reach a team row by its id alone: 404, as a row that is not
+//     there.
+//   - A team row the member queued is theirs to act on; one someone else
+//     queued is a manager's to cancel or delete (requireTeamManager, fresh),
+//     and nobody's to edit, retry or send now.
+func (s *Server) sendQueueRowRefusal(ctx context.Context, it sendqueue.Item, act sendQueueAct) (int, string) {
+	me := requestOwner(ctx)
+	switch {
+	case it.Owner != windowOwner(ctx):
+		return http.StatusNotFound, ""
+	case it.Owner == me, it.Queuer() == me:
+		return 0, ""
+	case act == sendQueueActManage && s.requireTeamManager(ctx, me, it.Owner):
+		return 0, ""
+	}
+	return http.StatusForbidden, SendQueueNotYours
+}
+
+// sendQueueBack is the view row it's actions send the browser back to: its
+// window's, naming its team (owner=) when the row is a team's.
+func sendQueueBack(ctx context.Context, it sendqueue.Item) string {
+	ref := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}
+	if it.Owner != requestOwner(ctx) {
+		ref.Owner = it.Owner
+	}
+	return ref.ViewPath()
 }
 
 // queueAnswered is, for each of items that answered a question in its session
@@ -482,8 +574,12 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	back := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}.ViewPath()
+	back := sendQueueBack(ctx, it)
 	nav := isDocumentNavigation(r)
+	if status, msg := s.sendQueueRowRefusal(ctx, it, sendQueueActManage); status != 0 {
+		sendQueueRowRefuse(w, r, nav, back, status, msg)
+		return
+	}
 	if _, err := s.ext.SendQueue.Cancel(ctx, id, s.sendQueueNow()); err != nil {
 		if errors.Is(err, sendqueue.ErrNotFound) {
 			http.NotFound(w, r)
@@ -521,6 +617,20 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// sendQueueRowRefuse answers sendQueueRowRefusal's refusal: a 404 as for a
+// row that is not there; a 403 with its words to the list's script, and to a
+// browser form a redirect back with the notice.
+func sendQueueRowRefuse(w http.ResponseWriter, r *http.Request, nav bool, back string, status int, msg string) {
+	switch {
+	case status == http.StatusNotFound:
+		http.NotFound(w, r)
+	case nav:
+		http.Redirect(w, r, withNotice(back, noticeNotYours), http.StatusSeeOther)
+	default:
+		http.Error(w, msg, status)
+	}
+}
+
 // SendQueueNotDeleted is why a Delete was refused: the message is not
 // finished.
 const SendQueueNotDeleted = "Not deleted: that message is still queued (cancel it first) or is being sent."
@@ -547,8 +657,12 @@ func (s *Server) handleSendQueueDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	back := ui.MirrorRef{Host: it.Target.Host, Session: it.Target.Session, Window: it.Target.Window}.ViewPath()
+	back := sendQueueBack(ctx, it)
 	nav := isDocumentNavigation(r)
+	if status, msg := s.sendQueueRowRefusal(ctx, it, sendQueueActManage); status != 0 {
+		sendQueueRowRefuse(w, r, nav, back, status, msg)
+		return
+	}
 	switch err := s.ext.SendQueue.Delete(ctx, id); {
 	case errors.Is(err, sendqueue.ErrNotFound):
 		http.NotFound(w, r)
@@ -651,6 +765,11 @@ func (s *Server) sendQueueRowTarget(w http.ResponseWriter, r *http.Request) (int
 	it, err := s.ext.SendQueue.Get(r.Context(), id)
 	if err != nil {
 		http.NotFound(w, r)
+		return 0, sendqueue.Item{}, sendQueueTarget{}, false
+	}
+	// Edit, Retry and Send now are the queuer's alone (team sharing 2b.4).
+	if status, msg := s.sendQueueRowRefusal(r.Context(), it, sendQueueActOwn); status != 0 {
+		sendQueueRowRefuse(w, r, isDocumentNavigation(r), sendQueueBack(r.Context(), it), status, msg)
 		return 0, sendqueue.Item{}, sendQueueTarget{}, false
 	}
 	v := url.Values{"host": {it.Target.Host}, "session": {it.Target.Session}}
@@ -764,8 +883,11 @@ func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e m
 	if ref.Window != "" {
 		q.Set("window", ref.Window)
 	}
-	t := sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
-	return &ui.ComposerQueue{Src: ui.SendQueuePath + "?" + q.Encode(),
+	if ref.Owner != 0 {
+		q.Set("owner", strconv.FormatInt(ref.Owner, 10))
+	}
+	t := sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window, Owner: h.Owner}
+	return &ui.ComposerQueue{Src: ui.SendQueuePath + "?" + q.Encode(), Owner: ref.Owner,
 		List: s.sendQueueListView(ctx, t, editing), Disabled: mirrorQueueOff(h, e)}
 }
 
@@ -934,9 +1056,16 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		// delivery moment is the auth time the paste's freshness check sees.
 		ctx = stepup.WithAuthTime(ctx, s.stepUpNow())
 	}
+	// 🔴 THE ROW'S OWNER'S HOSTS, AND ONLY WHEN ctx IS AIMED AT THEM: the
+	// dispatcher acts as the owner (a team's row as the team), and a member's
+	// Send now of a team row is aimed at the team by the route gate. A ctx
+	// whose windows are another owner's pastes nothing.
+	if windowOwner(ctx) != it.Owner {
+		return sendqueue.Outcome{Detail: "Not sent: " + unprefixed(mirror.ErrHostOffline)}
+	}
 	var h mirror.HostView
 	found := false
-	for _, x := range s.ext.Mirror.Hosts(ctx) {
+	for _, x := range s.windowHosts(ctx) {
 		if x.Host == it.Target.Host {
 			h, found = x, true
 			break
@@ -1055,23 +1184,91 @@ const (
 	SendQueueOwnerUnchecked = "Not sent: the account that queued it could not be checked. Queue it again."
 	SendQueueCancelDisabled = "Cancelled: the account was disabled."
 	SendQueueCancelSignOut  = "Cancelled: signed out everywhere."
+	// SendQueueQueuerNotOperator: a member's row in a TEAM's queue, whose
+	// queuer is no longer an operator (or a manager) of the team on a fresh
+	// read — removed, made a viewer, or disabled (team sharing 2b.4).
+	SendQueueQueuerNotOperator = "Not sent: the person who queued it is no longer an operator of the team that owns this session."
+	// SendQueueQueuerNotMember: a row queued by someone who is neither its
+	// owner nor — the owner being a team — a member of it. No path writes
+	// one (row-level security's insert arm); refused, failing closed.
+	SendQueueQueuerNotMember = "Not sent: it was queued by someone who is not its owner, nor a member of the team that owns it."
 )
 
-// sendQueueOwnerRefusal is why it's owner can no longer send it, "" when they
-// can: the owner is disabled, or the sign-in that queued it is at or before
-// the account's session cutoff or its latest sign-out everywhere — the same
-// "at or before, in whole seconds" rule the session tier applies to a token
+// sendQueueOwnerRefusal is why it may no longer be sent, "" when it may —
+// judged on the person who QUEUED it (send_queue.queued_by: Item.Queuer), read
+// fresh at delivery, never on the dispatcher's principal (team sharing 2b.4;
+// docs/design/team-sharing.md A, "Who can send").
+//
+//   - A person's own row (the queuer is the owner, a person): the account
+//     checks below (sendQueueAccountRefusal).
+//   - A TEAM's row queued by a member: the member's account checks, and then
+//     the member is still an operator or a manager of that team
+//     (teamOperatorNow: a fresh read of their role, an enabled person).
+//   - A TEAM's own row (the queuer is the team: a row the team queued acting
+//     as itself, such as a team chief's forward): the team's own — no person
+//     check applies, as none applies to a person's own row beyond their own.
+//
+// 🔴 IT FAILS CLOSED: an owner whose kind cannot be read, or a queuer who is
+// neither the owner nor a member of the owning team, sends nothing.
+func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) string {
+	who := it.Queuer()
+	if who == it.Owner {
+		team, err := s.sendQueueOwnerIsTeam(ctx, it.Owner)
+		switch {
+		case err != nil:
+			s.logger.Printf("sendqueue: message %d: read owner %d's kind: %v", it.ID, it.Owner, err)
+			return SendQueueOwnerUnchecked
+		case team:
+			return ""
+		}
+		return s.sendQueueAccountRefusal(ctx, it, it.Owner)
+	}
+	team, err := s.sendQueueOwnerIsTeam(ctx, it.Owner)
+	switch {
+	case err != nil:
+		s.logger.Printf("sendqueue: message %d: read owner %d's kind: %v", it.ID, it.Owner, err)
+		return SendQueueOwnerUnchecked
+	case !team:
+		return SendQueueQueuerNotMember
+	}
+	if why := s.sendQueueAccountRefusal(ctx, it, who); why != "" {
+		return why
+	}
+	if !s.teamOperatorNow(ctx, who, it.Owner) {
+		return SendQueueQueuerNotOperator
+	}
+	return ""
+}
+
+// sendQueueOwnerIsTeam reports whether owner is a team, on a fresh read
+// (accountOfChecked, under System). err: it could not be read. Without
+// accounts there are no teams.
+func (s *Server) sendQueueOwnerIsTeam(ctx context.Context, owner int64) (bool, error) {
+	if s.ext.Users == nil {
+		return false, nil
+	}
+	a, err := s.accountOfChecked(ctx, owner)
+	if err != nil {
+		return false, err
+	}
+	return a.Team, nil
+}
+
+// sendQueueAccountRefusal is why person can no longer send it, "" when they
+// can: they are disabled, or the sign-in that queued it is at or before the
+// account's session cutoff or its latest sign-out everywhere — the same "at
+// or before, in whole seconds" rule the session tier applies to a token
 // (issuedBeforeCutoff). It fails closed: an account that cannot be read sends
 // nothing. Without accounts (the operator password) there is nobody to
 // disable.
-func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) string {
+func (s *Server) sendQueueAccountRefusal(ctx context.Context, it sendqueue.Item, person int64) string {
 	if s.gt == nil || s.gt.Users == nil {
 		return ""
 	}
-	u, err := s.gt.Users.ByID(ctx, it.Owner)
+	u, err := s.gt.Users.ByID(ctx, person)
 	switch {
 	case err != nil:
-		s.logger.Printf("sendqueue: message %d: read owner %d: %v", it.ID, it.Owner, err)
+		s.logger.Printf("sendqueue: message %d: read the queuer %d: %v", it.ID, person, err)
 		return SendQueueOwnerUnchecked
 	case u.Disabled():
 		return SendQueueOwnerDisabled
@@ -1084,6 +1281,7 @@ func (s *Server) sendQueueOwnerRefusal(ctx context.Context, it sendqueue.Item) s
 		return SendQueueOwnerCutoff
 	// An edited message: the sign-in that SAVED its text is held to the same
 	// cutoffs (it can be another device's, older than the one that queued it).
+	// Only its queuer edits a row (sendQueueRowRule), so it is theirs.
 	case !it.EditStepUpAt.IsZero() && (atOrBefore(it.EditStepUpAt, u.SessionsNotBefore) || atOrBefore(it.EditStepUpAt, u.SignedOutAt)):
 		return SendQueueOwnerCutoff
 	}
@@ -1131,6 +1329,13 @@ func (s *Server) cancelQueuedFor(ctx context.Context, uid int64, detail string) 
 		s.logger.Printf("sendqueue: cancel user %d's queued messages: %v (left queued; the delivery's account check refuses them)", uid, err)
 		return
 	}
+	// ...and what they queued into their teams' windows (team sharing 2b.4):
+	// those rows are the TEAM's, so CancelOwner does not reach them.
+	if m, err := s.ext.SendQueue.CancelQueuedBy(ctx, 0, uid, s.sendQueueNow(), detail); err != nil {
+		s.logger.Printf("sendqueue: cancel user %d's queued messages in their teams' windows: %v (left queued; the delivery's account check refuses them)", uid, err)
+	} else {
+		n += m
+	}
 	if n > 0 {
 		s.logger.Printf("sendqueue: cancelled %d queued message(s) of user %d (%s)", n, uid, detail)
 		// A routed one's route goes back to the chief: the route sweep fails
@@ -1153,7 +1358,8 @@ func (s *Server) sendQueueNotePaste(ctx context.Context, host, session, window s
 	if pasted <= 0 {
 		return
 	}
-	t := sendqueue.Target{Host: host, Session: session, Window: window}
+	// The window's owner's queue (a team window's, for a member's Send).
+	t := sendqueue.Target{Host: host, Session: session, Window: window, Owner: windowOwner(ctx)}
 	if err := s.ext.SendQueue.NotePaste(ctx, t, pasted); err != nil {
 		s.logger.Printf("sendqueue: note a paste into %s: %v", t, err)
 	}

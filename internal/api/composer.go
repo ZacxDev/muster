@@ -62,6 +62,8 @@ const (
 	noticeQueueFull    = "queue-full"
 	noticeCancelled    = "cancelled"
 	noticeNotCancelled = "not-cancelled"
+	// noticeNotYours: a team row someone else queued (sendQueueRowRefusal).
+	noticeNotYours = "not-yours"
 	// noticeCancelledAnswered: cancelled, but the message had already answered
 	// a question in the session (attention.go's askerAddressed) — that answer
 	// was delivered and stays.
@@ -174,6 +176,7 @@ var composerNotices = map[string]struct {
 	noticeQueueFull:         {"Not queued: " + strings.TrimPrefix(sendqueue.ErrFull.Error(), "sendqueue: ") + ".", false},
 	noticeCancelled:         {"Cancelled: that queued message will not be sent.", true},
 	noticeNotCancelled:      {"Not cancelled: that message is already being sent, or has been.", false},
+	noticeNotYours:          {SendQueueNotYours, false},
 	noticeCancelledAnswered: {SendQueueCancelledAnsweredText(""), false},
 	noticeNotRetried:        {"Not queued again: only a message that failed can be retried, and only once.", false},
 	noticeRoutedNotRetried:  {"Not queued again: your chief routed that message, and a failed route goes back to the chief rather than being retried here.", false},

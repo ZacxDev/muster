@@ -34,6 +34,10 @@ var actsAsTeam = map[Via]bool{
 	// preview of a team session reads the team's plugins and writes its
 	// hand-off as the team (teamPreviewPrincipal).
 	ViaPlugin: true,
+	// A TEAM HOST'S SEND QUEUE (team sharing 2b.4): the dispatcher probes and
+	// pastes into a team host's window as the team; who may still send is
+	// the row's queued_by, checked at delivery (internal/api).
+	ViaQueue: true,
 	// A team-owned gateway agent's turn: NOT a team door in phase 4.
 	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
@@ -41,7 +45,7 @@ var actsAsTeam = map[Via]bool{
 	// Never a team.
 	ViaSession: false, ViaDevice: false, ViaToken: false, ViaHook: false, ViaService: false,
 	ViaRunner: false, ViaPageLink: false,
-	ViaQueue: false, ViaFocus: false,
+	ViaFocus: false,
 }
 
 // panicOf runs f and returns its panic message ("" when it did not panic).
@@ -102,8 +106,8 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 13 {
-		t.Fatalf("accepted a team at %d doors; the ledger names 12", accepted)
+	if accepted != 14 {
+		t.Fatalf("accepted a team at %d doors; the ledger names 14", accepted)
 	}
 }
 

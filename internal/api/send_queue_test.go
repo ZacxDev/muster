@@ -50,10 +50,28 @@ func queueUser(ctx context.Context) int64 {
 	return 0
 }
 
+// queueOwnerOf is whose queue t addresses for ctx: t.Owner, or the caller's
+// own (PGStore's targetWhere).
+func queueOwnerOf(ctx context.Context, t sendqueue.Target) int64 {
+	if t.Owner != 0 {
+		return t.Owner
+	}
+	return queueUser(ctx)
+}
+
+// isTarget reports whether it is t's, for ctx: its address and its owner. A
+// stored row's Target carries no Owner (as a scan leaves it).
+func isTarget(ctx context.Context, it sendqueue.Item, t sendqueue.Target) bool {
+	owner := queueOwnerOf(ctx, t)
+	t.Owner = 0
+	return it.Owner == owner && it.Target == t
+}
+
 func (m *memQueue) Enqueue(ctx context.Context, it sendqueue.Item) (sendqueue.Item, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	it.ID, it.Owner, it.State, it.CreatedAt = int64(len(m.items)+1), queueUser(ctx), sendqueue.Queued, time.Now()
+	it.ID, it.Owner, it.State, it.CreatedAt = int64(len(m.items)+1), queueOwnerOf(ctx, it.Target), sendqueue.Queued, time.Now()
+	it.QueuedBy, it.Target.Owner = queueUser(ctx), 0
 	m.items = append(m.items, it)
 	return it, nil
 }
@@ -69,7 +87,7 @@ func (m *memQueue) List(ctx context.Context, t sendqueue.Target) ([]sendqueue.It
 		if !it.State.Open() && (it.State != sendqueue.Failed || it.RetriedAs != 0 || it.RouteID != "" || it.ChiefNudgeID != 0) {
 			continue
 		}
-		if it.Owner == queueUser(ctx) && it.Target == t {
+		if isTarget(ctx, it, t) {
 			out = append(out, it)
 		}
 	}
@@ -116,7 +134,7 @@ func (m *memQueue) NotePaste(ctx context.Context, t sendqueue.Target, since int6
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i, it := range m.items {
-		if it.Owner == queueUser(ctx) && it.Target == t && it.State.Open() && it.AfterSince < since {
+		if isTarget(ctx, it, t) && it.State.Open() && it.AfterSince < since {
 			m.items[i].AfterSince = since
 		}
 	}
@@ -132,6 +150,19 @@ func (m *memQueue) CancelOwner(_ context.Context, owner int64, _ time.Time, deta
 	n := 0
 	for i, it := range m.items {
 		if it.Owner == owner && it.State == sendqueue.Queued {
+			m.items[i].State, m.items[i].Detail = sendqueue.Cancelled, detail
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memQueue) CancelQueuedBy(_ context.Context, team, user int64, _ time.Time, detail string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for i, it := range m.items {
+		if it.QueuedBy == user && it.Owner != user && (team == 0 || it.Owner == team) && it.State == sendqueue.Queued {
 			m.items[i].State, m.items[i].Detail = sendqueue.Cancelled, detail
 			n++
 		}

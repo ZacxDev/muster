@@ -32,11 +32,15 @@ import (
 //     session's transcript to a model on a PERSON's credentials or a
 //     person's chief, which D-1113 #10 and G4 forbid for a team's. 403 at
 //     every role.
-//   - mirrorTeamOwnOnly: own sessions only in this release — typing (a send,
-//     a queued send, an answer typed into the pane, the composer's catalog)
-//     is slice 2b.4's, with its step-up and its queue checks. A member is
-//     answered 403; anyone else 404. (The preview button is a view since
-//     2b.3b: it reads the TEAM's viewer plugins.)
+//   - mirrorTeamOperate: typing (team sharing 2b.4) — a send, a queued send
+//     and its queue, an answer typed into the pane, the composer's catalog.
+//     A member at OPERATOR and above, aimed at the team and registered for
+//     the sweep at operator, so a removal or a drop to viewer ends it; the
+//     handler's own step-up gate (stepup.Fresh, the member's own sign-in)
+//     and the plugin's access (operator) decide again. A viewer is answered
+//     403 (MirrorTeamViewerRefusal).
+//   - mirrorTeamViewOrKeys: the terminal's socket — a view at viewer, and
+//     live keys (mode=interactive) at operator, as mirrorTeamOperate.
 //   - mirrorTeamHostDoor: a host's own door (its mirror token): the owner is
 //     the token's, and no owner= is read.
 //
@@ -50,8 +54,9 @@ import (
 type mirrorTeamRule int
 
 const (
-	mirrorTeamOwnOnly mirrorTeamRule = iota
+	mirrorTeamOperate mirrorTeamRule = iota
 	mirrorTeamView
+	mirrorTeamViewOrKeys
 	mirrorTeamRefused
 	mirrorTeamHostDoor
 )
@@ -64,8 +69,8 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"POST /mirror/mcp":    mirrorTeamHostDoor,
 
 	"GET /mirror/terminal":         mirrorTeamView,
-	"GET /mirror/terminal/ws":      mirrorTeamView, // read-only: live keys need operator, which access refuses on a team host until 2b.4
-	"POST /mirror/terminal/scroll": mirrorTeamView, // moves copy-mode for every watcher (D-1113 #7)
+	"GET /mirror/terminal/ws":      mirrorTeamViewOrKeys, // read-only at viewer; live keys (mode=interactive) at operator
+	"POST /mirror/terminal/scroll": mirrorTeamView,       // moves copy-mode for every watcher (D-1113 #7)
 	"GET /mirror/view":             mirrorTeamView,
 	"GET /mirror/view/ws":          mirrorTeamView,
 	"GET /mirror/view/subagent":    mirrorTeamView,
@@ -81,29 +86,29 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"POST /mirror/view/suggest/event": mirrorTeamRefused,
 
 	"GET /ui/mirror/preview-button":           mirrorTeamView,    // on the TEAM's viewer plugins (2b.3b), never the viewer's
-	"GET /mirror/view/complete":               mirrorTeamOwnOnly, // the composer's catalog: operator (2b.4)
-	"GET /mirror/terminal/send":               mirrorTeamOwnOnly,
-	"POST /mirror/terminal/send":              mirrorTeamOwnOnly,
-	"GET /mirror/view/send":                   mirrorTeamOwnOnly,
-	"POST /mirror/view/send":                  mirrorTeamOwnOnly,
-	"POST /mirror/confirm-send":               mirrorTeamOwnOnly,
-	"POST /mirror/view/ask":                   mirrorTeamOwnOnly,
-	"POST /mirror/view/ask/cancel":            mirrorTeamOwnOnly,
-	"POST /mirror/view/ask/message":           mirrorTeamOwnOnly,
-	"GET /send-queue":                         mirrorTeamOwnOnly,
-	"POST /send-queue":                        mirrorTeamOwnOnly,
-	"POST /send-queue/confirm":                mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/cancel":            mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/delete":            mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/edit":              mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/edit/cancel":       mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/edit/confirm":      mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/edit/save":         mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/edit/save/confirm": mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/retry":             mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/retry/confirm":     mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/send-now":          mirrorTeamOwnOnly,
-	"POST /send-queue/{id}/send-now/confirm":  mirrorTeamOwnOnly,
+	"GET /mirror/view/complete":               mirrorTeamOperate, // the composer's catalog
+	"GET /mirror/terminal/send":               mirrorTeamOperate,
+	"POST /mirror/terminal/send":              mirrorTeamOperate,
+	"GET /mirror/view/send":                   mirrorTeamOperate,
+	"POST /mirror/view/send":                  mirrorTeamOperate,
+	"POST /mirror/confirm-send":               mirrorTeamOperate,
+	"POST /mirror/view/ask":                   mirrorTeamOperate,
+	"POST /mirror/view/ask/cancel":            mirrorTeamOperate,
+	"POST /mirror/view/ask/message":           mirrorTeamOperate,
+	"GET /send-queue":                         mirrorTeamOperate,
+	"POST /send-queue":                        mirrorTeamOperate,
+	"POST /send-queue/confirm":                mirrorTeamOperate,
+	"POST /send-queue/{id}/cancel":            mirrorTeamOperate,
+	"POST /send-queue/{id}/delete":            mirrorTeamOperate,
+	"POST /send-queue/{id}/edit":              mirrorTeamOperate,
+	"POST /send-queue/{id}/edit/cancel":       mirrorTeamOperate,
+	"POST /send-queue/{id}/edit/confirm":      mirrorTeamOperate,
+	"POST /send-queue/{id}/edit/save":         mirrorTeamOperate,
+	"POST /send-queue/{id}/edit/save/confirm": mirrorTeamOperate,
+	"POST /send-queue/{id}/retry":             mirrorTeamOperate,
+	"POST /send-queue/{id}/retry/confirm":     mirrorTeamOperate,
+	"POST /send-queue/{id}/send-now":          mirrorTeamOperate,
+	"POST /send-queue/{id}/send-now/confirm":  mirrorTeamOperate,
 }
 
 // What a member is answered on a team session's route that does not take one.
@@ -111,8 +116,9 @@ const (
 	// MirrorTeamExtraRefusal: a model-backed extra (mirrorTeamRefused).
 	MirrorTeamExtraRefusal = "this is a team session: the chief panel, proposals, succession and suggested replies are off on team sessions " +
 		"(they would send its transcript to a person's model or chief)"
-	// MirrorTeamOwnOnlyRefusal: typing (mirrorTeamOwnOnly).
-	MirrorTeamOwnOnlyRefusal = "this is a team session: you can watch it here; typing into it is not available yet"
+	// MirrorTeamViewerRefusal: typing (mirrorTeamOperate, and live keys on
+	// mirrorTeamViewOrKeys) by a member below operator.
+	MirrorTeamViewerRefusal = "this is a team session and you are a viewer of its team: you can watch it; an operator or a manager types into it"
 )
 
 // mirrorOwnerParam is the request's owner= (the query; for a POST, its form
@@ -129,9 +135,9 @@ func mirrorOwnerParam(r *http.Request) string {
 
 // mirrorTeamGate is admit's half of mirrorTeamRoutes: it answers a refusal
 // itself (ok false), or returns the request to serve — aimed at the team's
-// hub entries and registered for the membership sweep when a member's
-// mirrorTeamView request names their team (done unregisters it; nil when
-// nothing was registered). Every request whose owner= is absent or the
+// hub entries and registered for the membership sweep, at the role the
+// route needs (mirrorTeamNeed), when a member's request names their team
+// (done unregisters it; nil when nothing was registered). Every request whose owner= is absent or the
 // principal's own passes unchanged, and so does every route not in
 // mirrorTeamRoutes (mirrorEntry refuses an owner= there).
 //
@@ -176,25 +182,43 @@ func (s *Server) mirrorTeamGate(w http.ResponseWriter, r *http.Request) (*http.R
 		http.NotFound(w, r) // no oracle: as a host that does not exist
 		return nil, nil, false
 	}
-	switch rule {
-	case mirrorTeamView:
-		ctx, done := s.teamLiveOpen(mirror.ForOwner(r.Context(), o), o, p.UserID, authz.TeamViewer, errTeamStreamClosed)
-		// Read the role AGAIN, after registering (#690 round 1, 🟢1; as
-		// teamTerminalOpen does): a removal that landed between the
-		// principal's read and the registration ran its close before this
-		// request was there to be closed. Not a member now: the same 404.
-		if !s.teamMemberNow(ctx, p.UserID, o, authz.TeamViewer) {
-			done()
-			http.NotFound(w, r)
-			return nil, nil, false
-		}
-		return r.WithContext(ctx), done, true
-	case mirrorTeamRefused:
+	if rule == mirrorTeamRefused {
 		http.Error(w, MirrorTeamExtraRefusal, http.StatusForbidden)
-	default:
-		http.Error(w, MirrorTeamOwnOnlyRefusal, http.StatusForbidden)
+		return nil, nil, false
 	}
-	return nil, nil, false
+	need := mirrorTeamNeed(rule, r)
+	if !role.AtLeast(need) {
+		http.Error(w, MirrorTeamViewerRefusal, http.StatusForbidden)
+		return nil, nil, false
+	}
+	ctx, done := s.teamLiveOpen(mirror.ForOwner(r.Context(), o), o, p.UserID, need, errTeamStreamClosed)
+	// Read the role AGAIN, after registering (#690 round 1, 🟢1; as
+	// teamTerminalOpen does): a removal or a drop that landed between the
+	// principal's read and the registration ran its close before this
+	// request was there to be closed. Not a member now: the same 404; a
+	// member below the need now: the viewer's 403.
+	if !s.teamMemberNow(ctx, p.UserID, o, need) {
+		done()
+		if need != authz.TeamViewer && s.teamMemberNow(ctx, p.UserID, o, authz.TeamViewer) {
+			http.Error(w, MirrorTeamViewerRefusal, http.StatusForbidden)
+		} else {
+			http.NotFound(w, r)
+		}
+		return nil, nil, false
+	}
+	return r.WithContext(ctx), done, true
+}
+
+// mirrorTeamNeed is the role a member's request on a team session needs under
+// rule: operator to type (mirrorTeamOperate, live keys), viewer to watch.
+func mirrorTeamNeed(rule mirrorTeamRule, r *http.Request) authz.TeamRole {
+	switch {
+	case rule == mirrorTeamOperate:
+		return authz.TeamOperator
+	case rule == mirrorTeamViewOrKeys && r.URL.Query().Get("mode") == terminalModeInteractive:
+		return authz.TeamOperator
+	}
+	return authz.TeamViewer
 }
 
 // mirrorScrollBodyMax is the scroll request's body bound (handleMirrorTerminalScroll).
@@ -214,11 +238,47 @@ func (s *Server) teamMemberNow(ctx context.Context, person, team int64, need aut
 
 // mirrorTarget is the owner a request's mirror calls are about: its team
 // (mirrorTeamGate aimed it there) or the principal's own.
-func mirrorTarget(r *http.Request) int64 {
-	if t := mirror.TargetOwner(r.Context()); t > 0 {
+func mirrorTarget(r *http.Request) int64 { return windowOwner(r.Context()) }
+
+// windowOwner is whose WINDOWS ctx's mirror calls touch: the team the route
+// gate aimed it at (mirror.TargetOwner), else the principal's own — the team
+// acting principal's own being the team (the send queue's dispatcher on a
+// team's row). Everything keyed by a window's address beside its owner — the
+// send hold, the nonce claim, the queue's turn stamps — is keyed by this, so
+// a member's Send and the dispatcher's delivery into one team window meet in
+// one place, and a member's own build-01 never meets the team's.
+func windowOwner(ctx context.Context) int64 {
+	if t := mirror.TargetOwner(ctx); t > 0 {
 		return t
 	}
-	return requestOwner(r.Context())
+	return requestOwner(ctx)
+}
+
+// windowHosts is the hosts of windowOwner(ctx): the principal's own (Hosts),
+// or the aimed-at team's (teamHostsOf). Pick an entry from it by host name:
+// it holds one owner's hosts.
+func (s *Server) windowHosts(ctx context.Context) []mirror.HostView {
+	if o := windowOwner(ctx); o != requestOwner(ctx) {
+		return s.teamHostsOf(ctx, o)
+	}
+	return s.ext.Mirror.Hosts(ctx)
+}
+
+// teamOperatorOn reports whether r is a member's request on a TEAM host's
+// entry made by an operator or a manager of that team (the request's own
+// memberships): a page then draws the composer, the queue and the question
+// cards' answers for typing (team sharing 2b.4). Drawing only — every typing
+// route is gated again (mirrorTeamOperate), on a fresh read.
+func teamOperatorOn(r *http.Request) bool {
+	if !onTeamHost(r) {
+		return false
+	}
+	p, ok := authz.From(r.Context())
+	if !ok {
+		return false
+	}
+	role, in := p.TeamScope().RoleIn(mirror.TargetOwner(r.Context()))
+	return in && role.AtLeast(authz.TeamOperator)
 }
 
 // onTeamHost reports whether r is a member's request on a TEAM host's entry

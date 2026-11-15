@@ -48,6 +48,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // State is where a queued message is.
@@ -98,6 +99,15 @@ type Target struct {
 	Host    string
 	Session string
 	Window  string
+	// Owner is WHOSE queue a caller's call addresses (team sharing 2b.4): 0 is
+	// the caller's own (muster.uid), a team's id is that team's (row-level
+	// security then decides whether the caller may: read at viewer, write at
+	// operator). 🔴 EVERY TARGET-SCOPED QUERY PINS IT (targetWhere): since
+	// 0127 a member's principal reads their teams' rows too, and a team's
+	// build-01 shares its host NAME with the member's own, so a query by
+	// address alone mixed the two queues. A scanned row's owner is
+	// Item.Owner; a scan leaves this 0.
+	Owner int64
 }
 
 // Valid reports whether t is a target the table can hold.
@@ -121,10 +131,16 @@ func (t Target) String() string {
 
 // Item is one queued message.
 type Item struct {
-	ID     int64
-	Owner  int64
-	Target Target
-	Body   string
+	ID    int64
+	Owner int64
+	// QueuedBy is the person who queued it (send_queue.queued_by, 0127: the
+	// acting principal's muster.uid, forced by its trigger): the owner on a
+	// person's own row, the member on a team's, the team itself on a row the
+	// team queued as itself. 0 for a row the system scope wrote, or one
+	// written before 0127 — read as the owner's own (Queuer).
+	QueuedBy int64
+	Target   Target
+	Body     string
 	// AgentSession is the agent session the page showed for the target when
 	// the message was queued (a hand-opened opencode pane's; migration 0106):
 	// it is delivered only while the window still shows that session
@@ -268,14 +284,25 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
-	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(agent_session, '')`
+	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0), coalesce(agent_session, ''),
+	coalesce(queued_by, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
-		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID, &it.ChiefForwardDispatch, &it.AgentSession}
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID, &it.ChiefForwardDispatch, &it.AgentSession,
+		&it.QueuedBy}
+}
+
+// Queuer is who queued it: QueuedBy, or — a row the system scope wrote, or
+// one from before 0127 — its owner.
+func (it Item) Queuer() int64 {
+	if it.QueuedBy > 0 {
+		return it.QueuedBy
+	}
+	return it.Owner
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -298,10 +325,18 @@ func scanItem(row pgx.Row) (Item, error) {
 }
 
 // targetWhere is the SQL predicate "this row is target t's", with t's
-// parameters numbered from n.
+// parameters numbered from n: its address AND its owner (Target.Owner; 0 the
+// caller's own, muster.uid). Under the system scope muster.uid is unset, so a
+// target with no Owner matches nothing there: name one.
 func targetWhere(t Target, n int) (string, []any) {
-	return fmt.Sprintf(`mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d`, n, n+1, n+2),
-		[]any{t.Host, t.Session, t.Window}
+	return fmt.Sprintf(`mirror_host = $%d AND mirror_session = $%d AND mirror_window = $%d AND owner_id = %s`, n, n+1, n+2, ownerSQL(n+3)),
+		[]any{t.Host, t.Session, t.Window, t.Owner}
+}
+
+// ownerSQL is "the owner parameter $n names": that id, or for 0 the caller's
+// own (muster.uid).
+func ownerSQL(n int) string {
+	return fmt.Sprintf(`coalesce(nullif($%d::bigint, 0), nullif(current_setting('muster.uid', true), '')::bigint)`, n)
 }
 
 // Enqueue queues it for its target, as the caller, and returns the stored row.
@@ -343,8 +378,9 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		// sign-in time that admitted it could never be sent.
 		return Item{}, errors.New("sendqueue: a queued message needs the sign-in time of the session that queued it")
 	}
+	// Serialised per OWNER of the queue (a team's members queue into one).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sendqueue.enqueue'),
-		coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
+		coalesce(`+ownerSQL(1)+`, 0)::int)`, it.Target.Owner); err != nil {
 		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
 	}
 	var nudge, forward any
@@ -360,9 +396,12 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 	if it.AgentSession != "" && !mirror.ValidAgentSession(it.AgentSession) {
 		return Item{}, errors.New("sendqueue: not an agent session id")
 	}
-	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch, agent_session)
-		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, nullif($10, '')) RETURNING `+cols,
-		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward, it.AgentSession))
+	// owner_id: the target's owner (a team the caller operates: row-level
+	// security's insert arm refuses any other), else the caller's own.
+	// queued_by is the caller whatever this writes (0127's actor trigger).
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (owner_id, mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch, agent_session)
+		VALUES (`+ownerSQL(11)+`, $1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9, nullif($10, '')) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward, it.AgentSession, it.Target.Owner))
 	if err != nil {
 		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
 	}
@@ -412,7 +451,11 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		if old.ChiefNudgeID != 0 || old.ChiefForwardDispatch != 0 {
 			return ErrNudgeNotRetryable
 		}
-		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince, AgentSession: old.AgentSession})
+		// The same queue it failed in: a team's row is retried into the
+		// team's queue, never the retrier's own window of the same name.
+		t := old.Target
+		t.Owner = old.Owner
+		out, err = s.enqueueTx(ctx, tx, Item{Target: t, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince, AgentSession: old.AgentSession})
 		if err != nil {
 			return err
 		}
@@ -539,10 +582,12 @@ func (s *PGStore) Delete(ctx context.Context, id int64) error {
 			return ErrNotDeletable
 		}
 		if it.HoldsTurn() && it.AfterSince > 0 {
-			where, args := targetWhere(it.Target, 3)
+			t := it.Target
+			t.Owner = it.Owner
+			where, args := targetWhere(t, 2)
 			if _, err := tx.Exec(ctx, `UPDATE send_queue SET after_since = $1
-				WHERE owner_id = $2 AND state IN ('queued', 'sending') AND after_since < $1 AND `+where,
-				append([]any{it.AfterSince, it.Owner}, args...)...); err != nil {
+				WHERE state IN ('queued', 'sending') AND after_since < $1 AND `+where,
+				append([]any{it.AfterSince}, args...)...); err != nil {
 				return fmt.Errorf("sendqueue: delete: carry the turn: %w", err)
 			}
 		}
@@ -604,7 +649,7 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 	}
 	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0) FROM send_queue
 		WHERE state = 'sent' AND mirror_host = $1 AND mirror_session = $2 AND (mirror_window = $3 OR mirror_window = '')
-		AND created_at >= $4 ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit)
+		AND created_at >= $4 AND owner_id = `+ownerSQL(6)+` ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit, t.Owner)
 	if err != nil {
 		return nil, fmt.Errorf("sendqueue: sent bodies: %w", err)
 	}
@@ -656,6 +701,26 @@ func (s *PGStore) CancelOwner(ctx context.Context, owner int64, now time.Time, d
 		return 0, fmt.Errorf("sendqueue: cancel owner: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// CancelQueuedBy cancels every message user QUEUED into a team's queue that
+// is still queued — team's only, or (team 0) every team's — saying why
+// (detail): the sibling of CancelOwner for the rows a person queued but does
+// not own (team sharing 2b.4). A disable and a sign-out everywhere call it
+// with team 0, as they call CancelOwner; a removal from a team or a drop to
+// viewer cancels that team's in its own transaction (internal/users,
+// CancelQueuedByTx: the one statement). Under the system scope.
+func (s *PGStore) CancelQueuedBy(ctx context.Context, team, user int64, now time.Time, detail string) (int, error) {
+	var n int64
+	err := pgx.BeginFunc(sys(ctx), s.pool, func(tx pgx.Tx) error {
+		var err error
+		n, err = users.CancelQueuedByTx(sys(ctx), tx, team, user, now, clampDetail(detail))
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sendqueue: cancel queued by: %w", err)
+	}
+	return int(n), nil
 }
 
 // clampDetail is detail cut to MaxDetail on a character boundary.

@@ -123,7 +123,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// 🔴 A TEAM HOST'S SESSION (team sharing 2b.3) IS WATCHED, AND EVERY
 	// EXTRA THAT IS THE VIEWER'S OWN IS LEFT OUT: its composer is drawn
-	// disabled (typing is 2b.4's) with no queue; no rename offer or focus
+	// disabled to a viewer, and to an operator or a manager it types into
+	// the team's window with the team's queue (2b.4); no rename offer or focus
 	// history (G4: no focus titles); no chief mode, succession or suggested
 	// replies (each would send the transcript to the viewer's own model or
 	// chief — G4, D-1113 #10; their routes answer 403 there,
@@ -131,7 +132,20 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// host name). Its preview runs on the TEAM's plugins (2b.3b). Its
 	// Attention asks are on the Attention page.
 	if team {
-		v.TeamNote, v.FocusHistory = MirrorTeamComposerNote, ""
+		v.FocusHistory = ""
+		if teamOperatorOn(r) {
+			// An OPERATOR (or a manager) types here (team sharing 2b.4): the
+			// composer and the TEAM window's queue, every form naming the
+			// team (owner=). No paperclip: an upload is the uploader's own
+			// file, and a link to it in a team's session is not the team's.
+			if v.ViewOnly == "" {
+				v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
+			}
+			v.Upload, v.UploadOff = "", false
+			v.Notice, v.NoticeOK = composerNotice(r)
+		} else {
+			v.TeamNote = MirrorTeamComposerNote
+		}
 		v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e)})
 		v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
 		v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
@@ -787,7 +801,7 @@ func heldDestKey(host, session, window string, target mirror.PasteTarget) string
 // them left out is a second delivery from a copy of the page that never saw
 // the offer (audit #275 round 1, Y1: Queue and Send now).
 func (s *Server) isHeldFor(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, again bool) bool {
-	return !again && s.sends.isHeld(requestOwner(ctx), heldDestKey(host, session, window, target), text)
+	return !again && s.sends.isHeld(windowOwner(ctx), heldDestKey(host, session, window, target), text)
 }
 
 // settleHeld records how a delivery of text ended for the hold: one that may
@@ -795,7 +809,7 @@ func (s *Server) isHeldFor(ctx context.Context, host, session, window string, ta
 // here — a Send's, a Send now's and the dispatcher's (sendQueueDeliver) — so a
 // may-have-landed queued message is held like a Send's.
 func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text, key string, err error) {
-	owner, dest := requestOwner(ctx), heldDestKey(host, session, window, target)
+	owner, dest := windowOwner(ctx), heldDestKey(host, session, window, target)
 	switch {
 	case err == nil:
 		s.sends.release(owner, dest, text)
@@ -822,7 +836,7 @@ func (s *Server) messageKey(ctx context.Context, host, session, window string, t
 	if !again {
 		return nonce
 	}
-	if k := s.sends.heldKey(requestOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
+	if k := s.sends.heldKey(windowOwner(ctx), heldDestKey(host, session, window, target), text); k != "" {
 		return k
 	}
 	return nonce
@@ -902,7 +916,7 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 }
 
 func (s *Server) mirrorPasteOnce(ctx context.Context, host, session, window, text, nonce string, target mirror.PasteTarget, opts ...mirror.PasteOption) (repeat bool, err error) {
-	st, finish := s.sends.claim(requestOwner(ctx), nonce, text)
+	st, finish := s.sends.claim(windowOwner(ctx), nonce, text)
 	switch st {
 	case nonceRepeat:
 		return true, nil

@@ -285,6 +285,26 @@ offered without JavaScript. The menu works without JavaScript (Send now, Edit
 and Cancel are forms). The list is not redrawn while a menu is open, or while a
 message is open for editing.
 
+### A team session's queue
+
+A team host's window ([mirroring.md](mirroring.md#team-hosts)) has one queue,
+shared by the team's operators and managers (team sharing 2b.4). Queueing
+into it needs **your own** fresh sign-in, as a Send does; the message is the
+team's, and the list says "Queued by ben." on a message someone else queued.
+
+- 🔴 **It is checked against who queued it, when it is sent.** The server
+  sends it as the team, and first re-reads the person who queued it: still
+  enabled, still an operator or a manager of the team, and not signed out of
+  every session since. A message that fails is not sent ("Not sent: the
+  person who queued it is no longer an operator of the team that owns this
+  session."). A message the team queued as itself is the team's own.
+- **Leaving cancels it.** Removing someone from the team, or making them a
+  viewer, cancels what they queued into the team's windows at once; a
+  disable or a sign-out everywhere cancels it on every team.
+- **Whose it is to change.** Only the person who queued a message edits it,
+  retries it or sends it now. A manager may also cancel or delete anyone's.
+  A viewer sees no queue.
+
 ### A usage limit holds the queue
 
 When Claude Code hits a usage limit it ends the turn at once with a message of
@@ -535,6 +555,9 @@ read-only never is.
 - 🔴 **Freshness belongs to one browser session, never to the user.** It is read
   from the session each request presents, and nothing is recorded per user.
   Confirming on one device leaves your other devices as stale as they were.
+  On a team session (team sharing 2b.4) it is the typing member's own: a team
+  has no sign-in of its own, and one member's confirmation counts for nobody
+  else.
 
 When a send or attach is refused as stale, the page shows "Confirm it's you" and
 then completes what was waiting: the attach, or sending the **same** text. Nothing

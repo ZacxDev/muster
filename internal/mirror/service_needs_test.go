@@ -16,7 +16,8 @@ import (
 //
 //   - "viewer" / "operator": access with that role — a member's request aimed
 //     at a team host (ForOwner) reaches it at that role, and only while
-//     teamNeedsOpen opens the role (viewing only, in 2b.3);
+//     teamNeedsOpen opens the role (viewing since 2b.3, operating since
+//     2b.4);
 //   - "need": access with a role the method computes (AttachWindow: viewer
 //     read-only, operator with live keys);
 //   - "own": owner, the principal's OWN entries whatever ctx targets — the
