@@ -528,7 +528,9 @@ func (s *Server) mirrorStepUpPage(ctx context.Context, w http.ResponseWriter, p 
 	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
+	// The team (owner=) rides the action's query: only the query aims a
+	// request at a team window (mirrorTeamGate).
+	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: ownerQuery(mirrorConfirmSendPath, p.e.Owner), Fields: fields,
 		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
 		s.logger.Printf("mirror: render confirm page: %v", err)
 	}
@@ -732,7 +734,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			return
 		}
 		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
-			s.heldRefusal(r.Context(), w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
+			s.heldRefusal(r.Context(), w, true, ownerQuery(mirrorSendPath(p.target), p.e.Owner), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()

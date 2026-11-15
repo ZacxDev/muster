@@ -53,14 +53,22 @@ type teamView struct {
 	store        *users.PGStore
 	admin        users.Actor
 	teamPath     string // the team host's terminal page
+	interactive  bool   // the build-01s run -interactive
 	teamQuery    url.Values
 	ownTermQuery url.Values
 }
 
 func newTeamView(t *testing.T) *teamView {
 	t.Helper()
+	return newTeamViewWith(t, false)
+}
+
+// newTeamViewWith is newTeamView with both build-01s connected -interactive
+// (interactive) or not.
+func newTeamViewWith(t *testing.T, interactive bool) *teamView {
+	t.Helper()
 	w := newIsoWorld(t)
-	v := &teamView{w: w, store: users.NewPG(w.pool), admin: users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}}
+	v := &teamView{w: w, store: users.NewPG(w.pool), admin: users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, interactive: interactive}
 	w.srv.ext.Users = v.store
 	setTeamLiveEvery(w.srv, 100*time.Millisecond)
 	mk := func(name string) int64 {
@@ -120,7 +128,7 @@ func newTeamView(t *testing.T) *teamView {
 func (v *teamView) connect(t *testing.T, token, session string, owner int64) {
 	t.Helper()
 	c, err := mirrorhost.New(mirrorhost.Config{URL: v.ts.URL, Token: token, Host: "build-01", Backend: &viewBackend{session: session},
-		AllowHTTP: true, Refresh: 30 * time.Millisecond, ViewPoll: 20 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
+		Interactive: v.interactive, AllowHTTP: true, Refresh: 30 * time.Millisecond, ViewPoll: 20 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}

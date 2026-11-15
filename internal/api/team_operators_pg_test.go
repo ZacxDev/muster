@@ -2,7 +2,12 @@ package api
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +19,9 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -329,5 +336,242 @@ func TestOnlyItsQueuerOrAManagerChangesATeamSend(t *testing.T) {
 	}
 	if c, body := post(path(bens3, "cancel")+owner, v.cal); c != http.StatusForbidden || !strings.Contains(body, MirrorTeamViewerRefusal) || state(bens3) != "queued" {
 		t.Fatalf("cal's (viewer) cancel of a team row: %d %q, row %s; want 403 and still queued", c, truncate(body, 120), state(bens3))
+	}
+}
+
+// TestEveryQueueTargetNamesItsOwner: every function in internal/api that
+// builds a sendqueue.Target (a queue's address) is listed with whose queue it
+// addresses. A page's queue post (a queue, a Retry, a card's "Send as a
+// message") builds it ONLY through queueTargetOf, which carries the team
+// entry's owner: a literal elsewhere is the copy that drops it (round 1 on
+// #702, F1: "Send as a message" queued a team card's answer into the
+// member's own queue). Fails when the set grows or shrinks.
+//
+// 🔴 RED at c6df10bf: handleMirrorAskMessage built its own literal.
+func TestEveryQueueTargetNamesItsOwner(t *testing.T) {
+	want := map[string]string{
+		"queueTargetOf":                "a mirrored entry's queue: its address and its owner (a team entry's is the team's)",
+		"Server.sendQueueNotePaste":    "the window ctx's mirror calls touch (windowOwner)",
+		"Server.forwardToHostDispatch": "a chief's forward, as the chief's owner (the caller's own)",
+		"Server.queueNudgeText":        "a chief nudge, as the nudge's owner (the caller's own)",
+		"Server.injectRoute":           "a routed message, as the route's owner (the caller's own)",
+		"Server.askLogProvenance":      "the ask log's read of the caller's OWN sent bodies",
+	}
+	found := map[string]int{}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			name := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				rt := fn.Recv.List[0].Type
+				if st, ok := rt.(*ast.StarExpr); ok {
+					rt = st.X
+				}
+				if id, ok := rt.(*ast.Ident); ok {
+					name = id.Name + "." + name
+				}
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if cl, ok := n.(*ast.CompositeLit); ok {
+					if sel, ok := cl.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "Target" {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "sendqueue" {
+							found[name]++
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(found) < 3 {
+		t.Fatalf("instrument check FAILED: the walk found %d builders", len(found))
+	}
+	ledgerMatches(t, "sendqueue.Target literals", found, want)
+}
+
+// TestATeamCardMessageQueuesIntoTheTeamsQueue: the target a team window's
+// card builds (queueTargetOf, the one constructor) is the TEAM's, and a queue
+// post through it, by an operator aimed at the team, lands with owner_id the
+// team and queued_by the operator. CONTROL: the member's own entry (Owner 0)
+// queues into the member's own.
+func TestATeamCardMessageQueuesIntoTheTeamsQueue(t *testing.T) {
+	o := newOpsTeam(t)
+	m, err := authz.NewMemberships([]authz.Membership{{Team: o.team, Role: authz.TeamOperator}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ben := stepup.WithAuthTime(authz.WithPrincipal(context.Background(), authz.Principal{UserID: o.ben, Role: authz.RoleMember,
+		Via: authz.ViaSession, Teams: m}), time.Now())
+	teamHost := mirror.HostView{Owner: o.team, Host: "ws", Online: true, Interactive: true}
+	e := mirror.SessionView{Owner: o.team, Host: "ws", Session: "main", Window: "@61"}
+	q := sendQueueTarget{t: queueTargetOf(teamHost, e), h: teamHost, e: e, listed: true}
+	it, err := o.srv.enqueueSend(mirror.ForOwner(ben, o.team), q, "ops: a card's answer, as a message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Owner != o.team || it.QueuedBy != o.ben {
+		t.Fatalf("a team card's message: owner %d queued_by %d; want the team %d, queued by ben %d", it.Owner, it.QueuedBy, o.team, o.ben)
+	}
+	own := queueTargetOf(mirror.HostView{Host: "ws"}, mirror.SessionView{Host: "ws", Session: "main", Window: "@62"})
+	if own.Owner != 0 {
+		t.Fatalf("CONTROL: an own entry's target names owner %d; want 0 (the caller's own)", own.Owner)
+	}
+}
+
+// opsCutoff is the queuer's sign-in refusal, pinned literally.
+const opsCutoff = "Not sent: the account that queued it was signed out of every session (a disable, a password reset or a sign-out everywhere) after it was queued. Queue it again."
+
+// TestATeamRowIsCheckedAgainstItsQueuersSignIn: with accounts (GoTrue's
+// user store wired), a TEAM row is refused when its QUEUER's sessions were
+// cut off (users.sessions_not_before) or signed out everywhere
+// (users.signed_out_at) after the sign-in that queued it — the cancel is
+// bypassed (the cutoffs are written straight into the database), so only the
+// delivery's account check of the queuer stands between the row and the
+// pane. CONTROL: ben with no cutoff is pasted.
+//
+// Round 1 on #702 (F3): both mutants — the check reading the TEAM's account,
+// and the check skipped — survived the suite before this test.
+func TestATeamRowIsCheckedAgainstItsQueuersSignIn(t *testing.T) {
+	o := newOpsTeam(t)
+	o.srv.gt = &gotrueState{GoTrueAuth: GoTrueAuth{Users: o.store}, now: time.Now}
+
+	ok := o.teamRow(t, "@51", "ops: ben, signed in", o.ben)
+	o.tick(t)
+	if st, d := o.rowState(t, ok); st != "sent" {
+		t.Fatalf("CONTROL: ben's row with no cutoff: %s %q", st, d)
+	}
+	for _, c := range []struct{ name, column string }{
+		{"signed out everywhere", "signed_out_at"},
+		{"sessions cut off", "sessions_not_before"},
+	} {
+		body := "ops: ben, " + c.name
+		id := o.teamRow(t, "@5"+strconv.Itoa(len(c.column)), body, o.ben)
+		dbtest.OwnerExec(t, o.dsn, `UPDATE users SET `+c.column+` = now() WHERE id = $1`, o.ben)
+		o.tick(t)
+		if st, d := o.rowState(t, id); st != "failed" || d != opsCutoff || o.pastedBody(body) {
+			t.Errorf("ben's team row, %s since he queued it: %s %q, pasted %q; want failed %q", c.name, st, d, o.pasted(), opsCutoff)
+		}
+		dbtest.OwnerExec(t, o.dsn, `UPDATE users SET `+c.column+` = NULL WHERE id = $1`, o.ben)
+	}
+}
+
+// TestAPhoneDismissesATeamAskAtOperator: the device DISMISSAL route on a
+// TEAM's question (round 1 on #702, F4). A viewer's signed dismissal is
+// refused by name (403 not_operator) and the question stays open; an
+// operator's dismisses it. A team's DISPATCH CARD is not dismissed from a
+// phone even by an operator (TeamCardNotFromPhone) and stays open.
+func TestAPhoneDismissesATeamAskAtOperator(t *testing.T) {
+	a := newActionRig(t)
+	sys := authz.System(context.Background())
+	us := users.NewPG(a.pool)
+	pl := plugins.NewPG(a.pool)
+	a.s.ext.ChiefDispatch = pl
+	admin := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	tm, err := us.CreateTeam(sys, admin, "ops-dismiss-"+strconv.FormatInt(time.Now().UnixNano(), 36), authz.OperatorUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		for _, q := range []string{`DELETE FROM attention_asks WHERE owner_id = $1`, `DELETE FROM team_members WHERE team_id = $1`,
+			`DELETE FROM audit_log WHERE user_id = $1 OR team_id = $1 OR object = 'team:' || $1::text`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = a.pool.Exec(bg, q, tm.ID)
+		}
+	})
+	if err := us.SetTeamMember(sys, admin, tm.ID, a.uid, authz.TeamViewer); err != nil {
+		t.Fatal(err)
+	}
+	asTeam := authz.WithPrincipal(context.Background(), authz.Principal{UserID: tm.ID, Team: true, Role: authz.RoleMember, Via: authz.ViaAttention})
+	file := func(q string, card bool) int64 {
+		ask, err := a.attn.Create(asTeam, attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel},
+			Question: q, Options: []string{"yes", "no"}, OwnerCard: card})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ask.ID
+	}
+	open := func(id int64) bool {
+		got, err := a.attn.Get(asTeam, id)
+		return err == nil && got.Status == attention.Open
+	}
+	dismiss := func(id int64) (int, string) {
+		nonce, msg := a.challenge(t, a.tok, actionAskDismiss, id, nil)
+		return a.act(t, a.tok, "cancel", id, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg)})
+	}
+
+	plain := file("Skip the team's nightly build?", false)
+	if c, code := dismiss(plain); c != 403 || code != "not_operator" || !open(plain) {
+		t.Fatalf("a viewer's phone dismissing the team's question: %d %q, open %v; want 403 not_operator and still open", c, code, open(plain))
+	}
+	if err := us.SetTeamMember(sys, admin, tm.ID, a.uid, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	card := file("Start an agent on the team's task?", true)
+	if _, err := pl.FileDispatchHold(asTeam, map[string]any{"door": "card", "ask_id": card}); err != nil {
+		t.Fatal(err)
+	}
+	if c, code := dismiss(card); c == 200 || !open(card) {
+		t.Fatalf("an operator's phone dismissing the team's DISPATCH CARD: %d %q, open %v; want refused and still open", c, code, open(card))
+	}
+	if c, code := dismiss(plain); c != 200 || open(plain) {
+		t.Fatalf("CONTROL: an operator's phone dismissing the team's question: %d %q, open %v; want 200 and closed", c, code, open(plain))
+	}
+}
+
+// TestATeamConfirmPageComesBackToTheTeamsWindow: the plain confirm pages a
+// browser with no script gets for a stale (or, here, a wrong-password)
+// confirm of a TEAM window's send, queue post and Send now post back to the
+// TEAM's window: their action names the team (owner=), which is what aims a
+// request (mirrorTeamGate). Round 1 on #702 (F2): they named none, so the
+// confirm resolved against the member's own hosts. CONTROL: B's confirm with
+// no owner= is 404 — B has no build-01 of his own.
+func TestATeamConfirmPageComesBackToTheTeamsWindow(t *testing.T) {
+	v := newTeamViewWith(t, true)
+	w := v.w
+	team := strconv.FormatInt(v.team, 10)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO send_queue (owner_id, queued_by, mirror_host, mirror_session, mirror_window, body, stepup_at)
+		VALUES ($1, $2, 'build-01', $3, '', 'ops-confirm: B''s', now())`, v.team, w.b.uid, v.shared)
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE owner_id = $1`, v.team)
+	})
+	var row int64
+	if err := w.pool.QueryRow(w.sys, `SELECT id FROM send_queue WHERE body = 'ops-confirm: B''s'`).Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"host": {"build-01"}, "session": {v.shared}, "text": {"hello"}, "password": {"not the password"}}
+	send := url.Values{"kind": {"view"}}
+	for k, vs := range form {
+		send[k] = vs
+	}
+	sendNow := "/send-queue/" + strconv.FormatInt(row, 10) + "/send-now/confirm"
+	for _, c := range []struct{ name, path, body string }{
+		{"a send", "/mirror/confirm-send", send.Encode()},
+		{"a queue post", "/send-queue/confirm", form.Encode()},
+		{"a Send now", sendNow, url.Values{"password": {"not the password"}}.Encode()},
+	} {
+		rec := w.do(w.h, "POST", c.path+"?owner="+team, c.body, cred{sessionUser: w.b.uid})
+		want := `action="` + c.path + `?owner=` + team + `"`
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: B's confirm page for the team's window: %d, carries %s: %v\n%s", c.name, rec.Code, want,
+				strings.Contains(rec.Body.String(), want), truncate(rec.Body.String(), 300))
+		}
+	}
+	if rec := w.do(w.h, "POST", "/mirror/confirm-send", send.Encode(), cred{sessionUser: w.b.uid}); rec.Code != 404 {
+		t.Errorf("CONTROL: B's confirm naming no team: %d; want 404", rec.Code)
 	}
 }

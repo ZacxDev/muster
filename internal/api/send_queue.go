@@ -129,9 +129,32 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 		q.agentSession = as
 	}
 	// A team entry's queue is the team's (h.Owner; 0 is the principal's own).
-	q.t = sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window, Owner: h.Owner}
+	q.t = queueTargetOf(h, e)
 	q.back = mirrorRef(e).ViewPath()
 	return q, true
+}
+
+// queueTargetOf is THE queue target of a mirrored entry e of host h: its
+// address AND its owner — a team entry's queue is the team's (h.Owner; 0 is
+// the principal's own). Every queue post a page makes builds its target here
+// (queueTargetBuilders pins who else builds one), so no path drops the owner
+// and queues into the member's own window of the same name.
+func queueTargetOf(h mirror.HostView, e mirror.SessionView) sendqueue.Target {
+	return sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window, Owner: h.Owner}
+}
+
+// ownerQuery is path naming owner as its owner= query (a TEAM's; 0, the
+// principal's own, leaves path as it is). A form posting to a typing route
+// carries its team there: only the query aims a request (mirrorTeamGate).
+func ownerQuery(path string, owner int64) string {
+	if owner == 0 {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "owner=" + strconv.FormatInt(owner, 10)
 }
 
 // mirrorQueueOff is why a mirrored entry cannot be queued for, "" when it can:
@@ -204,7 +227,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		case !g.stale:
 			refuse(g.status, g.msg, g.notice)
 		case nav:
-			s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, sendQueueAddFields(q, text, again), q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, q, sendQueueAddFields(q, text, again), q.back, "")
 		default:
 			refuseStale(w)
 		}
@@ -218,7 +241,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	// without the person's Send again (isHeldFor): queued, it would be pasted
 	// a second time when the window goes idle.
 	if s.isHeldFor(ctx, q.t.Host, q.t.Session, q.t.Window, mirror.PasteClaude, text, again) {
-		s.heldRefusal(r.Context(), w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
+		s.heldRefusal(r.Context(), w, nav, ownerQuery(ui.SendQueuePath, q.h.Owner), sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
 		return
 	}
 	_, err := s.enqueueSend(ctx, q, text)
@@ -315,7 +338,13 @@ func sendQueueAddFields(q sendQueueTarget, text string, again bool) []ui.Compose
 // sendQueueStepUpPage answers a browser-submitted queue (or Retry) whose
 // sign-in is stale: the plain confirm page, carrying what was waiting in
 // hidden fields, which posts to action.
-func (s *Server) sendQueueStepUpPage(ctx context.Context, w http.ResponseWriter, action string, fields []ui.ComposerField, back, problem string) {
+//
+// q's owner rides the action's query (ownerQuery): only the query aims a
+// team request (mirrorTeamGate), so a confirm of a team window's queue post
+// or row comes back to the TEAM's window, never the member's own of that
+// name.
+func (s *Server) sendQueueStepUpPage(ctx context.Context, w http.ResponseWriter, action string, q sendQueueTarget, fields []ui.ComposerField, back, problem string) {
+	action = ownerQuery(action, q.h.Owner)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: action, Fields: fields,
@@ -350,7 +379,7 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text"), r.PostFormValue(ui.SendAgainField) == "1"), q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, q, sendQueueAddFields(q, r.PostFormValue("text"), r.PostFormValue(ui.SendAgainField) == "1"), q.back, o.Error)
 		return
 	}
 	s.sendQueueAdd(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -735,7 +764,7 @@ func (s *Server) handleSendQueueRetryConfirm(w http.ResponseWriter, r *http.Requ
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), q, sendQueueRetryFields(r), q.back, o.Error)
 		return
 	}
 	s.sendQueueRetry(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -821,7 +850,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 		if nav {
 			formDocument(w)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if err := ui.SendQueueRetryConfirmPage(ui.SendQueueRetryPath(id), SendQueueRetryConfirmField,
+			if err := ui.SendQueueRetryConfirmPage(ownerQuery(ui.SendQueueRetryPath(id), q.h.Owner), SendQueueRetryConfirmField,
 				SendQueueMayHaveSent, q.back, s.uiBrand(ctx)).Render(w); err != nil {
 				s.logger.Printf("sendqueue: render retry confirm page: %v", err)
 			}
@@ -836,7 +865,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 		case !g.stale:
 			refuse(g.status, g.msg, g.notice)
 		case nav:
-			s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), q, sendQueueRetryFields(r), q.back, "")
 		default:
 			refuseStale(w)
 		}
@@ -886,7 +915,7 @@ func (s *Server) mirrorComposerQueue(ctx context.Context, h mirror.HostView, e m
 	if ref.Owner != 0 {
 		q.Set("owner", strconv.FormatInt(ref.Owner, 10))
 	}
-	t := sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window, Owner: h.Owner}
+	t := queueTargetOf(h, e)
 	return &ui.ComposerQueue{Src: ui.SendQueuePath + "?" + q.Encode(), Owner: ref.Owner,
 		List: s.sendQueueListView(ctx, t, editing), Disabled: mirrorQueueOff(h, e)}
 }
