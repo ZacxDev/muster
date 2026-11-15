@@ -670,6 +670,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Interactive bool   `json:"interactive"`
 		OtherToken  bool   `json:"other_token"`
 		Held        bool   `json:"held"`
+		HeldUnsure  bool   `json:"held_unsure"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -691,6 +692,9 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
 			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+
 				" (right after a server restart, wait a few seconds and run doctor again)")
+	case h.HeldUnsure:
+		d.add(name, statusFail, fmt.Sprintf("team host %q is connected, but a second machine with its token is held, from the same address as the live one (a proxy or NodePort): the server cannot tell which of the two this machine is", h.Host),
+			"if this machine was moved, stop the old host first so this one is taken; if not, a kept copy of the token is retrying: a manager revokes it and mints a new one on the team's hosts page")
 	default:
 		mode := "read-only"
 		if h.Interactive {

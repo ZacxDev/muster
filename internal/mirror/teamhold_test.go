@@ -276,9 +276,8 @@ func TestAHeldMachineIsToldItIsHeld(t *testing.T) {
 		t.Fatalf("the second machine = %v; want it held", err)
 	}
 	ask := func(addr string) bool {
-		req := httptest.NewRequest(http.MethodGet, "/mirror/host", nil)
-		req.Header.Set(peerHeader, addr)
-		return r.svc.HeldHere(asUser(team), "build-05", req)
+		held, _ := askHeld(r, team, "build-05", addr)
+		return held
 	}
 	if !ask(keptAddr) {
 		t.Fatal("the held machine is not told it is held")
@@ -296,5 +295,56 @@ func TestAHeldMachineIsToldItIsHeld(t *testing.T) {
 	}
 	if ask(liveAddr) {
 		t.Fatal("the LIVE machine is told it is held because another machine shares its address")
+	}
+	// …and it is told the server cannot be sure which it is (round 1, Y1).
+	if _, unsure := askHeld(r, team, "build-05", liveAddr); !unsure {
+		t.Fatal("a machine sharing the live address with a held one is not told the server cannot be sure")
+	}
+	if _, unsure := askHeld(r, team, "build-05", movedAddr); unsure {
+		t.Fatal("a machine with no held attempt is told the server cannot be sure")
+	}
+}
+
+// askHeld is Service.HeldHere for a request from addr.
+func askHeld(r *rig, team int64, host, addr string) (held, unsure bool) {
+	req := httptest.NewRequest(http.MethodGet, "/mirror/host", nil)
+	req.Header.Set(peerHeader, addr)
+	return r.svc.HeldHere(asUser(team), host, req)
+}
+
+// TestAnAttemptFromTheLiveAddressCannotBeConfirmed (#685 round 1, Y1): behind
+// a proxy or a NodePort every machine shares one address, so a held attempt
+// from the LIVE connection's own address cannot be told from the live host.
+// The card marks it (SameAsLive), a confirm of it is refused
+// (ErrIndistinguishable) and arms nothing — its retry is still held. The
+// CONTROL is an attempt from another address, which a confirm arms.
+func TestAnAttemptFromTheLiveAddressCannotBeConfirmed(t *testing.T) {
+	const team = 900253
+	r := newPeerRig(t)
+	tok, _ := liveTeamHost(t, r, team, "build-07")
+	for _, a := range []string{liveAddr, movedAddr} {
+		if err := r.connectFrom(t, tok, a, hello("build-07", true, "s")); !isHeld(err) {
+			t.Fatalf("an attempt from %s = %v; want it held", a, err)
+		}
+	}
+	ctx := asUser(team)
+	same := map[string]bool{}
+	for _, h := range r.svc.HeldReplacements(ctx) {
+		same[h.Addr] = h.SameAsLive
+	}
+	if !same[liveAddr] || same[movedAddr] {
+		t.Fatalf("SameAsLive by address = %v; want only %s marked", same, liveAddr)
+	}
+	if err := r.svc.ConfirmReplacement(ctx, "build-07", liveAddr); !errors.Is(err, mirror.ErrIndistinguishable) {
+		t.Fatalf("a confirm of the live address's attempt = %v; want ErrIndistinguishable", err)
+	}
+	if err := r.connectFrom(t, tok, liveAddr, hello("build-07", true, "s")); !isHeld(err) {
+		t.Fatalf("after the refused confirm, the live address's retry = %v; want it still held", err)
+	}
+	if !r.svc.Hub().Online(team, "build-07", "real-host") {
+		t.Fatal("the real host stopped serving")
+	}
+	if err := r.svc.ConfirmReplacement(ctx, "build-07", movedAddr); err != nil {
+		t.Fatalf("CONTROL: a confirm of another address's attempt = %v; want it armed", err)
 	}
 }

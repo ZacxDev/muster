@@ -1875,8 +1875,14 @@ server and its own `muster-mirror`.
   a manager's confirmation" and keeps retrying, and `muster doctor` there
   reports "held: another connection is live for this team host". The page
   lists each held machine by the address it connected from; once a manager
-  confirms that machine, its next attempt from that address takes over, and
-  no other machine's does. Machines behind one proxy share its address. A host that disconnected first (a restart) is taken
+  confirms that machine, its next attempt from that address takes over.
+  **Behind a proxy or a Kubernetes NodePort every machine shares one
+  address**, so there a confirm cannot tell machines apart, and a held
+  machine at the live host's own address cannot be confirmed: stop the live
+  host first, or replace the token. `muster doctor` then says it cannot tell
+  which machine it is. A held machine (or any kept copy of the token) can
+  still use `/mirror/mcp` and `/mirror/ask` as any session the connected host
+  lists; revoking and re-minting the token is what stops it. A host that disconnected first (a restart) is taken
   back at once. A muster-mirror whose old connection is half-open waits for
   the keepalive to end it, and then reconnects.
 - **Leaving.** A manager revokes the token: the connection ends at the next

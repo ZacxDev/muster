@@ -46,8 +46,8 @@ func TestTheRotateReasonIsReadFromTheTeamsAudit(t *testing.T) {
 	if err := s.RemoveTeamMemberAsManager(ctx, Actor{UserID: rt.ana, Via: authz.ViaSession}, rt.team, rt.cal); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := s.TeamRotateReason(ctx, rt.team, time.Now().Add(time.Hour)); err != nil || r.UserID != rt.ben {
-		t.Fatalf("after a viewer's removal the reason = %+v, %v; want still ben (%d)", r, err, rt.ben)
+	if r, err := s.TeamRotateReason(ctx, rt.team, rotateAt(t, s, rt.token)); err != nil || r.UserID != rt.ben {
+		t.Fatalf("after a viewer's removal the reason = %+v, %v; want still ben (%d): a viewer's removal does not mark", r, err, rt.ben)
 	}
 	// A disable of a remaining operator moves it forward.
 	dee := addPerson(t, pool, "why-dee@example.test")
@@ -63,5 +63,42 @@ func TestTheRotateReasonIsReadFromTheTeamsAudit(t *testing.T) {
 	}
 	if r.UserID != dee || r.Name != "why-dee@example.test" || r.Kind != RotateDisabled {
 		t.Fatalf("after dee's disable the reason = %+v; want dee (%d) was disabled", r, dee)
+	}
+}
+
+// TestAStaleDisableIsNeverTheRotateReason (#685 round 1, G4): the reason is
+// the row of the MARK'S OWN transaction, never the newest older one. dee is
+// disabled while a VIEWER (an audited disable that marks nothing), re-enabled
+// and made an operator; then ben, an operator, is disabled with NO actor (no
+// audit row). The mark is ben's, and no row explains it: the reason is none
+// — never "dee was disabled", which a read of today's memberships matched.
+func TestAStaleDisableIsNeverTheRotateReason(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	rt := newRotateTeam(t, s, pool, "stale")
+	dee := addPerson(t, pool, "stale-dee@example.test")
+	if err := s.SetTeamMember(ctx, admin, rt.team, dee, authz.TeamViewer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetDisabledAs(ctx, &admin, dee, true); err != nil {
+		t.Fatal(err)
+	}
+	if marked(t, pool, rt.token) {
+		t.Fatal("a viewer's disable marked the token")
+	}
+	if _, err := s.SetDisabledAs(ctx, &admin, dee, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTeamMember(ctx, admin, rt.team, dee, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetDisabled(ctx, rt.ben, true); err != nil { // no actor: no audit row
+		t.Fatal(err)
+	}
+	if !marked(t, pool, rt.token) {
+		t.Fatal("ben's disable left the token unmarked")
+	}
+	if r, err := s.TeamRotateReason(ctx, rt.team, rotateAt(t, s, rt.token)); !errors.Is(err, ErrNoRotateReason) {
+		t.Fatalf("the reason for ben's unaudited disable = %+v, %v; want none (ErrNoRotateReason), never dee's older disable", r, err)
 	}
 }

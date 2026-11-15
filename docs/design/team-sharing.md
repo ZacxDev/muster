@@ -2089,10 +2089,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   (the three attention tools, the four task tools, `agent_report_done`,
    >   the 11 officer instance tools), 29 refused, as A lists them. A team
    >   token's `tools/list` is the kept tools only (also over the opencode
-   >   set, for an opencode session on a team host); a refused or unclassified
-   >   name answers `teamHostToolRefusal` by name at the call, listed or not
-   >   (serveMCP's disabled hook). It sits ahead of `hostOfficerMirrorTool`
-   >   and the step-up gate, because a refused name never reaches the call.
+   >   set, for an opencode session on a team host). 🔴 That listing filter is
+   >   the ONE guard (#685 round 1, G3): serveMCP runs a listed name only, so
+   >   a refused or unclassified name never reaches the call; serveMCP's
+   >   disabled hook only words the refusal (`teamHostToolRefusal`) instead of
+   >   "unknown tool". There is no second check at the call. Being unlisted,
+   >   a refused name never reaches `hostOfficerMirrorTool` or the step-up
+   >   gate.
    > - **Remote mode** answers 401 `TeamHostRemoteRefusal` to every
    >   remote-marked request of a team token (initialize and tools/list
    >   included), before serveMCP.
@@ -2124,6 +2127,25 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   reports `held` (`GET /mirror/host`, `Service.HeldHere`: an attempt
    >   from its address is held and the live connection is from another),
    >   not `online`.
+   >   🔴 **Round 1 (Y1), measured on a NodePort deployment: every host
+   >   showed as the same pod-network address.** So in the supported deployments (a proxy chain or
+   >   a NodePort) the address binding tells NO machines apart: the held
+   >   machine and the live host are one address. A confirm for an attempt
+   >   whose address equals the live connection's is therefore REFUSED
+   >   (`ErrIndistinguishable`), and the card says "this machine can't be told
+   >   apart from the live host by address; stop the live host first, or
+   >   replace the token". `muster doctor` there reports `held_unsure` (FAIL:
+   >   the server cannot tell which of the two this machine is), not online.
+   >   A per-attempt code that binds the confirm to one machine is a separate
+   >   follow-up PR, not built here.
+   >   Held attempts are logged and nudge members' views at most once per
+   >   `heldAnnounceEvery` (30 s) per address (G2); every attempt is still
+   >   counted on the card.
+   >   🔴 **The hold guards the tunnel only (G1).** A held machine, or any
+   >   kept copy of the token, can still call `/mirror/mcp` and `/mirror/ask`
+   >   as any session the LIVE host lists: those doors bind a call to the live
+   >   host's listing, and the session id is the caller's claim. The rotate
+   >   mark (revoke and re-mint) is the answer to a kept token.
    > - **`/teams/{id}/hosts`** (`team_hosts_page.go`): GET, `POST` (mint),
    >   `POST …/{token}/revoke`, `POST …/replace`. Managers only (the request's
    >   memberships, then `teamAdminContext`'s fresh read), and the token rows
@@ -2144,7 +2166,10 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   transaction. A later trigger moves the mark forward, so the page names
    >   the latest reason. The reason (`TeamRotateReason`, under System: a
    >   `user.disable` row names no team) is the newest of the three triggering
-   >   audit rows at or before `rotate_at`. A disable through
+   >   audit rows **written in the mark's own transaction** (`at =
+   >   rotate_at`, round 1 G4: "the newest row before it" showed a stale
+   >   disable of someone who was a viewer then), each condition reading the
+   >   row's own role, never today's membership. A disable through
    >   `SetDisabled` with no actor writes no audit row; the page then says
    >   "rotate (marked <date>)".
    > - **No episode for a team owner** (`attentionMirrorChanged`): with

@@ -12,10 +12,12 @@ import (
 // POST /mirror/mcp acts as the TEAM ACTING PRINCIPAL (authz.ViaMirrorHost is
 // team-acting, and admit lets a team through it), and row-level security then
 // shows it EVERY team row. So the tool set below is the WHOLE guard (D-1113
-// #5): a team token is listed only the kept tools, and every other name is
-// refused by name at the call (serveMCP runs a listed name only, and the
-// door's disabled hook answers teamHostToolRefusal). A tool that is not
-// classified here is refused too (fail closed), and
+// #5). 🔴 ITS ONE GUARD IS THE TOOL-LIST FILTER (handleMirrorMCP): a team
+// token is listed only the kept tools, and serveMCP runs a listed name only,
+// so an unlisted one never reaches the call. The door's disabled hook does
+// NOT guard anything: it only words that refusal (teamHostToolRefusal) instead
+// of "unknown tool". There is no second check at the call (#685 round 1, G3).
+// A tool that is not classified here is unlisted too (fail closed), and
 // TestEveryMirrorToolIsClassifiedForATeamHost fails until it is classified.
 //
 // 🔴 THIS LEDGER, admit's mirror arm and ViaMirrorHost's place in

@@ -497,10 +497,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		}
 		instructions = "muster's tools for a mirrored opencode session."
 	}
-	// 🔴 A TEAM HOST GETS teamHostTools ONLY (team_host_tools.go): listed are
-	// the kept tools, and every other name is refused by name at the call —
-	// serveMCP runs a listed name only, and asks disabled why. Over the
-	// opencode set, too, when an opencode session on a team host calls.
+	// 🔴 A TEAM HOST GETS teamHostTools ONLY (team_host_tools.go). THIS
+	// FILTER IS THE ONE GUARD: serveMCP runs a listed name only, so an
+	// unlisted one never reaches the call. The disabled hook below only words
+	// that refusal by name; it decides nothing. Over the opencode set, too,
+	// when an opencode session on a team host calls.
 	if team {
 		inner, innerDisabled := tools, disabled
 		tools = func() []agents.ToolDef {

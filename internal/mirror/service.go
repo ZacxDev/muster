@@ -243,14 +243,11 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// so the live connection's token stays the one tracked, and the held one
 	// is sent nothing — until a manager confirms it.
 	peer := s.peerAddr(r)
-	if tok.Team && !s.hub.admitPinned(key, peer) {
-		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer)
-		// Its hello first, as every refusal reads it: the host then reads the
-		// refusal as muster's answer to its registration.
-		_, _ = readHello(r.Context(), ws)
-		refuse(r.Context(), ws, ErrHeldForManager)
-		s.hub.changed(tok.OwnerID)
-		return
+	if tok.Team {
+		if admit, announce := s.hub.admitPinned(key, peer); !admit {
+			s.refuseHeld(r, ws, tok, peer, announce)
+			return
+		}
 	}
 
 	// A hijacked connection's request context does not end with the TCP
@@ -276,6 +273,20 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	}()
 	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
+}
+
+// refuseHeld answers a held team host connection (teamhold.go): its hello
+// first, as every refusal reads it, so the host reads the refusal as muster's
+// answer to its registration. Logged, and the team's views nudged, only when
+// announce (at most once per heldAnnounceEvery per address): a machine in a
+// tight retry loop is counted on the card, not announced each time.
+func (s *Service) refuseHeld(r *http.Request, ws *websocket.Conn, tok Token, peer string, announce bool) {
+	_, _ = readHello(r.Context(), ws)
+	refuse(r.Context(), ws, ErrHeldForManager)
+	if announce {
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection from %s is held for a manager's confirmation", tok.Host, tok.OwnerID, peer)
+		s.hub.changed(tok.OwnerID)
+	}
 }
 
 // authenticate checks the request's mirror token (ServeConnect's rules: the

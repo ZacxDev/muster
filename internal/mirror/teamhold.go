@@ -38,11 +38,24 @@ import (
 //     so a retained token retrying fast cannot win the race a blanket
 //     confirm would open (#685 round 0).
 //
-// ⚠ AN ADDRESS IS THE TCP PEER, NOT X-Forwarded-For (which any client
-// writes). Behind a proxy chain every machine shares the proxy's address, so
-// two machines there are ONE attempt on the card and the confirm cannot tell
-// them apart: the card says so (HeldReplacement.Addr is the proxy's). The
-// binding is exact only where hosts reach muster directly.
+// 🔴 AN ADDRESS IS THE TCP PEER, NOT X-Forwarded-For (which any client
+// writes), AND IN THE SUPPORTED DEPLOYMENTS IT TELLS NO MACHINES APART.
+// Behind a proxy chain or a Kubernetes NodePort every machine shares one
+// address (measured on a NodePort deployment: every host showed as the same
+// pod-network address), so the
+// held machine and the live host are the SAME address there, and a confirm
+// cannot distinguish them. So a confirm for an attempt whose address is the
+// LIVE connection's is REFUSED (ErrIndistinguishable, Service.
+// ConfirmReplacement): the manager must stop the live host first (its
+// replacement is then taken at once, as offline) or replace the token. The
+// binding does real work only where hosts reach muster directly, each from
+// its own address. A stronger binding (a per-attempt code) is a follow-up.
+//
+// 🔴 THE HOLD GUARDS THE TUNNEL ONLY. A held machine, or any kept copy of the
+// token, can still call /mirror/mcp and /mirror/ask: those doors bind a call
+// to a session the LIVE host lists, and the session id is the caller's claim
+// (internal/api mirror_mcp.go), so it can act as any session the live host
+// lists, within teamHostTools. The rotate mark is the answer to a kept token.
 //
 // A connection arriving while the host is OFFLINE (not live) is taken at
 // once, as today, so a restart of the real host is unaffected: a clean
@@ -64,6 +77,20 @@ const ReplaceConfirmWindow = 3 * time.Minute
 // its last attempt.
 const heldRetention = 15 * time.Minute
 
+// heldAnnounceEvery is the most often ONE address's held attempts are logged
+// and nudge the team's views: a machine retrying in a tight loop is counted,
+// not announced on every attempt.
+const heldAnnounceEvery = 30 * time.Second
+
+// ErrIndistinguishable: the chosen held attempt came from the LIVE
+// connection's own address, so a confirm could not tell the two machines
+// apart (the file comment).
+var ErrIndistinguishable = errors.New("mirror: this machine can't be told apart from the live host by address; stop the live host first, or replace the token")
+
+// ErrNothingHeld: no attempt from that address is held for that host (or the
+// host is no longer connected, and its next connection is taken anyway).
+var ErrNothingHeld = errors.New("mirror: no held attempt from that address")
+
 // maxHeldAttempts bounds the distinct addresses recorded per (team, host): a
 // token spraying from many addresses cannot grow the hub without bound. Past
 // it, the oldest-seen attempt is forgotten.
@@ -80,12 +107,18 @@ type HeldReplacement struct {
 	Attempts    int
 	// Confirmed: a manager chose THIS attempt, and its next attempt is taken.
 	Confirmed bool
+	// SameAsLive: Addr is the live connection's own address, so this attempt
+	// cannot be confirmed (ErrIndistinguishable). Set by
+	// Service.HeldReplacements.
+	SameAsLive bool
 }
 
 // heldAttempt is one address's held attempts, under Hub.mu.
 type heldAttempt struct {
 	first, last time.Time
 	attempts    int
+	// announced is when this address's hold was last logged and nudged.
+	announced time.Time
 }
 
 // held is one (team, host)'s hold state, under Hub.mu.
@@ -100,19 +133,21 @@ type held struct {
 // admitPinned decides a TEAM host connection's arrival for key from addr:
 // true when it may proceed — the host is offline, or a manager's confirm of
 // THIS address is armed (and is now spent) — and false when it is held (the
-// attempt is recorded under addr).
-func (h *Hub) admitPinned(key hostKey, addr string) bool {
+// attempt is recorded under addr). announce reports, for a held attempt,
+// whether to log it and nudge the views now: at most once per
+// heldAnnounceEvery per address.
+func (h *Hub) admitPinned(key hostKey, addr string) (admit, announce bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 	hd := h.held[key]
 	if hd != nil && hd.confirmedAddr == addr && now.Before(hd.confirmedUntil) {
 		delete(h.held, key) // the confirm is one-shot, and the other attempts go with the host they wanted
-		return true
+		return true, false
 	}
 	if h.hosts[key] == nil {
 		delete(h.held, key) // offline: taken at once, and nothing is left to confirm
-		return true
+		return true, false
 	}
 	if h.held == nil {
 		h.held = map[hostKey]*held{}
@@ -137,7 +172,11 @@ func (h *Hub) admitPinned(key hostKey, addr string) bool {
 	}
 	a.last = now
 	a.attempts++
-	return false
+	if a.announced.IsZero() || now.Sub(a.announced) >= heldAnnounceEvery {
+		a.announced = now
+		return false, true
+	}
+	return false, false
 }
 
 // HeldReplacements is owner's held second connections, one per (host,
@@ -211,39 +250,64 @@ func (s *Service) HeldReplacements(ctx context.Context) []HeldReplacement {
 	if err != nil {
 		return nil
 	}
-	return s.hub.HeldReplacements(o)
+	out := s.hub.HeldReplacements(o)
+	for i := range out {
+		if live, ok := s.liveAddr(o, out[i].Host); ok && live == out[i].Addr {
+			out[i].SameAsLive = true
+		}
+	}
+	return out
 }
 
 // ConfirmReplacement is Hub.ConfirmReplacement for the viewing principal's
-// host and the chosen attempt's address.
-func (s *Service) ConfirmReplacement(ctx context.Context, host, addr string) bool {
+// host and the chosen attempt's address: nil when armed, ErrIndistinguishable
+// for an attempt from the live connection's own address (nothing is armed),
+// ErrNothingHeld when no attempt from addr is held.
+func (s *Service) ConfirmReplacement(ctx context.Context, host, addr string) error {
 	o, err := owner(ctx)
 	if err != nil {
-		return false
+		return ErrNothingHeld
 	}
-	return s.hub.ConfirmReplacement(o, host, addr)
+	if live, ok := s.liveAddr(o, host); ok && live == addr {
+		return ErrIndistinguishable
+	}
+	if !s.hub.ConfirmReplacement(o, host, addr) {
+		return ErrNothingHeld
+	}
+	return nil
 }
 
-// HeldHere reports whether the machine making r — the viewing principal's
-// host, by the token's (owner, host) — is a HELD second connection rather
-// than the connected one: an attempt from r's address is held, and the live
-// connection came from another address. `muster doctor`'s this-host check
-// (GET /mirror/host) asks it, since a held machine shares the live one's
-// token. ⚠ Two machines behind one address cannot be told apart (the file
-// comment); then this answers false.
-func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) bool {
+// liveAddr is the address owner's host's live connection came from.
+func (s *Service) liveAddr(owner int64, host string) (string, bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	c, ok := s.connTok[hostKey{owner, host}]
+	return c.addr, ok
+}
+
+// HeldHere answers, for the machine making r — the viewing principal's host,
+// by the token's (owner, host) — `muster doctor`'s this-host question, which
+// the token alone cannot (a held machine shares the live one's token):
+//   - held: an attempt from r's address is held and the live connection came
+//     from ANOTHER address — this machine is the held one;
+//   - unsure: an attempt from r's address is held and the live connection
+//     came from the SAME address (a proxy or NodePort: the file comment) —
+//     this muster cannot tell whether this machine is the live one or the
+//     held one.
+func (s *Service) HeldHere(ctx context.Context, host string, r *http.Request) (held, unsure bool) {
 	o, err := owner(ctx)
 	if err != nil {
-		return false
+		return false, false
 	}
 	addr := s.peerAddr(r)
 	if !s.hub.heldFrom(o, host, addr) {
-		return false
+		return false, false
 	}
-	s.connMu.Lock()
-	c, live := s.connTok[hostKey{o, host}]
-	s.connMu.Unlock()
-	return live && c.addr != addr
+	live, ok := s.liveAddr(o, host)
+	if !ok {
+		return false, false
+	}
+	return live != addr, live == addr
 }
 
 // SetPeerAddr overrides how a request's peer address is read (tests: one

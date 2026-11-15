@@ -73,10 +73,19 @@ type RotateReason struct {
 var ErrNoRotateReason = errors.New("users: no audit row explains the rotate mark")
 
 // TeamRotateReason is the reason for a rotate mark on team's tokens set at
-// at: the newest audit row at or before it that is one of the three triggers
-// — the team's own team.member.remove of an operator or manager, its
-// team.member.set from operator or manager to viewer, or a user.disable of a
-// person who is an operator or manager of the team — with that person's name.
+// at: the triggering audit row written IN THE MARK'S OWN TRANSACTION — the
+// team's team.member.remove of an operator or manager, its team.member.set
+// from operator or manager to viewer, or a user.disable — with that person's
+// name. rotate_at and audit_log.at are both now() of that one transaction, so
+// the row is matched on at = rotate_at exactly, never "the newest row before
+// it": a mark whose transaction wrote no audit row (a disable with no actor)
+// has NO reason (ErrNoRotateReason), rather than a STALE row from another
+// change (#685 round 1, G4: an older disable of someone who was a viewer
+// then, and an operator now, was shown). The role each condition reads is
+// the row's own (detail.role / detail.before, written at the change), never
+// today's membership. A disable carries no role in its row; it is matched
+// only by its transaction's time, and the disable trigger marks only for an
+// operator's or manager's disable (markRotateForDisableTx).
 //
 // Read under System: audit_log's self_read admits a team's managers to the
 // team's own rows but not to a user.disable row, which names no team. The
@@ -92,12 +101,11 @@ func (s *PGStore) TeamRotateReason(ctx context.Context, team int64, at time.Time
 			WHEN a.action <> 'user.disable' AND a.detail->>'user' ~ '^[0-9]{1,18}$' THEN (a.detail->>'user')::bigint
 			END AS uid) x
 		JOIN users u ON u.id = x.uid
-		WHERE a.at <= $2 AND (
+		WHERE a.at = $2 AND (
 			(a.team_id = $1 AND a.action = 'team.member.remove' AND a.detail->>'role' IN ('operator', 'manager'))
 			OR (a.team_id = $1 AND a.action = 'team.member.set' AND a.detail->>'before' IN ('operator', 'manager')
 				AND a.detail->>'role' = 'viewer')
-			OR (a.action = 'user.disable' AND EXISTS (SELECT 1 FROM team_members m
-				WHERE m.team_id = $1 AND m.user_id = x.uid AND m.role IN ('operator', 'manager'))))
+			OR a.action = 'user.disable')
 		ORDER BY a.at DESC, a.id DESC LIMIT 1`, team, at).Scan(&action, &r.At, &r.UserID, &r.Name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RotateReason{}, ErrNoRotateReason

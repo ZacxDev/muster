@@ -153,7 +153,9 @@ releases (team sharing 2b.3 and 2b.4).
     set** (`teamHostTools`): the session's own asks (`attention_ask`,
     `attention_wait`, `attention_cancel`), the tasks that session created, its
     own host dispatch's `agent_report_done`, and a team host officer
-    instance's own tools. Everything else is refused by name, listed or not:
+    instance's own tools. Everything else is left off its tool list, which is
+    the one guard: muster runs a listed tool only, and answers any other name
+    with a refusal that names it. That covers:
     every owner-authority tool (`attention_answer`, the decide tools,
     `agent_destroy`, `chief_restart`, `dispatch_approve`, `route_reply`,
     `plugin_message_route`, and the rest), every read of the team's whole
@@ -179,12 +181,25 @@ releases (team sharing 2b.3 and 2b.4).
     while the connected host keeps serving. The manager sees "Replace the
     connected host?" on `/teams/<id>/hosts`, with **each held machine listed
     by the address it connected from** (first and last seen). The manager
-    confirms ONE of them: only that address's next attempt (muster-mirror
-    retries at most a minute apart) replaces the connected host, within 3
-    minutes, and any other machine presenting the token stays held. There is
-    no confirm that names no machine. ⚠ Machines behind one proxy share its
-    address and cannot be told apart. `muster doctor` on a held machine says
-    it is held, not connected. A connection arriving while the host is
+    confirms ONE of them: that address's next attempt (muster-mirror retries
+    at most a minute apart) replaces the connected host, within 3 minutes,
+    and another address presenting the token stays held. There is no confirm
+    that names no machine. 🔴 **An address is all muster can tell machines
+    apart by, and behind a proxy or a Kubernetes NodePort every machine
+    shares one address** (measured on a NodePort deployment: every host
+    showed as the same pod-network address), so there the confirm cannot distinguish the moved machine
+    from a kept copy of the token. An attempt from the live host's own
+    address cannot be confirmed at all: stop the live host first (the next
+    connection is then taken at once), or revoke the token and mint a new
+    one. `muster doctor` on a held machine says it is held; where the held
+    and live machines share an address it says it cannot tell which this
+    machine is.
+  - 🔴 **The hold guards the tunnel only.** A held machine, or anyone keeping
+    a copy of the token, can still call `/mirror/mcp` and `/mirror/ask` as
+    any session the connected host lists (those doors believe the session a
+    call names when the connected host lists it), within the reduced tool
+    set. The rotate mark is the answer: revoke the token and mint a new
+    one. A connection arriving while the host is
     offline is taken at once, as for a personal host, so a restart of the
     real host is unaffected. This does not close the offline window: only
     rotation does.
