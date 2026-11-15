@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -88,6 +89,49 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "id": rec.ID, "created": created})
 }
 
+// The first turn a NEW chief is given (provisionChief's kickoff).
+//
+// 🔴 CHOSEN BY THE OWNER, NOT BY THE KIND. A team's chief is a Claude Code
+// agent, as a person's may be; what differs is whose it is. A team's chief that
+// was told "you are muster's fleet agent … report the current state of the
+// fleet" was told a scope it does not have (it acts as the team and sees only
+// the team's tasks and agents) and a single owner it does not have. Its
+// standing instructions already say it is the team's (agentspec.TeamChiefSection,
+// placed by the provisioner); this turn must not contradict them.
+const (
+	ChiefKickoffPerson = "You are chief, muster's fleet agent. You have no task and no repo, and that is expected. " +
+		"Read AGENTS.md, then report the current state of the fleet."
+	ChiefKickoffTeam = "You are your team's chief in muster. You have no task and no repo, and that is expected. " +
+		"Your standing instructions are already loaded (the managed CLAUDE.md): they say which team you belong to and " +
+		"that several of its members talk to you here. Introduce yourself to the team in a few lines, and say what you " +
+		"can do for it with your muster tools (mcp__muster__…). Speak only of the team's own tasks and agents: you act " +
+		"as the team and see nothing that is not the team's."
+)
+
+// chiefKickoff is the first turn of a new chief owned by a team (team) or by a
+// person.
+func chiefKickoff(team bool) string {
+	if team {
+		return ChiefKickoffTeam
+	}
+	return ChiefKickoffPerson
+}
+
+// chiefKickoffFor is the first turn of owner's new chief.
+//
+// 🔴 AN UNREADABLE OWNER IS REFUSED, NOT GUESSED. ownerIsTeam answers "team"
+// on a read error, which is the safe side for what it gates elsewhere (a
+// refusal), but here it would tell a PERSON's chief it is a team's. So the
+// read error is the provision's error: nothing is created, and the caller's
+// retry reads the account again.
+func (s *Server) chiefKickoffFor(ctx context.Context, owner int64) (string, error) {
+	team, err := s.ownerTeam(ctx, owner)
+	if err != nil {
+		return "", fmt.Errorf("read owner %d to choose its chief's first turn: %w", owner, err)
+	}
+	return chiefKickoff(team), nil
+}
+
 // ChiefOffProvisionRefusal is POST /chief/provision's answer to an owner who
 // turned their chief off.
 const ChiefOffProvisionRefusal = "your chief is turned off; turn it on under Account → Chief"
@@ -132,8 +176,11 @@ func (s *Server) provisionChief(ctx context.Context, owner int64, model, kind st
 	// The model is taken from the request so the operator picks it at provision
 	// time; empty falls through to the cluster default the provisioner already
 	// applies, exactly as the dispatch form behaves.
-	intro := "You are chief, muster's fleet agent. You have no task and no repo, and that is expected. " +
-		"Read AGENTS.md, then report the current state of the fleet."
+	intro, err := s.chiefKickoffFor(ctx, owner)
+	if err != nil {
+		s.logger.Printf("chief: provision: %v", err)
+		return agents.Agent{}, false, err
+	}
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		// 🔴 THE DISPLAY NAME IS SET EXPLICITLY. Everything that TALKS to the
 		// chief (the panel, recaps, threads, `chief ask`) resolves it by display

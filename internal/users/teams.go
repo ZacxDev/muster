@@ -19,11 +19,13 @@ import (
 //
 // A team is a users row of kind 'team': an OWNER that no one signs in as. A
 // person belongs to it through team_members with a role (viewer, operator,
-// manager). In this phase a team owns nothing and membership shares nothing:
-// it is read into the request principal (Account) and is otherwise inert.
+// manager). Membership is read into the request principal (Account), and
+// Postgres decides from it what a member may read and write of the team's
+// rows (docs/auth.md#teams).
 //
-// 🔴 ONLY AN ADMIN MANAGES TEAMS IN THIS PHASE, from /admin/teams, whose
-// admin-role check is the gate (internal/api admin_teams.go). Every write here
+// 🔴 AN ADMIN MANAGES TEAMS from /admin/teams, whose admin-role check is the
+// gate (internal/api admin_teams.go); a manager manages their own team from
+// /teams/<id> (internal/api teams_pages.go). Every write here
 // runs under authz.System (inTx) and leaves an audit_log row naming the acting
 // admin IN THE SAME TRANSACTION, so a change and its record commit together.
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -18,13 +19,24 @@ import (
 // 🔴 BEST-EFFORT, AND IT NEVER FAILS THE PAGE. A visit that cannot be stored is
 // logged with the ids only and the page renders anyway.
 
-// recordAgentVisit records that the viewer opened agent id.
-func (s *Server) recordAgentVisit(ctx context.Context, id int64) {
-	if s.ext.Recents == nil {
+// recordAgentVisit records that the viewer opened agent a.
+//
+// 🔴 NOT FOR A TEAM'S AGENT OPENED BY A MEMBER (memberOnTeamAgent). A recents
+// row is the viewer's own, and its owner must own the agent it names (0018's
+// trigger): a member's visit to the team chief was refused by Postgres on every
+// page load (SQLSTATE 23514) and logged as an error each time. The row is not
+// written under the team either: a team has no recents strip (it cannot sign
+// in, and recents is personal-only — owner_isolation, internal/db's share
+// ledger personalOwned — so no member's door reads a team's rows), and
+// recording one would only log which member looked
+// at what. The team agent stays in the member's
+// sidebar under its team; it is simply not in their "recently viewed".
+func (s *Server) recordAgentVisit(ctx context.Context, a agents.Agent) {
+	if s.ext.Recents == nil || memberOnTeamAgent(ctx, a) {
 		return
 	}
-	if err := s.ext.Recents.VisitAgent(ctx, id); err != nil {
-		s.logger.Printf("recents: visit agent %d: %v", id, err)
+	if err := s.ext.Recents.VisitAgent(ctx, a.ID); err != nil {
+		s.logger.Printf("recents: visit agent %d: %v", a.ID, err)
 	}
 }
 

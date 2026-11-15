@@ -1577,7 +1577,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// stop of the conversation the page draws ends (session_viewed.go) —
 	// best-effort, both.
 	ctx = op.begin("visit")
-	s.recordAgentVisit(ctx, a.ID)
+	s.recordAgentVisit(ctx, a)
 	s.episodeViewedAgent(ctx, r, a.ID, active.ID)
 	if viewRequest(r) {
 		s.outcomeViewed(ctx, a) // a wait not yet told is seen (agent_outcome.go)
@@ -1617,7 +1617,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// The chief's chat bar: primary or side chat, its context, the chat
 	// actions (chief_chats.go).
 	if s.isChiefAgent(ctx, a) {
-		view.ChiefChat = chiefChatBarFor(a, active)
+		view.ChiefChat = chiefChatBarFor(ctx, a, active)
 	}
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})

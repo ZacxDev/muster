@@ -200,8 +200,10 @@ type ccUsagePush struct {
 }
 
 // CCUsagePushBody is the usage pusher's request body at now for owner (the
-// operator, whose pool the poller reads), labelled instance. ctx must act as
-// owner. An error is the store's; the body is then not built.
+// server pool's owner, credentials.Plane.EnvPoolOwner, whose pool the poller
+// reads), labelled instance. ctx must reach owner's rows (the poller's system
+// scope; every query names owner). An error is the store's; the body is then
+// not built.
 func (s *Server) CCUsagePushBody(ctx context.Context, owner int64, instance string, now time.Time) ([]byte, error) {
 	if s.ext.CCUsage == nil {
 		return nil, errors.New("this server keeps no Claude account usage (no database)")

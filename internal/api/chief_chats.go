@@ -409,10 +409,13 @@ func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID in
 	return views, true, err
 }
 
-// chiefChatBarFor is the chat bar of chief a's chat sess (ui.ChiefChatBar).
-func chiefChatBarFor(a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
+// chiefChatBarFor is the chat bar of chief a's chat sess (ui.ChiefChatBar), as
+// ctx's viewer is offered it: a member on a team's chief (memberOnTeamAgent)
+// is in its one shared room, and offered none of the chat actions the server
+// refuses them (teamAgentRoutes).
+func chiefChatBarFor(ctx context.Context, a agents.Agent, sess agents.ChatSession) *ui.ChiefChatBar {
 	return &ui.ChiefChatBar{AgentID: a.ID, AgentName: a.Name, SessionID: sess.ID,
-		Primary: sess.IsDefault, Archived: sess.ArchivedAt != nil}
+		Primary: sess.IsDefault, Archived: sess.ArchivedAt != nil, SharedRoom: memberOnTeamAgent(ctx, a)}
 }
 
 // chiefContextReader is the telemetry store's context read (chiefusage.PGStore).

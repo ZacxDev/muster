@@ -224,7 +224,9 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 // 🔴 ONE PREDICATE for every place a member's request must not act on a team
 // agent as if it were theirs: the turn's principal (turnActingContext), the
 // one shared room (resolveTurnSession), the asks a message closes
-// (addressAskerOnAccept) and a task dismiss's teardown (dismissTask).
+// (addressAskerOnAccept), a task dismiss's teardown (dismissTask), the
+// recently-viewed strip (recordAgentVisit) and the chief chat controls a
+// member is never offered (chiefChatBarFor).
 func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && !p.Team && a.OwnerID > 0 && p.UserID != a.OwnerID
