@@ -373,6 +373,7 @@ var apiNavSecret = map[string]bool{
 	"renderAccountTokens":          true,  // shows a minted API token once
 	"renderPluginsPage":            true,  // shows a minted plugin token once
 	"renderFlowsPage":              true,  // shows a minted runner token once
+	"renderTeamHosts":              true,  // shows a minted team host token once
 	"writeAdminDocument":           true,  // shows reset and invite links once
 	"renderCredentials":            true,  // takes a Claude OAuth token / an OpenRouter key
 	"renderAccountPasskeys":        true,  // runs passkey ceremonies

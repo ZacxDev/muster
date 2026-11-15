@@ -97,12 +97,12 @@ func (s *Server) teamHostsWrite(w http.ResponseWriter, r *http.Request) (int64, 
 }
 
 // teamHostStores is the page's two stores, or false when the mirror plugin is
-// not wired (answered).
-func (s *Server) teamHostStores(w http.ResponseWriter, r *http.Request) (teamHostTokens, teamHostHub, bool) {
+// not wired: answered 501, with the page's own "no mirror plugin" card.
+func (s *Server) teamHostStores(w http.ResponseWriter, r *http.Request, team int64, tctx context.Context) (teamHostTokens, teamHostHub, bool) {
 	toks, ok1 := s.ext.MirrorTokens.(teamHostTokens)
 	hub, ok2 := s.ext.Mirror.(teamHostHub)
 	if s.ext.MirrorTokens == nil || s.ext.Mirror == nil || !ok1 || !ok2 {
-		s.renderNotice(w, r, http.StatusNotFound, "Team hosts", TeamHostsNoStore)
+		s.renderTeamHosts(w, r, team, tctx, http.StatusNotImplemented, "", "")
 		return nil, nil, false
 	}
 	return toks, hub, true
@@ -123,8 +123,10 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 	hub, ok2 := s.ext.Mirror.(teamHostHub)
 	if s.ext.MirrorTokens == nil || s.ext.Mirror == nil || !ok1 || !ok2 {
 		// The mirror plugin is off (MUSTER_MIRROR): the page says so, in place.
-		s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="`+adminCard+
-			`" id="team-hosts-off"><h1 class="text-base font-semibold text-fg">Team hosts</h1><p class="text-sm text-fg2">`+html.EscapeString(TeamHostsNoStore)+`</p></section></div>`)
+		name := s.teamNames(r.Context(), []int64{team})[team]
+		s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, true, `<div class="flex flex-col gap-4"><section class="`+adminCard+
+			`" id="team-hosts-off"><h1 class="text-base font-semibold text-fg">Team hosts · `+html.EscapeString(name)+`</h1><p class="text-sm text-fg2">`+
+			html.EscapeString(TeamHostsNoStore)+`</p></section></div>`)
 		return
 	}
 	list, err := toks.ListTokens(tctx)
@@ -194,7 +196,7 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 <label for="team-host-name" class="text-sm font-medium text-fg">Host name (as its muster-mirror names it)</label>
 <input id="team-host-name" name="host" required autocomplete="off" class="` + adminInput + `">
 <button type="submit" class="` + adminButton + `">Mint a token</button></form>`)
-	s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+	s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, true, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
 }
 
 // teamRotateLine is a rotate mark's sentence: "rotate: ben left on <date>",
@@ -242,7 +244,7 @@ func (s *Server) handleTeamHostMint(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.teamHostsFresh(w, r, team, tctx) {
 		return
 	}
-	toks, _, ok := s.teamHostStores(w, r)
+	toks, _, ok := s.teamHostStores(w, r, team, tctx)
 	if !ok {
 		return
 	}
@@ -259,7 +261,7 @@ func (s *Server) handleTeamHostMint(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTeamLevel(r.Context(), actorOf(r), team, "team.host.token.create", "mirror_token:"+strconv.FormatInt(rec.ID, 10), map[string]any{"host": host}, true)
 	s.logger.Printf("teams: manager %d minted host token %d (%s) for team %d", actorOf(r).UserID, rec.ID, host, team)
-	w.Header().Set("Cache-Control", "no-store")
+	// The page is a document: writeDocumentHeaders already says no-store.
 	s.renderTeamHosts(w, r, team, tctx, http.StatusOK, "", tok)
 }
 
@@ -271,7 +273,7 @@ func (s *Server) handleTeamHostRevoke(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.teamHostsFresh(w, r, team, tctx) {
 		return
 	}
-	toks, _, ok := s.teamHostStores(w, r)
+	toks, _, ok := s.teamHostStores(w, r, team, tctx)
 	if !ok {
 		return
 	}
@@ -305,7 +307,7 @@ func (s *Server) handleTeamHostReplace(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.teamHostsFresh(w, r, team, tctx) {
 		return
 	}
-	_, hub, ok := s.teamHostStores(w, r)
+	_, hub, ok := s.teamHostStores(w, r, team, tctx)
 	if !ok {
 		return
 	}
