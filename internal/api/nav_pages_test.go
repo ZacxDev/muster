@@ -47,6 +47,7 @@ var apiNavWriters = []string{
 	"renderTeamPage",               // /teams/{id} (a team's manager page)
 	"renderTeamOfficers",           // /teams/{id}/officers (a team's officers, phase 3)
 	"renderTeamChief",              // /teams/{id}/chief (a team's chief, phase 4)
+	"renderTeamHosts",              // /teams/{id}/hosts (a team's host tokens, phase 2b.2)
 	"handleAgentRotateCredentials", // a rotation's outcome page (team_admin.go)
 	"renderOfficerSpawns",          // /officers/spawns (host officer spawns and their team lend)
 }

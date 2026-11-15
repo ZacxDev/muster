@@ -428,6 +428,9 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
+	// A TEAM HOST's token (team sharing 2b.2): the request principal is the
+	// team acting principal (admit, teamAgentDoors).
+	team := authz.MustFrom(r.Context()).Team
 	disabled, off := s.mcpFeatureHooks(mirrorDoor)
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
 	// An opencode caller (its host marks it, and names its session by KEY):
@@ -440,6 +443,12 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	// it is refused at the call.
 	remote := strings.EqualFold(strings.TrimSpace(r.Header.Get(mirrorClientHeader)), mirrorClientRemote)
 	remoteSID := strings.TrimSpace(r.Header.Get(mirrorRemoteSessionHeader))
+	// 🔴 A TEAM TOKEN IS NEVER SERVED REMOTELY (TeamHostRemoteRefusal): the
+	// remote set keeps the task tools, unbound to any listed session.
+	if team && remote {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": TeamHostRemoteRefusal})
+		return
+	}
 	tools := s.mirrorTools
 	instructions := "muster's tools for a mirrored Claude Code session."
 	var listMeta map[string]any
@@ -487,6 +496,32 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			return all(name)
 		}
 		instructions = "muster's tools for a mirrored opencode session."
+	}
+	// 🔴 A TEAM HOST GETS teamHostTools ONLY (team_host_tools.go): listed are
+	// the kept tools, and every other name is refused by name at the call —
+	// serveMCP runs a listed name only, and asks disabled why. Over the
+	// opencode set, too, when an opencode session on a team host calls.
+	if team {
+		inner, innerDisabled := tools, disabled
+		tools = func() []agents.ToolDef {
+			var out []agents.ToolDef
+			for _, d := range inner() {
+				if teamHostKeeps(d.Name) {
+					out = append(out, d)
+				}
+			}
+			return out
+		}
+		disabled = func(name string) string {
+			if _, classified := teamHostTools[name]; (classified || slices.ContainsFunc(s.mirrorTools(), func(d agents.ToolDef) bool { return d.Name == name })) && !teamHostKeeps(name) {
+				return teamHostToolRefusal(name)
+			}
+			if innerDisabled == nil {
+				return ""
+			}
+			return innerDisabled(name)
+		}
+		instructions = strings.Replace(instructions, "muster's tools for", "muster's tools, on a team host, for", 1)
 	}
 	if s.attentionToolsOn() && !remote {
 		instructions += " " + mirrorAttentionInstruction

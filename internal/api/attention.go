@@ -1243,7 +1243,16 @@ func (s *Server) attentionMirrorChanged(owner int64) {
 	// push them as new now — except one whose episode is still HELD
 	// (episodeHandedOver).
 	var episodePushed map[string]bool
-	if s.sessionStateOn() {
+	// 🔴 NO EPISODE FOR A TEAM OWNER, UNTIL 2b.3 (team sharing 2b.2;
+	// TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff). The state pass that
+	// settles and pushes an episode iterates persons only
+	// (sessionstate.PG.Owners), so an episode opened here for a team host's
+	// window would be left open forever, and no operator told. A team's
+	// waiting windows take today's diff path below instead, whose push is the
+	// team fan-out (goNotify). 2b.3 removes this branch with the state pass's
+	// team arm. An owner whose account could not be read is not known to be a
+	// team (principalFor's fallback), and keeps the person path.
+	if s.sessionStateOn() && !authz.MustFrom(octx).Team {
 		// 🔴 SESSION STATE ON: A WAITING WINDOW THAT SESSION STATE KEYS
 		// (episodeCover) — WHATEVER IT WAITS ON, AN ANSWERABLE ASK TOO — IS AN
 		// EPISODE, opened from here and pushed once per stop, claimed — held

@@ -25,14 +25,18 @@ var actsAsTeam = map[Via]bool{
 	// A team manager's lifecycle door (slice 4.5): stop, start, destroy and
 	// rotate a team agent, and provision the team's chief, as the team.
 	ViaTeamAdmin: true,
+	// A TEAM HOST (team sharing 2b.2): a team mirror token's MCP door acts as
+	// the team (internal/api serves it teamHostTools only), and the question
+	// watcher reads a team host's window as the team.
+	ViaMirrorHost: true, ViaAsk: true,
 	// A team-owned gateway agent's turn: NOT a team door in phase 4.
 	// internal/api's turnPrincipal refuses a team first; WithPrincipal's
 	// panic here is the second guard (TestATeamGatewayTurnIsRefusedAtTheDoor).
 	ViaKickoff: false, ViaAgentMessage: false,
 	// Never a team.
 	ViaSession: false, ViaDevice: false, ViaToken: false, ViaHook: false, ViaService: false,
-	ViaRunner: false, ViaPlugin: false, ViaMirrorHost: false, ViaPageLink: false,
-	ViaQueue: false, ViaFocus: false, ViaAsk: false,
+	ViaRunner: false, ViaPlugin: false, ViaPageLink: false,
+	ViaQueue: false, ViaFocus: false,
 }
 
 // panicOf runs f and returns its panic message ("" when it did not panic).
@@ -93,8 +97,8 @@ func TestTheTeamActingViasAreExactlyTheListedDoors(t *testing.T) {
 			t.Errorf("control %s: a person was refused: %s", v, m)
 		}
 	}
-	if accepted != 10 {
-		t.Fatalf("accepted a team at %d doors; the ledger names 10", accepted)
+	if accepted != 12 {
+		t.Fatalf("accepted a team at %d doors; the ledger names 12", accepted)
 	}
 }
 

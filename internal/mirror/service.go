@@ -231,13 +231,27 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.CloseNow()
 
+	key := hostKey{tok.OwnerID, tok.Host}
+	// 🔴 A TEAM HOST IS PINNED (teamhold.go): a second connection for a live
+	// (team, host) is refused as held — BEFORE it touches connTok or the hub,
+	// so the live connection's token stays the one tracked, and the held one
+	// is sent nothing — until a manager confirms it.
+	if tok.Team && !s.hub.admitPinned(key) {
+		s.logger.Printf("mirror: team host %s (owner %d): a second connection is held for a manager's confirmation", tok.Host, tok.OwnerID)
+		// Its hello first, as every refusal reads it: the host then reads the
+		// refusal as muster's answer to its registration.
+		_, _ = readHello(r.Context(), ws)
+		refuse(r.Context(), ws, ErrHeldForManager)
+		s.hub.changed(tok.OwnerID)
+		return
+	}
+
 	// A hijacked connection's request context does not end with the TCP
 	// connection, and nothing else ends this one on revocation, so its life is
 	// its own context: cancelled by the token check below or by the read loop.
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(r.Context()))
 	defer cancel(nil)
 	go s.watchToken(ctx, cancel, tok)
-	key := hostKey{tok.OwnerID, tok.Host}
 	s.connMu.Lock()
 	if s.connTok == nil {
 		s.connTok = map[hostKey]connToken{}
