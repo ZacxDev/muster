@@ -27,6 +27,16 @@
 #   - the muster host is appended to NO_PROXY / no_proxy, so a proxy in the
 #     pod's environment never carries the pod's token (the CLI sends plain
 #     http through HTTPS_PROXY).
+#
+# 🔴 THE SECOND ROUTE IS CCD_LLM_ROUTE=api_key: an instance of an officer pool
+# with its own credential (docs/officers.md "A pool's own credential") runs on
+# that pool's Anthropic API key and on NOTHING ELSE. Under it, and only under it:
+#   - ANTHROPIC_API_KEY must be set (non-empty): a pod without its key is
+#     refused, never started on another credential;
+#   - CLAUDE_CODE_OAUTH_TOKEN must be ABSENT: the shared account pool's
+#     setup-token never sits beside the pool's own key;
+#   - ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, Bedrock and Vertex are refused;
+#   - nothing is exported.
 # Any other CCD_LLM_ROUTE value is refused.
 #
 # The same variables set through settings.json's `env` are covered by removing
@@ -47,7 +57,11 @@ cc_check_credentials() {
   local route="${CCD_LLM_ROUTE:-}" v
   case "$route" in
     "" | muster) ;;
-    *) cc_refuse "CCD_LLM_ROUTE is set to an unknown route; the only route is \"muster\"." || return 1 ;;
+    api_key)
+      cc_check_api_key_route
+      return $?
+      ;;
+    *) cc_refuse "CCD_LLM_ROUTE is set to an unknown route; the routes are \"muster\" and \"api_key\"." || return 1 ;;
   esac
   for v in ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX; do
     if [[ -n "${!v:-}" ]]; then
@@ -93,4 +107,18 @@ cc_check_credentials() {
   fi
   export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$host"
   export no_proxy="${no_proxy:+$no_proxy,}$host"
+}
+
+# cc_check_api_key_route is CCD_LLM_ROUTE=api_key (see the header).
+cc_check_api_key_route() {
+  local v
+  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    cc_refuse "CCD_LLM_ROUTE=api_key but ANTHROPIC_API_KEY is not set; the pool runs only on its own API key." || return 1
+  fi
+  for v in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX; do
+    if [[ -n "${!v:-}" ]]; then
+      cc_refuse "$v is set under CCD_LLM_ROUTE=api_key; the pool's own API key is its only credential and endpoint." || return 1
+    fi
+  done
+  return 0
 }

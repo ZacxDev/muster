@@ -56,11 +56,11 @@ func (g gatewayUsage) Read(ctx context.Context, o officers.Officer, instance str
 // instanceUsageAccount is the Claude account instance a's usage is reported
 // on: the account its row is on NOW (agents.Agent.CCAccount — an account
 // failover moves it, and every hour pushed after the move is reported on the
-// new account), and none for an instance of a pool on the LLM proxy
-// (officers.ProxyAgent), which runs on no Claude account whatever its row
-// carries.
+// new account), and none for an instance that runs on no Claude account
+// whatever its row carries (officers.OnNoClaudeAccount: a pool on the LLM
+// proxy, or one on its own API key).
 func instanceUsageAccount(o officers.Officer, a agents.Agent) string {
-	if _, _, proxied := officers.ProxyAgent(o, a.Name); proxied {
+	if officers.OnNoClaudeAccount(o, a.Name) {
 		return ""
 	}
 	return a.CCAccount

@@ -173,8 +173,9 @@ func (s *Server) ccUsageAccounts(ctx context.Context, owner int64, now time.Time
 }
 
 // officerPoolOf is ccusage.OfficerOf over the declared officers: an instance's
-// officer id and pool ("" for an untiered officer), and whether its pool is on
-// the LLM proxy (officers.ProxyAgent, the proxy's own membership rule).
+// officer id and pool ("" for an untiered officer), and whether its pool runs
+// on none of the shared Claude accounts (officers.OnNoClaudeAccount: on the
+// LLM proxy, or on its own API key).
 func (s *Server) officerPoolOf(name string) (string, string, bool, bool) {
 	if s.officerRT == nil {
 		return "", "", false, false
@@ -183,8 +184,7 @@ func (s *Server) officerPoolOf(name string) (string, string, bool, bool) {
 	if !ok {
 		return "", "", false, false
 	}
-	_, _, proxied := officers.ProxyAgent(o, name)
-	return o.ID, o.Tier, proxied, true
+	return o.ID, o.Tier, officers.OnNoClaudeAccount(o, name), true
 }
 
 // ccUsagePush is the usage pusher's body (MUSTER_CC_USAGE_PUSH_URL): the

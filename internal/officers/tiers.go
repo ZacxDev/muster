@@ -68,6 +68,13 @@ type TierPool struct {
 	// llmRaw is the pool's declared `llm`, kept for the officer's parse, which
 	// holds the key's environment.
 	llmRaw json.RawMessage
+	// Credential, on either pool (tiers.<pool>.credential), is the pool's own
+	// Anthropic API key (credential.go, Officer.PoolCredential): its pods run on
+	// it and never on the shared account pool. Parsed by parseCredential.
+	Credential *Credential `json:"-"`
+	// credentialRaw is the pool's declared `credential`, kept for the
+	// officer's parse, which holds the key's environment.
+	credentialRaw json.RawMessage
 }
 
 // FreshSessionPerItem is THE rule for whether pool o works each item in a NEW
@@ -253,15 +260,25 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	dec.DisallowUnknownFields()
 	var w struct {
 		TierPool
-		LLM json.RawMessage `json:"llm"`
+		LLM        json.RawMessage `json:"llm"`
+		Credential json.RawMessage `json:"credential"`
 	}
 	if err := dec.Decode(&w); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "image"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"?, "llm"? (all three judgement only)}: %v`, err)
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "image"?, "fresh_session_per_item"?, "credential"?, "max_sessions_per_day"?, "max_item_minutes"?, "llm"? (all three judgement only)}: %v`, err)
 	}
 	p := w.TierPool
 	poolLLM := len(w.LLM) > 0 && string(w.LLM) != "null"
 	if poolLLM && routine {
 		return TierPool{}, errors.New("llm: the routine pool's LLM proxy block is the officer's top-level `llm`; move it there")
+	}
+	// 🔴 ONE MODEL CREDENTIAL PER POOL: a pool on the LLM proxy (the routine
+	// pool beside `llm`, the judgement pool with its own `llm`) reaches its
+	// model with the officer's OpenRouter key, held by the proxy.
+	if len(w.Credential) > 0 && string(w.Credential) != "null" {
+		if poolLLM || (routine && providerOK) {
+			return TierPool{}, errCredentialOnProxy
+		}
+		p.credentialRaw = w.Credential
 	}
 	if poolLLM {
 		p.llmRaw, providerOK = w.LLM, true

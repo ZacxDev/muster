@@ -179,6 +179,34 @@ type Gateway struct {
 	// failover is the account failover (UseFailover); nil = none.
 	failoverMu sync.RWMutex
 	failover   AccountFailover
+	// noAccount says an agent runs on none of the shared Claude accounts
+	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
+	noAccount func(agents.Agent) bool
+}
+
+// UseNoAccount installs the rule for which agents run on none of the shared
+// Claude accounts although their row names one (internal/api's officer
+// runtime: officers.OnNoClaudeAccount — a pool on the LLM proxy, or one on its
+// own API key). Such an agent's typed `rate_limited` / `auth_failed` is its
+// OWN credential's, so it marks no account and moves the agent nowhere: a
+// spent or revoked officer key must not cool down, or fail, an account every
+// other agent runs on. Set after construction, as UseFailover is.
+func (g *Gateway) UseNoAccount(f func(agents.Agent) bool) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.noAccount = f
+}
+
+// accountOf is the shared Claude account agent a's turns run on: its row's,
+// or "" when UseNoAccount's rule says it runs on none.
+func (g *Gateway) accountOf(a agents.Agent) string {
+	g.failoverMu.RLock()
+	f := g.noAccount
+	g.failoverMu.RUnlock()
+	if f != nil && f(a) {
+		return ""
+	}
+	return a.CCAccount
 }
 
 // AccountFailover is what the gateway tells after a typed `rate_limited` /
@@ -306,7 +334,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID, agentID: a.ID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.accountOf(a), owner: a.OwnerID, agentID: a.ID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from

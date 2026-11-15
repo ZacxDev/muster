@@ -68,6 +68,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
 | `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
+| `tiers.<pool>.credential` | none | `{"secret_env": "MUSTER_OFFICER_ANTHROPIC_KEY_<NAME>"}`: that pool's pods run on their **own Anthropic API key**, never on the shared account pool or setup-token — [A pool's own credential](#a-pools-own-credential). |
 | `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). The judgement pool's own block is `tiers.judgement.llm` ([below](#the-judgement-pool-on-the-proxy)). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
@@ -210,6 +211,19 @@ positive and a negative case in the Go suite (`cmd/ccd`,
 `internal/agentspec`) and in the image smoke (`cc-smoke`). A routed pod
 still needs a `claude-code-agent` image built from this version: an older
 entrypoint refuses the route's variables, and its pod does not start.
+
+**The API-key route (`CCD_LLM_ROUTE=api_key`).** An instance of a pool with
+its [own credential](#a-pools-own-credential), and no other pod, is given
+`CCD_LLM_ROUTE=api_key`, its key as `ANTHROPIC_API_KEY` in its own Secret, and
+**no** `CLAUDE_CODE_OAUTH_TOKEN`. The entrypoint's check then refuses the pod
+when `ANTHROPIC_API_KEY` is missing or empty, and when
+`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+Bedrock or Vertex is set beside it; it exports nothing. `ccd seed` records the
+key's last 20 characters as approved in the CLI's `.claude.json`
+(`customApiKeyResponses`, the CLI's own rule, read from its 2.1.289 bundle),
+so the interactive CLI uses the key instead of stopping on its "use this API
+key?" dialog; the whole key is never written there. Each condition has a
+positive and a negative case in the Go suite (`cmd/ccd`, `internal/agentspec`).
 
 **Memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
 `CLAUDE_CODE_DISABLE_ORG_MEMORY=1`).** Every officer instance's pod — either
@@ -3112,6 +3126,54 @@ judgement pool's block, remove every `tiers.judgement.llm` first, then run
 migration 0110's rollback (in its header: an older image cannot book usage
 while 0110's key is in place), then roll back. Migration 0075's own rollback is
 in its header.
+
+### A pool's own credential
+
+By default every instance's Claude Code session runs on muster's shared
+account pool: a subscription `setup-token` (`MUSTER_AGENT_CC_ACCOUNTS`, or the
+owner's accounts), chosen and failed over per instance. A pool that reads text
+an attacker may have written (an alert promoted to the judgement tier) can be
+given **its own Anthropic API key** instead, so an injected session can reach
+only a key that serves this one pool, with a spend cap set on the key in the
+Anthropic console:
+
+```json
+{"id": "security:example", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "deepseek/deepseek-v4.1-flash-1017"},
+           "judgement": {"model": "opus",
+                         "credential": {"secret_env": "MUSTER_OFFICER_ANTHROPIC_KEY_SECURITY_EXAMPLE"}}},
+ "llm": {"daily_budget_usd": 5}}
+```
+
+- **The pod carries only that key.** The pool's instances get it as
+  `ANTHROPIC_API_KEY` in their own Secret (on the
+  [API-key route](#the-instances-claude-code-session)), and NO
+  `CLAUDE_CODE_OAUTH_TOKEN`. The other pool, and every other officer, is
+  unchanged.
+- 🔴 **No fallback, fail closed.** `secret_env` unset or blank is a boot
+  refusal naming the variable; so is a value that is a subscription
+  setup-token (`sk-ant-oat…`) or not an API key (`sk-ant-api…`). The pod spec
+  refuses an empty key again, and the entrypoint refuses a pod without it.
+  Nothing anywhere puts the account's setup-token in its place.
+- **One key, one pool.** `secret_env` must be `MUSTER_OFFICER_ANTHROPIC_KEY_<NAME>`
+  (never a deployment-wide variable). Two pools naming one variable, or holding
+  one key, are a boot refusal. A pool on the LLM proxy (`llm`) is refused a
+  credential: it has its model credential already.
+- **No shared account is touched.** The instance's row still names an account,
+  but it runs on none (`officers.OnNoClaudeAccount`, the rule a proxied pool
+  follows too): a typed `rate_limited` or `auth_failed` — a spent or revoked
+  key — marks no account and fails the instance over nowhere, its usage is
+  reported on no account, and the accounts' attribution does not count it.
+- **The key is never printed.** It is held behind unexported fields that
+  `encoding/json` and `fmt` never print, boot refusals name the variable
+  only, and the [transcript to HQ](#transcript-to-hq) has the key replaced by
+  value (`officers.Client.Scrub`) before the shape filters run.
+- ⚠ **The pod holds the key.** Like the setup-token it replaces, the key is in
+  the pod's environment, and a session that runs every tool can read it and
+  send it out through `api.anthropic.com` ([What it still
+  allows](#the-instances-network)). What the option buys is the reach of what
+  leaks: a key for this one pool, with its own spend cap, that can be revoked
+  without touching any other agent.
 
 ## Reading a cluster: officer_kube_read
 

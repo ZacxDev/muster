@@ -559,6 +559,14 @@ type ClaudeCodeSession struct {
 	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
 	// and refuses a Model: the proxy pins the model.
 	LLMRoute bool
+	// APIKey, when set, runs the pod on its pool's OWN Anthropic API key
+	// ([EnvAnthropicAPIKey], in the agent's Secret) and NEVER on its account's
+	// subscription token, which it then does not carry: [EnvLLMRoute] =
+	// [LLMRouteAPIKey] tells the entrypoint to require the key and refuse
+	// every other credential. An empty key is a refusal, never a fallback.
+	// Set for an instance of an officer pool with its own credential only
+	// (internal/api OfficerClaudeCodeSession). Refused beside LLMRoute.
+	APIKey *ClaudeCodeAPIKey
 	// DisableAutoMemory turns the CLI's memory OFF in every session the pod
 	// runs: its auto-memory ([EnvClaudeDisableAutoMemory]=1 — the CLI then
 	// neither reads nor writes its memory directory, <config dir>/projects/
@@ -570,6 +578,17 @@ type ClaudeCodeSession struct {
 	// it — one a fresh conversation per item would still read.
 	DisableAutoMemory bool
 }
+
+// ClaudeCodeAPIKey is a pool's own Anthropic API key
+// ([ClaudeCodeSession.APIKey]). String and GoString never print it, so a
+// session logged with %v or %#v does not carry it.
+type ClaudeCodeAPIKey struct{ Value string }
+
+// String describes the key without printing it.
+func (ClaudeCodeAPIKey) String() string { return "[pool API key]" }
+
+// GoString is String.
+func (k ClaudeCodeAPIKey) GoString() string { return k.String() }
 
 // EgressLocked reports whether the pod's network policy drops the public-443
 // rule and the cluster-DNS rule (claudeCodeNetworkFor) and the pod is told to skip the CLI's

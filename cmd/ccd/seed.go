@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,6 +53,10 @@ type seedOpts struct {
 	// hqMCP is podagent.EnvHQMCP as read: "1" offers the HQ MCP server
 	// (hqmcp.go) and allows its tools (podagent.HQAllowEntry).
 	hqMCP string
+	// apiKey is ANTHROPIC_API_KEY, read ONLY under CCD_LLM_ROUTE=api_key (a
+	// pool on its own API key): seed pre-approves it (approveAPIKey), "" for
+	// every other pod.
+	apiKey string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -66,6 +71,9 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	o.allowMCPTools, o.model = os.Getenv(podagent.EnvAllowMCPTools), os.Getenv(podagent.EnvModel)
 	o.permissionMode = os.Getenv(podagent.EnvPermissionMode)
 	o.hqMCP = os.Getenv(podagent.EnvHQMCP)
+	if os.Getenv(envLLMRoute) == llmRouteAPIKey {
+		o.apiKey = os.Getenv(envAnthropicAPIKey)
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -289,6 +297,9 @@ func seed(o seedOpts, stderr io.Writer) error {
 		return err
 	}
 	st["hasCompletedOnboarding"] = true
+	if o.apiKey != "" {
+		approveAPIKey(st, o.apiKey)
+	}
 	if _, ok := st["theme"]; !ok {
 		st["theme"] = "dark"
 	}
@@ -619,4 +630,45 @@ func writeJSONAtomic(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// The API-key route (agentspec.LLMRouteAPIKey): ccd's spellings of the route
+// and the key's variable (agentspec.EnvLLMRoute, agentspec.EnvAnthropicAPIKey).
+const (
+	envLLMRoute        = "CCD_LLM_ROUTE"
+	llmRouteAPIKey     = "api_key"
+	envAnthropicAPIKey = "ANTHROPIC_API_KEY"
+)
+
+// approveAPIKey records key as approved in the CLI's state (.claude.json
+// customApiKeyResponses), so the interactive CLI uses ANTHROPIC_API_KEY
+// instead of stopping on its "use this API key?" dialog, which nobody in an
+// officer pod answers. The CLI keys a response by the LAST 20 characters of
+// the trimmed key (read from its bundle, 2.1.289: approved when
+// customApiKeyResponses.approved holds key.trim().slice(-20)); only that
+// suffix is written, never the key. A rejected entry for it is removed.
+func approveAPIKey(st map[string]any, key string) {
+	k := strings.TrimSpace(key)
+	if len(k) > 20 {
+		k = k[len(k)-20:]
+	}
+	resp, _ := st["customApiKeyResponses"].(map[string]any)
+	if resp == nil {
+		resp = map[string]any{}
+	}
+	keep := func(list any, drop bool) []any {
+		out := []any{}
+		items, _ := list.([]any)
+		for _, it := range items {
+			if s, ok := it.(string); ok && s == k && drop {
+				continue
+			}
+			out = append(out, it)
+		}
+		return out
+	}
+	approved := keep(resp["approved"], true)
+	resp["approved"] = append(approved, k)
+	resp["rejected"] = keep(resp["rejected"], true)
+	st["customApiKeyResponses"] = resp
 }

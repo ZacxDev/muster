@@ -655,6 +655,9 @@ func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Of
 		out = append(out, o)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if err := validateCredentials(out); err != nil {
+		return nil, fmt.Errorf("MUSTER_OFFICERS: %w", err)
+	}
 	if err := validateShepherds(out); err != nil {
 		return nil, fmt.Errorf("MUSTER_OFFICERS: %w", err)
 	}
@@ -870,6 +873,21 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Tiers.Judgement.LLM, o.Tiers.Judgement.llmRaw = l, nil
+	}
+	if o.Tiers != nil {
+		for _, p := range []struct {
+			name string
+			dst  *TierPool
+		}{{TierRoutine, &o.Tiers.Routine}, {TierJudgement, &o.Tiers.Judgement}} {
+			if p.dst.credentialRaw == nil {
+				continue
+			}
+			c, err := parseCredential("tiers."+p.name+".credential", p.dst.credentialRaw, getenv)
+			if err != nil {
+				return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+			}
+			p.dst.Credential, p.dst.credentialRaw = c, nil
+		}
 	}
 	if o.IsBuiltin() {
 		return o, nil

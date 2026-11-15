@@ -525,6 +525,12 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if cfg.InstallSession != nil {
 		cfg.InstallSession(s.OfficerClaudeCodeSession)
 	}
+	// 🔴 AN INSTANCE ON NO SHARED CLAUDE ACCOUNT (its pool on the LLM proxy, or
+	// on its own API key) MARKS NO ACCOUNT AND IS MOVED TO NONE when its turn
+	// fails rate_limited or auth_failed: the failure is its own credential's.
+	if g, ok := s.ext.Gateway.(noAccountGateway); ok {
+		g.UseNoAccount(s.instanceOnNoClaudeAccount)
+	}
 	if fwd != nil && !cfg.NoTranscriptRun {
 		// Ends with the server's streams (EndStreams, at shutdown).
 		ctx := s.streams.context()
@@ -1118,6 +1124,20 @@ func (s *Server) WaitForOfficerReprompts() {
 	}
 }
 
+// noAccountGateway is the agent gateway's hook for the agents that run on no
+// shared Claude account (agentgateway.Gateway.UseNoAccount).
+type noAccountGateway interface {
+	UseNoAccount(func(agents.Agent) bool)
+}
+
+// instanceOnNoClaudeAccount is officers.OnNoClaudeAccount for agent a: true
+// for an instance of a declared officer's pool on the LLM proxy or on its own
+// API key, false for every other agent.
+func (s *Server) instanceOnNoClaudeAccount(a agents.Agent) bool {
+	o, _, ok := s.officerOf(a)
+	return ok && officers.OnNoClaudeAccount(o, a.Name)
+}
+
 // OfficerClaudeCodeSession is the provisioner's session source
 // (agentprovision.Adapter.UseClaudeCodeSession): for a declared officer's
 // instance, its session settings; every other agent: ok=false, unchanged.
@@ -1189,6 +1209,13 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	if _, _, proxied := officers.ProxyAgent(o, a.Name); proxied {
 		sess.LLMRoute = true
 		return sess, true
+	}
+	// 🔴 AN INSTANCE OF A POOL WITH ITS OWN CREDENTIAL RUNS ON THAT KEY AND NO
+	// OTHER (officers.CredentialAgent, the one rule): its pod carries the key
+	// and no subscription token. An empty key is passed as it is, and the
+	// spec refuses it: never a fallback to the account's setup-token.
+	if p, own := officers.CredentialAgent(o, a.Name); own {
+		sess.APIKey = &agentspec.ClaudeCodeAPIKey{Value: p.PoolCredential().Key()}
 	}
 	sess.Model = o.Model
 	return sess, true

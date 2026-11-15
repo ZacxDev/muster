@@ -45,6 +45,19 @@ const (
 	// ([ClaudeCodeSession.LLMRoute]); the entrypoint refuses any other value.
 	EnvLLMRoute    = "CCD_LLM_ROUTE"
 	LLMRouteMuster = "muster"
+	// LLMRouteAPIKey is the route of a pod that runs on its pool's OWN
+	// Anthropic API key ([ClaudeCodeSession.APIKey]): the entrypoint then
+	// requires EnvAnthropicAPIKey and refuses a subscription token, a base URL
+	// and an auth token beside it.
+	LLMRouteAPIKey = "api_key"
+
+	// EnvAnthropicAPIKey is the variable the Claude Code CLI reads an Anthropic
+	// API key from.
+	//
+	// 🔴 IT IS PLACED IN EXACTLY ONE PLACE, LIKE EnvClaudeOAuthToken: the
+	// agent's own per-agent Secret (claudeCodeSecrets), and only for a session
+	// with an APIKey — whose Secret then carries NO EnvClaudeOAuthToken.
+	EnvAnthropicAPIKey = "ANTHROPIC_API_KEY"
 
 	// ClaudeCodeDataPath is where the agent's persistent volume is mounted.
 	ClaudeCodeDataPath = "/data"
@@ -512,8 +525,22 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	// (claudeCodeSecrets), and the Compose chief without a subscription token
 	// has its account but no token at all. Every other session still refuses a
 	// missing one.
+	// 🔴 A SESSION ON ITS POOL'S OWN API KEY NEEDS NO ACCOUNT TOKEN EITHER, and
+	// is refused without its key: there is no fallback to the account's
+	// setup-token, here or in the entrypoint (credentials.sh).
+	apiKey := opts.ClaudeCodeSession.APIKey
+	if apiKey != nil {
+		if opts.ClaudeCodeSession.LLMRoute {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is on the LLM route and has its own API key; a "+
+				"session has one model credential", a.Name)
+		}
+		if strings.TrimSpace(apiKey.Value) == "" {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs on its pool's own Anthropic API key, which is "+
+				"empty; it never falls back to the shared account pool, so it does not start", a.Name)
+		}
+	}
 	token, ok := cc.Accounts[a.CCAccount]
-	if !opts.ClaudeCodeSession.LLMRoute && (!ok || token == "") {
+	if !opts.ClaudeCodeSession.LLMRoute && apiKey == nil && (!ok || token == "") {
 		// The account NAME only — never a token, and not the configured set's
 		// values either.
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs on Claude account %q, which is not "+
@@ -589,7 +616,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// 🔴 A POD ON THE LLM ROUTE CARRIES NO SUBSCRIPTION TOKEN: its model is
 		// reached through muster's proxy with its own muster token, and the
 		// entrypoint refuses a routed pod that also holds one.
-		Secrets:   claudeCodeSecrets(a, token, route),
+		Secrets:   claudeCodeSecrets(a, token, route, apiKey),
 		Resources: claudeCodeResourcesFor(cfg),
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
@@ -688,6 +715,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	if route {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteMuster})
 	}
+	if apiKey != nil {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteAPIKey})
+	}
 	if opts.ClaudeCodeSession.DisableAutoMemory {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableAutoMemory, Value: "1"},
 			provision.EnvVar{Name: EnvClaudeDisableOrgMemory, Value: "1"})
@@ -705,14 +735,17 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 }
 
 // claudeCodeSecrets is a claude-code pod's secrets: its muster identity, its
-// turn credential and — unless it is on the LLM route — its account's
-// subscription token.
-func claudeCodeSecrets(a agents.Agent, token string, llmRoute bool) []provision.EnvVar {
+// turn credential and its ONE model credential — its pool's own API key when
+// it has one, nothing on the LLM route, else its account's subscription token.
+func claudeCodeSecrets(a agents.Agent, token string, llmRoute bool, apiKey *ClaudeCodeAPIKey) []provision.EnvVar {
 	s := []provision.EnvVar{
 		{Name: EnvToken, Value: a.HooksToken},
 		{Name: EnvGatewayBearer, Value: a.GatewaySecret},
 	}
-	if !llmRoute {
+	switch {
+	case apiKey != nil:
+		s = append(s, provision.EnvVar{Name: EnvAnthropicAPIKey, Value: apiKey.Value})
+	case !llmRoute:
 		s = append(s, provision.EnvVar{Name: EnvClaudeOAuthToken, Value: token})
 	}
 	return s

@@ -39,8 +39,9 @@ type JobCount struct {
 
 // OfficerOf says which officer pool an agent name is an instance of: the
 // officer id and its pool ("routine", "judgement", or "" for an untiered
-// officer), and whether that pool reaches its model through muster's LLM
-// proxy (onProxy). ok is false for any other agent.
+// officer), and whether that pool runs on none of the shared Claude accounts
+// (onProxy: it reaches its model through muster's LLM proxy, or on its own API
+// key). ok is false for any other agent.
 type OfficerOf func(name string) (officer, pool string, onProxy, ok bool)
 
 // OfficerUse is the instances of one officer pool that ran on an account.
@@ -111,10 +112,11 @@ func Attribute(now time.Time, agentUses []AgentUse, jobs []JobCount, officerOf O
 		}
 		o, p, onProxy, isOfficer := officerOf(u.Name)
 		if isOfficer && onProxy {
-			// 🔴 A PROXIED INSTANCE USES NO CLAUDE ACCOUNT. Its pod holds no
-			// subscription token (the LLM route); the account its row still
-			// names is only the one it was created on, so counting it there
-			// would credit that account with work an OpenRouter key paid for.
+			// 🔴 A PROXIED INSTANCE USES NO CLAUDE ACCOUNT, NOR DOES ONE ON ITS
+			// POOL'S OWN API KEY. Its pod holds no subscription token (the LLM
+			// route, or the key route); the account its row still names is only
+			// the one it was created on, so counting it there would credit that
+			// account with work another key paid for.
 			continue
 		}
 		for i, w := range windows {

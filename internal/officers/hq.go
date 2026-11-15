@@ -665,22 +665,39 @@ func (c *Client) PutUsage(ctx context.Context, r UsageReport) error {
 	return err
 }
 
-// tokenWithheld is what Scrub writes in place of the officer token.
-const tokenWithheld = "[officer token withheld]"
+// tokenWithheld is what Scrub writes in place of the officer token, and
+// keyWithheld in place of a pool's own Anthropic API key (credential.go).
+const (
+	tokenWithheld = "[officer token withheld]"
+	keyWithheld   = "[officer API key withheld]"
+)
 
 // Scrub is s with every occurrence of the officer's own token replaced — and
 // every word a cap cut short ("…" right after it) that ends in the token's
 // first 4 or more bytes. It is how text built from an instance's session
-// (which could echo anything) is cleared of the one credential this client
-// holds, without the token leaving the client: a shape-based secret filter
-// cannot know an opaque token's shape. (officership.RedactCutTail is the same
-// cut rule for the token SHAPES; it cannot be given this token.)
+// (which could echo anything) is cleared of the credentials this client
+// holds, without them leaving the client: a shape-based secret filter cannot
+// know an opaque token's shape. (officership.RedactCutTail is the same cut
+// rule for the token SHAPES; it cannot be given this token.)
+//
+// 🔴 A POOL'S OWN API KEY IS SCRUBBED THE SAME WAY (Officer.Keys): the pod of
+// such a pool holds it in its environment, so its session can print it, and
+// the transcript sent to HQ must not carry it even when a shape filter would
+// miss it.
 func (c *Client) Scrub(s string) string {
-	t := c.officer.Token()
+	s = scrubSecret(s, c.officer.Token(), tokenWithheld)
+	for _, k := range c.officer.Keys() {
+		s = scrubSecret(s, k, keyWithheld)
+	}
+	return s
+}
+
+// scrubSecret is Scrub for one secret t, written as marker.
+func scrubSecret(s, t, marker string) string {
 	if t == "" {
 		return s
 	}
-	s = strings.ReplaceAll(s, t, tokenWithheld)
+	s = strings.ReplaceAll(s, t, marker)
 	const cut = "…"
 	if !strings.Contains(s, cut) || len(t) < 8 {
 		return s
@@ -697,7 +714,7 @@ func (c *Client) Scrub(s string) string {
 		word := before[k:]
 		for i := 0; len(word)-i >= 4; i++ {
 			if strings.HasPrefix(t, word[i:]) {
-				before = before[:k] + word[:i] + tokenWithheld
+				before = before[:k] + word[:i] + marker
 				break
 			}
 		}
