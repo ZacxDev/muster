@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/url"
+	"strconv"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -70,6 +71,11 @@ type ComposerView struct {
 	Host    string
 	Session string
 	Window  string
+	// Owner is a TEAM host's entry's owner (team sharing 2b.4), 0 for the
+	// viewer's own: the form's action names it (owner=), which is how the
+	// server's route gate aims a send at the team's window. An own entry's
+	// action is what it always was.
+	Owner int64
 	// Extra are further hidden fields, in order: what else the route needs to
 	// know where the message goes and where to come back to.
 	Extra []ComposerField
@@ -192,6 +198,9 @@ func (v ComposerView) action() string {
 	q := url.Values{}
 	for _, f := range v.fields() {
 		q.Set(f.Name, f.Value)
+	}
+	if v.Owner != 0 {
+		q.Set("owner", strconv.FormatInt(v.Owner, 10))
 	}
 	if len(q) == 0 {
 		return v.SendPath

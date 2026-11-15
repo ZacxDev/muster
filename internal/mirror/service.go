@@ -422,12 +422,19 @@ func TargetOwner(ctx context.Context) int64 {
 }
 
 // teamNeedsOpen is the roles a member's request may act on a TEAM host's
-// entries with, in this release. Team sharing 2b.3 opens viewing only: a
-// member watches, reads and scrolls a team session. Typing into one (an
-// interactive attach, a paste, an answer, a spawn) is 2b.4's, with its
-// step-up and queue checks, and until then access refuses it whatever the
-// member's role — so no route can reach it by setting a target.
-var teamNeedsOpen = map[authz.TeamRole]bool{authz.TeamViewer: true}
+// entries with, in this release. Team sharing 2b.3 opened viewing (a member
+// watches, reads and scrolls a team session); 2b.4 opens operating — typing
+// into one: an interactive attach, a paste, an answer typed into the pane —
+// at operator and above, each still behind its own fresh sign-in (Attach's
+// and the paste's step-up, checked here as well as by internal/api).
+//
+// 🔴 A ROLE IS REACHED ONLY THROUGH A ROUTE THAT AIMS AT IT: internal/api's
+// route gate (mirrorTeamGate) is ForOwner's one caller, and it aims a
+// request at a team only for the routes its table lets a member onto, at the
+// role each needs. So opening operator here opens the typing routes it
+// lists, and no other operator method (a spawn, a close) — no route aims one
+// at a team. Manager is not opened: no mirror method needs it.
+var teamNeedsOpen = map[authz.TeamRole]bool{authz.TeamViewer: true, authz.TeamOperator: true}
 
 // access is THE ONE CHOKEPOINT (team sharing 2b.3; docs/design/team-sharing.md
 // A, "The chokepoint") deciding whose hub entries an owner-taking method acts

@@ -88,7 +88,9 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		var cancelled func()
 		if disable {
 			cancelled = func() {
-				n, err := sendqueue.NewPG(pool).CancelOwner(ctx, id, time.Now(), api.SendQueueCancelDisabled)
+				// Everything they still have queued: their own, and what they
+				// queued into their teams' windows (team sharing 2b.4).
+				n, err := sendqueue.NewPG(pool).CancelUser(ctx, id, time.Now(), api.SendQueueCancelDisabled)
 				if err != nil {
 					fmt.Fprintf(stderr, "user %d: cancel their queued messages: %v (a running server still refuses to send them)\n", id, err)
 					return
