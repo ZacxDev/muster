@@ -1673,9 +1673,15 @@ scan: a leak next to it is still found and named.
 
 A **shepherd** pushing into a pull request of a public repository is scanned
 the same way before its push lands (and again when it marks the pull request
-ready), but only when the shepherd's own `ship` block marks that repository
-`public` with an `internal_patterns_file`: muster does not read another
-officer's `public` flag. Mark every public repository a shepherd ships.
+ready), and its comments are scanned before they are forwarded, but only when
+the shepherd's own `ship` block marks that repository `public` with an
+`internal_patterns_file`: muster does not read another officer's `public`
+flag. Mark every public repository a shepherd ships. 🔴 **A refused shepherd
+push was still public**: GitHub stored it at its scratch ref
+(`refs/muster/shepherd/<nonce>`) before muster checked it, and deleting the
+ref does not stop GitHub serving its commits by sha. In a public repository
+the refusal notice says so: treat it as a leak, rotate what leaked, never
+rewrite history.
 
 ### The shepherd stage
 

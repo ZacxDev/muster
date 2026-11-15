@@ -265,3 +265,30 @@ func TestADocsOnlyKickoffForbidsCommandEdits(t *testing.T) {
 		t.Fatalf("docs-only kickoff lacks the whole DOCS ONLY note:\n%s\n--- want it to contain ---\n%s", got, note)
 	}
 }
+
+// TestAPublicShepherdKickoffCarriesThePublicNote (round 2 finding 2): a
+// shepherd that ships a public repository is told so, with what muster scans
+// and that a refused push was still stored there first. Control: a shepherd
+// with no public repository gets no PUBLIC note.
+func TestAPublicShepherdKickoffCarriesThePublicNote(t *testing.T) {
+	m := shepShip()
+	m["repos"].([]any)[0].(map[string]any)["public"] = true
+	m["internal_patterns_file"] = patternFile(t, "\\.corp\\.example\\b\n")
+	list, err := parseShep(t, shepAuthorDecl(), shepDecl(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := byID(t, list, shepID)
+	got := officers.KickoffText(o, 1)
+	want := "\nPUBLIC repositories: " + o.Ship.Repos[0].Repo + ". Anyone can read them. Never put an internal hostname, address, cluster or node name, internal link or item detail into a commit you push, its message, your git author identity or a comment there: muster scans each push before it lands and refuses it, refuses the comment, and refuses to mark the pull request ready. A refused push was still stored in the repository (at refs/muster/shepherd/<nonce>) before muster deleted it, and GitHub can still serve its commits by sha: treat a refused push as a leak, rotate what leaked, never rewrite history."
+	if !strings.Contains(got, want) {
+		t.Fatalf("the public shepherd kickoff lacks the whole PUBLIC note:\n%s\n--- want it to contain ---\n%s", got, want)
+	}
+	list, err = parseShep(t, shepAuthorDecl(), shepDecl(shepShip()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := officers.KickoffText(byID(t, list, shepID), 1); strings.Contains(got, "PUBLIC repositories") {
+		t.Fatalf("control: a private shepherd's kickoff carries the PUBLIC note:\n%s", got)
+	}
+}

@@ -725,3 +725,95 @@ func noticeTexts(r *draftRig) []string {
 	}
 	return out
 }
+
+// publicShepRig is a shepherd rig with the pattern file internalPatterns, its
+// repository marked public or not.
+func publicShepRig(t *testing.T, public bool) *shepRig {
+	t.Helper()
+	r := newShepRig()
+	p := filepath.Join(t.TempDir(), "internal-patterns.txt")
+	if err := os.WriteFile(p, []byte(internalPatterns), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.g.Ship.InternalPatternsFile = p
+	r.g.Ship.Repos[0].Public = public
+	return r
+}
+
+// TestAShepherdCommentOnAPublicRepositoryIsScanned (round 2 finding 2): a
+// shepherd's comment carrying an internal detail is refused (409, a notice)
+// in a public repository, naming the pattern's line and never the text.
+// Control: the same comment in a repository not marked public is forwarded.
+func TestAShepherdCommentOnAPublicRepositoryIsScanned(t *testing.T) {
+	for _, public := range []bool{true, false} {
+		r := publicShepRig(t, public)
+		err := r.comment("seen on db.corp.example")
+		if !public {
+			if err != nil {
+				t.Errorf("control (private): err = %v, want the comment forwarded", err)
+			}
+			continue
+		}
+		if !isConflict(err) || !strings.Contains(err.Error(), "internal-details pattern line 2") || len(r.notices) != 1 {
+			t.Fatalf("public: err = %v, notices %+v; want a 409 naming pattern line 2 and one notice", err, r.notices)
+		}
+		for _, s := range []string{err.Error(), r.notices[0].Summary} {
+			if strings.Contains(s, "corp.example") {
+				t.Errorf("public: a refusal or notice quotes the matched text: %q", s)
+			}
+		}
+	}
+}
+
+// TestARefusedShepherdPushIntoAPublicRepositoryIsCalledALeak (round 2
+// finding 2): GitHub stored the push at its scratch ref before muster refused
+// it, so in a public repository the notice names the ref and says to treat it
+// as a leak. Control: a private repository's notice does not.
+func TestARefusedShepherdPushIntoAPublicRepositoryIsCalledALeak(t *testing.T) {
+	for _, public := range []bool{true, false} {
+		r := publicShepRig(t, public)
+		out, err := r.push()
+		if err != nil {
+			t.Fatal(err)
+		}
+		scratch, _ := forwarded(t, out)
+		cmp := r.gh.compares["trunk..."+oidB]
+		cmp.Files = []File{{Path: "nodes/a.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+a: 2"}}
+		r.gh.compares["trunk..."+oidB] = cmp
+		answer(t, out, stored(scratch))
+		if len(r.notices) != 1 {
+			t.Fatalf("public=%v: notices %+v, want one", public, r.notices)
+		}
+		leak := strings.Contains(r.notices[0].Summary, "stored the push at "+scratch) && strings.Contains(r.notices[0].Summary, "treat it as a leak")
+		if leak != public {
+			t.Errorf("public=%v: the notice calls it a leak = %v: %q", public, leak, r.notices[0].Summary)
+		}
+	}
+}
+
+// TestMarkReadyScansAPublicRepository (round 2 finding 3): mark ready runs
+// the public repository's internal-details scan over base...head, with the
+// SHEPHERD's ship (the only one naming the pattern file). Control: the same
+// head in a repository not marked public is marked ready.
+func TestMarkReadyScansAPublicRepository(t *testing.T) {
+	for _, public := range []bool{true, false} {
+		r := publicShepRig(t, public)
+		cmp := r.gh.compares["trunk..."+oidA]
+		cmp.Files = []File{{Path: "clusters/prod/apps/x/notes.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+host: db.corp.example"}}
+		r.gh.compares["trunk..."+oidA] = cmp
+		out, err := r.gates.MarkReady(context.Background(), sInstance, sRepo, sPR)
+		if !public {
+			if err != nil || !out.Ready {
+				t.Errorf("control (private): ready %v, err = %v; want marked ready", out.Ready, err)
+			}
+			continue
+		}
+		rf, ok := AsRefusal(err)
+		if !ok || rf.Gate != GateWall || !strings.Contains(rf.Reason, "internal-details pattern line 2") || strings.Contains(rf.Reason, "corp.example") {
+			t.Fatalf("public: err = %v, want the wall refusal naming pattern line 2", err)
+		}
+		if out.Ready || len(r.gh.readied) != 0 {
+			t.Fatalf("public: ready %v, readied %v; want nothing converted", out.Ready, r.gh.readied)
+		}
+	}
+}

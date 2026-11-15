@@ -554,7 +554,31 @@ func shepherdShipNote(o Officer) string {
 		"- shadow: when HQ runs your item (or your officer) in shadow, every write above is refused with `shadow: would have …`, nothing is sent, and "+
 		"muster appends what it refused to your officer_complete summary. Work the item as usual and complete it.\n"+
 		"You never merge, close or tag: a human merges.",
-		strings.Join(repos, "; "), strings.Join(authors, ", "), GitHubConnector, onlyConnector(o), ToolShepherdReady, ToolShepherdMergeAsk)
+		strings.Join(repos, "; "), strings.Join(authors, ", "), GitHubConnector, onlyConnector(o), ToolShepherdReady, ToolShepherdMergeAsk) + shepherdPublicNote(o)
+}
+
+// publicRepos are the repositories o's ship marks public.
+func publicRepos(o Officer) []string {
+	var public []string
+	for _, r := range o.Ship.RepoList(o.Repo) {
+		if r.Public {
+			public = append(public, r.Repo)
+		}
+	}
+	return public
+}
+
+// shepherdPublicNote tells a shepherd which of its repositories are public,
+// what muster scans there, and that a refused push was public anyway ("" when
+// none is).
+func shepherdPublicNote(o Officer) string {
+	public := publicRepos(o)
+	if len(public) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+PUBLIC repositories: %s. Anyone can read them. Never put an internal hostname, address, cluster or node name, internal link or item detail into a commit you push, its message, your git author identity or a comment there: muster scans each push before it lands and refuses it, refuses the comment, and refuses to mark the pull request ready. A refused push was still stored in the repository (at %s<nonce>) before muster deleted it, and GitHub can still serve its commits by sha: treat a refused push as a leak, rotate what leaked, never rewrite history.`,
+		strings.Join(public, ", "), "refs/muster/shepherd/")
 }
 
 // draftShipNote is shipNote for a draft-stage officer: its repositories, the
@@ -593,13 +617,7 @@ DOCS ONLY: every path your pull request changes, adds, removes or renames from m
 			strings.Join(d.AllowedPaths, ", "), d.MaxFiles, d.MaxDiffLines)
 		out += " Never change a line inside a fenced code block (a command) and never change a file that is not Markdown: muster refuses both. Propose a command change as text in the pull request body instead."
 	}
-	var public []string
-	for _, r := range s.RepoList(o.Repo) {
-		if r.Public {
-			public = append(public, r.Repo)
-		}
-	}
-	if len(public) > 0 {
+	if public := publicRepos(o); len(public) > 0 {
 		out += fmt.Sprintf(`
 PUBLIC repositories: %s. Anyone can read them, including every branch you push and its name. Never put an internal hostname, address, cluster or node name, internal link or item detail into a branch name, a diff, a commit message, your git author identity, a title, a body or a comment there: muster scans all of them, refuses a push whose branch name matches, deletes a pushed branch whose content matches (or that it cannot check), and refuses the pull request.`,
 			strings.Join(public, ", "))
