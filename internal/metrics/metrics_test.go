@@ -119,6 +119,8 @@ func gather(t *testing.T) map[string][]string {
 	AgentProvision.WithLabelValues("ok")
 	PushDelivery.WithLabelValues("ok")
 	PushSuppressed.WithLabelValues("muted")
+	PushSuppressed.WithLabelValues("team_read_failed")
+	PushSuppressed.WithLabelValues("owner_kind_unread")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
 	TasksCreated.WithLabelValues("api")

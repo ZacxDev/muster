@@ -232,6 +232,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}",
 		"POST /teams/{id}/members",
 		"POST /teams/{id}/members/{user}/remove",
+		// Account -> Teams and a member's own notify switch (phase 2b.1):
+		// requireSession, and requireOperatorWrite for the write; the
+		// membership check is the store's, on the caller's own row.
+		"GET /account/teams",
+		"POST /account/teams/{id}/notify",
 		// A team's officers page and the host spawns' team lend (team sharing
 		// phase 3): requireSession, and requireOperatorWrite for the writes;
 		// the member/manager check and lendHostSpawn's gate are AFTER the

@@ -113,12 +113,9 @@ func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d p
 	if d.IsOutbound() && plugins.IsBatchKind(d.Target().Kind) {
 		// A follow or a like: ONE notification per outreach batch (its tag
 		// replaces the last), never one each (outreach_batch.go).
+		// A team's batch reaches its operators and managers through
+		// goNotify's one fan-out (team_notify.go).
 		s.notifyBatchAwaiting(owner, d)
-		// A TEAM officer's batch reaches the team's members as its single
-		// drafts do (team_notify.go): a team has no devices of its own.
-		for _, member := range s.teamOfficerRecipients(ctx, owner) {
-			s.notifyBatchAwaiting(member, d)
-		}
 		return
 	}
 	id := strconv.FormatInt(d.ID, 10)
@@ -136,15 +133,9 @@ func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d p
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": draftLink(d.ID)},
 	}
+	// A team's draft — an officer's or a reply — reaches its operators and
+	// managers through goNotify's one fan-out (team_notify.go).
 	s.goNotify(owner, push.EventPlugin, n, nil)
-	// A TEAM officer's outbound draft also reaches the team's operators and
-	// managers (team_notify.go, the minimal team fan-out); a reply draft and a
-	// personal officer's draft do not fan out.
-	if d.Officer != nil {
-		for _, member := range s.teamOfficerRecipients(ctx, owner) {
-			s.goNotify(member, push.EventPlugin, n, nil)
-		}
-	}
 }
 
 // draftPushBody is a draft notification's body: "Reply draft: <sender's

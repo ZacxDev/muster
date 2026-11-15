@@ -53,6 +53,7 @@ GET /account/credentials
 GET /account/devices/live
 GET /account/features
 GET /account/passkeys
+GET /account/teams
 GET /account/tokens
 GET /admin/invites
 GET /admin/teams
@@ -214,6 +215,7 @@ POST /account/push/preferences
 POST /account/push/test
 POST /account/push/{id}/remove
 POST /account/suggest
+POST /account/teams/{id}/notify
 POST /account/tokens
 POST /account/tokens/{id}/revoke
 POST /admin/invites

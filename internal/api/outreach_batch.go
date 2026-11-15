@@ -307,25 +307,29 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 	if len(res.Approved) > 0 {
 		s.draftWake.signal()
 	}
-	owner := requestOwner(ctx)
 	for _, d := range res.Rejected {
 		s.notSelectedSettled(ctx, d, id)
 	}
+	// 🔴 WITHDRAWN FROM THE BATCH'S OWNER, NOT FROM THE DECIDER. On a team's
+	// batch the decider is one of its managers; the notification went to every
+	// operator and manager (goNotify's fan-out), so it is withdrawn the same
+	// way: owner = the team. Their pages, the decider's among them, refresh
+	// through attentionChanged's team arm.
+	owner := requestOwner(ctx)
+	if bOwner, _, _, ok := plugins.ParseBatchID(id); ok {
+		owner = bOwner
+	}
 	for _, d := range append(append([]plugins.Draft{}, res.Approved...), res.Rejected...) {
-		s.draftSettled(owner, d.ID)
+		if d.OwnerID > 0 {
+			s.draftSettled(d.OwnerID, d.ID)
+		} else {
+			s.draftSettled(owner, d.ID) // a store that does not read the column
+		}
 		if owner <= 0 {
 			owner = d.OwnerID
 		}
 	}
 	s.clearBatchNote(owner, id)
-	// …and the team's members' copies (notifyDraftAwaitingNoting's fan-out).
-	if bOwner, _, _, ok := plugins.ParseBatchID(id); ok {
-		for _, member := range s.teamOfficerRecipients(ctx, bOwner) {
-			if member != owner {
-				s.clearBatchNote(member, id)
-			}
-		}
-	}
 	s.logger.Printf("plugins: outreach batch %s decided via %s: %d approved, %d not selected", id, dec.Via, len(res.Approved), len(res.Rejected))
 	return res, nil
 }

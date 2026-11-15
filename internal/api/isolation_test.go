@@ -689,6 +689,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /teams/{id}":                        classParam,
 	"POST /teams/{id}/members":               classParam,
 	"POST /teams/{id}/members/{user}/remove": classParam,
+	// Account -> Teams (phase 2b.1): the caller's own teams (list), and the
+	// notify switch of a team {id} A is a member of (param).
+	"GET /account/teams":                     classList,
+	"POST /account/teams/{id}/notify":        classParam,
 	// A team's officers (phase 3): {id} is a team A manages, {key} and
 	// {officer} A's team's type and officer.
 	"GET /teams/{id}/officers":                  classParam,
@@ -1726,7 +1730,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.pageDel, 10)
 	case strings.HasPrefix(path, "/pages/{id}"):
 		id = strconv.FormatInt(o.page, 10)
-	case strings.HasPrefix(path, "/teams/{id}"):
+	case strings.HasPrefix(path, "/teams/{id}") || strings.HasPrefix(path, "/account/teams/{id}"):
 		id = strconv.FormatInt(o.team, 10)
 		path = strings.NewReplacer("/types/{key}", "/types/"+o.officerType, "/defs/{officer}", "/defs/"+url.PathEscape(o.officer)).Replace(path)
 	case strings.HasPrefix(path, "/officers/spawns/{id}"):
@@ -1795,6 +1799,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			team = w.ghost.team
 		}
 		return method, path, url.Values{"team": {strconv.FormatInt(team, 10)}}.Encode()
+	}
+	if strings.HasPrefix(path, "/account/teams/") {
+		// A member's own notify switch (phase 2b.1): a valid value, so a
+		// refusal is about whose team, not a missing field.
+		return method, path, url.Values{"on": {"1"}}.Encode()
 	}
 	winner := actor.task.ID
 	if actor.uid == w.a.uid {

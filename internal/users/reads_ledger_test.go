@@ -58,7 +58,8 @@ var usersReads = map[string]string{
 	"internal/users PGStore.ListTeams":                     readTeam,
 	"internal/users PGStore.TeamNames":                     readTeam,   // the names of the caller's own teams (task board groups, Owner select)
 	"internal/users PGStore.TeamMembers":                   readByID,   // the members of a team id the manager page was handed
-	"internal/users PGStore.TeamNotifyMembers":             readPerson, // a team officer's push recipients: persons only (kind = 'person')
+	"internal/users PGStore.TeamPushTargets":               readPerson, // a team push's recipients: persons (kind = 'person'), and its own SQL drops a disabled one (u.disabled_at IS NULL): EnabledPersonIDs is the outside-package spelling
+	"internal/users PGStore.MyTeams":                       readTeam,   // the caller's own teams (Account -> Teams; the disable sweep reads them BEFORE the disable, so no enabled filter)
 	"internal/users lockTeam":                              readTeam,
 	"internal/users PGStore.AddTeamMemberByEmailAsManager": readPerson,
 	"internal/users lockPerson":                            readPerson,

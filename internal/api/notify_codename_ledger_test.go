@@ -47,6 +47,7 @@ var noCodenameFirst = map[string]string{
 	"push_task.go Server.notifyAgentRunning":               "a task's agent: an agent has no tmux window",
 	"push_task.go Server.notifyTaskDone":                   "a task done / in review: names a task",
 	"push_task.go Server.flushCommentedTasks":              "a task comment: names a task",
+	"push_task.go Server.teamTaskCommented":                "a member's comment on a team task: names a task",
 	"reply_draft_tool.go Server.notifyDraftAwaitingNoting": "a reply draft: fixed title, names no session",
 	"outreach_batch.go Server.notifyBatchAwaiting":         "an outreach batch: fixed title, names no session",
 }

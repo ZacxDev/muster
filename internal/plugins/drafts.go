@@ -1709,6 +1709,28 @@ func (s *PGStore) PendingDrafts(ctx context.Context) ([]PendingDraft, error) {
 	})
 }
 
+// PendingOwnedBy is owner's pending drafts, oldest first, read AS ctx's
+// principal (row-level security applies: the caller acts as owner). The team
+// withdrawal sweep (internal/api team_withdraw.go) reads it to close, on a
+// departing member's devices, the notification of each of a team's drafts
+// and outreach batches still awaiting a decision.
+func (s *PGStore) PendingOwnedBy(ctx context.Context, owner int64) ([]Draft, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE owner_id = $1 AND status = 'pending' ORDER BY id`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Draft
+	for rows.Next() {
+		d, err := scanDraft(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // cutRunes keeps at most n runes of s.
 func cutRunes(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
