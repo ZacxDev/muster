@@ -98,7 +98,7 @@ helm upgrade "$REL" "$CHART" "${common[@]}" -f "$CHART/ci/minimal.yaml" \
   --set agents.enabled=true \
   --set agents.gatewayImage.repository="$REPO" --set agents.gatewayImage.tag="$TAG" \
   --set agents.gateway.enabled=true --set agents.gateway.model=ci-model \
-  --set-string agents.gateway.runtimeConfig='{}' --set-string agents.gateway.runtimeInstall='true' \
+  --set-string agents.gateway.runtimeConfig=ci-runtime-config --set-string agents.gateway.runtimeInstall=true \
   --set agents.claudeCode.enabled=true --set agents.claudeCode.image="$REPO:$TAG" \
   --set 'agents.claudeCode.accounts={ci}' --set agents.claudeCode.tokensSecret=ci-claude-accounts \
   --set agents.rbac.layout="$LAYOUT"

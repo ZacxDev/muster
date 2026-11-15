@@ -1294,8 +1294,10 @@ jobs:
           for f in "$RUNNER_TEMP"/rendered/*.yaml; do
             python3 tests/chart/boot_config_check.py "$RUNNER_TEMP/muster-server" "$f"
           done
+          # The control: a subject the chart's schema lets through (mailto:…) and
+          # the server refuses (not a clean address).
           helm template t charts/muster -f charts/muster/ci/minimal.yaml --set push.enabled=true \
-            --set push.subject=http://ops.example.com > "$RUNNER_TEMP/refused.yaml"
+            --set-string 'push.subject=mailto:Ops <ops@example.com>' > "$RUNNER_TEMP/refused.yaml"
           python3 tests/chart/boot_config_check.py "$RUNNER_TEMP/muster-server" "$RUNNER_TEMP/refused.yaml" --expect-refusal 'VAPID_SUBJECT'
 
       - name: the release's chart carries the release's version (scripts/release-build.sh)
