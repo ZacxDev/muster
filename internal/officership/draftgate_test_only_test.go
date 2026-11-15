@@ -19,7 +19,7 @@ const dMoneyFile = ".github/officer/money-paths.txt"
 // trunk.
 func moneyRig(list string) *draftRig {
 	r := newDraftRig()
-	r.g.Ship.Repos[1].TestOnlyPathsFile = dMoneyFile
+	r.g.Ship.Repos[1].MoneyPathsFile = dMoneyFile
 	r.infra.contents[dMoneyFile+"@trunk"] = list
 	return r
 }
@@ -76,7 +76,7 @@ func TestAMoneyPathIsChangedOnlyInATest(t *testing.T) {
 // Control: a readable list and a clean comparison pass.
 func TestAnUnreadableMoneyPathsFileRefusesThePullRequest(t *testing.T) {
 	r := newDraftRig()
-	r.g.Ship.Repos[1].TestOnlyPathsFile = dMoneyFile // set, but no such file
+	r.g.Ship.Repos[1].MoneyPathsFile = dMoneyFile // set, but no such file
 	if err := r.create(goodCreate()); !isConflict(err) || !strings.Contains(err.Error(), dMoneyFile) || len(r.notices) != 1 {
 		t.Fatalf("a missing money list: err = %v, notices %d; want a 409 naming the file and a notice", err, len(r.notices))
 	}

@@ -93,12 +93,12 @@ type ShipRepo struct {
 	// forbidden globs, one per line; the draft gate reads it from the pull
 	// request's TARGET branch at every check (draftgate.go).
 	ForbiddenPathsFile string
-	// TestOnlyPathsFile, when set, is a repository file listing the "money
+	// MoneyPathsFile, when set, is a repository file listing the "money
 	// paths": globs (the forbidden-path grammar, MatchForbidden) a pull
 	// request of the officer may change ONLY in a test file (IsTestFile: a
 	// `*.test.*` or `*.spec.*` name). Read from the TARGET branch at every
 	// check like ForbiddenPathsFile, fail closed, and itself forbidden.
-	TestOnlyPathsFile string
+	MoneyPathsFile string
 }
 
 // RepoList is the officer's ship repositories: Repos when parsed, else the one
@@ -159,7 +159,7 @@ type declaredShipRepo struct {
 	} `json:"github_app"`
 	ForbiddenPaths     []string `json:"forbidden_paths"`
 	ForbiddenPathsFile string   `json:"forbidden_paths_file"`
-	TestOnlyPathsFile  string   `json:"test_only_paths_file"`
+	MoneyPathsFile  string   `json:"test_only_paths_file"`
 }
 
 // parseShipRepo validates one repository's base, prefix, App and forbidden
@@ -220,13 +220,13 @@ func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
 		}
 		r.ForbiddenPathsFile = f
 	}
-	if d.TestOnlyPathsFile != "" {
-		f := strings.TrimSpace(d.TestOnlyPathsFile)
+	if d.MoneyPathsFile != "" {
+		f := strings.TrimSpace(d.MoneyPathsFile)
 		if !ValidListFile(f) {
 			return ShipRepo{}, fmt.Errorf("ship: %stest_only_paths_file %q must be a repository-relative file path (no leading '/', no '.' or '..' segment, no glob characters)",
-				what, d.TestOnlyPathsFile)
+				what, d.MoneyPathsFile)
 		}
-		r.TestOnlyPathsFile = f
+		r.MoneyPathsFile = f
 	}
 	return r, nil
 }
@@ -283,7 +283,7 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && !wallStage(stage) {
 			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s and %s stages only; stage %s would ignore it — remove it", StageDraft, StageShepherd, stage)
 		}
-		if r.TestOnlyPathsFile != "" && !wallStage(stage) {
+		if r.MoneyPathsFile != "" && !wallStage(stage) {
 			return nil, fmt.Errorf("ship: repos[%d].test_only_paths_file is enforced by the %s and %s stages only; stage %s would ignore it — remove it", i, StageDraft, StageShepherd, stage)
 		}
 		lr := strings.ToLower(r.Repo)

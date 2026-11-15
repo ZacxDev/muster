@@ -199,11 +199,11 @@ type ShepherdRule struct {
 	// pull request's TARGET branch at every check (and each forbidden itself).
 	ForbiddenPaths      []string
 	ForbiddenPathsFiles []string
-	// TestOnlyPathsFiles are the repository files listing money paths (each
-	// ShipRepo.TestOnlyPathsFile of the shepherd and the author), read like
+	// MoneyPathsFiles are the repository files listing money paths (each
+	// ShipRepo.MoneyPathsFile of the shepherd and the author), read like
 	// ForbiddenPathsFiles: a shepherd push may change a path they match only
 	// in a test file.
-	TestOnlyPathsFiles []string
+	MoneyPathsFiles []string
 }
 
 // Empty reports whether the rule's wall forbids nothing.
@@ -237,8 +237,8 @@ func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 			if r.ForbiddenPathsFile != "" {
 				rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, r.ForbiddenPathsFile)
 			}
-			if r.TestOnlyPathsFile != "" {
-				rule.TestOnlyPathsFiles = append(rule.TestOnlyPathsFiles, r.TestOnlyPathsFile)
+			if r.MoneyPathsFile != "" {
+				rule.MoneyPathsFiles = append(rule.MoneyPathsFiles, r.MoneyPathsFile)
 			}
 			if a.Officer == "" {
 				continue
@@ -255,12 +255,12 @@ func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 			if ar.ForbiddenPathsFile != "" {
 				rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, ar.ForbiddenPathsFile)
 			}
-			if ar.TestOnlyPathsFile != "" {
-				rule.TestOnlyPathsFiles = append(rule.TestOnlyPathsFiles, ar.TestOnlyPathsFile)
+			if ar.MoneyPathsFile != "" {
+				rule.MoneyPathsFiles = append(rule.MoneyPathsFiles, ar.MoneyPathsFile)
 			}
 			rule.ForbiddenPaths = sortedUniqueStrings(rule.ForbiddenPaths)
 			rule.ForbiddenPathsFiles = sortedUniqueStrings(rule.ForbiddenPathsFiles)
-			rule.TestOnlyPathsFiles = sortedUniqueStrings(rule.TestOnlyPathsFiles)
+			rule.MoneyPathsFiles = sortedUniqueStrings(rule.MoneyPathsFiles)
 			out = append(out, rule)
 		}
 	}

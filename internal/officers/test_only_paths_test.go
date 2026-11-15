@@ -7,23 +7,23 @@ import (
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
-// TestParseReadsATestOnlyPathsFile: `test_only_paths_file` is kept on the one
+// TestParseReadsAMoneyPathsFile: `test_only_paths_file` is kept on the one
 // ship repository that declares it; a path that is absolute, climbs, is a
 // directory or is blank is refused naming the key; the top-level
 // (single-repository) form does not take it; and the shepherd's rule carries
 // it for that repository (officers.ShepherdRules reads ShipRepo, so a parsed
 // value is what reaches the wall).
-func TestParseReadsATestOnlyPathsFile(t *testing.T) {
+func TestParseReadsAMoneyPathsFile(t *testing.T) {
 	m := draftShip()
 	m["repos"].([]any)[0].(map[string]any)["test_only_paths_file"] = " .github/officer/money-paths.txt "
 	list, err := parseDecl(t, draftDecl(m), shipEnv(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := list[0].Ship.Repos[0]; r.TestOnlyPathsFile != ".github/officer/money-paths.txt" {
+	if r := list[0].Ship.Repos[0]; r.MoneyPathsFile != ".github/officer/money-paths.txt" {
 		t.Fatalf("repo 0 = %+v, want the money-path file", r)
 	}
-	if list[0].Ship.Repos[1].TestOnlyPathsFile != "" {
+	if list[0].Ship.Repos[1].MoneyPathsFile != "" {
 		t.Fatal("the other repository got the file")
 	}
 	for _, bad := range []string{"/etc/list.txt", "../list.txt", "a/../b.txt", "  ", "dir/", "a/*.txt"} {
@@ -46,12 +46,12 @@ func TestParseReadsATestOnlyPathsFile(t *testing.T) {
 // author's own pull request does.
 func TestAShepherdRuleCarriesTheMoneyPaths(t *testing.T) {
 	sh := officers.Officer{ID: "shepherd:example", Repo: "example-org/web", Ship: &officers.Ship{Stage: officers.StageShepherd,
-		Repos:    []officers.ShipRepo{{Repo: "example-org/web", TestOnlyPathsFile: "b/money.txt", ForbiddenPaths: []string{"x/**"}}},
+		Repos:    []officers.ShipRepo{{Repo: "example-org/web", MoneyPathsFile: "b/money.txt", ForbiddenPaths: []string{"x/**"}}},
 		Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: "author-bot[bot]", Officer: "author:example"}}}}}
 	au := officers.Officer{ID: "author:example", Repo: "example-org/web", Ship: &officers.Ship{Stage: officers.StageDraft,
-		Repos: []officers.ShipRepo{{Repo: "example-org/web", TestOnlyPathsFile: "a/money.txt"}}}}
+		Repos: []officers.ShipRepo{{Repo: "example-org/web", MoneyPathsFile: "a/money.txt"}}}}
 	rules := officers.ShepherdRules(sh, []officers.Officer{sh, au})
-	if len(rules) != 1 || strings.Join(rules[0].TestOnlyPathsFiles, ",") != "a/money.txt,b/money.txt" {
+	if len(rules) != 1 || strings.Join(rules[0].MoneyPathsFiles, ",") != "a/money.txt,b/money.txt" {
 		t.Fatalf("rules = %+v, want one carrying both money-path files", rules)
 	}
 }

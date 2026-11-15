@@ -347,8 +347,8 @@ func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh
 	if sr.ForbiddenPathsFile != "" {
 		files = []string{sr.ForbiddenPathsFile}
 	}
-	if sr.TestOnlyPathsFile != "" {
-		testOnly = []string{sr.TestOnlyPathsFile}
+	if sr.MoneyPathsFile != "" {
+		testOnly = []string{sr.MoneyPathsFile}
 	}
 	return g.checkWall(ctx, sr.Repo, gh, sr.ForbiddenPaths, files, testOnly, base, head)
 }
