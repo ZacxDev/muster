@@ -294,14 +294,16 @@ func k8sChiefEnv(t *testing.T, llm string) map[string]string {
 
 // k8sChiefLLMRequest boots muster on env, turns the admin's chief on, and
 // sends the chief's own POST /llm/v1/messages on the connect door with the
-// muster token its pod's Secret holds.
-func k8sChiefLLMRequest(t *testing.T, env map[string]string) (*httptest.ResponseRecorder, map[string]string) {
+// muster token its pod's Secret holds. markedOn is the Claude account the
+// booted agent gateway marks a typed rate_limited / auth_failed of the chief
+// against (agentgateway.Gateway.AccountOf, as main wired it).
+func k8sChiefLLMRequest(t *testing.T, env map[string]string) (w *httptest.ResponseRecorder, secret map[string]string, markedOn string) {
 	t.Helper()
 	return k8sChiefLLMRequestAs(t, env, agents.KindClaudeCode)
 }
 
 // k8sChiefLLMRequestAs is k8sChiefLLMRequest with the admin's chief row of kind.
-func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*httptest.ResponseRecorder, map[string]string) {
+func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*httptest.ResponseRecorder, map[string]string, string) {
 	t.Helper()
 	client := fake.NewClientset()
 	k8sTestClient = client
@@ -332,9 +334,10 @@ func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*ht
 	// The admin's chief, on claude-code (the production chief's kind: a new
 	// chief defaults to gateway, and `chief replace` moved it). Turning the
 	// chief on below starts this row.
-	if _, err := agents.NewPG(a.pool).Create(authz.Operator(context.Background()), agents.Agent{Name: agents.ChiefName,
+	chief, err := agents.NewPG(a.pool).Create(authz.Operator(context.Background()), agents.Agent{Name: agents.ChiefName,
 		Namespace: agents.NamespaceFor(agents.NamespacePrefix, agents.ChiefName), Status: agents.StatusStopped,
-		Kind: kind, CCAccount: map[bool]string{true: "work"}[kind == agents.KindClaudeCode], OwnerID: authz.OperatorUserID}); err != nil {
+		Kind: kind, CCAccount: map[bool]string{true: "work"}[kind == agents.KindClaudeCode], OwnerID: authz.OperatorUserID})
+	if err != nil {
 		t.Fatalf("create the chief row: %v", err)
 	}
 	st := &composeStack{env: env, logs: logs, h: a.srv.Handler(), app: a}
@@ -375,7 +378,10 @@ func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*ht
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	a.connect.Handler.ServeHTTP(w, r)
-	return w, secret
+	if a.gw == nil {
+		t.Fatalf("no agent gateway was built\n%s", logs.String())
+	}
+	return w, secret, a.gw.AccountOf(context.Background(), chief)
 }
 
 // TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy is the whole seam
@@ -385,7 +391,7 @@ func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*ht
 // (a haiku request included: Claude Code's background calls name one).
 func TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy(t *testing.T) {
 	up := newComposeProvider(t)
-	w, secret := k8sChiefLLMRequest(t, k8sChiefEnv(t, chiefLLMOpenRouter))
+	w, secret, markedOn := k8sChiefLLMRequest(t, k8sChiefEnv(t, chiefLLMOpenRouter))
 	if w.Code != http.StatusOK {
 		t.Fatalf("on: the chief's LLM request: %d %s", w.Code, w.Body)
 	}
@@ -395,6 +401,11 @@ func TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy(t *testing.T) {
 	if _, ok := secret[agentspec.EnvClaudeOAuthToken]; ok {
 		t.Fatalf("on: the chief's pod secret carries %s", agentspec.EnvClaudeOAuthToken)
 	}
+	// Its row still names "work", but it runs on no Claude account: an
+	// upstream provider's 429 (passed back by the proxy) must not mark it.
+	if markedOn != "" {
+		t.Fatalf("on: the gateway marks the chief's typed failures against Claude account %q, want none", markedOn)
+	}
 }
 
 // TestTheKubernetesChiefWithTheSwitchUnsetIsTodaysChief is the rollback: the
@@ -403,7 +414,7 @@ func TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy(t *testing.T) {
 // is the served test's negative control on the same stub provider.
 func TestTheKubernetesChiefWithTheSwitchUnsetIsTodaysChief(t *testing.T) {
 	up := newComposeProvider(t)
-	w, secret := k8sChiefLLMRequest(t, k8sChiefEnv(t, ""))
+	w, secret, markedOn := k8sChiefLLMRequest(t, k8sChiefEnv(t, ""))
 	if w.Code == http.StatusOK || !strings.Contains(w.Body.String(), "no officer on this server declares") {
 		t.Fatalf("off: the chief's LLM request: %d %s; want today's refusal", w.Code, w.Body)
 	}
@@ -412,6 +423,9 @@ func TestTheKubernetesChiefWithTheSwitchUnsetIsTodaysChief(t *testing.T) {
 	}
 	if secret[agentspec.EnvClaudeOAuthToken] != fakeTokWork {
 		t.Fatalf("off: the chief's pod secret does not carry its account token (keys %v)", keysOf(secret))
+	}
+	if markedOn != "work" {
+		t.Fatalf("off: the gateway marks the chief's typed failures against %q, want its account work", markedOn)
 	}
 }
 
@@ -422,7 +436,7 @@ func TestTheKubernetesChiefWithTheSwitchUnsetIsTodaysChief(t *testing.T) {
 // settings is served (TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy).
 func TestTheKubernetesProxyRefusesAChiefItsRouteRuleDoesNotRoute(t *testing.T) {
 	up := newComposeProvider(t)
-	w, _ := k8sChiefLLMRequestAs(t, k8sChiefEnv(t, chiefLLMOpenRouter), agents.KindGateway)
+	w, _, _ := k8sChiefLLMRequestAs(t, k8sChiefEnv(t, chiefLLMOpenRouter), agents.KindGateway)
 	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), api.ChiefNotRoutedRefusal) {
 		t.Fatalf("a gateway-kind admin chief: %d %s, want 403 %q", w.Code, w.Body, api.ChiefNotRoutedRefusal)
 	}

@@ -52,6 +52,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agentprovision"
@@ -222,6 +223,9 @@ type app struct {
 	// officerPools pushes the declared officers' pools to their HQ
 	// (api.Server.OfficerPoolsReporter); nil without officers.
 	officerPools interface{ Run(context.Context) }
+	// gw is the agent gateway, nil when none is built; kept so a booted test
+	// can read the account it marks for an agent (AccountOf).
+	gw *agentgateway.Gateway
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -981,6 +985,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			}
 			return nil, fmt.Errorf("%s=%s: %w", envChiefLLM, chiefLLMOpenRouter, err)
 		}
+	}
+
+	// 🔴 A CLAUDE-CODE AGENT ON THE LLM PROXY MARKS NO SHARED CLAUDE ACCOUNT AND
+	// IS FAILED OVER FROM NONE (api.Server.NoClaudeAccount: an officer pool's
+	// instance on the proxy, or the chief on the route above): its row still
+	// names an account, but the proxy passes an upstream provider's 429 back as
+	// it is. Installed here, on the concrete gateway, once: after srv is built
+	// and both of its inputs (EnableOfficers, EnableChiefLLM) are set.
+	if gw != nil {
+		gw.UseNoAccount(srv.NoClaudeAccount)
+		a.gw = gw
 	}
 
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S

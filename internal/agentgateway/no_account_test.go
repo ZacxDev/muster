@@ -24,7 +24,7 @@ func TestAnAgentOnNoSharedAccountMarksAndMovesNothing(t *testing.T) {
 				gw := markGateway(t, srv, m)
 				gw.UseFailover(f)
 				a := ccAgent()
-				gw.UseNoAccount(func(x agents.Agent) bool { return none && x.ID == a.ID })
+				gw.UseNoAccount(func(_ context.Context, x agents.Agent) bool { return none && x.ID == a.ID })
 				var err error
 				if shape == "chat" {
 					_, err = gw.Chat(context.Background(), a, "k", "hello", nil)

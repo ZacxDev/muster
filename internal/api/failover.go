@@ -97,9 +97,17 @@ func (s *Server) releaseInstanceClaims(ctx context.Context, o officers.Officer, 
 // re-queued on the SAME worker — whose account changed under it — and runs
 // again once the worker's new pod is ready. When every other account is
 // cooling, nothing moved, and the job fails with the reason as before.
+//
+// 🔴 A WORKER ON NO SHARED CLAUDE ACCOUNT (NoClaudeAccount: on the LLM proxy)
+// IS NOT MOVED: its failure is an upstream provider's, so a move would only
+// restart its pod (and drop an officer instance's claims) onto an account it
+// does not use either.
 func (s *Server) failoverJob(ctx context.Context, j jobs.Job, a agents.Agent, o jobs.Outcome) (agents.Agent, bool) {
 	if s.ext.AccountFailover == nil || o.Status != jobs.StatusFailed ||
 		(o.Reason != ccpool.FailureRateLimited && o.Reason != ccpool.FailureAuthFailed) {
+		return a, false
+	}
+	if s.NoClaudeAccount(ctx, a) {
 		return a, false
 	}
 	rq, ok := s.ext.Jobs.(jobs.Requeuer)

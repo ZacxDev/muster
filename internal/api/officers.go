@@ -525,13 +525,6 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if cfg.InstallSession != nil {
 		cfg.InstallSession(s.OfficerClaudeCodeSession)
 	}
-	// 🔴 AN INSTANCE ON THE LLM PROXY MARKS NO SHARED CLAUDE ACCOUNT AND IS
-	// MOVED TO NONE when its turn fails rate_limited or auth_failed: it runs
-	// on no Claude account whatever its row names, and the proxy passes an
-	// upstream provider's 429 back as it is.
-	if g, ok := s.ext.Gateway.(noAccountGateway); ok {
-		g.UseNoAccount(s.instanceOnNoClaudeAccount)
-	}
 	if fwd != nil && !cfg.NoTranscriptRun {
 		// Ends with the server's streams (EndStreams, at shutdown).
 		ctx := s.streams.context()
@@ -623,10 +616,39 @@ func (s *Server) logOfficerBackend(o officers.Officer) {
 	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
 }
 
-// noAccountGateway is the agent gateway's hook for the agents that run on no
-// shared Claude account (agentgateway.Gateway.UseNoAccount).
-type noAccountGateway interface {
-	UseNoAccount(func(agents.Agent) bool)
+// NoClaudeAccount is THE rule for whether claude-code agent a runs on none of
+// the shared Claude accounts although its row names one, because its model
+// calls go through muster's LLM proxy:
+//
+//   - an instance of a declared officer's pool on the proxy
+//     (instanceOnNoClaudeAccount);
+//   - the chief on the LLM route (the spec builder's own predicate,
+//     ChiefLLM.Routed, which places no Claude token in that chief's pod).
+//
+// 🔴 SUCH AN AGENT'S rate_limited / auth_failed MARKS NO ACCOUNT AND MOVES THE
+// AGENT NOWHERE: the proxy passes an upstream provider's 429 back as it is, so
+// it is not the account's. cmd/muster-server installs this on the agent
+// gateway (agentgateway.Gateway.UseNoAccount), and failoverJob asks it, so a
+// turn's marks and a job's failover follow one rule.
+//
+// ⚠ A ROUTE THAT CANNOT BE DECIDED COUNTS AS "NO ACCOUNT" (logged). The two
+// wrong answers are not equal: "no account" for a chief that is in fact on its
+// account skips one mark and one failover for that chief alone; "its account"
+// for a chief on the proxy cools, or fails over from, an account every other
+// agent on it shares, on a fault that was not the account's.
+func (s *Server) NoClaudeAccount(ctx context.Context, a agents.Agent) bool {
+	if s.instanceOnNoClaudeAccount(a) {
+		return true
+	}
+	if s.chiefLLM == nil || s.chiefLLM.routed == nil {
+		return false
+	}
+	routed, err := s.chiefLLM.routed(ctx, a)
+	if err != nil {
+		s.logger.Printf("agents: %s: deciding whether it is on the LLM route: %v; marking no Claude account for its failure", a.Name, err)
+		return true
+	}
+	return routed
 }
 
 // instanceOnNoClaudeAccount is true for an instance of a declared officer's
