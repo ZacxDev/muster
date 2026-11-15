@@ -1298,7 +1298,7 @@ reopen them.
 | Every notification's per-owner decisions (codename, title rule, mutes and rate cap, router) are made in `goNotify`, before `sendPush` | `internal/api/server.go:1431`, `:1462-1481`; `push_routes.go:268-292` |
 | The session-state pass iterates persons only, so a team session gets no waiting or done push | `internal/sessionstate/store.go:240-250` → `internal/chiefnudge/store.go:197` |
 | A newer connection for the same `(owner, host)` replaces the live one | `internal/mirror/hub.go:767`, `:876-894` |
-| Disabling a person does not revoke their mirror tokens, and the token lookup does not check `disabled_at` (the disabled-user mirror-token gap, filed separately) | `internal/users/users.go:314-370`; `internal/mirror/store.go:113-119` |
+| A disabled person's mirror token is refused: the token lookup and the live connection's recheck filter owners through `users.EnabledPersonIDs`, and a disable revokes the person's mirror tokens in its own transaction (#681) | `internal/users/users.go` (`EnabledPersonIDs`, `SetDisabledAs` → `revokeMirrorTokensTx`); `internal/mirror/store.go` (`Authenticate`, `TokenLive`) |
 
 > 🔴 **A delta from phase 2a's note.** 2a's text said "phase 2b adds
 > `ViaMirrorHost` to the team-carrying set", and is now corrected in place.
@@ -1883,7 +1883,7 @@ first team rows into them.
 
 | door | change |
 |---|---|
-| `mirror.PGStore.Authenticate` | admits a team-owned token. The `users.PersonIDs` filter (`store.go:118`) becomes "a person, or a team". 🔴 **On `main` today a disabled person's mirror token is NOT refused.** The lookup filters on `kind` only, `SetDisabledAs` (`users.go:314-370`) revokes API tokens, devices and invites but not mirror tokens, and `sweepDisabled` covers session requests only. That is **the disabled-user mirror-token gap, filed separately**. 2b neither depends on it nor fixes it. A team token held by a disabled operator is handled by 2b's rotate mark on disable (A), not by this filter. |
+| `mirror.PGStore.Authenticate` (and `TokenLive`, the live connection's recheck, which applies the same rule) | admits a team-owned token. The owner filter, `users.EnabledPersonIDs`, becomes "**an enabled person, or a team**". Keep the disabled clause on the person arm: since #681 a disabled person's mirror token is refused there, and a disable also revokes the person's mirror tokens (`SetDisabledAs` → `revokeMirrorTokensTx`). Do not widen it back to `PersonIDs`. A team token held by a disabled operator is handled by 2b's rotate mark on disable (A), not by this filter: a team has no `disabled_at`. |
 | `mirror.Service.Hosts` / new `VisibleHosts` | `Hosts` stays own-only. `VisibleHosts` adds the principal's team hosts, for a ledgered set of callers (`visibleHostsCallers`). **2b.3.** |
 | the hub's newer-replaces rule, for a team host | a second connection for a live `(team, host)` is held until a manager confirms (A). **2b.2.** |
 | `admit`'s team arm (`teamAgentDoors`, `internal/api/principal.go:178`, `:200`) | gains `ViaMirrorHost`, so a team token's `POST /mirror/mcp` reaches the handler **as the team acting principal** instead of a 403. **Slice 2b.2**, in the same PR as `teamHostTools`. Pinned by `TestOnlyTheAgentDoorsAdmitATeam` (`internal/api/principal_team_test.go`): `doorAdmitsATeam[ViaMirrorHost]` flips from `false` to `true`, and the walk then requires every `/mirror/mcp` request with a team token to arrive as the team. Every other door stays refused. |
