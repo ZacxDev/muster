@@ -434,10 +434,13 @@ jobs:
           retention-days: 30
 
       # Saved even when a test failed: Go never caches a failing result, and
-      # the build artifacts are still good. Not on the nightly (it restored
-      # nothing, so it would only save a cold copy).
+      # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
+      # set is ~0.55-0.75 GB per shard (measured on PR #691), the repository's
+      # cache budget is 10 GB, and a PR's cache serves only that PR — so saving
+      # per PR run would evict main's, the one every PR restores. Not on the
+      # nightly (it restored nothing) or a tag.
       - name: save Go's build and test cache
-        if: ${{ !cancelled() && github.event_name != 'schedule' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v4
         with:
           path: |
