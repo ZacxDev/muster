@@ -313,7 +313,8 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 	// 🔴 WITHDRAWN FROM THE BATCH'S OWNER, NOT FROM THE DECIDER. On a team's
 	// batch the decider is one of its managers; the notification went to every
 	// operator and manager (goNotify's fan-out), so it is withdrawn the same
-	// way: owner = the team. The decider's own views move too.
+	// way: owner = the team. Their pages, the decider's among them, refresh
+	// through attentionChanged's team arm.
 	owner := requestOwner(ctx)
 	if bOwner, _, _, ok := plugins.ParseBatchID(id); ok {
 		owner = bOwner
@@ -329,9 +330,6 @@ func (s *Server) decideBatchAs(ctx context.Context, id string, dec plugins.Batch
 		}
 	}
 	s.clearBatchNote(owner, id)
-	if by := requestOwner(ctx); by > 0 && by != owner {
-		s.attentionChanged(by, batchKey(id))
-	}
 	s.logger.Printf("plugins: outreach batch %s decided via %s: %d approved, %d not selected", id, dec.Via, len(res.Approved), len(res.Rejected))
 	return res, nil
 }

@@ -132,11 +132,15 @@ var (
 	// per device), by reason:
 	//   muted     — the owner turned that event off on /account
 	//   throttled — the owner's per-owner rate cap was reached
+	//   team_read_failed — the read of who a notification's owner is (a
+	//     team's recipients, team sharing phase 2b.1) failed, so it was sent
+	//     to the owner alone: for a TEAM owner, which has no devices, that is
+	//     nobody. Any non-zero rate is a dropped team push.
 	// A rising `throttled` is the amplification signal: something is producing
 	// notifications faster than a person can read them.
 	PushSuppressed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_push_suppressed_total",
-		Help: "Web Push notifications not sent, by reason (muted|throttled).",
+		Help: "Web Push notifications not sent, by reason (muted|throttled|team_read_failed).",
 	}, []string{"reason"})
 
 	// MirrorAskTyping counts answers muster typed into a mirrored session's

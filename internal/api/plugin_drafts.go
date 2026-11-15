@@ -656,15 +656,13 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
 	// 🔴 THE DRAFT'S OWNER, NOT THE DECIDER: a team's draft was pushed to
 	// each of its operators and managers (goNotify's fan-out), so it is
-	// withdrawn from each of them; the decider's own views move too.
-	owner, by := d.OwnerID, requestOwner(ctx)
+	// withdrawn from each of them, and their pages — the decider's among
+	// them — refresh (attentionChanged's team arm).
+	owner := d.OwnerID
 	if owner <= 0 {
-		owner = by // a store that does not read the column (a test fake)
+		owner = requestOwner(ctx) // a store that does not read the column (a test fake)
 	}
 	s.draftSettled(owner, d.ID)
-	if by > 0 && by != owner {
-		s.attentionChanged(by, draftKey(d.ID))
-	}
 	return d, nil
 }
 

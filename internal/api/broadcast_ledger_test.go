@@ -209,6 +209,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// the attention queue (attention.go): every change names its owner — the
 		// ask's row, the hub nudge's owner, or the request's principal.
 		"(*Server).attentionChanged → broadcastTo(owner)",
+		// …and, when the owner is a TEAM, each of its current operators and
+		// managers, read from team_members at the change (teamViewRecipients,
+		// team sharing 2b.1; replaced by 2b.3's stream subscriptions).
+		"(*Server).attentionChanged → broadcastTo(m)",
 		// A plugin's claim or result moved a reply draft's delivery status
 		// (plugin_drafts.go): owner is the authenticated plugin row's OwnerID —
 		// the plugin door confines both to that owner's drafts — so the Asks

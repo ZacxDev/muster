@@ -1954,7 +1954,7 @@ by re-checking the migration number (D). The slices ship **in order**.
    > - **Decided drafts and batches are withdrawn from their owner**, not
    >   from the deciding manager (`plugin_drafts.go`, `outreach_batch.go`):
    >   that was the bug that left a team draft on every other member's
-   >   phone. The decider's own views still move.
+   >   phone.
    > - **The sweep** (`internal/api/team_withdraw.go`): a removal (manager's
    >   or admin's), a role set below operator (manager's re-role or admin's
    >   set) and a disable (`userDisabledChanged`, now the one hook both
@@ -1977,12 +1977,25 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `comment` toggle, at once (not coalesced), excluding its author
    >   (`RouterNotification.skip`). An agent's comment on a team task keeps
    >   the agents' no-push rule, as on a personal task.
+   > - **Page refresh for team items (#683 round 0, Q1, operator decision).**
+   >   `attentionChanged` is the one place: for a team owner it also sends
+   >   `attention.changed` to the team's current operators and managers
+   >   (`teamViewRecipients`: the fan-out's read, without the notify switch).
+   >   That keeps #671's per-member refresh of an outreach batch arriving and
+   >   being decided, and gives team asks and drafts the same. A person's id
+   >   is remembered as a person, so their changes read nothing more. 2b.3's
+   >   stream subscriptions replace it; delete it then.
+   > - **A failed recipient read** is counted,
+   >   `muster_push_suppressed_total{reason="team_read_failed"}`.
+   > - **The machine comment route** (`POST /api/tasks/{id}/comments`)
+   >   carries no team, so it never reaches a team task (404, pinned in
+   >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`). It was left as
+   >   it is: 4.3's limitation (c) asked that members' comments notify the
+   >   team, and a member's comment goes through the browser session.
    > - **Not in 2b.1:** SSE subscriptions for teams. Part C assigns no SSE
    >   work; 2b.3 owns it ("SSE team subscriptions, the membership sweep on
-   >   streams"). Until then a team item's live view refresh reaches a member
-   >   only from their own actions: the outreach batch's old per-member view
-   >   nudge went with its loop. `TestAPhoneAnswersATeamAskAtOperator` is
-   >   2b.4's (the device route) and is not here.
+   >   streams"). `TestAPhoneAnswersATeamAskAtOperator` is 2b.4's (the device
+   >   route) and is not here.
    > - **Tests:** `TestATeamPushReachesItsOperatorsAndManagers`,
    >   `TestATeamNotificationReachesEachMemberOnce`,
    >   `TestATeamPushHonoursEachMembersMutesAndCap`,
@@ -1991,7 +2004,8 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `TestADecidedTeamDraftIsWithdrawnFromItsMembers`,
    >   `TestLeavingATeamWithdrawsItsOpenItems`,
    >   `TestTheNotifySwitchIsTheMembersOwn`,
-   >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`
+   >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`,
+   >   `TestATeamItemRefreshesItsMembersPages`
    >   (`internal/api/team_fanout_pg_test.go`), and
    >   `TestMigration0133TeamHosts` (`internal/db`).
 2. **2b.2: the team token and its door.**

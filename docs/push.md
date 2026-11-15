@@ -118,8 +118,21 @@ member's comment on a team task (below).
   the task's page, pushes the team's other operators and managers under the
   `comment` toggle, at once, titled `New comment on task #N`, its body the
   commenter's name and the comment. The person who wrote it is not pushed.
-  A comment on your own task still pushes no one, and an agent's comment on a
-  team task pushes no one either.
+  A comment on your own task still pushes no one. An agent's comment
+  (`/agent/task/comment`, an agent's task tool) pushes no one, on a team
+  task as on yours. The machine route `POST /api/tasks/{id}/comments`
+  (`muster task comment`) takes the hook token or a personal token, which
+  carry no team, so it never reaches a team task: it answers 404 there and
+  pushes no one.
+- **Open pages refresh.** A change to a team's item (an ask, a draft or an
+  outreach batch arriving or being decided) also refreshes the open
+  Attention and ask pages of the team's current operators and managers,
+  whatever their switch says: a refresh is not a push.
+- **A dropped team push is counted.** If muster cannot read who a
+  notification's owner is, it sends it to the owner alone; for a team, which
+  has no devices, that is nobody. Each such notification counts in
+  `muster_push_suppressed_total{reason="team_read_failed"}` and logs
+  `push: read owner <id>'s team recipients: …`.
 - A waiting or done push for a session on a **team host** comes with team
   hosts ([design](design/team-sharing.md#phase-2b-design-team-hosts-decided-2026-11-14),
   slice 2b.3).

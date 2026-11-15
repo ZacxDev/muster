@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -583,6 +584,17 @@ func TestACommentOnATeamTaskNotifiesItsOtherOperators(t *testing.T) {
 		(!strings.HasPrefix(got[0].Title, f.name+" · ") || !strings.Contains(got[0].Body, "fan-ben-"+w.suffix+": looks good")) {
 		t.Errorf("ana's push = %q / %q; want the team's prefix and ben's name before his words", got[0].Title, got[0].Body)
 	}
+	// The MACHINE route (POST /api/tasks/{id}/comments) carries no team: its
+	// credentials (the hook token, a personal token) never reach a team's
+	// task, so it neither comments there nor pushes anyone (docs/push.md).
+	rec.reset()
+	if r := w.do(w.h, "POST", "/api/tasks/"+strconv.FormatInt(task, 10)+"/comments", `{"body":"machine words"}`, cred{hook: true}); r.Code != http.StatusNotFound {
+		t.Errorf("the hook token commenting on a team task: %d %s; want 404 (no machine door carries a team)", r.Code, r.Body.String())
+	}
+	w.srv.WaitForPushes()
+	if got := rec.to(tag, append(f.everyone(), f.team, authz.OperatorUserID)...); len(got) != 0 {
+		t.Errorf("a machine-route comment attempt on a team task pushed %v; want no one", got)
+	}
 	rec.reset()
 	ownTag := "task-" + strconv.FormatInt(own, 10) + "-comment"
 	if r := w.do(w.h, "POST", "/tasks/"+strconv.FormatInt(own, 10)+"/comments", "body=note+to+self", cred{sessionUser: f.ben}); r.Code != http.StatusOK {
@@ -591,5 +603,98 @@ func TestACommentOnATeamTaskNotifiesItsOtherOperators(t *testing.T) {
 	w.srv.WaitForPushes()
 	if got := rec.to(ownTag, f.everyone()...); len(got) != 0 {
 		t.Errorf("ben's comment on his own task pushed %v; want no one", got)
+	}
+}
+
+// refreshedFor is which of people's open pages received an attention.changed
+// event naming key, within the wait. It drains each one's stream.
+func refreshedFor(streams map[int64]<-chan sse.Event, key string, people ...int64) []int64 {
+	var out []int64
+	for _, id := range people {
+		deadline := time.After(300 * time.Millisecond)
+		got := false
+	drain:
+		for {
+			select {
+			case ev := <-streams[id]:
+				if ev.Name == EventAttentionChanged && strings.Contains(ev.Data, `"`+key+`"`) {
+					got = true
+				}
+			case <-deadline:
+				break drain
+			}
+		}
+		if got {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// TestATeamItemRefreshesItsMembersPages (#683 round 0, Q1, operator
+// decision): when a TEAM owns an item, attentionChanged also refreshes the
+// open Attention and ask pages of the team's current operators and managers
+// — the operator whose notify switch is off included (a page refresh is not
+// a push) — and of no viewer, ex-member, disabled operator or outsider. Both
+// of #671's refresh points (an outreach batch arriving, and decided) are
+// covered, and so are a team ask's and a team draft's. Red at bfcf934d,
+// where the refresh named the team, which no page subscribes to.
+func TestATeamItemRefreshesItsMembersPages(t *testing.T) {
+	w := newIsoWorld(t)
+	f, _ := newFanTeam(t, w)
+	streams := map[int64]<-chan sse.Event{}
+	for _, id := range f.everyone() {
+		sub, ch := w.bus.Subscribe(id)
+		streams[id] = ch
+		t.Cleanup(func() { w.bus.Unsubscribe(sub) })
+	}
+	want := ids(f.ana, f.ben, f.off)
+	check := func(what, key string) {
+		t.Helper()
+		w.srv.WaitForPushes()
+		if got := refreshedFor(streams, key, f.everyone()...); !sameIDs(got, want) {
+			t.Errorf("%s refreshed the pages of %v; want the team's operators and managers %v (never viewer %d, ex-member %d, disabled %d, outsider %d)",
+				what, got, want, f.cal, f.gone, f.dis, f.dee)
+		}
+	}
+	dm, follow, batch := fanDrafts(t, w, f.team)
+	officer := builtinOfficerID
+	pid, kind := int64(1), plugins.TargetFollow
+	d, err := plugins.NewPG(w.pool).Draft(w.sys, follow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.notifyDraftAwaitingNoting(context.Background(), f.team, plugins.Draft{ID: follow, OwnerID: f.team, Officer: &officer, PluginID: &pid,
+		TargetKind: &kind, CreatedAt: d.CreatedAt}, plugins.Message{}, "")
+	check("an outreach batch arriving", batchKey(batch))
+	w.srv.draftFiled(f.team, plugins.Draft{ID: dm, OwnerID: f.team, ExpiresAt: time.Now().Add(time.Hour)})
+	check("a team draft arriving", draftKey(dm))
+	ask, err := (officerAsker{w.srv}).Raise(context.Background(), officers.Officer{ID: "mk:a", Owner: f.team}, builtin.AskAbout{}, "Refresh?", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("a team ask arriving", attentionAskKey(ask))
+
+	mgr := w.personAt(t, f.ana, authz.ViaSession)
+	if _, refused := w.srv.decideBatchAs(mgr, batch, plugins.BatchDecision{BatchSHA256: plugins.BatchSHA256([]int64{follow})}); refused != nil {
+		t.Fatalf("the manager deciding the team's batch: %+v", refused)
+	}
+	check("an outreach batch decided", batchKey(batch))
+	if _, refused := w.srv.decideDraftAs(mgr, dm, plugins.DraftDecision{Approve: false, Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}}); refused != nil {
+		t.Fatalf("the manager rejecting the team's draft: %+v", refused)
+	}
+	check("a team draft decided", draftKey(dm))
+	a, err := w.srv.ext.Attention.Answer(w.personAt(t, f.ben, authz.ViaSession), ask, "yes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.askSettled(a)
+	check("a team ask answered", attentionAskKey(ask))
+
+	// CONTROL: a person's item refreshes their own page alone.
+	w.srv.attentionChanged(f.ben, "fan-own-key")
+	if got := refreshedFor(streams, "fan-own-key", f.everyone()...); !sameIDs(got, ids(f.ben)) {
+		t.Errorf("a personal item refreshed the pages of %v; want only its owner %d", got, f.ben)
 	}
 }

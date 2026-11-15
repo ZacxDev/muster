@@ -351,6 +351,10 @@ type Server struct {
 
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
+	// personOwners remembers the owner ids known to be persons (never
+	// teams; users.kind never changes), so attentionChanged's team arm
+	// (teamViewRecipients) reads nothing for them after the first time.
+	personOwners sync.Map
 	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
 	deviceLimits deviceLimits
