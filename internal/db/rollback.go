@@ -329,6 +329,14 @@ const teamOfficersMigrationVersion = 130
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const officerContactsMigrationVersion = 132
 
+// teamHostsMigrationVersion is 0133: phase 2b of team sharing (team hosts) —
+// team_members.notify, mirror_tokens.rotate_at and officer_host_spawns'
+// team_owner_read policy. Re-applied after 0125 and 0130 (which re-create
+// officer_host_spawns' other policies and leave team_owner_read alone), keyed
+// on the column it adds. Its body is idempotent.
+// 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
+const teamHostsMigrationVersion = 133
+
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
 // principal, the role and its grants — and 0008's for mirror_tokens when that
@@ -339,7 +347,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals, hasPluginHandoffs, hasRoutingRules, hasCCAccountUsage, hasAskAttempts, hasPages, hasOfficerBackend, hasOfficerPRLoops, hasOutboundDrafts, hasPairRequests, hasOfficerHostSpawns, hasTeamAccess, hasAgentSecrets, hasTeamAgents, hasTeamOfficers, hasOfficerContacts, hasTeamHosts bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -392,8 +400,10 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regprocedure('public.muster_agents_team_no_secret()') IS NOT NULL,
 		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
 			AND table_name = 'officer_host_spawns' AND column_name = 'shared_team_id'),
-		to_regclass('public.officer_contacts') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts); err != nil {
+		to_regclass('public.officer_contacts') IS NOT NULL,
+		EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+			AND table_name = 'team_members' AND column_name = 'notify')`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals, &hasPluginHandoffs, &hasRoutingRules, &hasCCAccountUsage, &hasAskAttempts, &hasPages, &hasOfficerBackend, &hasOfficerPRLoops, &hasOutboundDrafts, &hasPairRequests, &hasOfficerHostSpawns, &hasTeamAccess, &hasAgentSecrets, &hasTeamAgents, &hasTeamOfficers, &hasOfficerContacts, &hasTeamHosts); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -448,7 +458,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == agentSecretsMigrationVersion && hasAgentSecrets) &&
 			!(m.version == teamAgentsMigrationVersion && hasTeamAgents) &&
 			!(m.version == teamOfficersMigrationVersion && hasTeamOfficers) &&
-			!(m.version == officerContactsMigrationVersion && hasOfficerContacts) {
+			!(m.version == officerContactsMigrationVersion && hasOfficerContacts) &&
+			!(m.version == teamHostsMigrationVersion && hasTeamHosts) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

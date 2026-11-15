@@ -30,7 +30,7 @@ has its own toggle, and all are on by default:
 | `agent` | A task's agent comes up. |
 | `agent_outcome` | An agent you dispatched **finished** — only when it says so (`<agent> finished: <summary>` from `agent_report_done`, or `… moved its task to complete`; a move to ready for review is told by the `review` push alone) — is **waiting for you** (`<agent> is waiting for you: <the last line of its reply>`: its turn ended without saying it finished, e.g. a question), **failed** (`<agent> failed: <reason>`: a turn of it failed, and its status is now `error`) or went **quiet** (`<agent> is stuck: no reply since kickoff` / `… silent for 30 min`). One notification per change of its outcome, tagged `agent-<id>-outcome` so a newer one replaces the older on the device; a tap opens the agent's page. See [provisioner.md](provisioner.md#how-an-agents-work-ends). An agent the chief started **on one of your hosts** pushes under the same toggle, tagged `host-dispatch-<id>-outcome`: `<runtime> on <host> finished: <summary>` (Claude's `agent_report_done`, or an opencode reply whose last line is `MUSTER-DONE: <summary>`) or, for opencode, `… is waiting for you: <the reply's last line>`; a tap opens the host's agents session. |
 | `created` | A machine (an agent, the CLI) created tasks. |
-| `comment` | A machine commented on a task. |
+| `comment` | A machine commented on a task, or a member commented on a team task ([below](#team-notifications)). |
 | `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Reply drafts tab (`/attention?tab=drafts#draft-<id>`). The same toggle carries the notice that your chief [routed a plugin message or a task to a session](plugins.md#you-are-told-where-the-chief-routed-it) on its own: one per route, `Chief routed it to <tmux place>`, its body the plugin's label and the message's subject (or the task's number and title), tagged `route-<route id>`; a tap opens the session (or the task). Information only: nothing to answer. |
 | `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item's session when it has one (a waiting window's or a held question's rendered view, an asking agent's page, an asking mirrored session's window) and its item on `/attention` otherwise, decided when tapped (`/attention/open/<key>`; [attention.md](attention.md)). A decided reply draft's `plugin` notification is withdrawn the same way. With `MUSTER_SESSION_STATE=1`, a waiting window or a stalled session is pushed instead as its **episode**: one notification per stop, titled by its window as every attention text names it, `<label> · tmux <session>:<window index> @ <host> needs you` (or `is stalled`; [attention.md](attention.md#how-a-window-is-named)), resolved when sent, its body only the state and idle time — never the session's text, except for a question muster can answer (below), whose push carries that question in full — tagged `attention-episode-<id>`, and withdrawn when the stop ends. A waiting window's episode is **not pushed at once**: it is held for 60 seconds and sent once they have passed unless the stop ended first (a window whose host drops meanwhile is still sent, once muster has known the host offline for 60 seconds too), so a prompt answered at the terminal never buzzes ([attention.md](attention.md#stalled--waiting-session-state)). **This holds for a question muster can answer too** (a held AskUserQuestion, an opencode prompt; since the follow-up to #463): its card shows at once, and its push — the question's own full-text notification, `<where> is asking`, tagged `attention-episode-<id>` — is sent only if it is still open after 60 seconds; a restart never re-sends one it already sent. Without session state, or for a window muster cannot key, the waiting push (`attention-session-<hash>`) is held by the same 60 seconds. |
 
@@ -84,6 +84,69 @@ Claude Code is waiting for you: …`
 ([focus.md](focus.md#tmux-name-first-in-push-titles)). It changes push titles
 only, on the browser and on the paired phone alike; its POST is
 `/account/notifications/codename` (`on=1|0`).
+
+### Team notifications
+
+A notification owned by a [team](auth.md#teams) reaches the team's
+**operators and managers**, never its viewers. muster decides who at send
+time, from the team's current members: someone who has left, a disabled
+person, and a member who turned the team's switch off get nothing. This
+covers every team-owned push: a team officer's asks, escalations, drafts
+and outreach batches; a team's reply drafts; its task notifications; and a
+member's comment on a team task (below).
+
+- **Each member is decided on their own.** For each recipient muster applies
+  that person's own event toggles, their own rate cap, their own **Start
+  notification titles with the tmux name** switch, and the router's admin
+  rule. A busy team spends each member's cap, not one shared one.
+- **The title names the team.** It starts with the team's name and ` · `, as
+  in `platform · Ana is asking`. The prefix goes on before the title is
+  plained, so it survives a long title.
+- **Withdrawals.** When a team's item is answered, decided or ends, its
+  notification is withdrawn from the team's current operators and managers,
+  whatever their switch says. A person who is removed from the team or
+  downgraded to viewer is sent, once the change has saved, a withdrawal for
+  each of the team's open items: asks, pending drafts and outreach batches,
+  tasks in review, and officer cap-hold notices. A person **disabled** on the
+  server's pages (Admin → Users) is sent the same withdrawals **before** the
+  disable, on their browsers and their paired phones alike.
+  - **Limits.** A disable through `muster-server accounts` (the CLI) sends
+    **no** withdrawal: that process has no push service. The disable then
+    deletes the person's paired phones, so their team notifications stay on
+    those phones (a tap opens nothing: the phone's credential is gone), and
+    on their browsers until each item's next change.
+  - A notification already on its way when the person leaves can land
+    just after its withdrawal, and then stays.
+- **The switch.** **Account → Teams** (`/account/teams`) lists your teams,
+  your role in each, and one switch per team: **Notifications from this
+  team**, on by default. It is yours; a manager cannot set it for you. Off
+  means no push from that team at all. Its items stay on the Asks page. The
+  POST is `/account/teams/{id}/notify` (`on=1|0`); a team you are not in
+  answers 404.
+- **A comment on a team task.** A member's comment on a team task, typed on
+  the task's page, pushes the team's other operators and managers under the
+  `comment` toggle, at once, titled `New comment on task #N`, its body the
+  commenter's name and the comment. The person who wrote it is not pushed.
+  A comment on your own task still pushes no one. An agent's comment
+  (`/agent/task/comment`, an agent's task tool) pushes no one, on a team
+  task as on yours. The machine route `POST /api/tasks/{id}/comments`
+  (`muster task comment`) takes the hook token or a personal token, which
+  carry no team, so it never reaches a team task: it answers 404 there and
+  pushes no one.
+- **Open pages refresh.** A change to a team's item (an ask, a draft or an
+  outreach batch arriving or being decided) also refreshes the open
+  Attention and ask pages of the team's current operators and managers,
+  whatever their switch says: a refresh is not a push.
+- **A dropped team push is counted.** If muster cannot read who a
+  notification's owner is, it sends it to the owner alone; for a team, which
+  has no devices, that is nobody. It logs `push: read owner <id>'s team
+  recipients: …` and counts in `muster_push_suppressed_total`:
+  `reason="team_read_failed"` when the owner is known to be a team (a
+  dropped team push), and `reason="owner_kind_unread"` when muster had not
+  yet read the owner's kind (a person's push did go; a team's did not).
+- A waiting or done push for a session on a **team host** comes with team
+  hosts ([design](design/team-sharing.md#phase-2b-design-team-hosts-decided-2026-11-14),
+  slice 2b.3).
 
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and

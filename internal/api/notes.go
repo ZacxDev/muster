@@ -2105,6 +2105,12 @@ func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load task", http.StatusInternalServerError)
 		return
 	}
+	// A member's comment on a TEAM task reaches the team's other operators
+	// and managers (team sharing phase 2b.1); on your own task it is still
+	// yours alone, as the comment above says.
+	if queued == nil {
+		s.teamTaskCommented(r.Context(), note, body)
+	}
 	if queued != nil {
 		// A reference: the comment went to the upstream's queue; the card shows
 		// it as "sending…" until the plugin confirms.

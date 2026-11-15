@@ -1,7 +1,7 @@
 # Design: team sharing on one muster server
 
 **Status: decided; phases 1, 2a, 3 and 4.1–4.4 are built (see each phase's "as built" note), and
-phase 2b is [designed and decided, not built](#phase-2b-design-team-hosts-decided-2026-11-14)
+phase 2b is [designed and decided](#phase-2b-design-team-hosts-decided-2026-11-14), with its slice 2b.1 (the fan-out, 0133) built
 (build order 1 → 2a → 3 & 4 → 2b).** The
 operator accepted every recommendation ([operator decisions](#operator-decisions-2026-11-13)). The operator asked for
 muster as "multiplayer": a personal instance for your own work, plus shared
@@ -930,7 +930,8 @@ rule the later phases' rows will meet.
 > - **The minimal team fan-out** (#668 round 0, Q1, operator decision): a
 >   team officer's asks, its escalations to the team and its outbound drafts
 >   push to the team's current operators and managers, read from
->   `team_members` at send time (`users.PGStore.TeamNotifyMembers`). Viewers,
+>   `team_members` at send time (`users.PGStore.TeamNotifyMembers`, replaced
+>   in 2b.1 by `TeamPushTargets` and goNotify's one fan-out). Viewers,
 >   people who have left and disabled people get nothing; a personal item is
 >   unchanged. Everything else is 2b's: other team-owned pushes, withdrawing
 >   these from members' devices once answered or decided, the per-member
@@ -1012,7 +1013,9 @@ rule the later phases' rows will meet.
     completed host dispatch still blocks a move, exactly as a live one does;
     a link row inserted while a move is in flight (the racing-insert window)
     is not closed by this slice; and a comment on a team task notifies no
-    other member.
+    other member. **(c) is closed by 2b.1:** a member's comment on a team
+    task pushes the team's other operators and managers (see "As built in
+    2b.1" under F).
   - **Not yet:** dispatching an agent on a team task. Agents are not shared
     until 4.4. A person's agent naming a team task would meet the
     `agents (note_id, owner_id)` key; this slice does not test that path.
@@ -1220,7 +1223,7 @@ the next step. Each question below is decided as stated.
 
 ## Phase 2b design: team hosts (decided 2026-11-14)
 
-**Status: decided, not built.** The operator accepted every recommendation in
+**Status: decided; slice 2b.1 built (see its "as built" note in F).** The operator accepted every recommendation in
 [G](#g-operator-decided-2026-11-14), and commit `5f848980` records the
 decisions. The build waits for phase 4.5 (PR #680) to merge. This section is
 the design for phase 2b. It replaces the bullet list under
@@ -1781,7 +1784,8 @@ fan-out one rule in one place.
 
   When `owner` is a team, `goNotify` first reads the recipients: the team's
   **operators and managers** with `notify = true`, persons only, not
-  disabled, read fresh (`TeamNotifyMembers`, gaining the `notify` filter).
+  disabled, read fresh (`TeamNotifyMembers`, gaining the `notify` filter;
+  as built, `TeamPushTargets`).
   Then it runs the **whole** per-owner decision once for each recipient `m`,
   in this order:
   1. **The team prefix, first.** `platform · ` is prepended to `Title` and
@@ -1965,6 +1969,121 @@ by re-checking the migration number (D). The slices ship **in order**.
      There is no recipient table (G1).
    - There is one notify switch per team, `team_members.notify`, on
      Account → Teams (G6).
+
+   > **As built in 2b.1 (0133).**
+   > - **Migration `0133_team_hosts`**, as D specifies: `team_members.notify`,
+   >   `mirror_tokens.rotate_at` (no reason column), and `team_owner_read` on
+   >   `officer_host_spawns`, with `muster_team_hosts_rollback()`. Re-applied by
+   >   `db.RLSOn`, keyed on `team_members.notify`. The share ledger pins the
+   >   new arm (`teamOwnerRead` in `internal/db/share_ledger_test.go`): a
+   >   viewer reads a team-owned spawn row through the browser and a phone,
+   >   no machine door does, and no member writes one.
+   > - **The fan-out** is in `goNotify` (`internal/api/server.go`), reading
+   >   `users.PGStore.TeamPushTargets` (`teamPushRecipients`,
+   >   `internal/api/team_notify.go`). Per recipient, in this order: that
+   >   member's codename switch picks `Title` or `CodenameTitle`; the team
+   >   prefix `<team> · ` goes on the title it picked; the title rule runs
+   >   once; `pushAllowed` with the member's mutes and cap; `sendPush`
+   >   (unchanged, owner-only); `routerServes` for the member. The prefix is
+   >   applied after the codename pick rather than to both titles first: the
+   >   title sent is the same, and the sink then writes no `CodenameTitle`
+   >   (the codename ledger's rule for `goNotify`).
+   > - **Recipients:** operators and managers, persons, not disabled, with
+   >   `notify` on. A **withdrawal** (`resolved`) goes to the operators and
+   >   managers whatever their switch says, so a member who turns it off
+   >   after a push still has it closed (G1 names "current operators and
+   >   managers", not the switch). A read that fails sends to the owner
+   >   alone, which for a team is nobody: the pre-2b behaviour.
+   > - **The four `teamOfficerRecipients` loops are gone**, and so are
+   >   `teamOfficerRecipients` and `officerAskFiled`: an officer's ask is
+   >   `askFiled`. Every team-owned push now fans out, a team's **reply**
+   >   drafts and task pushes included (phase 3's test that a team reply
+   >   draft did not fan out is inverted).
+   > - **Decided drafts and batches are withdrawn from their owner**, not
+   >   from the deciding manager (`plugin_drafts.go`, `outreach_batch.go`):
+   >   that was the bug that left a team draft on every other member's
+   >   phone.
+   > - **The sweep** (`internal/api/team_withdraw.go`): a removal (manager's
+   >   or admin's), a role set below operator (manager's re-role or admin's
+   >   set) and a disable (`teamItemsWithdrawnBeforeDisable`, called by both
+   >   `DisableUser` and `DisableUserAs`) send that person a withdrawal for
+   >   each of the team's open items of every withdrawable kind (below), read
+   >   as the team. A removal and a downgrade sweep after the store's
+   >   transaction commits; a disable sweeps before it. A disable through the
+   >   CLI (`SetUserDisabledAs` with no server) sends no sweep: that process
+   >   has no push service.
+   > - **The switch:** `GET /account/teams` and `POST
+   >   /account/teams/{id}/notify` (`on=1|0`), linked from `/account`.
+   >   `users.PGStore.SetTeamNotify` updates only `notify` on the caller's
+   >   own row and answers `ErrNotAMember` (one 404) otherwise. It runs
+   >   under System through `internal/users.sys`, which the System ledger
+   >   already lists; no new ledger row was needed.
+   > - **A team task comment (4.3's limitation c, agreed with the phase-4
+   >   session):** a member's comment through the browser session
+   >   (`handleNoteComment` → `teamTaskCommented`, `push_task.go`) pushes the
+   >   team's operators and managers through the same fan-out, under the
+   >   `comment` toggle, at once (not coalesced), excluding its author
+   >   (`RouterNotification.skip`). An agent's comment on a team task keeps
+   >   the agents' no-push rule, as on a personal task.
+   > - **Page refresh for team items (#683 round 0, Q1, operator decision).**
+   >   `attentionChanged` is the one place: for a team owner it also sends
+   >   `attention.changed` to the team's current operators and managers
+   >   (`teamViewRecipients`: the fan-out's read, without the notify switch).
+   >   That keeps #671's per-member refresh of an outreach batch arriving and
+   >   being decided, and gives team asks and drafts the same. A person's id
+   >   is remembered as a person, so their changes read nothing more. 2b.3's
+   >   stream subscriptions replace it; delete it then.
+   > - **A failed recipient read** is counted in
+   >   `muster_push_suppressed_total`: `team_read_failed` for an owner known
+   >   to be a team, `owner_kind_unread` for one whose kind was never read (a
+   >   person's push still went). A known person is never read again
+   >   (`personOwners`; `users.kind` never changes).
+   > - **The sweep's kinds are one list** (#683 round 1),
+   >   `withdrawableTeamKinds` in `team_withdraw.go`: asks, drafts and
+   >   outreach batches, tasks in review, officer cap holds. Cap holds are
+   >   recorded in memory as the officer loop shows and ends them, as the
+   >   episode itself is; a restart forgets an open one.
+   >   `TestEveryPushIsClassifiedForTheTeamSweep` classes every push the
+   >   package builds (the codename ledger's set) as one of those kinds or as
+   >   never withdrawn from a team member, so a new kind must choose.
+   > - **A disable sweeps before it commits** (#683 round 1):
+   >   `SetDisabledAs` deletes the person's paired phones and `ForOwner`
+   >   refuses a disabled owner's native rows, so the server's disable
+   >   (`DisableUser`, `DisableUserAs`) sends the withdrawals first and waits
+   >   for them (`RouterNotification.wait`). A disable then refused (the last
+   >   admin) has closed notifications that were still the person's; the next
+   >   change to each item shows it again. The CLI's disable sends none.
+   > - **Known windows, recorded, not closed** (#683 round 1, 🟢6 and 🟢7):
+   >   - a push that read its recipients just before a removal committed can
+   >     be delivered after the sweep's withdrawal, and then stays on the
+   >     ex-member's devices: inherent to G1's "no recipient table";
+   >   - `attentionChanged`'s team arm reads the team's members
+   >     synchronously (a 5 s timeout) on every change to a team item,
+   >     inline in the request or loop that made it. A person costs nothing
+   >     after the first read. No per-request cache was added: the refresh has
+   >     no request to hang one on, and a longer-lived one would refresh a
+   >     member who just left. 2b.3's stream subscriptions delete it.
+   > - **The machine comment route** (`POST /api/tasks/{id}/comments`)
+   >   carries no team, so it never reaches a team task (404, pinned in
+   >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`). It was left as
+   >   it is: 4.3's limitation (c) asked that members' comments notify the
+   >   team, and a member's comment goes through the browser session.
+   > - **Not in 2b.1:** SSE subscriptions for teams. Part C assigns no SSE
+   >   work; 2b.3 owns it ("SSE team subscriptions, the membership sweep on
+   >   streams"). `TestAPhoneAnswersATeamAskAtOperator` is 2b.4's (the device
+   >   route) and is not here.
+   > - **Tests:** `TestATeamPushReachesItsOperatorsAndManagers`,
+   >   `TestATeamNotificationReachesEachMemberOnce`,
+   >   `TestATeamPushHonoursEachMembersMutesAndCap`,
+   >   `TestATeamPushTitleNamesTheTeam`,
+   >   `TestAnAnsweredTeamAskIsWithdrawnFromItsMembers`,
+   >   `TestADecidedTeamDraftIsWithdrawnFromItsMembers`,
+   >   `TestLeavingATeamWithdrawsItsOpenItems`,
+   >   `TestTheNotifySwitchIsTheMembersOwn`,
+   >   `TestACommentOnATeamTaskNotifiesItsOtherOperators`,
+   >   `TestATeamItemRefreshesItsMembersPages`
+   >   (`internal/api/team_fanout_pg_test.go`), and
+   >   `TestMigration0133TeamHosts` (`internal/db`).
 2. **2b.2: the team token and its door.**
    - `Authenticate` admits a team.
    - `admit` lets a team through at `ViaMirrorHost` (`teamAgentDoors`), and

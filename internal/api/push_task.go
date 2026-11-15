@@ -346,7 +346,7 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 			s.goNotify(n.OwnerID, push.EventResolved, RouterNotification{
 				Type: push.TypeResolved,
 				ID:   strconv.FormatInt(n.ID, 10),
-				Tag:  fmt.Sprintf("task-%d-done", n.ID),
+				Tag:  taskDoneTag(n.ID),
 			}, nil)
 		}
 		return
@@ -370,9 +370,13 @@ func (s *Server) notifyTaskDone(ctx context.Context, n notes.Note) {
 		ID:    strconv.FormatInt(n.ID, 10),
 		Title: reviewPushTitle(n.ID, reviewSourceLabel(statusWriter(notes.WriterFrom(ctx)), refOriginFrom(ctx), confirmedRefWriteFrom(ctx), n)),
 		Body:  withTaskRef(taskTitle(n), taskRefFragment(n)),
-		Tag:   fmt.Sprintf("task-%d-done", n.ID),
+		Tag:   taskDoneTag(n.ID),
 	})
 }
+
+// taskDoneTag is task id's "ready for review" notification tag (its push,
+// its withdrawal, and the team sweep's "tasks in review" kind).
+func taskDoneTag(id int64) string { return fmt.Sprintf("task-%d-done", id) }
 
 // reviewPushTitle is the ready-for-review push's title: "Task #N ready for
 // review", then " · <source>" when the source has a label. The " · " joiner is
@@ -504,6 +508,40 @@ func (s *Server) flushCommentedTasks(owner int64) {
 		Title: title,
 		Body:  body,
 		Tag:   tag,
+	})
+}
+
+// --- 5. A MEMBER'S comment on a TEAM task (team sharing phase 2b.1) ---
+
+// teamTaskCommented pushes a person's comment on a TEAM's task to the team's
+// operators and managers — not to its author — through goNotify's one team
+// fan-out (team_notify.go). It closes phase 4.3's open limitation (c): "a
+// comment on a team task notifies no other member". At once, not coalesced:
+// it is a person typing, not a machine's burst. A comment on a person's OWN
+// task is theirs, typed by them, and still pushes nothing (handleNoteComment's
+// rule); an agent's comment keeps its no-push rule on a team task too.
+// Best-effort + nil-push-safe.
+func (s *Server) teamTaskCommented(ctx context.Context, n notes.Note, body string) {
+	p, ok := authz.From(ctx)
+	if !ok || !s.notifiable() || n.OwnerID <= 0 || n.OwnerID == p.UserID {
+		return
+	}
+	if _, in := p.TeamScope().RoleIn(n.OwnerID); !in {
+		return
+	}
+	who := "user " + strconv.FormatInt(p.UserID, 10)
+	if pn, ok := s.ext.Users.(personNamer); ok {
+		if u, err := pn.ByID(ctx, p.UserID); err == nil && strings.TrimSpace(u.DisplayName) != "" {
+			who = u.DisplayName
+		}
+	}
+	s.pushTask(n.OwnerID, push.EventComment, RouterNotification{
+		Type:  taskNotificationType,
+		ID:    strconv.FormatInt(n.ID, 10),
+		Title: fmt.Sprintf("New comment on task #%d", n.ID),
+		Body:  withTaskRef(truncate(strings.TrimSpace(pushLine(who)+": "+commentNotificationText(body)), taskBodyMax), taskRefFragment(n)),
+		Tag:   fmt.Sprintf("task-%d-comment", n.ID),
+		skip:  p.UserID,
 	})
 }
 

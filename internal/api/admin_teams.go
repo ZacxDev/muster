@@ -228,6 +228,7 @@ func (s *Server) handleAdminTeamMemberSet(w http.ResponseWriter, r *http.Request
 	err := s.gt.Accounts.SetTeamMember(r.Context(), by, team, user, role)
 	if err == nil {
 		s.logger.Printf("admin: user %d is %s of team %d (by user %d)", user, role, team, by.UserID)
+		s.teamRoleSet(team, user, role)
 	}
 	s.teamDone(w, r, "set team member", err)
 }
@@ -247,6 +248,7 @@ func (s *Server) handleAdminTeamMemberRemove(w http.ResponseWriter, r *http.Requ
 	err = s.gt.Accounts.RemoveTeamMember(r.Context(), by, team, user)
 	if err == nil {
 		s.logger.Printf("admin: user %d removed from team %d (by user %d)", user, team, by.UserID)
+		s.teamMembershipEnded(team, user)
 	}
 	s.teamDone(w, r, "remove team member", err)
 }

@@ -29,6 +29,7 @@ import (
 var apiNavWriters = []string{
 	"handleAccountPage",            // /account
 	"handleFeaturesPage",           // /account/features
+	"handleAccountTeams",           // /account/teams (your teams, each one's notify switch)
 	"renderAccountTokens",          // /account/tokens
 	"renderCredentials",            // /account/credentials
 	"renderAccountPasskeys",        // /account/passkeys
@@ -385,6 +386,7 @@ var apiNavSecret = map[string]bool{
 	"handleUsagePage":              false, // token counts and senders the owner already sees; no secret
 	"handleAnswersPage":            false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
 	"renderTeamPage":               false, // members, roles and activity; no secret shown or taken
+	"handleAccountTeams":           false, // your teams, roles and notify switches; no secret shown or taken
 	"renderTeamOfficers":           false, // officer types, charters and definitions; no secret shown or taken (a charter holds none: officers-builtin.md)
 	"renderTeamChief":              false, // the team chief's status and account name; no secret shown or taken
 	"handleAgentRotateCredentials": false, // a rotation's outcome sentence; the new credentials are never shown, nothing is typed

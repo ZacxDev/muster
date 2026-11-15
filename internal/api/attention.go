@@ -939,6 +939,11 @@ func (s *Server) attentionChanged(owner int64, key string) {
 	}
 	s.attention.wakeFor(owner).signal()
 	s.broadcastTo(owner, EventAttentionChanged, key)
+	// A TEAM's item: its operators' and managers' open Attention and ask
+	// pages refresh too (teamViewRecipients; replaced by 2b.3's streams).
+	for _, m := range s.teamViewRecipients(owner) {
+		s.broadcastTo(m, EventAttentionChanged, key)
+	}
 }
 
 // attentionNotify pushes one new item to owner's devices, under the
