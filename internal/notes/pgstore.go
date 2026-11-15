@@ -1306,13 +1306,18 @@ func (s *PGStore) MoveToTeam(ctx context.Context, id, from, team int64) error {
 	sort.Strings(keys)
 	for _, k := range keys {
 		tbl, col, _ := strings.Cut(k, ".")
+		live := ""
+		if p := MoveRefusals[k].Live; p != "" {
+			live = ` AND ` + p
+		}
 		var n int
-		// tbl and col come from MoveRefusals, a constant ledger; never input.
-		if err := tx.QueryRow(sys, `SELECT count(*) FROM `+tbl+` WHERE `+col+` = $1 AND owner_id IS DISTINCT FROM $2`, id, team).Scan(&n); err != nil {
+		// tbl, col and the live predicate come from MoveRefusals, a constant
+		// ledger; never input. A finished row does not refuse (move.go).
+		if err := tx.QueryRow(sys, `SELECT count(*) FROM `+tbl+` WHERE `+col+` = $1 AND owner_id IS DISTINCT FROM $2`+live, id, team).Scan(&n); err != nil {
 			return fmt.Errorf("notes: move %d: read %s: %w", id, k, err)
 		}
 		if n > 0 {
-			links = append(links, fmt.Sprintf("%s (%s: %d)", MoveRefusals[k], tbl, n))
+			links = append(links, fmt.Sprintf("%s (%s: %d)", MoveRefusals[k].Reason, tbl, n))
 		}
 	}
 	if len(links) > 0 {

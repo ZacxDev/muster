@@ -241,7 +241,7 @@ func TestAMoveIsRefusedNamingTheLink(t *testing.T) {
 	sysCtx := authz.System(context.Background())
 	err = w.store.MoveToTeam(sysCtx, n.ID, w.a, w.t)
 	var blocked *MoveBlockedError
-	if !errors.As(err, &blocked) || !strings.Contains(err.Error(), MoveRefusals["attention_asks.task_id"]) || !strings.Contains(err.Error(), "attention_asks: 1") {
+	if !errors.As(err, &blocked) || !strings.Contains(err.Error(), MoveRefusals["attention_asks.task_id"].Reason) || !strings.Contains(err.Error(), "attention_asks: 1") {
 		t.Fatalf("moving a task an ask points at: %v; want a refusal naming the ask link", err)
 	}
 	var owner int64

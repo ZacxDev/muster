@@ -364,6 +364,10 @@ type Server struct {
 	// "officer cap holds" kind reads them. In memory, as the episode is.
 	capHoldsMu sync.Mutex
 	capHolds   map[int64]map[string]bool
+	// teamTerminals is every open team-agent terminal socket a member holds,
+	// by team and member, so a removal or a downgrade closes it
+	// (team_agents.go teamTerminalOpen).
+	teamTerminals teamTerminalSet
 	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
 	deviceLimits deviceLimits

@@ -298,6 +298,9 @@ var agentHrefCallLedger = map[string]int{
 	// dispatch_approve's push: the BARE page, as notifyAgentRunning's (#237) —
 	// the agent was just created, so it has no session to name yet.
 	"AgentPath ← internal/api/dispatch_hold_tools.go:Server.pushSessionDispatch": 1,
+	// A team dispatch's push (team sharing 4.7): the BARE page, as the two
+	// above — the agent was just created.
+	"AgentPath ← internal/api/team_dispatch.go:Server.pushTeamDispatch": 1,
 	// A rename posted without script (POST /agents/{id}/name) is sent back to
 	// the agent's BARE page, which opens its latest session — as the push
 	// targets above.
