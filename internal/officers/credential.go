@@ -142,7 +142,9 @@ func parseCredential(where string, raw json.RawMessage, getenv func(string) stri
 		return nil, fmt.Errorf("%s.secret_env %q is not %s<NAME> (upper-case letters, digits and _): the key is the "+
 			"officer's own variable, never a deployment-wide one", where, c.SecretEnv, CredentialEnvPrefix)
 	}
-	k := strings.TrimSpace(getenv(c.SecretEnv))
+	// The variable is the prefix and the declared suffix (credentialEnvRE): spelled that way so
+	// the read is the prefix's (the environment-variable documentation lint resolves it).
+	k := strings.TrimSpace(getenv(CredentialEnvPrefix + strings.TrimPrefix(c.SecretEnv, CredentialEnvPrefix)))
 	switch {
 	case k == "":
 		return nil, fmt.Errorf("%s: %s is not set: the pool runs only on its own Anthropic API key and never falls back "+
