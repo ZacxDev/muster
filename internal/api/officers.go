@@ -525,6 +525,13 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if cfg.InstallSession != nil {
 		cfg.InstallSession(s.OfficerClaudeCodeSession)
 	}
+	// 🔴 AN INSTANCE ON THE LLM PROXY MARKS NO SHARED CLAUDE ACCOUNT AND IS
+	// MOVED TO NONE when its turn fails rate_limited or auth_failed: it runs
+	// on no Claude account whatever its row names, and the proxy passes an
+	// upstream provider's 429 back as it is.
+	if g, ok := s.ext.Gateway.(noAccountGateway); ok {
+		g.UseNoAccount(s.instanceOnNoClaudeAccount)
+	}
 	if fwd != nil && !cfg.NoTranscriptRun {
 		// Ends with the server's streams (EndStreams, at shutdown).
 		ctx := s.streams.context()
@@ -614,6 +621,21 @@ func (s *Server) logOfficerBackend(o officers.Officer) {
 		s.logger.Printf("officers: %s: defined in the built-in store and switched on", o.ID)
 	}
 	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
+}
+
+// noAccountGateway is the agent gateway's hook for the agents that run on no
+// shared Claude account (agentgateway.Gateway.UseNoAccount).
+type noAccountGateway interface {
+	UseNoAccount(func(agents.Agent) bool)
+}
+
+// instanceOnNoClaudeAccount is true for an instance of a declared officer's
+// pool on the LLM proxy, false for every other agent. It is the accounts'
+// attribution answer (officerPoolOf, officers.ProxyAgent), so a turn's
+// account marks and the usage credited to an account follow one rule.
+func (s *Server) instanceOnNoClaudeAccount(a agents.Agent) bool {
+	_, _, onProxy, ok := s.officerPoolOf(a.Name)
+	return ok && onProxy
 }
 
 // officerOf is THE binding rule: the declared officer agent a is an instance

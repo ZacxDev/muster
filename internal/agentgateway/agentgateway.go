@@ -179,6 +179,9 @@ type Gateway struct {
 	// failover is the account failover (UseFailover); nil = none.
 	failoverMu sync.RWMutex
 	failover   AccountFailover
+	// noAccount says an agent runs on none of the shared Claude accounts
+	// whatever its row names (UseNoAccount); nil = every agent runs on its row's.
+	noAccount func(agents.Agent) bool
 }
 
 // AccountFailover is what the gateway tells after a typed `rate_limited` /
@@ -197,6 +200,32 @@ func (g *Gateway) UseFailover(f AccountFailover) {
 	g.failoverMu.Lock()
 	defer g.failoverMu.Unlock()
 	g.failover = f
+}
+
+// UseNoAccount installs the rule for which agents run on none of the shared
+// Claude accounts although their row names one (internal/api's officer
+// runtime: an instance of an officer pool on the LLM proxy, officers.ProxyAgent).
+// Such an agent's typed `rate_limited` / `auth_failed` is not a Claude
+// account's: the proxy passes an upstream provider's 429 back as it is. So it
+// marks no account and moves the agent nowhere; an officer's spent provider
+// key must not cool down, or fail over from, an account other agents run on.
+// Set after construction, as UseFailover is.
+func (g *Gateway) UseNoAccount(f func(agents.Agent) bool) {
+	g.failoverMu.Lock()
+	defer g.failoverMu.Unlock()
+	g.noAccount = f
+}
+
+// accountOf is the shared Claude account agent a's turns run on: its row's,
+// or "" when UseNoAccount's rule says it runs on none.
+func (g *Gateway) accountOf(a agents.Agent) string {
+	g.failoverMu.RLock()
+	f := g.noAccount
+	g.failoverMu.RUnlock()
+	if f != nil && f(a) {
+		return ""
+	}
+	return a.CCAccount
 }
 
 // New validates the configuration and builds the gateway.
@@ -306,7 +335,7 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, unresolved{err}
 	}
-	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount, owner: a.OwnerID, agentID: a.ID}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: g.accountOf(a), owner: a.OwnerID, agentID: a.ID}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
