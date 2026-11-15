@@ -310,29 +310,39 @@ func fencedChange(ctx context.Context, gh GitHub, cmp Compare, f File, base, hea
 // fenceMask is, for each line of a Markdown text (1-based: mask[0] is
 // unused), whether it is inside a fenced code block or is a fence line.
 //
-// 🔴 TWO READINGS, UNIONED. A strict one close to CommonMark (a fence is
-// indented at most three spaces, after any blockquote markers) and a loose
-// one (any indentation: a fence inside a list item or an indented block). A
-// line either reading puts in a fence is fenced. One reading alone can be
-// walked out of sync by a line the other reads differently (an indented
-// "```" the strict reading ignores and the loose one opens on), leaving the
-// next real block's lines outside; the union cannot be, because each reading
-// on its own still marks every line it believes fenced.
+// 🔴 FOUR READINGS, UNIONED: strict (a fence indented at most three spaces,
+// after any blockquote markers) or loose (any indentation: a fence inside a
+// list item or an indented block), each either container-AWARE or
+// container-BLIND. A line any reading puts in a fence is fenced, so each
+// reading can only ADD marks. One reading alone can be walked out of sync by
+// a line another reads differently (an indented "```" the strict reading
+// ignores and the loose one opens on, or an unindented line that ends a list
+// item and the fence it opened), leaving the next real block's lines outside;
+// the union cannot be, because each reading on its own still marks every line
+// it believes fenced.
+//   - container-aware: a fence opens after any run of blockquote markers AND
+//     list markers ("- ", "* ", "+ ", "1. ", "1) "), so "- ```sh" opens one;
+//     it closes only on a fence line at the SAME blockquote depth that carries
+//     NO list marker ("> ```" inside an unquoted fence is content, and
+//     "- ```" starts a new list item, so neither closes it).
+//   - container-blind: list markers are not stripped (so "- ```sh" opens
+//     nothing) and a fence line at any blockquote depth closes. It is the one
+//     that marks "rm -rf /" in "- ```sh / safe / ``` / rm -rf / / ```": there
+//     "safe" ends the list item and its fence, and the next "```" opens a
+//     block, which the container-aware reading reads as a close.
 //
-// 🔴 OVER-MARKING IS THE SAFE ERROR. A line marked fenced that CommonMark
-// calls prose costs a false refusal; the reverse admits a command edit. So
-// every reading below errs toward fenced:
-//   - a fence opens after any run of blockquote markers AND list markers
-//     ("- ", "* ", "+ ", "1. ", "1) "), so "- ```sh" opens one;
-//   - it closes only on a fence line at the SAME blockquote depth that
-//     carries NO list marker: "> ```" inside an unquoted fence is content
-//     (CommonMark), and "- ```" starts a new list item (a new block), so
-//     neither closes it;
-//   - a leading YAML front matter block (line 1 "---", through the next
-//     "---", or to the end when none closes it) is marked whole: an agent's
-//     tools: or a skill's allowed-tools: is configuration, not prose. YAML's
-//     "..." does not close it here: a reader that closes only on "---" would
-//     read the lines after "..." as front matter.
+// 🔴 OVER-MARKING IS THE SAFE ERROR, AND IT IS PAID. A line marked fenced that
+// CommonMark calls prose costs a false refusal; the reverse admits a command
+// edit. No single reading errs toward fenced everywhere: each misreads some
+// shape in both directions, and only the union is never narrower than any one
+// of them. The price is real: the container-blind reading reads the indented
+// closer of a list item's fence as an opener, so prose after one is refused.
+//
+// A leading YAML front matter block (line 1 "---", through the next "---", or
+// to the end when none closes it) is marked whole: an agent's tools: or a
+// skill's allowed-tools: is configuration, not prose. YAML's "..." does not
+// close it here: a reader that closes only on "---" would read the lines
+// after "..." as front matter.
 func fenceMask(text string) []bool {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	mask := make([]bool, len(lines)+1)
@@ -345,11 +355,11 @@ func fenceMask(text string) []bool {
 			}
 		}
 	}
-	for _, loose := range []bool{false, true} {
+	for _, rd := range []struct{ loose, aware bool }{{false, true}, {true, true}, {false, false}, {true, false}} {
 		var fch byte
 		flen, fdepth := 0, 0
 		for i, l := range lines {
-			f, ok := fenceLine(l, loose)
+			f, ok := fenceLine(l, rd.loose, rd.aware)
 			if fch == 0 {
 				if ok {
 					fch, flen, fdepth = f.c, f.n, f.depth
@@ -358,7 +368,7 @@ func fenceMask(text string) []bool {
 				continue
 			}
 			mask[i+1] = true
-			if ok && f.c == fch && f.n >= flen && f.depth == fdepth && !f.listed && strings.TrimSpace(f.rest) == "" {
+			if ok && f.c == fch && f.n >= flen && (!rd.aware || (f.depth == fdepth && !f.listed)) && strings.TrimSpace(f.rest) == "" {
 				fch, flen, fdepth = 0, 0, 0
 			}
 		}
@@ -380,10 +390,10 @@ type fence struct {
 // listMarkerRE is a CommonMark list marker and the one space or tab after it.
 var listMarkerRE = regexp.MustCompile(`^(?:[-*+]|[0-9]{1,9}[.)])[ \t]`)
 
-// fenceLine reads l as a fence. Container markers — blockquote '>' and list
-// markers, in any order and any number — are stripped first; then strict
-// allows at most three spaces of indentation, loose any.
-func fenceLine(l string, loose bool) (fence, bool) {
+// fenceLine reads l as a fence. Blockquote '>' markers are stripped first,
+// and, when aware, list markers too, in any order and any number; then
+// strict allows at most three spaces of indentation, loose any.
+func fenceLine(l string, loose, aware bool) (fence, bool) {
 	s, depth, listed := l, 0, false
 	for {
 		t := strings.TrimLeft(s, " \t")
@@ -391,7 +401,7 @@ func fenceLine(l string, loose bool) (fence, bool) {
 			s, depth = t[1:], depth+1
 			continue
 		}
-		if m := listMarkerRE.FindString(t); m != "" {
+		if m := listMarkerRE.FindString(t); aware && m != "" {
 			s, listed = t[len(m):], true
 			continue
 		}

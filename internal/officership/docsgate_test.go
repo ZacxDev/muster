@@ -227,6 +227,23 @@ func TestAFencedCodeEditIsRefused(t *testing.T) {
 		"front matter":           {"---\nname: x\nallowed-tools: Read\n---\n\n# Skill\n", "---\nname: x\nallowed-tools: Bash\n---\n\n# Skill\n", "@@ -3 +3 @@\n-allowed-tools: Read\n+allowed-tools: Bash"},
 		"front matter's closing": {"---\nname: x\n---\n\n# Skill\n", "---\nname: x\n...\n\n# Skill\n", "@@ -3 +3 @@\n----\n+..."},
 		"adding front matter":    {"# Skill\n", "---\ntools: Bash\n---\n# Skill\n", "@@ -1 +1,4 @@\n+---\n+tools: Bash\n+---\n # Skill"},
+		// Round 2 finding 1: an unindented line ends the list item and the
+		// fence it opened (CommonMark), so the next bare fence line OPENS a
+		// block and "rm -rf /" is code. The list-aware reading alone closed
+		// there and called it prose; the container-blind reading still marks it.
+		"a list item's fence ended by an unindented line": {"- ```sh\nsafe\n```\nrm -rf /tmp/a\n```\n", "- ```sh\nsafe\n```\nrm -rf /\n```\n",
+			"@@ -4 +4 @@\n-rm -rf /tmp/a\n+rm -rf /"},
+		// The same shape through a blockquote: the unquoted "```" ends the
+		// quote and its fence and opens a block, so "> ```" is content and
+		// "rm x" is code. Only a reading that closes at ANY depth marks it.
+		"a quoted fence ended by an unquoted fence line": {"> ```\n```\n> ```\nrm x\n```\n", "> ```\n```\n> ```\nrm y\n```\n",
+			"@@ -4 +4 @@\n-rm x\n+rm y"},
+		// The cost of the union, pinned: the container-blind reading cannot see
+		// the "- ```sh" opener, reads the indented closer as an opener, and so
+		// marks everything after a list item's fence. A false refusal, the safe
+		// error.
+		"prose after a list item's fence": {"- ```sh\n  rm x\n  ```\n\nThe end.\n", "- ```sh\n  rm x\n  ```\n\nThe finish.\n",
+			"@@ -5 +5 @@\n-The end.\n+The finish."},
 	}
 	for name, c := range refused {
 		r := docsRig(t)
@@ -253,8 +270,6 @@ func TestAFencedCodeEditIsRefused(t *testing.T) {
 	// right after each closes, a list item that holds no fence, and a '---'
 	// thematic break that is not on line 1.
 	for name, c := range map[string]struct{ base, head, patch string }{
-		"prose after a list item's fence": {"- ```sh\n  rm x\n  ```\n\nThe end.\n", "- ```sh\n  rm x\n  ```\n\nThe finish.\n",
-			"@@ -5 +5 @@\n-The end.\n+The finish."},
 		"a list item with no fence":      {"- step one\n- step two\n", "- step one\n- step 2\n", "@@ -2 +2 @@\n-- step two\n+- step 2"},
 		"prose after a quoted fence":     {"> ```\n> rm x\n> ```\n\nThe end.\n", "> ```\n> rm x\n> ```\n\nThe finish.\n", "@@ -5 +5 @@\n-The end.\n+The finish."},
 		"prose after front matter":       {"---\nname: x\n---\n\n# Skill\n\nThe end.\n", "---\nname: x\n---\n\n# Skill\n\nThe finish.\n", "@@ -7 +7 @@\n-The end.\n+The finish."},

@@ -1621,14 +1621,20 @@ file, a changed line — added or removed — that sits inside a fenced code
 block, or is a fence line itself, is refused. The fences are read from the
 **whole** file, at the comparison's merge base for removed lines and at the
 head for added ones, so a hunk that starts inside a block is judged right.
-Two readings are unioned: one close to CommonMark (at most three spaces of
-indentation, after any `>` blockquote markers and list markers such as `- `,
-`* `, `1. ` or `1) `, so `- ```sh` opens a block) and one that takes a fence at
-any indentation; a line either puts in a block is in one. A block closes only
-on a fence line at the blockquote depth that opened it and carrying no list
-marker: a `> ```` line inside an unquoted block is content, and `- ```` starts
-a new item and a new block. Both errors are resolved toward "in a block",
-since a false refusal is the safe one. A leading YAML front matter block (line
+Four readings are unioned, and a line any of them puts in a block is in one:
+each of strict (at most three spaces of indentation) and loose (any
+indentation), read both container-aware and container-blind. Container-aware
+strips `>` blockquote markers and list markers such as `- `, `* `, `1. ` or
+`1) ` (so `- ```sh` opens a block) and closes a block only on a fence line at
+the blockquote depth that opened it and carrying no list marker (a `> ````
+line inside an unquoted block is content, and `- ```` starts a new item and a
+new block). Container-blind strips only the `>` markers and closes at any
+depth; it is what catches a block that CommonMark opens after an unindented
+line ends a list item, or an unquoted line ends a quote, and the fence with
+it. No single reading errs toward "in a block" everywhere; the union is never
+narrower than any one of them, and over-marking is the error it accepts
+(a false refusal is the safe one): prose after a list item's fence, for one,
+is refused. A leading YAML front matter block (line
 1 `---` through the next `---`, or the end of the file) counts as a block too:
 an agent's `tools:` or a skill's `allowed-tools:` is configuration. A file that
 cannot be read, or a changed line the file does not have, refuses (fail
