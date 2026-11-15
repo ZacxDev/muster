@@ -345,6 +345,10 @@ var (
 		// person, read as that owner after the hub's nudge named them, through
 		// authz.ViaAttention.
 		"internal/api.(*Server).attentionPrincipal",
+		// A member's preview of a TEAM session (team sharing 2b.3b): the team's
+		// viewer plugins read, and the hand-off written, as the team, through
+		// the team plugin door authz.ViaPlugin, after a fresh viewer read.
+		"internal/api.(*Server).teamPreviewPrincipal",
 		// The AskUserQuestion watcher and open-question scan: the transcript of
 		// the window showing a question, or of a waiting window, read as the
 		// question's or the window's owner (its host's token's), through

@@ -1059,6 +1059,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolAnswerSessionQuestion(ctx, a, arguments)
 	case postgresQueryToolName:
 		return s.toolPostgresQuery(ctx, a, arguments)
+	case internalHTTPToolName:
+		return s.toolInternalHTTP(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

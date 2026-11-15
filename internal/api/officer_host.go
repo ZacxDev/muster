@@ -529,7 +529,7 @@ func (s *Server) hostOfficerMirrorTool(ctx context.Context, host string, c toolC
 // officerHostInstanceRefusal answers a host officer instance naming a tool of
 // its owner's sessions.
 const officerHostInstanceRefusal = "this window is host officer instance %s, not one of your owner's sessions: %s is refused. " +
-	"An instance gets its officer tools, the connector tools (connectors_list, connector_request, connector_status, postgres_query) and attention_ask"
+	"An instance gets its officer tools, the connector tools (connectors_list, connector_request, connector_status, postgres_query, internal_http_request) and attention_ask"
 
 // toolHostOfficerInstance runs tool name for host officer instance a (its
 // agent row): the officer tools through the SAME dispatchOfficerTool the agent
@@ -570,6 +570,8 @@ func (s *Server) hostConnectorTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
 	case postgresQueryToolName:
 		return s.toolPostgresQuery(ctx, a, arguments)
+	case internalHTTPToolName:
+		return s.toolInternalHTTP(ctx, a, arguments)
 	}
 	return toolErr("unknown tool %q", name)
 }

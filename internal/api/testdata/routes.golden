@@ -169,6 +169,7 @@ GET /teams/{id}/chief
 GET /teams/{id}/connectors
 GET /teams/{id}/hosts
 GET /teams/{id}/officers
+GET /teams/{id}/plugins
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
@@ -384,6 +385,8 @@ POST /teams/{id}/members
 POST /teams/{id}/members/{user}/remove
 POST /teams/{id}/officers/defs/{officer}
 POST /teams/{id}/officers/types/{key}
+POST /teams/{id}/plugins
+POST /teams/{id}/plugins/{plugin}/revoke
 POST /telemetry/faro
 POST /transcribe
 POST /ui/connector-requests/{id}/approve

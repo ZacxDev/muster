@@ -360,7 +360,7 @@ func (s *PGStore) SetDeliverTo(ctx context.Context, id int64, deliverTo string) 
 		return Plugin{}, false, err
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL FOR UPDATE`, id))
+		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL AND `+ownedByPrincipal+` FOR UPDATE`, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

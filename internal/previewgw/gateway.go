@@ -85,7 +85,8 @@ type tokenState struct {
 	owner    int64 // from the last 200; 0 before any
 	plugin   int64 // the token's plugin id, from the last 200; muster_plugin names it
 	verdict  SelfVerdict
-	unknowns int // consecutive checks without a verdict
+	unknowns int  // consecutive checks without a verdict
+	team     bool // /self names the owner a team (owner_kind "team")
 }
 
 // Gateway is the running preview gateway.
@@ -251,7 +252,7 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 				g.log.Warn("plugin token check failed; keeping its last verdict", "token", i+1, "consecutive", n, "err", reason)
 			}
 		case SelfLive:
-			g.tokens[i] = tokenState{owner: a.Self.OwnerID, plugin: a.Self.PluginID, verdict: SelfLive}
+			g.tokens[i] = tokenState{owner: a.Self.OwnerID, plugin: a.Self.PluginID, verdict: SelfLive, team: a.Self.IsTeam()}
 		case SelfDead:
 			if a.Self.OwnerID > 0 {
 				g.tokens[i].owner = a.Self.OwnerID

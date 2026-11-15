@@ -25,6 +25,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
@@ -400,6 +401,14 @@ const (
 	// reachable. The HTTP connector proxy refuses those ranges always. Web
 	// Push sends are not covered (internal/push.Allowlist).
 	envDialDenyPrivate = "MUSTER_DIAL_DENY_PRIVATE"
+	// The internal_http connectors (internal/connectors internal_http.go): a
+	// JSON array of {name, base_url, path_prefix?, max_response_bytes?,
+	// timeout_seconds?}, each one fixed service an approved agent may call
+	// through internal_http_request with a bearer token read from
+	// MUSTER_INTERNAL_HTTP_TOKEN_<NAME> (connectors.InternalHTTPTokenEnvPrefix).
+	// The private-address rule does not apply to these destinations: the admin
+	// names them, the agent never does.
+	envInternalHTTPConnectors = "MUSTER_INTERNAL_HTTP_CONNECTORS"
 	// The Android app's PIN-key policy (docs/design/android.md, "The step-up
 	// key"): set, a phone with no strong biometric may pair with a
 	// biometric-or-PIN step-up key; unset, it pairs read-only.
@@ -875,6 +884,10 @@ type config struct {
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
 	// postgres connector dials its database through safedial (dialGuard).
 	DialDenyPrivate bool
+
+	// InternalHTTP are the MUSTER_INTERNAL_HTTP_CONNECTORS connectors, each
+	// with its token (nil: none).
+	InternalHTTP []*connectors.InternalHTTP
 
 	// AskLog is the ask log's configuration (asklog_config.go).
 	AskLog askLogConfig
@@ -1925,6 +1938,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
+	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)
+	}
 	c.Pages = envFlag(getenv, envPages)
 	if v := strings.TrimSpace(getenv(envPagesUploadBytes)); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -2217,6 +2233,10 @@ func anyOfficerImage(os []officers.Officer) bool {
 //     stays true to what agents can actually do, with no second flag to keep in
 //     step with it.
 func (c config) validateConnectors() error {
+	if len(c.InternalHTTP) > 0 && len(c.ConnectorEncKey) == 0 {
+		return fmt.Errorf("%s is set but %s is not: an internal_http connector is granted through the connector "+
+			"store. Set %s too", envInternalHTTPConnectors, envConnectorEncKey, envConnectorEncKey)
+	}
 	if c.GitHubAppID != 0 && len(c.ConnectorEncKey) == 0 {
 		return fmt.Errorf("%s is set but %s is not: the GitHub App's tokens reach agents only through the "+
 			"connector proxy, whose grants live in the connector store. Set %s too", envGitHubAppID,

@@ -49,6 +49,7 @@ var apiNavWriters = []string{
 	"renderTeamChief",              // /teams/{id}/chief (a team's chief, phase 4)
 	"renderTeamConnectors",         // /teams/{id}/connectors (the team agents' connector requests, 4.8)
 	"renderTeamHosts",              // /teams/{id}/hosts (a team's host tokens, phase 2b.2)
+	"renderTeamPlugins",            // /teams/{id}/plugins (a team's viewer plugins, 2b.3b)
 	"handleAgentRotateCredentials", // a rotation's outcome page (team_admin.go)
 	"renderOfficerSpawns",          // /officers/spawns (host officer spawns and their team lend)
 }
@@ -375,6 +376,7 @@ var apiNavSecret = map[string]bool{
 	"renderPluginsPage":            true,  // shows a minted plugin token once
 	"renderFlowsPage":              true,  // shows a minted runner token once
 	"renderTeamHosts":              true,  // shows a minted team host token once
+	"renderTeamPlugins":            true,  // shows a minted team viewer plugin token once
 	"writeAdminDocument":           true,  // shows reset and invite links once
 	"renderCredentials":            true,  // takes a Claude OAuth token / an OpenRouter key
 	"renderAccountPasskeys":        true,  // runs passkey ceremonies

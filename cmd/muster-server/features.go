@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/router"
@@ -80,7 +81,8 @@ func featureCatalog() []features.Feature {
 		{ID: features.Connectors, Name: "Connectors and credentials",
 			Description: "Stored platform credentials agents use through muster's proxy, and each member's own Claude and OpenRouter credentials.",
 			Enable:      []features.Var{v(envConnectorEncKey, "32-byte base64 key")},
-			Settings:    []string{envConnectPort, envAgentConnectURL}},
+			Settings: []string{envConnectPort, envAgentConnectURL, envInternalHTTPConnectors,
+				connectors.InternalHTTPTokenEnvPrefix + "<NAME>"}},
 		{ID: features.GitHubApp, Name: "GitHub App",
 			Description: "muster's own GitHub identity: per-repository, one-hour tokens for agents.",
 			Enable: []features.Var{v(envGitHubAppID, "App ID"), v(envGitHubAppKey, "App private key (PEM)"),

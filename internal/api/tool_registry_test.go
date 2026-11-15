@@ -51,6 +51,11 @@ var (
 		// claude-code pod reaches nothing but the connect port, and like the
 		// HTTP proxy it spends only a credential the owner granted THAT agent.
 		"postgres_query",
+		// internal_http_request (connector_tools.go): a call to one service an
+		// admin configured, for an agent holding an approved grant for it. On
+		// MCP for postgres_query's reason; the model picks only a method and a
+		// path, never the destination.
+		"internal_http_request",
 		"browser_flow_request", "browser_flow_status",
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status"}

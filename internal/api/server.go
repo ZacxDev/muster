@@ -721,6 +721,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTeamConnectorPages(mux)
 	// A team's host tokens (team sharing 2b.2, team_hosts_page.go).
 	s.registerTeamHostPages(mux)
+	s.registerTeamPluginPages(mux)
 	// Instance branding (branding.go): the public instance document and
 	// logo images, and the admin's writes (requireAdminRole).
 	s.registerBrandingRoutes(mux)

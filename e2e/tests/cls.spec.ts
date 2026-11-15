@@ -92,6 +92,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // the mirror plugin off (this spec's signed-in server), the page's own
   // "no mirror plugin" card.
   'GET /teams/{id}/hosts': { where: 'signed-in', url: 'TEAM_HOSTS', ready: ':is(#team-host-tokens-none, #team-host-tokens li, #team-hosts-off)' },
+  // The same team's viewer plugins (team_plugins_page.go, team sharing 2b.3b):
+  // a new team has none, so the empty state is what it draws — or, on a server
+  // without MUSTER_PLUGIN_ORIGINS, the page's own "plugins are off" card.
+  'GET /teams/{id}/plugins': { where: 'signed-in', url: 'TEAM_PLUGINS', ready: ':is(#team-plugins-none, #team-plugins li, #team-plugins-off)' },
   // The admin's host officer spawns and their team lend (officer_spawn_share.go):
   // a fresh admin has none, so the empty state is what it draws.
   'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
@@ -856,7 +860,8 @@ test.describe('signed-in pages in gotrue mode', () => {
           if (p.where !== 'signed-in') continue;
           const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers`
             : p.url === 'TEAM_CHIEF' ? `/teams/${teamID}/chief`
-            : p.url === 'TEAM_CONNECTORS' ? `/teams/${teamID}/connectors` : p.url === 'TEAM_HOSTS' ? `/teams/${teamID}/hosts` : p.url;
+            : p.url === 'TEAM_CONNECTORS' ? `/teams/${teamID}/connectors` : p.url === 'TEAM_HOSTS' ? `/teams/${teamID}/hosts`
+            : p.url === 'TEAM_PLUGINS' ? `/teams/${teamID}/plugins` : p.url;
           const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));

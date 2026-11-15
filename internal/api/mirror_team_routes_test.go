@@ -56,7 +56,7 @@ func TestEveryMirrorRouteHasATeamRule(t *testing.T) {
 var visibleHostsCallers = map[string]string{
 	"Server.mirrorEntry":     "a page or socket of one entry: only when mirrorTeamGate aimed the request at a team (mirror.TargetOwner), filtered to that owner's hosts",
 	"Server.teamMirrorCards": "the sidebar's and the switcher's team groups: each card carries its Owner, so its links name owner=",
-	"Server.teamHostsOf":     "a team episode's Attention row and tap: filtered to the episode's owner, for an operator or a manager of it (teamEpisodeShown)",
+	"Server.teamHostsOf":     "a team episode's Attention row and tap (teamEpisodeShown), and a team preview's hand-off (after teamViewerPlugins' fresh viewer read): filtered to that one owner",
 }
 
 // mirrorTargetSetters is EVERY function in internal/api that calls

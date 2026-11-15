@@ -67,7 +67,7 @@ func TestEveryMirrorToolIsClassifiedForATeamHost(t *testing.T) {
 	if teamHostKeeps(routeReplyToolName) {
 		t.Error("route_reply is kept for a team host; operator decision G2 refuses it")
 	}
-	for _, n := range []string{"connectors_list", "connector_request", "connector_status", postgresQueryToolName} {
+	for _, n := range []string{"connectors_list", "connector_request", "connector_status", postgresQueryToolName, internalHTTPToolName} {
 		if teamHostKeeps(n) {
 			t.Errorf("connector instance tool %s is kept for a team host; operator decision G3 refuses it", n)
 		}

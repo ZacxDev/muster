@@ -158,6 +158,16 @@ func PreviewButtonSrc(host, session, window string, place PreviewPlace) string {
 	return PreviewButtonPath + "?" + q.Encode()
 }
 
+// PreviewButtonSrcOf is PreviewButtonSrc for owner's entry: a TEAM host's
+// (owner != 0, team sharing 2b.3b) names it as owner=.
+func PreviewButtonSrcOf(owner int64, host, session, window string, place PreviewPlace) string {
+	src := PreviewButtonSrc(host, session, window, place)
+	if owner != 0 {
+		src += "&owner=" + strconv.FormatInt(owner, 10)
+	}
+	return src
+}
+
 // PluginChip is one live viewer plugin the panel can open.
 type PluginChip struct {
 	ID    int64
@@ -170,7 +180,10 @@ type PluginChip struct {
 type PluginChips struct {
 	MintPath              string
 	Host, Session, Window string
-	Chips                 []PluginChip
+	// Owner is a TEAM host's owner (team sharing 2b.3b: the team's plugins),
+	// 0 for the viewer's own: the mint and the button's poll name it.
+	Owner int64
+	Chips []PluginChip
 	// Previews is the window's counts when the page was drawn
 	// (mirror.SessionView.Previews): the button's first state.
 	Previews mirror.WindowPreviews
@@ -281,7 +294,7 @@ func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
 	return Span(
 		ID(id),
 		Class(cls),
-		hx("hx-get", PreviewButtonSrc(c.Host, c.Session, c.Window, place)),
+		hx("hx-get", PreviewButtonSrcOf(c.Owner, c.Host, c.Session, c.Window, place)),
 		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden&&"+at+"]"),
 		hx("hx-swap", "innerHTML"),
 		hx("hx-target", "this"),
@@ -361,6 +374,7 @@ func previewPanel(c *PluginChips) g.Node {
 			g.Attr("data-mint", c.MintPath),
 			g.Attr("data-host", c.Host),
 			g.Attr("data-window", c.Window),
+			g.If(c.Owner != 0, g.Attr("data-owner", strconv.FormatInt(c.Owner, 10))),
 			g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
 			// The screen above the message bar below `sm` (the script sets
 			// its bottom to the bar's top); a full-height side panel from
@@ -466,6 +480,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   function mint() {
     var p = panel();
     var body = { plugin: plugin(), target: { mirror: { host: p.getAttribute('data-host'), window: p.getAttribute('data-window') } } };
+    if (p.getAttribute('data-owner')) body.owner = Number(p.getAttribute('data-owner'));
     return fetch(p.getAttribute('data-mint'), {
       method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'manual',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },

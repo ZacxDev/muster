@@ -1179,7 +1179,8 @@ func (s *Server) WaitForOfficerReprompts() {
 //   - AllowMCPTools: the officer tools it is offered, in registry order, then —
 //     when the connector store is configured (so the instance is offered
 //     them) — connectors_list, connector_request, connector_status, and
-//     postgres_query when the officer declares `connectors`. Redundant
+//     postgres_query and internal_http_request when the officer declares
+//     `connectors`. Redundant
 //     under bypass, and kept: it names exactly the muster tools the instance
 //     is for, and holds if bypass is ever lifted.
 //   - Model: the officer's configured model (its pool's, for a tiered officer).
@@ -1200,9 +1201,10 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	}
 	if s.ext.Connectors != nil {
 		for _, d := range connectorToolDefs() {
-			// postgres_query only for an officer that declares a connector it
-			// could serve; every officer still reaches github.
-			if d.Name == postgresQueryToolName && len(o.Connectors) == 0 {
+			// postgres_query and internal_http_request only for an officer
+			// that declares a connector they could serve; every officer still
+			// reaches github.
+			if (d.Name == postgresQueryToolName || d.Name == internalHTTPToolName) && len(o.Connectors) == 0 {
 				continue
 			}
 			allow = append(allow, d.Name)

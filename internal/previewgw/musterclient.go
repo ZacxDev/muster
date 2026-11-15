@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,12 +23,19 @@ const CapabilityViewer = "viewer"
 
 // Self is GET /plugin/v1/self's answer.
 type Self struct {
-	PluginID     int64    `json:"plugin_id"`
-	PluginName   string   `json:"plugin_name"`
-	OwnerID      int64    `json:"owner_id"`
-	OwnerLogin   string   `json:"owner_login"`
+	PluginID   int64  `json:"plugin_id"`
+	PluginName string `json:"plugin_name"`
+	OwnerID    int64  `json:"owner_id"`
+	OwnerLogin string `json:"owner_login"`
+	// OwnerKind is "team" for a team viewer plugin's token (team sharing
+	// 2b.3b; OwnerLogin is then the team's name), "person" or "" (an older
+	// muster) for a person's.
+	OwnerKind    string   `json:"owner_kind"`
 	Capabilities []string `json:"capabilities"`
 }
+
+// IsTeam reports whether the token's owner is a team.
+func (s Self) IsTeam() bool { return s.OwnerKind == "team" }
 
 // HasViewer reports whether the token holds the viewer capability.
 func (s Self) HasViewer() bool { return slices.Contains(s.Capabilities, CapabilityViewer) }
@@ -133,6 +141,12 @@ func transportReason(err error) string {
 // it. With login empty and exactly one live owner, that owner is the answer.
 // A token whose answer is not live (401, no viewer, unreachable) cannot be
 // named, and the error says how many were skipped.
+//
+// A TEAM is named team:<id> (team sharing 2b.3b), never by its name: it has
+// no login, and its name is a label as a login is. team:<id> matches only a
+// live answer whose owner IS that team (owner_kind "team"), and a login never
+// matches a team's answer. As for a person, which owner a host is minted for
+// is the gateway admin's assertion.
 func ResolveOwner(login string, answers []SelfAnswer) (Self, error) {
 	byOwner := map[int64]Self{}
 	skipped := 0
@@ -155,9 +169,19 @@ func ResolveOwner(login string, answers []SelfAnswer) (Self, error) {
 		}
 		return Self{}, fmt.Errorf("name the owner: PLUGIN_TOKENS_FILE has %d live owner(s)%s", len(byOwner), note)
 	}
+	if rest, ok := strings.CutPrefix(login, TeamOwnerPrefix); ok {
+		id, err := strconv.ParseInt(rest, 10, 64)
+		if err != nil || id <= 0 {
+			return Self{}, fmt.Errorf("%q names no team: write %s<team id>", login, TeamOwnerPrefix)
+		}
+		if s, ok := byOwner[id]; ok && s.IsTeam() {
+			return s, nil
+		}
+		return Self{}, fmt.Errorf("no live plugin token in PLUGIN_TOKENS_FILE belongs to team %d%s", id, note)
+	}
 	var match []Self
 	for _, s := range byOwner {
-		if s.OwnerLogin == login {
+		if !s.IsTeam() && s.OwnerLogin == login {
 			match = append(match, s)
 		}
 	}
@@ -174,6 +198,9 @@ func ResolveOwner(login string, answers []SelfAnswer) (Self, error) {
 	slices.Sort(ids)
 	return Self{}, fmt.Errorf("the login %q is ambiguous: owners %s all answer to it; a login is a label, not an identifier", login, strings.Join(ids, ", "))
 }
+
+// TeamOwnerPrefix names a team owner on `host-token create`: team:<id>.
+const TeamOwnerPrefix = "team:"
 
 // PurposeView is the only hand-off purpose the session page accepts in this
 // phase (share links, purpose "share", are phase 3).

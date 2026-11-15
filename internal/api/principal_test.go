@@ -266,6 +266,11 @@ var routeVias = map[authz.Via][]string{
 		"POST /teams/{id}/hosts",
 		"POST /teams/{id}/hosts/{token}/revoke",
 		"POST /teams/{id}/hosts/replace",
+		// A team's viewer plugins (team sharing 2b.3b, team_plugins_page.go):
+		// the hosts page's gate.
+		"GET /teams/{id}/plugins",
+		"POST /teams/{id}/plugins",
+		"POST /teams/{id}/plugins/{plugin}/revoke",
 		"GET /officers/spawns",
 		"POST /officers/spawns/{id}/share",
 		"POST /officers/spawns/{id}/unshare",

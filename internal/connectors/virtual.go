@@ -135,9 +135,15 @@ func SourceFor(ctx context.Context, s Store, name string) string {
 //     given one, asks its owner again. For an officer with `read_repos`, repo
 //     is the whole set as RepoScope writes it, so a change to either `repo`
 //     or `read_repos` re-opens the grant and a reordering does not. NOT for
-//     kube-read (KubeReadVirtual): what officer_kube_read may read is the
-//     officer's `kube` block, never a repository, so a repository change
-//     leaves its grant as it is (its credential source is still compared).
+//     kube-read (KubeReadVirtual) or an internal_http connector
+//     (InternalHTTP): what they reach is the server's configuration, never a
+//     repository, so a repository change leaves their grant as it is (its
+//     credential source is still compared);
+//   - for an internal_http connector, the destination the approval was made
+//     for (Grant.Repo holds InternalHTTP.Destination there: GrantScope) is not
+//     the connector's destination now — its base URL or path prefix was
+//     changed and the server restarted. A grant recorded with none (or a
+//     repository) is re-opened too: it fails closed.
 //
 // reason is "" when the grant is returned unchanged, else the audit line's
 // why. The caller prompts the owner.
@@ -165,7 +171,9 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, 
 	switch {
 	case src != SourceFor(ctx, s, g.Connector):
 		reason = ReopenedSourceChanged
-	case !SameRepo(g.Repo, repo) && !isKubeRead(ctx, s, g.Connector):
+	case !sameDestination(ctx, s, g):
+		reason = ReopenedDestinationChanged
+	case !SameRepo(g.Repo, repo) && !repoIndependent(ctx, s, g.Connector):
 		reason = reopenedRepoChanged(g.Repo, repo)
 	default:
 		return g, "", nil
@@ -177,12 +185,40 @@ func ReconcileGrant(ctx context.Context, s Store, g Grant, repo string) (Grant, 
 	return ng, reason, nil
 }
 
-// isKubeRead reports whether connector name is, for ctx's principal, the
-// kube-read virtual connector.
-func isKubeRead(ctx context.Context, s Store, name string) bool {
+// repoIndependent reports whether connector name is, for ctx's principal, a
+// virtual connector whose grant has nothing to do with a repository: kube-read
+// and every internal_http connector (their reach is the server's
+// configuration, never the agent's repository).
+func repoIndependent(ctx context.Context, s Store, name string) bool {
 	v, ok := VirtualOf(ctx, s, name)
-	return ok && IsKubeRead(v)
+	return ok && (IsKubeRead(v) || IsInternalHTTP(v))
 }
+
+// GrantScope is what an approval of connector, for an agent whose effective
+// repository scope is repo (RepoScope), is recorded as being FOR (Grant.Repo,
+// DecideGrantFrom's repo): the connector's Destination for an internal_http
+// connector, whose reach is the server's configuration, and repo for every
+// other. 🔴 ONE PLACE: the approval writes it and ReconcileGrant compares
+// against it (sameDestination).
+func GrantScope(ctx context.Context, s Store, connector, repo string) string {
+	if ih, ok := InternalHTTPOf(ctx, s, connector); ok {
+		return ih.Destination()
+	}
+	return repo
+}
+
+// sameDestination reports whether g, for an internal_http connector, was
+// approved for the connector's current destination; true for every other
+// connector (it has none).
+func sameDestination(ctx context.Context, s Store, g Grant) bool {
+	ih, ok := InternalHTTPOf(ctx, s, g.Connector)
+	return !ok || strings.TrimSpace(g.Repo) == ih.Destination()
+}
+
+// ReopenedDestinationChanged is ReconcileGrant's reason for an internal_http
+// grant approved for another destination. It names neither: an address is
+// never in an agent-visible line.
+const ReopenedDestinationChanged = "re-opened: the connector's configured service (base URL or path prefix) changed"
 
 // ReopenedSourceChanged is ReconcileGrant's reason for a changed credential
 // source.

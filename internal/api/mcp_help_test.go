@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -291,7 +292,8 @@ func serveSurface(t *testing.T, surface mcpSurface, body string) *mcpReply {
 }
 
 func testSurface(defs []agents.ToolDef, call func(name, args string) string) mcpSurface {
-	return mcpSurface{tools: func() []agents.ToolDef { return defs }, call: call, instructions: "base instructions."}
+	return mcpSurface{tools: func() []agents.ToolDef { return defs },
+		call: func(_ context.Context, name, args string) string { return call(name, args) }, instructions: "base instructions."}
 }
 
 func echoDef(desc string, props map[string]any) agents.ToolDef {

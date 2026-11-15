@@ -123,7 +123,8 @@ func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn,
 		// one after the other. Row-level security hides every other owner's.
 		var err error
 		p, err = scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins
-			WHERE id = $1 AND revoked_at IS NULL AND 'viewer' = ANY (capabilities) FOR UPDATE`, pluginID))
+			WHERE id = $1 AND revoked_at IS NULL AND 'viewer' = ANY (capabilities)
+			  AND `+ownedByPrincipal+` FOR UPDATE`, pluginID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
