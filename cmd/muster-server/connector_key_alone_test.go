@@ -13,8 +13,10 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // TestTheConnectorKeyAloneBootsWithTheAgentHalfOff: MUSTER_CONNECTOR_ENCRYPTION_KEY
@@ -110,13 +112,46 @@ func TestConnectorsStatusSplitsTheMemberAndAgentHalves(t *testing.T) {
 		"key alone, no agents": {config{Database: "x", ConnectorEncKey: key}, api.Extensions{Credentials: credentialPage{}}, features.On, "members' own credentials only; " + agentHalfOff},
 		"key alone, agents": {func() config { c := prov; c.Database, c.ConnectorEncKey = "x", key; return c }(),
 			api.Extensions{Credentials: credentialPage{}, Provisioner: bannerProvisioner(t, prov)}, features.Misconfigured, "members' own credentials only; " + agentHalfOff},
+		// #706 round 0, F1: a host officer declaring connectors, in each
+		// not-ON state, is MISCONFIGURED, naming it (and only it) and the fix.
+		"key alone, host officer with connectors": {config{Database: "x", ConnectorEncKey: key, Officers: rosterF1},
+			api.Extensions{Credentials: credentialPage{}}, features.Misconfigured, "members' own credentials only; " + agentHalfOff + "; " + lostF1},
+		"key unset, host officer with connectors": {config{Database: "x", Officers: rosterF1}, api.Extensions{},
+			features.Misconfigured, envConnectorEncKey + " is unset; " + lostF1},
+		// Controls: the store is built, so the officer has its tools; and a
+		// host officer WITHOUT connectors changes nothing.
+		"store built, host officer with connectors": {config{Database: "x", ConnectorEncKey: key, Officers: rosterF1},
+			api.Extensions{Connectors: storeStub{}}, features.On, ""},
+		"key alone, host officer without connectors": {config{Database: "x", ConnectorEncKey: key, Officers: rosterF1[1:]},
+			api.Extensions{Credentials: credentialPage{}}, features.On, "members' own credentials only; " + agentHalfOff},
 	} {
 		got := connectorsStatus(c.cfg, c.ext)
 		if got.State != c.state || !strings.HasPrefix(got.Reason, c.reason) {
 			t.Errorf("%s: %s %q, want %s %q", name, got.State, got.Reason, c.state, c.reason)
 		}
+		if strings.Contains(c.reason, "host officer(s)") && got.Reason != c.reason {
+			t.Errorf("%s: reason %q, want exactly %q", name, got.Reason, c.reason)
+		}
 	}
 }
+
+// storeStub is a built agent-facing store, for connectorsStatus (which only
+// asks whether there is one).
+type storeStub struct{ connectors.Store }
+
+// rosterF1 is a host officer that declares a connector, a host officer that
+// declares none, and a POD officer that declares one (which validate holds to
+// the connect URL, so it is never this feature's concern): only the first is
+// named. lostF1 is the sentence for it, as a literal.
+var rosterF1 = []officers.Officer{
+	{ID: "marketing:example", Runtime: officers.RuntimeHost, Host: "laptop", Connectors: []string{"warehouse"}},
+	{ID: "support:example", Runtime: officers.RuntimeHost, Host: "laptop"},
+	{ID: "triage:example-web", Connectors: []string{"warehouse"}},
+}
+
+const lostF1 = "host officer(s) marketing:example declare connectors in MUSTER_OFFICERS, but their instances are offered " +
+	"no connector tools without the agent connector store. Set MUSTER_CONNECTOR_ENCRYPTION_KEY, MUSTER_AGENT_CONNECT_URL " +
+	"and MUSTER_CONNECT_PORT, or remove their `connectors`"
 
 // TestTheConnectorKeyIsHexOrBase64: the INSTALL.md helper writes 64 hex
 // digits (mi_rand 32), features.md says base64; both are 32 bytes and both
@@ -224,4 +259,61 @@ func TestAHostOfficerRosterBootsWithoutTheConnectDoor(t *testing.T) {
 	if _, err := load(podEnv); err == nil || !strings.Contains(err.Error(), "declares pod officers but "+envAgentConnectURL+" is not set") {
 		t.Fatalf("control: a pod officer without the connect door: err = %v, want the refusal", err)
 	}
+}
+
+// TestAHostOfficerWithConnectorsAndTheKeyAloneFailsTheDoctor (#706 round 0,
+// F1): the key, no agent connect URL, and a HOST officer that declares a
+// connector. It loads and boots (a host instance needs no connect URL for its
+// officer tools), but the agent connector store is not built, so the mirror
+// door offers its instances no connector tools: `muster doctor` must FAIL,
+// naming the officer and the fix, where it used to say the connectors feature
+// was on. Built through loadConfig and buildApp against a real database, read
+// off /api/doctor as the CLI reads it.
+func TestAHostOfficerWithConnectorsAndTheKeyAloneFailsTheDoctor(t *testing.T) {
+	const host = `{"id":"marketing:example","backend":"builtin","runtime":"host","host":"laptop","repo":"example-org/example-site","connectors":["warehouse"]}`
+	env := map[string]string{
+		envDatabase: dbtest.DSN(t), envUIPassword: "a-synthetic-operator-password", envHookToken: "a-synthetic-hook-token-0123456789",
+		envMirror: "1", envStandalone: "1", envPublicURL: "https://muster.example.invalid", envSessionState: "1",
+		envConnectorEncKey: connectorKey(5), envOfficers: "[" + host + "]",
+	}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err == nil {
+		err = cfg.validate()
+	}
+	if err != nil {
+		t.Fatalf("the key and a host officer with connectors is refused: %v", err)
+	}
+	var buf bytes.Buffer
+	a, err := buildApp(context.Background(), cfg, log.New(&buf, "", 0))
+	if err != nil {
+		t.Fatalf("buildApp: %v", err)
+	}
+	defer a.Close()
+	// The banner's MEMBERS' CREDENTIALS ONLY arm is Extensions.Connectors ==
+	// nil, which is api.hostConnectorToolsOn's false: the tools are not offered.
+	if !strings.Contains(buf.String(), "connector store: MEMBERS' CREDENTIALS ONLY") {
+		t.Fatalf("fixture: the agent connector store was built, so nothing is lost:\n%s", grepLines(buf.String(), "connector store"))
+	}
+	req := httptest.NewRequest(http.MethodGet, api.DoctorPath, nil)
+	req.Header.Set("Authorization", "Bearer "+env[envHookToken])
+	w := httptest.NewRecorder()
+	a.srv.Handler().ServeHTTP(w, req)
+	var rep struct {
+		Features []struct{ ID, State, Reason string } `json:"features"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rep) != nil {
+		t.Fatalf("/api/doctor: %d %s", w.Code, w.Body)
+	}
+	const want = "members' own credentials only; " + agentHalfOff + "; host officer(s) marketing:example declare connectors in " +
+		"MUSTER_OFFICERS, but their instances are offered no connector tools without the agent connector store. Set " +
+		"MUSTER_CONNECTOR_ENCRYPTION_KEY, MUSTER_AGENT_CONNECT_URL and MUSTER_CONNECT_PORT, or remove their `connectors`"
+	for _, f := range rep.Features {
+		if f.ID == features.Connectors {
+			if f.State != string(features.Misconfigured) || f.Reason != want {
+				t.Fatalf("connectors = %s %q,\nwant misconfigured %q", f.State, f.Reason, want)
+			}
+			return
+		}
+	}
+	t.Fatal("/api/doctor has no connectors feature")
 }
