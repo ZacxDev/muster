@@ -2606,11 +2606,28 @@ func (s *isoStream) text() string {
 type isoMirror struct {
 	owner int64
 	host  string
+	// teamOwner, when set, is a TEAM owning a host of the same name
+	// (team sharing 2b.3): listed by VisibleHosts to its members, as
+	// mirror.Service does, and nobody else.
+	teamOwner int64
 }
 
 func (m *isoMirror) mine(ctx context.Context) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && p.UserID == m.owner
+}
+
+// teamVisible is the team's host, for a principal that is a member of it on a
+// door that carries teams (Principal.TeamScope), else nothing.
+func (m *isoMirror) teamVisible(ctx context.Context) []mirror.HostView {
+	p, ok := authz.From(ctx)
+	if m.teamOwner == 0 || !ok || p.All() {
+		return nil
+	}
+	if _, in := p.TeamScope().RoleIn(m.teamOwner); !in {
+		return nil
+	}
+	return []mirror.HostView{{Owner: m.teamOwner, Host: m.host, Sessions: []string{"main"}, Online: true}}
 }
 
 func (m *isoMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {

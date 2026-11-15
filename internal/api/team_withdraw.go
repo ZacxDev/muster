@@ -47,20 +47,26 @@ type myTeamsReader interface {
 	MyTeams(ctx context.Context, user int64) ([]users.MyTeam, error)
 }
 
-// teamMembershipEnded is a person removed from team: the sweep, and their
-// open terminals on the team's agents closed (closeTeamTerminals).
+// teamMembershipEnded is a person removed from team: the sweep, and every
+// request they hold open on the team's surface ended (closeTeamLive: its
+// agents' terminals, its hosts' views, their event streams subscribed to it).
 func (s *Server) teamMembershipEnded(team, person int64) {
-	s.closeTeamTerminals(team, person)
+	s.closeTeamLive(team, person, "", false)
 	s.withdrawTeamItemsFrom(team, person)
 }
 
-// teamRoleSet is a person's role in team set to role: the sweep, and their
-// open terminals on the team's agents closed, when the new role is below
-// operator (a viewer receives no team push and opens no terminal). An add at
-// viewer sweeps too, which closes nothing the person was shown.
+// teamRoleSet is a person's role in team set to role: every request they hold
+// open on the team's surface that role no longer reaches is ended
+// (closeTeamLive: below operator, a team agent's terminal), and, when the new
+// role is below operator, the sweep (a viewer receives no team push and opens
+// no terminal). An add at viewer sweeps too, which closes nothing the person
+// was shown.
 func (s *Server) teamRoleSet(team, person int64, role authz.TeamRole) {
-	if role.Valid() && !role.AtLeast(authz.TeamOperator) {
-		s.closeTeamTerminals(team, person)
+	if !role.Valid() {
+		return
+	}
+	s.closeTeamLive(team, person, role, true)
+	if !role.AtLeast(authz.TeamOperator) {
 		s.withdrawTeamItemsFrom(team, person)
 	}
 }

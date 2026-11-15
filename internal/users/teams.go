@@ -341,6 +341,31 @@ func (s *PGStore) MyTeams(ctx context.Context, user int64) ([]MyTeam, error) {
 	})
 }
 
+// MembershipsAmong is every team membership of each of persons, in ONE query:
+// the team stream sweep's read (internal/api team_live.go), every
+// DisableSweepInterval, of the people who hold an open team stream. A person
+// with no row in the answer is in no team now. Under System: team_members is
+// self-read, and the sweep reads other people's rows.
+func (s *PGStore) MembershipsAmong(ctx context.Context, persons []int64) (map[int64][]authz.Membership, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT user_id, team_id, role FROM team_members WHERE user_id = ANY($1) ORDER BY user_id, team_id`, persons)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]authz.Membership{}
+	for rows.Next() {
+		var user int64
+		var m authz.Membership
+		var role string
+		if err := rows.Scan(&user, &m.Team, &role); err != nil {
+			return nil, err
+		}
+		m.Role = authz.TeamRole(role)
+		out[user] = append(out[user], m)
+	}
+	return out, rows.Err()
+}
+
 // SetTeamNotify sets person user's OWN notify switch in team (0133): it
 // updates only team_members.notify, only on the caller's own row, and only
 // while they are a member — ErrNotAMember otherwise, the same answer for a

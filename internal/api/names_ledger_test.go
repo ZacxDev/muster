@@ -42,10 +42,9 @@ var sessionNameCallers = []string{
 	"fleet_report.go Server.collectFleet",                        // the fleet report
 	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
 	"focus_tools.go Server.toolFocusSearch",                      // the chief's focus_search hits
-	"mirror.go Server.handleMirrorTerminalPage",                  // a mirrored terminal page's header and <title>
+	"mirror.go Server.mirrorNameUnlessTeam",                      // a mirrored terminal page's, and the Rendered view's, header and <title> (none on a team host's session, G4)
 	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
 	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
-	"mirror_view.go Server.handleMirrorViewPage",                 // the Rendered view's header and <title>
 	"name_drift.go Server.answerAgentRenamed",                    // an htmx rename answered in place: the agent page's or its Terminal page's header and <title>
 	"name_drift.go Server.answerMirrorRenamed",                   // an htmx rename answered in place: the Rendered view's or Terminal page's header and <title>
 	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
@@ -102,9 +101,8 @@ var noTmuxAddress = map[string]string{
 	"fleet_report.go Server.collectFleet":                        "a report, not a notification",
 	"focus_tools.go Server.toolFleetList":                        "a chief tool",
 	"focus_tools.go Server.toolFocusSearch":                      "a chief tool",
-	"mirror.go Server.handleMirrorTerminalPage":                  "a page header, not a notification",
+	"mirror.go Server.mirrorNameUnlessTeam":                      "a page header, not a notification",
 	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",
-	"mirror_view.go Server.handleMirrorViewPage":                 "a page header, not a notification",
 	"name_drift.go Server.answerAgentRenamed":                    "a page header redrawn in place, not a notification",
 	"name_drift.go Server.answerMirrorRenamed":                   "a page header redrawn in place, not a notification",
 	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",

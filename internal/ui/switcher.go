@@ -362,7 +362,7 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		if e.agent != nil {
 			byAgent[e.agent.ID] = e
 		} else {
-			byMirror[MirrorRef{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window}] = e
+			byMirror[e.mirror.Ref()] = e
 		}
 		if e.pinned() {
 			pins = append(pins, e)
@@ -371,8 +371,9 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			waiting = append(waiting, e)
 		}
 		if pin == nil && cur.is(e) {
+			// nil for a team host's session (newSwitcherPin): no pin to offer.
 			pin = newSwitcherPin(e)
-			if cur.Back != "" {
+			if pin != nil && cur.Back != "" {
 				pin.back = cur.Back
 			}
 		}

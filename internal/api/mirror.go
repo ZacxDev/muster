@@ -14,7 +14,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/sessionname"
 	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/telemetry"
@@ -141,7 +143,61 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	return out
 }
 
+// teamMirrorCards is the viewer's TEAMS' mirrored sessions (team sharing
+// 2b.3): every team host the principal sees at viewer and up
+// (mirror.Service.VisibleHosts, on a door that carries teams), each card
+// carrying its Owner — so its links name `owner=` (ui.MirrorRef) — and its
+// team's name, the sidebar group it is drawn in. One list per team, in that
+// team's own order (mirror.Ordered over its hosts alone, so a qualifier is
+// the team's). nil with the plugin off or no team host.
+//
+// 🔴 NOTHING HERE IS THE VIEWER'S OWN: no pin, no focus name or history, no
+// tags, no attention count — each of those is keyed by host NAME or by the
+// viewer's conversation, and would put the viewer's own build-01 on the
+// team's. They are built after the decorators that add those (agentsListEntries).
+func (s *Server) teamMirrorCards(ctx context.Context) []ui.MirrorCardView {
+	if s.ext.Mirror == nil {
+		return nil
+	}
+	own := requestOwner(ctx)
+	byTeam := map[int64][]mirror.HostView{}
+	var teams []int64
+	for _, h := range s.ext.Mirror.VisibleHosts(ctx) {
+		if h.Owner <= 0 || h.Owner == own {
+			continue
+		}
+		if _, seen := byTeam[h.Owner]; !seen {
+			teams = append(teams, h.Owner)
+		}
+		byTeam[h.Owner] = append(byTeam[h.Owner], h)
+	}
+	if len(teams) == 0 {
+		return nil
+	}
+	names := s.teamNames(ctx, teams)
+	var out []ui.MirrorCardView
+	for _, team := range teams {
+		for _, m := range mirror.Ordered(byTeam[team]) {
+			out = append(out, ui.MirrorCardView{Owner: team, Team: names[team], Host: m.Host, Session: m.Session, Window: m.Window,
+				Title: mirrorTitle(m), Label: m.Label, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(),
+				Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(), ActiveAt: m.ActiveAt(),
+				Repo: m.Repo, Work: m.Work, Color: m.Color, HostIcon: ui.HostIconFor(nil, m.Host)})
+		}
+	}
+	return out
+}
+
 // mirrorHostIcon is one host's icon key — the one its sidebar rows draw (mirrorCards).
+// mirrorNameUnlessTeam is s.mirrorName(r, e), and nothing for a team host's
+// entry: G4 keeps focus titles off team sessions, and a name the viewer gave
+// a window is theirs, keyed by its conversation.
+func (s *Server) mirrorNameUnlessTeam(r *http.Request, e mirror.SessionView) sessionname.Name {
+	if onTeamHost(r) {
+		return sessionname.Name{}
+	}
+	return s.mirrorName(r.Context(), e)
+}
+
 func (s *Server) mirrorHostIcon(ctx context.Context, host string) string {
 	if s.ext.Mirror == nil {
 		return ui.HostIconFor(nil, host)
@@ -175,11 +231,37 @@ func mirrorTitle(e mirror.SessionView) string {
 //   - e carries the Qualifier the sidebar and the switcher give the same
 //     entry (mirror.Qualified, over the same hosts), so a page is titled
 //     exactly as the row that opened it.
+//
+// 🔴 A TEAM HOST'S ENTRY ONLY WHEN THE ROUTE'S GATE AIMED THE REQUEST THERE
+// (team sharing 2b.3): a request mirrorTeamGate let through to a team's
+// entries (mirror.TargetOwner) resolves against that team's hosts among the
+// principal's VisibleHosts; every other request against the principal's OWN
+// hosts (Hosts, own-only). A request that names another owner= the gate did
+// not aim it at — a route outside mirrorTeamRoutes — is not ok: it never
+// falls back to the principal's own host of the same name.
 func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h mirror.HostView, e mirror.SessionView, listed, redirect, ok bool) {
 	if s.ext.Mirror == nil {
 		return h, e, false, false, false
 	}
-	hosts := s.ext.Mirror.Hosts(r.Context())
+	target := mirrorTarget(r)
+	if raw := mirrorOwnerParam(r); raw != "" && raw != strconv.FormatInt(target, 10) {
+		return h, e, false, false, false
+	}
+	var hosts []mirror.HostView
+	if target == requestOwner(r.Context()) {
+		// The principal's own: Owner is left 0 (mirrorRef's "own", whose URLs
+		// carry no owner=), so a team entry is the only one that names one.
+		hosts = s.ext.Mirror.Hosts(r.Context())
+		for i := range hosts {
+			hosts[i].Owner = 0
+		}
+	} else {
+		for _, x := range s.ext.Mirror.VisibleHosts(r.Context()) {
+			if x.Owner == target {
+				hosts = append(hosts, x)
+			}
+		}
+	}
 	found := false
 	for _, x := range hosts {
 		if x.Host == host {
@@ -192,16 +274,22 @@ func (s *Server) mirrorEntry(r *http.Request, host, session, window string) (h m
 	}
 	e, listed = h.Find(session, window)
 	if !listed {
-		e = mirror.SessionView{Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
+		e = mirror.SessionView{Owner: h.Owner, Host: h.Host, Session: session, Window: window, Online: h.Online, Interactive: h.Interactive,
 			Rendered: h.Rendered, PanePaste: h.PanePaste, PaneScroll: h.PaneScroll}
 	}
 	return h, mirror.Qualified(hosts, e), listed, listed && window == "" && e.Window != "", true
 }
 
-// mirrorRef is e's address for the ui package's URLs.
+// mirrorRef is e's address for the ui package's URLs: a TEAM host's entry
+// (mirrorEntry leaves Owner 0 on the principal's own) carries its owner, so
+// every link, socket and form of its page names it.
 func mirrorRef(e mirror.SessionView) ui.MirrorRef {
-	return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
+	return ui.MirrorRef{Owner: e.Owner, Host: e.Host, Session: e.Session, Window: e.Window}
 }
+
+// MirrorTeamComposerNote is what a team host's session's composer says, drawn
+// disabled (team sharing 2b.3: viewers; typing is 2b.4's).
+const MirrorTeamComposerNote = "This is a team session: you can watch it here. Typing into a team session is not available yet."
 
 // handleMirrorTerminalPage is GET /mirror/terminal?host=…&session=…: the shared
 // terminal page, pointed at the mirror socket.
@@ -223,10 +311,17 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// The viewer opened this window (best-effort): its "recently viewed"
-	// entry, and its open stop ends (session_viewed.go).
+	// entry, and its open stop ends (session_viewed.go). 🔴 NOT ON A TEAM
+	// HOST'S (team sharing 2b.3): recents are the viewer's own, keyed by host
+	// NAME (a team's build-01 would read as their own), and a member opening
+	// a team session does not settle the team's stop — it settles when the
+	// window moves on.
+	team := onTeamHost(r)
 	vctx := op.begin("visit")
-	s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
-	s.episodeViewedMirror(vctx, r, h, e)
+	if !team {
+		s.recordMirrorVisit(vctx, h.Host, e.Session, e.Window)
+		s.episodeViewedMirror(vctx, r, h, e)
+	}
 	op.begin("view")
 	session := e.Session
 	rawName := ""
@@ -237,7 +332,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		Name: session,
 		// The conversation's name (internal/sessionname), when it has a human
 		// one: the header and <title> are called by it instead of the label.
-		SessionName: s.mirrorName(r.Context(), e),
+		// None on a team host's (G4: no focus titles on team sessions).
+		SessionName: s.mirrorNameUnlessTeam(r, e),
 		// The host's display label ("mango:1") — or, for a window with none,
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).
@@ -254,7 +350,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// 🔴 LIVE KEYS ONLY WHEN THE HOST ADVERTISED -interactive: elsewhere the
 		// page's keys are off. The hub refuses a rw attach to a host that did
 		// not, regardless.
-		ReadOnlyOnly: !h.Interactive,
+		ReadOnlyOnly: !h.Interactive || team,
 		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
 		// a user can switch to ANY session there, or open a new window — a
 		// shell on the host. The "only listed sessions" rule guards opening an
@@ -285,6 +381,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// redirect back here (composer.go).
 		c.Notice, c.NoticeOK = composerNotice(r)
 		switch {
+		case team:
+			c.Disabled, c.DisabledPlaceholder = MirrorTeamComposerNote, "Watching a team session"
+			c.DraftKey = ""
 		case !h.Interactive:
 			c.Disabled, c.DisabledPlaceholder = ui.MirrorReadOnlyNote, "Read-only host"
 		case !e.CanPaste():
@@ -303,11 +402,14 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	// The session switcher at the page's foot (ui/switcher.go), as the
 	// Rendered view draws it for the same window — its pin, the window's only
 	// one where it has no rendered view, posting back to THIS view.
-	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window},
+	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: mirrorRef(e),
 		Back: mirrorRef(e).TerminalPath()})
-	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
-	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
-	v.TagTarget = ui.SessionTagTarget{Host: h.Host, Session: e.Session}
+	// The viewer's tags on the tmux session, in the header (ui/session_tags.go):
+	// their own, keyed by host name, so none on a team host's.
+	if !team {
+		v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
+		v.TagTarget = ui.SessionTagTarget{Host: h.Host, Session: e.Session}
+	}
 	if e.AgentNote != v.TerminalOnly {
 		v.Note = e.AgentNote
 	}
@@ -319,7 +421,12 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
-	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
+	// None on a team host's: they are the viewer's PERSONAL viewer plugins
+	// (mirrorTeamRoutes: the preview button is own-only).
+	var vp []plugins.Plugin
+	if !team {
+		vp = s.viewerPlugins(op.begin("plugins"), e.Window)
+	}
 	v.Plugins = pluginChips(vp, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
@@ -373,6 +480,15 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		op.finish("not_found")
 		viewEnded(r, openViewTerminal, "not_found", since)
 		http.NotFound(w, r)
+		return
+	}
+	// 🔴 A TEAM HOST'S TERMINAL IS READ-ONLY (team sharing 2b.3): live keys
+	// are typing, 2b.4's. The plugin's access refuses them on a team host
+	// too; this answers before the upgrade, with a status.
+	if !readOnly && onTeamHost(r) {
+		op.finish("team_read_only")
+		viewEnded(r, openViewTerminal, "team_read_only", since)
+		http.Error(w, MirrorTeamOwnOnlyRefusal, http.StatusForbidden)
 		return
 	}
 	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in

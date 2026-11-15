@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -89,38 +88,6 @@ func (s *Server) teamPushRecipients(ctx context.Context, owner int64, event stri
 		}
 	}
 	return out, mirror.OneLine(t.Name, users.TeamNameMax) + teamPushPrefixSep
-}
-
-// teamViewRecipients is whose open pages a change to an item owner owns also
-// refreshes (attentionChanged's team arm): for a TEAM, its current operators
-// and managers — the fan-out's own read (TeamPushTargets.Withdraw), with no
-// notify switch, since a page refresh is not a push; nobody for a person,
-// whose own page attentionChanged already refreshes. A person's id is
-// remembered as one (users.kind never changes, 0126), so their changes read
-// nothing after the first. Team sharing phase 2b.1 (operator decision on
-// #683's round 0, Q1): it restores #671's per-member Attention refresh for
-// team items until 2b.3's stream subscriptions replace it.
-func (s *Server) teamViewRecipients(owner int64) []int64 {
-	r, ok := s.ext.Users.(teamPushReader)
-	if !ok || owner <= 0 {
-		return nil
-	}
-	if _, person := s.personOwners.Load(owner); person {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	t, err := r.TeamPushTargets(ctx, owner)
-	if err != nil {
-		s.logger.Printf("attention: read owner %d's team members for a page refresh: %v", owner, err)
-		return nil
-	}
-	if !t.Team {
-		s.personOwners.Store(owner, struct{}{})
-		return nil
-	}
-	s.teamOwners.Store(owner, struct{}{})
-	return t.Withdraw
 }
 
 // teamAuditor is the users store's team-scoped audit writer

@@ -236,17 +236,27 @@ func cut(s string, n int) string {
 
 func validState(s string) bool { return s == StateNeedsYou || s == StateStalled }
 
-// Owners implements Store, through chiefnudge.PG.Owners.
+// Owners implements Store: every enabled person (chiefnudge.PG.Owners), then
+// every team with an unrevoked mirror token (chiefnudge.PG.TeamHostOwners) —
+// the TEAM ARM (team sharing 2b.3): a team host's waiting and done windows are
+// episodes, opened, settled and pushed as the team, and the push fan-out
+// (internal/api goNotify) reaches its operators and managers. The pass runs no
+// classifier for a team (internal/api's stateClassifier).
 func (p *PG) Owners(ctx context.Context) ([]int64, error) {
-	os, err := chiefnudge.NewPG(p.pool).Owners(ctx)
+	cn := chiefnudge.NewPG(p.pool)
+	os, err := cn.Owners(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]int64, 0, len(os))
+	teams, err := cn.TeamHostOwners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(os)+len(teams))
 	for _, o := range os {
 		out = append(out, o.ID)
 	}
-	return out, nil
+	return append(out, teams...), nil
 }
 
 // Open implements Store.

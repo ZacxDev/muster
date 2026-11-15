@@ -352,8 +352,8 @@ type Server struct {
 	// pushLimit is the per-owner notification rate cap (push_routes.go).
 	pushLimit ownerRateLimit
 	// personOwners remembers the owner ids known to be persons (never
-	// teams; users.kind never changes), so attentionChanged's team arm
-	// (teamViewRecipients) reads nothing for them after the first time.
+	// teams; users.kind never changes), so the push fan-out
+	// (teamPushRecipients) reads nothing for them after the first time.
 	personOwners sync.Map
 	// teamOwners remembers the owner ids known to be teams, so a failed
 	// recipient read is counted as a dropped TEAM push only for a team
@@ -364,10 +364,13 @@ type Server struct {
 	// "officer cap holds" kind reads them. In memory, as the episode is.
 	capHoldsMu sync.Mutex
 	capHolds   map[int64]map[string]bool
-	// teamTerminals is every open team-agent terminal socket a member holds,
-	// by team and member, so a removal or a downgrade closes it
-	// (team_agents.go teamTerminalOpen).
-	teamTerminals teamTerminalSet
+	// teamLive is every open request a member holds on a team's surface — a
+	// team agent's terminal, a team host's view, an event stream subscribed
+	// to the team — by team and member, so a removal, a downgrade or the
+	// membership sweep ends it (team_live.go). teamLiveEvery overrides the
+	// sweep's interval (tests; 0 = DisableSweepInterval).
+	teamLive      teamLiveSet
+	teamLiveEvery time.Duration
 	// deviceLimits throttle the pairing route and the device tier
 	// (devices.go).
 	deviceLimits deviceLimits
@@ -1036,7 +1039,7 @@ func (s *Server) tasksShellData(ctx context.Context) ui.ShellData {
 	}
 	mark := ""
 	if s.bus != nil {
-		mark = s.bus.Mark(requestOwner(ctx))
+		mark = s.bus.Mark(streamOwners(ctx)...)
 	}
 	within := s.boardWithinOverride
 	if within <= 0 {
@@ -1154,13 +1157,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// 🔴 THE STREAM IS THE SESSION USER'S, AND ONLY THEIRS (accounts PR 3b).
-	// requireSession attached the principal; the bus delivers this subscriber
-	// only the events its user owns. A principal-less or scope-all request
-	// cannot reach here (requireSession admits a user), and would subscribe as
-	// nobody (0) if it did.
-	owner := requestOwner(r.Context())
-	id, ch := s.bus.Subscribe(owner)
+	// 🔴 THE STREAM IS THE SESSION USER'S, AND ONLY THEIRS (accounts PR 3b) —
+	// AND, SINCE TEAM SHARING 2b.3, THEIR TEAMS' (streamOwners). requireSession
+	// attached the principal; the bus delivers this subscriber only the events
+	// its user owns, or a team the user is a member of owns. A principal-less
+	// or scope-all request cannot reach here (requireSession admits a user),
+	// and would subscribe as nobody (0) if it did.
+	//
+	// 🔴 THE TEAMS ARE THE REQUEST'S, AND THE STREAM ENDS WHEN ONE IS LEFT
+	// (teamEventsOpen): a removal from a team — here, on another replica or
+	// through the CLI — ends this stream within the membership sweep, and the
+	// page reconnects subscribed to the teams the person is in then.
+	tctx, _, untrack := s.teamEventsOpen(r.Context())
+	defer untrack()
+	r = r.WithContext(tctx)
+	owners := streamOwners(r.Context())
+	id, ch := s.bus.Subscribe(owners...)
 	defer s.bus.Unsubscribe(id)
 
 	// Initial comment so clients know the stream is open and proxies flush.
@@ -1169,7 +1181,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// published after it is on this stream. A shell that drew its board at the
 	// same mark skips its first-open resync (ui/tasks_list_ssr.go); see
 	// sse.Broadcaster.Mark for why the order of the two reads is the guarantee.
-	hello, _ := json.Marshal(map[string]string{"mark": s.bus.Mark(owner)})
+	hello, _ := json.Marshal(map[string]string{"mark": s.bus.Mark(owners...)})
 	fmt.Fprintf(w, "event: muster.hello\ndata: %s\n\n", hello)
 	flusher.Flush()
 
@@ -1375,6 +1387,24 @@ func requestOwner(ctx context.Context) int64 {
 		return 0
 	}
 	return p.UserID
+}
+
+// streamOwners is the owners an event stream opened under ctx subscribes to,
+// in order: the principal's user, then each team it is a member of on this
+// door (Principal.TeamScope: the browser session; every other door none), by
+// team id. A principal-less or scope-all context subscribes as nobody (0).
+// ONE RULE for the stream and for the board document's mark (tasksShellData),
+// so a document drawn at the stream's mark has missed none of either's events.
+func streamOwners(ctx context.Context) []int64 {
+	owners := []int64{requestOwner(ctx)}
+	if p, ok := authz.From(ctx); ok && !p.All() {
+		for _, m := range p.TeamScope().List() {
+			if m.Role.AtLeast(authz.TeamViewer) && m.Team != p.UserID {
+				owners = append(owners, m.Team)
+			}
+		}
+	}
+	return owners
 }
 
 // broadcastTo publishes one SSE event carrying an id to owner's streams.

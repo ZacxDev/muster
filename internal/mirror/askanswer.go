@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/authz"
 	"strings"
 	"time"
 
@@ -274,7 +275,7 @@ func askAnswerError(why, refusal string) error {
 
 // AnswerWindow is Hub.AnswerWindow for the viewing principal's host.
 func (s *Service) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
-	o, err := owner(ctx)
+	o, err := access(ctx, authz.TeamOperator)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/redact"
@@ -189,7 +190,20 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 			dropped[h.Host] = h.OfflineSince
 		}
 	}
-	sp := statePass{owner: owner, cl: s.stateClassifier(octx), budget: budget, now: s.now(), judges: s.episodeChiefJudges(octx, owner), hs: hs}
+	sp := statePass{owner: owner, budget: budget, now: s.now(), hs: hs}
+	// 🔴 A TEAM'S PASS (team sharing 2b.3; sessionstate.PG.Owners' team arm)
+	// RUNS NO CLASSIFIER AND NO CHIEF: the stall classifier is a model call on
+	// a session's last message, and a team's transcripts reach no person's
+	// model or chief (G4, D-1113 #10) — nor, in 2b, a team chief's: the
+	// nudge sweep and its live judging stay persons only. A team episode is the
+	// deterministic state alone: waiting on a prompt, needing you, done. Nor
+	// are a team's AGENTS' conversations episodes here: the arm is for team
+	// HOSTS (it visits only a team holding a mirror token), and a team agent's
+	// stops are not designed in 2b.
+	team := authz.MustFrom(octx).Team
+	if !team {
+		sp.cl, sp.judges = s.stateClassifier(octx), s.episodeChiefJudges(octx, owner)
+	}
 	// The restart rule's clear first: an ended stop's notification is closed
 	// whether it ended in a pass, or while muster was down.
 	defer s.clearEndedEpisodes(octx, owner)
@@ -198,6 +212,9 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 	agentsSeen := map[int64]bool{}
 	for _, c := range read.sessions {
 		if c.OtherUser || c.Chief || c.Officer {
+			continue
+		}
+		if c.Kind == chiefnudge.KindAgent && team {
 			continue
 		}
 		if c.Kind == chiefnudge.KindAgent {

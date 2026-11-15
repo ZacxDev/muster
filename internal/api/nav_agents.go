@@ -153,10 +153,19 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 		}
 		cards = kept
 	}
+	// Home is the viewer's own: a team host's session (team sharing 2b.3) is
+	// listed in its team's group, and never where `/` lands.
+	own := mirrors[:0:0]
+	for _, m := range mirrors {
+		if m.Owner == 0 {
+			own = append(own, m)
+		}
+	}
+	mirrors = own
 	if except.mirror.Host != "" {
 		kept := mirrors[:0]
 		for _, m := range mirrors {
-			if (ui.MirrorRef{Host: m.Host, Session: m.Session, Window: m.Window}) != except.mirror {
+			if m.Ref() != except.mirror {
 				kept = append(kept, m)
 			}
 		}

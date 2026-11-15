@@ -550,8 +550,14 @@ type Routing struct {
 type Mirror interface {
 	// ServeConnect is GET /mirror/connect: a host's muster-mirror dialling in.
 	ServeConnect(w http.ResponseWriter, r *http.Request)
-	// Hosts is the viewing principal's hosts and their sessions.
+	// Hosts is the viewing principal's OWN hosts and their sessions: never a
+	// team's (team sharing 2b.3 keeps it own-only for its ~50 callers that
+	// pick an entry by host name alone).
 	Hosts(ctx context.Context) []mirror.HostView
+	// VisibleHosts is Hosts plus the principal's teams' hosts (viewer and
+	// up, on a door that carries teams), each carrying its Owner. Its callers
+	// are a ledger (visibleHostsCallers).
+	VisibleHosts(ctx context.Context) []mirror.HostView
 	// 🔴 EACH OF THE THREE BELOW TAKES A WINDOW: the tmux window id of the entry
 	// (mirror.Window.ID), or "" for the session's ACTIVE window — the only
 	// address a per-session host has, and what a URL with no `window` means.

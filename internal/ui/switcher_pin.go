@@ -70,6 +70,11 @@ func newSwitcherPin(e listEntry) *switcherPin {
 		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref(),
 			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}, name: entryName(e), rawManual: rawManual(entryName(e), e.agent.DisplayName)}
 	}
+	if e.mirror.Owner != 0 {
+		// A TEAM host's session (team sharing 2b.3): pins, tags and names are
+		// the viewer's own, keyed by host name, so its menu offers none.
+		return nil
+	}
 	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror),
 		tags: e.mirror.Tags, tagTarget: SessionTagTarget{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window},
 		name: entryName(e), rawManual: rawManual(entryName(e), e.mirror.ManualName)}

@@ -188,8 +188,9 @@ func auditDetail(d Decision) map[string]any {
 
 // sys is the store's one system-scope helper (internal/authz's ledger names
 // it): the sweep's three cross-owner reads — the owners it visits, the global
-// hourly count and the live decisions in flight. Every one of those decisions
-// is then acted on as its own owner, never under System.
+// hourly count and the live decisions in flight — and the session-state
+// pass's team owners (TeamHostOwners). Every one of those decisions is then
+// acted on as its own owner, never under System.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
 // Owners implements Store.
@@ -208,6 +209,21 @@ func (p *PG) Owners(ctx context.Context) ([]Owner, error) {
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// TeamHostOwners is every TEAM holding an unrevoked mirror token — a team
+// that has, or may have, a team host — by id: the session-state pass's team
+// arm (internal/sessionstate PG.Owners, team sharing 2b.3). NOT the nudge
+// sweep's owners (Owners stays persons only: a team session gets no chief
+// nudge until a team chief binds to team hosts).
+func (p *PG) TeamHostOwners(ctx context.Context) ([]int64, error) {
+	rows, err := p.pool.Query(sys(ctx), `SELECT DISTINCT t.owner_id FROM mirror_tokens t
+		JOIN users u ON u.id = t.owner_id AND u.kind = 'team'
+		WHERE t.revoked_at IS NULL ORDER BY t.owner_id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
 }
 
 // Decided implements Store.

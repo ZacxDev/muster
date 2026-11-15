@@ -1223,7 +1223,7 @@ the next step. Each question below is decided as stated.
 
 ## Phase 2b design: team hosts (decided 2026-11-14)
 
-**Status: decided; slices 2b.1 and 2b.2 built (see their "as built" notes in F).** The operator accepted every recommendation in
+**Status: decided; slices 2b.1, 2b.2 and 2b.3 built (see their "as built" notes in F).** The operator accepted every recommendation in
 [G](#g-operator-decided-2026-11-14), and commit `5f848980` records the
 decisions. The build waits for phase 4.5 (PR #680) to merge. This section is
 the design for phase 2b. It replaces the bullet list under
@@ -2352,6 +2352,126 @@ by re-checking the migration number (D). The slices ship **in order**.
    - A personal host that reconnects with a team token starts the team's view
      empty. Nothing of its history moves (G5). This slice's docs say so, and
      recommend two daemons.
+
+   > **As built in 2b.3 (no migration).**
+   > - **The chokepoint** (`internal/mirror/service.go`). `access(ctx, need)`
+   >   decides every owner-taking Service method: the request's TARGET
+   >   (`mirror.ForOwner`; none = the principal's own) when the principal is
+   >   that owner, or holds `need` in it through `Principal.TeamScope`, and
+   >   `need` is one `teamNeedsOpen` opens — viewer only in 2b.3, so an
+   >   interactive attach, a paste, an answer or a spawn on a team host is
+   >   refused (`ErrNoPrincipal`, no oracle) at every role until 2b.4 adds
+   >   operator. 🔴 **Deviation:** D says "every Service method takes the owner
+   >   explicitly". The owner rides the context instead (`ForOwner`), set in
+   >   ONE place, the route gate below — so ~75 own-only callers and ~20 test
+   >   fakes are untouched, and a caller that sets nothing is own-only by
+   >   construction. The design's `TestEveryMirrorServiceCallerNamesItsOwn`
+   >   is two ledgers instead: `serviceNeeds`
+   >   (`TestEveryServiceMethodSaysItsNeed`, `internal/mirror`: every method
+   >   that reads its owner, by its need or "own") and `mirrorTargetSetters`
+   >   (`TestOnlyTheMirrorTeamGateAimsAMirrorCall`, `internal/api`: the gate
+   >   is `ForOwner`'s only caller). ⚠ `role.AtLeast(need)` above viewer is
+   >   unreachable while `teamNeedsOpen` is viewer-only; its half of the
+   >   membership arm is redundant with `!in` for a non-member (mutation
+   >   M2 removes both).
+   > - **`Hosts` stays own-only; `VisibleHosts`** adds each team host where
+   >   `TeamScope` is viewer and up, and `HostView`/`SessionView` carry
+   >   `Owner`. `visibleHostsCallers` (`TestEveryVisibleHostsCallerIsClassified`)
+   >   is two: `mirrorEntry` (only for a request the gate aimed at a team) and
+   >   `teamMirrorCards` (the sidebar's and switcher's team groups).
+   > - **A 2b.2-era bug, fixed here:** `HostRanks` and `LiveTokenHosts` ranked
+   >   and listed every token the session reads, and since 0127 a member reads
+   >   their teams' tokens (`mirror_tokens` is managed), so a member's own
+   >   host icons moved. Both now take the owner's own tokens only
+   >   (`TestHostRanksRankOnlyTheOwnersTokens`).
+   > - **The routes** (`internal/api/mirror_team_routes.go`).
+   >   `mirrorTeamRoutes` classes every `/mirror/`, `/ui/mirror/` and
+   >   `/send-queue` route (`TestEveryMirrorRouteHasATeamRule`, against
+   >   routes.golden): `mirrorTeamView` (the two pages, the read-only
+   >   terminal socket, the Rendered socket, subagents, the question cards,
+   >   the scroll), `mirrorTeamRefused` (chief, chief log, proposal,
+   >   successor, suggest, suggest event: 403 at every role),
+   >   `mirrorTeamOwnOnly` (typing, the queue, the composer's catalog: 403 to
+   >   a member until 2b.4) and `mirrorTeamHostDoor` (the token doors).
+   >   `mirrorTeamGate` runs in `admit`; a non-member naming a team is 404 on
+   >   every route. A member's view is aimed at the team (`ForOwner`) and
+   >   registered for the stream sweep. 🔴 **The gate reads a POST body only
+   >   on a view route (the scroll):** parsing every POST's form ahead of its
+   >   handler spent bodies the handlers bound themselves (it broke the
+   >   "too-large" answer path, `TestEveryAnswerPathRecordsOneRow`). An
+   >   `owner=` in any other route's body is refused by `mirrorEntry`, which
+   >   never resolves an owner the gate did not aim the request at (404) — so a
+   >   POST to a refused route with `owner=` only in its body is 404, not 403.
+   >   🔴 **Deviation:** the role table gives a viewer "open a preview that
+   >   is already running". The Preview button reads the viewer's PERSONAL
+   >   viewer plugins, so it is `mirrorTeamOwnOnly` here, and a team session
+   >   draws none; whose plugin a team preview runs on is its own decision.
+   > - **The pages.** On a team session the terminal and the Rendered view
+   >   leave out everything that is the viewer's own and keyed by host name or
+   >   conversation (recents, tags, pins, names, focus history, drafts, the
+   >   queue, chief mode, succession, suggestions, the asks block, plugins),
+   >   draw the composer disabled (`MirrorTeamComposerNote`), and do not
+   >   settle the team's episode on a view (`episodeViewedMirror` is not
+   >   called: the stop settles when the window moves on; the design was
+   >   silent). The terminal socket refuses live keys before the upgrade
+   >   (403). The question cards are the TEAM's (read by the target) and drawn
+   >   unanswerable. Every link of a team entry carries `owner=`
+   >   (`ui.MirrorRef.Owner`; an own entry's URLs are byte-identical), card
+   >   ids include the owner, and a team row offers no pin/tag menu. ⚠ Not
+   >   pinned one by one: the page leave-outs, the Rendered socket's
+   >   suggestion skip and the home filter (below).
+   > - **The sidebar.** Team host sessions are drawn in a group per team, under
+   >   the team's name, below the viewer's own rows (`navTeamGroups`), added
+   >   after every decorator that reads the viewer's own pins, names, tags,
+   >   attention, idle state or succession. Home (`/`) never lands on a team
+   >   session.
+   > - **Streams follow the membership** (`internal/api/team_live.go`).
+   >   🔴 **Deviation:** not `gotrueState.live` but a server-level registry,
+   >   `teamLive`, by (team, person) with the role each request needs, so it
+   >   also runs in password mode. It replaces 4.7's team-terminal set (a
+   >   team agent's terminal is registered at operator in it). A removal or
+   >   a role change in this process ends what the new role no longer reaches
+   >   at once (`teamMembershipEnded`, `teamRoleSet`); `sweepTeamLive` re-reads
+   >   every registered person's memberships in one query
+   >   (`users.PGStore.MembershipsAmong`, under System) each
+   >   `DisableSweepInterval`, for a removal made elsewhere.
+   > - **SSE team subscriptions.** `/events` subscribes to its person and each
+   >   of their teams at viewer and up (`streamOwners`; the bus subscribes to
+   >   several owners, and the board document's mark reads the same list), and
+   >   registers each team for the sweep, so leaving a team ends the stream
+   >   and the page reconnects with the teams as they are. A viewer's stream
+   >   now carries the team's events (ids only); 2b.1's `teamViewRecipients`
+   >   (operators and managers, read per change) is deleted, and
+   >   `TestATeamItemRefreshesItsMembersPages` now expects the viewer too.
+   > - **The state pass's team arm.** `sessionstate.PG.Owners` adds every
+   >   team with an unrevoked mirror token (`chiefnudge.PG.TeamHostOwners`,
+   >   under System; users-read ledger `readTeam`). A team's pass runs no
+   >   classifier and no live chief judging, whatever chief the team has (G4).
+   >   2b.2's "no episode for a team" branch in `attentionMirrorChanged` is
+   >   removed. 🔴 **Decision (the design was silent):** a team's AGENTS'
+   >   conversations are not episodes in its pass — the arm visits only teams
+   >   holding a mirror token, so including them would give team agents
+   >   stall pushes only where the team happens to own a host token. ⚠ Not
+   >   pinned by a test.
+   > - **Tests:** `TestHostsNeverListsATeamHost` (invariant),
+   >   `TestAccessReachesATeamHostOnlyAsFarAsTheMembership`,
+   >   `TestEveryServiceMethodSaysItsNeed`,
+   >   `TestHostRanksRankOnlyTheOwnersTokens` (`internal/mirror`);
+   >   `TestATeamSessionWaitingPushesItsOperatorsOnce`,
+   >   `TestTheStatePassRunsNoClassifierForATeam`,
+   >   `TestATeamHostIsWatchedByItsMembersAndNoOneElse`,
+   >   `TestATeamsEventsReachItsMembersStreams`,
+   >   `TestARemovedOperatorsTerminalClosesWithinTheSweep` (a read-only
+   >   terminal and `/events`; the Rendered socket is registered by the same
+   >   gate and is not separately tested), and the ledgers
+   >   `TestEveryMirrorRouteHasATeamRule`,
+   >   `TestEveryVisibleHostsCallerIsClassified`,
+   >   `TestOnlyTheMirrorTeamGateAimsAMirrorCall` (`internal/api`).
+   >   `TestATeamHostOpensNoEpisodeWhileTheStateArmIsOff` is removed.
+   >   🔴 **Deviation:** the isolation walk (`isolation_test.go`) gains no
+   >   team-host rows; the end-to-end tests above run a REAL mirror plugin
+   >   with two REAL `muster-mirror` clients (an own and a team `build-01`)
+   >   over Postgres instead.
 4. **2b.4: operators.**
    - Typing and step-up through `access`.
    - `ViaQueue` becomes team-acting **and** `sendQueueOwnerRefusal` reads
