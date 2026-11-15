@@ -1,0 +1,43 @@
+muster {{ include "muster.imageTag" . }} is installed as {{ include "muster.fullname" . }} in {{ .Release.Namespace }}.
+
+{{- $gen := include "muster.generatedSecretName" . }}
+{{- $authSecret := default $gen .Values.auth.existingSecret }}
+
+1. Wait for it to be ready (migrations run at the first boot):
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "muster.fullname" . }}
+
+2. Reach it:
+{{- if .Values.ingress.enabled }}
+   https://{{ .Values.ingress.host }}
+{{- else if .Values.httpRoute.enabled }}
+   https://{{ first .Values.httpRoute.hostnames }}
+{{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "muster.fullname" . }} {{ .Values.service.port }}:{{ ternary "browser" "http" (eq .Values.auth.mode "gotrue") }}
+   then open http://localhost:{{ .Values.service.port }}
+   (a plain-http URL: set secureCookies=false for that, or sign-in cookies are
+   Secure and a browser off localhost drops them)
+{{- end }}
+
+{{- if eq .Values.auth.mode "password" }}
+
+3. The operator password:
+
+   kubectl -n {{ .Release.Namespace }} get secret {{ $authSecret }} -o jsonpath='{.data.MUSTER_UI_PASSWORD}' | base64 -d; echo
+{{- else }}
+
+3. Bind the first admin's GoTrue login (a single-use link, 24 hours):
+
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "muster.fullname" . }} -- /muster-server invite --claim-admin
+{{- end }}
+
+4. Check what is on, off or degraded, and why, from a machine with the muster CLI:
+
+   MUSTER_TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ $authSecret }} -o jsonpath='{.data.MUSTER_HOOK_TOKEN}' | base64 -d) \
+     muster doctor --api-url {{ default "<your muster URL>" .Values.publicUrl }}
+
+The values per feature, upgrades and rollback: docs/kubernetes.md.
+{{- if not .Values.publicUrl }}
+
+⚠ publicUrl is not set: invites, passkeys, push, attachments and previews need it.
+{{- end }}

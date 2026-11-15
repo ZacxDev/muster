@@ -69,13 +69,13 @@ import (
 // 🔴 TWO PREREQUISITES FOR `kubernetes` THAT LIVE OUTSIDE THIS REPOSITORY, NAMED
 // HERE BECAUSE NOTHING ELSE IN IT CAN CHECK THEM:
 //
-//  1. RBAC. This module ships no Kubernetes manifest of any kind, so nothing here
-//     grants muster's own ServiceAccount the Deployment / Service / Secret /
-//     ConfigMap / ServiceAccount / Namespace permissions internal/provision/k8s
-//     needs. Every dispatch then 403s — and a 403 from the apiserver reads as a
-//     driver defect rather than a missing Role. CLOSING CONDITION: a merged change
-//     in the deployment's own repository adding that Role/RoleBinding, verified by
-//     one real dispatch.
+//  1. RBAC. Nothing in the server grants muster's own ServiceAccount the
+//     Deployment / Service / Secret / ConfigMap / ServiceAccount / Namespace
+//     permissions internal/provision/k8s needs; the Helm chart's
+//     templates/rbac.yaml does (both layouts, measured against this driver by
+//     internal/provision/k8s/chart_rbac_test.go). A deployment made another way
+//     must grant them itself, or every dispatch 403s — and a 403 from the
+//     apiserver reads as a driver defect rather than a missing Role.
 //     ⚠ THE PRIVILEGE TIER (MUSTER_AGENT_PRIVILEGE_APPLY) USED TO NEED A FURTHER
 //     SET — write verbs plus `escalate`/`bind` on all four rbac resource types.
 //     It was removed with the privilege subsystem (superseded by connectors), so

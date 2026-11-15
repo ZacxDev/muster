@@ -1,0 +1,38 @@
+{{- /*
+Refuses a RoleBinding write by muster's ServiceAccount outside its agent
+namespaces: docs/provisioner.md#kubernetes-rbac ("What the narrow grant still
+allows"). The prefix is agents.namespacePrefix, the value the server is given.
+*/ -}}
+{{- if and .Values.agents.enabled .Values.agents.rbac.admissionPolicy.enabled }}
+{{- $name := printf "%s-rolebindings" (include "muster.clusterScopedName" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: is-muster
+      expression: {{ printf "request.userInfo.username == \"system:serviceaccount:%s:%s\"" .Release.Namespace (include "muster.serviceAccountName" .) | quote }}
+  validations:
+    - expression: {{ printf "request.namespace.startsWith(\"%s\")" .Values.agents.namespacePrefix | quote }}
+      message: muster may only write or delete RoleBindings in its agent namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

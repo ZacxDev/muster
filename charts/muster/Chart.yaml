@@ -1,0 +1,22 @@
+apiVersion: v2
+name: muster
+description: >-
+  muster, the self-hosted control room for coding agents: the server, its
+  Postgres, and (each off by default) the Kubernetes agent plane, the chief,
+  officers, push, attachments, dictation, GoTrue sign-in and the preview gateway.
+type: application
+home: https://github.com/ZacxDev/muster
+sources:
+  - https://github.com/ZacxDev/muster
+# 🔴 `version` AND `appVersion` ARE PLACEHOLDERS IN THE REPOSITORY, NEVER
+# HAND-EDITED. scripts/release-build.sh writes the release's X.Y.Z into both
+# when it packages the chart (muster-<X.Y.Z>.tgz, a release asset), so the
+# chart, its default image tag (appVersion) and the release are one number.
+# Installing from this directory needs `--set image.tag=<X.Y.Z>` (docs/kubernetes.md).
+version: 0.0.0
+appVersion: "0.0.0"
+kubeVersion: ">=1.30.0-0"
+keywords:
+  - agents
+  - claude-code
+  - self-hosted

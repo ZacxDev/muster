@@ -1,0 +1,17 @@
+# The core on a database you run yourself.
+image:
+  tag: 1.2.3
+publicUrl: https://muster.example.com
+postgres:
+  enabled: false
+externalDatabase:
+  existingSecret: muster-database
+  key: DATABASE_URL
+auth:
+  existingSecret: muster-auth
+ingress:
+  enabled: true
+  className: nginx
+  host: muster.example.com
+  tls:
+    secretName: muster-tls

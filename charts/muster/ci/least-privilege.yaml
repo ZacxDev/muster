@@ -1,0 +1,18 @@
+# The agent plane with the least-privilege RBAC layout and its admission policy.
+image:
+  tag: 1.2.3
+publicUrl: https://muster.example.com
+agents:
+  enabled: true
+  gatewayImage:
+    repository: registry.example.com/agent-runtime
+    tag: "1.0.0"
+  claudeCode:
+    enabled: true
+    image: ghcr.io/zacxdev/claude-code-agent:abc1234
+    accounts: [team-a]
+    tokensSecret: muster-claude-accounts
+  rbac:
+    layout: least-privilege
+    admissionPolicy:
+      enabled: true

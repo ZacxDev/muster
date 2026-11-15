@@ -1,0 +1,90 @@
+# Every feature the chart has a value for, on at once.
+image:
+  tag: 1.2.3
+publicUrl: https://muster.example.com
+plugins: true
+auth:
+  mode: gotrue
+gotrue:
+  enabled: true
+ingress:
+  enabled: true
+  className: nginx
+  host: muster.example.com
+  tls:
+    secretName: muster-tls
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+  hostnames: [muster.example.com]
+  timeouts:
+    request: "0s"
+agents:
+  enabled: true
+  gatewayImage:
+    repository: registry.example.com/agent-runtime
+    tag: "1.0.0"
+  model: openrouter/example-vendor/example-model
+  workspace:
+    persist: true
+  gateway:
+    enabled: true
+    model: example-runtime-model
+    runtimeConfig: |
+      {"agents": {"defaults": {}}}
+    runtimeInstall: |
+      #!/bin/sh
+      echo "$MUSTER_CONFIG" > /tmp/runtime.json
+  claudeCode:
+    enabled: true
+    image: ghcr.io/zacxdev/claude-code-agent:abc1234
+    accounts: [team-a, team-b]
+    tokensSecret: muster-claude-accounts
+    storageSize: 20Gi
+  rbac:
+    layout: default
+    admissionPolicy:
+      enabled: true
+chief:
+  dispatchOwners: [1]
+  taskRouting: true
+  openrouter:
+    enabled: true
+    model: example-vendor/example-model
+officers:
+  enabled: true
+  tokensSecret: muster-officer-tokens
+  config:
+    - id: release:example-web
+      hq_url: https://hq.example.com/api/v1
+  egressCidrs: ["192.0.2.0/24:443"]
+connectors:
+  enabled: true
+githubApp:
+  enabled: true
+  appId: "123456"
+  accounts:
+    - login: example-org
+      id: 1234567
+  access: read
+  existingSecret: muster-github-app
+openrouter:
+  enabled: true
+  existingSecret: muster-openrouter
+push:
+  enabled: true
+  subject: mailto:ops@example.com
+attachments:
+  enabled: true
+dictation:
+  enabled: true
+preview:
+  enabled: true
+  domain: preview.example.com
+  pluginTokensSecret: muster-preview-tokens
+  ingress:
+    enabled: true
+    className: nginx
+    tlsSecretName: preview-wildcard-tls

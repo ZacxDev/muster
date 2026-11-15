@@ -217,8 +217,8 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
 - **An interactive mirror is a shell on that host.** Anyone who can type into
   that host's Terminal view (after a recent sign-in) can run commands as the
   user `muster-mirror` runs as.
-- **Agent dispatch is opt-in and only lightly proven.** The repository ships no
-  Kubernetes manifests.
+- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
+  the Helm chart in `charts/muster` installs it ([docs/kubernetes.md](docs/kubernetes.md)).
 
 The full list is in [docs/limits.md](docs/limits.md).
 
