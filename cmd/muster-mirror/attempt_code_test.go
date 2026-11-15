@@ -34,3 +34,28 @@ func TestTheAttemptCodeFileIsPrivateAndOnlyItsOwnerRemovesIt(t *testing.T) {
 		t.Fatalf("the owner's exit left its code file: %v", err)
 	}
 }
+
+// TestTheAttemptCodeFileReplacesASymlinkRatherThanFollowingIt: a symlink at
+// the code file's path is replaced by a regular 0600 file, and the file it
+// pointed at is left untouched.
+func TestTheAttemptCodeFileReplacesASymlinkRatherThanFollowingIt(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "attempt-code")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAttemptCode(path, "AB12-CD34-EF56"); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the code file after a write over a symlink: %v, mode %v; want a regular 0600 file", err, fi.Mode())
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keep me\n" {
+		t.Fatalf("the symlink's target was written through: %q", b)
+	}
+}

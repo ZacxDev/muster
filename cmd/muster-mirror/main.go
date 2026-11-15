@@ -46,6 +46,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/ZacxDev/muster/internal/atomicfile"
 	"github.com/ZacxDev/muster/internal/attemptcode"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
@@ -830,29 +831,15 @@ func runAgentSpawnLog(args []string, getenv func(string) string, stdout, stderr 
 	return 0
 }
 
-// writeAttemptCode leaves code at path for `muster doctor`: the file 0600, its
-// directory 0700, written whole (a temp file renamed over it), so a doctor
-// never reads half a code. A symlink at path is replaced, never followed.
+// writeAttemptCode leaves code at path for `muster doctor`: its directory
+// 0700, the file written whole and 0600 by internal/atomicfile (a temp file
+// renamed over it), so a doctor never reads half a code, and a symlink at
+// path is replaced, never followed.
 func writeAttemptCode(path, code string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".attempt-code-*")
-	if err != nil {
-		return err
-	}
-	_, werr := f.WriteString(code + "\n")
-	cerr := f.Close()
-	if werr == nil {
-		werr = cerr
-	}
-	if werr == nil {
-		werr = os.Rename(f.Name(), path)
-	}
-	if werr != nil {
-		_ = os.Remove(f.Name())
-	}
-	return werr
+	return atomicfile.Write(path, []byte(code+"\n"))
 }
 
 // removeAttemptCode removes path at exit if it still holds this process's
