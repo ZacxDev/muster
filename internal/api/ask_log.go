@@ -958,8 +958,9 @@ func (w askLoggingAttention) WithdrawAbout(ctx context.Context, agentID int64, k
 	return as, err
 }
 
-func (w askLoggingAttention) AnswerInSession(ctx context.Context, asker attention.Asker, message string, queueID int64) ([]attention.Ask, error) {
-	as, err := w.Store.AnswerInSession(ctx, asker, message, queueID)
+func (w askLoggingAttention) AnswerInSession(ctx context.Context, asker attention.Asker, message string, queueID int64,
+	keep func(attention.Ask) bool) ([]attention.Ask, error) {
+	as, err := w.Store.AnswerInSession(ctx, asker, message, queueID, keep)
 	for _, a := range as {
 		w.settled(a, err)
 	}

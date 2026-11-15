@@ -23,18 +23,68 @@ import (
 // ledger, or when a ledger names a key that no longer exists.
 
 // MoveRefusals are the foreign keys onto notes whose rows REFUSE the move
-// when one points at the task, with the reason the refusal names. Each row
-// belongs to its owner's personal state (an agent, a host dispatch, a
-// plugin's queue or message) or carries its own same-owner rule that a move
-// would silently break, so the task stays where it is rather than leave a
-// link pointing across owners.
-var MoveRefusals = map[string]string{
-	"agents.note_id":          "an agent works on it (agents are not shared yet)",
-	"attention_asks.task_id":  "an ask is linked to it",
-	"host_dispatches.task_id": "a host dispatch is linked to it",
-	"plugin_messages.task_id": "a plugin message is linked to it",
-	"session_routes.task_id":  "a session route is linked to it",
-	"task_ref_writes.note_id": "writes are queued for its plugin",
+// when a LIVE one points at the task, with the reason the refusal names and
+// what "live" means for that table. Each row belongs to its owner's personal
+// state (an agent, a host dispatch, a plugin's queue or message) or carries
+// its own same-owner rule that a move would silently break, so the task stays
+// where it is rather than leave a live link pointing across owners.
+//
+// 🔴 A FINISHED ROW DOES NOT REFUSE (team sharing phase 4, slice 4.7, closing
+// slice 4.3's limitation (a): a task any agent had ever worked on could never
+// move). A row whose Live predicate is false stays where it is — its owner's,
+// pointing at a task that is now the team's — because nothing acts through it
+// any more: an ask that is no longer open (answered, cancelled or expired)
+// AND whose delivery is finished (askLive); a session route that is answered back, relayed, timed out, fell
+// back or failed; a host dispatch that ended. Each of those four keys is a
+// SIMPLE key onto notes(id), so the row's owner is not tied to the task's and
+// the move cannot break it; the task's new owner (the team) does not see the
+// row (it is its old owner's, under row-level security), and its old owner
+// still does. Live "" is "every row refuses":
+//   - agents.note_id is a COMPOSITE key onto notes(id, owner_id) — an agent's
+//     row, stopped or errored included, would fail the move's own statement
+//     (23503) and cannot be moved with the task (its credentials, namespace
+//     and account are its owner's); a destroyed agent has no row at all;
+//   - plugin_messages and task_ref_writes are a plugin's queue: still refused.
+var MoveRefusals = map[string]MoveRefusal{
+	"agents.note_id":          {Reason: "an agent works on it (agents are not shared yet)"},
+	"attention_asks.task_id":  {Reason: "an ask is linked to it", Live: askLive()},
+	"host_dispatches.task_id": {Reason: "a host dispatch is linked to it", Live: "status <> 'ended'"},
+	"plugin_messages.task_id": {Reason: "a plugin message is linked to it"},
+	"session_routes.task_id":  {Reason: "a session route is linked to it", Live: "state IN ('routed', 'answered')"},
+	"task_ref_writes.note_id": {Reason: "writes are queued for its plugin"},
+}
+
+// AskDeliveriesFinished is THE CLOSED SET of an ask's delivery states that
+// no transition leaves (internal/attention's state machine): delivered, and
+// waited (the asker read it through attention_wait). An answered ask whose
+// delivery is one of these, or none (a system asker's, or one answered in the
+// session), is finished. EVERY OTHER STATE IS LIVE, by construction —
+// AskDeliveriesLive only names them for the ledger test: queued and
+// delivering (owed or in flight), unconfirmed (RetryDelivery queues it again,
+// after a move too) and pull (a mirrored session's attention_wait still
+// reads it). attention's TestTheMoveClassifiesEveryDeliveryState and
+// TestEveryAskDeliveryStateIsClassifiedForTheMove (the database's own list)
+// fail when a state is added that neither names.
+var (
+	AskDeliveriesFinished = []string{"delivered", "waited"}
+	AskDeliveriesLive     = []string{"queued", "delivering", "unconfirmed", "pull"}
+)
+
+// askLive is the ask key's Live predicate: an ask is FINISHED only when it is
+// not open (or its time ran out) AND its delivery is none or in
+// AskDeliveriesFinished — defined positively, so a state this file has not
+// heard of is live. An open ask never returns to open once it leaves it.
+func askLive() string {
+	return "NOT ((status <> 'open' OR expires_at <= now()) AND (delivery IS NULL OR delivery IN ('" +
+		strings.Join(AskDeliveriesFinished, "', '") + "')))"
+}
+
+// MoveRefusal is one MoveRefusals entry: the sentence the refusal names, and
+// the SQL predicate over that table's row that makes it LIVE — refusing —
+// ("" for every row). A constant of this file, never input.
+type MoveRefusal struct {
+	Reason string
+	Live   string
 }
 
 // ErrMoveNotYours is a move of a task the caller does not own (or that does

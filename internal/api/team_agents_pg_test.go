@@ -170,9 +170,11 @@ func (tw *teamAgentWalk) path(r string) (method, path string) {
 var (
 	teamChatRoutes = []string{"GET /agents/{name}/ws", "POST /agents/{name}/send", "POST /agents/sessions/{sid}/read"}
 	// teamManageRoutes: a manager's only (slice 4.5), run as the team.
-	teamManageRoutes  = []string{"POST /agents/{id}/start", "POST /agents/{id}/stop", "DELETE /agents/{id}", "POST /agents/{id}/credentials/rotate"}
-	teamRefusedRoutes = []string{
-		"GET /agents/{name}/terminal/ws",
+	teamManageRoutes = []string{"POST /agents/{id}/start", "POST /agents/{id}/stop", "DELETE /agents/{id}", "POST /agents/{id}/credentials/rotate"}
+	// teamTerminalRoutes: an operator or above with a FRESH sign-in (slice
+	// 4.7). The walk's sessions are fresh, so A and B pass the gate.
+	teamTerminalRoutes = []string{"GET /agents/{name}/terminal/ws"}
+	teamRefusedRoutes  = []string{
 		"POST /agents/{id}/model", "POST /agents/{id}/name",
 		"POST /agents/{id}/sessions", "POST /agents/{id}/sessions/side", "POST /agents/{id}/sessions/fresh-primary",
 		"POST /agents/{id}/sessions/{sid}/default", "POST /agents/{id}/sessions/{sid}/archive",
@@ -196,6 +198,9 @@ func sessionAgentRoutes() map[string]teamAgentRule {
 	for _, r := range teamManageRoutes {
 		out[r] = teamAgentManage
 	}
+	for _, r := range teamTerminalRoutes {
+		out[r] = teamAgentTerminal
+	}
 	for _, r := range teamRefusedRoutes {
 		out[r] = teamAgentRefused
 	}
@@ -218,10 +223,11 @@ func (tw *teamAgentWalk) send(t *testing.T, uid int64, text string) *httptest.Re
 //     and every refused route answers 403 from the team-agent gate; nothing of
 //     the team's changes;
 //   - B (operator): every refused route and every manager route 403
-//     (lifecycle, settings, new threads, the terminal), and the send is
-//     accepted;
-//   - A (manager) is refused the refused routes (settings, new threads, the
-//     terminal); A's lifecycle — as the team — is walked by
+//     (lifecycle, settings, new threads), the terminal's socket passes the
+//     gate (a fresh sign-in, slice 4.7: TestATeamAgentsTerminalOpensForAFreshOperator
+//     walks the stale one), and the send is accepted;
+//   - A (manager) is refused the refused routes (settings, new threads) and
+//     passes the terminal's gate; A's lifecycle — as the team — is walked by
 //     TestAManagersLifecycleOnATeamAgentRunsAsTheTeam.
 //
 // 🔴 RED at origin/main 006bbe5c: no member sees the team chief at all (agents
@@ -280,10 +286,18 @@ func TestATeamAgentIsWalkedByEveryRole(t *testing.T) {
 
 	for _, who := range []isoUser{w.b, w.a} {
 		for r, rule := range routes {
+			m, p := tw.path(r)
+			if rule == teamAgentTerminal {
+				// A FRESH operator or manager (the walk's sessions are fresh)
+				// passes the gate: the socket's own answer, never the gate's 403.
+				if rec := w.do(w.h, m, p, "", cred{sessionUser: who.uid}); rec.Code == http.StatusForbidden {
+					t.Errorf("%s (operator or above, fresh) %s → 403 %q; want through the team-agent gate", who.name, r, truncate(rec.Body.String(), 120))
+				}
+				continue
+			}
 			if rule != teamAgentRefused && !(rule == teamAgentManage && who.uid == w.b.uid) {
 				continue
 			}
-			m, p := tw.path(r)
 			if rec := w.do(w.h, m, p, "", cred{sessionUser: who.uid}); rec.Code != http.StatusForbidden {
 				t.Errorf("%s (member) %s → %d; want 403: a member does not act on a team agent through it", who.name, r, rec.Code)
 			}

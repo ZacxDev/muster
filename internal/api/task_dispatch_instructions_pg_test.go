@@ -164,7 +164,7 @@ func TestTaskDispatchRefusesAnInSessionAnswer(t *testing.T) {
 			t.Fatalf("task_route_attention: %s", text)
 		}
 	}
-	settled, err := f.srv.ext.Attention.AnswerInSession(f.asOwner, attention.Asker{AgentID: f.chief.ID}, ownersWords, 0)
+	settled, err := f.srv.ext.Attention.AnswerInSession(f.asOwner, attention.Asker{AgentID: f.chief.ID}, ownersWords, 0, nil)
 	if err != nil || len(settled) != 2 {
 		t.Fatalf("the in-session message settled %d asks (%v); want both", len(settled), err)
 	}

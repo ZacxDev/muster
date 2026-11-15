@@ -29,6 +29,7 @@ var teamSweepClasses = map[string]string{
 	"dispatch_hold_tools.go Server.pushSessionDispatch":    "never withdrawn: information only, replaced by its tag",
 	"agent_outcome.go Server.pushOutcome":                  "never withdrawn: an outcome is replaced by the next under its tag",
 	"chief_owner_release.go Server.applyGateRelease":       "never withdrawn: information only",
+	"team_dispatch.go Server.pushTeamDispatch":             "never withdrawn: information only, replaced by its tag (a team start; its card is an ask)",
 	"connectors.go Server.onConnectorRequested":            "never: connector requests are personal (connectors are never shared)",
 	"pages.go Server.pageResponded":                        "never: pages are personal",
 	"plugin_drafts.go Server.notifyDraftRefused":           "never withdrawn: information only",

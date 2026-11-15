@@ -613,6 +613,10 @@ func (s *Server) ownerAnswer(ctx context.Context, owner, taskID int64, text stri
 	if s.ext.Attention == nil {
 		return attention.Ask{}, chiefDispatchInstructionsUnsourced
 	}
+	// A TEAM's task: no answer is instructions by itself (team_dispatch.go).
+	if why := s.teamOwnerAnswerRefusal(ctx, owner); why != "" {
+		return attention.Ask{}, why
+	}
 	asks, err := s.ext.Attention.AnswersForTask(ctx, taskID)
 	if err != nil {
 		s.logger.Printf("task routing: answers for task %d: %v", taskID, err)

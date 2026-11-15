@@ -127,7 +127,7 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 // none — muster's own cards.
 func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string, about string,
 	wait ...time.Duration) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, false, about, firstWait(wait))
+	return s.raiseCard(ctx, chief, question, options, false, about, firstWait(wait), nil)
 }
 
 // firstWait is a card's optional wait (attention.New.Timeout; 0 = the
@@ -155,12 +155,26 @@ const holdCardWait = plugins.CardHoldTTL + plugins.CardAskOutlives
 // reaches the owner's phone; its card is cancelled.
 func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string,
 	wait ...time.Duration) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, true, "", firstWait(wait))
+	return s.raiseCard(ctx, chief, question, options, true, "", firstWait(wait), nil)
+}
+
+// raiseHeldCard is the card of an agent_dispatch HOLD (fileHeldDispatch): an
+// approval card (proposal: raiseProposalCard's row, notified by the caller) or
+// a host/model/repo card (raiseOwnerCard's), waiting holdCardWait, with its
+// HOLD written in the card's own transaction (hold, attention.New.With).
+//
+// 🔴 THE CARD NEVER EXISTS WITHOUT ITS HOLD (PR #682 round 1). teamCardHold —
+// the answer path's and the push's one test of "a team's dispatch card" —
+// reads the hold; a card committed before its hold was, until the hold
+// landed, "not a dispatch card", and an answer then skipped every team check.
+func (s *Server) raiseHeldCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool,
+	hold *attention.WithAudit) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, proposal, "", holdCardWait, hold)
 }
 
 // raiseCard is raiseOwnerCard and raiseProposalCard.
 func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool, about string,
-	timeout time.Duration) (attention.Ask, error) {
+	timeout time.Duration, with *attention.WithAudit) (attention.Ask, error) {
 	// Only a test fixture runs with no attention store (muster-server always
 	// wires one); ask_owner is still offered there (round 0 D1), and the call
 	// then takes the same chat-only path as any refused raise.
@@ -168,7 +182,7 @@ func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question str
 		return attention.Ask{}, errors.New("no attention store")
 	}
 	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options,
-		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about, Timeout: timeout})
+		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about, Timeout: timeout, With: with})
 	if err != nil {
 		return attention.Ask{}, err
 	}
