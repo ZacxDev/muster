@@ -668,6 +668,34 @@ func TestTeamOfficerRules(t *testing.T) {
 	}
 }
 
+// TestATeamAutoOfficerIsNeverPlacedOnAHost: a TEAM's "runtime": "auto"
+// officer on a server with no pods but a qualifying host of the team's would
+// resolve to that host — and a team cannot own a host officer, so the roster
+// load refuses to run it there (officers.CheckOwners after the resolution),
+// saying why. CONTROL: a person's auto officer on the same server runs there.
+func TestATeamAutoOfficerIsNeverPlacedOnAHost(t *testing.T) {
+	h := spawnableHost(hostOffHost, true)
+	h.AgentClose = true
+	r := newDeclRig(t, declRigOpts{hosts: []mirror.HostView{h}})
+	r.m.owner = declTeam // the hub lists this host as the team's
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_types (owner_id, key, name) VALUES (987302, 'tauto', 'x')`)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, repo, instance_slug)
+		VALUES (987302, 'tauto:x', 'tauto', 'auto', '`+hostOffRepo+`', 'tauto-x')`)
+	if err := r.s.reloadDeclaredOfficers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st, ok := r.s.officerRT.declaredView(declTeam, "tauto:x")
+	if !ok || st.officer != nil || !strings.Contains(st.reason, officers.ErrTeamHostOfficer.Error()) {
+		t.Fatalf("a team's auto officer with only a host to run on: %+v; want not running, refused by the team rule", st)
+	}
+	r.m.owner = 1
+	body := `{"id":"pauto:x","charter":"c","repo":"` + hostOffRepo + `"}`
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", body); rec.Code != http.StatusCreated || decodeView(t, rec).RunsOnHost != hostOffHost {
+		t.Fatalf("control: a person's auto officer: %d %s; want it on %s", rec.Code, rec.Body.String(), hostOffHost)
+	}
+}
+
 // TestTheRegistrySwapIsRaceFreeUnderTheWakeLoop: the wake loop's passes and
 // readers of the roster run while officers are created, paused and deleted
 // and the roster reloaded. Run under -race (the scoped command in the PR).
