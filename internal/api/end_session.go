@@ -58,7 +58,7 @@ const (
 		"they typed in your chat — the message you are answering is neither (a plugin message, a session's words or muster's " +
 		"note never counts)"
 	// endSessionTyperNotOperator / endSessionTyperSignedOut: a TEAM's chief
-	// (team sharing 2b.4, operator decision 2026-11-15: the team dispatch
+	// (team sharing 2b.4, an operator decision: the team dispatch
 	// rule), on a member's line whose typer is no longer an operator of the
 	// team on a fresh read, or was signed out everywhere since they typed it.
 	endSessionTyperNotOperator = "ending a session needs a request typed by an operator or a manager of your team: the member " +
@@ -80,8 +80,8 @@ const (
 	endSessionTeamAgent = "a team's agent is not ended from a card: a manager of your team stops and removes it on the team's agents page"
 )
 
-// A TEAM's end card refusals (team sharing 2b.4; operator decision
-// 2026-11-15, "Operator+, fresh sign-in"): its answerer, what they read.
+// A TEAM's end card refusals (team sharing 2b.4; the operator's decision,
+// "Operator+, fresh sign-in"): its answerer, what they read.
 const (
 	TeamEndCardNotFromPhone = "this is a team's card to end a session: it is answered only in muster in a browser, with a recent sign-in — " +
 		"not from a phone or a notification. Open it in muster in a browser"

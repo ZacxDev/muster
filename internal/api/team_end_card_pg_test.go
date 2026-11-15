@@ -15,7 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// A TEAM'S END CARD (team sharing 2b.4; operator decision 2026-11-15,
+// A TEAM'S END CARD (team sharing 2b.4; the operator's decision,
 // "Operator+, fresh sign-in"): the team chief's end_session_propose files a
 // card owned by the team, and an operator or a manager of the team ends the
 // session from it — in a browser, with a fresh sign-in — while a viewer, a

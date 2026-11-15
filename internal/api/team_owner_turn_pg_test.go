@@ -9,7 +9,7 @@ import (
 )
 
 // A TEAM CHIEF'S OTHER SAY-SO USES THE TEAM DISPATCH RULE (team sharing 2b.4,
-// operator decision 2026-11-15). On a team's chief, end_session_propose, a
+// an operator decision). On a team's chief, end_session_propose, a
 // text route (route_to_session) and agent_dispatch's gate release take a
 // typed turn as the say-so only on the rule team dispatch uses: a fresh typed
 // turn from a person who is an operator or above of the agent's team, the

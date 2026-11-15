@@ -456,7 +456,7 @@ func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string,
 	if src.ViaSession() {
 		return nil, errReleaseRefused(proposalNotOwnersDoor)
 	}
-	// A TEAM's end card (team sharing 2b.4, operator decision 2026-11-15):
+	// A TEAM's end card (team sharing 2b.4, an operator decision):
 	// no person is the team, so its owner's door is an operator's or a
 	// manager's browser with a fresh sign-in (teamEndCardRefusal).
 	if !attention.IsOwnerDoor(ctx, a.Owner) {

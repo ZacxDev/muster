@@ -80,6 +80,9 @@ var teamTurnWords = map[string]string{
 		"a member typed this, so it cannot %[2]s%[3]s",
 	chiefReleaseUnverifiable: "%[1]sthe member's turn could not be read, so muster cannot %[2]s; try again later",
 	chiefReleaseChanged:      "%[1]sthe member's turn or the task's gate changed while this was being checked; call again",
+	// A gated task's only (round 1 on #703, F4): a gate a member set.
+	chiefReleaseNotChiefsGate: "%[1]sthis task's gate is not one you filed with task_create_gated (a member of your team set it, " +
+		"or it carries a gate of theirs as well), so only the team can release it, on the board; use task_route_attention",
 }
 
 // ownerTurnWords is THE one translation of ownerTurnFor's refusal why into

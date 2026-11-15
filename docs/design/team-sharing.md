@@ -2844,8 +2844,11 @@ by re-checking the migration number (D). The slices ship **in order**.
    > - **One wording table (round 0 on #703).** `ownerTurnWords` is THE
    >   translation of an `ownerTurnFor` refusal into the chief's sentence, by
    >   use (gated release, no-task and ungated dispatch, route, end) and by
-   >   whose chief it is; agent_dispatch, host_dispatch, a route and
-   >   end_session_propose all call it (`ownerTurnRefusal`). A PERSON's chief
+   >   whose chief it is; agent_dispatch, a route and end_session_propose
+   >   call it (`ownerTurnRefusal`; host_dispatch keeps the person's words: a
+   >   team's chief is refused a host target first, `agentDispatchTeamHost`).
+   >   A gate a member set (`chiefReleaseNotChiefsGate`) is worded for the
+   >   team too (round 1). A PERSON's chief
    >   reads each use's sentences unchanged. A TEAM's chief never reads "your
    >   owner": every refusal that said it — a stale sign-in's no-marker
    >   included — is worded for an operator or a manager of the team, with
@@ -2867,10 +2870,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   🔴 **Decided (fail closed):** a team chief's end card for one of the
    >   team's AGENTS is not filed (`endSessionTeamAgent`): stopping and
    >   removing a team agent is a manager's, on the team's agents page (4.5),
-   >   and an operator's tap would bypass that.
-   >   ⚠ The team end card's push still carries the answer actions a phone
-   >   cannot use (the dispatch card's push drops them:
-   >   `teamDispatchCardPush`); a tap there is refused by name.
+   >   and an operator's tap would bypass that. A card filed before this
+   >   release is refused on the tap too (`TestATeamAgentIsNeverEndedFromACard`).
+   >   An operator's "Not now" declines a team's card as the team
+   >   (`TestATeamMemberDeclinesATeamsEndCard`).
+   >   Its push carries no answer actions: every proposal card's filing push
+   >   is built with none (`proposalCardFiled`), so a phone has nothing to tap
+   >   (corrected in round 1: the earlier note said otherwise).
    > - ⚠ **Known, not changed:** an answer typed into a team window's picker
    >   records its `ask_attempts` row as the member's own (the table's
    >   `owner_id` default), keyed by host name, so it shows on the member's
