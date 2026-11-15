@@ -107,6 +107,12 @@ func newHoldObject() (string, error) {
 	return holdObjectPrefix + hex.EncodeToString(b[:]), nil
 }
 
+// NewHoldObject mints a hold id for a hold row written outside
+// FileDispatchHold — a held dispatch's card, whose hold is written in the
+// card's own transaction (attention.New.With; internal/api fileHeldDispatch),
+// with ActionDispatchHeld and the same detail FileDispatchHold takes.
+func NewHoldObject() (string, error) { return newHoldObject() }
+
 // ErrHoldNotFound: no hold of the principal's has that id — a missing one and
 // another owner's read the same.
 var ErrHoldNotFound = errors.New("plugins: no such held dispatch")

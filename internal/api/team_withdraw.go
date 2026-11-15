@@ -47,16 +47,20 @@ type myTeamsReader interface {
 	MyTeams(ctx context.Context, user int64) ([]users.MyTeam, error)
 }
 
-// teamMembershipEnded is a person removed from team: the sweep.
+// teamMembershipEnded is a person removed from team: the sweep, and their
+// open terminals on the team's agents closed (closeTeamTerminals).
 func (s *Server) teamMembershipEnded(team, person int64) {
+	s.closeTeamTerminals(team, person)
 	s.withdrawTeamItemsFrom(team, person)
 }
 
-// teamRoleSet is a person's role in team set to role: the sweep when the new
-// role is below operator (a viewer receives no team push). An add at viewer
-// sweeps too, which closes nothing the person was shown.
+// teamRoleSet is a person's role in team set to role: the sweep, and their
+// open terminals on the team's agents closed, when the new role is below
+// operator (a viewer receives no team push and opens no terminal). An add at
+// viewer sweeps too, which closes nothing the person was shown.
 func (s *Server) teamRoleSet(team, person int64, role authz.TeamRole) {
 	if role.Valid() && !role.AtLeast(authz.TeamOperator) {
+		s.closeTeamTerminals(team, person)
 		s.withdrawTeamItemsFrom(team, person)
 	}
 }

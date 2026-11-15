@@ -294,6 +294,13 @@ var routeOwnerAskedSibling = map[string]string{
 	chiefReleaseNotOverMCP: "owner_asked: this session is not a Claude Code session, and only a Claude Code session can " +
 		"route your owner's request; tell your owner",
 	chiefReleaseUnverifiable: "owner_asked: your owner's turn could not be read, so nothing was routed; try again later",
+	// A team's chief (team sharing 4.7): the member who typed it was removed
+	// or made a viewer since.
+	chiefReleaseTyperNotOperator: "owner_asked: the member who typed the message you are answering is no longer an " +
+		"operator of your team, so muster cannot route text in the team's name",
+	// ...or was signed out everywhere (or disabled, or reset) since.
+	chiefReleaseTyperSignedOut: "owner_asked: the member who typed the message you are answering was signed out of every " +
+		"session since, so muster cannot route text in the team's name",
 }
 
 // routeOwnerAskedRefusal is why (an ownerTurnFor refusal) as a text route's

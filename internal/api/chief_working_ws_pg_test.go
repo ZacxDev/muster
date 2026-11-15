@@ -31,13 +31,14 @@ type heldAnswerAttention struct {
 	release chan struct{}
 }
 
-func (h heldAnswerAttention) AnswerInSession(ctx context.Context, asker attention.Asker, message string, queueID int64) ([]attention.Ask, error) {
+func (h heldAnswerAttention) AnswerInSession(ctx context.Context, asker attention.Asker, message string, queueID int64,
+	keep func(attention.Ask) bool) ([]attention.Ask, error) {
 	select {
 	case h.entered <- struct{}{}:
 	default:
 	}
 	<-h.release
-	return h.Store.AnswerInSession(ctx, asker, message, queueID)
+	return h.Store.AnswerInSession(ctx, asker, message, queueID, keep)
 }
 
 // TestARefetchRightAfterASocketSendDrawsWorking (the operator's report: in a

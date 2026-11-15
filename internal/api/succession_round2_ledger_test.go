@@ -50,13 +50,14 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	// routing_rule_propose raises its card here too: its question is
 	// ruleCardQuestion over a plugins.RuleNew, which carries no kickoff (a
 	// rule is a match and an action copied from a plugin message).
-	// agent_dispatch's APPROVAL card (dispatch_approval.go) too: raised
+	// agent_dispatch's APPROVAL card (dispatch_approval.go) is raised by
+	// raiseHeldCard (PR #682 round 1: with its hold, in one transaction):
 	// unnotified like a proposal's, then notified with no answer actions
 	// (proposalCardFiled). Its question is approvalQuestion over the
 	// dispatch's own arguments: no succession, so no kickoff.
-	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "host_dispatch.go:fileHeldDispatch",
-		"routing_rules.go:toolRoutingRulePropose"})
-	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
+	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "routing_rules.go:toolRoutingRulePropose"})
+	assertCallers(t, ".", "raiseHeldCard", []string{"host_dispatch.go:fileHeldDispatch"})
+	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseHeldCard", "owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)
 	tainted := pkg.kickoffTaint()
@@ -123,8 +124,8 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 		}
 	}
 
-	// agent_dispatch's approval card, the one other raiseProposalCard caller
-	// that builds a question of its own (fileHeldDispatch): nothing in its
+	// agent_dispatch's approval card, the one other proposal-style card that
+	// builds a question of its own (fileHeldDispatch, via raiseHeldCard): nothing in its
 	// body holds kickoffCopy's result, at any depth, and no package function
 	// it reaches reads a Proposal's Kickoff. Pinned here, not by the comment
 	// on its caller entry above.
@@ -134,13 +135,13 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	}
 	raises := 0
 	ast.Inspect(fhd.Body, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == "raiseProposalCard" {
+		if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == "raiseHeldCard" {
 			raises++
 		}
 		return true
 	})
 	if raises != 1 {
-		t.Errorf("instrument check: fileHeldDispatch calls raiseProposalCard %d times; want 1", raises)
+		t.Errorf("instrument check: fileHeldDispatch calls raiseHeldCard %d times; want 1", raises)
 	}
 	if v := pkg.taintedIn(fhd.Body, tainted); v != "" {
 		t.Errorf("fileHeldDispatch holds the kickoff (%s): an approval card's question or options could carry it", v)

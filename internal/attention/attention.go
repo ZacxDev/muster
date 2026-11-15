@@ -274,6 +274,11 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// AnsweredByUser is the PERSON whose update answered the ask (migration
+	// 0127's answered_by_user, stamped by the database from muster.uid, never
+	// by the statement): on a team's ask, the member who answered it. 0 for an
+	// ask that is not answered, or was answered before 0127.
+	AnsweredByUser int64 `json:"-"`
 	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
 	// migration 0050) — the chief may answer it (AnswerByChief), and the owner's
 	// Attention queue does not list it.
@@ -373,6 +378,19 @@ type New struct {
 	// officerItemContext), never from an asker's arguments; Clean sanitises
 	// and bounds it (item_context.go).
 	Context *ItemContext
+	// With is an audit row written in Create's OWN transaction, as the
+	// caller's principal, naming the new ask (Detail is called with its id):
+	// nil for none. Set ONLY by internal/api's agent_dispatch, for a held
+	// dispatch's card (its hold): the card and its hold then commit together,
+	// so no reader ever sees the card without its hold.
+	With *WithAudit
+}
+
+// WithAudit is New.With: the audit row's action and object, and its detail
+// for the new ask's id.
+type WithAudit struct {
+	Action, Object string
+	Detail         func(askID int64) map[string]any
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -527,8 +545,10 @@ type Store interface {
 	// (of its owner cards, only the oldest) before this statement began (created_at < statement_timestamp()), with
 	// message (capped at MaxAnswerRunes) as the answer and queueID (0 = none)
 	// as the send-queue row that carried it, and returns them; none for a
-	// blank message.
-	AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error)
+	// blank message. keep (nil: none) names asks the message must NOT settle
+	// although they qualify — they stay open, and they still count as the
+	// oldest owner card (no younger card is settled in a kept one's place).
+	AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64, keep func(Ask) bool) ([]Ask, error)
 	// AnsweredByQueue is, for each of ids that answered asks in session, the
 	// label of the asker it answered.
 	AnsweredByQueue(ctx context.Context, ids []int64) (map[int64]string, error)
@@ -616,7 +636,7 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, ''), item_context`
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0)`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -627,7 +647,7 @@ func scan(row pgx.Row) (Ask, error) {
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey, &ictx); err != nil {
+		&a.SubjectKey, &ictx, &a.AnsweredByUser); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -754,6 +774,15 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 			detail["route_id"] = n.RouteID
 		}
 		if err := auditAsk(ctx, tx, "chief_question.asked", a.ID, detail); err != nil {
+			return Ask{}, err
+		}
+	}
+	if w := n.With; w != nil {
+		p, ok := authz.From(ctx)
+		if !ok || p.UserID <= 0 || w.Detail == nil {
+			return Ask{}, errors.New("attention: an audited write needs a user principal and a detail")
+		}
+		if err := users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, w.Action, w.Object, w.Detail(a.ID)); err != nil {
 			return Ask{}, err
 		}
 	}
@@ -1135,7 +1164,7 @@ func (s *PGStore) WithdrawAbout(ctx context.Context, agentID int64, key string, 
 // open owner cards (OwnerCard), only the OLDEST is settled — the one the chat
 // draws as the card this message answers — and every other stays open for its
 // own answer. Every other ask settles as it always did.
-func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error) {
+func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64, keep func(Ask) bool) ([]Ask, error) {
 	message = truncateRunes(strings.TrimSpace(message), MaxAnswerRunes)
 	if message == "" || asker.Valid() != nil {
 		return nil, nil
@@ -1148,15 +1177,35 @@ func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message stri
 	if queueID > 0 {
 		queue = queueID
 	}
-	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $1, answered_by = $2, resolved_at = now(),
-		  answer_queue_id = $6::bigint
-		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
-		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
+	// The asks this message settles, as one predicate ($1..$3 the asker).
+	const settles = `status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
+		  AND agent_id IS NOT DISTINCT FROM $1::bigint AND mirror_host IS NOT DISTINCT FROM $2::text AND mirror_session IS NOT DISTINCT FROM $3::text
 		  AND (NOT owner_card OR id = (SELECT min(c.id) FROM attention_asks c
 		    WHERE c.owner_card AND c.status = 'open' AND c.expires_at > now() AND c.created_at < statement_timestamp()
-		      AND c.agent_id IS NOT DISTINCT FROM $3::bigint AND c.mirror_host IS NOT DISTINCT FROM $4::text
-		      AND c.mirror_session IS NOT DISTINCT FROM $5::text))
-		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession), queue))
+		      AND c.agent_id IS NOT DISTINCT FROM $1::bigint AND c.mirror_host IS NOT DISTINCT FROM $2::text
+		      AND c.mirror_session IS NOT DISTINCT FROM $3::text))`
+	host, session := nullable(asker.MirrorHost), nullable(asker.MirrorSession)
+	if keep == nil {
+		return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $4, answered_by = $5, resolved_at = now(),
+		  answer_queue_id = $6::bigint WHERE `+settles+` RETURNING `+cols, agent, host, session, message, ByOperator, queue))
+	}
+	// With keep: the candidates first, then ONLY those not kept, by id — and
+	// still only while they settle (an ask answered in between is not).
+	cands, err := collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks WHERE `+settles, agent, host, session))
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, a := range cands {
+		if !keep(a) {
+			ids = append(ids, a.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $4, answered_by = $5, resolved_at = now(),
+		  answer_queue_id = $6::bigint WHERE id = ANY($7) AND `+settles+` RETURNING `+cols, agent, host, session, message, ByOperator, queue, ids))
 }
 
 // AnsweredByQueue runs under the caller's principal (row-level security keeps
