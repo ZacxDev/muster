@@ -642,7 +642,7 @@ func (s *Server) officerSpawnIDs(ctx context.Context, host string, ids []int64) 
 func officerHostLine(o officers.Officer) string {
 	return fmt.Sprintf("officers: %s on: runtime host on %s — instances %s..%s, each a window in its agents session in a fresh worktree of %s; idle scale-to-zero after %s, poll %s. "+
 		"The host must run -interactive -agent-spawn with %s on -agent-spawn-repos, and a muster-mirror that closes windows. %s",
-		o.ID, o.Host, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.Repo, o.IdleAfter, o.PollInterval, o.Repo,
+		o.ID, o.Host, o.InstanceName(1), o.InstanceName(o.MaxInstances), o.Repo, o.IdleAfter, o.PollInterval, o.Repo,
 		strings.TrimSpace(officerHostSecurityLine))
 }
 

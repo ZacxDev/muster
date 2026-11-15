@@ -152,16 +152,27 @@ func NewBackends(build func(Officer) Backend) *Backends {
 	return &Backends{backends: map[string]Backend{}, build: build}
 }
 
-// Backend returns the cached backend for o.
+// Backend returns the cached backend for o, keyed on o.Key() (two owners'
+// DB-declared officers may share an id, never a key).
 func (h *Backends) Backend(o Officer) Backend {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	b, ok := h.backends[o.ID]
+	b, ok := h.backends[o.Key()]
 	if !ok {
 		b = h.build(o)
-		h.backends[o.ID] = b
+		h.backends[o.Key()] = b
 	}
 	return b
+}
+
+// Forget drops the cached backend of the officer keyed key, so the next
+// Backend builds one from the officer as it is now: a DB-declared officer
+// changed or deleted through the admin API (its backend holds the Officer it
+// was built from).
+func (h *Backends) Forget(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.backends, key)
 }
 
 // AllItems implements HQ.
@@ -287,7 +298,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		byName[in.Name] = in
 	}
 	ours := func(holder string) (InstanceState, bool) {
-		if p, n, ok := (&Registry{list: []Officer{o}}).ForAgentName(holder); ok && p.Tier == o.Tier {
+		if p, n, ok := forAgentName([]Officer{o}, holder); ok && p.Tier == o.Tier {
 			if in, ok := byName[holder]; ok {
 				return in, true
 			}
@@ -549,6 +560,11 @@ type Reconciler struct {
 	judgement *JudgementLedger
 	// capHold is Config.CapHold (nil: none).
 	capHold func(o Officer, h CapHold)
+	// refresh, refreshEvery and refreshedAt are Config.Refresh: Run calls it
+	// at most every refreshEvery, before it looks for a due officer.
+	refresh      func(ctx context.Context)
+	refreshEvery time.Duration
+	refreshedAt  time.Time
 
 	mu    sync.Mutex
 	state map[string]*officerState
@@ -583,7 +599,20 @@ type Config struct {
 	// lock, from the pass; it must not block. A restarted muster begins a
 	// new episode for a refusal still in force.
 	CapHold func(o Officer, h CapHold)
+	// Refresh, when set, re-reads the roster into Registry (internal/api: the
+	// DB-declared officers, migration 0135). Run calls it on its first tick
+	// and then at most every RefreshEvery (DefaultRefreshEvery when 0), so an
+	// officer another replica created, changed or deleted reaches this one's
+	// loop with no restart. It must not block for long; it is called from
+	// Run's goroutine.
+	Refresh      func(ctx context.Context)
+	RefreshEvery time.Duration
 }
+
+// DefaultRefreshEvery is how often Run re-reads the roster (Config.Refresh)
+// when nothing else asks: what bounds how late another replica's create,
+// pause or delete reaches this one.
+const DefaultRefreshEvery = 15 * time.Second
 
 // NewReconciler returns a loop over cfg's officers.
 func NewReconciler(cfg Config) (*Reconciler, error) {
@@ -596,21 +625,48 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.RefreshEvery <= 0 {
+		cfg.RefreshEvery = DefaultRefreshEvery
+	}
 	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		judgement: cfg.Judgement, capHold: cfg.CapHold, state: map[string]*officerState{}, done: make(chan struct{})}, nil
+		judgement: cfg.Judgement, capHold: cfg.CapHold, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery,
+		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
 // erroredSlot is how an instance in error is named in the log.
 type erroredSlot struct{ officer, instance string }
 
-func (r *Reconciler) st(id string) *officerState {
-	s, ok := r.state[id]
+// st is the state of the officer keyed key (Officer.Key).
+func (r *Reconciler) st(key string) *officerState {
+	s, ok := r.state[key]
 	if !ok {
 		s = &officerState{idleSince: map[string]time.Time{}, promptedAt: map[string]time.Time{}, errored: map[string]erroredSlot{},
 			capRefused: map[ItemID]refusedCap{}}
-		r.state[id] = s
+		r.state[key] = s
 	}
 	return s
+}
+
+// prune forgets the state of every officer no longer in the roster (a
+// DB-declared officer deleted), so its gauges stop counting it and a later
+// officer that reuses its slug starts with none of it.
+func (r *Reconciler) prune(list []Officer) {
+	keep := make(map[string]bool, len(list))
+	for _, o := range list {
+		keep[o.Key()] = true
+	}
+	r.mu.Lock()
+	pruned := false
+	for k := range r.state {
+		if !keep[k] {
+			delete(r.state, k)
+			pruned = true
+		}
+	}
+	r.mu.Unlock()
+	if pruned {
+		r.publish()
+	}
 }
 
 // PassResult is one pass's outcome, for logs and tests.
@@ -629,16 +685,29 @@ type PassResult struct {
 	ActErrs []error
 }
 
-// Check runs one pass for officer id NOW, whatever its schedule, unless it is
-// backing off and force is false.
-func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResult {
-	o, err := r.reg.Get(id)
+// Due makes the officer keyed key due now: Run passes it on its next tick
+// (RunTick), in Run's own goroutine — so a pass it asks for never runs beside
+// another pass for the same officer. The admin API asks it after a pause or a
+// resume, so the switch acts within a tick rather than a poll interval.
+func (r *Reconciler) Due(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.state[key]; ok {
+		s.nextAt = time.Time{}
+	}
+}
+
+// Check runs one pass for the officer keyed key (Officer.Key: an env
+// officer's id) NOW, whatever its schedule, unless it is backing off and force
+// is false.
+func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResult {
+	o, err := r.reg.Get(key)
 	if err != nil {
 		return PassResult{Err: err}
 	}
 	now := r.now()
 	r.mu.Lock()
-	s := r.st(id)
+	s := r.st(key)
 	if !force && s.failures > 0 && now.Before(s.nextAt) {
 		r.mu.Unlock()
 		return PassResult{Skipped: true}
@@ -812,7 +881,7 @@ func (r *Reconciler) actAll(ctx context.Context, pools []Officer, ds []Decision,
 // next ordinary pass logs it on again.
 func (r *Reconciler) switchedOffPass(ctx context.Context, o Officer, now time.Time) PassResult {
 	r.mu.Lock()
-	s := r.st(o.ID)
+	s := r.st(o.Key())
 	turned := !s.switchedOff
 	s.switchedOff = true
 	s.failures, s.strikes, s.fault, s.capReached = 0, 0, "", false
@@ -865,7 +934,7 @@ func (r *Reconciler) scaleDownForFault(ctx context.Context, o Officer, cause err
 // across all of o's pools (obs is parallel to pools).
 func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 	r.mu.Lock()
-	s := r.st(o.ID)
+	s := r.st(o.Key())
 	var entered, left []string
 	now := map[string]erroredSlot{}
 	for i, p := range pools {
@@ -1082,7 +1151,7 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun, wai
 	}
 	msg := err.Error()
 	r.mu.Lock()
-	s := r.st(o.ID)
+	s := r.st(o.Key())
 	c, had := s.capRefused[ov.Item.ID]
 	changed := c.msg != msg
 	if !had {
@@ -1113,7 +1182,7 @@ func (r *Reconciler) stopOverrun(ctx context.Context, o Officer, ov Overrun, wai
 // ends its episode.
 func (r *Reconciler) forgetCapRefusal(o Officer, id ItemID) {
 	r.mu.Lock()
-	s := r.st(o.ID)
+	s := r.st(o.Key())
 	c, had := s.capRefused[id]
 	delete(s.capRefused, id)
 	r.mu.Unlock()
@@ -1175,7 +1244,7 @@ func OverrunSummary(o Officer, ov Overrun) string {
 
 func (r *Reconciler) prompted(o Officer, n int) {
 	r.mu.Lock()
-	r.st(o.ID).promptedAt[o.InstanceName(n)] = r.now()
+	r.st(o.Key()).promptedAt[o.InstanceName(n)] = r.now()
 	r.mu.Unlock()
 }
 
@@ -1211,27 +1280,33 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			now := r.now()
-			for _, o := range r.reg.All() {
+			if r.refresh != nil && (r.refreshedAt.IsZero() || now.Sub(r.refreshedAt) >= r.refreshEvery) {
+				r.refreshedAt = now
+				r.refresh(ctx)
+			}
+			list := r.reg.All()
+			r.prune(list)
+			for _, o := range list {
 				r.mu.Lock()
-				due := !now.Before(r.st(o.ID).nextAt)
+				due := !now.Before(r.st(o.Key()).nextAt)
 				r.mu.Unlock()
 				if due {
-					r.pass(ctx, o.ID, false)
+					r.pass(ctx, o.Key(), false)
 				}
 			}
 		}
 	}
 }
 
-func (r *Reconciler) pass(ctx context.Context, id string, force bool) {
+func (r *Reconciler) pass(ctx context.Context, key string, force bool) {
 	pctx, cancel := context.WithTimeout(ctx, passTimeout)
 	defer cancel()
 	defer func() {
 		if rec := recover(); rec != nil {
-			r.log.Printf("officers: PANIC in a pass for %s: %v", id, rec)
+			r.log.Printf("officers: PANIC in a pass for %s: %v", key, rec)
 		}
 	}()
-	r.Check(pctx, id, force)
+	r.Check(pctx, key, force)
 }
 
 // FaultStrikes is how many consecutive passes must see a permanent HQ refusal

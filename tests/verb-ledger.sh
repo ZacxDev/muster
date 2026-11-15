@@ -74,12 +74,17 @@ flow enqueue
 flow ls
 flow status
 nudge next
+officer create
 officer def delete
 officer def ls
 officer def put
+officer delete
 officer item enqueue
 officer item ls
 officer item resolve
+officer ls
+officer pause
+officer resume
 officer schedule delete
 officer schedule ls
 officer schedule put
@@ -120,7 +125,9 @@ whoami"
 # 44 -> 45: `pr-session` (which of your sessions created a pull request).
 # 45 -> 46: `agent rm` (DELETE /api/agents/{name}; removes a host officer
 #   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
-WANT_COUNT=46
+# 46 -> 51: `officer ls|create|pause|resume|delete` (officers declared in the
+#   database, migration 0135; no restart).
+WANT_COUNT=51
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

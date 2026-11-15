@@ -244,6 +244,13 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}/officers",
 		"POST /teams/{id}/officers/types/{key}",
 		"POST /teams/{id}/officers/defs/{officer}",
+		// A team's DB-declared officers (officer_declared.go): requireOperatorWrite;
+		// the manager check (teamDeclared) is AFTER the principal.
+		"POST /teams/{id}/officers/declared",
+		"PUT /teams/{id}/officers/declared/{officer}",
+		"DELETE /teams/{id}/officers/declared/{officer}",
+		"POST /teams/{id}/officers/declared/{officer}/pause",
+		"POST /teams/{id}/officers/declared/{officer}/resume",
 		// A team's chief (team sharing phase 4, team_admin.go) and an agent's
 		// credential rotation: requireSession (+ same-origin for the writes);
 		// the member/manager check and the team acting context
@@ -496,6 +503,15 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
 		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		// Officers declared in the database (officer_declared.go): requireArmedHookToken.
+		"GET /api/officers/declared",
+		"POST /api/officers/declared",
+		"GET /api/officers/declared/{officer}",
+		"PUT /api/officers/declared/{officer}",
+		"DELETE /api/officers/declared/{officer}",
+		"POST /api/officers/declared/{officer}/pause",
+		"POST /api/officers/declared/{officer}/resume",
+		"GET /api/officers/runtime-options",
 	},
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
@@ -557,6 +573,15 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}",
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags",
 		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}",
+		// Officers declared in the database (officer_declared.go): requireArmedHookToken.
+		"GET /api/officers/declared",
+		"POST /api/officers/declared",
+		"GET /api/officers/declared/{officer}",
+		"PUT /api/officers/declared/{officer}",
+		"DELETE /api/officers/declared/{officer}",
+		"POST /api/officers/declared/{officer}/pause",
+		"POST /api/officers/declared/{officer}/resume",
+		"GET /api/officers/runtime-options",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
@@ -946,6 +971,14 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}":       true,
 		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": true,
 		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    true,
+		"GET /api/officers/declared":                                       true,
+		"POST /api/officers/declared":                                      true,
+		"GET /api/officers/declared/{officer}":                             true,
+		"PUT /api/officers/declared/{officer}":                             true,
+		"DELETE /api/officers/declared/{officer}":                          true,
+		"POST /api/officers/declared/{officer}/pause":                      true,
+		"POST /api/officers/declared/{officer}/resume":                     true,
+		"GET /api/officers/runtime-options":                                true,
 		"POST /api/chief/replace":                                          true,
 		"POST /api/agents":                                                 true,
 		"GET /api/doctor":                                                  true}

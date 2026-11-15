@@ -60,11 +60,28 @@ import (
 // ---------------------------------------------------------------------------
 
 // officerRuntime is the officer runtime's state on the server; nil when no
-// officer is declared.
+// officer is declared and there is no database to declare one in.
 type officerRuntime struct {
+	// reg is the LIVE roster: env officers plus the runnable DB-declared ones,
+	// swapped atomically by reloadDeclaredOfficers (officer_declared.go).
 	reg *officers.Registry
-	hq  *officers.Backends
-	rec *officers.Reconciler
+	// env is MUSTER_OFFICERS' officers, fixed at boot.
+	env []officers.Officer
+	// store is the built-in store DB-declared officers are read from; nil:
+	// none are (no database).
+	store *builtin.Store
+	// sessionInstalled: the provisioner takes the officer session settings
+	// (OfficersConfig.InstallSession was given), which a pod officer needs.
+	sessionInstalled bool
+	// reloadMu serialises roster loads; declMu guards declared and autoHost:
+	// the last load's DB-declared officers by declKey, and the host each
+	// "runtime": "auto" officer last resolved to, by instance slug.
+	reloadMu sync.Mutex
+	declMu   sync.Mutex
+	declared map[string]declaredState
+	autoHost map[string]string
+	hq       *officers.Backends
+	rec      *officers.Reconciler
 	// claimOwner names this process on an instance's session claim while it
 	// sends a re-prompt.
 	claimOwner string
@@ -287,6 +304,9 @@ type OfficersConfig struct {
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
 	HostSpawns officers.HostSpawnStore
+	// RefreshEvery is how often the wake loop re-reads the DB-declared
+	// officers (officers.Config.RefreshEvery); 0 is the default. For tests.
+	RefreshEvery time.Duration
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
 	// officer pool's OWN runner image (`image`) is pulled with
 	// (agentspec.ClaudeCodeSession.ImagePullSecret, which reaches the pod spec
@@ -398,7 +418,10 @@ func (s *Server) officerBackendBuilder(cfg OfficersConfig) (func(officers.Office
 // caller to Run. It needs the agents store and the provisioner (an officer is
 // nothing without instances), and the claude-code kind.
 func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error) {
-	if len(cfg.Officers) == 0 {
+	// With the built-in store an empty MUSTER_OFFICERS is a runtime for the
+	// officers declared in the database (officer_declared.go); without it,
+	// there is nothing to run.
+	if len(cfg.Officers) == 0 && cfg.Builtin == nil {
 		return nil, errors.New("officers: none declared")
 	}
 	// 🔴 WHAT EACH RUNTIME NEEDS, REFUSED AT BOOT BY RUNTIME
@@ -491,7 +514,12 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice}
+		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery}
+	if cfg.Builtin != nil {
+		// The DB-declared officers (migration 0135) reach every replica's
+		// loop on its refresh, whoever wrote them.
+		rcfg.Refresh = s.refreshDeclaredOfficers
+	}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)
@@ -513,7 +541,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
+	s.officerRT = &officerRuntime{reg: reg, env: append([]officers.Officer(nil), cfg.Officers...), store: cfg.Builtin,
+		sessionInstalled: cfg.InstallSession != nil,
+		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
 		hostSpawns:      cfg.HostSpawns,
 		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
@@ -546,7 +576,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		}
 		if o.Tiers == nil {
 			s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, repo %s",
-				o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
+				o.ID, o.InstanceName(1), o.InstanceName(o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
 			continue
 		}
 		var pools []string
@@ -558,6 +588,15 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	for _, o := range reg.All() {
 		s.logOfficerBackend(o)
+	}
+	if cfg.Builtin != nil {
+		// The officers declared in the database, at boot: a failure leaves the
+		// env roster running and the wake loop's refresh tries again.
+		ctx, cancel := context.WithTimeout(context.Background(), officerBootReadTimeout)
+		if err := s.reloadDeclaredOfficers(ctx); err != nil {
+			s.logger.Printf("officers: reading the officers declared in the database at boot: %v; the wake loop retries", err)
+		}
+		cancel()
 	}
 	return rec, nil
 }
@@ -840,7 +879,7 @@ func (f officerFleet) byName(ctx context.Context, o officers.Officer) (map[strin
 	}
 	out := map[string]agents.Agent{}
 	for _, a := range list {
-		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.ID == o.ID && bo.Tier == o.Tier {
+		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.Key() == o.Key() && bo.Tier == o.Tier {
 			out[a.Name] = a
 		}
 	}
@@ -878,6 +917,12 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 // Start implements officers.Fleet: create instance n with kickoff as its first
 // turn, or — when its agent exists — re-arm its first turn and start it.
 func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
+	// 🔴 NOT FOR AN OFFICER THAT IS GONE. A pass reads the roster once; a
+	// DB-declared officer deleted meanwhile has had its instances torn down,
+	// and a start now would leave an agent no officer owns.
+	if _, err := f.s.officerRT.reg.Get(o.Key()); err != nil {
+		return fmt.Errorf("officers: %s is no longer declared; not starting %s", o.ID, o.InstanceName(n))
+	}
 	if o.OnHost() {
 		return f.hostStart(ctx, o, n, kickoff)
 	}

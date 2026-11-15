@@ -53,7 +53,11 @@ The empty roster (no officer declared) exposes nothing.
 
 ## 1. Turn the runtime on (the empty roster)
 
-Set `MUSTER_OFFICERS` — an empty array is enough:
+With a database (`DATABASE_URL`) the built-in store and the officer runtime
+are on whether or not `MUSTER_OFFICERS` is set: an officer can be
+[declared in the database](#declared-in-the-database-no-restart) with no
+environment change at all. For a GitOps roster, set `MUSTER_OFFICERS` — an
+empty array is enough:
 
 ```yaml
 - name: MUSTER_OFFICERS
@@ -69,7 +73,7 @@ officers: ON — empty roster (MUSTER_OFFICERS declares none)
 officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s, schedules every 30s (UTC cron)
 ```
 
-Unset (or blank), the store is off and every `/api/officers/…` route answers
+With no database the store is off and every `/api/officers/…` route answers
 404.
 
 🔴 **A builtin officer's queue is in muster's database.** If that database
@@ -492,6 +496,51 @@ invisible character).
 stops its instances and starts none, whatever its queue holds; switch it on
 again and it resumes. Removing it from `MUSTER_OFFICERS` also stops muster
 running it; its store rows stay.
+
+## Declared in the database (no restart)
+
+An officer can be declared in muster's database instead of
+`MUSTER_OFFICERS`: one record holds its type and charter, its def, and where
+it runs. It is created, changed, paused and deleted through the API (or
+`muster officer create|pause|resume|delete|ls`) and runs at once, with no
+restart: every write swaps the live roster, and every replica re-reads it on
+its wake loop's refresh (15 s).
+
+```bash
+muster officer create scout:main --charter-file charter.md --runtime auto
+muster officer pause scout:main     # its instances stop; none starts
+muster officer resume scout:main
+muster officer delete scout:main    # its queue, schedules and instances go too
+```
+
+- It runs on the **built-in backend**, untiered, and holds no secret: no
+  `tiers`, `ship`, `ci_logs`, `transcript`, `llm`, `kube`, `image` or token.
+  Those stay `MUSTER_OFFICERS`-only.
+- `runtime` is `pod`, `host` or `auto` (the default). `auto` runs it in a
+  pod when this muster has the agent plane, else on the first of your hosts
+  that can start and close Claude Code windows; when neither qualifies it
+  does not run, and its `reason` says why. `GET /api/officers/runtime-options`
+  shows what each would pick now.
+- It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
+  refusal names each field (`{"error", "fields": [{field, error}]}`). A host
+  officer still needs a `repo`.
+- Its instance names are built on a **server-allocated slug**
+  (`instance_slug`), unique across owners, so two people may each have a
+  `scout:main`.
+- 🔴 **An env officer wins.** An officer `MUSTER_OFFICERS` declares for you
+  is listed `managed_by: env` and is read-only here (409); a database row of
+  the same id does not run beside it.
+- A team's officers are declared by its **managers**, signed in, under
+  `/teams/{id}/officers/declared` (a personal API token carries no team
+  access). A team cannot own a host officer yet.
+
+| method | path | body / query |
+|---|---|---|
+| GET / POST | `/api/officers/declared` | POST `{id, name?, charter?, policy?, runtime?, host?, repo?, connectors?, read_repos?, max_instances?, idle_scale_to_zero_after?, poll_interval?, model?, mode?, escalate_to?, paused?}` |
+| GET / PUT / DELETE | `/api/officers/declared/{officer}` | PUT: the whole record, as POST (its id and slug never change) |
+| POST | `/api/officers/declared/{officer}/pause`, `…/resume` | |
+| GET | `/api/officers/runtime-options` | `?repo=`: pod available or not, each of your hosts (spawnable, closable, qualifies, reason), what `auto` picks |
+| POST, PUT, DELETE, POST | `/teams/{id}/officers/declared[/{officer}[/pause\|/resume]]` | a team manager's, signed in |
 
 ## The admin API
 

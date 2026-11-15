@@ -34,6 +34,7 @@ DELETE /api/device
 DELETE /api/device/push
 DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
+DELETE /api/officers/declared/{officer}
 DELETE /api/officers/defs/{officer}
 DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}
 DELETE /api/officers/defs/{officer}/schedules/{name}
@@ -47,6 +48,7 @@ DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
+DELETE /teams/{id}/officers/declared/{officer}
 GET /.well-known/assetlinks.json
 GET /account
 GET /account/credentials
@@ -84,11 +86,14 @@ GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/instance
 GET /api/jobs/{id}
+GET /api/officers/declared
+GET /api/officers/declared/{officer}
 GET /api/officers/defs
 GET /api/officers/defs/{officer}/contacts
 GET /api/officers/defs/{officer}/contacts/{venue}/{handle}
 GET /api/officers/defs/{officer}/items
 GET /api/officers/defs/{officer}/schedules
+GET /api/officers/runtime-options
 GET /api/officers/types
 GET /api/officers/types/{key}
 GET /api/openrouter/models
@@ -262,6 +267,9 @@ POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel
 POST /api/jobs
+POST /api/officers/declared
+POST /api/officers/declared/{officer}/pause
+POST /api/officers/declared/{officer}/resume
 POST /api/officers/defs/{officer}/items
 POST /api/officers/defs/{officer}/items/{id}/resolve
 POST /api/plugin-threads
@@ -383,6 +391,9 @@ POST /teams/{id}/hosts/replace
 POST /teams/{id}/hosts/{token}/revoke
 POST /teams/{id}/members
 POST /teams/{id}/members/{user}/remove
+POST /teams/{id}/officers/declared
+POST /teams/{id}/officers/declared/{officer}/pause
+POST /teams/{id}/officers/declared/{officer}/resume
 POST /teams/{id}/officers/defs/{officer}
 POST /teams/{id}/officers/types/{key}
 POST /teams/{id}/plugins
@@ -395,8 +406,10 @@ POST /uploads
 POST /uploads/{id}/revoke
 PUT /api/device/push
 PUT /api/instance/branding
+PUT /api/officers/declared/{officer}
 PUT /api/officers/defs/{officer}
 PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags
 PUT /api/officers/defs/{officer}/schedules/{name}
 PUT /api/officers/types/{key}
 PUT /api/plugins/{id}/deliver-to
+PUT /teams/{id}/officers/declared/{officer}

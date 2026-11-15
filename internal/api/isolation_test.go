@@ -405,6 +405,17 @@ var isolationClasses = map[string]routeClass{
 	"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": classAdmin,
 	"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    classAdmin,
 	"POST /api/tasks/{id}/comments":                                    classAdmin,
+	// Officers declared in the database (0135, officer_declared.go): the
+	// caller's own; {officer} is A's def, which declares no runtime, so A's
+	// own answer is 409 and the ghost's (and B's) 404.
+	"GET /api/officers/declared":                   classAdmin,
+	"POST /api/officers/declared":                  classAdmin,
+	"GET /api/officers/declared/{officer}":         classAdmin,
+	"PUT /api/officers/declared/{officer}":         classAdmin,
+	"DELETE /api/officers/declared/{officer}":      classAdmin,
+	"POST /api/officers/declared/{officer}/pause":  classAdmin,
+	"POST /api/officers/declared/{officer}/resume": classAdmin,
+	"GET /api/officers/runtime-options":            classAdmin,
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
 	"POST /api/jobs":     classAdmin,
@@ -702,6 +713,13 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/chief/provision":         classParam,
 	"POST /teams/{id}/chief/stop":              classParam,
 	"POST /teams/{id}/chief/restart":           classParam,
+	// A team's DB-declared officers (0135): a manager's writes, {officer}
+	// A's officer id under the team.
+	"POST /teams/{id}/officers/declared":                  classParam,
+	"PUT /teams/{id}/officers/declared/{officer}":         classParam,
+	"DELETE /teams/{id}/officers/declared/{officer}":      classParam,
+	"POST /teams/{id}/officers/declared/{officer}/pause":  classParam,
+	"POST /teams/{id}/officers/declared/{officer}/resume": classParam,
 	// A team's connector requests (slice 4.8): {id} is a team A manages,
 	// {grant} one of that team's requests.
 	"GET /teams/{id}/connectors":                             classParam,
@@ -1751,7 +1769,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.page, 10)
 	case strings.HasPrefix(path, "/teams/{id}") || strings.HasPrefix(path, "/account/teams/{id}"):
 		id = strconv.FormatInt(o.team, 10)
-		path = strings.NewReplacer("/types/{key}", "/types/"+o.officerType, "/defs/{officer}", "/defs/"+url.PathEscape(o.officer)).Replace(path)
+		path = strings.NewReplacer("/types/{key}", "/types/"+o.officerType, "/defs/{officer}", "/defs/"+url.PathEscape(o.officer),
+			"/declared/{officer}", "/declared/"+url.PathEscape(o.officer)).Replace(path)
 	case strings.HasPrefix(path, "/officers/spawns/{id}"):
 		id = strconv.FormatInt(o.spawn, 10)
 	}
@@ -2131,6 +2150,12 @@ var controlMarkers = map[string]string{
 	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
 	// another owner's) to its place on the queue.
 	"GET /attention/open/{key}": `href="/attention/asks/`,
+	// A team's DB-declared officer writes: A (the team's manager) is let in
+	// and the officer is looked up under the team — "no such officer" — where
+	// a ghost team (and B) is refused at the team: "no such team".
+	"DELETE /teams/{id}/officers/declared/{officer}":      "no such officer",
+	"POST /teams/{id}/officers/declared/{officer}/pause":  "no such officer",
+	"POST /teams/{id}/officers/declared/{officer}/resume": "no such officer",
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

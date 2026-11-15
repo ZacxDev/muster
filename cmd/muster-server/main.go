@@ -895,8 +895,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	// The built-in officer store (internal/officers/builtin): on whenever
-	// MUSTER_OFFICERS is set — `[]`, the empty roster, included — and there is
-	// a database: the admin API (`muster officer`) and the Attention sweep.
+	// there is a database: the admin API (`muster officer`), the Attention
+	// sweep, and officers DECLARED IN THE DATABASE (migration 0135), which the
+	// runtime below runs beside MUSTER_OFFICERS' with no restart. Before 0135
+	// it needed MUSTER_OFFICERS set; an officer can now be created with none.
 	// A host officer spawn's team lending (team sharing phase 3:
 	// /officers/spawns, the chief's officer_spawn_share), wherever spawns can
 	// be kept.
@@ -904,11 +906,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.EnableHostSpawnLending(officers.NewPGHostSpawnStore(a.pool))
 	}
 	var officerStore *builtin.Store
-	if cfg.OfficersSet && a.pool != nil {
+	if a.pool != nil {
 		officerStore = builtin.NewStore(a.pool)
 		srv.EnableOfficerStore(officerStore)
 	}
-	if len(cfg.Officers) > 0 {
+	if len(cfg.Officers) > 0 || officerStore != nil {
 		ocfg := officersConfig(cfg, prov)
 		if a.pool != nil {
 			// The LLM proxy's daily budget lives here (migration 0075); an
@@ -1643,10 +1645,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		}
 		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend; %d in pods, %d on hosts); woken by polling their backends",
 			len(a.cfg.Officers), envOfficers, hq, bi, len(a.cfg.Officers)-onHost, onHost)
+	} else if a.srv != nil && a.srv.OfficerStoreOn() {
+		l.Printf("officers: ON — %s declares none; officers declared in the database (`muster officer create`) run with no restart", envOfficers)
 	} else if a.cfg.OfficersSet {
 		l.Printf("officers: ON — empty roster (%s declares none)", envOfficers)
 	} else {
-		l.Printf("officers: OFF (%s declares none)", envOfficers)
+		l.Printf("officers: OFF (%s declares none, and there is no database to declare one in)", envOfficers)
 	}
 
 	switch {

@@ -810,6 +810,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerOfficerRoutes(mux)
 	// The built-in officer store's admin API (officer_admin.go): 404 while it is off.
 	s.registerOfficerAdminRoutes(mux)
+	s.registerDeclaredOfficerRoutes(mux) // officer_declared.go
 	s.registerMirrorRoutes(mux)
 	// Suggested replies (suggest.go): the composer's set, its counts and the
 	// per-user toggle.

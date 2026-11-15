@@ -79,7 +79,7 @@ func (s *Server) registerOfficerAdminRoutes(mux Mux) {
 func (s *Server) requireOfficerStore(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.officerStore == nil {
-			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "the built-in officer store is off: it needs MUSTER_OFFICERS set (an empty [] turns it on) and a database"})
+			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "the built-in officer store is off: it needs a database (DATABASE_URL)"})
 			return
 		}
 		next(w, r)
@@ -176,18 +176,27 @@ func (s *Server) handleOfficerTypeDelete(w http.ResponseWriter, r *http.Request)
 }
 
 // officerDefView is an officer as the admin API answers it: the store's row
-// and whether MUSTER_OFFICERS declares it on the built-in backend (only then
-// does anything run it).
+// and whether the runtime RUNS it on the built-in backend — declared for THIS
+// owner, in MUSTER_OFFICERS or in the database (only then does anything run
+// it) — and where it is declared.
 type officerDefView struct {
 	builtin.DefInfo
-	Declared bool `json:"declared"`
+	Declared  bool   `json:"declared"`
+	ManagedBy string `json:"managed_by,omitempty"`
 }
 
-func (s *Server) defView(d builtin.DefInfo) officerDefView {
+// defView is owner's def d as the admin API answers it. 🔴 OWNER-AWARE, FROM
+// THE LIVE ROSTER: another owner's officer of the same id (an env one, or a
+// DB-declared one) does not make d declared, and a DB-declared officer
+// created a moment ago does.
+func (s *Server) defView(owner int64, d builtin.DefInfo) officerDefView {
 	v := officerDefView{DefInfo: d}
 	if s.officerRT != nil {
-		if o, err := s.officerRT.reg.Get(d.Officer); err == nil && o.IsBuiltin() {
-			v.Declared = true
+		if o, ok := s.officerRT.reg.ForOwner(owner, d.Officer); ok && o.IsBuiltin() {
+			v.Declared, v.ManagedBy = true, officers.ManagedByEnv
+			if o.FromDB() {
+				v.ManagedBy = officers.ManagedByDB
+			}
 		}
 	}
 	return v
@@ -201,7 +210,7 @@ func (s *Server) handleOfficerDefs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]officerDefView, 0, len(list))
 	for _, d := range list {
-		out = append(out, s.defView(d))
+		out = append(out, s.defView(adminOwner(r), d))
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"defs": out})
 }
@@ -242,7 +251,7 @@ func (s *Server) handleOfficerDefPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("officers: user %d put officer %s (enabled %v, mode %s)", adminOwner(r), d.Officer, d.Enabled, d.Mode)
-	s.writeJSON(w, http.StatusOK, s.defView(d))
+	s.writeJSON(w, http.StatusOK, s.defView(adminOwner(r), d))
 }
 
 func (s *Server) handleOfficerDefDelete(w http.ResponseWriter, r *http.Request) {
