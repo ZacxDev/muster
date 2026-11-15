@@ -64,7 +64,7 @@ done
 tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (reproducible --sort/--mtime)" 2
 
 [ -f "$ROOT/deploy/docker-compose.yml" ] || die "deploy/docker-compose.yml is missing" 2
-[ -f "$ROOT/deploy/.env.example" ] || die "deploy/.env.example is missing"
+[ -f "$ROOT/deploy/.env.example" ] || die "deploy/.env.example is missing" 2
 [ -f "$ROOT/charts/muster/Chart.yaml" ] || die "charts/muster/Chart.yaml is missing" 2
 
 rm -rf "$DIST"

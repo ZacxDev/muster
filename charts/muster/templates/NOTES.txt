@@ -32,12 +32,21 @@ muster {{ include "muster.imageTag" . }} is installed as {{ include "muster.full
 {{- end }}
 
 4. Check what is on, off or degraded, and why, from a machine with the muster CLI:
+{{- if eq .Values.auth.mode "gotrue" }}
+   (gotrue mode: the public URL is the browser listener, which refuses the
+   hook token, so doctor goes to the main port through its own port-forward)
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "muster.fullname" . }} 18105:http &
+   MUSTER_TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ $authSecret }} -o jsonpath='{.data.MUSTER_HOOK_TOKEN}' | base64 -d) \
+     muster doctor --api-url http://localhost:18105
+{{- else }}
 
    MUSTER_TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ $authSecret }} -o jsonpath='{.data.MUSTER_HOOK_TOKEN}' | base64 -d) \
      muster doctor --api-url {{ default "<your muster URL>" .Values.publicUrl }}
+{{- end }}
 
 The values per feature, upgrades and rollback: docs/kubernetes.md.
 {{- if not .Values.publicUrl }}
 
-⚠ publicUrl is not set: invites, passkeys, push, attachments and previews need it.
+⚠ publicUrl is not set: invites, passkeys, push and attachments need it.
 {{- end }}

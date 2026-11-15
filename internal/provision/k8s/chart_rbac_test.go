@@ -20,8 +20,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -57,7 +57,7 @@ const chartReleaseNS = "muster"
 
 func TestChartRBACCoversAnInstancesWholeLife(t *testing.T) {
 	for _, tc := range []struct{ set, layout string }{
-		{"full.yaml", "default"},
+		{"full.yaml", "cluster-wide"},
 		{"least-privilege.yaml", "least-privilege"},
 	} {
 		t.Run(tc.layout, func(t *testing.T) {
@@ -91,12 +91,17 @@ func TestChartRBACCoversAnInstancesWholeLife(t *testing.T) {
 
 // TestChartRBACEvaluatorRefusesWhatItMust: the evaluator's negative controls.
 // The same whole life against the least-privilege render with (a) the
-// source-Secrets Role removed, and (b) the agent-namespace ClusterRole's
-// networkpolicies rule removed, must be refused — each naming the request.
+// source-Secrets Role removed, (b) the agent-namespace ClusterRole's
+// networkpolicies rule removed, and (c) `list` removed from the namespaces
+// rule, must be refused — each naming the request. (c) pins WHERE `list` on
+// namespaces is needed: the least-privilege List reads the namespace list
+// (rolebinding.go, instanceNamespaces). The cluster-wide layout does not hold
+// it, and its whole life above passes without it.
 func TestChartRBACEvaluatorRefusesWhatItMust(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
 		{"no source-secrets Role", "get secrets " + chartReleaseNS},
 		{"no networkpolicies rule", "networkpolicies"},
+		{"no list on namespaces", "list namespaces"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := renderChart(t, "least-privilege.yaml")
@@ -114,6 +119,26 @@ func TestChartRBACEvaluatorRefusesWhatItMust(t *testing.T) {
 				}
 				cr.Rules = kept
 				r.clusterRoles[role] = cr
+			case "no list on namespaces":
+				n := 0
+				for name, cr := range r.clusterRoles {
+					for i, rule := range cr.Rules {
+						if contains(rule.Resources, "namespaces") && contains(rule.Verbs, "list") {
+							var verbs []string
+							for _, v := range rule.Verbs {
+								if v != "list" {
+									verbs = append(verbs, v)
+								}
+							}
+							cr.Rules[i].Verbs = verbs
+							n++
+						}
+					}
+					r.clusterRoles[name] = cr
+				}
+				if n != 1 {
+					t.Fatalf("instrument check: %d rule(s) grant list on namespaces in the least-privilege render, want 1", n)
+				}
 			}
 			ev, _, d := r.enforcingDriver(t)
 			err := runWholeLife(d)
@@ -184,7 +209,7 @@ func (r *chartRender) layout() string {
 	if r.env["MUSTER_AGENT_NAMESPACE_CLUSTERROLE"] != "" {
 		return "least-privilege"
 	}
-	return "default"
+	return "cluster-wide"
 }
 
 func renderChart(t *testing.T, set string) *chartRender {

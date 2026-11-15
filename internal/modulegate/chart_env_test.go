@@ -30,8 +30,8 @@ import (
 // 🔴 PER BINARY, NOT PER FILE. MUSTER_URL is a documented row, of
 // muster-preview; set on the SERVER it does nothing. So each container is
 // checked against its own binary's sections: the server container against
-// "muster-server: …" and "Tracing", the preview gateway against
-// "muster-preview" and "Tracing".
+// "muster-server: …" and "Tracing". (The chart runs no other muster binary
+// today; one added goes in chartContainerSections with its own sections.)
 //
 // 🔴 A CONTAINER THIS TEST DOES NOT KNOW IS A FAILURE. The bundled third-party
 // services (postgres, the speech-to-text and S3 images, GoTrue) read their own
@@ -49,8 +49,7 @@ import (
 // chartContainerSections: muster's own containers, by container name, and
 // the configuration.md sections ("## " headings, by prefix) whose rows they may set.
 var chartContainerSections = map[string][]string{
-	"muster":         {"muster-server", "Tracing"},
-	"muster-preview": {"muster-preview", "Tracing"},
+	"muster": {"muster-server", "Tracing"},
 }
 
 // thirdPartyContainers: every other container the chart renders, with whose
@@ -71,7 +70,7 @@ func TestChartEnvIsDocumentedForTheBinaryThatReadsIt(t *testing.T) {
 	if err != nil || len(sets) < 4 {
 		t.Fatalf("instrument check: want the chart's value sets under charts/muster/ci, found %v (%v)", sets, err)
 	}
-	seen := map[string]map[string]bool{}  // container -> names, over every set
+	seen := map[string]map[string]bool{} // container -> names, over every set
 	containersSeen := map[string]bool{}
 	for _, set := range sets {
 		for _, c := range renderedContainers(t, root, set) {
@@ -108,8 +107,7 @@ func TestChartEnvIsDocumentedForTheBinaryThatReadsIt(t *testing.T) {
 	for c, want := range map[string][]string{
 		"muster": {"DATABASE_URL", "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_NETPOL_FROM_POD_LABELS",
 			"MUSTER_AGENT_NAMESPACE_CLUSTERROLE", "MUSTER_VAPID_PRIVATE_KEY", "MUSTER_GITHUB_APP_ACCOUNTS",
-			"MUSTER_S3_ENDPOINT", "MUSTER_STT_URL", "MUSTER_GOTRUE_URL", "MUSTER_OFFICERS", "MUSTER_PLUGIN_ORIGINS"},
-		"muster-preview": {"MUSTER_URL", "PREVIEW_DOMAIN", "PREVIEW_SIGNING_KEY", "STATE_DIR"},
+			"MUSTER_S3_ENDPOINT", "MUSTER_STT_URL", "MUSTER_GOTRUE_URL", "MUSTER_OFFICERS", "MUSTER_PLUGINS"},
 	} {
 		for _, n := range want {
 			if !seen[c][n] {
@@ -120,8 +118,7 @@ func TestChartEnvIsDocumentedForTheBinaryThatReadsIt(t *testing.T) {
 	if len(seen["muster"]) < 50 {
 		t.Errorf("positive control FAILED: only %d distinct variable(s) on the server container across the sets", len(seen["muster"]))
 	}
-	t.Logf("%d value set(s); server container: %d distinct variables; preview: %d",
-		len(sets), len(seen["muster"]), len(seen["muster-preview"]))
+	t.Logf("%d value set(s); server container: %d distinct variables", len(sets), len(seen["muster"]))
 }
 
 // TestChartEnvCheckerRefusesWhatItMust is the checker's negative control,
@@ -132,7 +129,7 @@ func TestChartEnvCheckerRefusesWhatItMust(t *testing.T) {
 	got := undocumentedFor([]string{"MUSTER_PORT", "MUSTER_NOT_A_VARIABLE", "MUSTER_URL", "MUSTER_AGENT_CC_TOKEN_X"}, docs, server)
 	if strings.Join(got, ",") != "MUSTER_NOT_A_VARIABLE,MUSTER_URL" {
 		t.Errorf("undocumentedFor = %v, want [MUSTER_NOT_A_VARIABLE MUSTER_URL] (an invented name, and the preview "+
-			"gateway's MUSTER_URL on the server; MUSTER_PORT and a documented <NAME> prefix pass)", got)
+			"gateway's documented MUSTER_URL on the server; MUSTER_PORT and a documented <NAME> prefix pass)", got)
 	}
 }
 

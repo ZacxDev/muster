@@ -34,6 +34,15 @@
     "fullnameOverride": {
       "type": "string"
     },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "generate": {
+          "type": "boolean"
+        }
+      }
+    },
     "publicUrl": {
       "type": "string",
       "pattern": "^(|https?://[^/\\s]+/?)$"
@@ -366,8 +375,8 @@
             },
             "layout": {
               "enum": [
-                "default",
-                "least-privilege"
+                "least-privilege",
+                "cluster-wide"
               ]
             },
             "sourceSecretNames": {
@@ -577,9 +586,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
         "image": {
           "type": "object",
           "additionalProperties": false,
@@ -628,9 +634,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
         "image": {
           "type": "object",
           "additionalProperties": false,
@@ -684,54 +687,6 @@
               "type": "string"
             },
             "tag": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "preview": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "domain": {
-          "type": "string"
-        },
-        "pluginTokensSecret": {
-          "type": "string"
-        },
-        "existingSecret": {
-          "type": "string"
-        },
-        "storage": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "size": {
-              "type": "string"
-            },
-            "storageClass": {
-              "type": "string"
-            }
-          }
-        },
-        "ingress": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "className": {
-              "type": "string"
-            },
-            "annotations": {
-              "type": "object"
-            },
-            "tlsSecretName": {
               "type": "string"
             }
           }

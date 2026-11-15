@@ -134,48 +134,63 @@ new connector key (every stored credential is unreadable).
 {{- end -}}
 {{- end -}}
 {{- $out := deepCopy $existing -}}
+{{- /* Each wanted key: (key, a new value, the value that supplies it instead). */ -}}
 {{- $want := list -}}
 {{- if not .Values.auth.existingSecret -}}
-{{- $want = append $want (list "MUSTER_UI_PASSWORD" (randAlphaNum 24)) -}}
-{{- $want = append $want (list "MUSTER_HOOK_TOKEN" (randAlphaNum 40)) -}}
+{{- $want = append $want (list "MUSTER_UI_PASSWORD" (randAlphaNum 24) "auth.existingSecret") -}}
+{{- $want = append $want (list "MUSTER_HOOK_TOKEN" (randAlphaNum 40) "auth.existingSecret") -}}
 {{- end -}}
 {{- if and .Values.postgres.enabled (not .Values.postgres.existingSecret) -}}
-{{- $want = append $want (list "POSTGRES_PASSWORD" (randAlphaNum 32)) -}}
+{{- $want = append $want (list "POSTGRES_PASSWORD" (randAlphaNum 32) "postgres.existingSecret") -}}
 {{- end -}}
 {{- if and .Values.connectors.enabled (not .Values.connectors.existingSecret) -}}
-{{- $want = append $want (list "MUSTER_CONNECTOR_ENCRYPTION_KEY" (randBytes 32)) -}}
+{{- $want = append $want (list "MUSTER_CONNECTOR_ENCRYPTION_KEY" (randBytes 32) "connectors.existingSecret") -}}
 {{- end -}}
 {{- if and .Values.attachments.enabled (not .Values.attachments.signingKeySecret) -}}
-{{- $want = append $want (list "MUSTER_UPLOAD_SIGNING_KEY" (randAlphaNum 48)) -}}
+{{- $want = append $want (list "MUSTER_UPLOAD_SIGNING_KEY" (randAlphaNum 48) "attachments.signingKeySecret") -}}
 {{- end -}}
 {{- if and (include "muster.s3Bundled" .) (not .Values.attachments.existingSecret) -}}
-{{- $want = append $want (list "MUSTER_S3_SECRET_KEY" (randAlphaNum 40)) -}}
+{{- $want = append $want (list "MUSTER_S3_SECRET_KEY" (randAlphaNum 40) "attachments.existingSecret") -}}
 {{- end -}}
 {{- if and (include "muster.sttBundled" .) (not .Values.dictation.existingSecret) -}}
-{{- $want = append $want (list "MUSTER_STT_TOKEN" (randAlphaNum 40)) -}}
+{{- $want = append $want (list "MUSTER_STT_TOKEN" (randAlphaNum 40) "dictation.existingSecret") -}}
 {{- end -}}
 {{- if and .Values.gotrue.enabled (not .Values.gotrue.existingSecret) -}}
-{{- $want = append $want (list "MUSTER_GOTRUE_JWT_SECRET" (randAlphaNum 48)) -}}
+{{- $want = append $want (list "MUSTER_GOTRUE_JWT_SECRET" (randAlphaNum 48) "gotrue.existingSecret") -}}
 {{- end -}}
-{{- if .Values.gotrue.enabled -}}
-{{- $want = append $want (list "GOTRUE_DB_PASSWORD" (randAlphaNum 32)) -}}
+{{- if and .Values.gotrue.enabled (or .Values.secrets.generate (not .Values.gotrue.existingSecret)) -}}
+{{- $want = append $want (list "GOTRUE_DB_PASSWORD" (randAlphaNum 32) "gotrue.existingSecret") -}}
 {{- end -}}
-{{- if and .Values.preview.enabled (not .Values.preview.existingSecret) -}}
-{{- $want = append $want (list "PREVIEW_SIGNING_KEY" (randAlphaNum 48)) -}}
+{{- if and .Values.push.enabled (not .Values.push.existingSecret) -}}
+{{- /* Generated below, as a pair; listed here for secrets.generate=false. */ -}}
+{{- $want = append $want (list "" "" "push.existingSecret") -}}
+{{- end -}}
+{{- if not .Values.secrets.generate -}}
+{{- /* secrets.generate=false: nothing is made, so every feature that is on
+must name its own Secret. */ -}}
+{{- $missing := list -}}
+{{- range $want -}}
+{{- $missing = append $missing (index . 2) -}}
+{{- end -}}
+{{- if $missing -}}
+{{- fail (printf "secrets.generate=false: the chart makes no Secret, so set %s (docs/kubernetes.md#secrets)" (join ", " (uniq $missing))) -}}
+{{- end -}}
+{{- $out = dict -}}
+{{- $want = list -}}
 {{- end -}}
 {{- range $want -}}
-{{- if not (hasKey $out (index . 0)) -}}
+{{- if and (index . 0) (not (hasKey $out (index . 0))) -}}
 {{- $_ := set $out (index . 0) (index . 1) -}}
 {{- end -}}
 {{- end -}}
 {{- /* Derived, not random: rebuilt from the kept password on every render. */ -}}
-{{- if and .Values.postgres.enabled (not .Values.postgres.existingSecret) -}}
+{{- if hasKey $out "POSTGRES_PASSWORD" -}}
 {{- $_ := set $out "DATABASE_URL" (printf "postgres://muster:%s@%s:5432/muster?sslmode=disable" (index $out "POSTGRES_PASSWORD") (include "muster.postgresName" .)) -}}
 {{- end -}}
-{{- if .Values.gotrue.enabled -}}
+{{- if hasKey $out "GOTRUE_DB_PASSWORD" -}}
 {{- $_ := set $out "GOTRUE_DB_DATABASE_URL" (printf "postgres://muster_auth:%s@%s:5432/muster_auth?sslmode=disable&search_path=auth" (index $out "GOTRUE_DB_PASSWORD") (include "muster.postgresName" .)) -}}
 {{- end -}}
-{{- if and .Values.push.enabled (not .Values.push.existingSecret) (not (hasKey $out "MUSTER_VAPID_PRIVATE_KEY")) -}}
+{{- if and .Values.secrets.generate .Values.push.enabled (not .Values.push.existingSecret) (not (hasKey $out "MUSTER_VAPID_PRIVATE_KEY")) -}}
 {{- $pair := include "muster.vapidPair" . | fromYaml -}}
 {{- $_ := set $out "MUSTER_VAPID_PUBLIC_KEY" $pair.public -}}
 {{- $_ := set $out "MUSTER_VAPID_PRIVATE_KEY" $pair.private -}}

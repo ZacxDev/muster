@@ -1,4 +1,6 @@
-# The agent plane with the least-privilege RBAC layout and its admission policy.
+# The agent plane with the chart's DEFAULT RBAC: the least-privilege layout and
+# its admission policy, neither set here (the RBAC test checks this renders
+# least-privilege, so a changed default is caught).
 image:
   tag: 1.2.3
 publicUrl: https://muster.example.com
@@ -12,7 +14,3 @@ agents:
     image: ghcr.io/zacxdev/claude-code-agent:abc1234
     accounts: [team-a]
     tokensSecret: muster-claude-accounts
-  rbac:
-    layout: least-privilege
-    admissionPolicy:
-      enabled: true

@@ -1217,6 +1217,7 @@ jobs:
   #
   # Local (no cluster needed; helm + kubeconform on PATH):
   #   for f in charts/muster/ci/*.yaml; do helm lint charts/muster -f $f; done
+  #   python3 tests/chart/chart_render_test.py
   #   go test -tags chart -run '^TestChart' ./internal/modulegate/ ./internal/provision/k8s/
   #   go build -o /tmp/muster-server ./cmd/muster-server && for f in charts/muster/ci/*.yaml; do
   #     helm template t charts/muster -n muster -f $f > /tmp/r.yaml &&
@@ -1271,6 +1272,9 @@ jobs:
           fi
           grep -q "enabeld" "$RUNNER_TEMP/typo.err"
 
+      - name: what the chart renders and refuses for values no test set covers
+        run: python3 tests/chart/chart_render_test.py
+
       - name: kubeconform (strict), every rendered value set, and a negative control
         run: |
           set -euo pipefail
@@ -1311,24 +1315,44 @@ jobs:
 
   # Local: DO NOT run it on a shared workstation (it creates a cluster).
   #   kind create cluster && make image IMAGE=muster-local VERSION=ci &&
-  #   kind load docker-image muster-local:ci && tests/chart/kind-e2e.sh muster-local ci default
+  #   kind load docker-image muster-local:ci && tests/chart/kind-e2e.sh muster-local ci least-privilege
   #
-  # The chart on a real cluster, once per RBAC layout: minimal install ->
-  # /readyz -> sign in -> upgrade with the agent plane on (secrets kept) -> an
-  # agent through POST /api/agents -> its namespace, pod and NetworkPolicy ->
-  # destroy -> namespace gone -> no RBAC refusal in muster's log. The agent is
-  # NOT a real Claude session (no subscription token in CI): see the script.
+  # The chart on a real cluster. Once per RBAC layout, with the admission
+  # policy on (its default): minimal install -> /readyz -> sign in -> upgrade
+  # with the agent plane on (secrets kept) -> the policy refuses muster a
+  # namespace outside its prefix -> an agent through POST /api/agents -> its
+  # namespace, pod and NetworkPolicy -> destroy -> namespace gone -> no RBAC
+  # refusal in muster's log. The agent is NOT a real Claude session (no
+  # subscription token in CI): see the script. And the `services` leg: the
+  # bundled GoTrue, S3 store and STT RUNNING (a sign-in, an upload into the
+  # store, two clips transcribed), doctor as the notes print it, push and
+  # connector keys kept across off/on, and the documented password rotation.
   chart-kind:
-    name: helm chart on kind (${{ matrix.layout }} RBAC)
+    name: helm chart on kind (${{ matrix.leg }})
     needs: main-verdict
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        layout: [default, least-privilege]
+        leg: [least-privilege, cluster-wide, services]
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        if: matrix.leg == 'services'
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: the muster CLI and espeak-ng (services leg)
+        if: matrix.leg == 'services'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/muster" ./cmd/muster
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
 
       - name: install helm and kind (pinned by checksum)
         run: |
@@ -1350,8 +1374,8 @@ jobs:
           kind create cluster --wait 3m --image kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
           kind load docker-image muster-local:ci
 
-      - name: install, sign in, dispatch, destroy (${{ matrix.layout }} RBAC)
-        run: tests/chart/kind-e2e.sh muster-local ci "${{ matrix.layout }}"
+      - name: the chart end to end (${{ matrix.leg }})
+        run: tests/chart/kind-e2e.sh muster-local ci "${{ matrix.leg }}"
 
   # ---------------------------------------------------------------------------
   # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).

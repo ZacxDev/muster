@@ -44,9 +44,8 @@ agents:
     tokensSecret: muster-claude-accounts
     storageSize: 20Gi
   rbac:
-    layout: default
-    admissionPolicy:
-      enabled: true
+    # The opt-in wide layout (least-privilege, the default, is least-privilege.yaml).
+    layout: cluster-wide
 chief:
   dispatchOwners: [1]
   taskRouting: true
@@ -80,11 +79,3 @@ attachments:
   enabled: true
 dictation:
   enabled: true
-preview:
-  enabled: true
-  domain: preview.example.com
-  pluginTokensSecret: muster-preview-tokens
-  ingress:
-    enabled: true
-    className: nginx
-    tlsSecretName: preview-wildcard-tls

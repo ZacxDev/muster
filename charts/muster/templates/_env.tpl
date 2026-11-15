@@ -32,19 +32,25 @@ names the value that switches it on.
 {{- end }}
 {{ include "muster.secretEnv" (dict "name" "MUSTER_HOOK_TOKEN" "existing" $v.auth.existingSecret "ctx" .) }}
 {{- if include "muster.gotrueOn" . }}
+{{- if not $v.gotrue.enabled }}
+{{- /* Your own GoTrue: without these the server would be pointed at a bundled
+GoTrue that is not running, with a JWT secret no Secret holds. */ -}}
+{{- if not $v.gotrue.url }}
+{{- fail "auth.mode=gotrue with gotrue.enabled=false: set gotrue.url (your GoTrue) and gotrue.existingSecret (its JWT secret, key MUSTER_GOTRUE_JWT_SECRET), or set gotrue.enabled=true for the bundled one" }}
+{{- end }}
+{{- if not $v.gotrue.existingSecret }}
+{{- fail "auth.mode=gotrue with gotrue.enabled=false: set gotrue.existingSecret (your GoTrue's JWT secret, key MUSTER_GOTRUE_JWT_SECRET); the chart generates it only for the bundled GoTrue" }}
+{{- end }}
+{{- end }}
 - name: MUSTER_GOTRUE_URL
   value: {{ default (printf "http://%s-gotrue:9999" $full) $v.gotrue.url | quote }}
 {{ include "muster.secretEnv" (dict "name" "MUSTER_GOTRUE_JWT_SECRET" "existing" $v.gotrue.existingSecret "ctx" .) }}
 - name: MUSTER_BROWSER_PORT
   value: {{ $v.service.browserPort | quote }}
 {{- end }}
-{{- if or $v.plugins $v.preview.enabled }}
+{{- if $v.plugins }}
 - name: MUSTER_PLUGINS
   value: "1"
-{{- end }}
-{{- if $v.preview.enabled }}
-- name: MUSTER_PLUGIN_ORIGINS
-  value: {{ printf "https://*.%s" (required "preview.domain is required with preview.enabled" $v.preview.domain) | quote }}
 {{- end }}
 {{- if $v.chief.taskRouting }}
 - name: MUSTER_TASK_ROUTING

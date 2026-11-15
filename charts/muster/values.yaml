@@ -13,15 +13,21 @@
 #
 # SECRETS. Every secret the chart can make itself (the UI password, the hook
 # token, the Postgres password, VAPID keys, the connector key, the upload
-# signing key, the GoTrue JWT secret, the STT token, the bundled store's key,
-# the preview signing key) is generated ONCE, on first install, into the Secret
+# signing key, the GoTrue JWT secret and database password, the STT token, the
+# bundled store's key) is generated ONCE, on first install, into the Secret
 # <release>-muster-generated, and read back with `lookup` on every upgrade, so
 # an upgrade keeps it. That Secret carries `helm.sh/resource-policy: keep`, so
 # `helm uninstall` leaves it (and the Postgres volume) behind. Each feature also
 # takes an `existingSecret` instead; then the chart generates nothing for it.
 # ⚠ `lookup` needs a live cluster: `helm template`, `--dry-run` and tools that
-# render without one (Argo CD) get a NEW value on every render. With those, use
-# `existingSecret` for everything. See docs/kubernetes.md#secrets.
+# render without one (Argo CD) get a NEW value on every render. With those, set
+# secrets.generate=false and give every feature its `existingSecret`. See
+# docs/kubernetes.md#secrets.
+secrets:
+  # false: the chart makes no Secret at all, and refuses to render while a
+  # feature that is on has no `existingSecret` (the error names the value).
+  # For tools that render without a cluster (Argo CD; docs/kubernetes.md#secrets).
+  generate: true
 
 # -- The muster image (ghcr.io/zacxdev/muster, linux/amd64 + linux/arm64).
 image:
@@ -113,6 +119,9 @@ postgres:
   # A bundled single-instance Postgres StatefulSet with a PVC. It is not a
   # backup: see docs/kubernetes.md#postgres.
   enabled: true
+  # 🔴 A MAJOR-VERSION change (16 -> 17) cannot open the old data directory:
+  # it needs a dump and restore (docs/kubernetes.md#postgres). The tag moves
+  # only within 16.
   image:
     repository: postgres
     tag: 16-alpine
@@ -221,23 +230,26 @@ agents:
   # Kubernetes RBAC for muster's ServiceAccount (DOCS/provisioner.md#kubernetes-rbac).
   rbac:
     create: true
-    # `default`: the agent-namespace ClusterRole bound cluster-wide
-    # (ClusterRoleBinding), plus namespaces. `least-privilege`: sets
-    # MUSTER_AGENT_NAMESPACE_CLUSTERROLE; the cluster-wide grant shrinks to
-    # namespaces, RoleBinding get/create and `bind` on that one ClusterRole,
-    # muster binds itself inside each agent namespace, and a Role grants
-    # `get` on Secrets in the release namespace (deploy-key and image-pull
-    # sources).
-    layout: default
+    # `least-privilege` (the default): sets MUSTER_AGENT_NAMESPACE_CLUSTERROLE;
+    # the cluster-wide grant is namespaces, RoleBinding get/create and `bind`
+    # on one ClusterRole; muster binds itself inside each agent namespace, and
+    # a Role grants `get` on Secrets in the release namespace (deploy-key and
+    # image-pull sources).
+    # `cluster-wide` (opt-in): the agent-namespace ClusterRole bound
+    # cluster-wide (ClusterRoleBinding), plus namespaces: muster can then read
+    # Secrets and create Deployments in EVERY namespace.
+    layout: least-privilege
     # least-privilege only: the Secret names that Role may read
     # (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS' and MUSTER_OFFICER_IMAGE_PULL_SECRET's
     # sources). [] = every Secret in the release namespace.
     sourceSecretNames: []
-    # Optional: a ValidatingAdmissionPolicy that refuses a RoleBinding write by
-    # muster's ServiceAccount outside namespacePrefix (Kubernetes >= 1.30).
-    # Closes the gap the least-privilege layout names. DOCS/provisioner.md#kubernetes-rbac
+    # A ValidatingAdmissionPolicy (Kubernetes >= 1.30) that refuses, for
+    # muster's ServiceAccount only: creating or deleting a namespace whose name
+    # does not start with namespacePrefix, and writing or deleting a
+    # RoleBinding outside such a namespace. What it does NOT restrict:
+    # docs/kubernetes.md#the-agent-plane.
     admissionPolicy:
-      enabled: false
+      enabled: true
 
 # ----------------------------------------------------------------------------
 # THE CHIEF, your fleet agent (DOCS/chief.md). Each user turns it on under
@@ -311,7 +323,8 @@ push:
   existingSecret: ""
 
 # FILE ATTACHMENTS: MUSTER_S3_* and MUSTER_UPLOAD_SIGNING_KEY (DOCS/uploads.md).
-# Needs publicUrl. Either the bundled store (s3.enabled) or your own.
+# Needs publicUrl. Either your own store (`endpoint`) or, with no endpoint, the
+# bundled one (`s3` below).
 attachments:
   enabled: false
   # Your own store: MUSTER_S3_ENDPOINT, MUSTER_S3_BUCKET, MUSTER_S3_REGION, and
@@ -326,10 +339,9 @@ attachments:
   maxBytes: ""
 
 # The bundled S3-compatible store for attachments (a single-node MinIO-API
-# server, the same image the Compose file's `s3` profile runs). Used when
-# attachments.endpoint is empty.
+# server, the same image the Compose file's `s3` profile runs). It runs when
+# attachments.enabled is on and attachments.endpoint is empty.
 s3:
-  enabled: false
   image:
     repository: pgsty/silo
     tag: RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
@@ -346,9 +358,9 @@ dictation:
   # A Secret with MUSTER_STT_TOKEN. Empty: generated (bundled service only).
   existingSecret: ""
 
-# The bundled CPU speech-to-text service (the Compose file's `stt` profile).
+# The bundled CPU speech-to-text service (the Compose file's `stt` profile). It
+# runs when dictation.enabled is on and dictation.url is empty.
 stt:
-  enabled: false
   image:
     repository: ghcr.io/speaches-ai/speaches
     tag: 0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
@@ -364,36 +376,16 @@ stt:
 # GOTRUE (per-user sign-in, auth.mode=gotrue). DOCS/auth.md#gotrue
 gotrue:
   # Run a bundled GoTrue on its own database in the bundled Postgres. Off with
-  # auth.mode=gotrue: give `url` and a JWT-secret Secret of your own.
+  # auth.mode=gotrue: `url` and `existingSecret` are then both required (the
+  # render fails without them).
   enabled: false
   # MUSTER_GOTRUE_URL for your own GoTrue.
   url: ""
   # A Secret with MUSTER_GOTRUE_JWT_SECRET (at least 32 characters). Empty:
-  # generated (bundled GoTrue only).
+  # generated (bundled GoTrue only). With secrets.generate=false and the
+  # bundled GoTrue, it must also hold GOTRUE_DB_PASSWORD and
+  # GOTRUE_DB_DATABASE_URL (docs/kubernetes.md#secrets).
   existingSecret: ""
   image:
     repository: supabase/gotrue
     tag: v2.197.0
-
-# ----------------------------------------------------------------------------
-# THE PREVIEW GATEWAY, muster-preview (DOCS/previews.md). Needs plugins and a
-# wildcard DNS zone. Its variables: DOCS/configuration.md#muster-preview-the-preview-gateway
-preview:
-  enabled: false
-  # PREVIEW_DOMAIN: the preview zone (preview.example.com). The ingress
-  # serves *.<domain> to the gateway.
-  domain: ""
-  # A Secret holding a `tokens` key: the viewer plugin token(s) minted on
-  # /plugins, one per line (PLUGIN_TOKENS_FILE). Required.
-  pluginTokensSecret: ""
-  # A Secret with PREVIEW_SIGNING_KEY. Empty: generated.
-  existingSecret: ""
-  storage:
-    size: 1Gi
-    storageClass: ""
-  ingress:
-    enabled: false
-    className: ""
-    annotations: {}
-    # A wildcard TLS Secret for *.<domain>.
-    tlsSecretName: ""

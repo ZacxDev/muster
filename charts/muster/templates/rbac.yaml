@@ -11,9 +11,9 @@ life against exactly what this file renders, in both layouts.
 {{- $sa := include "muster.serviceAccountName" . }}
 {{- $role := include "muster.agentNamespaceRole" . }}
 {{- $base := include "muster.clusterScopedName" . }}
-# The rights muster needs INSIDE an agent namespace. Bound cluster-wide in the
-# default layout; bound by muster itself, per agent namespace, in the
-# least-privilege one.
+# The rights muster needs INSIDE an agent namespace. Bound by muster itself, per
+# agent namespace, in the least-privilege layout (the default); bound
+# cluster-wide in the cluster-wide one.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -106,9 +106,12 @@ subjects:
   - kind: ServiceAccount
     name: {{ $sa }}
     namespace: {{ .Release.Namespace }}
-{{- else if eq .Values.agents.rbac.layout "default" }}
-# The default layout: the agent-namespace rights in EVERY namespace, plus the
-# namespaces themselves (created at dispatch).
+{{- else if eq .Values.agents.rbac.layout "cluster-wide" }}
+# The cluster-wide layout (opt-in): the agent-namespace rights in EVERY
+# namespace, plus the namespaces themselves (created at dispatch). No `list`:
+# the driver lists namespaces only in the least-privilege layout
+# (rolebinding.go, instanceNamespaces); here List reads Deployments and Pods
+# across all namespaces instead.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -118,7 +121,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
-    verbs: [get, list, create, delete]
+    verbs: [get, create, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -150,6 +153,6 @@ subjects:
     name: {{ $sa }}
     namespace: {{ .Release.Namespace }}
 {{- else }}
-{{- fail (printf "agents.rbac.layout must be default or least-privilege, not %q" .Values.agents.rbac.layout) }}
+{{- fail (printf "agents.rbac.layout must be least-privilege or cluster-wide, not %q" .Values.agents.rbac.layout) }}
 {{- end }}
 {{- end }}

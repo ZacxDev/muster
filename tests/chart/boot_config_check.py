@@ -50,10 +50,24 @@ def rsa_pem() -> str:
         return open(p).read()
 
 
-def fixture_secrets() -> dict:
+def vapid_pair(binary) -> dict:
+    # A pair the server's own boot check accepts: made by the server itself.
+    out = subprocess.run([binary, "vapid", "generate"], check=True, capture_output=True, text=True).stdout
+    return dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+
+
+def fixture_secrets(binary) -> dict:
     """The Secrets a value set names as existingSecret, with values of the
     shape the server checks (lengths, encodings). Names match charts/muster/ci/."""
     return {
+        "muster-gotrue": {"MUSTER_GOTRUE_JWT_SECRET": "fixture-gotrue-jwt-secret-0123456789abcdef"},
+        "muster-postgres": {"POSTGRES_PASSWORD": "fixture-pg-password",
+                            "DATABASE_URL": "postgres://muster:fixture-pg-password@db.example.invalid:5432/muster"},
+        "muster-connectors": {"MUSTER_CONNECTOR_ENCRYPTION_KEY": base64.b64encode(bytes(range(32))).decode()},
+        "muster-push": vapid_pair(binary),
+        "muster-s3": {"MUSTER_S3_ACCESS_KEY": "fixture-access", "MUSTER_S3_SECRET_KEY": "fixture-secret-key-0123456789"},
+        "muster-upload-signing": {"MUSTER_UPLOAD_SIGNING_KEY": "fixture-upload-signing-key-0123456789abcdef"},
+        "muster-stt": {"MUSTER_STT_TOKEN": "fixture-stt-token"},
         "muster-database": {"DATABASE_URL": "postgres://muster:x@db.example.invalid:5432/muster"},
         "muster-auth": {"MUSTER_UI_PASSWORD": "fixture-password-0123", "MUSTER_HOOK_TOKEN": "fixture-hook-token-0123456789"},
         "muster-claude-accounts": {
@@ -143,7 +157,7 @@ def main():
     ap.add_argument("rendered")
     ap.add_argument("--expect-refusal", metavar="REGEX")
     a = ap.parse_args()
-    env = build_env(load(a.rendered), fixture_secrets())
+    env = build_env(load(a.rendered), fixture_secrets(a.binary))
     alive, out = run(a.binary, env)
     refusals = [l for l in out.splitlines() if re.search(r"\bconfig: ", l)]
     dialled = "db: connect attempt" in out
