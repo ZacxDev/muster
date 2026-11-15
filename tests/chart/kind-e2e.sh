@@ -170,7 +170,8 @@ services_leg() {
   code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Cookie: $COOKIE" "$PUBLIC/tasks")"
   [ "$code" = 200 ] || fail "[gotrue] the GoTrue session does not open the board ($code)"
   code="$(gotrue_signin "not-$pw")"
-  [ "$code" = 401 ] && [ ! -s "$WORK/cookie" ] || fail "[gotrue] a WRONG password answered $code with cookie '$(cat "$WORK/cookie")'"
+  # (the cookie file holds a lone newline when no cookie was set: compare its text)
+  [ "$code" = 401 ] && [ -z "$(cat "$WORK/cookie")" ] || fail "[gotrue] a WRONG password answered $code with cookie '$(cat "$WORK/cookie")'"
   grep -q "login: user 1 signed in" <(kubectl -n "$NS" logs "deploy/$FULL" --tail=-1) ||
     fail "[gotrue] muster's log has no 'login: user 1 signed in'"
   echo "ok   [gotrue] a claimed login signs in through the bundled GoTrue and opens the board; a wrong password is 401"
