@@ -23,6 +23,11 @@ import (
 //   - readPerson: it yields a user to act as, notify, authenticate a credential
 //     for or look up by name, so it must be persons only. Outside this
 //     package it must use PersonIDs; inside, `kind = 'person'`.
+//   - readEnabledPerson: readPerson for a credential honoured on every use
+//     with no sign-in behind it, or a per-owner loop that must skip a disabled
+//     account, so it must also refuse a DISABLED owner, through
+//     EnabledPersonIDs (#681: a disabled person's mirror tokens kept
+//     connecting because Authenticate filtered through PersonIDs alone).
 //   - readTeam: it reads teams on purpose (teams.go).
 //   - readByID: it reads one row by an id it was handed (a principal being
 //     built, a row being locked, a disabled check) and returns no new user.
@@ -32,9 +37,10 @@ var usersReads = map[string]string{
 	"internal/chiefnudge PG.Owners":                        readPerson,
 	"internal/devices PGStore.Redeem":                      readByID,
 	"internal/devices PGStore.Authenticate":                readPerson,
-	"internal/flows PGStore.AuthenticateRunner":            readPerson,
-	"internal/focus PGStore.Owners":                        readPerson,
-	"internal/mirror PGStore.Authenticate":                 readPerson,
+	"internal/flows PGStore.AuthenticateRunner":            readEnabledPerson,
+	"internal/focus PGStore.Owners":                        readEnabledPerson,
+	"internal/mirror PGStore.Authenticate":                 readEnabledPerson,
+	"internal/mirror PGStore.TokenLive":                    readEnabledPerson, // a live connection's recheck: Authenticate's rule
 	"internal/officers/builtin Store.UsersExist":           readPerson,
 	"internal/plugins PGStore.CreatePairRequest":           readPerson,
 	"internal/plugins PGStore.Authenticate":                readPerson,
@@ -45,8 +51,8 @@ var usersReads = map[string]string{
 	"internal/users guardLastAdmin":                        readByID, // admins only; a team is never an admin (CHECK)
 	"internal/users PGStore.SetRole":                       readByID,
 	"internal/users PGStore.ListTeams":                     readTeam,
-	"internal/users PGStore.TeamNames":                     readTeam, // the names of the caller's own teams (task board groups, Owner select)
-	"internal/users PGStore.TeamMembers":                   readByID, // the members of a team id the manager page was handed
+	"internal/users PGStore.TeamNames":                     readTeam,   // the names of the caller's own teams (task board groups, Owner select)
+	"internal/users PGStore.TeamMembers":                   readByID,   // the members of a team id the manager page was handed
 	"internal/users PGStore.TeamNotifyMembers":             readPerson, // a team officer's push recipients: persons only (kind = 'person')
 	"internal/users lockTeam":                              readTeam,
 	"internal/users PGStore.AddTeamMemberByEmailAsManager": readPerson,
@@ -63,9 +69,10 @@ var usersReads = map[string]string{
 }
 
 const (
-	readPerson = "persons only"
-	readTeam   = "teams on purpose"
-	readByID   = "one row by an id it was handed"
+	readPerson        = "persons only"
+	readEnabledPerson = "enabled persons only"
+	readTeam          = "teams on purpose"
+	readByID          = "one row by an id it was handed"
 )
 
 var readsUsers = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?users\b`)
@@ -107,7 +114,7 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 					}
 					// A read whose only users-table SQL is the shared PersonIDs
 					// subquery spells no "FROM users" of its own: count it too.
-					if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "PersonIDs" {
+					if sel, ok := n.(*ast.SelectorExpr); ok && (sel.Sel.Name == "PersonIDs" || sel.Sel.Name == "EnabledPersonIDs") {
 						if id, ok := sel.X.(*ast.Ident); ok && id.Name == "users" {
 							hit = true
 						}
@@ -140,6 +147,10 @@ func TestEveryUsersReadIsLedgered(t *testing.T) {
 		case readPerson:
 			if inUsers && !strings.Contains(s.body, "kind = 'person'") || !inUsers && !strings.Contains(s.body, "users.PersonIDs") {
 				t.Errorf("%s is ledgered persons-only but does not filter through %s", k, map[bool]string{true: "kind = 'person'", false: "users.PersonIDs"}[inUsers])
+			}
+		case readEnabledPerson:
+			if !strings.Contains(s.body, "users.EnabledPersonIDs") {
+				t.Errorf("%s is ledgered enabled-persons-only but does not filter through users.EnabledPersonIDs", k)
 			}
 		case readTeam:
 			if !strings.Contains(s.body, "kind = 'team'") {
