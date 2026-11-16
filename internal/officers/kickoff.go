@@ -395,6 +395,12 @@ const (
 	// failed Tekton TaskRuns' failing tests and error lines). Offered to a
 	// shipping officer with a `ci_logs` block only; read-only.
 	ToolCILogs = "officer_ci_logs"
+	// ToolPublicBranch names (and muster records) the branch a draft
+	// officer's item is pushed to in a ship repository marked public: a
+	// neutral name with no officer id and no item number
+	// (officers.NewPublicBranch). Offered to a draft officer with at least one
+	// public repository only.
+	ToolPublicBranch = "officer_public_branch"
 	// ToolAskPerson asks a named HQ member a question about an item (HQ's
 	// asks route); asking ends the instance's lease on it. Every officer's.
 	ToolAskPerson = "officer_ask_person"
@@ -479,6 +485,8 @@ func ToolOffered(o Officer, tool string) bool {
 		return o.Ship.IsShepherd()
 	case ToolCILogs:
 		return o.Ship != nil && o.CILogs != nil
+	case ToolPublicBranch:
+		return o.Ship.IsDraft() && len(publicRepos(o)) > 0
 	case ToolKubeRead:
 		return len(o.KubeClusters()) > 0
 	case ToolObsRaw:
@@ -618,6 +626,10 @@ func draftShipNote(o Officer) string {
 	s := o.Ship
 	var repos []string
 	for _, r := range s.RepoList(o.Repo) {
+		if r.Public {
+			repos = append(repos, fmt.Sprintf("%s (PUBLIC: the branch %s names for your item, off origin/%s)", r.Repo, ToolPublicBranch, r.Base))
+			continue
+		}
 		repos = append(repos, fmt.Sprintf("%s (branches %s%s/<item>-<slug> off origin/%s)", r.Repo, r.BranchPrefix, Slug(o.ID), r.Base))
 	}
 	return fmt.Sprintf(`
@@ -632,7 +644,21 @@ Every pull request body must start with this exact line:
 (with your item's number), and must have the sections %[6]s, each heading on a line of its own. Cite evidence by audit id; never quote a credential or any credential-shaped value — muster refuses a diff, title or body that holds one.
 muster reads the comparison of every pull request you open or edit and refuses it (409) when it changes a forbidden path of that repository or a .gitattributes file, removes a PersistentVolumeClaim, PersistentVolume, CloudNativePG or Canary manifest, or carries a credential-shaped value; HQ is told. That manifest rule is only a best-effort early refusal: the authoritative check is the repository's own CI render-diff gate on every officer/* pull request, where the repository runs one (muster does not check that it does), so never delete or rename a volume, database or canary by any route. The same check covers pushes: after every push to a branch with an open pull request, muster reads that comparison again and CLOSES the pull request on a hit (HQ is told; you cannot reopen it), so check a fix before you push it. Limits: %[7]d open pull requests per repository, %[8]d new per UTC day, %[9]d per item. You never mark ready, merge, tag or release: a human reviews the draft.`,
 		strings.Join(repos, "; "), GitHubConnector, onlyConnector(o), Slug(o.ID), strings.Replace(BodyFirstLine(o.ID, 0), "item 0", "item <n>", 1),
-		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, s.NewPRsPerDay(), MaxPRsPerItem) + docsOnlyNote(o) + ciLogsNote(o)
+		strings.Join(BodySections, ", "), MaxOpenPRsPerRepo, s.NewPRsPerDay(), MaxPRsPerItem) + publicDraftNote(o) + docsOnlyNote(o) + ciLogsNote(o)
+}
+
+// publicDraftNote tells a draft officer with a public repository how its
+// branch and body differ there ("" when it has none).
+func publicDraftNote(o Officer) string {
+	public := publicRepos(o)
+	if len(public) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+In the PUBLIC repositories (%s) the branch and the body carry no officer id and no item number: call %s{repo, item_id, slug} once you hold the item (slug: lower-case words joined by '-', no digits) and push ONLY the branch it answers (muster records which item it is for; any other branch there is refused). There the body's first line is exactly:
+%s
+instead of the line above, followed by the same sections; never write your officer id or the item number in a branch, title, body or comment there.`,
+		strings.Join(public, ", "), ToolPublicBranch, PublicBodyFirstLine)
 }
 
 // docsOnlyNote tells a docs-only draft officer what its pull requests may

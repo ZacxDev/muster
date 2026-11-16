@@ -264,7 +264,7 @@ func ToolCapability(tool string) (capability string, known bool) {
 		return CapGapTasks, true
 	case ToolPRContext:
 		return CapPRContext, true
-	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady, ToolShepherdReady, ToolShepherdMergeAsk, ToolCILogs:
+	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady, ToolShepherdReady, ToolShepherdMergeAsk, ToolCILogs, ToolPublicBranch:
 		return CapShip, true
 	}
 	return "", false
