@@ -6,28 +6,43 @@
 
 **Claude Code · Codex · opencode** (any model, incl. OpenRouter) **· anything else you run in tmux.**<br>
 When a Claude Code session needs you, you get a push, answer from your phone, and it carries on.<br>
-Self-hosted on your own machines, over your own Tailscale network.
+Self-hosted: start on this machine at `http://localhost`, then add your phone over your own Tailscale network.
 
 [![Latest release](https://img.shields.io/github/v/release/ZacxDev/muster?label=release&color=e5b84b)](https://github.com/ZacxDev/muster/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/ZacxDev/muster?color=7c5cff)](LICENSE)
 [![Self-hosted with Docker Compose](https://img.shields.io/badge/self--hosted-Docker%20Compose-2496ED?logo=docker&logoColor=white)](INSTALL.md)
 [![Runs on your tailnet](https://img.shields.io/badge/network-your%20tailnet-242424?logo=tailscale&logoColor=white)](#how-it-works)
 
-<img src="docs/img/hero.gif" width="300" alt="On a phone: the sidebar lists every session on two machines, called by their work (Claude Code sessions, Codex windows, an opencode session and a shell). The Claude Code session 'Rate-limit the public API' asks whether to limit per API key or per client IP and jumps to the top with a count; one tap opens its chat, Per API key and Submit answer it, the session runs its tests and says it is done, and the list ends with nothing waiting">
+<img src="docs/img/hero.gif" width="300" alt="On a phone: the sidebar lists every session on two machines, called by their work. Searching 'opencode' finds the opencode session and 'codex' finds the two Codex windows; one Codex window opens as a live terminal. Back in the list, the Claude Code session 'Rate-limit the public API' asks whether to limit per API key or per client IP and jumps to the top with a count; one tap opens its chat, Per API key and Submit answer it, the session runs its tests and says it is done, and the list ends with nothing waiting">
 
 </div>
 
 ## Quick start
 
-Paste this one prompt into the coding agent (Claude Code, Codex, opencode, Gemini
-CLI, …) on the machine that will run the server, then on each further machine:
+**On this machine, in one line** (Docker with Compose v2, and tmux; nothing
+else, no account):
+
+```sh
+curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh
+```
+
+It starts muster at `http://localhost:8105` with every secret generated (no
+`.env` to fill in), shows this machine's tmux sessions, and runs
+`muster doctor`. Or from a clone:
+`docker compose -f deploy/docker-compose.yml up -d --wait`. Both are in
+[docs/quickstart-local.md](docs/quickstart-local.md).
+
+**Add your phone** with Tailscale: HTTPS on your own tailnet, for the phone,
+push notifications and your other machines
+([docs/quickstart-local.md#add-your-phone](docs/quickstart-local.md#add-your-phone)).
+
+**Your other machines, or the whole install over Tailscale from the start:**
+paste this one prompt into the coding agent (Claude Code, Codex, opencode,
+Gemini CLI, …) on each machine ([the full install](#install)):
 
 ```text
 Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself.
 ```
-
-You need Tailscale on every machine and your phone, Docker on one machine, and
-tmux everywhere. [What it sets up, and installing it by hand](#install).
 
 ## What you get
 
@@ -39,7 +54,7 @@ tmux everywhere. [What it sets up, and installing it by hand](#install).
 <sub>Every tmux window on every machine, Claude Code, Codex, opencode and shells alike, with the ones waiting on you first.</sub>
 </td>
 <td align="center" valign="top" width="33%">
-<img src="docs/img/ask-flow.gif" width="220" alt="On a phone: the sidebar lists sessions on two machines; 'Write the 2.4 release notes' asks whether to tag and publish the release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"><br>
+<img src="docs/img/ask-card.png" width="220" alt="A Claude Code session, 'Write the 2.4 release notes', on a phone: its question, whether to tag and publish v2.4.0 now, drawn as a form with Publish now, Hold for review and Other, and a Submit answers button"><br>
 <b>Agents ask instead of stopping</b><br>
 <sub>A Claude Code question becomes a form on your phone, pushed with its text; answer it and the session carries on. One-time setup per machine.</sub>
 </td>
@@ -67,6 +82,12 @@ tmux everywhere. [What it sets up, and installing it by hand](#install).
 </td>
 </tr>
 </table>
+
+<sub>Sessions are called by a **name**: the one you give with **Rename…**, or
+their first good focus title ([focus](docs/features.md#focus): optional, needs
+an OpenRouter key). Without either, a window shows its tmux session and window
+(`work:1`), or a label you give that tmux session (`muster-mirror
+-labels-file`), as the shells and Codex windows in these pictures do.</sub>
 
 - **A push when a session needs you, and one queue for everything waiting.** A
   session's stop is pushed once and never quoted; asks are pushed with their
@@ -104,6 +125,8 @@ tmux everywhere. [What it sets up, and installing it by hand](#install).
 - **Officers** need Kubernetes, or run in the Compose stack as host-spawned
   sessions on one opted-in machine: [docs/features.md](docs/features.md#officers).
 
+<p align="center"><img src="docs/img/ask-flow.gif" width="270" alt="On a phone: the sidebar lists sessions on two machines; 'Write the 2.4 release notes' asks whether to tag and publish the release, and jumps to the top with an Asks count; the Asks page shows the question; in the session, tapping Publish now and Submit answers it, and the agent tags and publishes the release"></p>
+
 </details>
 
 <p align="center">
@@ -127,6 +150,8 @@ agents** that muster starts in Kubernetes pods:
 The components and what each trusts: [docs/architecture.md](docs/architecture.md).
 
 ## Install
+
+### The full install, phone and every machine
 
 You need:
 
@@ -279,8 +304,8 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
 - **An interactive mirror is a shell on that host.** Anyone who can type into
   that host's Terminal view (after a recent sign-in) can run commands as the
   user `muster-mirror` runs as.
-- **Agent dispatch is opt-in and only lightly proven.** The repository ships no
-  Kubernetes manifests.
+- **Agent dispatch is opt-in and only lightly proven.** It needs Kubernetes:
+  the Helm chart in `charts/muster` installs it ([docs/kubernetes.md](docs/kubernetes.md)).
 
 The full list is in [docs/limits.md](docs/limits.md).
 

@@ -16,9 +16,8 @@ import { Page } from '@playwright/test';
 // ([data-mirror-name], which carries data-session-name=<source> only when the
 // name is a human one, internal/ui/session_name.go).
 //
-// Ported from the marketing demo fleet's film checks (devrc
-// marketing/muster/demo/film-checks.mjs, `namedSessions`), so the README's
-// images and the marketing films hold one rule.
+// The same rule the demo-fleet media outside this repository is held to
+// (docs/testing.md), so every image the README shows holds one rule.
 
 export type Title = { where: string; name: string; code: string; session?: string; source?: string; nameable: boolean };
 

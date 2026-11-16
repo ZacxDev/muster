@@ -806,6 +806,8 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await card.scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await askFlow.frame(page, 2.0);
+  // The README's still of the same moment: the question as a form, unanswered.
+  await shoot(page, 'ask-card.png');
   const choice = card.getByText('Publish now', { exact: true });
   await tapDot(page, choice, 0.6, askFlow);
   await choice.tap();
