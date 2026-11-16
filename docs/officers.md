@@ -1040,13 +1040,15 @@ dispatch both ask them.
   HQ decides which items and outcomes take each). `authors` is
   `{"<login>": "<text>"}`: HQ mails each of the item's `payload.authors` its
   own text, on `done` or `escalated` (HQ's officer guide, §5i "Author mail").
-  `attributed_prs` (PR numbers, at most 10) with `attribution`
+  `attributed_prs` (PR numbers) with `attribution`
   (`likely`, the default, or `confirmed`) name the PRs an `escalated`
   finding is attributed to, and HQ sends each kept PR's author the escalation
   card (§5b "Attributed PRs"). `tickets` is a release-ticket item's links,
   `[{ticket_id, pr, attribution, gist}]`. muster forwards each **as sent**,
   like `investigation`, and checks none of them: HQ's decoder is the one
-  schema, and its `400` comes back with the item still held. A field the
+  schema, and its `400` comes back with the item still held. The tool's
+  schema describes each field's shape and copies none of HQ's bounds, which
+  would drift from HQ's. A field the
   instance does not send is **no key** in the body — never `null` or `[]`,
   which an HQ that predates the field refuses; a value the instance did send,
   `null` or `[]` included, is forwarded unchanged. (Before this, muster

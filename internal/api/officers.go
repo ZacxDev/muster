@@ -1572,19 +1572,17 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 		"`authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, " +
 		"and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it."
 	props["authors"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"},
-		"description": "Optional, outcome done or escalated only: {\"<GitHub login>\": \"the text HQ mails that author\"}. Every login must be one of " +
-			"your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. " +
-			"HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none."}
-	props["attributed_prs"] = map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": officers.MaxLinks,
-		"description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's " +
-			"payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. " +
-			"On any other outcome it is a 400."}
+		"description": "Optional, outcome done or escalated: {\"<GitHub login>\": \"the text HQ mails that author\"}, each login one of " +
+			"your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held."}
+	props["attributed_prs"] = map[string]any{"type": "array", "items": map[string]any{"type": "integer"},
+		"description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. " +
+			"HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400."}
 	props["attribution"] = map[string]any{"type": "string",
-		"description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400."}
+		"description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400."}
 	props["tickets"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
-		"description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, " +
-			"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], " +
-			"each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400."}
+		"description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, " +
+			"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], " +
+			"each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400."}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder

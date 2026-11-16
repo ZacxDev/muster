@@ -118,22 +118,21 @@ officer_gap_task
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -180,7 +179,7 @@ officer_gap_task
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -507,22 +506,21 @@ officer_gap_task
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -565,7 +563,7 @@ officer_gap_task
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -889,22 +887,21 @@ officer_obs_raw
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -951,7 +948,7 @@ officer_obs_raw
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -1234,22 +1231,21 @@ officer_obs_raw
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -1292,7 +1288,7 @@ officer_obs_raw
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -1576,22 +1572,21 @@ officer_obs_query
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -1638,7 +1633,7 @@ officer_obs_query
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -1946,22 +1941,21 @@ officer_task_ask
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -2008,7 +2002,7 @@ officer_task_ask
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -2320,22 +2314,21 @@ officer_obs_query
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -2382,7 +2375,7 @@ officer_obs_query
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -2620,22 +2613,21 @@ officer_pr_context
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -2682,7 +2674,7 @@ officer_pr_context
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -3027,22 +3019,21 @@ officer_obs_raw
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -3085,7 +3076,7 @@ officer_obs_raw
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
@@ -3375,22 +3366,21 @@ officer_rollout_status
     "additionalProperties": false,
     "properties": {
       "attributed_prs": {
-        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400.",
         "items": {
           "type": "integer"
         },
-        "maxItems": 10,
         "type": "array"
       },
       "attribution": {
-        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400.",
         "type": "string"
       },
       "authors": {
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "description": "Optional, outcome done or escalated: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}, each login one of your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held.",
         "type": "object"
       },
       "handoff": {
@@ -3437,7 +3427,7 @@ officer_rollout_status
         "type": "string"
       },
       "tickets": {
-        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400.",
         "items": {
           "additionalProperties": true,
           "type": "object"
