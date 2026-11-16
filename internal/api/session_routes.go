@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -359,7 +362,7 @@ func (s *Server) resolveRouteTarget(ctx context.Context, sub focus.Subject) (rou
 		// A dispatched agent is not a routing target YET — a scope cut, not a
 		// technical bar. An agent needs its own reply path (reply_to_chief as an
 		// agent tool, checked against the route's target) and a delivery that is
-		// not the send queue (a gateway turn, guarded the way handBackRoute guards
+		// not the send queue (a gateway turn, guarded the way deliverToChief guards
 		// its own). That is a follow-up; this change routes into mirrored Claude
 		// Code sessions only, through the send queue.
 		return t, routeRefusal(RefusedUnsupported, "only a mirrored Claude Code session (mirror:<claude session id>) can take a routed message; answer it yourself with reply_draft")
@@ -1322,10 +1325,9 @@ func (s *Server) relayTaskRoute(ctx context.Context, r plugins.Route) (plugins.R
 // chief (Route.AnswersToChief: a REQUEST route, a ONE-WAY route): the route
 // ends relayed owing the chief its answer (FinishAnswerToChiefRoute, one
 // transaction), and the sweep — woken now — delivers it to the chief session
-// (deliverHandBack → deliverRouteAnswer), AT LEAST ONCE: the hand-back is
-// cleared only once the answer is on record there, and a row already there is
-// not written again, so a relay retried or cut off by a crash delivers it once
-// in the ordinary case (two sweeps racing on one route may write it twice).
+// (deliverHandBack → deliverRouteAnswer): the hand-back is cleared only once
+// the answer is on record there, and a row already there is not written again
+// (deliverRouteAnswers states what "on record" does and does not promise).
 func (s *Server) relayAnswerToChiefRoute(ctx context.Context, r plugins.Route) (plugins.Route, error) {
 	got, err := s.ext.Routes.FinishAnswerToChiefRoute(ctx, r.RouteID)
 	if err != nil {
@@ -1436,8 +1438,9 @@ func (s *Server) pluginChiefSession(ctx context.Context, r plugins.Route) (int64
 
 // noteToChief records, in the chief's conversation for the route
 // (routeChiefSession), what became of a route — muster's words, never the
-// answer or the item — so the chief's next turn knows. It costs the chief no
-// turn.
+// answer or the item. It costs the chief no turn — and ⚠ a Claude Code chief's
+// CLI never reads a chat row it was not sent, so its next turn does NOT know
+// unless something tells it; the owner, reading the chat, does.
 func (s *Server) noteToChief(ctx context.Context, r plugins.Route, what string) {
 	sessID, ok := s.routeChiefSession(ctx, r)
 	if !ok {
@@ -1477,6 +1480,11 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	ctx = withPRReadBudget(ctx, prReadsPerPass) // a hand-back's closed-PR check (settleClosedPRRoute), this pass
+	// The pass's owed answers are collected and delivered together once every
+	// route has been seen: one turn per chief session (deliverRouteAnswer).
+	answers := &routeAnswerCollector{}
+	ctx = context.WithValue(ctx, routeAnswerCollectorKey{}, answers)
+	defer s.flushRouteAnswers(answers)
 	n := 0
 	for _, d := range due {
 		octx := s.routePrincipal(ctx, d.OwnerID)
@@ -1652,21 +1660,54 @@ func (s *Server) failCancelledRoute(ctx context.Context, routeID string) {
 // delivered at least once instead (deliverRouteAnswer): its hand-back is
 // cleared only after the answer is on record in the chief's chat.
 func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
-	if r, err := s.ext.Routes.Route(ctx, routeID); err == nil && r.AnswersToChief() && r.State == plugins.RouteRelayed {
-		s.deliverRouteAnswer(ctx, r)
+	if r, err := s.ext.Routes.Route(ctx, routeID); err == nil {
+		if r.AnswersToChief() && r.State == plugins.RouteRelayed {
+			s.deliverRouteAnswer(ctx, r)
+			return
+		}
+		s.deliverRouteHandBack(ctx, r)
+	}
+	// A route that cannot be read is offered again by the next sweep.
+}
+
+// deliverRouteHandBack hands ended route r's message back to its chief — the
+// hand-back r owes (HandBackOwed) — on the route answers' path, with the same
+// promise (deliverRouteAnswers): a turn of its own (startRouteTurn: the
+// delivery claim, never during the owner's turn, never waiting while holding
+// it), and the hand-back is taken (TakeHandBack) only once that turn's row is
+// on record. A chief that cannot
+// take it NOW leaves it owed for the next sweep; a note is the last resort
+// (deliverToChief). ctx acts as r's owner.
+//
+// Two endings act once and so take the hand-back FIRST, as before: a route
+// whose pull request is already closed (settled, nothing handed back), and a
+// refused reply going back to the session that wrote it (redraftRoute makes a
+// NEW route). A redraft that fails falls to the chief already taken: then a
+// busy chief gets a note.
+func (s *Server) deliverRouteHandBack(ctx context.Context, r plugins.Route) {
+	reason, owed, err := s.ext.Routes.HandBackOwed(ctx, r.RouteID)
+	if err != nil || !owed {
+		if err != nil {
+			s.logger.Printf("routes: %s: read its hand-back: %v (retried on the next sweep)", r.RouteID, err)
+		}
 		return
 	}
-	r, reason, ok, err := s.ext.Routes.TakeHandBack(ctx, routeID)
-	if err != nil {
-		s.logger.Printf("routes: %s: take the hand-back: %v", routeID, err)
-		return
-	}
-	if !ok {
-		return
+	taken := false
+	takeNow := func() bool {
+		tr, why, ok, err := s.ext.Routes.TakeHandBack(ctx, r.RouteID)
+		if err != nil {
+			s.logger.Printf("routes: %s: take the hand-back: %v", r.RouteID, err)
+		}
+		if ok {
+			r, reason, taken = tr, why, true
+		}
+		return ok
 	}
 	if s.settleClosedPRRoute(ctx, r) {
 		// Its pull request is merged or closed: settled, nothing handed back.
-		s.logger.Printf("routes: %s: not handed back (%s): its pull request is already closed", routeID, reason)
+		if takeNow() {
+			s.logger.Printf("routes: %s: not handed back (%s): its pull request is already closed", r.RouteID, reason)
+		}
 		return
 	}
 	if r.State == plugins.RouteSendFailed && r.Redraft {
@@ -1674,14 +1715,98 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 		// to its session too often (plugins.MaxRouteRedrafts): it goes back
 		// THERE, to be written again. A session that cannot take it now falls
 		// to the chief below, as a timed-out route does.
+		if !takeNow() {
+			return
+		}
 		why := s.redraftRoute(ctx, r)
 		if why == "" {
 			return
 		}
 		reason += "; muster could not hand it back to the session that wrote it (" + why + ")"
 	}
-	s.logger.Printf("routes: %s: handing it back to the chief (%s)", routeID, reason)
-	s.handBackRoute(ctx, r, s.handBackText(ctx, r, reason))
+	s.logger.Printf("routes: %s: handing it back to the chief (%s)", r.RouteID, reason)
+	s.deliverToChief(ctx, r, routeNote(r, s.handBackText(ctx, r, reason)), taken)
+}
+
+// deliverToChief delivers text — route r's hand-back — to r's chief as a turn
+// of its own when it can take one (startRouteAnswerTurn), and takes r's
+// hand-back once that turn is on record. A chief that cannot take it now
+// leaves it owed (unless already taken, or it has waited routeChiefWaitMax);
+// a chief that can take no turn at all gets it as a note, the last resort: a
+// Claude Code chief's CLI never reads a row it was not sent.
+func (s *Server) deliverToChief(ctx context.Context, r plugins.Route, text string, taken bool) {
+	take := func(ctx context.Context) {
+		if taken {
+			return
+		}
+		if _, _, _, err := s.ext.Routes.TakeHandBack(context.WithoutCancel(ctx), r.RouteID); err != nil {
+			s.logger.Printf("routes: %s: clear the delivered hand-back: %v (it may be delivered again)", r.RouteID, err)
+		}
+	}
+	sessID, ok := s.routeChiefSession(ctx, r)
+	if !ok || r.AgentID == nil {
+		take(ctx) // no chief left to tell
+		return
+	}
+	// A route turn in flight (its row stored, nothing taken yet) is left alone
+	// — unless this hand-back is already taken and must not vanish.
+	if !taken && s.routeTurnInFlight(ctx, *r.AgentID) {
+		return
+	}
+	if s.textOnRecord(ctx, sessID, text) {
+		take(ctx)
+		return
+	}
+	note := func(ctx context.Context) {
+		if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *r.AgentID, SessionID: sessID,
+			Role: "user", Content: text}); err != nil {
+			s.logger.Printf("routes: %s: record its hand-back in the chief's session %d: %v", r.RouteID, sessID, err)
+			if !taken {
+				return // retried on the next sweep
+			}
+		}
+		take(ctx)
+	}
+	// The fallback after a refusal: a hand-back already taken (a failed
+	// redraft) must never vanish, and one that has waited routeChiefWaitMax —
+	// refusals count toward it — gives up waiting for a turn.
+	refused := func(ctx context.Context) {
+		if routeRowSurvived(ctx) {
+			return // the refused turn's row stands as the record: no second copy
+		}
+		if taken || routeChiefWaitOver(r, time.Now()) {
+			s.logger.Printf("routes: %s: the chief's runtime refused its hand-back; recorded as a note", r.RouteID)
+			note(ctx)
+		}
+	}
+	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
+	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
+		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
+			if s.startRouteTurn(ctx, chief, sess, r.RouteID, text, take, refused) {
+				return
+			}
+			if !taken && (!routeChiefWaitOver(r, time.Now()) || s.routeTurnInFlight(ctx, chief.ID)) {
+				return // the chief is busy: still owed
+			}
+		}
+	}
+	note(ctx)
+}
+
+// textOnRecord reports whether chief session sessID already holds a user row
+// that is exactly text (a hand-back delivered whose take failed). A session
+// that cannot be read is "not yet": delivering again is the safe direction.
+func (s *Server) textOnRecord(ctx context.Context, sessID int64, text string) bool {
+	msgs, err := s.ext.Agents.ListChatMessages(ctx, sessID)
+	if err != nil {
+		return false
+	}
+	for _, m := range msgs {
+		if m.Role == "user" && m.Content == text {
+			return true
+		}
+	}
+	return false
 }
 
 // redraftRoute hands send_failed route r's message back to the session it was
@@ -1744,68 +1869,434 @@ const routeAnswerMarker = "route-answer"
 // deliverRouteAnswer gives relayed route r's answer to its chief — a request
 // route's (Route.AnswersToChief), in the chief session the owner asked in, or a
 // one-way route's, in the message's plugin chief session (routeChiefSession,
-// which falls back to the chief's default session when that one is gone) —
-// AT LEAST ONCE: the
-// hand-back that owes it is cleared (TakeHandBack) only once the answer is on
-// record there — the row the chief's turn stores, or, when no turn can run or
-// the turn stored nothing (a chief being replaced refuses before storing:
-// ErrAgentBeingReplaced), a note. A failure leaves it owed, and the next sweep
-// tries again; a row already there is not written twice (answerOnRecord). ctx
-// acts as the route's owner.
+// which falls back to the chief's default session when that one is gone).
 //
-// 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S: it runs under the hand-back's
-// session claim and is not typed, so owner_asked refuses in it — an answer can
-// never route text onward in the owner's name.
+// Inside the route sweep (RouteTimeoutPass) it only COLLECTS r: once the pass
+// has seen every route, each chief session's owed answers are delivered
+// together (deliverRouteAnswers) — ONE turn carrying every answer owed to it,
+// each fenced on its own (operator decision, PR #715 round 0 Q1: a turn per
+// answer cost the chief a full turn each). Outside a sweep it delivers r alone.
+// ctx acts as the route's owner.
 func (s *Server) deliverRouteAnswer(ctx context.Context, r plugins.Route) {
-	owed, err := s.ext.Routes.OwesHandBack(ctx, r.RouteID)
-	if err != nil || !owed {
-		if err != nil {
-			s.logger.Printf("routes: %s: read whether its answer is owed: %v (retried on the next sweep)", r.RouteID, err)
-		}
+	if c, ok := ctx.Value(routeAnswerCollectorKey{}).(*routeAnswerCollector); ok {
+		c.add(ctx, r)
 		return
 	}
-	take := func(ctx context.Context) {
-		if _, _, _, err := s.ext.Routes.TakeHandBack(ctx, r.RouteID); err != nil {
-			s.logger.Printf("routes: %s: clear the delivered answer's hand-back: %v (it may be delivered again)", r.RouteID, err)
-		}
+	if sessID, ok := s.routeAnswerSession(ctx, r); ok {
+		s.deliverRouteAnswers(ctx, sessID, []plugins.Route{r})
 	}
+}
+
+// routeAnswerSession is the chief session route r's answer goes to; ok is false
+// when there is none yet (retried on the next sweep). An answer whose chief is
+// gone has nobody to go to: its hand-back is dropped here.
+func (s *Server) routeAnswerSession(ctx context.Context, r plugins.Route) (int64, bool) {
 	if r.AgentID == nil || s.ext.Agents == nil {
 		s.logger.Printf("routes: %s: its chief no longer exists, so its answer has nobody to go to; dropped", r.RouteID)
-		take(ctx)
-		return
+		if _, _, _, err := s.ext.Routes.TakeHandBack(ctx, r.RouteID); err != nil {
+			s.logger.Printf("routes: %s: clear its hand-back: %v", r.RouteID, err)
+		}
+		return 0, false
 	}
 	sessID, ok := s.routeChiefSession(ctx, r)
 	if !ok {
 		s.logger.Printf("routes: %s: no chief session to deliver its answer to (retried on the next sweep)", r.RouteID)
-		return
 	}
-	if s.answerOnRecord(ctx, r, sessID) {
-		take(ctx)
-		return
+	return sessID, ok
+}
+
+// routeAnswerCollectorKey carries a sweep's routeAnswerCollector on its ctx.
+type routeAnswerCollectorKey struct{}
+
+// routeAnswerCollector gathers one route sweep's owed answers, each with the
+// ctx (its owner's principal) it was seen under, in the order seen.
+type routeAnswerCollector struct {
+	mu   sync.Mutex
+	seen []collectedAnswer
+}
+
+type collectedAnswer struct {
+	ctx context.Context
+	r   plugins.Route
+}
+
+func (c *routeAnswerCollector) add(ctx context.Context, r plugins.Route) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append(c.seen, collectedAnswer{ctx: ctx, r: r})
+}
+
+// flushRouteAnswers delivers a sweep's collected answers: grouped by the chief
+// session each goes to, every group in ONE call to deliverRouteAnswers.
+func (s *Server) flushRouteAnswers(c *routeAnswerCollector) {
+	c.mu.Lock()
+	seen := c.seen
+	c.seen = nil
+	c.mu.Unlock()
+	type group struct {
+		ctx context.Context
+		rs  []plugins.Route
 	}
+	var order []int64
+	groups := map[int64]*group{}
+	for _, a := range seen {
+		sessID, ok := s.routeAnswerSession(a.ctx, a.r)
+		if !ok {
+			continue
+		}
+		g := groups[sessID]
+		if g == nil {
+			g = &group{ctx: context.WithValue(a.ctx, routeAnswerCollectorKey{}, nil)}
+			groups[sessID] = g
+			order = append(order, sessID)
+		}
+		g.rs = append(g.rs, a.r)
+	}
+	for _, sessID := range order {
+		s.deliverRouteAnswers(groups[sessID].ctx, sessID, groups[sessID].rs)
+	}
+}
+
+// The combined answer turn's bounds: at most routeAnswersPerTurn answers and
+// routeAnswersTurnBytes of text (the first answer always goes, whatever its
+// size — each is already capped by the reply screen). The rest stay owed and go
+// in the next turn: the sweep is woken as soon as this one is over.
+const (
+	routeAnswersPerTurn   = 20
+	routeAnswersTurnBytes = 64 << 10
+)
+
+// routeAnswersHead opens a turn carrying several answers.
+func routeAnswersHead(n int) string {
+	return "[muster] " + strconv.Itoa(n) + " sessions answered requests routed from this chat while you were busy. Each answer " +
+		"is below on its own, fenced as data: tell your owner what each says."
+}
+
+// routeAnswerText is route r's answer as the chief reads it: muster's head
+// (routeNote) and the answer, fenced as data under its own nonce.
+func (s *Server) routeAnswerText(ctx context.Context, r plugins.Route) string {
 	block := fence.Block{Preface: s.routeAnswerPreface(ctx, r), Marker: routeAnswerMarker, Count: 1,
 		Lines: []string{"  answer: " + fence.Sanitize(r.ReplyBody)}}.Render(fence.NewNonce())
-	text := routeNote(r, routeAnswerNoteFor(r)+"\n\n"+block)
-	record := func(ctx context.Context) {
-		// The turn stored its own row unless it was refused before storing it.
-		if !s.answerOnRecord(ctx, r, sessID) {
-			if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *r.AgentID,
-				SessionID: sessID, Role: "user", Content: text}); err != nil {
-				s.logger.Printf("routes: %s: record its answer in the chief's session %d: %v (retried on the next sweep)", r.RouteID, sessID, err)
+	return routeNote(r, routeAnswerNoteFor(r)+"\n\n"+block)
+}
+
+// deliverRouteAnswers delivers the answers rs owe chief session sessID — every
+// one still owed and not yet on record.
+//
+// 🔴 WHAT IT PROMISES: each answer is put ON RECORD in that session at least
+// once — a turn's row, or a note — and its hand-back is taken only after; it
+// is SENT to the chief's runtime AT MOST ONCE once on record. The turn's row is
+// stored before the send (startRouteTurn), so a muster process hard-killed
+// between storing it and the send leaves the answer in the chat (the owner
+// sees it) but never delivered to the chief, and it is not sent again. A
+// graceful stop cancels the turn instead (its row stays: the turn may have
+// been pasted). Not "delivered at least once".
+//
+// In ONE turn of the chief's (startRouteTurn), up to routeAnswersPerTurn /
+// routeAnswersTurnBytes, each answer fenced separately with its own route id
+// and nonce; each route's hand-back is taken (TakeHandBack) only once the turn
+// is on record. A chief that can take a turn but not NOW leaves them all OWED:
+// the next sweep offers them again, together with any that arrived meanwhile.
+// A note — a chat row a Claude Code chief's CLI never reads — is the last
+// resort: a chief that can take no turn at all (not running, no gateway), or
+// an answer that has waited routeChiefWaitMax. A row already there is not
+// written twice (answerOnRecord).
+//
+// 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S: it runs under its own session
+// claim and is not typed, so owner_asked refuses in it — an answer can never
+// route text onward in the owner's name.
+func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plugins.Route) {
+	take := func(ctx context.Context, r plugins.Route) {
+		if _, _, _, err := s.ext.Routes.TakeHandBack(context.WithoutCancel(ctx), r.RouteID); err != nil {
+			s.logger.Printf("routes: %s: clear the delivered answer's hand-back: %v (it may be delivered again)", r.RouteID, err)
+		}
+	}
+	type owedAnswer struct {
+		r    plugins.Route
+		text string
+	}
+	if len(rs) == 0 || rs[0].AgentID == nil {
+		return
+	}
+	// A route turn in flight for this chief (its row stored, its hand-backs
+	// not taken yet — possibly in another process): leave every answer alone
+	// this sweep. Taking one now could lose it if that turn is then refused
+	// (its row is removed), and a fallback note would copy the turn's own row.
+	if s.routeTurnInFlight(ctx, *rs[0].AgentID) {
+		return
+	}
+	var owed []owedAnswer
+	for _, r := range rs {
+		if ok, err := s.ext.Routes.OwesHandBack(ctx, r.RouteID); err != nil || !ok {
+			if err != nil {
+				s.logger.Printf("routes: %s: read whether its answer is owed: %v (retried on the next sweep)", r.RouteID, err)
+			}
+			continue
+		}
+		if s.answerOnRecord(ctx, r, sessID) {
+			take(ctx, r)
+			continue
+		}
+		owed = append(owed, owedAnswer{r: r, text: s.routeAnswerText(ctx, r)})
+	}
+	if len(owed) == 0 {
+		return
+	}
+	record := func(a owedAnswer) {
+		if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *a.r.AgentID,
+			SessionID: sessID, Role: "user", Content: a.text}); err != nil {
+			s.logger.Printf("routes: %s: record its answer in the chief's session %d: %v (retried on the next sweep)", a.r.RouteID, sessID, err)
+			return
+		}
+		s.logger.Printf("routes: %s: its answer is in the chief's session %d as a note", a.r.RouteID, sessID)
+		take(ctx, a.r)
+	}
+	chief, err := s.ext.Agents.Get(ctx, *owed[0].r.AgentID)
+	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
+		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
+			n, size, most := 0, 0, routeAnswersPerTurn
+			if s.routeAnswersCap > 0 {
+				most = s.routeAnswersCap
+			}
+			for n < len(owed) && n < most && (n == 0 || size+len(owed[n].text) <= routeAnswersTurnBytes) {
+				size += len(owed[n].text)
+				n++
+			}
+			turn := owed[:n]
+			text := turn[0].text
+			if n > 1 {
+				parts := []string{routeAnswersHead(n)}
+				for _, a := range turn {
+					parts = append(parts, a.text)
+				}
+				text = strings.Join(parts, "\n\n")
+			}
+			done := func(ctx context.Context) {
+				for _, a := range turn {
+					take(ctx, a.r)
+				}
+				s.logger.Printf("routes: %d answer(s) delivered to the chief in one turn (session %d)", n, sessID)
+			}
+			// The fallback for what has waited routeChiefWaitMax: after the
+			// runtime refused the turn (a usage limit, a bad credential… —
+			// refusals count toward the wait), or when the chief could not
+			// take one at all. Never while a route turn is in flight.
+			fallback := func(ctx context.Context, as []owedAnswer) {
+				for _, a := range as {
+					if routeChiefWaitOver(a.r, time.Now()) {
+						s.logger.Printf("routes: %s: the chief could not take its answer for %s", a.r.RouteID, routeChiefWaitMax)
+						record(a)
+					}
+				}
+			}
+			refused := func(ctx context.Context) {
+				if routeRowSurvived(ctx) {
+					return // the refused turn's row stands as their record: no second copy
+				}
+				fallback(ctx, turn)
+			}
+			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, done, refused) {
 				return
 			}
-		}
-		s.logger.Printf("routes: %s: its answer is in the chief's session %d", r.RouteID, sessID)
-		take(ctx)
-	}
-	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
-	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
-		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID &&
-			s.startClaimedChiefTurnThen(ctx, chief, sess, r.RouteID, text, record) {
+			// The chief cannot take a turn NOW (its owner's turn is in flight,
+			// another turn holds its session, or one runs here): every answer
+			// stays owed, and the next sweep offers them again — together.
+			if !s.routeTurnInFlight(ctx, chief.ID) {
+				fallback(ctx, owed)
+			}
 			return
 		}
 	}
-	record(ctx)
+	for _, a := range owed {
+		record(a)
+	}
+}
+
+// routeChiefWaitMax bounds how long an ended route's answer or hand-back waits
+// for its chief to be free to take it as a turn (deliverRouteAnswer,
+// deliverToChief) before it is recorded as a note instead: far longer than
+// any one turn's budget (agentTurnBudget), so only a chief that never frees —
+// stuck, or turning continuously — reaches it.
+const routeChiefWaitMax = 2 * time.Hour
+
+// routeChiefWaitOver reports whether route r ended (FinishedAt) more than
+// routeChiefWaitMax before now. A route with no end time has not waited.
+func routeChiefWaitOver(r plugins.Route, now time.Time) bool {
+	return r.FinishedAt != nil && now.Sub(*r.FinishedAt) > routeChiefWaitMax
+}
+
+// startRouteAnswerTurn is startRouteTurn with no refusal callback: what it
+// carries simply stays owed when the runtime refuses it.
+func (s *Server) startRouteAnswerTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
+	done func(context.Context)) bool {
+	return s.startRouteTurn(ctx, chief, sess, routeID, text, done, nil)
+}
+
+// routeTurnClaimPrefix opens the session claim a route's turn holds
+// (startRouteTurn): routeTurnInFlight reads it back.
+const routeTurnClaimPrefix = "route-answer/"
+
+// routeTurnInFlight reports whether a route's turn (startRouteTurn, in any
+// process) holds chief's session claim now: what it delivers is mid-flight —
+// its row already stored, its hand-backs not yet taken — so a sweep must
+// neither take them (the turn may still be refused and its row removed) nor
+// write a fallback note for them (a second copy of the turn's own row).
+// Unreadable counts as in flight: waiting a sweep is the safe direction.
+func (s *Server) routeTurnInFlight(ctx context.Context, chiefID int64) bool {
+	holder, err := s.ext.Agents.KickoffClaimHolder(ctx, chiefID)
+	return err != nil || strings.HasPrefix(holder, routeTurnClaimPrefix)
+}
+
+// routeRowSurvivedKey marks the ctx a refused route turn hands its refused
+// callback when the turn's row could not be removed (startRouteTurn): that
+// row stands as the record, so the callback writes no second copy.
+type routeRowSurvivedKey struct{}
+
+// routeRowSurvived reports whether ctx is a refused route turn's whose row
+// could not be removed.
+func routeRowSurvived(ctx context.Context) bool {
+	v, _ := ctx.Value(routeRowSurvivedKey{}).(bool)
+	return v
+}
+
+// startRouteTurn delivers text to chief as ONE TURN OF ITS OWN, in session
+// sess, and reports false — with nothing sent and nothing stored — when the
+// chief cannot take it now; what it carries then stays owed.
+//
+// 🔴 IT NEVER WAITS WHILE HOLDING THE CHIEF'S SESSION CLAIM, and it never takes
+// the claim during its owner's turn. Before this, the answer turn took the
+// claim (startClaimedChiefTurnThen) while the owner's turn ran and then waited
+// in chatTurnWhenFree for the CLI: the held claim made owner_asked refuse
+// (ownerTurnFor → chiefReleaseOutsideTurn) for the rest of the owner's own turn,
+// and every LATER answer, finding the claim held, was written as a note the
+// chief's CLI never sees. Now: the claim is ClaimKickoffForDelivery's (it loses
+// while an owner turn is in flight), the turn gate is enterIdle's (it loses
+// while any turn of the chief's runs or waits in this process — the owner's
+// typed line first), and the turn is chatTurn's alone: a runtime that refuses
+// (agentgateway.Unsent — busy, a dialog, rate-limited, not ready…) took nothing.
+//
+// 🔴 THE ROW IS STORED BEFORE THE TURN, as runEnteredTurn stores a typed line,
+// so a process hard-killed mid-turn leaves it on record: the next sweep
+// recognises it (answerOnRecord, textOnRecord) and takes what it carried
+// rather than pasting it a second time (so a kill between the store and the
+// send leaves it on record but never sent: deliverRouteAnswers' promise). It
+// is stored WITHOUT touching its session (ChatMessage.NoSessionTouch): a
+// refused attempt must not move the chat up the list or name it. A refusal
+// REMOVES the row (DeleteChatMessage, tried twice): nothing was sent, and it
+// stays owed; a row that cannot be removed stays as the record — logged, and
+// the caller's fallback is told (routeRowSurvived) so it writes no second
+// copy. While the turn runs its claim (routeTurnClaimPrefix) tells every sweep
+// to leave its routes alone (routeTurnInFlight). The turn runs under the
+// server's shutdown handling (streamContext, the answer deliveries' wait
+// group), so a graceful stop cancels it and releases the claim instead of
+// holding it for the claim's whole TTL.
+//
+// 🔴 A REFUSAL DOES NOT WAKE THE SWEEP. Only a turn that ran wakes it (for
+// whatever else is owed); a refused one is offered again on the sweep's next
+// pass — every interval, or as often as routeKickMinGap while OTHER work keeps
+// waking the sweep — not in a loop (PR #715 round 1). refused (when not nil)
+// runs after a refusal, once the row is removed and while the claim is STILL
+// held: the caller's fallback for what has waited too long. done (when not
+// nil) runs once the turn's reply is stored — where the caller takes what it
+// delivered. 🔴 THE CLAIM IS RELEASED EXACTLY ONCE, when the turn ends: its
+// owner string (routeTurnClaimPrefix + routeID) is the same in every process,
+// so a second release could clear another replica's claim on the same route.
+//
+// It is the ONE door for what a route owes its chief: the answers owed to a
+// chief session, combined (deliverRouteAnswers), and a hand-back
+// (deliverToChief). routeID names the claim (the first answer's route, the
+// hand-back's).
+func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
+	done, refused func(context.Context)) bool {
+	if agents.KickoffOwed(chief) {
+		return false
+	}
+	owner := routeTurnClaimPrefix + routeID
+	budget := agentTurnBudget(chief.Kind)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
+	if err != nil || !won {
+		return false
+	}
+	release := func(ctx context.Context) {
+		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, owner); err != nil {
+			s.logger.Printf("routes: %s: release the chief's claim: %v", routeID, err)
+		}
+	}
+	if ok, _ := s.turns.enterIdle(chief.ID); !ok {
+		release(ctx)
+		return false
+	}
+	row, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID,
+		Role: "user", Content: text, NoSessionTouch: true})
+	if err != nil {
+		s.logger.Printf("routes: %s: store its row in the chief's session %d: %v (retried on the next sweep)", routeID, sess.ID, err)
+		s.turns.leave(chief.ID)
+		release(ctx)
+		return false
+	}
+	sctx, scancel := s.streamContext(context.WithoutCancel(ctx))
+	tctx, cancel := context.WithTimeout(sctx, budget)
+	tctx = chiefusage.WithTrigger(withTurnInput(tctx, row.ID), turnTriggerFor(notTyped, nil))
+	s.attention.deliveries.Add(1)
+	safeGo(s.logger, "route turn", func() {
+		defer s.attention.deliveries.Done()
+		defer scancel()
+		defer cancel()
+		ran := false
+		defer func() {
+			if ran {
+				s.kickRouteSweep() // whatever else is owed, now that this turn is done
+			}
+		}()
+		defer release(tctx)
+		defer s.turns.leave(chief.ID)
+		s.markAgentActive(requestOwner(ctx), chief.Name, "thinking")
+		pc := &agents.PartCollector{}
+		reply, err := s.chatTurn(tctx, chief, sess.SessionKey, text, pc.Observe)
+		s.markAgentIdle(chief.Name)
+		bctx, bcancel := context.WithTimeout(context.WithoutCancel(tctx), persistTurnTimeout)
+		defer bcancel()
+		if why := agentgateway.Unsent(err); why != "" {
+			// Nothing reached the runtime: the row goes, and what it carried
+			// stays owed for the sweep's next interval.
+			var derr error
+			for attempt := 0; attempt < 2; attempt++ {
+				if derr = s.ext.Agents.DeleteChatMessage(bctx, chief.ID, row.ID); derr == nil {
+					break
+				}
+			}
+			rctx := bctx
+			if derr != nil {
+				// The row stays: it is the record now (a note the chief's CLI
+				// never read). The fallback must not write it a second time.
+				s.logger.Printf("🔴 routes: %s: could NOT remove the row of a turn the runtime refused (%v): it stays in the "+
+					"chief's session as the record, never delivered to the chief", routeID, derr)
+				rctx = context.WithValue(bctx, routeRowSurvivedKey{}, true)
+			}
+			// A page that drew the row meanwhile redraws without it (and drops
+			// its "working…"). At most once per pass: a refusal never wakes
+			// the sweep.
+			s.broadcastTo(chief.OwnerID, EventChatReply, chief.Name)
+			s.logger.Printf("routes: %s: the chief's runtime took nothing (%s); it stays owed", routeID, why)
+			if refused != nil {
+				refused(rctx) // under the claim still held: released once, by the defer
+			}
+			return
+		}
+		ran = true
+		parts := pc.Parts()
+		if len(parts) == 0 && reply != "" {
+			parts = []agents.TurnPart{{Kind: "text", Content: reply}}
+		}
+		if err != nil {
+			parts = turnFailedParts(err)
+		}
+		s.persistTurn(bctx, chief, sess, parts)
+		if done != nil {
+			done(bctx)
+		}
+	})
+	return true
 }
 
 // routeAnswerNote opens a request route's answer in the chief's chat (after
@@ -1863,8 +2354,11 @@ func routeAnswerNoteFor(r plugins.Route) string {
 
 // answerOnRecord reports whether chief session sessID already holds route r's
 // answer: a row muster wrote for it (routeNote's head plus
-// routeAnswerNoteFor). A session that cannot be read is "not yet": delivering
-// again is the safe direction.
+// routeAnswerNoteFor) — on its own, or as one of a combined turn's answers,
+// each of which opens a paragraph (deliverRouteAnswers). An answer's own text
+// is fenced on one line (fence.Sanitize), so it cannot open a paragraph with a
+// head. A session that cannot be read is "not yet": delivering again is the
+// safe direction.
 func (s *Server) answerOnRecord(ctx context.Context, r plugins.Route, sessID int64) bool {
 	msgs, err := s.ext.Agents.ListChatMessages(ctx, sessID)
 	if err != nil {
@@ -1872,7 +2366,7 @@ func (s *Server) answerOnRecord(ctx context.Context, r plugins.Route, sessID int
 	}
 	head := routeNote(r, routeAnswerNoteFor(r))
 	for _, m := range msgs {
-		if m.Role == "user" && strings.HasPrefix(m.Content, head) {
+		if m.Role == "user" && (strings.HasPrefix(m.Content, head) || strings.Contains(m.Content, "\n\n"+head)) {
 			return true
 		}
 	}
@@ -1974,75 +2468,9 @@ func (s *Server) routeChiefTools(ctx context.Context, r plugins.Route) plugins.C
 	return s.ChiefTurnTools(ctx, chief)
 }
 
-// handBackRoute gives an ended route's item back to its chief (it timed out,
-// or its window moved on): a turn, when the chief is running, telling it what
-// — muster's words, naming the message or task it already holds — in the
-// route's chief session (routeChiefSession), else a note it reads on its next
-// turn.
-func (s *Server) handBackRoute(ctx context.Context, r plugins.Route, what string) {
-	sessID, ok := s.routeChiefSession(ctx, r)
-	if !ok {
-		return
-	}
-	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
-	if err != nil || !agentCanBeSent(chief.Status) || s.ext.Provisioner == nil || s.ext.Gateway == nil {
-		s.noteToChief(ctx, r, what)
-		return
-	}
-	sess, err := s.ext.Agents.GetSession(ctx, sessID)
-	if err != nil || sess.AgentID != chief.ID {
-		s.noteToChief(ctx, r, what)
-		return
-	}
-	if !s.startClaimedChiefTurn(ctx, chief, sess, r.RouteID, routeNote(r, what)) {
-		// The chief is mid-turn (a delivery, a first turn): never overlap it.
-		s.noteToChief(ctx, r, what)
-	}
-}
-
 // routeHandbackClaimTTL is the hand-back's session claim: one minute past the
 // turn budget it guards.
 func routeHandbackClaimTTL(budget time.Duration) time.Duration { return budget + time.Minute }
-
-// startClaimedChiefTurn runs one turn of the chief's under its SESSION CLAIM
-// (agents.Store.ClaimKickoff — the claim a delivered plugin message and a first
-// turn hold), so a hand-back never overlaps another turn. False, with nothing
-// started, when the claim is held.
-func (s *Server) startClaimedChiefTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string) bool {
-	return s.startClaimedChiefTurnThen(ctx, chief, sess, routeID, text, nil)
-}
-
-// startClaimedChiefTurnThen is startClaimedChiefTurn calling after (when not
-// nil) once the turn has returned and been persisted, still under the claim.
-func (s *Server) startClaimedChiefTurnThen(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
-	after func(context.Context)) bool {
-	owner := "route-handback/" + routeID
-	// The claim outlives the turn's own budget (agentTurnBudget: 37m for a
-	// claude-code chief), so it cannot lapse while the turn still runs.
-	budget := agentTurnBudget(chief.Kind)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
-	if err != nil || !won {
-		return false
-	}
-	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
-	safeGo(s.logger, "route hand-back turn", func() {
-		defer cancel()
-		defer func() {
-			if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(tctx), chief.ID, owner); err != nil {
-				s.logger.Printf("routes: %s: release the chief's claim: %v", routeID, err)
-			}
-		}()
-		parts, err := s.runUserTurn(tctx, chief, sess, text, nil)
-		if err != nil {
-			parts = turnFailedParts(asHandBack(err)) // muster's own text: no "send it again"
-		}
-		s.persistTurn(tctx, chief, sess, parts)
-		if after != nil {
-			after(context.WithoutCancel(tctx))
-		}
-	})
-	return true
-}
 
 // RunRouteTimeouts runs RouteTimeoutPass every interval until ctx ends. It does
 // nothing with routing off. Started by cmd/muster-server.
@@ -2060,15 +2488,35 @@ func (s *Server) RunRouteTimeouts(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	kick := s.routeKickCh()
+	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-kick:
+			// 🔴 A KICK NEVER RUNS PASSES BACK TO BACK: at most one pass per
+			// routeKickMinGap, however often something kicks (PR #715 round 1:
+			// a kick per refused turn ran ~200 passes in 3 ms).
+			if wait := routeKickMinGap - time.Since(last); !last.IsZero() && wait > 0 {
+				w := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					w.Stop()
+					return
+				case <-w.C:
+				case <-t.C:
+					w.Stop()
+				}
+			}
 		}
+		last = time.Now()
 		if _, err := s.RouteTimeoutPass(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Printf("routes: timeout pass: %v", err)
 		}
 	}
 }
+
+// routeKickMinGap is the least time between two route sweeps a kick starts
+// (RunRouteTimeouts): a kick hurries the next pass, it never loops it.
+const routeKickMinGap = 2 * time.Second

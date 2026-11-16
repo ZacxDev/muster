@@ -1779,7 +1779,14 @@ Each refusal has its own sentence, in this order:
      finishing), `muster chief ask`, a job, and another session's delivery. A
      ccd that cannot answer — unreachable, or an image without the route —
      refuses. Also refused while muster holds the chief's session claim for a
-     turn it started. 🔴 This holds against Claude Code CLIs, **not against
+     turn it started — a claim taken before your turn was accepted: no
+     delivery takes it while your turn is in flight
+     (`agents.Store.ClaimKickoffForDelivery`; plugin messages, route answers
+     and hand-backs, answers to asks, session questions, nudges, memos and
+     officer re-prompts wait for your turn to end instead), so a delivery that
+     arrives during your turn never voids it. The same check serves
+     `agent_dispatch`, `route_to_session`, the host dispatch and the end of a
+     session (`ownerTurnFor`, one place). 🔴 This holds against Claude Code CLIs, **not against
      any process** running as the pod's user — an accepted risk: one a tool
      call left behind (a detached loop a Bash call started; the claude-code
      chief runs every tool with no prompt, and a job's session runs with
@@ -3109,6 +3116,13 @@ What differs:
   request route. A refusal is
   `{"refused": "not_owners_turn", "error": "owner_asked: …"}`, its sentence
   naming the condition that failed; nothing is routed or queued.
+  **Your authority lasts for the whole turn your message started.** A
+  delivery that arrives while it runs — the answer to one of its own relays, a
+  plugin message, a nudge, an answer to an ask — never takes the chief's
+  session claim while your turn is in flight
+  (`agents.Store.ClaimKickoffForDelivery`), so it cannot void the turn: it
+  waits and is delivered after it. The chief can relay your request to many
+  sessions in one turn though the first ones answer before it is over.
   ⚠ **What it does not prove: that the text says what you asked.** The check
   is about whose TURN it is, not whose WORDS the `text` is: during your own
   turn the chief may read outside text (a plugin message, a session's output,
@@ -3133,12 +3147,34 @@ What differs:
 - **The answer comes back to the chat you asked in.** `route_reply` records
   it (`answered`) and ends the route `relayed`, owing the chief its delivery in
   the same transaction; the route sweep delivers it **at least once** to the
-  chief session your message is in (`chief_session_id`) — a turn when the
-  chief can take one, else a note — with the answer fenced as data, for the
-  chief to tell you what it says. The route owes it until it is on record in
-  that session: the row the turn stored, or a note when no turn can run or the
-  turn stored nothing (a chief being replaced). A failure leaves it owed for
-  the next sweep (every 30 s), and a row already there is not written again.
+  chief session your message is in (`chief_session_id`), fenced as data, for
+  the chief to tell you what it says. While the chief cannot take a turn (your
+  turn is in flight, another turn holds its session, or one is running or
+  waiting in this muster process — your own typed line goes first there), the
+  answer **stays owed** and the next sweep (every 30 s; at most one pass per
+  2 s however often it is woken, and a turn the chief's runtime refused does
+  not wake it) offers it again. **Every answer owed to a chat when the chief
+  is next free goes in ONE turn** (operator decision, PR #715): each fenced on
+  its own, under its own route id and nonce, after a line saying how many
+  there are — up to 20 answers or 64 KiB in one turn (`routeAnswersPerTurn`,
+  `routeAnswersTurnBytes`), the rest in the next. The turn's row is stored
+  **before** the turn and removed if the runtime refuses it, so a muster
+  that is hard-killed mid-turn leaves it on record and the next one does not
+  paste it again (its claim lapses after the turn's budget). A graceful
+  rollout instead cancels the turn and lets its claim go, the row staying as
+  the record. **What that promises:** each answer is on record in the chat at
+  least once and sent to the chief at most once — a muster hard-killed
+  between storing the row and sending it leaves the answer in the chat for
+  you but never delivered to the chief, and it is not sent again. The
+  answer is written as a plain note — a row the chief's Claude Code session
+  never reads — only as a last resort: a chief that cannot take a turn at all
+  (not running, no gateway), or an answer that has not been delivered for
+  2 hours (`routeChiefWaitMax`), runtime refusals included; never while its
+  own turn is still running. A route's timed-out or failed hand-back goes the
+  same way: a turn of its own when the chief is free, taken only once that
+  turn is on record; one already taken (a failed redraft) that the runtime
+  refuses is written as a note, never dropped. The route owes the answer until
+  it is on record in that session; a row already there is not written again.
   If that session is gone, cannot be read or is not this chief's, the
   **chief's default session** gets it instead, and muster logs it. That turn
   is muster's, not yours, so `owner_asked` refuses in it. No draft is filed and

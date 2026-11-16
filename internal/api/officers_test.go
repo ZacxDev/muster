@@ -118,6 +118,11 @@ func (s *officerAgents) ClaimKickoff(_ context.Context, id int64, owner string, 
 	return true, nil
 }
 
+// ClaimKickoffForDelivery is ClaimKickoff: this fake keeps no owner-turn marker.
+func (s *officerAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return s.ClaimKickoff(ctx, id, owner, ttl)
+}
+
 func (s *officerAgents) ReleaseKickoffClaim(_ context.Context, id int64, owner string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

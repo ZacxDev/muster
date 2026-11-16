@@ -77,6 +77,17 @@ import (
 //  3. NO MUSTER-STARTED TURN HOLDS THE CHIEF'S SESSION CLAIM. Mostly implied by
 //     2 now; kept because the claim is taken before a delivery's CLI turn
 //     starts, so it also covers the instant before that CLI reports busy.
+//     🔴 OWNER AUTHORITY IS BOUND TO THE OWNER'S MESSAGE (operator decision):
+//     a delivery that arrives WHILE the owner's turn is in flight never takes
+//     the claim (agents.Store.ClaimKickoffForDelivery loses on a live marker),
+//     so it cannot void the turn — it waits for it. A claim seen here was
+//     therefore taken BEFORE the owner's text was accepted (a turn genuinely
+//     started by something else), and still refuses. Before this, a route's
+//     answer arriving mid-turn took the claim and waited for the CLI, and
+//     every owner_asked call left in the owner's own turn was refused. No
+//     delivery WAITS under the claim either: a route's answers and hand-back
+//     (startRouteAnswerTurn), a plugin message, an answer to an ask and a nudge
+//     each take the runtime's busy refusal at once and let the claim go.
 //  4. THE CALL CAME OVER MCP. A gateway-runtime session's tool calls run in
 //     muster's own process (AgentToolDispatch), from a session that is no CLI
 //     and so invisible to 2; they never release.

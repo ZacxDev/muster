@@ -643,6 +643,24 @@ func (s *PGStore) ClaimKickoff(ctx context.Context, id int64, owner string, ttl 
 	return tag.RowsAffected() > 0, nil
 }
 
+// ClaimKickoffForDelivery is ClaimKickoff that also loses while an owner turn
+// is in flight (see the Store contract): one atomic UPDATE, the owner-turn
+// conjunct being ownerTurnLive — the predicate OwnerTurnInFlight reads — so
+// the claim and the marker are judged on one row, at one instant, by one clock.
+func (s *PGStore) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agents
+		   SET kickoff_claim_owner=$2, kickoff_claim_expires_at=now()+make_interval(secs => $3)
+		 WHERE id=$1
+		   AND (kickoff_claim_expires_at IS NULL OR kickoff_claim_expires_at <= now())
+		   AND NOT (`+ownerTurnLive+`)`,
+		id, owner, ttl.Seconds())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // RenewKickoffClaim extends this owner's claim (see the Store contract). The
 // owner predicate is load-bearing: without it a process whose TTL lapsed would
 // stamp over the claim another pod legitimately took, and two kickoffs would run.
@@ -1156,8 +1174,9 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 	if err != nil {
 		return m, err
 	}
+	touch := !m.NoSessionTouch
 	m = stored
-	if m.SessionID != 0 {
+	if m.SessionID != 0 && touch {
 		// Bump updated_at so the session sorts most-recent-first; set the title from
 		// the first user message when it's still blank (COALESCE keeps any existing
 		// title, the NULLIF/'' guard only names an as-yet-untitled session).
@@ -1370,14 +1389,18 @@ func (s *PGStore) ClearOwnerTurn(ctx context.Context, agentID, messageID int64) 
 	return err
 }
 
+// ownerTurnLive is THE "an owner-typed turn is in flight" predicate on an
+// agents row: what OwnerTurnInFlight reads and what ClaimKickoffForDelivery
+// refuses on. One string, so the two can never disagree about a marker.
+const ownerTurnLive = `(owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL AND owner_turn_expires_at > now())`
+
 // OwnerTurnInFlight reads agentID's marker; the zero OwnerTurn when there is
 // none, it has lapsed (by Postgres's clock), or the agent does not exist.
 func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTurn, error) {
 	var t OwnerTurn
 	err := s.pool.QueryRow(ctx, `
 		SELECT owner_turn_by, owner_turn_message_id, COALESCE(owner_turn_lane, ''), owner_turn_expires_at FROM agents
-		 WHERE id = $1 AND owner_turn_message_id IS NOT NULL AND owner_turn_by IS NOT NULL
-		   AND owner_turn_expires_at > now()`, agentID).Scan(&t.By, &t.MessageID, &t.Lane, &t.ExpiresAt)
+		 WHERE id = $1 AND `+ownerTurnLive, agentID).Scan(&t.By, &t.MessageID, &t.Lane, &t.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OwnerTurn{}, nil
 	}
@@ -1388,6 +1411,12 @@ func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTu
 // visible to ctx's principal).
 func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
 	return scanChatMessage(s.pool.QueryRow(ctx, `SELECT `+chatMessageCols+` FROM chat_messages WHERE id = $1`, id))
+}
+
+// DeleteChatMessage removes agentID's user row id (see the Store contract).
+func (s *PGStore) DeleteChatMessage(ctx context.Context, agentID, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM chat_messages WHERE id = $1 AND agent_id = $2 AND role = 'user'`, id, agentID)
+	return err
 }
 
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.

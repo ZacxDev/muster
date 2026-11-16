@@ -313,6 +313,15 @@ type ChatMessage struct {
 	// TestOnlyTheViewDoorBindsASubject pins the writers. Not serialised: no API
 	// reader needs it.
 	AboutKey string `json:"-"`
+
+	// NoSessionTouch, on a write, leaves the row's session as it was: no
+	// updated_at bump and no title from it (AddChatMessage does both
+	// otherwise). Not stored. Its one writer is a route turn's row, stored
+	// BEFORE its turn and removed if the runtime refuses it (internal/api
+	// startRouteTurn): a refused attempt must not move the chat up the list or
+	// name it, and a delete could not undo either. A turn that ran bumps the
+	// session through its reply's rows.
+	NoSessionTouch bool `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each
@@ -525,6 +534,23 @@ type Store interface {
 	// make the kickoff proceed on an unverified claim and reopen the duplicate
 	// silently, on exactly the occasion the database is unhealthy.
 	ClaimKickoff(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error)
+	// ClaimKickoffForDelivery is ClaimKickoff for a turn NOBODY TYPED — a
+	// delivery muster starts on its own (a plugin message, a route's answer or
+	// hand-back, an owner's answer to an ask, a nudge, a memo, an officer's
+	// re-prompt). It also LOSES while an owner-typed turn is in flight on the
+	// agent (its owner_turn_* marker, migration 0069, live by Postgres's clock:
+	// the predicate OwnerTurnInFlight reads), in the same atomic UPDATE.
+	//
+	// 🔴 THE OWNER'S TURN IS NEVER VOIDED BY A DELIVERY THAT ARRIVED DURING IT.
+	// A held claim is one of the conditions owner_asked refuses on
+	// (internal/api ownerTurnFor), so a delivery that took the claim while the
+	// owner's turn ran — and then waited for the CLI to free — refused every
+	// owner_asked call left in that turn. A delivery loses here instead and waits
+	// for the owner's turn to end (each caller already treats a lost claim as
+	// "try again later"). The first turn (internal/agentkickoff) and a chief
+	// replacement keep ClaimKickoff: neither is a delivery into a running chat.
+	// Same error contract: on error, won == false.
+	ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error)
 	// RenewKickoffClaim extends the agent's claim to `ttl` from now, but ONLY if
 	// `owner` still owns it — an owner mismatch means another process legitimately
 	// took the claim after this one's TTL lapsed, and stamping over that would
@@ -606,6 +632,12 @@ type Store interface {
 	// session's updated_at, and — when the session is still untitled and the
 	// message is a user turn — names the session from the message's first line.
 	AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessage, error)
+	// DeleteChatMessage removes user row id of agent agentID — a delivery's row
+	// stored BEFORE its turn, whose runtime then provably took nothing
+	// (internal/api startRouteTurn): the delivery stays owed and is offered
+	// again, so the row must not stand as "on record". Only a user row of that
+	// agent is removed; anything else is a no-op.
+	DeleteChatMessage(ctx context.Context, agentID, id int64) error
 	ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error)
 	// ListRecentChatMessages returns the most recent limit messages for ONE
 	// session in chronological order — the capped reader the page render uses so a

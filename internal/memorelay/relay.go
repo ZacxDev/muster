@@ -570,7 +570,8 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	defer cancel()
 
 	// 🔴 THE AGENT'S SESSION CLAIM IS TAKEN FIRST, AND IT IS THE SAME CLAIM A FIRST TURN HOLDS
-	// (agents.Store.ClaimKickoff). internal/agentkickoff stamps a row kicked-off BEFORE it sends
+	// (taken here with agents.Store.ClaimKickoffForDelivery, which also loses while the owner's
+	// typed turn is in flight). internal/agentkickoff stamps a row kicked-off BEFORE it sends
 	// the first turn and then re-sends it for minutes while the CLI starts; all that time the
 	// row reads as eligible here. A memo that took the session in that window would leave the
 	// first turn answered `busy` — recorded as failed, never retried — and the agent would never
@@ -579,7 +580,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	//
 	// It is also what makes "once" hold across PROCESSES: two replicas cannot be inside this
 	// section for one agent, and the winner re-reads the row and the ledger below.
-	won, err := r.agents.ClaimKickoff(ctx, a.ID, r.owner, turn+claimMargin)
+	won, err := r.agents.ClaimKickoffForDelivery(ctx, a.ID, r.owner, turn+claimMargin)
 	if err != nil {
 		r.count(familyDelivery, ResultClaimFailed)
 		r.log.Printf("memorelay: agent %d (%s): the session claim could not be taken; sending nothing: %v", a.ID, a.Name, err)

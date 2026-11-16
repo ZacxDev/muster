@@ -94,6 +94,11 @@ func (f *fakeAgents) ClaimKickoff(_ context.Context, id int64, owner string, ttl
 	return true, nil
 }
 
+// ClaimKickoffForDelivery is ClaimKickoff: this fake keeps no owner-turn marker.
+func (f *fakeAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return f.ClaimKickoff(ctx, id, owner, ttl)
+}
+
 // ReleaseKickoffClaim clears the claim only for its owner, and — like pgx — refuses a done ctx.
 func (f *fakeAgents) ReleaseKickoffClaim(ctx context.Context, id int64, owner string) error {
 	if ctx.Err() != nil {
