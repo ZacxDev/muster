@@ -184,11 +184,6 @@ func (s *Server) loadDeclaredRoster(ctx context.Context) ([]officers.Officer, er
 	rt.declMu.Lock()
 	prev := rt.declared
 	rt.declared, rt.loaded = states, true
-	for slug := range rt.autoHost {
-		if !slices.ContainsFunc(rows, func(r builtin.DeclaredRow) bool { return r.Fields.InstanceSlug == slug }) {
-			delete(rt.autoHost, slug)
-		}
-	}
 	rt.declMu.Unlock()
 	s.logDeclaredChanges(prev, states)
 	return moved, nil
@@ -242,7 +237,7 @@ func (s *Server) resolveDeclared(ctx context.Context, r builtin.DeclaredRow, env
 	if id, ok := envSlugs[r.Fields.InstanceSlug]; ok {
 		return officers.Officer{}, fmt.Sprintf("its instance slug %s is env officer %s's; delete and re-create it for a new slug", r.Fields.InstanceSlug, id)
 	}
-	runtime, host, why := s.resolveRuntime(ctx, r.Fields)
+	runtime, host, why := s.resolveRuntime(ctx, r.Fields, autoPlacement{host: r.AutoHost, ok: r.AutoHostAt})
 	if why != "" {
 		return officers.Officer{}, why
 	}
@@ -259,10 +254,11 @@ func (s *Server) resolveDeclared(ctx context.Context, r builtin.DeclaredRow, env
 // resolveRuntime is where declaration d runs: its own runtime and host when it
 // names one (refused, with the reason, when this server cannot run it), and
 // for RuntimeAuto a pod when this server can run one, else a host of its
-// owner's (autoHostFor: the host it already runs on, while that host
+// owner's (autoHostFor: the host the database places it on, while that host
 // qualifies or has been gone for less than autoHostGrace; else the first that
-// qualifies) — else no runtime, with both reasons.
-func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (runtime, host, why string) {
+// qualifies) — else no runtime, with both reasons. stored is the database's
+// placement of d (DeclaredRow.AutoHost), zero for none.
+func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration, stored autoPlacement) (runtime, host, why string) {
 	switch d.Runtime {
 	case officers.RuntimePod:
 		if r := s.podRuntimeRefusal(); r != "" {
@@ -291,7 +287,7 @@ func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (ru
 	}
 	if hostWhy == "" {
 		var h string
-		if h, hostWhy = s.autoHostFor(ctx, d); h != "" {
+		if h, hostWhy = s.autoHostFor(ctx, d, stored); h != "" {
 			return officers.RuntimeHost, h, ""
 		}
 	}
@@ -303,29 +299,44 @@ func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (ru
 // muster-mirror), before it moves to another of its owner's hosts.
 const autoHostGrace = 10 * time.Minute
 
-// autoPlacement is where a "runtime": "auto" officer was last placed on a
-// host, and when that host last qualified.
+// autoHostRefresh is how often, at most, a load writes that an auto
+// officer's host still qualifies (SetAutoHost with the same host): the grace
+// is read from that time, so it may start up to this much early.
+const autoHostRefresh = time.Minute
+
+// autoPlacement is where a "runtime": "auto" officer is placed on a host, and
+// when that host last qualified: DeclaredRow.AutoHost and AutoHostAt.
 type autoPlacement struct {
 	host string
 	ok   time.Time
 }
 
 // autoHostFor is the host a "runtime": "auto" declaration d runs on, or ""
-// and why none.
+// and why none. stored is the database's placement of it.
 //
 // 🔴 IT STICKS (round 0's F3). It used to pick the FIRST qualifying host on
 // every load, and fall back to the previous one only when none qualified —
 // so a blip of the host it ran on moved it to another, and the start there
 // was then refused, because the instance's agent row is the old host's
-// (ensureHostInstanceRow never adopts one). Now the host it runs on — this
-// process's memory of it, else the host its instance agent rows run on
-// (so a restart or another replica agrees) — is kept while it qualifies, and
-// while it has been gone for less than autoHostGrace (the pass then sees it
-// offline and changes nothing: fail-blind). Only past the grace, and only to
-// a host that qualifies, does it move; the load that moves it tears the old
-// placement's instances down (teardownMoved). With nowhere else to go it
-// stays where it is.
-func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration) (string, string) {
+// (ensureHostInstanceRow never adopts one). Now the host it is placed on is
+// kept while it qualifies, and while it has been gone for less than
+// autoHostGrace (the pass then sees it offline and changes nothing:
+// fail-blind). Only past the grace, and only to a host that qualifies, does
+// it move; the load that moves it tears the old placement's instances down
+// (teardownMoved). With nowhere else to go it stays where it is.
+//
+// 🔴 THE PLACEMENT IS THE DATABASE'S (round 2's third finding). It was each
+// process's memory, so two replicas that saw different hosts qualify (a host
+// is connected to ONE replica's hub) each kept their own pick, for good, and
+// tore down each other's instances on every move. Now every replica reads
+// the stored placement and its time, and changes it only by SetAutoHost's
+// compare-and-swap from what it read: one replica's move wins, and the other
+// reads the winner's at once. A replica that sees the placed host qualify
+// writes so (at most every autoHostRefresh), so a replica that cannot see
+// that host still reads it as live and keeps it there. A placement not stored
+// yet (an officer placed before this) is taken from the host its instance
+// agent rows run on, and stored.
+func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration, stored autoPlacement) (string, string) {
 	opts := s.ownerHostOptions(ctx, d.Owner, d.Repo)
 	qualifies := func(host string) bool {
 		return slices.ContainsFunc(opts, func(h hostOption) bool { return h.Host == host && h.Qualifies })
@@ -338,7 +349,7 @@ func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration) (strin
 		}
 	}
 	if d.InstanceSlug == runtimeProbeSlug {
-		// runtime-options' probe: what a new officer would get, remembered
+		// runtime-options' probe: what a new officer would get, stored
 		// nowhere.
 		if first == "" {
 			return "", noHostWhy(opts)
@@ -347,10 +358,8 @@ func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration) (strin
 	}
 	rt := s.officerRT
 	now := rt.now()
-	rt.declMu.Lock()
-	prev, known := rt.autoHost[d.InstanceSlug]
-	rt.declMu.Unlock()
-	if !known {
+	prev := stored
+	if prev.host == "" {
 		if h := s.autoHostOfRows(ctx, d); h != "" {
 			// The rows say where it ran, not when that host last qualified:
 			// the grace starts now.
@@ -368,13 +377,28 @@ func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration) (strin
 	default:
 		return "", noHostWhy(opts)
 	}
-	rt.declMu.Lock()
-	if rt.autoHost == nil {
-		rt.autoHost = map[string]autoPlacement{}
+	if place.host == stored.host && place.ok.Sub(stored.ok) < autoHostRefresh {
+		return place.host, ""
 	}
-	rt.autoHost[d.InstanceSlug] = place
-	rt.declMu.Unlock()
-	return place.host, ""
+	octx := s.officerPrincipal(ctx, d.Owner)
+	won, err := rt.store.SetAutoHost(octx, d.Owner, d.ID, d.InstanceSlug, stored.host, place.host, place.ok)
+	switch {
+	case err != nil && stored.host != "":
+		s.logger.Printf("officers: %s (owner %d): store its placement on %s: %v; it stays on %s", d.ID, d.Owner, place.host, err, stored.host)
+		return stored.host, ""
+	case err != nil:
+		return "", "its host placement could not be stored (" + err.Error() + ")"
+	case won || place.host == stored.host:
+		// Written, or a refresh another replica's write beat: the placement
+		// stands either way.
+		return place.host, ""
+	}
+	// Another replica moved it first: its placement is the one.
+	cur, err := rt.store.GetDeclared(octx, d.Owner, d.ID)
+	if err != nil || cur.Fields.InstanceSlug != d.InstanceSlug || cur.AutoHost == "" {
+		return "", "its host placement changed on another replica; the next load reads it"
+	}
+	return cur.AutoHost, ""
 }
 
 // noHostWhy is why none of opts takes an auto officer.
@@ -512,7 +536,7 @@ func (s *Server) runtimeOptionsFor(ctx context.Context, owner int64, repo string
 	// 🔴 THE ONE AUTO RULE: what the wake loop's roster load resolves a stored
 	// "auto" to (resolveRuntime), asked of a probe declaration of repo.
 	probe := officers.Declaration{ID: "probe:probe", Owner: owner, Runtime: officers.RuntimeAuto, Repo: strings.TrimSpace(repo), InstanceSlug: runtimeProbeSlug}
-	out.Auto.Runtime, out.Auto.Host, out.Auto.Reason = s.resolveRuntime(ctx, probe)
+	out.Auto.Runtime, out.Auto.Host, out.Auto.Reason = s.resolveRuntime(ctx, probe, autoPlacement{})
 	return out
 }
 
@@ -1194,17 +1218,48 @@ func (s *Server) teardownMoved(ctx context.Context, old officers.Officer) []stri
 	return removed
 }
 
+// teardownOutcome is what one instance teardown did.
+type teardownOutcome int
+
+const (
+	// teardownNone: there was no agent to remove.
+	teardownNone teardownOutcome = iota
+	// teardownRemoved: its agent's teardown was started.
+	teardownRemoved
+	// teardownFailed: an agent exists and was NOT removed (refused, or no
+	// provisioner); the log says why.
+	teardownFailed
+)
+
 // teardownInstance removes instance n of o, when its agent exists and the
 // delete protection lets it go, reporting whether it removed it.
 func (s *Server) teardownInstance(ctx context.Context, o officers.Officer, n int) bool {
+	return s.teardownInstanceWith(ctx, o, n, destroyHooks{}) == teardownRemoved
+}
+
+// teardownGoneInstance is teardownInstance for an officer the caller found
+// GONE FROM THE DATABASE (officerFleet.Start's second check): destroyAgent is
+// told so (destroyHooks.goneOfficer), and lifts the officer half of the delete
+// protection for o's own instance row once it has read the database's answer
+// itself (goneOfficerRow) — so a delete made on another replica, which this
+// replica's roster has not seen yet, still has its orphan removed. The chief
+// half of the protection is never lifted.
+func (s *Server) teardownGoneInstance(ctx context.Context, o officers.Officer, n int) teardownOutcome {
+	gone := o
+	return s.teardownInstanceWith(ctx, o, n, destroyHooks{goneOfficer: &gone})
+}
+
+// teardownInstanceWith is the one instance teardown, with h passed to
+// destroyAgent.
+func (s *Server) teardownInstanceWith(ctx context.Context, o officers.Officer, n int, h destroyHooks) teardownOutcome {
 	if s.ext.Agents == nil {
-		return false
+		return teardownNone
 	}
 	octx := s.officerPrincipal(context.WithoutCancel(ctx), o.Owner)
 	name := o.InstanceName(n)
 	a, err := s.ext.Agents.GetByName(octx, name)
 	if err != nil {
-		return false
+		return teardownNone
 	}
 	if o.OnHost() && a.RunsOnHost == o.Host && n <= o.MaxInstances {
 		if err := (officerFleet{s: s}).Stop(octx, o, n); err != nil {
@@ -1213,12 +1268,41 @@ func (s *Server) teardownInstance(ctx context.Context, o officers.Officer, n int
 	}
 	if a.Provisioned() && !s.lifecycleServed() {
 		s.logger.Printf("officers: %s: no provisioner to tear it down; remove it with `muster agent rm %s`", name, name)
-		return false
+		return teardownFailed
 	}
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	if _, err := s.destroyAgent(octx, a.ID, destroy, destroyHooks{}); err != nil {
+	if _, err := s.destroyAgent(octx, a.ID, destroy, h); err != nil {
 		s.logger.Printf("officers: %s: remove its agent: %v", name, err)
+		return teardownFailed
+	}
+	return teardownRemoved
+}
+
+// goneOfficerRow reports whether agent a is the instance row of the officer
+// h names as gone (destroyHooks.goneOfficer), and the DATABASE confirms that
+// officer is gone: its (owner, id) reads not found, or declares no runtime,
+// or carries another slug. Only then may destroyAgent remove a row the
+// roster still protects. It FAILS CLOSED: no gone officer, a row bound to
+// another officer (or to none), an env officer (no database row to ask), the
+// chief, or an unreadable database — and the protection stands.
+func (s *Server) goneOfficerRow(ctx context.Context, a agents.Agent, h destroyHooks) bool {
+	g := h.goneOfficer
+	if g == nil || !g.FromDB() || s.officerRT == nil || s.officerRT.store == nil {
 		return false
 	}
-	return true
+	bound, n, ok := s.officerOf(a)
+	if !ok || bound.Key() != g.Key() || bound.Owner != g.Owner || bound.ID != g.ID || a.Name != g.InstanceName(n) || a.OwnerID != g.Owner {
+		return false
+	}
+	if _, chief, err := s.agentIsChief(ctx, a.ID); err != nil || chief {
+		return false
+	}
+	row, err := s.officerRT.store.GetDeclared(s.officerPrincipal(ctx, g.Owner), g.Owner, g.ID)
+	switch {
+	case errors.Is(err, builtin.ErrNotFound), errors.Is(err, builtin.ErrNotDeclared):
+		return true
+	case err != nil:
+		return false
+	}
+	return row.Fields.InstanceSlug != g.InstanceSlug
 }

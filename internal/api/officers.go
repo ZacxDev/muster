@@ -73,15 +73,14 @@ type officerRuntime struct {
 	// sessionInstalled: the provisioner takes the officer session settings
 	// (OfficersConfig.InstallSession was given), which a pod officer needs.
 	sessionInstalled bool
-	// reloadMu serialises roster loads; declMu guards declared, loaded and
-	// autoHost: the last load's DB-declared officers by declKey, whether a
-	// load has run, and where each "runtime": "auto" officer was last placed
-	// on a host, by instance slug (autoPlacement).
+	// reloadMu serialises roster loads; declMu guards declared and loaded:
+	// the last load's DB-declared officers by declKey, and whether a load has
+	// run. (Where a "runtime": "auto" officer is placed is the database's,
+	// DeclaredRow.AutoHost — never this process's memory: round 2.)
 	reloadMu sync.Mutex
 	declMu   sync.Mutex
 	declared map[string]declaredState
 	loaded   bool
-	autoHost map[string]autoPlacement
 	hq       *officers.Backends
 	rec      *officers.Reconciler
 	// claimOwner names this process on an instance's session claim while it
@@ -947,11 +946,27 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	// the instance removed if the officer is gone. Every delete's teardown
 	// runs after its swap, so either the teardown sees this instance or this
 	// check sees the delete.
+	//
+	// 🔴 THE TEARDOWN HERE IS THE DATABASE'S, NOT THE ROSTER'S (round 2's
+	// first finding). A delete made on ANOTHER replica is seen here only in
+	// the database: this replica's roster still holds the officer until its
+	// next refresh, so the delete protection (isDeclaredInstanceRow, which
+	// reads the roster) refused the teardown and the orphan stayed — while
+	// the start answered "removed it". teardownGoneInstance passes the
+	// officer to destroyAgent as gone (destroyHooks.goneOfficer), which lifts
+	// the officer half of the protection for that officer's own row, and only
+	// once the database says it is gone.
 	if !f.stillDeclared(ctx, o) {
-		if f.s.teardownInstance(ctx, o, n) {
-			f.s.logger.Printf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
+		name := o.InstanceName(n)
+		switch f.s.teardownGoneInstance(ctx, o, n) {
+		case teardownRemoved:
+			f.s.logger.Printf("officers: %s was deleted while %s started; removed it", o.ID, name)
+			return fmt.Errorf("officers: %s was deleted while %s started; removed it", o.ID, name)
+		case teardownFailed:
+			f.s.logger.Printf("officers: %s was deleted while %s started; could NOT remove it", o.ID, name)
+			return fmt.Errorf("officers: %s was deleted while %s started; could not remove it (see the log; `muster agent rm %s` removes it)", o.ID, name, name)
 		}
-		return fmt.Errorf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
+		return fmt.Errorf("officers: %s was deleted while %s started; it has no agent to remove", o.ID, name)
 	}
 	return err
 }

@@ -224,6 +224,46 @@ func (s *Server) hostOfficerWindowsOpen(ctx context.Context, owner int64, host s
 	return out
 }
 
+// officerSpawnsListing applies one listing of owner's host to the officer
+// spawn windows muster recorded there (officers.HostSpawnStore.
+// ObserveHostListing): a window the host has stopped listing, two listings in
+// a row, is gone for good, and hostOfficerWindowsOpen never matches its row
+// again.
+//
+// 🔴 WHY BY OBSERVATION, AND NOT BY A TAG (round 2's second finding). The gate
+// matched a recorded window by host and window id alone, and the rows were
+// never closed — so once a deleted officer's window had ended, a tmux window
+// id the host later reissued (a restarted tmux server numbers from the start
+// again) to any other window re-gated the machine for an officer that is
+// gone. The window's @muster-dispatch tag would tell the two apart, but the
+// tag is the window's own option, which anything running IN the window can
+// set or clear: the very officer window the gate holds for could then
+// un-gate its machine. The window id is the tmux server's, never reused while
+// that server lives, and the host's listing is what the hub was told — so a
+// window id absent from two listings in a row (one transient miss frees
+// nothing, as the host-dispatch reconciler's hostMissingToEnd) is the old
+// window gone, and its row closes. A row younger than hostPendingCountdown is
+// not counted: its window may not be listed yet.
+//
+// ⚠ What it cannot see: a window that ends, a tmux server restart, and the
+// reissue of that very id, all while the host is DISCONNECTED (no listing in
+// between). The mirror reports no tmux server identity to tell them apart.
+func (s *Server) officerSpawnsListing(ctx context.Context, owner int64, host string, windows []mirror.Window) {
+	st := s.officerHostSpawns()
+	if st == nil {
+		return
+	}
+	ids := make([]string, 0, len(windows))
+	for _, w := range windows {
+		if w.ID != "" {
+			ids = append(ids, w.ID)
+		}
+	}
+	if err := st.ObserveHostListing(s.officerPrincipal(ctx, owner), host, ids, s.officerRT.now().Add(-hostPendingCountdown)); err != nil {
+		s.logger.Printf("officers: apply host %s's listing to its officer windows: %v", host, err)
+	}
+}
+
 // The card's two answers.
 const (
 	hostDecisionConfirm = "Confirm"

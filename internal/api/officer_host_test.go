@@ -743,4 +743,7 @@ func TestTheHostOfficerSeamsAreALedger(t *testing.T) {
 	assertCallers(t, ".", "applyOfficerSpawnReply", []string{"host_dispatch_reconcile.go:HostDispatchSpawnReply", "officer_host.go:hostStart"})
 	assertCallers(t, ".", "NewReconciler", []string{"officers.go:EnableOfficers"})
 	assertCallers(t, ".", "hostSpawnUp", []string{"officer_host.go:hostInstances"})
+	// Round 2: the fifth writer, from the hub's listing hook alone.
+	assertCallers(t, ".", "ObserveHostListing", []string{"host_stepup.go:officerSpawnsListing"})
+	assertCallers(t, ".", "officerSpawnsListing", []string{"host_dispatch_reconcile.go:HostDispatchListing"})
 }

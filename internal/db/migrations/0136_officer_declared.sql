@@ -19,6 +19,20 @@
 --                     (officer_defs_instance_slug), because agents.name is
 --                     globally unique and two owners may each declare
 --                     `marketing:main`. Set iff runtime is.
+--   auto_host, auto_host_at   where a 'auto' officer is placed on a host, and
+--                     when that host last qualified (round 2's third finding):
+--                     the PLACEMENT IS THE DATABASE'S, so every replica reads
+--                     one answer. A move is a compare-and-swap on auto_host;
+--                     '' / NULL = not placed on a host. Only on 'auto'.
+--
+-- And on officer_host_spawns (0125):
+--
+--   missing_listings  how many of its host's listings in a row have not listed
+--                     its recorded window. At 2 the window is gone for good and
+--                     the row stops counting (round 2's second finding): the
+--                     step-up gate never matches it again, so a tmux window id
+--                     the host later reissues to another window does not
+--                     re-gate the machine.
 --
 -- 🔴 A DECLARED OFFICER'S TYPE IS ITS OWN (round 0's F5). Its type row holds
 -- its charter, and 0118 tied every def to the type named by its id's part
@@ -66,7 +80,10 @@
 --     DROP COLUMN IF EXISTS connectors, DROP COLUMN IF EXISTS read_repos,
 --     DROP COLUMN IF EXISTS max_instances, DROP COLUMN IF EXISTS idle_after_seconds,
 --     DROP COLUMN IF EXISTS poll_seconds, DROP COLUMN IF EXISTS model,
---     DROP COLUMN IF EXISTS instance_slug;
+--     DROP COLUMN IF EXISTS instance_slug, DROP COLUMN IF EXISTS auto_host,
+--     DROP COLUMN IF EXISTS auto_host_at;
+--   DROP INDEX IF EXISTS public.officer_host_spawns_open;
+--   ALTER TABLE public.officer_host_spawns DROP COLUMN IF EXISTS missing_listings;
 --   DELETE FROM schema_migrations WHERE version = 136;
 
 SET LOCAL lock_timeout = '3s';
@@ -81,7 +98,9 @@ ALTER TABLE public.officer_defs
     ADD COLUMN IF NOT EXISTS idle_after_seconds INTEGER,
     ADD COLUMN IF NOT EXISTS poll_seconds       INTEGER,
     ADD COLUMN IF NOT EXISTS model              TEXT    NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS instance_slug      TEXT;
+    ADD COLUMN IF NOT EXISTS instance_slug      TEXT,
+    ADD COLUMN IF NOT EXISTS auto_host          TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS auto_host_at       TIMESTAMPTZ;
 
 -- The shapes. The full rules (a host officer's refusals, the repo grammar,
 -- the namespace length) are internal/officers' declared.officer, which every
@@ -100,6 +119,8 @@ ALTER TABLE public.officer_defs ADD CONSTRAINT officer_defs_declared_check CHECK
     AND (idle_after_seconds IS NULL OR idle_after_seconds > 0)
     AND (poll_seconds IS NULL OR poll_seconds >= 10)
     AND length(model) <= 200
+    AND (auto_host = '' OR (runtime = 'auto' AND auto_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'))
+    AND ((auto_host = '') = (auto_host_at IS NULL))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS officer_defs_instance_slug
@@ -111,3 +132,10 @@ ALTER TABLE public.officer_defs ADD CONSTRAINT officer_defs_type_is_the_id CHECK
     type_key = split_part(officer, ':', 1)
     OR (instance_slug IS NOT NULL AND type_key = instance_slug)
 );
+
+-- A recorded officer window's missing listings (round 2's second finding).
+ALTER TABLE public.officer_host_spawns
+    ADD COLUMN IF NOT EXISTS missing_listings INTEGER NOT NULL DEFAULT 0 CHECK (missing_listings >= 0);
+-- Every applied listing reads the owner's recorded windows on that host.
+CREATE INDEX IF NOT EXISTS officer_host_spawns_open
+    ON public.officer_host_spawns (owner_id, host) WHERE tmux_window <> '';

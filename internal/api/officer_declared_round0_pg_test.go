@@ -262,12 +262,13 @@ func TestAnAutoOfficerSticksToItsHostThroughABlip(t *testing.T) {
 	if a, ok := r.agentNamed(o.InstanceName(1)); !ok || a.RunsOnHost != hostOffOther {
 		t.Fatalf("tearing down the host-bravo placement removed the host-charlie row: %+v (%v)", a, ok)
 	}
-	// A restart: no memory; host-bravo is back and sorts first. The rows say
-	// host-charlie, so it stays.
-	r.s.officerRT.declMu.Lock()
-	r.s.officerRT.autoHost = nil
-	r.s.officerRT.declMu.Unlock()
+	// A restart: host-bravo is back and sorts first. The stored placement
+	// says host-charlie, so it stays.
 	r.m.setHost(hostOffHost, func(v *mirror.HostView) { v.Online = true })
+	reloadOn(hostOffOther)
+	// A row placed before the placement was stored (round 2): none stored,
+	// and the instance rows say host-charlie, so it stays there too.
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE officer_defs SET auto_host = '', auto_host_at = NULL WHERE officer = '`+declID+`'`)
 	reloadOn(hostOffOther)
 }
 

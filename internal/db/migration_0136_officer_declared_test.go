@@ -43,17 +43,35 @@ func TestMigration0136OfficerDeclared(t *testing.T) {
 		// F5: a declared def's own type is its slug's, never another key.
 		{"a declared def on a type that is neither its id's nor its slug's", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:h', 'scout-other', 'pod', 'scout-h')`},
 		{"an env def (no runtime) on a type that is not its id's", `INSERT INTO officer_defs (owner_id, officer, type_key) VALUES (1, 'scout:i', 'scout-own')`},
+		// Round 2: the stored auto placement is an auto officer's alone, a
+		// host name, and always has its time.
+		{"an auto placement on a pod officer", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug, auto_host, auto_host_at) VALUES (1, 'scout:j', 'scout', 'pod', 'scout-j', 'box', now())`},
+		{"an auto placement with no time", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug, auto_host) VALUES (1, 'scout:k', 'scout', 'auto', 'scout-k', 'box')`},
+		{"an auto placement time with no host", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug, auto_host_at) VALUES (1, 'scout:l', 'scout', 'auto', 'scout-l', now())`},
+		{"an auto placement that is not a host name", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug, auto_host, auto_host_at) VALUES (1, 'scout:m', 'scout', 'auto', 'scout-m', 'Box_1', now())`},
 	} {
 		if _, err := pool.Exec(ctx, bad.sql); err == nil {
 			t.Errorf("accepted %s", bad.why)
 		}
 	}
 	mustExec(ctx, t, pool, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (`+two+`, 'scout:main', 'scout', 'pod', 'scout-main-2')`)
+	// Round 2: an auto officer's placement, and a recorded window's count of
+	// missing listings (0 by default, never negative).
+	mustExec(ctx, t, pool, `INSERT INTO officer_types (owner_id, key) VALUES (1, 'scout-auto')`)
+	mustExec(ctx, t, pool, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug, auto_host, auto_host_at) VALUES (1, 'scout:auto', 'scout-auto', 'auto', 'scout-auto', 'box', now())`)
+	mustExec(ctx, t, pool, `INSERT INTO officer_host_spawns (owner_id, officer, instance, host) VALUES (1, 'scout:auto', 'officer-scout-auto-1', 'box')`)
+	var missing int
+	if err := pool.QueryRow(ctx, `SELECT missing_listings FROM officer_host_spawns`).Scan(&missing); err != nil || missing != 0 {
+		t.Fatalf("a spawn's missing_listings = %d (%v), want 0", missing, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE officer_host_spawns SET missing_listings = -1`); err == nil {
+		t.Error("accepted a negative missing_listings")
+	}
 	if _, err := pool.Exec(ctx, readMigration(t, "0136_officer_declared.sql")); err != nil {
 		t.Fatalf("re-applying 0136: %v", err)
 	}
-	if n := countRows(ctx, t, pool, "officer_defs"); n != 4 {
-		t.Fatalf("re-applying 0136 left %d defs, want 4", n)
+	if n := countRows(ctx, t, pool, "officer_defs"); n != 5 {
+		t.Fatalf("re-applying 0136 left %d defs, want 5", n)
 	}
 	for _, q := range asksRollbackSQL(t, "0136_officer_declared.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
@@ -62,5 +80,11 @@ func TestMigration0136OfficerDeclared(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `SELECT runtime FROM officer_defs`); err == nil {
 		t.Error("after the rollback officer_defs.runtime still exists")
+	}
+	if _, err := pool.Exec(ctx, `SELECT auto_host FROM officer_defs`); err == nil {
+		t.Error("after the rollback officer_defs.auto_host still exists")
+	}
+	if _, err := pool.Exec(ctx, `SELECT missing_listings FROM officer_host_spawns`); err == nil {
+		t.Error("after the rollback officer_host_spawns.missing_listings still exists")
 	}
 }

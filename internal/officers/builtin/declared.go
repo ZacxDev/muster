@@ -24,7 +24,8 @@ import (
 // declCols are the declared columns, in DeclaredRow's scan order.
 const declCols = `d.owner_id, d.officer, d.type_key, d.enabled, d.mode, d.escalate_to, d.updated_at,
 	coalesce(d.runtime, ''), d.host, coalesce(d.repo, ''), d.connectors, d.read_repos, coalesce(d.max_instances, 0),
-	coalesce(d.idle_after_seconds, 0), coalesce(d.poll_seconds, 0), d.model, coalesce(d.instance_slug, ''), t.name`
+	coalesce(d.idle_after_seconds, 0), coalesce(d.poll_seconds, 0), d.model, coalesce(d.instance_slug, ''), t.name,
+	d.auto_host, d.auto_host_at`
 
 // DeclaredRow is a DB-declared officer as stored.
 type DeclaredRow struct {
@@ -34,14 +35,24 @@ type DeclaredRow struct {
 	Fields officers.Declaration
 	// TypeName is its type's display name.
 	TypeName string
+	// AutoHost is where a "runtime": "auto" officer is placed on a host ("" =
+	// not on a host), and AutoHostAt when that host last qualified (zero with
+	// it). THE DATABASE'S PLACEMENT (round 2's third finding): every replica
+	// reads it here, and moves it only by SetAutoHost's compare-and-swap.
+	AutoHost   string
+	AutoHostAt time.Time
 }
 
 func scanDeclared(r pgx.Row) (DeclaredRow, error) {
 	var d DeclaredRow
 	var idle, poll int
+	var autoAt *time.Time
 	err := r.Scan(&d.Owner, &d.Officer, &d.TypeKey, &d.Enabled, &d.Mode, &d.EscalateTo, &d.UpdatedAt,
 		&d.Fields.Runtime, &d.Fields.Host, &d.Fields.Repo, &d.Fields.Connectors, &d.Fields.ReadRepos, &d.Fields.MaxInstances,
-		&idle, &poll, &d.Fields.Model, &d.Fields.InstanceSlug, &d.TypeName)
+		&idle, &poll, &d.Fields.Model, &d.Fields.InstanceSlug, &d.TypeName, &d.AutoHost, &autoAt)
+	if autoAt != nil {
+		d.AutoHostAt = *autoAt
+	}
 	d.Fields.ID, d.Fields.Owner = d.Officer, d.Owner
 	d.Fields.IdleAfter = time.Duration(idle) * time.Second
 	d.Fields.PollInterval = time.Duration(poll) * time.Second
@@ -293,7 +304,9 @@ func (s *Store) UpdateDeclared(ctx context.Context, owner int64, officer string,
 	mode, esc := w.defaults()
 	f := w.Fields
 	if _, err := tx.Exec(ctx, `UPDATE officer_defs SET enabled = $3, mode = $4, escalate_to = $5, runtime = $6, host = $7, repo = $8,
-			connectors = $9, read_repos = $10, max_instances = $11, idle_after_seconds = $12, poll_seconds = $13, model = $14, updated_at = now()
+			connectors = $9, read_repos = $10, max_instances = $11, idle_after_seconds = $12, poll_seconds = $13, model = $14, updated_at = now(),
+			auto_host = CASE WHEN $6 = 'auto' THEN auto_host ELSE '' END,
+			auto_host_at = CASE WHEN $6 = 'auto' THEN auto_host_at END
 		WHERE owner_id = $1 AND officer = $2`,
 		owner, officer, w.Enabled, mode, esc, f.Runtime, f.Host, nullStr(f.Repo), strs(f.Connectors), strs(f.ReadRepos),
 		nullInt(f.MaxInstances), nullInt(int(f.IdleAfter/time.Second)), nullInt(int(f.PollInterval/time.Second)), f.Model); err != nil {
@@ -304,6 +317,27 @@ func (s *Store) UpdateDeclared(ctx context.Context, owner int64, officer string,
 		return DeclaredRow{}, err
 	}
 	return d, tx.Commit(ctx)
+}
+
+// SetAutoHost is the ONE writer of a "runtime": "auto" officer's placement
+// (DeclaredRow.AutoHost): a COMPARE-AND-SWAP from prev to next, at time at,
+// on owner's officer with that slug. It writes only while the stored host is
+// still prev, so of two replicas that each decided a move from what they
+// read, one wins and the other reads the winner's placement; prev == next
+// refreshes when the host last qualified. next "" clears it. It reports
+// whether it wrote. It never touches updated_at: a placement is not an edit.
+func (s *Store) SetAutoHost(ctx context.Context, owner int64, officer, slug, prev, next string, at time.Time) (bool, error) {
+	var when any
+	if next != "" {
+		when = at
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_defs SET auto_host = $5, auto_host_at = $6
+		WHERE owner_id = $1 AND officer = $2 AND instance_slug = $3 AND runtime = 'auto' AND auto_host = $4`,
+		owner, officer, slug, prev, next, when)
+	if err != nil {
+		return false, classify(err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // SetDeclaredEnabled is pause (on false) and resume (on true) of owner's

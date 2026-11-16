@@ -218,6 +218,12 @@ What happens:
   answering or routing a plugin message — files a confirmation card instead
   of deciding; it runs once, exactly as asked, when you answer **Confirm** on
   your paired phone. Without a paired phone, decide in muster's web UI.
+  The gate holds while a host officer is declared on the machine, and while
+  any officer window muster started there is still listed (a paused, deleted
+  or moved officer's window finishing its turn). A window is gone for good
+  once two listings in a row have not listed it: a window id the host later
+  reissues to another window does not gate the machine again. If muster
+  cannot read its record of officer windows, the gate holds.
 - **Connectors.** Each `connector_request` is decided by its owner, per
   request, never from a shared approval — as for a pod. Not `github`: it works
   through an HTTP proxy with an agent token no host session holds; the
@@ -534,15 +540,25 @@ muster officer delete scout:main    # its queue, schedules and instances go too
   can start and close Claude Code windows; when neither qualifies it does not
   run, and its `reason` says why. `GET /api/officers/runtime-options` shows
   what each would pick now for a new officer.
-- 🔴 **An `auto` officer on a host stays there.** Once placed, it keeps the
-  host it runs on (the host its instance agents run on, so a restart or
-  another replica agrees) while that host qualifies, and for **10 minutes**
-  after it stops qualifying (disconnected, or an older muster-mirror): a
-  blip does not move it. Its passes meanwhile see the host offline and change
-  nothing. Only past those 10 minutes, and only to another host that
-  qualifies, does it move — and the load that moves it removes the old host's
-  instance agents (a window still open there is asked to close only when
-  idle, as every stop is). With nowhere else to go it stays.
+- 🔴 **An `auto` officer on a host stays there.** Its placement is stored in
+  the database (the host, and when that host last qualified), so a restart
+  and every replica read the same answer. It keeps that host while the host
+  qualifies, and for **10 minutes** after it stops qualifying (disconnected,
+  or an older muster-mirror): a blip does not move it. Its passes meanwhile
+  see the host offline and change nothing. Only past those 10 minutes, and
+  only to another host that qualifies, does it move — a compare-and-swap on
+  the stored placement, so of two replicas deciding a move one wins and the
+  other takes its answer — and the load that moves it removes the old host's
+  instance agents. With nowhere else to go it stays. An officer placed before
+  the placement was stored is placed where its instance agents run.
+- ⚠ **A move can cut a window mid-turn.** The old host's window is asked to
+  close only when idle, as every stop is, so a window still working its last
+  turn is left open; but its instance agent row is removed at once, so that
+  window's officer tools stop answering for the rest of its turn. Its machine
+  stays step-up gated while the host lists the window. A move happens only
+  after the host has failed to qualify for 10 minutes (usually: it is
+  disconnected, so the window cannot be reached anyway) or when you replace
+  the officer onto another runtime or host.
 - A `host` officer must name one of **your** mirrored hosts (by the mirror
   token's host name); any other is refused on the `host` field.
 - It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
@@ -606,9 +622,16 @@ roster until its next refresh:
   once the instance exists (and before a host spawn is sent) and removes it
   when the officer is gone, so no orphan is left; its other passes act on an
   emptied queue (the delete removed the items) and start nothing.
-- **auto host placement** is each replica's own, from the same rule and the
-  same instance rows, so two replicas agree unless they read the hosts at
-  different moments.
+- **delete on another replica while a start runs here**: the start's second
+  check reads the database, and removes the instance it created although this
+  replica's roster still holds the officer (only for that officer's own
+  instance, and only on the database's word; with the database unreadable
+  the instance is left, and the start says it could not remove it).
+- **auto host placement** is the database's, not a replica's: each replica
+  reads the stored placement. A replica that sees the placed host qualify
+  records so (at most once a minute), so a replica that cannot see that host
+  (a host is connected to one replica's hub) still keeps the officer there; a
+  move is a compare-and-swap, so replicas never keep different hosts.
 
 ## The admin API
 

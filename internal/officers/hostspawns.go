@@ -28,11 +28,13 @@ import (
 // the branch muster/<id>-<slug>), so it is drawn from host_dispatches' own
 // sequence: it can never equal a chief dispatch's id on any host.
 //
-// 🔴 FOUR WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
+// 🔴 FIVE WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
 // internal/api): InsertHostSpawn (the fleet's Start), RecordHostSpawnWindow
 // and RecordHostSpawnRefusal (the one reply application, for the waiter and
-// the hub's late-reply hook alike), and RecordHostSpawnSession (the fleet's
-// read, when the recorded window runs another conversation). The two records write only a row whose
+// the hub's late-reply hook alike), RecordHostSpawnSession (the fleet's
+// read, when the recorded window runs another conversation), and
+// ObserveHostListing (the hub's listing hook, which counts a recorded window's
+// missing listings and closes it for good). The two records write only a row whose
 // window and refusal are both still empty, on the row's own host: a late or
 // repeated reply never moves a recorded window.
 // ---------------------------------------------------------------------------
@@ -56,7 +58,18 @@ type HostSpawn struct {
 	// sharing phase 3), 0 for none: that team's members read the row, and
 	// only its owner writes it. Personal by default.
 	SharedTeam int64
+	// MissingListings is how many of its host's listings in a row have not
+	// listed its recorded window (migration 0136, ObserveHostListing). At
+	// HostSpawnMissingToClose the window is GONE for good: the count no longer
+	// moves, and HostSpawnsInWindows never answers the row again, so a tmux
+	// window id the host later reissues to another window is not this one.
+	MissingListings int
 }
+
+// HostSpawnMissingToClose is how many listings in a row must miss a recorded
+// window before it is gone for good: one transient miss closes nothing (the
+// host-dispatch reconciler's hostMissingToEnd, for the same reason).
+const HostSpawnMissingToClose = 2
 
 // ErrHostSpawnNotFound: no row of the principal's matches.
 var ErrHostSpawnNotFound = errors.New("officers: no such host spawn")
@@ -90,8 +103,17 @@ type HostSpawnStore interface {
 	HostSpawnIDs(ctx context.Context, host string, ids []int64) (map[int64]bool, error)
 	// HostSpawnsInWindows is the principal's spawns on host whose RECORDED
 	// window (the id from the host's own spawn reply, never a tag) is one of
-	// windows: the officer windows among a host's listing.
+	// windows, and is not closed (ObserveHostListing): the officer windows
+	// among a host's listing.
 	HostSpawnsInWindows(ctx context.Context, host string, windows []string) ([]HostSpawn, error)
+	// ObserveHostListing applies one listing of host (its window ids) to the
+	// principal's rows there: a row whose recorded window is listed has its
+	// count of missing listings reset; one whose window is not listed, and
+	// that was created before settled (a younger row's window may not be
+	// listed yet), has it counted up — until HostSpawnMissingToClose, after
+	// which the row is closed and neither moves again (round 2's second
+	// finding: a reissued window id).
+	ObserveHostListing(ctx context.Context, host string, windows []string, settled time.Time) error
 }
 
 // PGHostSpawnStore is HostSpawnStore over muster's Postgres.
@@ -100,11 +122,11 @@ type PGHostSpawnStore struct{ pool *pgxpool.Pool }
 // NewPGHostSpawnStore is the store over pool.
 func NewPGHostSpawnStore(pool *pgxpool.Pool) *PGHostSpawnStore { return &PGHostSpawnStore{pool: pool} }
 
-const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at, owner_id, coalesce(shared_team_id, 0)`
+const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at, owner_id, coalesce(shared_team_id, 0), missing_listings`
 
 func scanHostSpawn(row pgx.Row) (HostSpawn, error) {
 	var h HostSpawn
-	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt, &h.OwnerID, &h.SharedTeam)
+	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt, &h.OwnerID, &h.SharedTeam, &h.MissingListings)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HostSpawn{}, ErrHostSpawnNotFound
 	}
@@ -201,7 +223,8 @@ func (s *PGHostSpawnStore) HostSpawnsInWindows(ctx context.Context, host string,
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
-		WHERE host = $1 AND tmux_window = ANY($2) AND tmux_window <> '' AND refusal = '' ORDER BY id`, host, windows)
+		WHERE host = $1 AND tmux_window = ANY($2) AND tmux_window <> '' AND refusal = '' AND missing_listings < $3 ORDER BY id`,
+		host, windows, HostSpawnMissingToClose)
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +238,25 @@ func (s *PGHostSpawnStore) HostSpawnsInWindows(ctx context.Context, host string,
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// ObserveHostListing implements HostSpawnStore. Two statements, each its own
+// rule: a listed window resets its row (a closed row never reopens), an
+// unlisted one counts its settled row up to the close. 🔴 windows is never
+// passed as NULL: `= ANY(NULL)` is NULL, and NOT NULL would skip every row.
+func (s *PGHostSpawnStore) ObserveHostListing(ctx context.Context, host string, windows []string, settled time.Time) error {
+	if windows == nil {
+		windows = []string{}
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET missing_listings = 0
+		WHERE host = $1 AND tmux_window = ANY($2) AND missing_listings > 0 AND missing_listings < $3`,
+		host, windows, HostSpawnMissingToClose); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET missing_listings = missing_listings + 1
+		WHERE host = $1 AND tmux_window <> '' AND refusal = '' AND NOT (tmux_window = ANY($2))
+		AND missing_listings < $3 AND created_at < $4`, host, windows, HostSpawnMissingToClose, settled)
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -424,12 +466,31 @@ func (m *MemHostSpawnStore) HostSpawnsInWindows(_ context.Context, host string, 
 	defer m.mu.Unlock()
 	var out []HostSpawn
 	for _, r := range m.rows {
-		if r.Host == host && r.Window != "" && r.Refusal == "" && slices.Contains(windows, r.Window) {
+		if r.Host == host && r.Window != "" && r.Refusal == "" && slices.Contains(windows, r.Window) && r.MissingListings < HostSpawnMissingToClose {
 			out = append(out, r)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// ObserveHostListing implements HostSpawnStore.
+func (m *MemHostSpawnStore) ObserveHostListing(_ context.Context, host string, windows []string, settled time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.Host != host || r.Window == "" || r.MissingListings >= HostSpawnMissingToClose {
+			continue
+		}
+		switch {
+		case slices.Contains(windows, r.Window):
+			r.MissingListings = 0
+		case r.Refusal == "" && r.CreatedAt.Before(settled):
+			r.MissingListings++
+		}
+	}
+	return nil
 }
 
 // All is every row, by id (tests).

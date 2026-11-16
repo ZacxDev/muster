@@ -69,7 +69,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/chief_toggle.go (*Server).chiefToggleAvailable Provisioner!=nil":           1, // Account → Chief drawn (after the Compose owner check)
 	"internal/api/compose_chief.go (*Server).reapplyComposeChief lifecycleServed()":          1, // the Compose chief's boot re-apply: its own Start, never a dispatch
 	"internal/api/agent_rm.go (*Server).handleAPIAgentRemove lifecycleServed()":              1, // `muster agent rm`: destroy an EXISTING provisioned agent (never the chief); a host officer row needs no provisioner and skips this check
-	"internal/api/officer_declared.go (*Server).teardownInstance lifecycleServed()":          1, // a deleted or moved DB-declared officer's EXISTING instance agents, destroyed as `muster agent rm` does (never the chief)
+	"internal/api/officer_declared.go (*Server).teardownInstanceWith lifecycleServed()":      1, // a deleted or moved DB-declared officer's EXISTING instance agents, destroyed as `muster agent rm` does (never the chief)
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner!=nil":             2, // the switch's Start and Stop
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner==nil":             1, // the switch's create
 	"internal/api/ext.go (Extensions).defects Provisioner!=nil":                              1, // the namespace-prefix wiring check
