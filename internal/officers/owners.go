@@ -11,14 +11,25 @@ import (
 // its builtin store rows, its asks and its outbound drafts are then the
 // team's, and its runtime acts as the team (authz.ViaOfficer is a team door).
 //
-// CheckOwners is the boot check over the declared roster, given how each
-// owner id reads in users. It refuses:
+// CheckOwners is THE team rule over officers, given how each owner id reads
+// in users: at boot over MUSTER_OFFICERS (api.EnableOfficers), and over every
+// DB-declared officer at its create or replace (checkDeclaredOwner) and at
+// each roster load (resolveDeclared, after an auto runtime is resolved). It
+// refuses:
 //   - an owner that names nobody (ErrOwnerUnknown): its every pass would act
 //     as a user that does not exist, and an escalation to it reaches nobody;
-//   - a TEAM owner of a "runtime": "host" officer (ErrTeamHostOfficer): a host
-//     officer's sessions run on a mirror host its owner's token connects, and
-//     a team mirror token is phase 2b's. Until then the hub never lists a
-//     team's host, so every spawn would be refused at the host.
+//   - a TEAM owner of a "runtime": "host" officer that declares `connectors`
+//     (ErrTeamHostOfficerConnectors; operator decision G3, team sharing
+//     2b.5). A team's connector requests would be connector_grants rows the
+//     team owns, which are personal and readable by no member, so nobody
+//     could decide one. Refused until team connector requests have a decider.
+//
+// A team MAY own a host officer (team sharing 2b.5): its host is a team host,
+// one connected with the team's mirror token. Its runtime acts as the team
+// (authz.ViaOfficer is team-acting), so every spawn, close and listing reaches
+// only the team's (team, host) — never a member's personal host of the same
+// name (the hub key). Boot cannot know which hosts will connect, so the host
+// is not checked here.
 // ---------------------------------------------------------------------------
 
 // OwnerKind is how one owner id reads in users.
@@ -36,8 +47,10 @@ const (
 // ErrOwnerUnknown: an officer's owner names no user.
 var ErrOwnerUnknown = errors.New("officers: an officer's owner names no user")
 
-// ErrTeamHostOfficer: a team owns a host officer.
-var ErrTeamHostOfficer = errors.New(`officers: a team cannot own a "runtime": "host" officer until team hosts (team sharing phase 2b)`)
+// ErrTeamHostOfficerConnectors: a team owns a host officer that declares
+// connectors (operator decision G3).
+var ErrTeamHostOfficerConnectors = errors.New(`officers: a team's "runtime": "host" officer cannot declare connectors: ` +
+	`a team's connector requests have no one to decide them (team sharing, decision G3); remove connectors, or run it in pods`)
 
 // CheckOwners checks every officer's owner, read through kindOf (one call per
 // distinct owner).
@@ -55,8 +68,8 @@ func CheckOwners(list []Officer, kindOf func(owner int64) (OwnerKind, error)) er
 		switch {
 		case k == OwnerMissing:
 			return fmt.Errorf("officer %s: owner %d: %w", o.ID, o.Owner, ErrOwnerUnknown)
-		case k == OwnerTeam && o.OnHost():
-			return fmt.Errorf("officer %s: owner %d is a team: %w", o.ID, o.Owner, ErrTeamHostOfficer)
+		case k == OwnerTeam && o.OnHost() && len(o.Connectors) > 0:
+			return fmt.Errorf("officer %s: owner %d is a team: %w", o.ID, o.Owner, ErrTeamHostOfficerConnectors)
 		}
 	}
 	return nil

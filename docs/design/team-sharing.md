@@ -1366,7 +1366,7 @@ reopen them.
 | The minimal team fan-out (phase 3) reaches operators and managers for officer asks, escalations and drafts only, and is not withdrawn from them | `internal/api/team_notify.go:11-25`, `:79-93`; `internal/users/teams.go:268` |
 | An SSE stream subscribes to one owner | `internal/api/server.go:1133-1134` |
 | The disable sweep ends a disabled user's open streams every 10 s | `internal/api/accounts.go:131`, `:300` (`sweepDisabled`) |
-| Boot refuses a team owning a `"runtime": "host"` officer | `internal/officers/owners.go:58-59` (`ErrTeamHostOfficer`) |
+| Boot refuses a team owning a `"runtime": "host"` officer | `internal/officers/owners.go:58-59` (`ErrTeamHostOfficer`). **Lifted in 2b.5:** only a team host officer that declares `connectors` is refused now (`ErrTeamHostOfficerConnectors`, G3) |
 | On a machine that runs a host officer, every owner-authority tool (10 of them) files a confirmation card, answered only from the owner's paired phone | `internal/api/host_stepup.go:57-68` (`hostStepUpTools`), `:184`, owner check at `:257` |
 | `officer_host_spawns` is personal and lendable; a team-owned row is visible only to the team acting principal | `0130_team_officers.sql:112-143`; `lentOwned` in `internal/db/share_ledger_test.go:81` |
 | Focus titles are refreshed for persons only, on each person's own key | `internal/focus/pgstore.go:401-415` |
@@ -2906,6 +2906,74 @@ by re-checking the migration number (D). The slices ship **in order**.
    - The gate-ordering test.
    - Docs: `officers-builtin.md`, `auth.md`'s "team hosts come later" lines,
      and `mirroring.md`'s team host section.
+
+   **Built (no migration: 0133's `team_owner_read` already carries it). See
+   "As built in 2b.5".**
+
+   > **As built in 2b.5.**
+   > - **One rule, both kinds of officer.** `officers.CheckOwners` drops
+   >   `ErrTeamHostOfficer` and refuses, in its place, a team's host officer
+   >   that declares `connectors` (`ErrTeamHostOfficerConnectors`, G3). It is
+   >   THE team rule for env and DB-declared officers alike: boot
+   >   (`EnableOfficers`) and each roster load (`resolveDeclared`, after an
+   >   auto runtime resolves) call it
+   >   (`TestCheckOwnersAdmitsATeamHostOfficer`,
+   >   `TestCheckOwnersRefusesATeamHostOfficerWithConnectors`,
+   >   `TestBootRefusesATeamHostOfficerWithConnectors`, `TestTeamOfficerRules`,
+   >   `TestATeamAutoOfficerIsPlacedOnTheTeamsHost`, which replaces
+   >   `TestATeamAutoOfficerIsNeverPlacedOnAHost`). A stored team row that
+   >   breaks G3 does not run, and the load says why.
+   > - 🔴 **Owed to O-C: refuse it at the team door.** No door accepts a team
+   >   owner yet (the create/replace door's owner is the caller's own;
+   >   `TestTeamOfficerRules` pins the team door's 404), so no declare-time
+   >   refusal was added here (round 0 on #729, D1). O-C's team door must
+   >   refuse a team `"runtime": "host"` declaration that declares
+   >   `connectors`, at the door (it reaches `checkDeclaredOwner`, which
+   >   calls `CheckOwners`; report it on the field to change). A team
+   >   `"runtime": "auto"` declaration with connectors cannot be refused at
+   >   the door, because in a pod it is not a host officer: it is refused at
+   >   the load when auto places it on a host, as now. Team pod officers with
+   >   connectors stay as phase 3 left them (UNVERIFIED).
+   > - **Which host.** Unchanged code: the runtime acts as the team
+   >   (`officerPrincipal` → `ViaOfficer`), so `Mirror.Hosts` lists only the
+   >   team's hosts. `TestATeamHostOfficerNeverSpawnsOnAPersonsHost` is an
+   >   **invariant** of the hub key (red at base only because boot refused
+   >   the officer): with only a member's personal `host-bravo` online the
+   >   pass errors "not connected" and nothing is sent; on the team's own
+   >   host it spawns, and the instance's agent row is the team's.
+   >   `TestATeamHostOfficerInstanceBindsOnlyOnTheTeamHost`: an instance's
+   >   officer tool is served on the team host's MCP door, and the same
+   >   session id from a member's personal host of the same name is not
+   >   bound (the mirror door carries no teams, so `team_owner_read` never
+   >   reaches it).
+   > - **`/officers/spawns`.** A row whose owner is one of the viewer's teams
+   >   is drawn in a section of its own under the team's name, read-only,
+   >   with no lend form (`TestTheSpawnsPageGroupsATeamsOwnSpawnsUnderTheTeam`:
+   >   red at base, which drew it as "Shared with  by a teammate"). A row a
+   >   person lent to the team stays in the personal list as a lend. The
+   >   chief's `officer_spawn_share` list is unchanged: its door carries no
+   >   teams. The share ledger already expected `team_owner_read` (2b.1), so
+   >   `TestTheShareLedgerHoldsForEveryRole` is unchanged. Each section reads
+   >   its own window of the newest 200 rows (`officers.SpawnWindow`: the
+   >   personal section leaves out the viewer's teams' own rows, and each team
+   >   section reads only that team's), so a busy team host officer never
+   >   pushes a member's own lend off the page
+   >   (`TestABusyTeamOfficerNeverPushesAMembersLendOffTheSpawnsPage`: red
+   >   with the one shared window; round 1 on #729, F1).
+   > - **The gate order was already structural.** Since 2b.2, a team token's
+   >   tool LIST is filtered by `teamHostTools`, and `serveMCP` runs a listed
+   >   name only, so the filter runs before `hostStepUpGate` with no code
+   >   change here. `TestATeamHostFilesNoStepUpCard` pins it on a team host
+   >   that runs a team host officer (the gate would hold that machine:
+   >   checked), for `plugin_draft_decide` and `attention_answer`. The
+   >   positive control is the person's host of the same name, which files a
+   >   card for each. Turning the filter off, or keeping either tool, files a
+   >   TEAM-owned card.
+   > - **Say-so.** No new say-so path. The officer actions that need a
+   >   person on a team host are already the existing ones: a draft waits
+   >   for a manager with step-up (`draft_approver`), and every owner-authority
+   >   tool is refused at the door. Nothing looser than the team dispatch
+   >   rule was added.
 
 **Rollback.** The order is the reverse of shipping.
 
