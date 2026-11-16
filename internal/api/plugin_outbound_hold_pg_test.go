@@ -91,7 +91,12 @@ func TestARejectionPastTheBoundIsHeldAndDeliveredLater(t *testing.T) {
 		t.Fatalf("complete prior: %s", out)
 	}
 
+	// The delivering sweep runs WITHOUT an attention store: delivery must not
+	// depend on one.
+	att := w.srv.ext.Attention
+	w.srv.ext.Attention = nil
 	w.srv.SweepOfficerAttention(w.ctx)
+	w.srv.ext.Attention = att
 	if out, ok := w.claimItem(held); !ok {
 		t.Fatalf("one of the 3 finished and the sweep ran, but the held rejection was not delivered: %s", out)
 	}
