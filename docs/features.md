@@ -445,14 +445,18 @@ A sealed store of HTTP credentials (and read-only Postgres connectors) that
 agents use through muster's proxy without seeing the secret; it also holds each
 member's own Claude token and OpenRouter key. [connectors.md](connectors.md).
 
-- **Needs:** a 32-byte key. Agents using connectors need [dispatch](#dispatch);
-  the store itself and members' credentials do not.
-- **`.env`:** `MUSTER_CONNECTOR_ENCRYPTION_KEY=<head -c32 /dev/urandom | base64>`.
+- **Needs:** a 32-byte key. Agents using connectors need [dispatch](#dispatch)
+  and `MUSTER_AGENT_CONNECT_URL` with `MUSTER_CONNECT_PORT`; members'
+  credentials need only the key.
+- **`.env`:** `MUSTER_CONNECTOR_ENCRYPTION_KEY=<openssl rand -hex 32>` (64 hex
+  digits, or base64 of 32 bytes).
   Keep it: losing it loses every stored secret. Optionally
   `MUSTER_DIAL_DENY_PRIVATE=1` refuses postgres connectors to loopback and
   private addresses
   ([connectors.md](connectors.md#refusing-private-addresses)).
-- **Check:** `connector store: ENABLED — …`; the Connectors tab appears.
+- **Check:** with the key alone, `connector store: MEMBERS' CREDENTIALS ONLY — …`
+  and Account → Credentials takes keys; with the agent connect URL too,
+  `connector store: ENABLED — …` and the Connectors tab appears.
 
 ### GitHub App
 
@@ -482,18 +486,19 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
   MUSTER_AUTH_MODE=gotrue
   MUSTER_GOTRUE_URL=http://<your gotrue>:9999
   MUSTER_GOTRUE_JWT_SECRET=<GoTrue's HS256 secret, 32+ characters>
-  MUSTER_BROWSER_PORT=8106
+  MUSTER_BROWSER_PORT=8107
   ```
 
 - **Publish the browser port** with a `docker-compose.override.yml` beside
   `docker-compose.yml` (Compose reads it automatically), and point
-  `tailscale serve` at 8106 instead of 8105:
+  `tailscale serve` at 8107 instead of 8105 (not 8106: with the chief on, that
+  is the Compose stack's connect port):
 
   ```yaml
   services:
     muster:
       ports:
-        - "127.0.0.1:8106:8106"
+        - "127.0.0.1:8107:8107"
   ```
 
 - **Then:** `docker compose exec muster /muster-server invite --claim-admin`

@@ -137,6 +137,7 @@ func proxyShutdownApp(t *testing.T, connectPort int, u *proxyUpstream) (a *app, 
 	key := bytes.Repeat([]byte{7}, 32)
 	cfg.ConnectorEncKey = key
 	cfg.ConnectPort = connectPort
+	cfg.AgentConnectURL = "http://muster.example.test:" + strconv.Itoa(connectPort) // the agent-facing store needs it
 	a = buildForShutdown(t, cfg)
 
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
