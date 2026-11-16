@@ -79,6 +79,19 @@ a turn is already running in that session; a message sent from the Terminal's
 composer waits the same way, in the background. A prompt waiting for an answer
 in the agent's terminal holds the session too, and the chat says so.
 
+**What muster delivers on its own waits for your turn, and for your line.**
+Muster also gives the chief turns nobody typed: a plugin message, the answer to
+a request it routed for you, a route's hand-back, your answer to one of its
+asks, a session's question, a nudge. None of them takes the chief's session
+while a turn you typed is in flight, so your turn keeps its authority
+(`owner_asked`) to the end, and none of them jumps a line you typed that is
+waiting for the session. Each waits and is delivered afterwards **as a turn of
+its own**: a route answer that cannot be delivered yet stays owed and is
+offered again on the next sweep, so answers that arrive while the chief is busy
+are relayed one after another rather than written into the chat where the
+chief's Claude Code session never reads them
+([plugins.md](plugins.md#routing-your-own-request-to-a-session)).
+
 **The last click wins.** Each user's switch changes run one at a time, each
 finishing its Start or Stop before the next begins, so a quick Off then On (or
 On then Off) leaves the pod in the state the switch shows.

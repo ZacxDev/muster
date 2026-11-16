@@ -1438,8 +1438,9 @@ func (s *Server) pluginChiefSession(ctx context.Context, r plugins.Route) (int64
 
 // noteToChief records, in the chief's conversation for the route
 // (routeChiefSession), what became of a route — muster's words, never the
-// answer or the item — so the chief's next turn knows. It costs the chief no
-// turn.
+// answer or the item. It costs the chief no turn — and ⚠ a Claude Code chief's
+// CLI never reads a chat row it was not sent, so its next turn does NOT know
+// unless something tells it; the owner, reading the chat, does.
 func (s *Server) noteToChief(ctx context.Context, r plugins.Route, what string) {
 	sessID, ok := s.routeChiefSession(ctx, r)
 	if !ok {
@@ -1783,15 +1784,18 @@ const routeAnswerMarker = "route-answer"
 // which falls back to the chief's default session when that one is gone) —
 // AT LEAST ONCE: the
 // hand-back that owes it is cleared (TakeHandBack) only once the answer is on
-// record there — the row the chief's turn stores, or, when no turn can run or
-// the turn stored nothing (a chief being replaced refuses before storing:
-// ErrAgentBeingReplaced), a note. A failure leaves it owed, and the next sweep
-// tries again; a row already there is not written twice (answerOnRecord). ctx
-// acts as the route's owner.
+// record there — the row the chief's turn stores (startRouteAnswerTurn), or a
+// note when the chief can take no turn at all (not running, no gateway) or has
+// not been free for routeChiefWaitMax. A chief that can take a turn but not now
+// leaves it OWED: the next sweep offers it again, so each answer is a turn of
+// its own. 🔴 A note is a chat row only: a Claude Code chief's CLI never reads
+// it, so a note is the last resort, never the busy path — answers that arrived
+// during a turn were lost to the chief that way. A row already there is not
+// written twice (answerOnRecord). ctx acts as the route's owner.
 //
-// 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S: it runs under the hand-back's
-// session claim and is not typed, so owner_asked refuses in it — an answer can
-// never route text onward in the owner's name.
+// 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S: it runs under its own session
+// claim and is not typed, so owner_asked refuses in it — an answer can never
+// route text onward in the owner's name.
 func (s *Server) deliverRouteAnswer(ctx context.Context, r plugins.Route) {
 	owed, err := s.ext.Routes.OwesHandBack(ctx, r.RouteID)
 	if err != nil || !owed {
