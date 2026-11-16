@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,6 +70,7 @@ func (s *Server) registerOfficerAdminRoutes(mux Mux) {
 	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/items", h(s.handleOfficerItems))
 	mux.HandleFunc("POST "+officerAdminPrefix+"/defs/{officer}/items", h(s.handleOfficerItemEnqueue))
 	mux.HandleFunc("POST "+officerAdminPrefix+"/defs/{officer}/items/{id}/resolve", h(s.handleOfficerItemResolve))
+	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/usage", h(s.handleOfficerUsage))
 	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/schedules", h(s.handleOfficerSchedules))
 	mux.HandleFunc("PUT "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerSchedulePut))
 	mux.HandleFunc("DELETE "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerScheduleDelete))
@@ -268,6 +270,27 @@ func (s *Server) handleOfficerItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleOfficerUsage is GET .../defs/{officer}/usage?days=N: the officer's
+// model spend per UTC day, pool and instance (officer_llm_usage), newest
+// first, over the last N days (default 30, at most builtin.UsageDays), with
+// the window's total. cost_usd is the provider's reported cost for a pool on
+// the LLM proxy and an estimate from officers' price list for a Claude Code
+// instance (estimated_requests counts the requests booked from an estimate).
+func (s *Server) handleOfficerUsage(w http.ResponseWriter, r *http.Request) {
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	list, err := s.officerStore.ListUsage(r.Context(), adminOwner(r), r.PathValue("officer"), days, time.Now())
+	if err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	}
+	var total float64
+	for _, u := range list {
+		total += u.CostUSD
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"days": list, "total_cost_usd": math.Round(total*1e6) / 1e6,
+		"prices_as_of": officers.ClaudePricesAsOf()})
 }
 
 func validItemStatus(s string) bool {

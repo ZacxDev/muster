@@ -28,6 +28,7 @@ const (
 	officerItemsRoute   = "/api/officers/defs/{officer}/items"
 	officerResolveRoute = "/api/officers/defs/{officer}/items/{id}/resolve"
 	officerSchedsRoute  = "/api/officers/defs/{officer}/schedules"
+	officerUsageRoute   = "/api/officers/defs/{officer}/usage"
 	officerSchedRoute   = "/api/officers/defs/{officer}/schedules/{name}"
 )
 
@@ -43,7 +44,32 @@ escalation recipients — and lets you queue and resolve its items.
 Order: put the type first (officer type put), then the officer (officer def
 put <type>:<area>); an officer's type is the part of its id before the colon.`,
 	}
-	cmd.AddCommand(newOfficerTypeCmd(a), newOfficerDefCmd(a), newOfficerItemCmd(a), newOfficerScheduleCmd(a))
+	cmd.AddCommand(newOfficerTypeCmd(a), newOfficerDefCmd(a), newOfficerItemCmd(a), newOfficerScheduleCmd(a), newOfficerUsageCmd(a))
+	return cmd
+}
+
+// newOfficerUsageCmd is `officer usage <officer>`: what the officer's model
+// calls cost, per UTC day, pool and instance (officer_llm_usage).
+func newOfficerUsageCmd(a *app) *cobra.Command {
+	var days int
+	cmd := &cobra.Command{
+		Use:   "usage <officer>",
+		Short: "GET " + officerUsageRoute + " — model spend per UTC day (requests, tokens, USD), newest first",
+		Long: `What the officer's model calls cost, one row per UTC day, pool and instance,
+newest first, with the window's total. cost_usd is the provider's reported cost
+for a pool on muster's LLM proxy, and an ESTIMATE at Anthropic's list price for
+a Claude Code instance (its transcript carries tokens, not dollars):
+estimated_requests counts the requests whose cost is an estimate.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q := url.Values{}
+			if days > 0 {
+				q.Set("days", strconv.Itoa(days))
+			}
+			return a.officerCall(cmd, http.MethodGet, officerUsageRoute, map[string]string{"officer": args[0]}, q, nil)
+		},
+	}
+	cmd.Flags().IntVar(&days, "days", 0, "the last this many UTC days, today included (default 30, at most 90)")
 	return cmd
 }
 
