@@ -1490,6 +1490,7 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 	// route has been seen: one turn per chief session (deliverRouteAnswer).
 	answers := &routeAnswerCollector{}
 	ctx = context.WithValue(ctx, routeAnswerCollectorKey{}, answers)
+	ctx = withRouteBatchSweep(ctx) // each route_many batch once per pass (route_many.go)
 	defer s.flushRouteAnswers(answers)
 	n := 0
 	for _, d := range due {

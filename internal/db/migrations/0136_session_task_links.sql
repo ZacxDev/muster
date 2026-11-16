@@ -21,6 +21,11 @@
 --       (internal/api route_many.go), once every member has ended.
 --       The batch has no claim column: its digest is owed while any member
 --       owes a hand-back, and is delivered under the chief's own claims.
+--   session_routes.batch_size   how many members route_many SEALED the batch
+--       with once it had made every route of the call (plugins.PGStore.
+--       SealBatch), the same on every member; NULL until then. An unsealed
+--       batch is never digested, so a member ending while the call still
+--       makes the rest cannot start a digest of part of it.
 --
 -- 🔴 THE TASK LINK IS THE SESSION'S OWN WORD, AND ITS ONE WRITER IS THE
 -- SESSION. It is written only through the mirror door, for the calling
@@ -46,7 +51,8 @@
 --   DROP INDEX IF EXISTS idx_session_routes_batch;
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_id_shape;
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_is_request;
---   ALTER TABLE session_routes DROP COLUMN IF EXISTS batch_id;
+--   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_size_range;
+--   ALTER TABLE session_routes DROP COLUMN IF EXISTS batch_id, DROP COLUMN IF EXISTS batch_size;
 --   DELETE FROM schema_migrations WHERE version = 136;
 
 SET LOCAL lock_timeout = '3s';
@@ -75,6 +81,10 @@ ALTER TABLE public.agent_focus ADD CONSTRAINT agent_focus_task_mirror_only
     CHECK (subject_kind = 'mirror' OR (cardinality(task_keys) = 0 AND task_none IS NULL AND task_set_at IS NULL));
 
 ALTER TABLE public.session_routes ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE public.session_routes ADD COLUMN IF NOT EXISTS batch_size INTEGER;
+ALTER TABLE public.session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_size_range;
+ALTER TABLE public.session_routes ADD CONSTRAINT session_routes_batch_size_range
+    CHECK (batch_size IS NULL OR (batch_id IS NOT NULL AND batch_size BETWEEN 1 AND 50));
 ALTER TABLE public.session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_id_shape;
 ALTER TABLE public.session_routes ADD CONSTRAINT session_routes_batch_id_shape
     CHECK (batch_id IS NULL OR batch_id ~ '^rb_[0-9a-f]{24}$');

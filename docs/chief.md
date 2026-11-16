@@ -385,13 +385,20 @@ dispatched agent or an opencode session is never a route target, so it is
 The answers do **not** come back one by one. Each answer is recorded and owed,
 and no answer starts a turn of the chief's. When every session has answered, or
 at the deadline (default 60 minutes, 10 to 240), whichever is first, the chief
-gets **one digest turn** in the chat you asked in. The digest has one line per
-session: its answer as it wrote it (cut at 1,500 characters, fenced as untrusted
-data like a route answer), or `no reply (<why>)`. Like every route answer, the
-digest waits while your own turn runs. The batch is owed while any of its
-sessions' answers is, and it is delivered under the chief's own claims, so a
-digest is delivered once. A chief that can take no turn gets it as a note in
-the chat.
+gets **one digest turn** in the chat you asked in. The digest has one entry per
+session: its answer as it wrote it, cut at 1,500 characters and in a fenced
+block of its own under its own nonce, so one answer cannot pass for another's;
+or `no reply (<why>)`. A session refused in the call's result is not in it. The
+digest is capped at 64 KiB, like a turn of route answers; sessions past the cap
+are named, marked cut. Like every route answer, the digest waits while your own
+turn runs.
+
+The batch is digested only once `route_many` has made every route of the call
+(it **seals** the batch with its size), so a session that ends early never
+starts a digest of part of it. It is owed while any of its sessions' answers is,
+it is delivered under the chief's own claims, so a digest is delivered once, and
+a sweep reads each batch once. A chief that cannot be read for a moment keeps the
+digest owed. A chief that can take no turn gets it as a note in the chat.
 
 **Reconciling sessions with tasks.** The claude-code chief is taught one flow:
 

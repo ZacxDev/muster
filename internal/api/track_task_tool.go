@@ -33,17 +33,36 @@ import (
 
 const trackTaskTool = "track_task"
 
+// trackTaskOn reports whether the mirror door offers track_task: with the
+// focus store (whose row holds the declaration) AND a plugin task namespace
+// configured — without one no key is valid, so the tool could only refuse.
+func (s *Server) trackTaskOn() bool {
+	return s.ext.Focus != nil && len(notes.PluginTaskNamespaces()) > 0
+}
+
+// trackTaskExampleKey is the example key the tool, its instruction and the
+// reconcile request name: in this server's first plugin task namespace.
+func trackTaskExampleKey() string {
+	ns := "<namespace>"
+	if all := notes.PluginTaskNamespaces(); len(all) > 0 {
+		ns = all[0]
+	}
+	return ns + ":<task id>"
+}
+
 // trackTaskInstruction is the mirror door's standing instruction when it
 // offers track_task (handleMirrorMCP): short and deterministic.
-const trackTaskInstruction = "When you start work, switch to other work, or are asked which task you are on, call track_task with " +
-	"the task keys you work under (e.g. \"hq:<task id>\"), or none: \"<one line>\" when the work is deliberately untracked. " +
-	"Keep it current."
+func trackTaskInstruction() string {
+	return "When you start work, switch to other work, or are asked which task you are on, call track_task with " +
+		"the task keys you work under (e.g. \"" + trackTaskExampleKey() + "\"), or none: \"<one line>\" when the work is " +
+		"deliberately untracked. Keep it current."
+}
 
 func trackTaskToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: trackTaskTool,
 		Description: "Record which tasks THIS session works under, so your owner and their chief see it (fleet_list). Each call " +
 			"replaces what was recorded. tasks: task keys, \"<namespace>:<id>\" as your owner's task plugin files them (e.g. " +
-			"\"hq:<task id>\"); at most 10; an empty list clears them. none: instead of tasks, one line saying why this work is " +
+			"\"" + trackTaskExampleKey() + "\"); at most 10; an empty list clears them. none: instead of tasks, one line saying why this work is " +
 			"deliberately untracked. note: an optional short line on what you do under the tasks. Call it when you start or switch work.",
 		Parameters: objSchema(map[string]any{
 			"tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": focus.MaxTaskKeys,
@@ -65,7 +84,7 @@ const trackTaskArgs = `arguments are {tasks: [...], note?} (tasks: [] clears the
 // toolTrackTask is track_task for caller c: a mirrored session (Claude Code or
 // opencode) the mirror door bound. It writes c's OWN subject.
 func (s *Server) toolTrackTask(ctx context.Context, c toolCaller, arguments string) string {
-	if s.ext.Focus == nil {
+	if !s.trackTaskOn() {
 		return toolErr("unknown tool %q", trackTaskTool)
 	}
 	sub := focus.MirrorSubject(c.asker.MirrorSession)

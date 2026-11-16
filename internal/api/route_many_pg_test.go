@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -113,8 +114,9 @@ func TestRouteManyWhenEveryoneAnswersTheChiefGetsOneDigest(t *testing.T) {
 		t.Fatalf("%d chief turns, want exactly the one digest: %q", len(turns), turns)
 	}
 	d := turns[0]
-	for _, want := range []string{routeBatchHead(res.BatchID) + " ", "2 answered, 0 no reply", "[mirror:" + routeSID + "] answered: " + answerBody(1),
-		"[mirror:" + otherRouteSID + "] answered: " + answerBody(2), "<<<" + routeBatchDigestMarker + " untrusted nonce="} {
+	for _, want := range []string{routeBatchHead(res.BatchID) + " ", "2 answered, 0 no reply", "[mirror:" + routeSID + "] answered. ",
+		"[mirror:" + otherRouteSID + "] answered. ", fence.ContentPrefix + "  answer: " + answerBody(1),
+		fence.ContentPrefix + "  answer: " + answerBody(2), "<<<" + routeBatchDigestMarker + " untrusted nonce="} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("the digest lacks %q:\n%s", want, d)
 		}
@@ -155,7 +157,7 @@ func TestRouteManyAtTheDeadlineTheDigestMarksTheRestNoReply(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("%d chief turns at the deadline, want one digest: %q", len(turns), turns)
 	}
-	for _, want := range []string{"1 answered, 1 no reply", "[mirror:" + routeSID + "] answered: " + answerBody(1),
+	for _, want := range []string{"1 answered, 1 no reply", "[mirror:" + routeSID + "] answered. ", fence.ContentPrefix + "  answer: " + answerBody(1),
 		"[mirror:" + otherRouteSID + "] no reply ("} {
 		if !strings.Contains(turns[0], want) {
 			t.Fatalf("the digest lacks %q:\n%s", want, turns[0])
