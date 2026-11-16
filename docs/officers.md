@@ -1036,8 +1036,8 @@ dispatch both ask them.
   `no_author`, `nothing_pushed`, `head_not_live`)
   come back with HQ's status and body; HQ rolls the complete back, so the
   item stays held.
-- **`authors`, `attributed_prs`, `attribution`, `tickets`** (every instance;
-  HQ decides which items and outcomes take each). `authors` is
+- **`authors`, `attributed_prs`, `attribution`, `tickets`** (every instance of
+  an HQ officer; HQ decides which items and outcomes take each). `authors` is
   `{"<login>": "<text>"}`: HQ mails each of the item's `payload.authors` its
   own text, on `done` or `escalated` (HQ's officer guide, §5i "Author mail").
   `attributed_prs` (PR numbers) with `attribution`
@@ -1051,7 +1051,13 @@ dispatch both ask them.
   would drift from HQ's. A field the
   instance does not send is **no key** in the body — never `null` or `[]`,
   which an HQ that predates the field refuses; a value the instance did send,
-  `null` or `[]` included, is forwarded unchanged. (Before this, muster
+  `null` or `[]` included, is forwarded unchanged. An HQ that predates a
+  field refuses it with a generic `400` (`body must be one JSON object {…}`,
+  naming no field) and writes nothing, so until HQ accepts `tickets` a
+  complete carrying it is refused, the item stays held, and the same complete
+  without it succeeds. A **builtin** officer is not offered the four (its
+  backend has no author mail, attribution or tickets), and muster refuses one
+  it sends anyway, naming the field, before the backend. (Before this, muster
   dropped all four silently, so no officer-attributed author was ever told.)
 
 ### Observability queries

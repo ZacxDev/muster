@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/hqtest"
 )
 
 // ---------------------------------------------------------------------------
@@ -218,4 +220,59 @@ func completePropsOf(t *testing.T, defs []agents.ToolDef) map[string]json.RawMes
 	}
 	t.Fatalf("%s is not offered", completeTool)
 	return nil
+}
+
+// TestAnHQWithoutTicketsRefusesThemAndTheRetryWithoutSucceeds: against an HQ
+// that predates `tickets` (its decoder disallows unknown fields), a complete
+// carrying it gets HQ's generic 400 — naming no field — and nothing is
+// written: the item stays held. The same complete without `tickets` is then
+// served. A fake that accepted every field could not see this.
+func TestAnHQWithoutTicketsRefusesThemAndTheRetryWithoutSucceeds(t *testing.T) {
+	r := newKubeOfficerRig(t)
+	ctx := context.Background()
+	r.hq.CompleteFields = hqtest.CompleteFieldsWithout("tickets")
+	routine := r.addNamed(offKRout+"1", 2251)
+	item := r.hq.AddTieredItem(offK, "followup.tickets", "sweep-old-hq", officers.TierRoutine)
+	r.hq.SetClaim(item, routine.Name, time.Now().Add(10*time.Minute))
+	r.hq.ResetRequests()
+	out := r.s.dispatchAgentTool(ctx, routine, completeTool, `{"item_id":"`+item+`","outcome":"escalated","summary":"two tickets match PR 7259","tickets":`+ticketsArg+`}`)
+	if !isToolErr(out) || !strings.Contains(out, `"status":400`) || !strings.Contains(out, "body must be one JSON object") {
+		t.Fatalf("tickets against an HQ without them: %s, want HQ's generic 400", out)
+	}
+	if strings.Contains(out, "tickets") {
+		t.Errorf("HQ's refusal of an unknown field named it: %s (real HQ's decoder names none)", out)
+	}
+	if it := r.hq.Item(item); it.Status != "claimed" || it.ClaimedBy != routine.Name {
+		t.Fatalf("a refused complete left the item %s held by %q, want it still held", it.Status, it.ClaimedBy)
+	}
+	out = r.s.dispatchAgentTool(ctx, routine, completeTool, `{"item_id":"`+item+`","outcome":"escalated","summary":"two tickets match PR 7259","attributed_prs":`+attributedPRsArg+`}`)
+	if isToolErr(out) {
+		t.Fatalf("the same complete without tickets: %s, want it served", out)
+	}
+	if it := r.hq.Item(item); it.Status != "escalated" {
+		t.Fatalf("the retry left the item %s, want escalated", it.Status)
+	}
+}
+
+// TestOfficerCompleteOffersTheHQFieldsToAnHQOfficerOnly: a builtin officer's
+// officer_complete has none of the four (its backend would drop them), an HQ
+// officer's has all four — judgement, routine and untiered alike.
+func TestOfficerCompleteOffersTheHQFieldsToAnHQOfficerOnly(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		o    officers.Officer
+		want bool
+	}{
+		{"builtin", officers.Officer{ID: "marketing:example", Backend: officers.BackendBuiltin}, false},
+		{"builtin routine", officers.Officer{ID: "marketing:example", Backend: officers.BackendBuiltin, Tier: officers.TierRoutine}, false},
+		{"hq", officers.Officer{ID: "triage:example"}, true},
+		{"hq explicit", officers.Officer{ID: "triage:example", Backend: officers.BackendHQ, Tier: officers.TierRoutine}, true},
+	} {
+		props := completePropsOf(t, []agents.ToolDef{completeToolDef(c.o)})
+		for _, f := range attributionFields {
+			if _, has := props[f.key]; has != c.want {
+				t.Errorf("%s: officer_complete offers %s: %v, want %v", c.name, f.key, has, c.want)
+			}
+		}
+	}
 }

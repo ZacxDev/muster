@@ -1563,26 +1563,34 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	}
 	props["handoff"] = map[string]any{"type": "object", "additionalProperties": false, "description": handoffDesc,
 		"properties": handoffProps, "required": []string{"head_sha"}}
-	// 🔴 OFFERED TO EVERY POOL, AND OPEN: HQ decides which items and outcomes
-	// take each (its refusal is a 400 naming the field, and the item stays
-	// held), and muster forwards each to HQ as sent
+	// 🔴 OFFERED TO EVERY POOL OF AN HQ OFFICER, AND OPEN: HQ decides which
+	// items and outcomes take each, and muster forwards each to HQ as sent
 	// (officers.Completion.AuthorsJSON and siblings) — a closed schema here
-	// would be a second copy that drifts from HQ's decoder.
-	desc += " When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: " +
-		"`authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, " +
-		"and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it."
-	props["authors"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"},
-		"description": "Optional, outcome done or escalated: {\"<GitHub login>\": \"the text HQ mails that author\"}, each login one of " +
-			"your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held."}
-	props["attributed_prs"] = map[string]any{"type": "array", "items": map[string]any{"type": "integer"},
-		"description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. " +
-			"HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400."}
-	props["attribution"] = map[string]any{"type": "string",
-		"description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400."}
-	props["tickets"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
-		"description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, " +
-			"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], " +
-			"each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400."}
+	// would be a second copy that drifts from HQ's decoder. HQ's refusal is a
+	// 400 and the item stays held; it names the field only when HQ knows the
+	// field. An HQ that predates one (its decoder disallows unknown fields)
+	// answers a generic `body must be one JSON object {…}` naming none — so
+	// until HQ accepts `tickets`, a complete carrying it is refused, the item
+	// stays held, and the same complete without it succeeds.
+	// A builtin officer is not offered them (completeTakesHQFields): its
+	// backend has no author mail, attribution or tickets.
+	if completeTakesHQFields(o) {
+		desc += " When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: " +
+			"`authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, " +
+			"and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it."
+		props["authors"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"},
+			"description": "Optional, outcome done or escalated: {\"<GitHub login>\": \"the text HQ mails that author\"}, each login one of " +
+				"your item's payload.authors. HQ mails each author only their own text. HQ validates it and may refuse with 400; a refused complete leaves the item held."}
+		props["attributed_prs"] = map[string]any{"type": "array", "items": map[string]any{"type": "integer"},
+			"description": "Optional, outcome escalated: the PR numbers your finding is attributed to, from your item's payload.authors PRs. " +
+				"HQ sends each attributed PR's author the escalation card. HQ validates it and may refuse with 400."}
+		props["attribution"] = map[string]any{"type": "string",
+			"description": "Optional, with attributed_prs: \"likely\" or \"confirmed\". HQ validates it and may refuse with 400."}
+		props["tickets"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
+			"description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, " +
+				"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], " +
+				"each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400."}
+	}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
@@ -1598,6 +1606,13 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
 		Parameters: objSchema(props, "item_id", "outcome", "summary")}
 }
+
+// completeTakesHQFields is THE rule for whether officer o's instances are
+// offered officer_complete's authors, attributed_prs, attribution and
+// tickets (the features only HQ serves), and may send them: an HQ officer's only. The
+// builtin backend has none of those features, and would complete the item
+// while dropping them.
+func completeTakesHQFields(o officers.Officer) bool { return !o.IsBuiltin() }
 
 // completeHandoff checks officer_complete's `handoff` (raw as sent; absent or
 // null is none): {"head_sha": <40 lower-case hex>}, plus — a shepherd's only
@@ -1925,6 +1940,15 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(inv) > 0 && !officers.CompleteTakesInvestigation(o) {
 			return toolErr("investigation is not a routine instance's: an item that needs investigating is the judgement pool's — complete it with outcome %s and what you found in the summary",
 				officers.OutcomeNeedsJudgement), true
+		}
+		// 🔴 REFUSED, NEVER DROPPED, on a builtin officer: it is not offered
+		// them, and its backend would complete the item without them.
+		if !completeTakesHQFields(o) {
+			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets} {
+				if len(bytes.TrimSpace(raw)) > 0 {
+					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution or tickets): complete without it", f, o.ID), true
+				}
+			}
 		}
 		if strings.TrimSpace(in.Summary) == "" || utf8.RuneCountInString(in.Summary) > officers.MaxSummaryChars {
 			return toolErr("summary is required and at most %d characters", officers.MaxSummaryChars), true
