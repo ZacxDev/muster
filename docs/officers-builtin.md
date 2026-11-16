@@ -521,30 +521,85 @@ muster officer delete scout:main    # its queue, schedules and instances go too
   `tiers`, `ship`, `ci_logs`, `transcript`, `llm`, `kube`, `image` or token.
   Those stay `MUSTER_OFFICERS`-only.
 - `runtime` is `pod`, `host` or `auto` (the default). `auto` runs it in a
-  pod when this muster has the agent plane, else on the first of your hosts
-  that can start and close Claude Code windows; when neither qualifies it
-  does not run, and its `reason` says why. `GET /api/officers/runtime-options`
-  shows what each would pick now.
+  pod when this muster has the agent plane, else on one of your hosts that
+  can start and close Claude Code windows; when neither qualifies it does not
+  run, and its `reason` says why. `GET /api/officers/runtime-options` shows
+  what each would pick now for a new officer.
+- 🔴 **An `auto` officer on a host stays there.** Once placed, it keeps the
+  host it runs on (the host its instance agents run on, so a restart or
+  another replica agrees) while that host qualifies, and for **10 minutes**
+  after it stops qualifying (disconnected, or an older muster-mirror): a
+  blip does not move it. Its passes meanwhile see the host offline and change
+  nothing. Only past those 10 minutes, and only to another host that
+  qualifies, does it move — and the load that moves it removes the old host's
+  instance agents (a window still open there is asked to close only when
+  idle, as every stop is). With nowhere else to go it stays.
+- A `host` officer must name one of **your** mirrored hosts (by the mirror
+  token's host name); any other is refused on the `host` field.
 - It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
   refusal names each field (`{"error", "fields": [{field, error}]}`). A host
   officer still needs a `repo`.
 - Its instance names are built on a **server-allocated slug**
-  (`instance_slug`), unique across owners, so two people may each have a
-  `scout:main`.
+  (`instance_slug`): the id's slug and a short tag derived from you and the
+  id (`scout-main-k3x9q2`), unique across owners, so two people may each have
+  a `scout:main`. A slug never passes from one owner to another (yours comes
+  back if you delete and re-create the id), a slug whose instance agents
+  still exist is never handed out, and the tag says nothing about who else
+  declared the id.
+- 🔴 **Its type is its own.** Its name, charter and policy are a type keyed
+  by its slug, written and deleted with it. Creating or changing it never
+  touches the type its id's prefix names (`scout` for `scout:main`), which an
+  env officer may run on. A create starts its type from the `charter` and
+  `policy` it is given (empty when left out).
 - 🔴 **An env officer wins.** An officer `MUSTER_OFFICERS` declares for you
   is listed `managed_by: env` and is read-only here (409); a database row of
   the same id does not run beside it.
-- A team's officers are declared by its **managers**, signed in, under
-  `/teams/{id}/officers/declared` (a personal API token carries no team
-  access). A team cannot own a host officer yet.
+- A **replace** (`PUT`) is the whole record, and must state `mode` and
+  `paused`: a body that leaves either out is refused on that field, so a
+  shadow officer is never flipped live, nor a paused one resumed, by
+  omission. Every other field left out takes its default, as on a create.
+- A team's officers run from the database as a person's do (a row a team
+  owns is loaded, and a team cannot own a host officer yet), but there is no
+  door to write them yet: the team door comes with the officers UI (O-C).
 
 | method | path | body / query |
 |---|---|---|
 | GET / POST | `/api/officers/declared` | POST `{id, name?, charter?, policy?, runtime?, host?, repo?, connectors?, read_repos?, max_instances?, idle_scale_to_zero_after?, poll_interval?, model?, mode?, escalate_to?, paused?}` |
-| GET / PUT / DELETE | `/api/officers/declared/{officer}` | PUT: the whole record, as POST (its id and slug never change) |
+| GET / PUT / DELETE | `/api/officers/declared/{officer}` | PUT: the whole record, as POST, with `mode` and `paused` required (its id and slug never change) |
 | POST | `/api/officers/declared/{officer}/pause`, `…/resume` | |
 | GET | `/api/officers/runtime-options` | `?repo=`: pod available or not, each of your hosts (spawnable, closable, qualifies, reason), what `auto` picks |
-| POST, PUT, DELETE, POST | `/teams/{id}/officers/declared[/{officer}[/pause\|/resume]]` | a team manager's, signed in |
+
+### Every database install runs the officer machinery
+
+With a database, muster-server turns the officer runtime on whether or not
+`MUSTER_OFFICERS` declares anything, so that an officer created through the
+API runs with no restart. On a muster where nobody has declared one, that
+means: the wake loop runs, and its roster refresh (every 15 s) makes **one
+index probe** for a declared officer and reads nothing more until one exists;
+the Attention sweep for officer asks and escalations and the schedule runner
+run (each finds nothing); the chief is offered the `officer_spawn_share` tool;
+and the Features page reads Officers **on**.
+
+### Two replicas: the 15 s window
+
+Each replica keeps its own copy of the roster and re-reads the database on
+its wake loop's refresh, every 15 s. A write answers from the replica that
+took it, which swaps its roster at once; another replica acts on the old
+roster until its next refresh:
+
+- **create**: the other replica does not run the new officer yet (no
+  instance starts there) for up to 15 s.
+- **pause**: the other replica's passes read the officer's switch from the
+  database on every pass, so a paused officer's instances are stopped and
+  none starts there either; nothing waits for the refresh.
+- **delete**: the other replica may still hold the officer for up to 15 s. A
+  pass there that starts an instance in that window asks the database again
+  once the instance exists (and before a host spawn is sent) and removes it
+  when the officer is gone, so no orphan is left; its other passes act on an
+  emptied queue (the delete removed the items) and start nothing.
+- **auto host placement** is each replica's own, from the same rule and the
+  same instance rows, so two replicas agree unless they read the hosts at
+  different moments.
 
 ## The admin API
 
