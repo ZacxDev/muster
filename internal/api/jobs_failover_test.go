@@ -373,7 +373,7 @@ func TestAnOfficersPinIsReadFromItsConfiguration(t *testing.T) {
 			if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}, InstallSession: discardSession}); err != nil {
 				t.Fatal(err)
 			}
-			p, opt := s.failoverPolicy(agents.Agent{Name: officers.InstanceName(offA, 1)})
+			p, opt := s.failoverPolicy(agents.Agent{Name: officers.InstanceName(offA, 1), OwnerID: 1})
 			if p != tc.wantPinned || opt != tc.wantO {
 				t.Fatalf("policy = pinned %v, opt-in %v; want %v, %v", p, opt, tc.wantPinned, tc.wantO)
 			}

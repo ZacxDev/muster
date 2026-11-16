@@ -26,7 +26,7 @@ import (
 // request from it and a branch deletion of it are refused (fail closed: a
 // lookup that errors is a refusal too).
 //
-// Kept in muster's database (PGPublicBranchStore, migration 0136) when it has
+// Kept in muster's database (PGPublicBranchStore, migration 0138) when it has
 // one, so a restart and a second replica see the same record; else in this
 // process's memory (MemPublicBranchStore), which a restart forgets — the
 // officer then cannot push to a public branch minted before it.
@@ -105,7 +105,7 @@ func (m *MemPublicBranchStore) PublicBranches(_ context.Context, officer, repo s
 }
 
 // PGPublicBranchStore is PublicBranchStore on officer_public_branches
-// (migration 0136), under row-level security: ctx must act as the officer's
+// (migration 0138), under row-level security: ctx must act as the officer's
 // owner.
 type PGPublicBranchStore struct{ pool *pgxpool.Pool }
 

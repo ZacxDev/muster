@@ -12,7 +12,7 @@ import (
 
 // A draft officer's public branches (public_branches.go): one contract,
 // asserted on the memory store and on officer_public_branches (migration
-// 0136) with a database — where the record also survives a new store on its
+// 0138) with a database — where the record also survives a new store on its
 // own pool (a restarted server, or the other replica).
 
 const (

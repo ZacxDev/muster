@@ -218,6 +218,42 @@ func hostSpawnContract(t *testing.T, ctx context.Context, st officers.HostSpawnS
 	if ids, _ := st.HostSpawnIDs(ctx, "host-beta", []int64{a.ID}); len(ids) != 0 {
 		t.Fatalf("ids on host-beta = %v, want none", ids)
 	}
+	// Round 2: a recorded window closes after HostSpawnMissingToClose listings
+	// in a row miss it, and never reopens; a young row is not counted; a
+	// listing of another host touches nothing.
+	open := func(why string, want bool) {
+		t.Helper()
+		got, err := st.HostSpawnsInWindows(ctx, "host-alpha", []string{"@3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (len(got) == 1 && got[0].ID == a.ID) != want || len(got) > 1 {
+			t.Fatalf("%s: window @3's rows %+v, want open=%v", why, got, want)
+		}
+	}
+	past, future := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	observe := func(host string, settled time.Time, ws ...string) {
+		t.Helper()
+		if err := st.ObserveHostListing(ctx, host, ws, settled); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open("control: recorded", true)
+	observe("host-alpha", past)
+	observe("host-alpha", past)
+	open("a row younger than settled is not counted", true)
+	observe("host-beta", future)
+	observe("host-beta", future)
+	open("another host's listings touch nothing", true)
+	observe("host-alpha", future)
+	observe("host-alpha", future, "@3")
+	open("one missing listing, then listed again", true)
+	observe("host-alpha", future)
+	open("one missing listing", true)
+	observe("host-alpha", future)
+	open("two missing listings in a row", false)
+	observe("host-alpha", future, "@3")
+	open("a closed window listed again (a reissued id)", false)
 }
 
 func TestTheMemHostSpawnStoreKeepsTheContract(t *testing.T) {

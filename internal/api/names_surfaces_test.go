@@ -36,7 +36,7 @@ func TestTheChiefsToolsNameASessionByItsStableName(t *testing.T) {
 	var fl struct {
 		Sessions []fleetListRow `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(s.toolFleetList(ctx)), &fl); err != nil {
+	if err := json.Unmarshal([]byte(s.toolFleetList(ctx, "")), &fl); err != nil {
 		t.Fatal(err)
 	}
 	var row *fleetListRow
@@ -279,7 +279,7 @@ func TestTheChiefsToolsNameAnAgentByItsStableName(t *testing.T) {
 	var fl struct {
 		Sessions []fleetListRow `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(f.srv.toolFleetList(ctx)), &fl); err != nil {
+	if err := json.Unmarshal([]byte(f.srv.toolFleetList(ctx, "")), &fl); err != nil {
 		t.Fatal(err)
 	}
 	found := false

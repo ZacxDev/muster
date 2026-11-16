@@ -55,23 +55,27 @@ The empty roster (no officer declared) exposes nothing.
 
 ## 1. Turn the runtime on (the empty roster)
 
-Set `MUSTER_OFFICERS` — an empty array is enough:
+With a database (`DATABASE_URL`) the built-in store and the officer runtime
+are on whether or not `MUSTER_OFFICERS` is set: an officer can be
+[declared in the database](#declared-in-the-database-no-restart) with no
+environment change at all. For a GitOps roster, set `MUSTER_OFFICERS` — an
+empty array is enough:
 
 ```yaml
 - name: MUSTER_OFFICERS
   value: "[]"
 ```
 
-With a database (`DATABASE_URL`) this turns the **built-in store** on: the
-admin API at `/api/officers/…` (the `muster officer` CLI) and the Attention
-sweep. No officer runs yet. The boot log says:
+The **built-in store** is then on: the admin API at `/api/officers/…` (the
+`muster officer` CLI) and the Attention sweep. No officer runs yet. The boot
+log says:
 
 ```
-officers: ON — empty roster (MUSTER_OFFICERS declares none)
+officers: ON — MUSTER_OFFICERS declares none; officers declared in the database (`muster officer create`) run with no restart
 officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s, schedules every 30s (UTC cron)
 ```
 
-Unset (or blank), the store is off and every `/api/officers/…` route answers
+With no database the store is off and every `/api/officers/…` route answers
 404.
 
 🔴 **A builtin officer's queue is in muster's database.** If that database
@@ -214,6 +218,12 @@ What happens:
   answering or routing a plugin message — files a confirmation card instead
   of deciding; it runs once, exactly as asked, when you answer **Confirm** on
   your paired phone. Without a paired phone, decide in muster's web UI.
+  The gate holds while a host officer is declared on the machine, and while
+  any officer window muster started there is still listed (a paused, deleted
+  or moved officer's window finishing its turn). A window is gone for good
+  once two listings in a row have not listed it: a window id the host later
+  reissues to another window does not gate the machine again. If muster
+  cannot read its record of officer windows, the gate holds.
 - **Connectors.** Each `connector_request` is decided by its owner, per
   request, never from a shared approval — as for a pod. Not `github`: it works
   through an HTTP proxy with an agent token no host session holds; the
@@ -505,6 +515,123 @@ invisible character).
 stops its instances and starts none, whatever its queue holds; switch it on
 again and it resumes. Removing it from `MUSTER_OFFICERS` also stops muster
 running it; its store rows stay.
+
+## Declared in the database (no restart)
+
+An officer can be declared in muster's database instead of
+`MUSTER_OFFICERS`: one record holds its type and charter, its def, and where
+it runs. It is created, changed, paused and deleted through the API (or
+`muster officer create|pause|resume|delete|ls`) and runs at once, with no
+restart: every write swaps the live roster, and every replica re-reads it on
+its wake loop's refresh (15 s).
+
+```bash
+muster officer create scout:main --charter-file charter.md --runtime auto
+muster officer pause scout:main     # its instances stop; none starts
+muster officer resume scout:main
+muster officer delete scout:main    # its queue, schedules and instances go too
+```
+
+- It runs on the **built-in backend**, untiered, and holds no secret: no
+  `tiers`, `ship`, `ci_logs`, `transcript`, `llm`, `kube`, `image` or token.
+  Those stay `MUSTER_OFFICERS`-only.
+- `runtime` is `pod`, `host` or `auto` (the default). `auto` runs it in a
+  pod when this muster has the agent plane, else on one of your hosts that
+  can start and close Claude Code windows; when neither qualifies it does not
+  run, and its `reason` says why. `GET /api/officers/runtime-options` shows
+  what each would pick now for a new officer.
+- 🔴 **An `auto` officer on a host stays there.** Its placement is stored in
+  the database (the host, and when that host last qualified), so a restart
+  and every replica read the same answer. It keeps that host while the host
+  qualifies, and for **10 minutes** after it stops qualifying (disconnected,
+  or an older muster-mirror): a blip does not move it. Its passes meanwhile
+  see the host offline and change nothing. Only past those 10 minutes, and
+  only to another host that qualifies, does it move — a compare-and-swap on
+  the stored placement, so of two replicas deciding a move one wins and the
+  other takes its answer — and the load that moves it removes the old host's
+  instance agents. With nowhere else to go it stays. An officer placed before
+  the placement was stored is placed where its instance agents run.
+- ⚠ **A move can cut a window mid-turn.** The old host's window is asked to
+  close only when idle, as every stop is, so a window still working its last
+  turn is left open; but its instance agent row is removed at once, so that
+  window's officer tools stop answering for the rest of its turn. Its machine
+  stays step-up gated while the host lists the window. A move happens only
+  after the host has failed to qualify for 10 minutes (usually: it is
+  disconnected, so the window cannot be reached anyway) or when you replace
+  the officer onto another runtime or host.
+- A `host` officer must name one of **your** mirrored hosts (by the mirror
+  token's host name); any other is refused on the `host` field.
+- It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
+  refusal names each field (`{"error", "fields": [{field, error}]}`). A host
+  officer still needs a `repo`.
+- Its instance names are built on a **server-allocated slug**
+  (`instance_slug`): the id's slug and a short tag derived from you and the
+  id (`scout-main-k3x9q2`), unique across owners, so two people may each have
+  a `scout:main`. A slug never passes from one owner to another (yours comes
+  back if you delete and re-create the id), a slug whose instance agents
+  still exist is never handed out, and the tag says nothing about who else
+  declared the id.
+- 🔴 **Its type is its own.** Its name, charter and policy are a type keyed
+  by its slug, written and deleted with it. Creating or changing it never
+  touches the type its id's prefix names (`scout` for `scout:main`), which an
+  env officer may run on. A create starts its type from the `charter` and
+  `policy` it is given (empty when left out).
+- 🔴 **An env officer wins.** An officer `MUSTER_OFFICERS` declares for you
+  is listed `managed_by: env` and is read-only here (409); a database row of
+  the same id does not run beside it.
+- A **replace** (`PUT`) is the whole record, and must state `mode` and
+  `paused`: a body that leaves either out is refused on that field, so a
+  shadow officer is never flipped live, nor a paused one resumed, by
+  omission. Every other field left out takes its default, as on a create.
+- A team's officers run from the database as a person's do (a row a team
+  owns is loaded, and a team cannot own a host officer yet), but there is no
+  door to write them yet: the team door comes with the officers UI (O-C).
+
+| method | path | body / query |
+|---|---|---|
+| GET / POST | `/api/officers/declared` | POST `{id, name?, charter?, policy?, runtime?, host?, repo?, connectors?, read_repos?, max_instances?, idle_scale_to_zero_after?, poll_interval?, model?, mode?, escalate_to?, paused?}` |
+| GET / PUT / DELETE | `/api/officers/declared/{officer}` | PUT: the whole record, as POST, with `mode` and `paused` required (its id and slug never change) |
+| POST | `/api/officers/declared/{officer}/pause`, `…/resume` | |
+| GET | `/api/officers/runtime-options` | `?repo=`: pod available or not, each of your hosts (spawnable, closable, qualifies, reason), what `auto` picks |
+
+### Every database install runs the officer machinery
+
+With a database, muster-server turns the officer runtime on whether or not
+`MUSTER_OFFICERS` declares anything, so that an officer created through the
+API runs with no restart. On a muster where nobody has declared one, that
+means: the wake loop runs, and its roster refresh (every 15 s) makes **one
+index probe** for a declared officer and reads nothing more until one exists;
+the Attention sweep for officer asks and escalations and the schedule runner
+run (each finds nothing); the chief is offered the `officer_spawn_share` tool;
+and the Features page reads Officers **on**.
+
+### Two replicas: the 15 s window
+
+Each replica keeps its own copy of the roster and re-reads the database on
+its wake loop's refresh, every 15 s. A write answers from the replica that
+took it, which swaps its roster at once; another replica acts on the old
+roster until its next refresh:
+
+- **create**: the other replica does not run the new officer yet (no
+  instance starts there) for up to 15 s.
+- **pause**: the other replica's passes read the officer's switch from the
+  database on every pass, so a paused officer's instances are stopped and
+  none starts there either; nothing waits for the refresh.
+- **delete**: the other replica may still hold the officer for up to 15 s. A
+  pass there that starts an instance in that window asks the database again
+  once the instance exists (and before a host spawn is sent) and removes it
+  when the officer is gone, so no orphan is left; its other passes act on an
+  emptied queue (the delete removed the items) and start nothing.
+- **delete on another replica while a start runs here**: the start's second
+  check reads the database, and removes the instance it created although this
+  replica's roster still holds the officer (only for that officer's own
+  instance, and only on the database's word; with the database unreadable
+  the instance is left, and the start says it could not remove it).
+- **auto host placement** is the database's, not a replica's: each replica
+  reads the stored placement. A replica that sees the placed host qualify
+  records so (at most once a minute), so a replica that cannot see that host
+  (a host is connected to one replica's hub) still keeps the officer there; a
+  move is a compare-and-swap, so replicas never keep different hosts.
 
 ## The admin API
 

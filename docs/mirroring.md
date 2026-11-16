@@ -1741,7 +1741,8 @@ the task, so the scope is real, not empty) and `muster_help`.
 
 Everything else is **session-bound** and runs on the primary only. That covers
 `attention_ask`, `attention_wait` and `attention_cancel`, and `chief_ask`,
-whose answer is collected with `attention_wait`. It covers `route_reply`,
+whose answer is collected with `attention_wait`. It covers `track_task`, the
+session's own [declared tasks](focus.md#a-sessions-tasks). It covers `route_reply`,
 `plugin_messages_list` and `plugin_message_route`, because a route targets a
 session the instance lists. It covers `agent_report_done` and the host-officer
 tools, and the page tools.

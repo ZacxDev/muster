@@ -1,4 +1,4 @@
--- muster 0136 — A DRAFT OFFICER'S PUBLIC BRANCHES (internal/officers
+-- muster 0138 — A DRAFT OFFICER'S PUBLIC BRANCHES (internal/officers
 -- public_branches.go; docs/officers.md "Public repositories").
 --
 --   officer_public_branches   one row per (owner, officer, repository, item):
@@ -24,15 +24,15 @@
 -- and --rls-on re-applies this file (db.RLSOn), so every statement is
 -- idempotent.
 --
--- Must apply after its predecessor, 0135 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0137 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT (and db.officerPublicBranchesMigrationVersion) if another
--- migration takes 0136 first.
+-- migration takes 0138 first.
 --
 -- ROLLBACK. An older image never reads the table (it names a public
 -- repository's branches the private way); roll the image back, then
 -- (optionally):
 --   DROP TABLE public.officer_public_branches;   (its policies and owner_fixed trigger go with it)
---   DELETE FROM schema_migrations WHERE version = 136;
+--   DELETE FROM schema_migrations WHERE version = 138;
 -- A public branch minted before the rollback is then no officer's to the newer
 -- image if the table is dropped: its pull request can still be closed by a
 -- human, and the officer is named a new branch.

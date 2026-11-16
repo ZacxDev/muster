@@ -1,0 +1,120 @@
+{{- /* The bundled CPU speech-to-text service, the Compose file's `stt` profile
+(docs/dictation.md#2-stt-cpu). Used when dictation is on with no dictation.url. */ -}}
+{{- if include "muster.sttBundled" . }}
+{{- $name := printf "%s-stt" (include "muster.fullname" .) }}
+{{- $sel := include "muster.componentSelector" (dict "ctx" . "component" "stt") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-models
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.stt.storage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.stt.storage.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $sel | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stt
+          image: "{{ .Values.stt.image.repository }}:{{ .Values.stt.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "muster.generatedSecretName" .) .Values.dictation.existingSecret }}
+                  key: MUSTER_STT_TOKEN
+            - name: STT_WHISPER_MODEL
+              value: {{ .Values.stt.model | quote }}
+            - name: ENABLE_UI
+              value: "false"
+            - name: HF_HUB_CACHE
+              value: /models
+          # Ready once the model is on the volume: a GET finds it, else a POST
+          # downloads it (minutes on first start) — the Compose healthcheck's probe.
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os, sys, urllib.request
+                  h = {"Authorization": "Bearer " + os.environ["API_KEY"]}
+                  base = "http://127.0.0.1:8000/v1/models/" + os.environ["STT_WHISPER_MODEL"]
+                  def call(method):
+                      try:
+                          return urllib.request.urlopen(urllib.request.Request(base, method=method, headers=h), timeout=600).status
+                      except Exception:
+                          return 0
+                  sys.exit(0 if call("GET") == 200 or call("POST") in (200, 201) else 1)
+            periodSeconds: 20
+            timeoutSeconds: 610
+            failureThreshold: 45
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.stt.resources | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ $name }}-models
+{{- end }}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -90,26 +91,32 @@ var hostStepUpExempt = map[string]string{
 	pageGetTool:                "a read",
 	pageListTool:               "a read",
 	agentReportDoneTool:        "the session's own dispatch",
-	pageShareRequestTool:       "asks the owner for a link (their tap decides)",
-	pageResponsesTool:          "a read of the session's own page",
-	pageLinkRevokeTool:         "revokes a link of the session's own page",
-	"connectors_list":          "a host instance's own (hostOfficerMirrorTool)",
-	"connector_request":        "a host instance's own (hostOfficerMirrorTool)",
-	"connector_status":         "a host instance's own (hostOfficerMirrorTool)",
-	postgresQueryToolName:      "a host instance's own (hostOfficerMirrorTool)",
-	internalHTTPToolName:       "a host instance's own (hostOfficerMirrorTool)",
-	pluginRequestsListTool:     "a read",
-	officers.ToolBrief:         "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolItems:         "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolClaim:         "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolHeartbeat:     "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolComplete:      "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolRelease:       "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolAskPerson:     "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolPostDraft:     "a host instance's own (hostOfficerMirrorTool); the draft itself waits for the owner",
-	officers.ToolContactGet:    "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolContactsList:  "a host instance's own (hostOfficerMirrorTool)",
-	officers.ToolContactNote:   "a host instance's own (hostOfficerMirrorTool); it can only set a mark",
+	// track_task is exempt BY DECISION, not by default: it is no owner
+	// authority. It writes only the declaration of the session the call is
+	// bound to (no subject argument), which every reader treats as untrusted
+	// data; on a host-officer machine a header-named caller can therefore only
+	// mislabel that one session's tasks, never act as the owner.
+	trackTaskTool:             "the session's own declared tasks (untrusted data; no owner authority)",
+	pageShareRequestTool:      "asks the owner for a link (their tap decides)",
+	pageResponsesTool:         "a read of the session's own page",
+	pageLinkRevokeTool:        "revokes a link of the session's own page",
+	"connectors_list":         "a host instance's own (hostOfficerMirrorTool)",
+	"connector_request":       "a host instance's own (hostOfficerMirrorTool)",
+	"connector_status":        "a host instance's own (hostOfficerMirrorTool)",
+	postgresQueryToolName:     "a host instance's own (hostOfficerMirrorTool)",
+	internalHTTPToolName:      "a host instance's own (hostOfficerMirrorTool)",
+	pluginRequestsListTool:    "a read",
+	officers.ToolBrief:        "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolItems:        "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolClaim:        "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolHeartbeat:    "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolComplete:     "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolRelease:      "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolAskPerson:    "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolPostDraft:    "a host instance's own (hostOfficerMirrorTool); the draft itself waits for the owner",
+	officers.ToolContactGet:   "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolContactsList: "a host instance's own (hostOfficerMirrorTool)",
+	officers.ToolContactNote:  "a host instance's own (hostOfficerMirrorTool); it can only set a mark",
 }
 
 // hostDecisionLabel is the confirmation card's asker label: how a card whose
@@ -157,9 +164,18 @@ func (h *hostDecisions) peek(id int64) (hostDecision, bool) {
 	return d, ok
 }
 
-// hostOfficersOnMachine is the host officers of owner declared on host: a
-// non-empty answer is what gates that machine's door.
-func (s *Server) hostOfficersOnMachine(owner int64, host string) []string {
+// hostOfficersOnMachine is what gates owner's machine host: the host officers
+// of owner declared on it, and every officer one of whose windows is still
+// open there (hostOfficerWindowsOpen). A non-empty answer gates the door.
+//
+// 🔴 THE ROSTER IS NOT ENOUGH (round 0's F4). Deleting a host officer takes
+// it out of the roster at once, but its teardown closes only an IDLE window
+// (agent-close at once would cut a mid-turn one off): a window still working
+// its last turn stays open, running as the machine user, and with the roster
+// alone the gate dropped while it did. So an officer-spawned window muster
+// recorded and the host still lists gates the machine too, whether its
+// officer is paused, deleted or moved, until the window is gone.
+func (s *Server) hostOfficersOnMachine(ctx context.Context, owner int64, host string) []string {
 	if s.officerRT == nil {
 		return nil
 	}
@@ -169,7 +185,89 @@ func (s *Server) hostOfficersOnMachine(owner int64, host string) []string {
 			out = append(out, o.ID)
 		}
 	}
+	for _, id := range s.hostOfficerWindowsOpen(ctx, owner, host) {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
 	return out
+}
+
+// hostOfficerWindowsOpen is the officers (ids, sorted) with a window open on
+// owner's host now: a spawn muster recorded whose window — the id the host's
+// own reply named, never a tag a window can set — the host lists. A host this
+// muster cannot see answers none (no call reaches the door from it).
+// ⚠ An unreadable spawn store answers one entry, "unknown", so the gate holds
+// rather than drop on a read error.
+func (s *Server) hostOfficerWindowsOpen(ctx context.Context, owner int64, host string) []string {
+	st := s.officerHostSpawns()
+	if st == nil {
+		return nil
+	}
+	octx := s.officerPrincipal(ctx, owner)
+	v, _ := s.officerHostView(octx, host)
+	var windows []string
+	for _, w := range v.Windows {
+		if w.ID != "" {
+			windows = append(windows, w.ID)
+		}
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	rows, err := st.HostSpawnsInWindows(octx, host, windows)
+	if err != nil {
+		s.logger.Printf("officers: read host %s's officer windows: %v; its door stays gated", host, err)
+		return []string{"unknown: its officer windows could not be read"}
+	}
+	var out []string
+	for _, r := range rows {
+		if !slices.Contains(out, r.Officer) {
+			out = append(out, r.Officer)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// officerSpawnsListing applies one listing of owner's host to the officer
+// spawn windows muster recorded there (officers.HostSpawnStore.
+// ObserveHostListing): a window the host has stopped listing, two listings in
+// a row, is gone for good, and hostOfficerWindowsOpen never matches its row
+// again.
+//
+// 🔴 WHY BY OBSERVATION, AND NOT BY A TAG (round 2's second finding). The gate
+// matched a recorded window by host and window id alone, and the rows were
+// never closed — so once a deleted officer's window had ended, a tmux window
+// id the host later reissued (a restarted tmux server numbers from the start
+// again) to any other window re-gated the machine for an officer that is
+// gone. The window's @muster-dispatch tag would tell the two apart, but the
+// tag is the window's own option, which anything running IN the window can
+// set or clear: the very officer window the gate holds for could then
+// un-gate its machine. The window id is the tmux server's, never reused while
+// that server lives, and the host's listing is what the hub was told — so a
+// window id absent from two listings in a row (one transient miss frees
+// nothing, as the host-dispatch reconciler's hostMissingToEnd) is the old
+// window gone, and its row closes. A row younger than hostPendingCountdown is
+// not counted: its window may not be listed yet.
+//
+// ⚠ What it cannot see: a window that ends, a tmux server restart, and the
+// reissue of that very id, all while the host is DISCONNECTED (no listing in
+// between). The mirror reports no tmux server identity to tell them apart.
+func (s *Server) officerSpawnsListing(ctx context.Context, owner int64, host string, windows []mirror.Window) {
+	st := s.officerHostSpawns()
+	if st == nil {
+		return
+	}
+	ids := make([]string, 0, len(windows))
+	for _, w := range windows {
+		if w.ID != "" {
+			ids = append(ids, w.ID)
+		}
+	}
+	if err := st.ObserveHostListing(s.officerPrincipal(ctx, owner), host, ids, s.officerRT.now().Add(-hostPendingCountdown)); err != nil {
+		s.logger.Printf("officers: apply host %s's listing to its officer windows: %v", host, err)
+	}
 }
 
 // The card's two answers.
@@ -188,7 +286,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 		return "", false
 	}
 	p, _ := authz.From(ctx)
-	ids := s.hostOfficersOnMachine(p.UserID, host)
+	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
 	if len(ids) == 0 && !c.remote {
 		return "", false
 	}

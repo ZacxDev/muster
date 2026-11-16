@@ -563,7 +563,14 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	st[features.ServiceToken] = pick(c.serviceWriteRefusal() == "", false, "", "", c.serviceWriteRefusal())
 	st[features.Android] = pick(len(ext.AssetLinks) > 0, false, "", "", envAndroidPackage+" and "+envAndroidCertSHA256+" are unset")
 	st[features.Telemetry] = pick(c.FaroUpstream != "" || c.FaroURL != "", false, "", "", envFaroUpstream+" and "+envFaroURL+" are unset")
-	st[features.Officers] = pick(len(c.Officers) > 0, false, "", "", envOfficers+" declares none")
+	// Officers are declared in MUSTER_OFFICERS or, with a database, in the
+	// database (migration 0136: `muster officer create`, no restart), so the
+	// feature — and the officer tools it gates — is on with either.
+	officersOn := ""
+	if len(c.Officers) == 0 {
+		officersOn = envOfficers + " declares none; officers declared in the database run"
+	}
+	st[features.Officers] = pick(len(c.Officers) > 0 || a.pool != nil, false, officersOn, "", envOfficers+" declares none, and there is no database to declare one in")
 
 	for id, s := range st {
 		s.Reason = c.redact(s.Reason)

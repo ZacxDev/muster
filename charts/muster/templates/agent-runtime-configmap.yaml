@@ -1,0 +1,14 @@
+{{- if and .Values.agents.enabled .Values.agents.gateway.enabled }}
+# MUSTER_AGENT_RUNTIME_CONFIG and MUSTER_AGENT_RUNTIME_INSTALL: the gateway
+# kind's runtime config and the script that installs it
+# (docs/configuration.md#muster-server-agent-provisioning).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "muster.fullname" . }}-agent-runtime
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+data:
+  runtime-config: {{ required "agents.gateway.runtimeConfig is required with agents.gateway.enabled" .Values.agents.gateway.runtimeConfig | quote }}
+  runtime-install: {{ required "agents.gateway.runtimeInstall is required with agents.gateway.enabled" .Values.agents.gateway.runtimeInstall | quote }}
+{{- end }}

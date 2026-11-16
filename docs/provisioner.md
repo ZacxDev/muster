@@ -44,15 +44,16 @@ What happens when you dispatch:
   its first turn once the instance is ready, every 10 seconds, at most once per
   agent. A failed kickoff is shown on the card, with the error.
 
-### What a Kubernetes deployment needs that this repository does not ship
+### What a Kubernetes deployment needs
+
+The Helm chart in `charts/muster` ([kubernetes.md](kubernetes.md)) ships both:
 
 - **RBAC for muster's ServiceAccount**, in one of two layouts (see
   [Kubernetes RBAC](#kubernetes-rbac) below). By default, a ClusterRole holding
   every namespaced right cluster-wide; with `MUSTER_AGENT_NAMESPACE_CLUSTERROLE`
   set, a narrow cluster-wide grant plus a per-namespace RoleBinding muster writes
   itself. The Kubernetes driver's `render.go` is the authority on what it creates.
-- **The muster Deployment itself:** this repository ships a container image
-  definition (`Dockerfile`), but no manifests.
+- **The muster Deployment itself**, with its Postgres, Service and Ingress.
 
 ### Kubernetes RBAC
 

@@ -170,9 +170,9 @@ func (o Officer) Pool(tier string) Officer {
 // routine pool, `-<n>` otherwise (InstanceName).
 func (o Officer) InstanceName(n int) string {
 	if o.Tier == TierRoutine {
-		return InstanceNamePrefix + Slug(o.ID) + "-" + routineMark + strconv.Itoa(n)
+		return InstanceNamePrefix + o.AgentSlug() + "-" + routineMark + strconv.Itoa(n)
 	}
-	return InstanceName(o.ID, n)
+	return InstanceNamePrefix + o.AgentSlug() + "-" + strconv.Itoa(n)
 }
 
 // InstanceLabel is how instance n of this pool is named in text: "r<n>" in

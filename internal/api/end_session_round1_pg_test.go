@@ -118,7 +118,7 @@ func TestAnOfficersInstanceIsNotProposed(t *testing.T) {
 	f := newSuccFixture(t)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	oid := "endsess-" + suffix
-	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: oid, MaxInstances: 1}})}
+	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: oid, MaxInstances: 1, Owner: f.owner}})}
 	t.Cleanup(func() { f.srv.officerRT = nil })
 	st := agents.NewPG(f.pool)
 	off, err := st.Create(f.asOwner, agents.Agent{Name: officers.InstanceName(oid, 1), Namespace: "devpod-endoff", Status: agents.StatusRunning})

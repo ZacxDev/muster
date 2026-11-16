@@ -1,0 +1,158 @@
+{{- /*
+RBAC for the agent plane: docs/provisioner.md#kubernetes-rbac.
+
+The rules are the Kubernetes driver's own declared needs
+(internal/provision/k8s: NetworkPolicyRBACPrerequisite,
+PodExecRBACPrerequisite, NamespaceRoleBindingClusterRBAC), and
+internal/provision/k8s/chart_rbac_test.go runs a driver's whole instance
+life against exactly what this file renders, in both layouts.
+*/ -}}
+{{- if and .Values.agents.enabled .Values.agents.rbac.create (eq .Values.agents.provisioner "kubernetes") }}
+{{- $sa := include "muster.serviceAccountName" . }}
+{{- $role := include "muster.agentNamespaceRole" . }}
+{{- $base := include "muster.clusterScopedName" . }}
+# The rights muster needs INSIDE an agent namespace. Bound by muster itself, per
+# agent namespace, in the least-privilege layout (the default); bound
+# cluster-wide in the cluster-wide one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $role }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts, secrets, configmaps, services, persistentvolumeclaims]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, update, delete]
+---
+{{- if eq .Values.agents.rbac.layout "least-privilege" }}
+# The whole cluster-wide grant of the least-privilege layout.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $base }}-provisioner
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, create]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames: [{{ $role }}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $base }}-provisioner
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $base }}-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# Outside agent namespaces: a deploy-key pool's and an officer image's pull
+# Secret are read from muster's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "muster.fullname" . }}-source-secrets
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+    {{- with .Values.agents.rbac.sourceSecretNames }}
+    resourceNames:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "muster.fullname" . }}-source-secrets
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "muster.fullname" . }}-source-secrets
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- else if eq .Values.agents.rbac.layout "cluster-wide" }}
+# The cluster-wide layout (opt-in): the agent-namespace rights in EVERY
+# namespace, plus the namespaces themselves (created at dispatch). No `list`:
+# the driver lists namespaces only in the least-privilege layout
+# (rolebinding.go, instanceNamespaces); here List reads Deployments and Pods
+# across all namespaces instead.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $base }}-namespaces
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $base }}-namespaces
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $base }}-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $role }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $role }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- fail (printf "agents.rbac.layout must be least-privilege or cluster-wide, not %q" .Values.agents.rbac.layout) }}
+{{- end }}
+{{- end }}

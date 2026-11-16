@@ -1728,7 +1728,7 @@ name neither the officer nor its HQ item: anyone can read them.
   answers the same branch. A push to any branch of a public repository whose
   name holds the officer's id or slug is refused (403) before ownership is
   even asked.
-- **muster keeps the mapping**: `officer_public_branches` (migration 0136),
+- **muster keeps the mapping**: `officer_public_branches` (migration 0138),
   one row per (owner, officer, repository, item) naming the branch, under the
   officer's owner's row-level security. 🔴 **The row is the only proof the
   branch is the officer's**: the push gate admits a push to a public branch

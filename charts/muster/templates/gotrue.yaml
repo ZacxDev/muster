@@ -1,0 +1,168 @@
+{{- /*
+A bundled GoTrue for auth.mode=gotrue (docs/auth.md#gotrue), on a database of
+its own (muster_auth, schema `auth`) in the bundled Postgres. The init
+container makes that role and database idempotently on every start; GoTrue
+runs its own migrations. Tokens: issuer `muster-auth`, audience
+`authenticated`, as muster requires. Users are created by muster through the
+admin API (invites), so public sign-up is off.
+*/ -}}
+{{- if .Values.gotrue.enabled }}
+{{- if not .Values.postgres.enabled }}
+{{- fail "gotrue.enabled runs GoTrue on the bundled Postgres; with an external database, run your own GoTrue and set gotrue.url" }}
+{{- end }}
+{{- $name := printf "%s-gotrue" (include "muster.fullname" .) }}
+{{- $sel := include "muster.componentSelector" (dict "ctx" . "component" "gotrue") }}
+{{- $gen := include "muster.generatedSecretName" . }}
+{{- /* GoTrue's own database password: generated, or with secrets.generate=false
+in gotrue.existingSecret (GOTRUE_DB_PASSWORD, GOTRUE_DB_DATABASE_URL). */ -}}
+{{- $dbSecret := ternary $gen .Values.gotrue.existingSecret .Values.secrets.generate }}
+{{- $public := required "publicUrl is required with gotrue.enabled (GoTrue's site URL and passkey origin)" .Values.publicUrl }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: 9999
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $sel | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: dbinit
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: PGHOST
+              value: {{ include "muster.postgresName" . }}
+            - name: PGUSER
+              value: muster
+            - name: PGDATABASE
+              value: muster
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default $gen .Values.postgres.existingSecret }}
+                  key: POSTGRES_PASSWORD
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: GOTRUE_DB_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              until pg_isready -q; do sleep 2; done
+              psql -v ON_ERROR_STOP=1 -X -q -v pw="$AUTH_PASSWORD" <<'SQL'
+              SELECT 'CREATE ROLE muster_auth LOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'muster_auth') \gexec
+              ALTER ROLE muster_auth PASSWORD :'pw';
+              ALTER ROLE muster_auth SET search_path = auth;
+              SELECT 'CREATE ROLE postgres NOLOGIN' WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') \gexec
+              SELECT 'CREATE DATABASE muster_auth OWNER muster_auth' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'muster_auth') \gexec
+              REVOKE ALL ON DATABASE muster_auth FROM PUBLIC;
+              GRANT CONNECT, TEMPORARY ON DATABASE muster_auth TO muster_auth;
+              \connect muster_auth
+              CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION muster_auth;
+              ALTER SCHEMA auth OWNER TO muster_auth;
+              SQL
+      containers:
+        - name: gotrue
+          image: "{{ .Values.gotrue.image.repository }}:{{ .Values.gotrue.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 9999
+          env:
+            - name: GOTRUE_API_HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "9999"
+            - name: API_EXTERNAL_URL
+              value: {{ $public | quote }}
+            - name: GOTRUE_SITE_URL
+              value: {{ $public | quote }}
+            - name: GOTRUE_DB_DRIVER
+              value: postgres
+            - name: GOTRUE_DB_NAMESPACE
+              value: auth
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: GOTRUE_DB_DATABASE_URL
+            - name: GOTRUE_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default $gen .Values.gotrue.existingSecret }}
+                  key: MUSTER_GOTRUE_JWT_SECRET
+            - name: GOTRUE_JWT_ISSUER
+              value: muster-auth
+            - name: GOTRUE_JWT_AUD
+              value: authenticated
+            - name: GOTRUE_JWT_DEFAULT_GROUP_NAME
+              value: authenticated
+            - name: GOTRUE_JWT_EXP
+              value: "3600"
+            - name: GOTRUE_DISABLE_SIGNUP
+              value: "true"
+            - name: GOTRUE_EXTERNAL_EMAIL_ENABLED
+              value: "true"
+            - name: GOTRUE_MAILER_AUTOCONFIRM
+              value: "true"
+            - name: GOTRUE_EXTERNAL_PHONE_ENABLED
+              value: "false"
+            - name: GOTRUE_PASSKEY_ENABLED
+              value: "true"
+            - name: GOTRUE_WEBAUTHN_RP_ID
+              value: {{ (urlParse $public).hostname | quote }}
+            - name: GOTRUE_WEBAUTHN_RP_DISPLAY_NAME
+              value: muster
+            - name: GOTRUE_WEBAUTHN_RP_ORIGINS
+              value: {{ $public | trimSuffix "/" | quote }}
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+{{- end }}

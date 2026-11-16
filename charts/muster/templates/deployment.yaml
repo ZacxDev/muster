@@ -1,0 +1,125 @@
+{{- $env := include "muster.serverEnv" . | fromYamlArray -}}
+{{- $names := dict -}}
+{{- range $env }}{{ $_ := set $names .name true }}{{ end -}}
+{{- range .Values.server.extraEnv -}}
+{{- if hasKey $names .name -}}
+{{- fail (printf "server.extraEnv sets %s, which the chart already sets from its values; set it there instead (two sources for one variable could disagree)" .name) -}}
+{{- end -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "muster.fullname" . }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- include "muster.selectorLabels" . | nindent 4 }}
+spec:
+  # 🔴 One pod, replaced with Recreate: see values.yaml server.replicas.
+  replicas: {{ .Values.server.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "muster.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "muster.selectorLabels" . | nindent 8 }}
+        {{- with .Values.server.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.agents.gateway.enabled .Values.server.podAnnotations }}
+      annotations:
+        {{- if .Values.agents.gateway.enabled }}
+        checksum/agent-runtime: {{ include (print $.Template.BasePath "/agent-runtime-configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.server.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "muster.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.agents.enabled }}
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      # The image is distroless `nonroot` (uid/gid 65532).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: muster
+          image: {{ include "muster.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+            {{- if include "muster.connectOn" . }}
+            - name: connect
+              containerPort: {{ .Values.service.connectPort }}
+            {{- end }}
+            {{- if include "muster.gotrueOn" . }}
+            - name: browser
+              containerPort: {{ .Values.service.browserPort }}
+            {{- end }}
+          env:
+            {{- toYaml $env | nindent 12 }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $from := list -}}
+          {{- if .Values.agents.claudeCode.tokensSecret }}{{ $from = append $from (dict "secretRef" (dict "name" .Values.agents.claudeCode.tokensSecret)) }}{{ end -}}
+          {{- if .Values.officers.tokensSecret }}{{ $from = append $from (dict "secretRef" (dict "name" .Values.officers.tokensSecret)) }}{{ end -}}
+          {{- $from = concat $from .Values.server.extraEnvFrom -}}
+          {{- with $from }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Migrations run at boot, before the listener answers: the startup
+          # probe gives them 5 minutes.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          # /readyz: 200 only when the wiring is complete and the database answers.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

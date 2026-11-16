@@ -337,13 +337,13 @@ const officerContactsMigrationVersion = 132
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const teamHostsMigrationVersion = 133
 
-// officerPublicBranchesMigrationVersion is 0136: officer_public_branches (a
+// officerPublicBranchesMigrationVersion is 0138: officer_public_branches (a
 // draft officer's branches in public repositories and the item each is for,
 // internal/officers public_branches.go), owned and under row-level security
 // in officer_pr_loops' share class; same treatment again. Its body is
 // idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerPublicBranchesMigrationVersion = 136
+const officerPublicBranchesMigrationVersion = 138
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
