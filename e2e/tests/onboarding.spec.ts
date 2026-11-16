@@ -23,8 +23,11 @@ import { startServer, Running } from '../lib/server';
 // a time, and each stops its server in afterAll.
 
 const PROMPT =
-  'Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md ' +
-  'and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself.';
+  'Set up muster for me. Download its install guide with ' +
+  '`curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, ' +
+  'read that whole file and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself. ' +
+  "Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at " +
+  'https://github.com/ZacxDev/muster over memory.';
 
 const origin = `http://localhost:${onboardingPort}`;
 const dorigin = `http://localhost:${layoutDispatchPort}`;

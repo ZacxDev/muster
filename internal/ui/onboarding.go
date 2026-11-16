@@ -18,8 +18,23 @@ import (
 // Quickstart. TestTheOnePromptIsTheSameEverywhere pins that, so a reword in
 // one place fails until all four agree. Changing it is a public-facing change: people
 // will have copied the old one.
-const OnboardingPrompt = "Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md " +
-	"and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself."
+//
+// 🔴 IT HOLDS NO FACTS, ONLY REFERENCES (TestTheOnePromptHoldsNoFacts): no
+// version, port, image tag or setting, only where facts live — the guide's
+// URL, the repository, `muster doctor` and `--help`. A fact in a prompt people
+// have pasted somewhere cannot be corrected when the code changes.
+const OnboardingPrompt = "Set up muster for me. Download its install guide with " +
+	"`curl -fsSL -o muster-install.md " + InstallGuideAssetURL + "`, read that whole file and follow it step by step. " +
+	"Ask me everything you need in one go up front, then do the rest yourself. " +
+	"Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at " +
+	"https://github.com/ZacxDev/muster over memory."
+
+// InstallGuideAssetURL is the newest release's own copy of INSTALL.md
+// (scripts/release-build.sh attaches it, stamped with that release), so the
+// guide an agent downloads installs the release it came with. The prompt has
+// the agent DOWNLOAD it (curl -o) rather than "read" it: a fetch tool may hand
+// an agent a summary of a page, and this file is a program to run.
+const InstallGuideAssetURL = "https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md"
 
 // InstallGuideURL is INSTALL.md on GitHub, for a person to read.
 const InstallGuideURL = "https://github.com/ZacxDev/muster/blob/main/INSTALL.md"

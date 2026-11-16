@@ -1020,7 +1020,7 @@ the start of the session's `$TMUX`. A session outside tmux, or in another tmux
 server, keeps its question in the terminal. A record written by an older
 `muster-mirror` names no socket and matches only the default tmux server.
 
-With [a second muster server on this machine](../INSTALL.md#a-second-muster-server-on-this-machine-optional),
+With [a second muster server on this machine](multi-tenant-hosts.md),
 each server's `muster-mirror@<tenant>` writes its own record to
 `~/.muster/mirror-hook.d/<tenant>.json`, and the hook picks the one record whose
 tmux server is the session's. If none matches, or two daemons mirror the same

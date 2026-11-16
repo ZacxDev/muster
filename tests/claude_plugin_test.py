@@ -28,7 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
-INSTALL_URL = "https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md"
+# The newest release's own copy of the guide (scripts/release-build.sh attaches it).
+INSTALL_URL = "https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md"
 DONE_ANCHOR = "Done means"
 SKILL_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
@@ -116,6 +117,83 @@ class Skills(unittest.TestCase):
         self.assertIn(f'"{DONE_ANCHOR}"', text)
         # The sentence it names must exist in the guide, exactly once.
         self.assertEqual(guide_text().count(DONE_ANCHOR), 1)
+
+
+
+# --- the prompt and the skill hold no facts, only references ------------------
+
+URL_RE = re.compile(r"https?://[^\s`>)\]]+")
+# A fact a prompt must not carry: any digit (a version, a port, a step number,
+# a duration), a setting's value (NAME=…), or an image reference.
+FACT_RES = (
+    ("a digit (a version, port, step number or duration)", re.compile(r"\d")),
+    ("a setting's value (NAME=...)", re.compile(r"\b[A-Z][A-Z0-9_]{2,}=")),
+    ("an image reference", re.compile(r"ghcr\.io|docker\.io|:latest\b")),
+)
+
+
+def facts(text: str) -> list[str]:
+    """What TEXT states that the code owns: every match of FACT_RES once the
+    URLs (references, which are allowed) are taken out."""
+    bare = URL_RE.sub(" ", text)
+    return [f"{why}: {m.group(0)!r} in ...{bare[max(0, m.start() - 30):m.end() + 30]!r}..."
+            for why, rx in FACT_RES for m in rx.finditer(bare)]
+
+
+def the_prompt() -> str:
+    m = re.search(r"```text\n(.*?)\n```", (ROOT / "README.md").read_text(), re.S)
+    assert m, "README.md has no ```text block (the one prompt)"
+    return m.group(1)
+
+
+class Drift(unittest.TestCase):
+    """The one prompt (README's copy; internal/ui's onboarding test pins the
+    other three byte-identical to it) and the setup skill are pasted and
+    installed where no release can update them, so they hold no fact of their
+    own: no version, port, image tag, setting value or step number — only
+    where facts live (URLs, doc paths, `muster doctor`, `--help`)."""
+
+    def skill(self) -> str:
+        text = (plugin_root() / "skills/muster-setup/SKILL.md").read_text()
+        return text.split("\n---\n", 1)[1]  # the body; the frontmatter is the description
+
+    def test_the_prompt_holds_no_facts(self) -> None:
+        self.assertEqual(facts(the_prompt()), [])
+
+    def test_the_skill_holds_no_facts(self) -> None:
+        self.assertEqual(facts(self.skill()), [])
+        self.assertEqual(facts(frontmatter(plugin_root() / "skills/muster-setup/SKILL.md")["description"]), [])
+
+    def test_the_fact_check_sees_each_kind_of_fact(self) -> None:
+        # Negative controls: each kind, planted into the real prompt, is seen;
+        # and a URL with digits in it (a reference) is not.
+        p = the_prompt()
+        for planted in ("open http-less port 8105", "release v0.235.0", "set MUSTER_SECURE_COOKIES=0",
+                        "image ghcr.io/zacxdev/muster", "the guide's Step 7"):
+            self.assertTrue(facts(p + " " + planted), f"control: {planted!r} went unseen")
+        self.assertEqual(facts("see https://github.com/ZacxDev/muster/releases/download/v1.2.3/x"), [],
+                         "control: a URL is a reference, not a fact")
+
+    def test_the_prompt_downloads_the_releases_guide(self) -> None:
+        # The finding: "read <url>" lets a fetch tool hand the agent a summary
+        # of a program to run, and the URL was main's copy while the guide
+        # installs the newest release. The prompt downloads the RELEASE asset.
+        p = the_prompt()
+        self.assertIn(f"curl -fsSL -o muster-install.md {INSTALL_URL}", p)
+        self.assertNotIn("raw.githubusercontent.com", p)
+        self.assertNotRegex(p, r"\bread https?://", "the prompt tells the agent to READ a URL")
+        skill = self.skill()
+        self.assertIn(f"curl -fsSL -o muster-install.md {INSTALL_URL}", skill)
+
+    def test_every_section_the_skill_names_exists(self) -> None:
+        # The skill refers to the guide's sections by TITLE ("<title>" section),
+        # never a step number: each must be a heading of INSTALL.md.
+        titles = {re.sub(r"^Step \d+: ", "", m) for m in re.findall(r"(?m)^#{2,4} (.+?)\s*$", guide_text())}
+        named = re.findall(r'"([^"]+)" section', " ".join(self.skill().split()))
+        self.assertGreaterEqual(len(named), 2, f"positive control: the skill names few sections: {named}")
+        for t in named:
+            self.assertIn(t, titles, f"the skill names the guide's {t!r} section, which is not a heading")
+        self.assertNotIn("No such title", titles, "control: an invented title is not a heading")
 
 
 SKILLS_ADD = "npx skills add ZacxDev/muster --skill muster-setup"

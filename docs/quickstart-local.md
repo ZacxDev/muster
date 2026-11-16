@@ -21,7 +21,14 @@ It is safe to run again: it keeps the password, the mirror token and any line
 you added to `~/.config/muster-mirror/env`. It refuses, and changes nothing,
 when it finds a muster it did not install (another `~/muster`, another compose
 project of the same name, something already on the port, or muster-mirror
-settings someone else wrote).
+settings someone else wrote; `MUSTER_MIRROR_ADOPT=1` lets it take those
+settings over, keeping every line it does not manage).
+
+On another machine, the same script connects that machine's sessions to this
+muster instead of starting a server: `MUSTER_JOIN_URL=https://…` (the hub's
+HTTPS address, after [Add your phone](#add-your-phone)), with the machine's
+mirror token in `~/.config/muster-mirror/token` (INSTALL.md's "Another
+machine" mints it).
 
 Then start an agent in tmux, for example `tmux new -A -s work claude`, and
 open the address.

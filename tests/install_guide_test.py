@@ -3,29 +3,42 @@
 
     python3 tests/install_guide_test.py            # the guide in this checkout
     MI_GUIDE=path/to/INSTALL.md python3 tests/install_guide_test.py
+    MT_DOC=path/to/multi-tenant.md python3 tests/install_guide_test.py
 
 Each case finds a block of INSTALL.md by what it contains, runs it in a fresh
-`sh` with HOME in a temp directory and fake `docker`, `curl`, `tailscale` and
-`ssh` first on PATH (every call logged), and asserts what the block WROTE
-(.env, the state file, the token file) or CALLED. Nothing touches this
-machine's Docker, Tailscale or network.
+`sh` with HOME in a temp directory and fake `docker`, `curl`, `tailscale`,
+`ssh`, `systemctl` and `journalctl` first on PATH (every call logged), and
+asserts what the block WROTE (.env, the state file, muster-mirror's settings)
+or CALLED. Nothing touches this machine's Docker, Tailscale, services or
+network.
 
-What it pins (the round-1 audit on #322): push keys are all three or none;
-Step 5 brings .env's MUSTER_VERSION to the chosen release; re-running or
-switching the dictation option never loses a key and never leaves a stale
-profile or model; a failed version lookup is never saved; an existing muster
-or Tailscale config is never taken over; "start over" deletes only this
-guide's own fresh install; a secret never reaches argv; the ssh mint keeps
-only the token.
+Step 2 runs the REAL deploy/install.sh: the fake curl serves a fake release
+(this checkout's install.sh, stamped, plus tiny muster and muster-mirror
+binaries in real tarballs and a real checksums.txt), so the guide's own
+download, checksum and hand-over are exercised end to end, and install.sh's
+merge of muster-mirror's settings is what the env-merge cases observe.
+
+What it pins: a failed version lookup is never saved; muster-mirror's
+settings are MERGED (a hand-added line such as TMUX_TMPDIR survives) and never
+taken over unasked; a crash-looping muster-mirror prints its own reason line;
+an existing muster or Tailscale config is never taken over (a signed-out
+Tailscale is `unready`, not `none`); "start over" deletes only this guide's own
+fresh install; a secret never reaches argv; the ssh mint keeps only the token;
+a release's copy of the guide installs that release; the second-server page's
+blocks load the helpers (else Linux takes the macOS branch).
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -33,11 +46,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GUIDE = Path(os.environ.get("MI_GUIDE", ROOT / "INSTALL.md"))
+MT_DOC = Path(os.environ.get("MT_DOC", ROOT / "docs/multi-tenant-hosts.md"))
 URL = "https://hub.example-tailnet.ts.net"
+MARK = "# written by muster's install.sh; edit freely, lines it does not own are kept"
+RELEASE = "9.9.9"
 
 
-def blocks() -> list[str]:
-    text = GUIDE.read_text()
+def sh_blocks(path: Path) -> list[str]:
+    text = path.read_text()
     out = []
     for m in re.finditer(r"^([ \t]*)```sh\n(.*?)^\1```", text, re.S | re.M):
         body = m.group(2)
@@ -47,6 +63,10 @@ def blocks() -> list[str]:
     return out
 
 
+def blocks() -> list[str]:
+    return sh_blocks(GUIDE)
+
+
 def block(*needles: str) -> str:
     for b in blocks():
         if all(n in b for n in needles):
@@ -54,15 +74,30 @@ def block(*needles: str) -> str:
     raise AssertionError(f"INSTALL.md has no sh block containing {needles!r}")
 
 
+def headings(md: str) -> list[str]:
+    """Every heading's text, outside code fences, with a leading "Step N: " dropped."""
+    out, fenced = [], False
+    for line in md.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        m = re.match(r"^#{1,6}\s+(.*?)\s*$", line)
+        if m and not fenced:
+            out.append(re.sub(r"^Step \d+: ", "", m.group(1)))
+    return out
+
+
 FAKE_DOCKER = r"""#!/bin/sh
 echo "docker $*" >> "$FAKE_LOG"
-case "$*" in *"mirror token create"*)
-  eval "h=\${$#}"; echo "minted mirror token 9 for host $h" >&2; echo "mmt_token-for-$h"; exit 0 ;;
+case "$*" in
+  *"mirror token create"*) eval "h=\${$#}"; echo "minted mirror token 9 for host $h" >&2; echo "mmt_token-for-$h"; exit 0 ;;
+  *"show-secret ui-password"*) echo "pw-fixture-0123456789"; exit 0 ;;
+  *"show-secret hook-token"*) echo "hook-fixture-0123456789"; exit 0 ;;
+  "compose version"*) [ "${FAKE_NO_COMPOSE:-0}" = 1 ] && exit 1; echo "Docker Compose version v2.29.0"; exit 0 ;;
+  info*) [ "${FAKE_DOCKER_INFO_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
+  compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'; exit 0 ;;
 esac
 case "$1 $2" in
-  "run --rm")
-    [ "${FAKE_VAPID:-ok}" = fail ] && { echo "pull denied" >&2; exit 1; }
-    echo "MUSTER_VAPID_PUBLIC_KEY=BPUBFAKE"; echo "MUSTER_VAPID_PRIVATE_KEY=privfake"; exit 0 ;;
   "ps -a")
     case "$*" in *--format*) for i in ${FAKE_PS_IDS:-}; do echo "  container name-$i"; done ;;
                  *) for i in ${FAKE_PS_IDS:-}; do echo "$i"; done ;; esac; exit 0 ;;
@@ -71,23 +106,41 @@ case "$1 $2" in
                  *) for v in ${FAKE_VOLUMES:-}; do echo "$v"; done ;; esac; exit 0 ;;
   "inspect -f")
     id=$4; case "$3" in *working_dir*) eval "echo \"\${FAKE_WD_$id:-}\"" ;; *) echo "/name-$id" ;; esac; exit 0 ;;
-  "compose config") echo "name: muster"; echo "services:"; exit 0 ;;
 esac
 exit 0
 """
 
+# curl: the release's assets come from FAKE_RELEASE_DIR (by file name); the
+# hub, the local stack and the mirror's host route answer as the case says.
 FAKE_CURL = r"""#!/bin/sh
 echo "curl $*" >> "$FAKE_LOG"
-case "$*" in
-  *127.0.0.1:8105/health*) echo '{"status":"ok"}'; exit 0 ;;
-  *127.0.0.1:8105*) [ "${FAKE_PORT_8105:-0}" = 1 ] && exit 0; exit 7 ;;
-  *-fsSLI*releases/latest*) printf '%s' "${FAKE_LATEST_URL:-}"; [ -n "${FAKE_LATEST_URL:-}" ] || exit 22; exit 0 ;;
+url=""; out=""; prev=""; w=0
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out=$a
+  [ "$a" = "-w" ] && w=1
+  case "$a" in http*) url=$a ;; esac
+  prev=$a
+done
+case "$url" in
+  *releases/latest) [ -n "${FAKE_LATEST_URL:-}" ] || exit 22; printf '%s' "$FAKE_LATEST_URL"; exit 0 ;;
   *api.github.com*) printf '%s\n' "${FAKE_API_BODY:-}"; exit 0 ;;
-  */health*) printf '%s\n' "${FAKE_HEALTH:-}"; exit 0 ;;
+  http://127.0.0.1:*/health) [ "${FAKE_PORT_TAKEN:-0}" = 1 ] && exit 0; exit 7 ;;
+  */mirror/host)
+    if [ "$w" = 1 ]; then printf '%s' "${FAKE_MIRROR_CODE:-200}"
+    elif [ "${FAKE_MIRROR_OFFLINE:-0}" = 1 ]; then echo '{"online": false}'
+    else echo '{"online": true}'; fi; exit 0 ;;
+  */readyz) exit 0 ;;
+  http://localhost:*/health) echo '{"status":"ok"}'; exit 0 ;;
+  */health) printf '%s\n' "${FAKE_HEALTH:-}"; exit 0 ;;
 esac
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; url=$a; done
-[ -n "$out" ] && { printf 'downloaded %s\n' "$url" > "$out"; exit 0; }
+if [ -n "$out" ]; then
+  if [ -n "${FAKE_RELEASE_DIR:-}" ]; then
+    f="$FAKE_RELEASE_DIR/${url##*/}"
+    [ -f "$f" ] || exit 22
+    cp "$f" "$out"; exit 0
+  fi
+  printf 'downloaded %s\n' "$url" > "$out"; exit 0
+fi
 exit 0
 """
 
@@ -97,8 +150,8 @@ case "$*" in
   "serve status"*)
     [ "${FAKE_SERVE_FAIL:-0}" = 1 ] && { echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2; exit 1; }
     cat "$FAKE_SERVE"; exit 0 ;;
-  "serve --bg --https=443 8105")
-    printf 'https://hub.example-tailnet.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n' > "$FAKE_SERVE"; exit 0 ;;
+  "serve --bg --https=443 "*)
+    printf 'https://hub.example-tailnet.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:%s\n' "${4}" > "$FAKE_SERVE"; exit 0 ;;
   "debug prefs"*)
     [ -n "${FAKE_TS_PREFS:-}" ] || { echo "unknown subcommand" >&2; exit 1; }
     printf '%s\n' "$FAKE_TS_PREFS"; exit 0 ;;
@@ -117,16 +170,12 @@ echo "ssh $*" >> "$FAKE_LOG"
 echo "Welcome to the hub! (motd on stdout)"
 while [ "$1" != "sh" ] && [ $# -gt 0 ]; do shift; done
 shift
-# A real hub's login shell would set its own PATH; this one keeps the fakes.
 [ "$1" = "-l" ] && shift
 sh "$@"; rc=$?
 echo "Connection to hub closed. (logout noise on stdout)"
 exit $rc
 """
 
-# loginctl and sudo: linger is FAKE_LINGER ("yes" by default); sudo runs its
-# command (the fakes first on PATH) unless FAKE_SUDO=fail. systemctl and
-# journalctl only log: no block may reach this machine's user services.
 FAKE_LOGINCTL = r"""#!/bin/sh
 echo "loginctl $*" >> "$FAKE_LOG"
 case "$1" in show-user) echo "${FAKE_LINGER:-yes}" ;; esac
@@ -146,9 +195,27 @@ FAKE_UNAME = r"""#!/bin/sh
 exec "$REAL_UNAME" "$@"
 """
 
+# systemctl: logs; a user manager is there; the service's restart count and
+# sub-state are the case's (FAKE_NRESTARTS, FAKE_SUBSTATE).
+FAKE_SYSTEMCTL = r"""#!/bin/sh
+echo "systemctl $*" >> "$FAKE_LOG"
+case "$*" in
+  *show-environment*) exit 0 ;;
+  *NRestarts*) echo "${FAKE_NRESTARTS:-0}" ;;
+  *SubState*) echo "${FAKE_SUBSTATE:-running}" ;;
+  *is-active*) echo "${FAKE_ACTIVE:-active}" ;;
+esac
+exit 0
+"""
+
+FAKE_JOURNALCTL = r"""#!/bin/sh
+echo "journalctl $*" >> "$FAKE_LOG"
+[ -n "${FAKE_JOURNAL:-}" ] && printf '%s\n' "$FAKE_JOURNAL"
+exit 0
+"""
+
 FAKE_LOGGER = r"""#!/bin/sh
 echo "$(basename "$0") $*" >> "$FAKE_LOG"
-case "$*" in *is-active*) echo active ;; esac
 exit 0
 """
 
@@ -170,6 +237,24 @@ printf '%s\n' "$*" >> "$FAKE_AWK_ARGV"
 exec "$REAL_AWK" "$@"
 """
 
+# The release's binaries: the CLI logs its arguments (doctor prints a report on
+# stderr and its JSON on stdout, as the real one does); the mirror only logs.
+FAKE_MUSTER_BIN = """#!/bin/sh
+echo "muster $*" >> "$FAKE_LOG"
+case "$1" in doctor) echo "PASS  server" >&2; echo '{"ok": true, "checks": []}' ;; esac
+exit 0
+"""
+FAKE_MIRROR_BIN = """#!/bin/sh
+echo "muster-mirror $*" >> "$FAKE_LOG"
+exit 0
+"""
+
+
+def host_os_arch() -> tuple[str, str]:
+    os_ = {"Linux": "linux", "Darwin": "darwin"}[platform.system()]
+    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine()]
+    return os_, arch
+
 
 class Guide(unittest.TestCase):
     def setUp(self) -> None:
@@ -188,8 +273,9 @@ class Guide(unittest.TestCase):
         real_uname = subprocess.run(["sh", "-c", "command -v uname"], capture_output=True, text=True).stdout.strip()
         for name, body in [("docker", FAKE_DOCKER), ("curl", FAKE_CURL), ("tailscale", FAKE_TAILSCALE),
                            ("ssh", FAKE_SSH), ("awk", FAKE_AWK), ("loginctl", FAKE_LOGINCTL), ("sudo", FAKE_SUDO),
-                           ("systemctl", FAKE_LOGGER), ("journalctl", FAKE_LOGGER), ("qrencode", FAKE_LOGGER),
-                           ("tmux", FAKE_LOGGER), ("login-shell", FAKE_LOGIN_SHELL), ("uname", FAKE_UNAME)]:
+                           ("systemctl", FAKE_SYSTEMCTL), ("journalctl", FAKE_JOURNALCTL), ("qrencode", FAKE_LOGGER),
+                           ("launchctl", FAKE_LOGGER), ("tmux", FAKE_LOGGER), ("login-shell", FAKE_LOGIN_SHELL),
+                           ("uname", FAKE_UNAME)]:
             p = self.bin / name
             p.write_text(body)
             p.chmod(0o755)
@@ -199,15 +285,17 @@ class Guide(unittest.TestCase):
             "REAL_UNAME": real_uname,
         }
         self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'))
+        self.log.write_text("")  # Step 0's own probes are not the case's calls
         self.lib = f'. "{self.homedir}/.config/muster-install/lib.sh"\n'
         self.muster = self.homedir / "muster"
+        self.cfg = self.homedir / ".config/muster-mirror"
 
     def tearDown(self) -> None:
         subprocess.run(["rm", "-rf", str(self.tmp)])
 
     def run_block(self, script: str, **env: str) -> str:
         p = subprocess.run(["sh", "-c", script], env={**self.env, **env}, capture_output=True, text=True,
-                           cwd=self.tmp, timeout=60)
+                           cwd=self.tmp, timeout=120)
         return p.stdout + p.stderr
 
     def without(self, *names: str) -> str:
@@ -254,253 +342,275 @@ class Guide(unittest.TestCase):
                 out[k] = v
         return out
 
-    def hub(self, env_example: str = "", **saved: str) -> None:
-        """A hub at Step 4: .env.example and .env in place, values saved."""
+    def hub(self, **saved: str) -> None:
+        """A hub after Step 2: install.sh's ~/muster and muster-mirror settings."""
         self.muster.mkdir(exist_ok=True)
-        ex = "MUSTER_VERSION=1.0.0\nPOSTGRES_PASSWORD=CHANGE-ME\nMUSTER_UI_PASSWORD=CHANGE-ME\nMUSTER_HOOK_TOKEN=CHANGE-ME\n" \
-             "#MUSTER_STT_TOKEN=CHANGE-ME\n" + env_example
-        (self.muster / ".env.example").write_text(ex)
-        (self.muster / ".env").write_text(ex)
-        (self.muster / ".env").chmod(0o600)
-        saved = {"MUSTER_URL": URL, "MUSTER_VERSION": "1.0.0", **saved}
+        (self.muster / "docker-compose.yml").write_text("services: {}\n")
+        (self.muster / ".muster-install").write_text("installed-by: install.sh\n")
+        self.cfg.mkdir(parents=True, exist_ok=True)
+        (self.cfg / "env").write_text(f"{MARK}\nMUSTER_MIRROR_URL=http://localhost:8105\nPATH=/usr/bin\n")
+        saved = {"MUSTER_URL": "http://localhost:8105", "OS": "linux", **saved}
         self.sh("".join(f"mi_save {k} '{v}'\n" for k, v in saved.items()))
 
-    # --- Y1: push keys, all three or none ------------------------------------
+    # --- a fake release, and Step 2 against it --------------------------------
 
-    def test_failed_key_generation_writes_no_push_key(self) -> None:
-        self.hub()
-        out = self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"), FAKE_VAPID="fail")
-        env = self.dotenv()
-        self.assertIn("vapid generate", self.calls(), "positive control: the block tried to generate keys")
-        for k in ("MUSTER_VAPID_PUBLIC_KEY", "MUSTER_VAPID_PRIVATE_KEY", "MUSTER_VAPID_SUBJECT"):
-            self.assertEqual(env.get(k, ""), "", f"{k} written although generation failed\n{out}")
+    def release(self) -> Path:
+        """The release's assets: this checkout's install.sh (stamped), tiny
+        muster and muster-mirror binaries in real tarballs, a compose file and
+        a real checksums.txt."""
+        rel = self.tmp / "release"
+        if rel.exists():
+            return rel
+        rel.mkdir()
+        src = (ROOT / "deploy/install.sh").read_text()
+        self.assertIn('RELEASE="@MUSTER_RELEASE@"', src, "deploy/install.sh lost its release stamp line")
+        (rel / "install.sh").write_text(src.replace('RELEASE="@MUSTER_RELEASE@"', f'RELEASE="{RELEASE}"', 1))
+        (rel / "docker-compose.yml").write_text("name: muster\nservices: {}\n")
+        os_, arch = host_os_arch()
+        for name, body in (("muster", FAKE_MUSTER_BIN), ("muster-mirror", FAKE_MIRROR_BIN)):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                data = body.encode()
+                ti = tarfile.TarInfo(name)
+                ti.size, ti.mode = len(data), 0o755
+                tf.addfile(ti, io.BytesIO(data))
+            (rel / f"{name}_{os_}_{arch}.tar.gz").write_bytes(buf.getvalue())
+        lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in sorted(rel.iterdir())]
+        (rel / "checksums.txt").write_text("\n".join(lines) + "\n")
+        return rel
 
-    def test_generated_keys_are_all_three(self) -> None:
-        self.hub()
-        self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"))
-        env = self.dotenv()
-        self.assertEqual((env.get("MUSTER_VAPID_PUBLIC_KEY"), env.get("MUSTER_VAPID_PRIVATE_KEY"), env.get("MUSTER_VAPID_SUBJECT")),
-                         ("BPUBFAKE", "privfake", URL))
+    def install_env(self, **env: str) -> dict[str, str]:
+        return {"FAKE_RELEASE_DIR": str(self.release()), "MUSTER_RELEASE_OVERRIDE": "https://release.example/dl",
+                "FAKE_LATEST_URL": f"https://github.com/ZacxDev/muster/releases/tag/v{RELEASE}",
+                "FAKE_HEALTH": f'{{"status":"ok","version":"{RELEASE}"}}', "USER": "tester",
+                "SHELL": str(self.bin / "login-shell"), **env}
 
-    # --- Y2: Step 5 brings .env to the chosen version -------------------------
+    def step2(self, **env: str) -> str:
+        return self.run_block(self.lib + block("MUSTER_MIRROR_INTERACTIVE"), **self.install_env(**env))
 
-    def test_step5_writes_the_chosen_version_before_it_pulls(self) -> None:
-        self.hub()
-        self.sh("mi_set_version 1.1.0")
-        self.run_block(self.lib + block("docker compose up -d --wait"))
-        self.assertEqual(self.dotenv()["MUSTER_VERSION"], "1.1.0")
-        self.assertIn("compose pull", self.calls())
-
-    # --- Y3 and Y4: dictation re-runs and switches ----------------------------
-
-    def dictation(self, **saved: str) -> str:
+    def joining(self, legacy_env: str | None = None, **saved: str) -> None:
+        """A joining machine after Step 1 and its token: the hub's URL saved."""
+        self.cfg.mkdir(parents=True, exist_ok=True)
+        (self.cfg / "token").write_text("mmt_fixture\n")
+        (self.cfg / "token").chmod(0o600)
+        if legacy_env is not None:
+            (self.cfg / "env").write_text(legacy_env)
+        saved = {"OS": "linux", "ROLE": "join", "MUSTER_URL": URL, "MIRROR_HOST": "laptop", "INTERACTIVE": "1", **saved}
         self.sh("".join(f"mi_save {k} '{v}'\n" for k, v in saved.items()))
-        return self.run_block(self.lib + block('case "$STT" in'))
 
-    def write_secret(self, name: str, value: str) -> None:
-        p = self.homedir / ".config/muster-install" / name
-        p.write_text(value)
-        p.chmod(0o600)
+    def mirror_env(self) -> list[str]:
+        return (self.cfg / "env").read_text().splitlines()
 
-    def test_rerunning_api_keeps_the_key(self) -> None:
-        self.hub()
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key")
-        self.dictation(STT="api")
-        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key", "a re-run replaced the key")
+    # --- Step 2: muster-mirror's settings are merged, never overwritten --------
 
-    def test_rerunning_gpu_keeps_the_hf_token(self) -> None:
-        self.hub()
-        self.write_secret("hf-token", "hf_real")
-        self.dictation(STT="local-gpu")
-        self.dictation(STT="local-gpu")
-        env = self.dotenv()
-        self.assertEqual(env["HF_TOKEN"], "hf_real", "a re-run replaced the Hugging Face token")
-        first = env["MUSTER_STT_TOKEN"]
-        self.dictation(STT="local-gpu")
-        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], first, "a re-run rotated the local service's token")
+    LEGACY = ("MUSTER_MIRROR_URL=https://old-hub.example-tailnet.ts.net\nMUSTER_MIRROR_TOKEN_FILE=/old/token\n"
+              "MUSTER_MIRROR_HOST=laptop\nMUSTER_MIRROR_INTERACTIVE=0\nMUSTER_MIRROR_WRITE_HOOK_CONFIG=1\n"
+              "TMUX_TMPDIR=/run/user/1000/tmux-here\nPATH=/old/path\n")
 
-    def test_gpu_to_api_is_a_clean_swap(self) -> None:
-        self.hub()
-        self.write_secret("hf-token", "hf_real")
-        self.dictation(STT="local-gpu")
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        env = self.dotenv()
-        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"], env["MUSTER_STT_TOKEN"]),
-                         ("", "https://api.openai.com", "whisper-1", "sk-the-real-key"))
+    def test_step2_merges_the_mirror_settings_keeping_hand_added_lines(self) -> None:
+        # The finding: Step 7 wrote ~/.config/muster-mirror/env with `>`, so a
+        # TMUX_TMPDIR the person had added was silently dropped and sessions
+        # vanished. Now install.sh rewrites only the lines it owns.
+        self.joining(legacy_env=self.LEGACY, ADOPT_MIRROR="1")
+        out = self.step2()
+        lines = self.mirror_env()
+        self.assertIn("TMUX_TMPDIR=/run/user/1000/tmux-here", lines, f"a hand-added line was dropped\n{out}")
+        self.assertIn(f"MUSTER_MIRROR_URL={URL}", lines, f"positive control: the settings were rewritten\n{out}")
+        for key, want in (("MUSTER_MIRROR_URL", URL), ("MUSTER_MIRROR_INTERACTIVE", "1"),
+                          ("MUSTER_MIRROR_TOKEN_FILE", str(self.cfg / "token"))):
+            got = [l for l in lines if l.startswith(key + "=")]
+            self.assertEqual(got, [f"{key}={want}"], f"{key} is not written exactly once with the new value")
+        self.assertEqual(sum(l.startswith("PATH=") for l in lines), 1)
+        # And a second run changes nothing it does not own.
+        (self.cfg / "env").write_text((self.cfg / "env").read_text() + "MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:1\n")
+        self.step2()
+        again = self.mirror_env()
+        self.assertIn("MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:1", again)
+        self.assertIn("TMUX_TMPDIR=/run/user/1000/tmux-here", again)
+        self.assertEqual(sum(l.startswith("MUSTER_MIRROR_URL=") for l in again), 1)
 
-    def test_gpu_names_its_model(self) -> None:
-        # The compose file sends a model whenever the token is set (the stt
-        # profile's, by default); stt-cohere ignores it, so the guide names
-        # Cohere's own to keep muster's dictation line true.
-        self.hub()
-        self.write_secret("hf-token", "hf_real")
-        self.dictation(STT="local-gpu")
-        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "CohereLabs/cohere-transcribe-03-2026")
-        self.dictation(STT="local-cpu")
-        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-small",
-                         "leaving the GPU kept Cohere's model for the whisper server")
+    def test_step2_never_takes_over_mirror_settings_unasked(self) -> None:
+        self.joining(legacy_env=self.LEGACY)
+        out = self.step2()
+        self.assertIn("MUSTER_MIRROR_ADOPT=1", out, f"the refusal does not say how to allow it\n{out}")
+        self.assertEqual((self.cfg / "env").read_text(), self.LEGACY, "settings it did not write were changed")
+        self.assertNotIn("systemctl --user restart", self.calls())
 
-    def test_every_dictation_option_keeps_the_s3_profile(self) -> None:
-        # Attachments (Step 11) put s3 in COMPOSE_PROFILES too: choosing or
-        # switching dictation must replace only its own profile.
-        self.hub()
-        self.sh(f"env_set COMPOSE_PROFILES s3")
-        self.write_secret("hf-token", "hf_real")
-        want = {"local-cpu": "s3,stt", "local-gpu": "s3,stt-cohere", "none": "s3"}
-        for stt in ("local-cpu", "local-gpu", "local-cpu", "none"):
-            self.dictation(STT=stt)
-            self.assertEqual(self.dotenv()["COMPOSE_PROFILES"], want[stt], f"after {stt}")
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        self.assertEqual(self.dotenv()["COMPOSE_PROFILES"], "s3")
-        # With s3 on, the API option is still recognised as in effect: leaving
-        # it keeps the key aside (its only copy is .env).
-        self.dictation(STT="none")
-        kept = self.homedir / ".config/muster-install/stt-api-key"
-        self.assertTrue(kept.exists(), "leaving the API option with s3 on lost the key: it was not kept aside")
-        self.assertEqual(kept.read_text().strip(), "sk-the-real-key")
+    def test_step2_join_points_the_mirror_at_the_hub_and_checks_from_here(self) -> None:
+        self.joining()
+        out = self.step2()
+        self.assertIn(f"MUSTER_MIRROR_URL={URL}", self.mirror_env(), out)
+        self.assertIn(MARK, self.mirror_env())
+        self.assertIn(f"muster doctor --api-url {URL}", self.calls(), "the joining machine's doctor did not run")
+        self.assertNotIn("compose", self.calls(), "a joining machine touched Docker")
+        self.assertNotIn("show-secret", self.calls())
 
-    def test_cpu_rerun_from_the_old_profile_name_keeps_the_token(self) -> None:
-        # An install made when the CPU profile was called stt-whisper: a re-run
-        # moves it to `stt` without rotating the service's token.
-        self.hub()
-        self.sh("env_set COMPOSE_PROFILES stt-whisper\nenv_set MUSTER_STT_TOKEN keep-this-token")
-        self.dictation(STT="local-cpu")
-        env = self.dotenv()
-        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_TOKEN"]), ("stt", "keep-this-token"))
+    def test_step2_join_without_a_token_says_so_and_installs_nothing(self) -> None:
+        self.joining()
+        (self.cfg / "token").unlink()
+        out = self.step2()
+        self.assertIn("NO TOKEN", out)
+        self.assertFalse((self.homedir / ".local/bin/muster-mirror").exists())
 
-    def test_step11_attachments_generates_both_secrets_once(self) -> None:
-        self.hub()
-        self.sh("env_set COMPOSE_PROFILES stt")
-        b = self.lib + block("env_secret S3_STORE_SECRET_KEY", "mi_profiles s3")
-        out = self.run_block(b)
-        env = self.dotenv()
-        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", out)
-        self.assertRegex(env["S3_STORE_SECRET_KEY"], r"^[0-9a-f]{48}$")
-        self.assertRegex(env["MUSTER_UPLOAD_SIGNING_KEY"], r"^[0-9a-f]{96}$")
-        first = (env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"])
-        self.run_block(b)
-        env = self.dotenv()
-        self.assertEqual((env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"]), first, "a re-run rotated a key")
-        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", "a re-run added s3 twice")
+    def test_step2_crash_loop_prints_the_mirrors_own_reason(self) -> None:
+        # The finding: a crash-looping muster-mirror reads `activating`, and
+        # `journalctl -n 15` buries its reason in restart noise. The installer
+        # names the line muster-mirror printed (they start "muster-mirror: ";
+        # its ordinary log lines carry a timestamp) and does not wait 30s.
+        self.joining()
+        reason = 'muster-mirror: MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="maybe" is not a bool'
+        journal = "\n".join([
+            "2026/11/16 10:00:00 muster-mirror 9.9.9 starting",
+            reason,
+            "muster-mirror.service: Main process exited, code=exited, status=2/INVALIDARGUMENT",
+            "muster-mirror.service: Failed with result 'exit-code'.",
+            "muster-mirror.service: Scheduled restart job, restart counter is at 4.",
+        ])
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_SUBSTATE="auto-restart", FAKE_JOURNAL=journal)
+        self.assertIn("exits as it starts", out, out)
+        self.assertIn("    " + reason, out, f"the mirror's own reason was not printed\n{out}")
+        self.assertNotIn("Scheduled restart job", out, "the journal's restart noise was printed instead of the reason")
+        self.assertNotIn("has not connected after 30s", out, "it waited the whole 30s on a crash loop")
 
-    def test_api_to_cpu_is_a_clean_swap(self) -> None:
-        self.hub()
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        self.dictation(STT="local-cpu")
-        env = self.dotenv()
-        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"]),
-                         ("stt", "http://stt-whisper:8000", "Systran/faster-whisper-small"))
-        self.assertNotEqual(env["MUSTER_STT_TOKEN"], "sk-the-real-key", "the API key was handed to the local service")
-        self.assertRegex(env["MUSTER_STT_TOKEN"], r"^[0-9a-f]{64}$")
-
-    def test_cpu_to_api_without_a_key_asks_and_changes_nothing(self) -> None:
-        self.hub()
-        self.dictation(STT="local-cpu")
-        before = self.dotenv()
-        out = self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        self.assertIn("MISSING: the API key", out)
-        self.assertEqual(self.dotenv(), before, "it switched to the API with the local service's token as the key")
-
-    def test_step5_marks_the_install_in_use_once_healthy(self) -> None:
-        self.hub()
-        self.run_block(self.lib + block("docker compose up -d --wait"))
+    def test_step2_hub_installs_locally_and_records_the_local_address(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save INTERACTIVE 0")
+        out = self.step2()
+        self.assertIn("MUSTER_MIRROR_URL=http://localhost:8105", self.mirror_env(), out)
+        self.assertIn("MUSTER_URL='http://localhost:8105'", self.state())
+        self.assertIn("GUIDE_STARTED='1'", self.state())
         self.assertIn("GUIDE_IN_USE='1'", self.state())
-        own = dict(FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster), FAKE_VOLUMES="muster_pgdata")
-        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", **own))
-        self.assertNotIn("compose down", self.calls())
+        self.assertIn("muster doctor --deploy-env", self.calls(), "the installer's doctor did not run")
+        self.assertNotIn("pw-fixture-0123456789", out, "the sign-in password reached the agent's output")
+        self.assertIn("show-secret ui-password", out, "the command that shows the password was not printed")
+        self.assertIn("mirror token create hubbox", self.calls())
 
-    def test_none_keeps_the_api_key_for_later(self) -> None:
-        self.hub()
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
-        self.dictation(STT="none")
-        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "", "dictation is still on")
-        out = self.dictation(STT="api")
-        self.assertNotIn("MISSING", out)
-        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key", "the key was lost on the way through none")
+    def test_step2_keeps_the_https_address_on_a_rerun(self) -> None:
+        self.sh(f"mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save MUSTER_URL '{URL}'")
+        self.step2()
+        self.assertIn(f"MUSTER_URL='{URL}'", self.state(), "a re-run replaced the hub's https address with localhost")
 
-    def test_cpu_resets_a_non_whisper_model(self) -> None:
-        self.hub()
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        self.dictation(STT="api", STT_API_URL="https://api.example-provider.test", STT_API_MODEL="openai/whisper-large-v3")
-        self.dictation(STT="local-cpu")
-        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-small")
-        self.sh("env_set MUSTER_STT_MODEL Systran/faster-whisper-large-v3")
-        self.dictation(STT="local-cpu")
-        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-large-v3", "a chosen whisper model was reset")
-
-    def test_api_without_a_url_asks_and_changes_nothing(self) -> None:
-        self.hub()
-        self.dictation(STT="local-cpu")
-        before = self.dotenv()
-        self.write_secret("stt-api-key", "sk-the-real-key")
-        out = self.dictation(STT="api")
-        self.assertIn("MISSING: the API's URL", out)
-        self.assertEqual(self.dotenv(), before, "a half-switched dictation config was written")
-
-    # --- Y5: a failed version lookup is never saved ---------------------------
-
-    def test_failed_lookup_saves_nothing_and_recovers(self) -> None:
+    def test_step2_refuses_an_earlier_guides_install(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
         self.muster.mkdir()
-        out = self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"),
-                             FAKE_LATEST_URL="", FAKE_API_BODY='{"message":"API rate limit exceeded"}')
+        (self.muster / "docker-compose.yml").write_text("services: {}\n")
+        (self.muster / ".env").write_text("POSTGRES_PASSWORD=keep-me\n")
+        out = self.step2()
+        self.assertIn("did not install", out, out)
+        self.assertNotIn("compose", " ".join(l for l in self.calls().splitlines() if " up " in l))
+        self.assertEqual((self.muster / ".env").read_text(), "POSTGRES_PASSWORD=keep-me\n")
+        self.assertNotIn("GUIDE_STARTED='1'", self.state(), "an earlier install was marked as this guide's own")
+
+    def test_step2_respects_a_declined_linger(self) -> None:
+        self.joining(LINGER="no")
+        out = self.step2(FAKE_LINGER="no")
+        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), f"positive control\n{out}")
+        self.assertNotIn("enable-linger", self.calls(), out)
+
+    def test_the_install_sets_up_mirrored_sessions_only(self) -> None:
+        # The README, onboarding.md and Step 4 tell the person this guide
+        # starts no session of its own. That is a claim about what it WRITES:
+        # the host's service settings are exactly these keys (no
+        # MUSTER_MIRROR_RESUME_SPAWN, the one way a host starts a Claude Code
+        # process), and the compose file and env template name no provisioner
+        # and no mail resume. An INVARIANT guard.
+        self.joining()
+        self.step2()
+        keys = sorted(l.split("=", 1)[0] for l in self.mirror_env() if l.strip() and not l.startswith("#"))
+        self.assertEqual(keys, ["MUSTER_MIRROR_HOST", "MUSTER_MIRROR_INTERACTIVE", "MUSTER_MIRROR_TOKEN_FILE",
+                                "MUSTER_MIRROR_URL", "MUSTER_MIRROR_WRITE_HOOK_CONFIG", "PATH"])
+        compose = (ROOT / "deploy/docker-compose.yml").read_text()
+        example = (ROOT / "deploy/.env.example").read_text()
+        self.assertRegex(compose, r"(?m)^      MUSTER_HOOK_TOKEN: ", "positive control: the env block is where this looks")
+        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY"):
+            self.assertNotRegex(compose, rf"(?m)^\s+{key}:", f"the compose file forwards {key}: dispatch could be turned on")
+        self.assertRegex(compose, r"(?m)^      MUSTER_MAIL_RESUME_ALLOW: \$\{MUSTER_MAIL_RESUME_ALLOW:-\}$",
+                         "MUSTER_MAIL_RESUME_ALLOW must be forwarded with an EMPTY default")
+        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_MAIL_RESUME_ALLOW"):
+            self.assertNotRegex(example, rf"(?m)^{key}=", f".env.example sets {key}: the install would no longer be mirrored-only")
+        for text in (compose, example):
+            self.assertNotIn("RESUME_SPAWN", text)
+
+    def test_step2_names_the_opencode_line_muster_mirror_logs(self) -> None:
+        # The seam: the guide quotes the daemon's start-up line as expected, so
+        # the line it quotes must be the one the code logs.
+        src = (ROOT / "cmd/muster-mirror/opencode.go").read_text()
+        m = re.search(r'openCodeNotPairedWhy = "([^"]*)"', src)
+        self.assertIsNotNone(m, "cmd/muster-mirror/opencode.go no longer has openCodeNotPairedWhy")
+        quoted = re.search(r"`opencode: ([^`…]*) …`", self.section("## Step 2:"))
+        self.assertIsNotNone(quoted, "Step 2 does not quote the opencode line")
+        self.assertTrue(m.group(1).startswith(quoted.group(1)),
+                        f"Step 2 quotes {quoted.group(1)!r}; muster-mirror logs {m.group(1)!r}")
+
+    # --- Step 2: the PATH note only when it is needed --------------------------
+
+    def test_step2_no_path_note_when_a_login_shell_finds_muster(self) -> None:
+        self.joining()
+        (self.homedir / ".profile-path").write_text(f"{self.homedir}/.local/bin\n")
+        self.assertNotIn("NOTE: a new login shell", self.step2())
+
+    def test_step2_path_note_when_a_login_shell_does_not(self) -> None:
+        self.joining()
+        # The agent's own PATH has the directory; a new login (no profile
+        # line) would not. Only `env -i` keeps the check from inheriting it.
+        out = self.step2(PATH=f"{self.homedir}/.local/bin:{self.env['PATH']}")
+        self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out)
+
+    # --- the version: a failed lookup is never saved; a release pins its own --
+
+    def test_failed_lookup_saves_nothing(self) -> None:
+        self.joining()
+        out = self.run_block(self.lib + block("MUSTER_MIRROR_INTERACTIVE"),
+                             **self.install_env(FAKE_LATEST_URL="", FAKE_API_BODY='{"message":"API rate limit exceeded"}'))
+        self.assertIn("VERSION LOOKUP FAILED", out)
         self.assertNotIn("MUSTER_VERSION=", self.state(), f"a failed lookup was saved\n{out}")
-        self.assertNotIn("MUSTER_RELEASE_BASE=", self.state())
-        self.assertNotIn("docker-compose.yml", self.calls(), "it downloaded with no version")
-        self.sh("mi_set_version 1.2.3")
-        self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"))
-        self.assertIn("/releases/download/v1.2.3/docker-compose.yml", self.calls())
-        self.assertNotEqual(self.sh("mi_set_version v1.2.3 && echo SAVED"), "SAVED", "a v-prefixed version was accepted")
-        self.assertIn("MUSTER_VERSION='1.2.3'", self.state())
+        self.assertNotIn("install.sh", self.calls(), "it downloaded with no version")
+        self.assertNotEqual(self.sh("mi_set_version v1.2.3 && echo SAVED").strip(), "SAVED", "a v-prefixed version was accepted")
 
     def test_lookup_takes_the_latest_redirect(self) -> None:
-        self.muster.mkdir()
-        self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"),
-                       FAKE_LATEST_URL="https://github.com/ZacxDev/muster/releases/tag/v2.3.4")
+        self.sh("mi_release", FAKE_LATEST_URL="https://github.com/ZacxDev/muster/releases/tag/v2.3.4")
         self.assertIn("MUSTER_VERSION='2.3.4'", self.state())
 
-    def test_joining_machine_saves_no_unreadable_version(self) -> None:
-        self.sh(f"mi_save MUSTER_URL '{URL}'")
-        self.run_block(self.lib + block('$MUSTER_URL/health" | sed'), FAKE_HEALTH="<html>tailnet login</html>")
-        self.assertNotIn("MUSTER_VERSION=", self.state())
-        self.run_block(self.lib + block('$MUSTER_URL/health" | sed'), FAKE_HEALTH='{"status":"ok","version":"1.4.0"}')
-        self.assertIn("MUSTER_VERSION='1.4.0'", self.state())
-        self.assertIn("MUSTER_RELEASE_BASE='https://github.com/ZacxDev/muster/releases/download/v1.4.0'", self.state())
+    def test_a_releases_copy_of_the_guide_installs_that_release(self) -> None:
+        # scripts/release-build.sh stamps MI_GUIDE_RELEASE into the INSTALL.md
+        # it publishes; that copy must choose its own release without asking
+        # GitHub for the newest. The control: the unstamped guide asks.
+        text = GUIDE.read_text()
+        line = 'MI_GUIDE_RELEASE="@MUSTER_RELEASE@"'
+        self.assertEqual(text.count(line), 1, "INSTALL.md must hold exactly one stampable MI_GUIDE_RELEASE line")
+        stamped = self.tmp / "INSTALL.stamped.md"
+        stamped.write_text(text.replace(line, 'MI_GUIDE_RELEASE="4.5.6"'))
+        lib_block = [b for b in sh_blocks(stamped) if 'cat > "$HOME/.config/muster-install/lib.sh"' in b][0]
+        self.run_block(lib_block)
+        self.log.write_text("")
+        self.sh("mi_release", FAKE_LATEST_URL="https://github.com/ZacxDev/muster/releases/tag/v7.7.7")
+        self.assertIn("MUSTER_VERSION='4.5.6'", self.state())
+        self.assertNotIn("releases/latest", self.calls(), "a stamped guide still asked for the newest release")
+        # control: the repository's unstamped copy asks
+        self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'))
+        self.sh("mi_release", FAKE_LATEST_URL="https://github.com/ZacxDev/muster/releases/tag/v7.7.7")
+        self.assertIn("MUSTER_VERSION='7.7.7'", self.state())
 
-    # --- Y6: an existing muster is never taken over ---------------------------
-
-    def test_step5_stops_on_another_installs_container(self) -> None:
-        self.hub()
-        out = self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/other-muster")
-        self.assertNotIn("compose up", self.calls(), f"it started over another install\n{out}")
-        self.assertIn("STOP", out)
-
-    def test_step5_stops_on_a_fresh_machine_with_8105_taken(self) -> None:
-        self.hub()
-        out = self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PORT_8105="1")
-        self.assertNotIn("compose up", self.calls(), out)
-
-    def test_step5_stops_on_leftover_volumes(self) -> None:
-        self.hub()
-        self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_VOLUMES="muster_pgdata")
-        self.assertNotIn("compose up", self.calls())
-
-    def test_step5_rerun_on_its_own_install_proceeds(self) -> None:
-        self.hub(GUIDE_STARTED="1")
-        self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PS_IDS="abc",
-                       FAKE_WD_abc=str(self.muster), FAKE_PORT_8105="1")
-        self.assertIn("compose up", self.calls(), "the guide refused its own install")
+    # --- an existing muster is never taken over -------------------------------
 
     def test_step0_reports_another_install(self) -> None:
         out = self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/x")
         self.assertIn("FOREIGN container", out)
 
-    # --- Y6: starting over deletes only this guide's fresh install ------------
+    def test_step0_tells_an_earlier_guides_install_and_mirror_settings_apart(self) -> None:
+        self.muster.mkdir()
+        (self.muster / "docker-compose.yml").write_text("services: {}\n")
+        self.cfg.mkdir(parents=True)
+        (self.cfg / "env").write_text(self.LEGACY)
+        out = self.step0()
+        self.assertIn("existing muster: NOT install.sh's", out)
+        self.assertIn("muster-mirror settings: NOT install.sh's", out)
+        (self.muster / ".muster-install").write_text("installed-by: install.sh\n")
+        (self.cfg / "env").write_text(MARK + "\n" + self.LEGACY)
+        out = self.step0()
+        self.assertIn("existing muster: install.sh's", out)
+        self.assertIn("muster-mirror settings: install.sh's", out)
+
+    # --- starting over deletes only this guide's fresh install ----------------
 
     def start_over(self, **env: str) -> str:
         return self.run_block(self.lib + block("down -v"), **env)
@@ -515,7 +625,7 @@ class Guide(unittest.TestCase):
         self.hub(GUIDE_STARTED="1", GUIDE_IN_USE="0")
         self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/x"),
                       "it would delete another install's containers")
-        self.assertNotIn("compose down", self.calls())
+        self.assertNotIn("down -v", self.calls())
 
     def test_start_over_names_what_it_deletes_and_needs_the_confirmation(self) -> None:
         self.hub(GUIDE_STARTED="1")
@@ -523,20 +633,32 @@ class Guide(unittest.TestCase):
         out = self.start_over(**own)
         self.assertIn("container name-abc", out)
         self.assertIn("volume muster_pgdata", out)
-        self.assertNotIn("compose down", self.calls(), "it deleted without the confirmation")
+        self.assertNotIn("down -v", self.calls(), "it deleted without the confirmation")
         self.start_over(MI_CONFIRM_DELETE="muster", **own)
-        self.assertIn("compose down -v", self.calls())
+        self.assertIn("down -v", self.calls())
 
-    # --- Y7: Tailscale serve is added to, never replaced ----------------------
+    # --- Tailscale serve is added to, never replaced --------------------------
 
-    def serve(self, status: str) -> str:
+    def serve(self, status: str, **env: str) -> str:
+        self.hub()
         self.serve_file.write_text(status)
-        return self.run_block(self.lib + block("mi_save MUSTER_URL"))
+        return self.run_block(self.lib + block("tailscale serve --bg"), **env)
 
     def test_serve_adds_only_muster_when_empty(self) -> None:
         self.serve("No serve config\n")
         self.assertIn("tailscale serve --bg --https=443 8105", self.calls())
         self.assertIn(f"MUSTER_URL='{URL}'", self.state())
+        self.assertEqual(self.dotenv()["MUSTER_PUBLIC_URL"], URL, "muster was not told its https address")
+        self.assertRegex(self.calls(), r"docker compose .* up -d --wait", "muster was not restarted with it")
+
+    def test_serve_uses_the_installs_own_port(self) -> None:
+        # The port is install.sh's (the compose file's), never one the guide
+        # spells: a hub on another port is served on THAT port.
+        self.hub()
+        (self.cfg / "env").write_text(f"{MARK}\nMUSTER_MIRROR_URL=http://localhost:9123\n")
+        self.serve_file.write_text("No serve config\n")
+        self.run_block(self.lib + block("tailscale serve --bg"))
+        self.assertIn("tailscale serve --bg --https=443 9123", self.calls())
 
     def test_serve_keeps_its_own_mapping(self) -> None:
         self.serve(f"{URL} (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n")
@@ -546,24 +668,31 @@ class Guide(unittest.TestCase):
     def test_serve_stops_on_someone_elses_site(self) -> None:
         out = self.serve(f"{URL} (tailnet only)\n|-- / proxy http://127.0.0.1:3000\n")
         self.assertNotIn("--bg", self.calls(), out)
-        self.assertNotIn("MUSTER_URL", self.state())
+        self.assertNotIn(f"MUSTER_URL='{URL}'", self.state())
 
     def test_serve_stops_on_funnel(self) -> None:
         # The mapping is muster's own, so ONLY the Funnel check can stop it.
         out = self.serve(f"{URL} (Funnel on)\n|-- / proxy http://127.0.0.1:8105\n")
         self.assertNotIn("--bg", self.calls())
         self.assertIn("STOP", out)
-        self.assertNotIn("MUSTER_URL", self.state(), "a Funnel-exposed mapping was adopted as muster's")
+        self.assertNotIn(f"MUSTER_URL='{URL}'", self.state(), "a Funnel-exposed mapping was adopted as muster's")
 
     def test_serve_unready_is_not_a_foreign_stop(self) -> None:
-        self.serve_file.write_text("No serve config\n")
-        out = self.run_block(self.lib + block("mi_save MUSTER_URL"), FAKE_SERVE_FAIL="1")
+        out = self.serve("No serve config\n", FAKE_SERVE_FAIL="1")
         self.assertIn("TAILSCALE NOT READY", out)
         self.assertNotIn("STOP", out)
         self.assertNotIn("--bg", self.calls())
-        self.assertNotIn("MUSTER_URL", self.state())
         pre = self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), FAKE_SERVE_FAIL="1")
         self.assertIn("tailscale serve: unready", pre)
+
+    def test_a_signed_out_tailscale_is_unready_not_none(self) -> None:
+        # The finding: signed out, `tailscale serve status` still answers "No
+        # serve config", so the helper said `none` and Step 2 ran `serve` on a
+        # Tailscale that could not serve. Signed out is `unready`.
+        self.hub()
+        self.serve_file.write_text("No serve config\n")
+        self.assertEqual(self.sh("mi_serve_state", FAKE_TS_LOGGED_OUT="1").strip(), "unready")
+        self.assertEqual(self.sh("mi_serve_state").strip(), "none", "control: signed in with nothing served is none")
 
     def test_removal_turns_off_only_musters_mapping(self) -> None:
         # Prose, so a weaker guard: no block runs `serve reset`, every mention
@@ -575,27 +704,50 @@ class Guide(unittest.TestCase):
             self.assertIn("Never", text[max(0, m.start() - 40):m.start()], "the guide tells the agent to reset serve")
         self.assertRegex(text, r"tailscale serve --https=443\s+off", "removal does not name muster's mapping")
 
-    # --- nits: secrets, the ssh mint ------------------------------------------
+    # --- optional features: the generic helpers -------------------------------
+
+    def test_attachments_generates_both_secrets_once(self) -> None:
+        self.hub()
+        self.sh("env_set COMPOSE_PROFILES stt")
+        b = self.lib + block("env_secret S3_STORE_SECRET_KEY", "mi_profiles s3")
+        out = self.run_block(b)
+        env = self.dotenv()
+        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", out)
+        self.assertRegex(env["S3_STORE_SECRET_KEY"], r"^[0-9a-f]{48}$")
+        self.assertRegex(env["MUSTER_UPLOAD_SIGNING_KEY"], r"^[0-9a-f]{96}$")
+        first = (env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"])
+        self.run_block(b)
+        env = self.dotenv()
+        self.assertEqual((env["S3_STORE_SECRET_KEY"], env["MUSTER_UPLOAD_SIGNING_KEY"]), first, "a re-run rotated a key")
+        self.assertEqual(env["COMPOSE_PROFILES"], "stt,s3", "a re-run added s3 twice")
+        self.assertEqual(stat.S_IMODE((self.muster / ".env").stat().st_mode), 0o600)
 
     def test_env_set_keeps_secrets_out_of_argv_and_the_file_private(self) -> None:
         self.hub()
-        self.sh("env_set MUSTER_STT_TOKEN sk-secret-in-argv-check")
+        self.sh("umask 022\nenv_set MUSTER_STT_TOKEN sk-secret-in-argv-check")
         self.assertNotIn("sk-secret-in-argv-check", self.awk_argv.read_text())
-        mode = stat.S_IMODE((self.muster / ".env").stat().st_mode)
-        self.assertEqual(mode, 0o600)
+        self.assertEqual(stat.S_IMODE((self.muster / ".env").stat().st_mode), 0o600)
         self.assertFalse((self.muster / ".env.tmp").exists())
         self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-secret-in-argv-check")
+
+    def test_mi_profiles_replaces_only_its_own(self) -> None:
+        self.hub()
+        self.sh("env_set COMPOSE_PROFILES s3,stt")
+        self.assertEqual(self.sh("mi_profiles stt-cohere stt").strip(), "s3,stt-cohere")
+        self.assertEqual(self.sh('mi_profiles "" stt').strip(), "s3")
+
+    # --- the ssh mint ---------------------------------------------------------
 
     def test_ssh_mint_keeps_only_the_token(self) -> None:
         self.sh("mi_save MIRROR_HOST laptop")
         out = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
-        tok = (self.homedir / ".config/muster-mirror/token").read_text().strip()
+        tok = (self.cfg / "token").read_text().strip()
         self.assertEqual(tok, "mmt_token-for-laptop", out)
         self.assertIn("BatchMode=yes", self.calls())
         again = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
         self.assertIn("kept existing token", again)
 
-    # --- fresh-run friction: ask for sudo and the person's hands up front -----
+    # --- Step 0: ask for sudo and the person's hands up front -----------------
 
     def step0(self, **env: str) -> str:
         return self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), **env)
@@ -609,38 +761,55 @@ class Guide(unittest.TestCase):
 
     def test_step0_asks_up_front_for_a_signed_out_tailscale(self) -> None:
         out = self.step0(FAKE_TS_LOGGED_OUT="1", FAKE_TS_JSON=self.TS_ON)
-        self.assertIn("ASK UP FRONT: sudo to run `tailscale up`, which prints a sign-in link the person must open",
-                      self.asks(out), out)
+        self.assertTrue([a for a in self.asks(out) if "sudo to run `tailscale up`, which prints a sign-in link the person must open" in a],
+                        out)
         signed_in = self.step0(FAKE_TS_JSON=self.TS_ON)
         self.assertFalse([a for a in self.asks(signed_in) if "tailscale up" in a],
                          f"a signed-in Tailscale was asked about:\n{signed_in}")
 
     def test_step0_asks_up_front_to_install_a_missing_tailscale(self) -> None:
         out = self.step0(PATH=self.without("tailscale"))
-        self.assertIn("ASK UP FRONT: sudo to install Tailscale (https://tailscale.com/download), then to run "
-                      "`tailscale up`, which prints a sign-in link the person must open", self.asks(out), out)
+        self.assertTrue([a for a in self.asks(out) if "sudo to install Tailscale (https://tailscale.com/download)" in a], out)
 
     def test_step0_asks_for_magicdns_and_https_until_both_are_on(self) -> None:
-        want = ("ASK UP FRONT (hub only): the person turns on MagicDNS and HTTPS Certificates in the Tailscale "
-                "admin console (https://login.tailscale.com/admin/dns) before you start")
-        self.assertIn(want, self.asks(self.step0()))
+        def wanted(out: str) -> bool:
+            return bool([a for a in self.asks(out) if "turns on MagicDNS and HTTPS Certificates" in a
+                         and "https://login.tailscale.com/admin/dns" in a])
+        self.assertTrue(wanted(self.step0()))
         only_dns = '{"CertDomains": null, "CurrentTailnet": {"MagicDNSEnabled": true}}'
-        self.assertIn(want, self.asks(self.step0(FAKE_TS_JSON=only_dns)), "HTTPS Certificates off was not asked for")
+        self.assertTrue(wanted(self.step0(FAKE_TS_JSON=only_dns)), "HTTPS Certificates off was not asked for")
         only_certs = '{"CertDomains": ["hub.example-tailnet.ts.net"], "CurrentTailnet": {"MagicDNSEnabled": false}}'
-        self.assertIn(want, self.asks(self.step0(FAKE_TS_JSON=only_certs)), "MagicDNS off was not asked for")
-        self.assertNotIn(want, self.asks(self.step0(FAKE_TS_JSON=self.TS_ON)), "asked although both are on")
+        self.assertTrue(wanted(self.step0(FAKE_TS_JSON=only_certs)), "MagicDNS off was not asked for")
+        self.assertFalse(wanted(self.step0(FAKE_TS_JSON=self.TS_ON)), "asked although both are on")
 
     def test_step0_asks_for_qrencode_and_linger_in_the_same_batch(self) -> None:
-        qr = "ASK UP FRONT (optional): sudo to install qrencode, so `muster doctor` can draw the phone's QR code"
-        linger = ('ASK UP FRONT (Linux): sudo to run `loginctl enable-linger "$USER"`, so muster-mirror keeps '
-                  "running after the person logs out (Step 7)")
+        def has(out: str, s: str) -> bool:
+            return bool([a for a in self.asks(out) if s in a])
         out = self.step0(PATH=self.without("qrencode"), FAKE_LINGER="no", FAKE_TS_JSON=self.TS_ON)
-        self.assertIn(qr, self.asks(out), out)
+        self.assertTrue(has(out, "sudo to install qrencode"), out)
         if os.uname().sysname == "Linux":
-            self.assertIn(linger, self.asks(out), out)
+            self.assertTrue(has(out, 'loginctl enable-linger "$USER"'), out)
         done = self.step0(FAKE_LINGER="yes", FAKE_TS_JSON=self.TS_ON)
-        self.assertNotIn(qr, self.asks(done))
-        self.assertNotIn(linger, self.asks(done))
+        self.assertFalse(has(done, "qrencode"))
+        self.assertFalse(has(done, "enable-linger"))
+
+    @unittest.skipUnless(os.uname().sysname == "Linux", "the docker group is Linux")
+    def test_step0_asks_for_the_docker_group_and_says_a_new_login_is_needed(self) -> None:
+        # The finding: no Linux install lines for Docker and Compose v2, and no
+        # docker-group step; a blind run added the group and then could not
+        # use Docker in the same shell.
+        out = self.step0(FAKE_DOCKER_INFO_FAIL="1", FAKE_TS_JSON=self.TS_ON)
+        group = [a for a in self.asks(out) if "usermod -aG docker" in a]
+        self.assertTrue(group, out)
+        self.assertIn("NEW login", group[0])
+        self.assertFalse([a for a in self.asks(self.step0(FAKE_TS_JSON=self.TS_ON)) if "docker group" in a],
+                         "control: a usable Docker was asked about")
+        compose = self.step0(FAKE_NO_COMPOSE="1", FAKE_TS_JSON=self.TS_ON)
+        self.assertTrue([a for a in self.asks(compose) if "Compose v2" in a], compose)
+        text = self.section("## Step 0:")
+        for want in ("get.docker.com", "docker-compose-v2", "docker-compose-plugin", 'usermod -aG docker "$USER"',
+                     "applies only to a new login"):
+            self.assertIn(want, text, f"Step 0 has no {want!r}")
 
     def section(self, heading: str) -> str:
         text = GUIDE.read_text()
@@ -657,163 +826,6 @@ class Guide(unittest.TestCase):
                      "ask for `sudo` for all of them at once"):
             self.assertIn(want, s1, f"Step 1 does not ask about {want!r}")
 
-    # --- fresh-run friction: Step 4 shows why the push keys failed -----------
-
-    def test_failed_key_generation_prints_dockers_error(self) -> None:
-        self.hub()
-        out = self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"), FAKE_VAPID="fail")
-        self.assertIn("PUSH KEYS NOT GENERATED", out)
-        self.assertIn("  pull denied", out, f"docker's own error was hidden\n{out}")
-        self.assertEqual((self.homedir / ".config/muster-install/vapid.err").read_text(), "pull denied\n")
-        env = self.dotenv()
-        for k in ("MUSTER_VAPID_PUBLIC_KEY", "MUSTER_VAPID_PRIVATE_KEY", "MUSTER_VAPID_SUBJECT"):
-            self.assertEqual(env.get(k, ""), "", f"{k} written although generation failed")
-        # A later success clears the stale error.
-        self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"))
-        self.assertFalse((self.homedir / ".config/muster-install/vapid.err").exists())
-        fix = " ".join(self.section("## Step 4:").split("**If this fails:**")[1].split())
-        self.assertNotIn("docker pull", fix, "the fix still sends the agent to `docker pull`")
-        self.assertIn("Read the error printed under it", fix)
-
-    # --- fresh-run friction: Step 7 turns linger on with sudo -----------------
-
-    def mirror_service(self, **env: str) -> str:
-        self.sh(f"mi_save OS linux\nmi_save MUSTER_URL '{URL}'\nmi_save MIRROR_HOST laptop\nmi_save INTERACTIVE 1")
-        cfg = self.homedir / ".config/muster-mirror"
-        cfg.mkdir(parents=True, exist_ok=True)
-        (cfg / "token").write_text("mmt_fixture\n")
-        return self.run_block(self.lib + block("MUSTER_MIRROR_WRITE_HOOK_CONFIG=1"), USER="tester", **env)
-
-    def test_step7_enables_linger_with_sudo(self) -> None:
-        out = self.mirror_service(FAKE_LINGER="no")
-        self.assertIn("sudo -n loginctl enable-linger tester", self.calls(), out)
-        self.assertIn("linger: on", out)
-
-    def test_step7_leaves_linger_alone_when_on(self) -> None:
-        out = self.mirror_service(FAKE_LINGER="yes")
-        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the Linux branch ran")
-        self.assertNotIn("enable-linger", self.calls(), out)
-        self.assertIn("linger: already on", out)
-
-    def test_step7_hands_linger_to_the_person_when_sudo_fails(self) -> None:
-        out = self.mirror_service(FAKE_LINGER="no", FAKE_SUDO="fail")
-        self.assertIn("LINGER NOT ON: ask the person to run, in their own terminal: sudo loginctl enable-linger tester", out)
-
-    # --- what the one-prompt install sets up: mirrored sessions only --------
-
-    def test_the_install_sets_up_mirrored_sessions_only(self) -> None:
-        # The README, onboarding.md and Step 8 tell the person this guide
-        # starts no session of its own. That is a claim about what it WRITES:
-        # the host's service settings are exactly these keys (no
-        # MUSTER_MIRROR_RESUME_SPAWN, the one way a host starts a Claude Code
-        # process), and the hub's compose file and env template name no
-        # provisioner (so dispatch stays UNWIRED: docs/provisioner.md) and no
-        # mail resume. An INVARIANT guard: it holds at origin/main too; it
-        # fails the day either side starts sessions without the docs moving.
-        self.mirror_service(FAKE_LINGER="yes")
-        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the block ran")
-        written = (self.homedir / ".config/muster-mirror/env").read_text().splitlines()
-        self.assertEqual(sorted(l.split("=", 1)[0] for l in written if l.strip()),
-                         ["MUSTER_MIRROR_HOST", "MUSTER_MIRROR_INTERACTIVE", "MUSTER_MIRROR_TOKEN_FILE",
-                          "MUSTER_MIRROR_URL", "MUSTER_MIRROR_WRITE_HOOK_CONFIG", "PATH"])
-        # Since the compose file forwards every optional setting from .env
-        # (docs/features.md), the claim is about VALUES, not spellings: the
-        # provisioner and the gateway are not forwarded at all (dispatch needs
-        # Kubernetes), mail resume is forwarded EMPTY, and no uncommented line
-        # of the env template sets any of them.
-        compose = (ROOT / "deploy/docker-compose.yml").read_text()
-        example = (ROOT / "deploy/.env.example").read_text()
-        self.assertRegex(compose, r"(?m)^      MUSTER_HOOK_TOKEN: ", "positive control: the env block is where this looks")
-        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY"):
-            self.assertNotRegex(compose, rf"(?m)^\s+{key}:", f"the compose file forwards {key}: dispatch could be turned on")
-        self.assertRegex(compose, r"(?m)^      MUSTER_MAIL_RESUME_ALLOW: \$\{MUSTER_MAIL_RESUME_ALLOW:-\}$",
-                         "MUSTER_MAIL_RESUME_ALLOW must be forwarded with an EMPTY default")
-        for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_MAIL_RESUME_ALLOW"):
-            self.assertNotRegex(example, rf"(?m)^{key}=", f".env.example sets {key}: the install would no longer be mirrored-only")
-        for text in (compose, example):
-            self.assertNotIn("RESUME_SPAWN", text)
-
-    def test_step7_adds_the_mcp_endpoint_only_when_asked(self) -> None:
-        # Step 11's agent ask tool: the saved answer adds exactly one setting,
-        # and a re-run of Step 7 (as an update does) keeps it.
-        self.mirror_service(FAKE_LINGER="yes", ASK_TOOLS="")
-        env_file = self.homedir / ".config/muster-mirror/env"
-        self.assertNotIn("MUSTER_MIRROR_MCP_LISTEN", env_file.read_text(), "the endpoint was turned on unasked")
-        self.sh("mi_save ASK_TOOLS yes")
-        self.mirror_service(FAKE_LINGER="yes")
-        self.mirror_service(FAKE_LINGER="yes")
-        lines = env_file.read_text().splitlines()
-        self.assertIn("MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823", lines)
-        self.assertEqual(sum(l.startswith("MUSTER_MIRROR_MCP_LISTEN=") for l in lines), 1)
-        self.assertTrue(lines[-1].startswith("PATH="), "PATH must stay the last line written")
-
-    def test_step7_names_the_opencode_line_muster_mirror_logs(self) -> None:
-        # The seam: the guide quotes the daemon's start-up line as expected, so
-        # the line it quotes must be the one the code logs.
-        src = (ROOT / "cmd/muster-mirror/opencode.go").read_text()
-        m = re.search(r'openCodeNotPairedWhy = "([^"]*)"', src)
-        self.assertIsNotNone(m, "cmd/muster-mirror/opencode.go no longer has openCodeNotPairedWhy")
-        quoted = re.search(r"`opencode: ([^`…]*) …`", self.section("## Step 7:"))
-        self.assertIsNotNone(quoted, "Step 7 does not quote the opencode line")
-        self.assertTrue(m.group(1).startswith(quoted.group(1)),
-                        f"Step 7 quotes {quoted.group(1)!r}; muster-mirror logs {m.group(1)!r}")
-
-    # --- fresh-run friction: Step 6's PATH note only when it is needed --------
-
-    def install_binaries(self, profile_dir: str = "", **env: str) -> str:
-        self.sh("mi_save OS linux\nmi_save ARCH amd64\nmi_set_version 1.0.0")
-        bindir = self.homedir / ".local/bin"
-        bindir.mkdir(parents=True)
-        muster = bindir / "muster"
-        muster.write_text("#!/bin/sh\necho muster 1.0.0\n")
-        muster.chmod(0o755)
-        if profile_dir:
-            (self.homedir / ".profile-path").write_text(profile_dir + "\n")
-        return self.run_block(self.lib + block('mi_verify "$asset"'), SHELL=str(self.bin / "login-shell"), **env)
-
-    def test_step6_no_path_note_when_a_login_shell_finds_muster(self) -> None:
-        out = self.install_binaries(f"{self.homedir}/.local/bin")
-        self.assertNotIn("NOTE:", out, "a PATH note although a new login shell finds muster")
-
-    def test_step6_path_note_when_a_login_shell_does_not(self) -> None:
-        out = self.install_binaries()
-        self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out)
-
-    def test_step6_path_check_ignores_this_shells_path(self) -> None:
-        # The agent's own PATH has the directory; a new login (no profile line)
-        # would not. Only `env -i` keeps the check from inheriting it.
-        out = self.install_binaries(PATH=f"{self.homedir}/.local/bin:{self.env['PATH']}")
-        self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out,
-                      "the login shell inherited this shell's PATH")
-
-    # --- fresh-run friction: the state file is private ------------------------
-
-    def test_mi_save_writes_the_state_file_mode_600(self) -> None:
-        state = self.homedir / ".config/muster-install/state"
-        state.unlink()
-        self.sh("umask 022\nmi_save SOME_KEY value")
-        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
-        state.chmod(0o644)  # one written before this fix
-        self.sh("umask 022\nmi_save SOME_KEY other")
-        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
-        self.assertIn("SOME_KEY='other'", self.state())
-
-    # --- final pass: D1, D2, Y2, G4 -------------------------------------------
-
-    def test_step10_shows_only_doctors_report(self) -> None:
-        # D1: the CLI keeps stdout one JSON document; the guide drops it.
-        self.hub()
-        bindir = self.homedir / ".local/bin"
-        bindir.mkdir(parents=True)
-        fake = bindir / "muster"
-        fake.write_text('#!/bin/sh\necho "PASS  server" >&2\necho "1 passed, 0 failed" >&2\n'
-                        'echo \'{"ok": true, "checks": []}\'\n')
-        fake.chmod(0o755)
-        for b in (block('doctor --deploy-env "$MUSTER_DIR/.env"'), block('doctor --api-url "$MUSTER_URL"')):
-            out = self.run_block(self.lib + b)
-            self.assertIn("PASS  server", out, "positive control: the doctor ran")
-            self.assertNotIn('"checks"', out, f"the JSON copy reached the agent:\n{out}")
-
     def operator(self, prefs: str = "") -> list[str]:
         out = self.step0(USER="tester", FAKE_TS_JSON=self.TS_ON, **({"FAKE_TS_PREFS": prefs} if prefs else {}))
         return [a for a in self.asks(out) if "--operator" in a]
@@ -827,18 +839,6 @@ class Guide(unittest.TestCase):
         self.assertEqual(len(self.operator(other)), 1, "another user's operator was not asked for")
         self.assertEqual(self.operator(mine), [], "asked although the operator is this user")
         self.assertEqual(self.operator(), [], "asked although the prefs could not be read")
-
-    def test_step7_skips_linger_the_person_declined(self) -> None:
-        self.sh("mi_save LINGER no")
-        out = self.mirror_service(FAKE_LINGER="no")
-        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the Linux branch ran")
-        self.assertNotIn("enable-linger", self.calls(), out)
-        self.assertIn("linger: skipped (declined in Step 1)", out)
-
-    def test_step7_without_loginctl_asks_for_no_sudo(self) -> None:
-        out = self.mirror_service(PATH=self.without("loginctl"))
-        self.assertNotIn("sudo", self.calls(), out)
-        self.assertIn("linger: no loginctl here", out)
 
     def test_step0_without_loginctl_has_no_linger_ask(self) -> None:
         if os.uname().sysname != "Linux":
@@ -864,9 +864,144 @@ class Guide(unittest.TestCase):
         self.assertNotRegex(out, r"(?m)^tailscale +MISSING$")
         self.assertIn("tailscale: logged in", out)
         # and every later block reaches it through lib.sh
-        self.run_block(self.lib + block("mi_save MUSTER_URL"), PATH=path, MI_TS_APP=app)
+        self.hub()
+        self.run_block(self.lib + block("tailscale serve --bg"), PATH=f"{path}", MI_TS_APP=app)
         self.assertIn("tailscale serve --bg --https=443 8105", self.calls())
         self.assertIn(f"MUSTER_URL='{URL}'", self.state())
+
+    def test_mi_save_writes_the_state_file_mode_600(self) -> None:
+        state = self.homedir / ".config/muster-install/state"
+        state.unlink()
+        self.sh("umask 022\nmi_save SOME_KEY value")
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
+        state.chmod(0o644)  # one written before this fix
+        self.sh("umask 022\nmi_save SOME_KEY other")
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
+        self.assertIn("SOME_KEY='other'", self.state())
+
+    # --- Step 5: the doctor's report, once ------------------------------------
+
+    def test_step5_shows_only_doctors_report_and_never_puts_a_secret_on_argv(self) -> None:
+        self.hub(MUSTER_URL=URL)
+        bindir = self.homedir / ".local/bin"
+        bindir.mkdir(parents=True)
+        fake = bindir / "muster"
+        fake.write_text('#!/bin/sh\necho "muster $*" >> "$FAKE_LOG"\n'
+                        'echo "PASS  server" >&2\necho "1 passed, 0 failed" >&2\n'
+                        'echo \'{"ok": true, "checks": []}\'\n')
+        fake.chmod(0o755)
+        hub_block = block("show-secret hook-token", "doctor --deploy-env")
+        other = [b for b in blocks() if 'doctor --api-url "$MUSTER_URL"' in b and "show-secret" not in b]
+        self.assertTrue(other, "Step 5 has no block for the other machines")
+        for b in (hub_block, other[0]):
+            out = self.run_block(self.lib + b)
+            self.assertIn("PASS  server", out, "positive control: the doctor ran")
+            self.assertNotIn('"checks"', out, f"the JSON copy reached the agent:\n{out}")
+        muster_calls = [l for l in self.calls().splitlines() if l.startswith("muster ")]
+        self.assertTrue(any("--deploy-env" in l for l in muster_calls), "positive control: the hub's doctor ran")
+        self.assertTrue(any(f"--api-url {URL}" in l for l in muster_calls), "the HTTPS address was not checked")
+        for l in self.calls().splitlines():
+            self.assertNotIn("pw-fixture-0123456789", l, "the password reached a command line")
+        self.assertFalse((self.homedir / ".config/muster-install/doctor.env").exists(), "the deploy file was left behind")
+
+
+class Prose(unittest.TestCase):
+    """What the guide must NOT hold, and where its references must land."""
+
+    def test_no_fact_tables_the_code_owns(self) -> None:
+        # The doctor's check list is docs/cli.md's (pinned to doctor.go); the
+        # guide had its own copy, 10 checks against the code's 14.
+        text = GUIDE.read_text()
+        self.assertNotRegex(text, r"(?m)^\| check \| what it proves \|", "INSTALL.md has its own doctor table again")
+        self.assertIn("docs/cli.md#muster-doctor", text, "INSTALL.md does not point at the doctor's table")
+        # Model ids and image versions belong to docs/features.md and the code.
+        for fact in ("cohere-transcribe-03-2026", "faster-whisper-small", "whisper-1", "47823", "127.0.0.1:8105"):
+            self.assertNotIn(fact, text, f"INSTALL.md spells {fact!r}, a fact the code owns")
+
+    def test_the_release_publishes_the_guide(self) -> None:
+        # The prompt downloads .../releases/latest/download/INSTALL.md, so a
+        # release must attach it. scripts/release-build.sh's own self-check
+        # makes dist/ EXACTLY its literal `expected` list (CI's
+        # release-dry-run runs it on every pull request); this pins that the
+        # list holds INSTALL.md, and that the script stamps it.
+        src = (ROOT / "scripts/release-build.sh").read_text()
+        m = re.search(r"(?ms)^expected=\((.*?)^\)", src)
+        self.assertIsNotNone(m, "scripts/release-build.sh has no expected=( … ) asset list")
+        assets = m.group(1).split()
+        self.assertIn("install.sh", assets, "positive control: the list was parsed")
+        self.assertIn("INSTALL.md", assets, "the release does not publish INSTALL.md")
+        self.assertRegex(src, r'MI_GUIDE_RELEASE=.*"\$ROOT/INSTALL\.md" > "\$DIST/INSTALL\.md"',
+                         "release-build.sh does not stamp the guide it publishes")
+        self.assertRegex(src, r'grep -qx "MI_GUIDE_RELEASE=\\"\$VERSION\\"" "\$DIST/INSTALL\.md"',
+                         "release-build.sh does not check the published guide pins its release")
+
+    def test_the_second_server_section_moved_out(self) -> None:
+        self.assertNotIn("## A second muster server", GUIDE.read_text().replace("### A second", "## A second"))
+        self.assertIn("docs/multi-tenant-hosts.md", GUIDE.read_text())
+
+    def test_every_install_section_the_code_names_exists(self) -> None:
+        # Fix lines and comments name a guide section by its TITLE
+        # (INSTALL.md, "Another machine"), never a step number that a
+        # restructure silently re-points.
+        titles = set(headings(GUIDE.read_text()))
+        named, numbered = [], []
+        for p in [*ROOT.glob("cmd/**/*.go"), *ROOT.glob("internal/**/*.go"), ROOT / "deploy/install.sh",
+                  *ROOT.glob("docs/*.md")]:
+            src = p.read_text()
+            named += [(p.name, " ".join(t.split())) for t in re.findall(r'INSTALL\.md(?:\'s)?,?\s\\?"([^"\\]+)\\?"', src)]
+            numbered += [(p.name, m) for m in re.findall(r"INSTALL\.md(?:'s)?,? [Ss]tep \d+", src)]
+        self.assertGreater(len(named), 5, "positive control: the pattern found almost no section names")
+        self.assertEqual(numbered, [], "code or docs name an INSTALL.md step by number")
+        for f, t in named:
+            self.assertIn(t, titles, f"{f} names INSTALL.md section {t!r}, which is not a heading")
+        self.assertNotIn("No such section", titles, "control")
+
+
+class MultiTenantPage(unittest.TestCase):
+    """docs/multi-tenant-hosts.md: every block loads INSTALL.md's helpers.
+
+    The finding: in INSTALL.md those blocks did not, so `$OS` was empty and a
+    Linux machine took the `else` branch, `launchctl`. Each block must load
+    the helpers, and the restart block, run on a Linux machine whose helpers
+    say so, must call systemctl and never launchctl."""
+
+    def setUp(self) -> None:
+        self.g = Guide("test_mi_save_writes_the_state_file_mode_600")
+        self.g.setUp()
+
+    def tearDown(self) -> None:
+        self.g.tearDown()
+
+    def doc_blocks(self) -> list[str]:
+        self.assertTrue(MT_DOC.exists(), f"{MT_DOC} is missing")
+        return sh_blocks(MT_DOC)
+
+    def test_every_block_loads_the_helpers(self) -> None:
+        bs = self.doc_blocks()
+        self.assertGreaterEqual(len(bs), 4, "positive control: the page's blocks were found")
+        for b in bs:
+            first = next(l for l in b.splitlines() if l.strip() and not l.lstrip().startswith("#"))
+            self.assertTrue(first.startswith('. "$HOME/.config/muster-install/lib.sh"'),
+                            f"a block does not start by loading the helpers:\n{b[:200]}")
+
+    def test_the_restart_block_takes_the_linux_branch_on_linux(self) -> None:
+        restart = [b for b in self.doc_blocks() if "restart muster-mirror.service" in b]
+        self.assertTrue(restart, "the page has no restart block")
+        self.g.sh("mi_save OS linux")
+        self.g.run_block(restart[0])
+        calls = self.g.calls()
+        self.assertIn("systemctl --user restart muster-mirror.service", calls, calls)
+        self.assertNotIn("launchctl", calls, "a Linux machine took the macOS branch")
+
+    def test_the_tenant_name_reaches_the_later_blocks(self) -> None:
+        bs = self.doc_blocks()
+        name = [b for b in bs if "mi_save TENANT" in b]
+        self.assertTrue(name, "the naming block does not save the tenant for the later blocks")
+        self.g.run_block(name[0])
+        later = [b for b in bs if "MUSTER_MIRROR_TMUX_SOCKET=$TENANT" in b][0]
+        out = self.g.run_block(later.replace("CHOOSE-A-FREE-PORT", "47999"))
+        env = (self.g.homedir / ".config/muster-mirror/work/env").read_text()
+        self.assertIn("MUSTER_MIRROR_TMUX_SOCKET=work", env, out)
 
 
 if __name__ == "__main__":

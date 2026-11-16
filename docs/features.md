@@ -7,9 +7,10 @@ it, and each one names exactly what it needs.
 
 **Turning a feature on** is the same every time, on the server (the hub):
 
-1. add the lines its section gives to `~/muster/.env` (the file
-   [INSTALL.md](../INSTALL.md) made from `deploy/.env.example`, which already
-   holds every optional line, commented out, grouped as below);
+1. add the lines its section gives to `~/muster/.env`, beside
+   `docker-compose.yml` (create it if it is not there: a stack that generated
+   its secrets needs none; `deploy/.env.example` holds every optional line,
+   commented out, grouped as below);
 2. if the section names a **profile**, add it to `COMPOSE_PROFILES` in the same
    file (`COMPOSE_PROFILES=stt,s3` for two), or pass `--profile <name>`;
 3. run `docker compose up -d --wait` in `~/muster`.
@@ -104,7 +105,7 @@ muster refuses to start without `DATABASE_URL`, which the compose file sets.
 
 Mirrored sessions: every tmux window on every machine whose `muster-mirror`
 holds a mirror token ([mirroring.md](mirroring.md)). The compose file sets
-`MUSTER_MIRROR=1`; each machine is connected in INSTALL.md Step 7.
+`MUSTER_MIRROR=1`; each machine is connected by INSTALL.md's "Install muster on this machine".
 **Check:** `mirrored sessions: ENABLED (…)`, and `muster doctor`'s
 `mirror-hosts` and `this-host`.
 
@@ -277,7 +278,7 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
 - **Needs, on each machine:** `muster-mirror` serving its local MCP endpoint,
   and Claude Code configured to use it. Nothing on the server.
-- **Steps, on each machine** (INSTALL.md Step 11 does these when you ask for it):
+- **Steps, on each machine** (INSTALL.md's "Optional features" points here when you ask for it):
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
      `~/.config/muster-mirror/env` (INSTALL.md: `mi_save ASK_TOOLS yes`, then
      re-run Step 7's last block) and restart `muster-mirror`. On its first start

@@ -2092,7 +2092,7 @@ const fallbackVAPIDSubject = "mailto:muster@localhost"
 // 🔴 NEVER AN http:// URL. A push service refuses a subject that is not
 // mailto: or https (push.validSubject refuses it at boot), and copying an
 // http MUSTER_PUBLIC_URL into the subject is exactly how a local install
-// restart-looped (INSTALL.md Step 4 did it). The subject is only a contact
+// restart-looped (an earlier INSTALL.md did it). The subject is only a contact
 // for the push service's operator; a mailto: with no real mailbox behind it
 // sends push the same.
 func defaultVAPIDSubject(publicURL string) string {

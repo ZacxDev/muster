@@ -20,6 +20,12 @@
 #      survives logout and reboot, and says plainly when it could not;
 #   5. runs `muster doctor`, and exits with its verdict.
 #
+# JOINING ANOTHER MACHINE'S muster (MUSTER_JOIN_URL=https://<hub>): steps 2's
+# stack checks and 3 are skipped (no Docker needed); step 4 installs the
+# binaries of the release the hub runs, uses the mirror token already in
+# ~/.config/muster-mirror/token (minted on the hub: INSTALL.md), and points
+# muster-mirror at the hub; step 5's doctor checks the hub from here.
+#
 # The mirror token never goes on a command line (other users can read argv in
 # `ps`): curl reads its Authorization header from a 0600 file (`-H @file`).
 #
@@ -30,8 +36,14 @@
 # Settings (environment): MUSTER_DIR (default ~/muster), MUSTER_PROJECT
 # (compose project, default muster), MUSTER_BIN (default ~/.local/bin),
 # MUSTER_MIRROR_HOST (default this machine's short hostname), MUSTER_LINGER
-# (yes/no: answer the linger question without asking). For testing only:
-# MUSTER_RELEASE_BASE (where the assets are), MUSTER_IMAGE (a local image).
+# (yes/no: answer the linger question without asking), MUSTER_JOIN_URL (join
+# that hub instead of starting a server here), MUSTER_MIRROR_INTERACTIVE (0/1:
+# write it into muster-mirror's settings; unset keeps what is there),
+# MUSTER_MIRROR_ADOPT=1 (take over muster-mirror settings this script did not
+# write, keeping every line it does not own), MUSTER_PRINT_PASSWORD=no (print
+# the command that shows the sign-in password, not the password: for an agent,
+# whose output is read by its provider). For testing only: MUSTER_RELEASE_BASE
+# (where the assets are), MUSTER_IMAGE (a local image).
 set -eu
 
 # 🔴 EVERYTHING IS IN main(), CALLED ON THE LAST LINE. Under `curl … | sh` the
@@ -47,17 +59,32 @@ BIN="${MUSTER_BIN:-$HOME/.local/bin}"
 CFG="$HOME/.config/muster-mirror"
 MARK="# written by muster's install.sh; edit freely, lines it does not own are kept"
 PHONE_DOC="$REPO/blob/main/docs/quickstart-local.md#add-your-phone"
+JOIN="${MUSTER_JOIN_URL:-}"; JOIN="${JOIN%/}"
+case "${MUSTER_MIRROR_INTERACTIVE:-}" in ""|0|1) ;; *) die "MUSTER_MIRROR_INTERACTIVE must be 0 or 1" ;; esac
 
 # --- 1. preflight -------------------------------------------------------------
 for t in curl tar uname sed grep; do have "$t" || die "this needs $t; install it and run again"; done
+if [ -n "$JOIN" ]; then
+  case "$JOIN" in
+    https://*|http://localhost:*|http://127.0.0.1:*|http://\[::1\]:*) ;;
+    *) die "MUSTER_JOIN_URL must be the hub's https:// address (muster-mirror sends its token over https only)" ;;
+  esac
+else
 have docker || die "Docker is not installed. Install Docker Engine (Linux) or Docker Desktop (macOS): https://docs.docker.com/engine/install/"
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is missing (\`docker compose version\` failed): install the docker-compose-plugin package"
 docker info >/dev/null 2>&1 || die "Docker is installed but this user cannot use it. Start Docker, or on Linux add yourself to the docker group (sudo usermod -aG docker \"\$USER\", then log in again)"
+fi
 if have sha256sum; then sha() { sha256sum "$@"; }; elif have shasum; then sha() { shasum -a 256 "$@"; }; else die "this needs sha256sum or shasum"; fi
 case "$(uname -s)" in Linux) OS=linux ;; Darwin) OS=darwin ;; *) die "unsupported OS $(uname -s): Linux and macOS only" ;; esac
 case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) die "unsupported CPU $(uname -m)" ;; esac
 have tmux || say "note: tmux is not installed; muster shows tmux windows, so install it to see your sessions"
 
+if [ -n "$JOIN" ]; then
+  # The hub's own release, so this machine's muster-mirror matches its server.
+  v=$(curl -fsS -m 10 "$JOIN/health" 2>/dev/null | sed -n 's/.*"version": *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p')
+  [ -n "$v" ] || die "$JOIN/health did not answer with muster's version: is this machine on the tailnet (\`tailscale status\`), and is the address right?"
+  RELEASE="$v"
+fi
 case "$RELEASE" in
   @*) # Not a release's copy: the newest release (GitHub's redirect).
     RELEASE=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$REPO/releases/latest" | sed -n 's#.*/tag/v\([0-9][0-9.]*\)$#\1#p')
@@ -69,13 +96,15 @@ BASE="${MUSTER_RELEASE_BASE:-$REPO/releases/download/v$RELEASE}"
 dc() { docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null; }
 
 # --- 2. refuse a muster this script did not make ------------------------------
+if [ -z "$JOIN" ]; then
 if [ -e "$DIR/docker-compose.yml" ] && [ ! -e "$DIR/.muster-install" ]; then
-  die "$DIR already holds a muster this script did not install (INSTALL.md's, or your own). Nothing was changed. Update it the way it was installed, or install beside it: MUSTER_DIR=<dir> MUSTER_PROJECT=<name>"
+  die "$DIR already holds a muster this script did not install (an earlier INSTALL.md's, or your own). Nothing was changed. Update it the way it was installed, or install beside it: MUSTER_DIR=<dir> MUSTER_PROJECT=<name>"
 fi
 others=$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | grep -vx "$DIR" || true)
 [ -z "$others" ] || die "a compose project named $PROJECT already runs from $(echo "$others" | head -n 1), not $DIR. Nothing was changed. Pick another name: MUSTER_PROJECT=<name>"
-if [ -e "$CFG/env" ] && ! grep -qxF "$MARK" "$CFG/env"; then
-  die "this machine's muster-mirror is already set up ($CFG/env, not written by this script: INSTALL.md's, or your own). Nothing was changed."
+fi
+if [ -e "$CFG/env" ] && ! grep -qxF "$MARK" "$CFG/env" && [ "${MUSTER_MIRROR_ADOPT:-}" != 1 ]; then
+  die "this machine's muster-mirror is already set up ($CFG/env, not written by this script: an earlier INSTALL.md's, or your own). Nothing was changed. To keep its extra lines and let this script manage the rest, run again with MUSTER_MIRROR_ADOPT=1."
 fi
 
 # --- 3. the stack -----------------------------------------------------------------
@@ -84,6 +113,9 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 fetch() { curl -fsSL -o "$tmp/$1" "$BASE/$1" || die "could not download $BASE/$1"; }
 verify() { (cd "$tmp" && grep "  $1\$" checksums.txt | sha -c - >/dev/null 2>&1) || die "$1 does not match the release's checksums.txt; nothing was installed"; }
 fetch checksums.txt
+if [ -n "$JOIN" ]; then
+  URL="$JOIN"
+else
 fetch docker-compose.yml; verify docker-compose.yml
 port=$(docker compose -f "$tmp/docker-compose.yml" -p "$PROJECT" config 2>/dev/null | sed -n 's/^ *published: "\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' | head -n 1)
 [ -n "$port" ] || die "the release's docker-compose.yml publishes no port"
@@ -101,6 +133,7 @@ if ! dc up -d --wait --wait-timeout 300; then
   die "the stack did not come up; the reason is in the lines above (\`docker compose -f $DIR/docker-compose.yml logs muster-init muster\`)"
 fi
 curl -fsS -m 5 -o /dev/null "$URL/readyz" || die "muster is up but $URL/readyz does not answer"
+fi
 
 # --- 4. this machine: muster-mirror and the CLI -----------------------------------
 mkdir -p "$BIN"
@@ -121,8 +154,12 @@ authfile() { (umask 077; printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "
 # A kept token must still be live (a `down -v` starts a new database).
 [ -s "$tok" ] && authfile
 if [ -s "$tok" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' -H @"$auth" "$URL/mirror/host")" = 401 ]; then
+  [ -z "$JOIN" ] || die "$URL refused this machine's mirror token ($tok): mint a new one on the hub for host $host (INSTALL.md), write it there, and run this again"
   say "this machine's mirror token is not known to this server any more; minting a new one"
   rm -f "$tok"
+fi
+if [ ! -s "$tok" ] && [ -n "$JOIN" ]; then
+  die "no mirror token in $tok. On the hub, mint one for this machine: docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create $host; write it to $tok (mode 600) and run this again"
 fi
 if [ ! -s "$tok" ]; then
   (umask 077; dc exec -T muster /muster-server mirror token create "$host" > "$tok.tmp") && [ -s "$tok.tmp" ] && mv "$tok.tmp" "$tok" ||
@@ -132,15 +169,19 @@ fi
 chmod 600 "$tok"
 authfile
 # The settings: the lines this script owns are rewritten, every other line kept.
-owned='^(MUSTER_MIRROR_URL|MUSTER_MIRROR_TOKEN_FILE|MUSTER_MIRROR_HOST|MUSTER_MIRROR_WRITE_HOOK_CONFIG|PATH)='
+# MUSTER_MIRROR_INTERACTIVE is owned only when it is given; unset, the line
+# already there (or its absence: read-only) is kept.
+owned='MUSTER_MIRROR_URL|MUSTER_MIRROR_TOKEN_FILE|MUSTER_MIRROR_HOST|MUSTER_MIRROR_WRITE_HOOK_CONFIG|PATH'
+[ -z "${MUSTER_MIRROR_INTERACTIVE:-}" ] || owned="$owned|MUSTER_MIRROR_INTERACTIVE"
 tmux_dir=$(dirname "$(command -v tmux 2>/dev/null || echo /usr/bin/tmux)")
 {
   echo "$MARK"
-  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "$owned" || true
+  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^($owned)=" || true
   echo "MUSTER_MIRROR_URL=$URL"
   echo "MUSTER_MIRROR_TOKEN_FILE=$tok"
   echo "MUSTER_MIRROR_HOST=$host"
   echo "MUSTER_MIRROR_WRITE_HOOK_CONFIG=1"
+  [ -z "${MUSTER_MIRROR_INTERACTIVE:-}" ] || echo "MUSTER_MIRROR_INTERACTIVE=$MUSTER_MIRROR_INTERACTIVE"
   echo "PATH=$tmux_dir:$BIN:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
 } > "$tmp/mirror-env"
 (umask 077; cp "$tmp/mirror-env" "$CFG/env")
@@ -165,6 +206,7 @@ UNIT
   systemctl --user daemon-reload
   systemctl --user enable muster-mirror.service >/dev/null 2>&1
   systemctl --user restart muster-mirror.service
+  restarts0=$(systemctl --user show muster-mirror.service -p NRestarts --value 2>/dev/null || echo 0)
   service=systemd
   linger
 elif [ "$OS" = darwin ]; then
@@ -192,16 +234,38 @@ else
   say "run it yourself, e.g. in tmux: set -a; . $CFG/env; set +a; $BIN/muster-mirror"
 fi
 
-# Wait for this machine to connect before the doctor looks.
+# Wait for this machine to connect before the doctor looks. A muster-mirror
+# that exits at once (a bad setting, a refused URL) is restarted every few
+# seconds and reads `activating`, never `failed`: say so, with ITS reason line,
+# instead of waiting the whole 30s.
 if [ "$service" != none ]; then
   i=0
   until curl -fsS -H @"$auth" "$URL/mirror/host" 2>/dev/null | grep -q '"online": *true'; do
+    if crashloop; then
+      say "muster-mirror is not running: it exits as it starts and is restarted (it shows as \`activating\`). Its reason:"
+      say "    $(mirror_reason)"
+      break
+    fi
     i=$((i + 1)); [ "$i" -le 30 ] || { say "muster-mirror has not connected after 30s; the doctor below says why"; break; }
     sleep 1
   done
 fi
 
 # --- 5. the doctor -------------------------------------------------------------------
+# Dictation and the other optional features are not skipped here: the doctor
+# reports a feature the server has off as SKIP, never as a failure.
+skip=""
+[ "$service" = none ] && skip="mirror-service,this-host,mirror-hosts"
+rc=0
+if [ -n "$JOIN" ]; then
+  # No server credential on a joining machine: the server-side checks SKIP,
+  # and this-host asks the hub, with this machine's own token, if it is seen.
+  "$BIN/muster" doctor --api-url "$URL" --mirror-env "$CFG/env" ${skip:+--skip "$skip"} >/dev/null || rc=$?
+  echo
+  say "this machine's sessions now show in muster at $URL"
+  [ "$rc" = 0 ] || say "the doctor found a problem (above); fix it and run this again — it is safe to"
+  exit "$rc"
+fi
 pw=$(dc exec -T muster /muster-server show-secret ui-password)
 deploy="$tmp/doctor.env"
 (umask 077; {
@@ -209,16 +273,20 @@ deploy="$tmp/doctor.env"
   echo "MUSTER_HOOK_TOKEN=$(dc exec -T muster /muster-server show-secret hook-token)"
   echo "MUSTER_UI_PASSWORD=$pw"
 } > "$deploy")
-skip=dictation  # off unless you turn it on (docs/features.md#dictation)
-[ "$service" = none ] && skip="$skip,mirror-service,this-host,mirror-hosts"
-rc=0
-"$BIN/muster" doctor --deploy-env "$deploy" --mirror-env "$CFG/env" --skip "$skip" >/dev/null || rc=$?
+"$BIN/muster" doctor --deploy-env "$deploy" --mirror-env "$CFG/env" ${skip:+--skip "$skip"} >/dev/null || rc=$?
 rm -f "$deploy"
 
 echo
-say "muster is at $URL — open it in this machine's browser and sign in with:"
-say "    $pw"
-say "show the password again: docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server show-secret ui-password"
+show="docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server show-secret ui-password"
+case "${MUSTER_PRINT_PASSWORD:-yes}" in
+  no|0)
+    say "muster is at $URL — open it in this machine's browser. The sign-in password is not printed here; show it with:"
+    say "    $show" ;;
+  *)
+    say "muster is at $URL — open it in this machine's browser and sign in with:"
+    say "    $pw"
+    say "show the password again: $show" ;;
+esac
 say "on your phone: add HTTPS with Tailscale, $PHONE_DOC"
 [ "$rc" = 0 ] || say "the doctor found a problem (above); fix it and run this again — it is safe to"
 exit "$rc"
@@ -227,6 +295,34 @@ exit "$rc"
 say() { printf 'muster-install: %s\n' "$*"; }
 die() { printf 'muster-install: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# crashloop: muster-mirror's service has been restarted since this run started
+# it (systemd: NRestarts grew, or it waits in auto-restart; launchd: its last
+# exit status is non-zero). Its fatal reason is the last line it printed
+# starting "muster-mirror: " (mirror_reason); its ordinary log lines carry a
+# timestamp instead.
+crashloop() {
+  case "$service" in
+    systemd)
+      n=$(systemctl --user show muster-mirror.service -p NRestarts --value 2>/dev/null || echo 0)
+      sub=$(systemctl --user show muster-mirror.service -p SubState --value 2>/dev/null || echo)
+      [ "${n:-0}" -gt "${restarts0:-0}" ] 2>/dev/null || [ "$sub" = auto-restart ] ;;
+    launchd)
+      launchctl print "gui/$(id -u)/io.github.zacxdev.muster-mirror" 2>/dev/null | grep -Eq 'last exit code = [1-9]' ;;
+    *) return 1 ;;
+  esac
+}
+mirror_reason() {
+  if [ "$service" = systemd ]; then
+    r=$(journalctl --user -u muster-mirror.service -o cat -n 200 --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
+    # Without a per-user journal (volatile storage), the user unit's lines are
+    # in the system journal, which --user-unit reads.
+    [ -n "$r" ] || r=$(journalctl --user-unit muster-mirror.service -o cat -n 200 --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
+  else
+    r=$(tail -n 200 "$HOME/Library/Logs/muster-mirror.log" 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
+  fi
+  printf '%s\n' "${r:-(it printed no reason; journalctl --user -u muster-mirror.service -n 30)}"
+}
 
 # linger: muster-mirror is a systemd USER service, which runs only while this
 # user is logged in unless the user has linger on: without it the mirror stops

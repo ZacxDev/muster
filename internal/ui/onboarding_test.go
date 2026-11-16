@@ -17,8 +17,10 @@ var fencedText = regexp.MustCompile("(?s)```text\n(.*?)\n```")
 // Each file's FIRST ```text block must be the constant, byte for byte, so a
 // reword anywhere fails here until every copy agrees.
 func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
-	if !strings.Contains(OnboardingPrompt, "https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md") {
-		t.Fatalf("OnboardingPrompt does not name the raw INSTALL.md URL: %q", OnboardingPrompt)
+	// The release's own copy, DOWNLOADED (tests/claude_plugin_test.py's Drift
+	// pins that the prompt holds no facts and does not say "read <url>").
+	if !strings.Contains(OnboardingPrompt, "curl -fsSL -o muster-install.md "+InstallGuideAssetURL) {
+		t.Fatalf("OnboardingPrompt does not download the release's INSTALL.md: %q", OnboardingPrompt)
 	}
 	for _, path := range []string{"../../INSTALL.md", "../../docs/onboarding.md", "../../README.md"} {
 		b, err := os.ReadFile(path)
