@@ -21,7 +21,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// OFFICERS DECLARED IN THE DATABASE (officers redesign O-A; migration 0135;
+// OFFICERS DECLARED IN THE DATABASE (officers redesign O-A; migration 0136;
 // docs/officers-builtin.md "Declared in the database")
 //
 //	GET    /api/officers/declared                    the caller's officers: DB-declared, and env ones (read-only)

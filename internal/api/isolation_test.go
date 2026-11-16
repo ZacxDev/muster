@@ -405,7 +405,7 @@ var isolationClasses = map[string]routeClass{
 	"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": classAdmin,
 	"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    classAdmin,
 	"POST /api/tasks/{id}/comments":                                    classAdmin,
-	// Officers declared in the database (0135, officer_declared.go): the
+	// Officers declared in the database (0136, officer_declared.go): the
 	// caller's own; {officer} is A's def, which declares no runtime, so A's
 	// own answer is 409 and the ghost's (and B's) 404.
 	"GET /api/officers/declared":                   classAdmin,
@@ -714,7 +714,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/chief/provision":         classParam,
 	"POST /teams/{id}/chief/stop":              classParam,
 	"POST /teams/{id}/chief/restart":           classParam,
-	// A team's DB-declared officers (0135): a manager's writes, {officer}
+	// A team's DB-declared officers (0136): a manager's writes, {officer}
 	// A's officer id under the team.
 	"POST /teams/{id}/officers/declared":                  classParam,
 	"PUT /teams/{id}/officers/declared/{officer}":         classParam,

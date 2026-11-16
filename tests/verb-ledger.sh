@@ -126,7 +126,7 @@ whoami"
 # 45 -> 46: `agent rm` (DELETE /api/agents/{name}; removes a host officer
 #   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
 # 46 -> 51: `officer ls|create|pause|resume|delete` (officers declared in the
-#   database, migration 0135; no restart).
+#   database, migration 0136; no restart).
 WANT_COUNT=51
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream

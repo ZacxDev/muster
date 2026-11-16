@@ -25,7 +25,7 @@ import (
 	"github.com/ZacxDev/muster/internal/users"
 )
 
-// Officers declared in the database (officers redesign O-A, migration 0135),
+// Officers declared in the database (officers redesign O-A, migration 0136),
 // through the real server, the real built-in store and the real wake loop's
 // pass, with the fleet's agents and provisioner played in memory
 // (officerAgents, officerProv) and the mirror hub played by

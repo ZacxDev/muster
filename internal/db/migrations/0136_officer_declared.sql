@@ -1,4 +1,4 @@
--- muster 0135 — OFFICERS DECLARED IN THE DATABASE (officers redesign O-A;
+-- muster 0136 — OFFICERS DECLARED IN THE DATABASE (officers redesign O-A;
 -- internal/officers declared_db.go, internal/api officer_declared.go,
 -- docs/officers-builtin.md "Declared in the database").
 --
@@ -7,7 +7,7 @@
 -- creates, changes, pauses and deletes it with no restart:
 --
 --   runtime           'pod' | 'host' | 'auto'; NULL = the row declares no
---                     runtime (a def an env officer runs on, as before 0135).
+--                     runtime (a def an env officer runs on, as before 0136).
 --   host              the mirror host of a 'host' officer; '' otherwise.
 --   repo              the officer's own repository (owner/name), or NULL.
 --   connectors        the connectors besides github its instances may request.
@@ -39,8 +39,8 @@
 -- image never reads them. Idempotent (db.RLSOn re-applies 0118, which leaves
 -- these columns alone).
 --
--- Must apply after its predecessor, 0134 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT if another migration takes 0135 first.
+-- Must apply after its predecessor, 0135 (the contiguity test refuses a gap).
+-- 🔴 RENUMBER IT if another migration takes 0136 first.
 --
 -- Before rolling the image back: nothing is needed — an older image ignores
 -- these columns, so a DB-declared officer simply stops running (no env entry
@@ -55,7 +55,7 @@
 --     DROP COLUMN IF EXISTS max_instances, DROP COLUMN IF EXISTS idle_after_seconds,
 --     DROP COLUMN IF EXISTS poll_seconds, DROP COLUMN IF EXISTS model,
 --     DROP COLUMN IF EXISTS instance_slug;
---   DELETE FROM schema_migrations WHERE version = 135;
+--   DELETE FROM schema_migrations WHERE version = 136;
 
 SET LOCAL lock_timeout = '3s';
 

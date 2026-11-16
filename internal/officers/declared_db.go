@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// DB-DECLARED OFFICERS (migration 0135; docs/officers-builtin.md "Declared in
+// DB-DECLARED OFFICERS (migration 0136; docs/officers-builtin.md "Declared in
 // the database")
 //
 // An officer can be declared in muster's database instead of MUSTER_OFFICERS:
@@ -34,7 +34,7 @@ import (
 const RuntimeAuto = "auto"
 
 // Declaration is a DB-declared officer's runtime fields, as officer_defs
-// stores them (0135).
+// stores them (0136).
 type Declaration struct {
 	ID    string
 	Owner int64
@@ -136,7 +136,7 @@ const autoProbeHost = "probe"
 // stay DNS labels.
 var instanceSlugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// MaxSlugLen bounds an instance slug: officer_defs' CHECK (0135) holds it too.
+// MaxSlugLen bounds an instance slug: officer_defs' CHECK (0136) holds it too.
 const MaxSlugLen = 54
 
 // ValidSlug reports whether s may be an instance slug.
@@ -144,7 +144,7 @@ func ValidSlug(s string) bool { return len(s) <= MaxSlugLen && instanceSlugRE.Ma
 
 // SlugCandidates are the slugs AllocateSlug tries for id, in order: Slug(id),
 // then Slug(id)-2 … Slug(id)-9, each cut to fit maxLen. A slug equal to an env
-// officer's, or one another owner holds (the 0135 unique index refuses it),
+// officer's, or one another owner holds (the 0136 unique index refuses it),
 // is passed over.
 func SlugCandidates(id string, maxLen int) []string {
 	if maxLen > MaxSlugLen {

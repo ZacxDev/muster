@@ -104,7 +104,7 @@ for (const size of [
       // Officers run in the Compose stack too (as host-spawned sessions,
       // docs/design/officers-on-hosts.md), and with a database they are ON
       // whether or not MUSTER_OFFICERS declares any: an officer can be
-      // declared in the database (migration 0135). No Kubernetes hint.
+      // declared in the database (migration 0136). No Kubernetes hint.
       const officers = row(page, 'officers');
       await expect(officers).toHaveAttribute('data-state', 'on');
       await expect(officers.locator('[data-feature-kubernetes]')).toHaveCount(0);

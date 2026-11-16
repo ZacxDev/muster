@@ -173,7 +173,7 @@ type Officer struct {
 	// instances are spawned on; "" for a pod officer.
 	Host string `json:"-"`
 	// InstanceSlug is a DB-declared officer's server-allocated agent slug
-	// (officer_defs.instance_slug, migration 0135): globally unique, so two
+	// (officer_defs.instance_slug, migration 0136): globally unique, so two
 	// owners' `marketing:main` never build the same agent name. "" for an env
 	// officer, whose slug is Slug(ID). Read it through AgentSlug.
 	InstanceSlug string `json:"instance_slug,omitempty"`
@@ -202,7 +202,7 @@ const (
 	ManagedByDB  = "db"
 )
 
-// FromDB reports whether o is DB-declared (officer_defs, migration 0135).
+// FromDB reports whether o is DB-declared (officer_defs, migration 0136).
 func (o Officer) FromDB() bool { return o.ManagedBy == ManagedByDB }
 
 // Key is o's registry key: unique across every officer the registry holds,
@@ -987,7 +987,7 @@ var ErrUnknownOfficer = errors.New("officers: no such officer")
 // snapshot, so a reader never sees half a roster, and every consumer — the
 // wake loop (re-read every tick), hostOfficersOn, the mirror door's step-up
 // gate, the tool binding (ForAgentName) — reads the roster LIVE. The env
-// officers are fixed at boot; the DB-declared ones (migration 0135) are
+// officers are fixed at boot; the DB-declared ones (migration 0136) are
 // swapped in by internal/api's loader whenever they change, with no restart.
 type Registry struct {
 	cur atomic.Pointer[regSnapshot]

@@ -13,7 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
-// --- DB-declared officers (migration 0135; internal/api officer_declared.go) --
+// --- DB-declared officers (migration 0136; internal/api officer_declared.go) --
 //
 // An officer declared in the database is one officer_defs row carrying its
 // runtime fields, beside its type (the charter) — written together, in ONE

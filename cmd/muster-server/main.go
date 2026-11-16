@@ -906,8 +906,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// configuration, when officers are declared without what they need.
 	// The built-in officer store (internal/officers/builtin): on whenever
 	// there is a database: the admin API (`muster officer`), the Attention
-	// sweep, and officers DECLARED IN THE DATABASE (migration 0135), which the
-	// runtime below runs beside MUSTER_OFFICERS' with no restart. Before 0135
+	// sweep, and officers DECLARED IN THE DATABASE (migration 0136), which the
+	// runtime below runs beside MUSTER_OFFICERS' with no restart. Before 0136
 	// it needed MUSTER_OFFICERS set; an officer can now be created with none.
 	// A host officer spawn's team lending (team sharing phase 3:
 	// /officers/spawns, the chief's officer_spawn_share), wherever spawns can

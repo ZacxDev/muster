@@ -600,7 +600,7 @@ type Config struct {
 	// new episode for a refusal still in force.
 	CapHold func(o Officer, h CapHold)
 	// Refresh, when set, re-reads the roster into Registry (internal/api: the
-	// DB-declared officers, migration 0135). Run calls it on its first tick
+	// DB-declared officers, migration 0136). Run calls it on its first tick
 	// and then at most every RefreshEvery (DefaultRefreshEvery when 0), so an
 	// officer another replica created, changed or deleted reaches this one's
 	// loop with no restart. It must not block for long; it is called from

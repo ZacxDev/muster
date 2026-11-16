@@ -29,7 +29,7 @@ const (
 	officerResolveRoute = "/api/officers/defs/{officer}/items/{id}/resolve"
 	officerSchedsRoute  = "/api/officers/defs/{officer}/schedules"
 	officerSchedRoute   = "/api/officers/defs/{officer}/schedules/{name}"
-	// Officers declared in the database (migration 0135): one record each —
+	// Officers declared in the database (migration 0136): one record each —
 	// type, def and runtime — created, paused and deleted with no restart.
 	officerDeclaredRoute  = "/api/officers/declared"
 	officerDeclaredOne    = "/api/officers/declared/{officer}"

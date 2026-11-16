@@ -267,7 +267,7 @@ var (
 		"internal/api.(*Server).handleOfficerDefPut",
 		"internal/api.(*Server).handleTeamOfficerDefPut",
 		// …the same escalate_to check on the declared-officer API's create and
-		// replace (officer_declared.go, migration 0135), answering only which
+		// replace (officer_declared.go, migration 0136), answering only which
 		// of the caller's own ids are missing; and its roster loader, which
 		// reads every owner's DB-declared officer rows (the runtime fields, no
 		// charter) to run each as its owner — as the scheduler below reads

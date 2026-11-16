@@ -516,7 +516,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
 		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery}
 	if cfg.Builtin != nil {
-		// The DB-declared officers (migration 0135) reach every replica's
+		// The DB-declared officers (migration 0136) reach every replica's
 		// loop on its refresh, whoever wrote them.
 		rcfg.Refresh = s.refreshDeclaredOfficers
 	}

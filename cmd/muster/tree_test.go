@@ -62,7 +62,7 @@ import (
 // sessions created a pull request, and its `claude --resume` line.
 //
 // 46 → 51: `officer ls|create|pause|resume|delete` (officer.go) — officers
-// declared in the database (migration 0135), with no restart.
+// declared in the database (migration 0136), with no restart.
 const wantVerbCount = 51
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
@@ -141,7 +141,7 @@ var wiring = []struct {
 	{"officer schedule ls", []string{"officer", "schedule", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/schedules"},
 	{"officer schedule put", []string{"officer", "schedule", "put", "marketing:example", "nightly", "--cron", "0 6 * * *", "--kind", "k", "--subject", "s"}, "PUT /api/officers/defs/marketing:example/schedules/nightly"},
 	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
-	// Officers declared in the database (0135): five more.
+	// Officers declared in the database (0136): five more.
 	{"officer ls", []string{"officer", "ls"}, "GET /api/officers/declared"},
 	{"officer create", []string{"officer", "create", "scout:main", "--runtime", "pod"}, "POST /api/officers/declared"},
 	{"officer pause", []string{"officer", "pause", "scout:main"}, "POST /api/officers/declared/scout:main/pause"},
