@@ -825,6 +825,9 @@ impossible. **The "service holds the key" variant is rejected outright**: it
 is a MITM by design. DNS-01 delegation (the server holds DNS credentials) is
 rejected because the zone is shared: no DNS provider scopes a credential to
 one TXT name (**UNVERIFIED** across providers; true of the common ones).
+**Phase 0 refuted this** for Route 53, deSEC and Google Cloud DNS, which can
+scope a credential to one name and type; it holds for Cloudflare and Hetzner
+([phase 0 results](managed-network-phase0.md#1-dns-provider-limits)).
 
 #### Certificate renewal
 
@@ -882,7 +885,10 @@ explicit, and an unclaimed id is NXDOMAIN.
   the trigger to run an authoritative DNS server of our own.
 - The zone's credential is a provider API token scoped to this zone only; the
   zone has nothing else in it. **The same token writes TXT and CAA**
-  ([§8](#8-threat-model) says what that means).
+  ([§8](#8-threat-model) says what that means). On a provider with per-type
+  credentials the challenge endpoint's token can be TXT-only; on Cloudflare,
+  Universal SSL overrides the CAA pin. Both are in the
+  [phase 0 results](managed-network-phase0.md#1-dns-provider-limits).
 - Phase 1's DNS test resolves every record through two public resolvers on a
   staging zone ([phase 1](#phase-1-internal-relay-coordination-and-the-tunnel)).
 
@@ -1581,6 +1587,9 @@ stay in the operator's **private** infrastructure repository.
   licence for this use, and how it updates.
 - PSL submission opened for the product domain; CA rate-limit request filed.
 - **Exit:** a written results page like [previews-spike.md](previews-spike.md).
+  The documentation spikes (DNS limits, CT, GeoIP) are in
+  [managed-network-phase0.md](managed-network-phase0.md), including the correction to the "up to
+  24 h" detection bound in [§8](#8-threat-model).
 
 ### Phase 1 (internal): relay, coordination and the tunnel
 

@@ -19,7 +19,7 @@ Anything not confirmed from a primary source is marked **UNVERIFIED**.
 | spike | answer | changes in the design |
 |---|---|---|
 | **1. DNS provider** | **Route 53** fits best: 10,000 records per zone (raisable), and an IAM policy can limit a credential to `TXT` at `_acme-challenge.*` names. deSEC and Google Cloud DNS can also scope a credential to one name and type. Cloudflare and Hetzner cannot. | 🔴 **Refutes** "no DNS provider scopes a credential to one TXT name" ([DNS-01](managed-network.md#acme-dns-01-the-servers-client-the-services-txt)). The challenge endpoint's credential can be TXT-only, so it cannot rewrite CAA. 🔴 **On Cloudflare, Universal SSL silently defeats the CAA `accounturi` pin** (CVE-2026-14440). |
-| **2. CT aggregator** | Cert Spotter's API wants an **account and API key "for production"**; unauthenticated use is "for personal or evaluation purposes". Free: 100 single-hostname queries/hour per account. Paid: $50, $500 and up per month. Watching with webhooks is a separate paid product (from $15/month, 20 endpoints, hourly). crt.sh: no published policy; 60 requests/min per IP (2020 post); no SLA. | The design does not say **whose key** each server polls with. "Up to 24 h" is right for the slowest logs Chrome accepts today (17 usable logs with a 24 h MMD), but it leaves out the aggregator's own lag and the hourly poll. |
+| **2. CT aggregator** | Cert Spotter's API wants an **account and API key "for production"**; unauthenticated use is "for personal or evaluation purposes". Free: 100 single-hostname queries/hour (whether that is per account or per key is not stated: **UNVERIFIED**). Paid: $50, $500 and up per month. Watching with webhooks is a separate paid product (from $15/month, 20 endpoints, hourly). crt.sh: no published policy; 60 requests/min per IP (2020 post); no SLA. | The design does not say **whose key** each server polls with. "Up to 24 h" is right for the slowest logs Chrome accepts today (17 usable logs with a 24 h MMD), but it leaves out the aggregator's own lag and the hourly poll. |
 | **3. GeoIP** | **DB-IP City Lite**: CC BY 4.0, no account, monthly, country + region + city, MMDB. GeoLite2 City is also usable: free, attribution, an account and licence key, updated Tuesday and Friday, old copies destroyed within 30 days. IPinfo Lite is **country only**. IP2Location LITE **forbids redistribution**. | The **relay** does the lookup ([the relay](managed-network.md#the-relay)), so the public muster-server never ships or downloads a database. The confirm screen needs an **attribution line**. |
 
 ## 1. DNS provider limits
@@ -142,7 +142,7 @@ is then **about 4 writes a month**, before retries and claims.
   the load, per-name and per-type credentials, and a documented
   parameterised-CAA example. deSEC is the free alternative with the same
   credential model, but its 300 writes/day per domain caps the product at
-  roughly 2,000 servers with Pages. Google Cloud DNS has the credential model
+  about 2,250 servers with Pages, before retries and claims. Google Cloud DNS has the credential model
   but does not print its defaults. Phase 0's DNS-01 + CAA negative-control
   spike should run on the provider actually chosen.
 
@@ -214,9 +214,6 @@ fine as the fallback? And what does "up to 24 h detection" assume?
   downloading large datasets should "strongly consider monitoring the CT logs
   directly instead" (2017-07-17). The JSON output (`output=json`) is not
   documented on the site.
-- Reliability, one observation only: on the day of reading, one of three
-  front-page loads from this spike timed out at 30 s. A separate fetch got a 502. The
-  other two loads answered in 0.5 s. That is a sample, not a rate.
 
 **What "up to 24 h" assumes.** It assumes the attacker's certificate is
 logged, and that the logs' **maximum merge delay** (MMD) is 24 h:
