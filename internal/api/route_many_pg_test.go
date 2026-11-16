@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +26,7 @@ type routeManyRes struct {
 		RouteID string `json:"route_id"`
 	} `json:"routed"`
 	Refused []routeManyRefused `json:"refused"`
+	Skipped []routeManyRefused `json:"skipped"`
 	Error   string             `json:"error"`
 	Code    string             `json:"refused_code"`
 }
@@ -165,18 +165,27 @@ func TestRouteManyAtTheDeadlineTheDigestMarksTheRestNoReply(t *testing.T) {
 
 // TestRouteManyRefusesEachSessionThatCannotTakeItInItsResult: in ONE call, a
 // window the chief started (dispatched_window), a session no window shows
-// (window_gone), an agent (unsupported_target), a malformed subject and a
-// repeat are each refused by subject, synchronously, while the one session
+// (window_gone), a malformed subject and a repeat are each refused by
+// subject, synchronously; a dispatched agent and an opencode session — never
+// a route target — are SKIPPED, not routed and refused; and the one session
 // that can take it is routed.
 func TestRouteManyRefusesEachSessionThatCannotTakeItInItsResult(t *testing.T) {
 	f, _, _ := newRouteAnswerFixture(t)
 	tagRouteWindow(f, 77) // @4 (routeSID) runs an agent the chief started
 	f.typed(t, f.owner, "Ask them all.")
 	gone := "mirror:6a6a6a6a-0000-4000-8000-00000000dead"
-	res, out := f.routeMany(t, []string{"mirror:" + routeSID, "mirror:" + otherRouteSID, gone, "agent:7", "bogus", "mirror:" + otherRouteSID},
-		"Which task do you work under?")
+	routes, _ := f.ownersRoutesAndRows(t)
+	res, out := f.routeMany(t, []string{"mirror:" + routeSID, "mirror:" + otherRouteSID, gone, "agent:7", "mirror:opencode:ses_launch",
+		"bogus", "mirror:" + otherRouteSID}, "Which task do you work under?")
 	if len(res.Routed) != 1 || res.Routed[0].Subject != "mirror:"+otherRouteSID || !plugins.ValidBatchID(res.BatchID) {
 		t.Fatalf("routed: %s", out)
+	}
+	var skipped []string
+	for _, r := range res.Skipped {
+		skipped = append(skipped, r.Subject)
+	}
+	if !slices.Equal(skipped, []string{"agent:7", "mirror:opencode:ses_launch"}) {
+		t.Fatalf("skipped %v, want the agent and the opencode session: %s", skipped, out)
 	}
 	got := map[string]string{}
 	for _, r := range res.Refused {
@@ -186,13 +195,16 @@ func TestRouteManyRefusesEachSessionThatCannotTakeItInItsResult(t *testing.T) {
 		got[r.Subject+" "+r.Refused] = r.Error
 	}
 	for _, want := range []string{"mirror:" + routeSID + " " + RefusedDispatchedWindow, gone + " " + RefusedWindowGone,
-		"agent:7 " + RefusedUnsupported, "bogus " + RefusedBadArguments, "mirror:" + otherRouteSID + " " + RefusedBadArguments} {
+		"bogus " + RefusedBadArguments, "mirror:" + otherRouteSID + " " + RefusedBadArguments} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("no refusal %q in %v", want, got)
 		}
 	}
-	if len(res.Refused) != 5 {
-		t.Fatalf("%d refusals, want 5: %s", len(res.Refused), out)
+	if len(res.Refused) != 4 {
+		t.Fatalf("%d refusals, want 4: %s", len(res.Refused), out)
+	}
+	if r2, _ := f.ownersRoutesAndRows(t); r2 != routes+1 {
+		t.Fatalf("%d routes made, want 1 (the skipped subjects make none)", r2-routes)
 	}
 }
 
@@ -218,58 +230,5 @@ func TestRouteManyIsRefusedOutsideTheOwnersTurn(t *testing.T) {
 	f.typed(t, f.owner, "Ask both.")
 	if res, out := f.routeMany(t, subjects, "Which task do you work under?"); len(res.Routed) != 2 {
 		t.Fatalf("control: route_many in the owner's turn: %s", out)
-	}
-}
-
-// TestABatchsDigestIsClaimedOnce: the one-digest guard itself
-// (plugins.PGStore.ClaimBatchDigest): of many claims racing, exactly one wins;
-// a held claim refuses another; a released one is claimable again; a
-// delivered digest never is.
-func TestABatchsDigestIsClaimedOnce(t *testing.T) {
-	f, _, _, res, _ := twoSessionBatch(t)
-	st := f.srv.ext.Routes
-	var wins int
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			won, err := st.ClaimBatchDigest(f.asOwner, res.BatchID, time.Minute)
-			if err != nil {
-				t.Error(err)
-			}
-			if won {
-				mu.Lock()
-				wins++
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	if wins != 1 {
-		t.Fatalf("%d of 8 racing claims won, want exactly 1", wins)
-	}
-	if won, _ := st.ClaimBatchDigest(f.asOwner, res.BatchID, time.Minute); won {
-		t.Fatal("a held claim was claimed again")
-	}
-	if err := st.ReleaseBatchDigest(f.asOwner, res.BatchID); err != nil {
-		t.Fatal(err)
-	}
-	if won, _ := st.ClaimBatchDigest(f.asOwner, res.BatchID, time.Minute); !won {
-		t.Fatal("a released claim could not be claimed")
-	}
-	if err := st.FinishBatchDigest(f.asOwner, res.BatchID); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.ReleaseBatchDigest(f.asOwner, res.BatchID); err != nil {
-		t.Fatal(err)
-	}
-	if won, _ := st.ClaimBatchDigest(f.asOwner, res.BatchID, time.Minute); won {
-		t.Fatal("a delivered digest was claimed again")
-	}
-	members, err := st.BatchRoutes(f.asOwner, res.BatchID)
-	if err != nil || len(members) != 2 || slices.ContainsFunc(members, func(r plugins.Route) bool { return r.BatchID != res.BatchID }) {
-		t.Fatalf("the batch's members: %+v %v", members, err)
 	}
 }

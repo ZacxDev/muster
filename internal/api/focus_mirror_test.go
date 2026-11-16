@@ -81,9 +81,9 @@ func (m *memFocus) DismissDrift(_ context.Context, s focus.Subject, title string
 	return nil
 }
 
-// SetTaskLink is a replace-only stand-in (the store's own semantics are
-// pinned against Postgres in internal/focus).
-func (m *memFocus) SetTaskLink(_ context.Context, s focus.Subject, l focus.TaskLink, _ focus.TaskLinkMode) (focus.TaskLink, error) {
+// SetTaskLink is a stand-in (the store's own semantics are pinned against
+// Postgres in internal/focus).
+func (m *memFocus) SetTaskLink(_ context.Context, s focus.Subject, l focus.TaskLink) (focus.TaskLink, error) {
 	if s.Kind != focus.KindMirror {
 		return focus.TaskLink{}, focus.ErrTaskLinkAgent
 	}

@@ -39,7 +39,7 @@ type Store interface {
 	SetManualName(ctx context.Context, s Subject, name string) (Name, error)
 	// SetTaskLink writes a MIRRORED session's declared tasks (tasklink.go,
 	// migration 0136).
-	SetTaskLink(ctx context.Context, s Subject, l TaskLink, mode TaskLinkMode) (TaskLink, error)
+	SetTaskLink(ctx context.Context, s Subject, l TaskLink) (TaskLink, error)
 	// DismissDrift records the owner's "not now" on a rename offer at focus
 	// title title (drift.go, migration 0091).
 	DismissDrift(ctx context.Context, s Subject, title string) error
@@ -102,14 +102,14 @@ var _ Store = (*PGStore)(nil)
 const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, updated_at,
 	last_error, coalesce(error_at, 'epoch'::timestamptz), cwd, name_auto, coalesce(name_auto_at, 'epoch'::timestamptz),
 	name_manual, coalesce(name_manual_at, 'epoch'::timestamptz), drift_dismissed,
-	task_keys, coalesce(task_none, ''), coalesce(task_note, ''), coalesce(task_set_at, 'epoch'::timestamptz), coalesce(task_set_by, '')`
+	task_keys, coalesce(task_none, ''), coalesce(task_note, ''), coalesce(task_set_at, 'epoch'::timestamptz)`
 
 func scan(row pgx.Row) (Focus, error) {
 	var f Focus
 	var kind, src string
 	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.UpdatedAt,
 		&f.LastError, &f.ErrorAt, &f.Cwd, &f.Name.Auto, &f.Name.AutoAt, &f.Name.Manual, &f.Name.ManualAt,
-		&f.Name.DriftDismissed, &f.Tasks.Keys, &f.Tasks.None, &f.Tasks.Note, &f.Tasks.SetAt, &f.Tasks.SetBy)
+		&f.Name.DriftDismissed, &f.Tasks.Keys, &f.Tasks.None, &f.Tasks.Note, &f.Tasks.SetAt)
 	f.Subject.Kind, f.Source = Kind(kind), Source(src)
 	if len(f.Tasks.Keys) == 0 {
 		f.Tasks.Keys = nil

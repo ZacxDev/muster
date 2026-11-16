@@ -7,61 +7,53 @@ import (
 	"testing"
 )
 
-// TestASessionsTaskLinkReplaceAddClearAndNone: against Postgres (0136's
-// columns and setTaskLinkSQL). replace sets the keys (de-duplicated, order
-// kept) with a note; add appends only new keys and keeps the note; a none
-// declaration replaces the keys; a further add drops it; an empty replace
-// clears it — and every write stamps set_at/set_by. Nothing touches the
-// focus or the name.
-func TestASessionsTaskLinkReplaceAddClearAndNone(t *testing.T) {
+// TestASessionsTaskLinkReplacesNoneAndClears: against Postgres (0136's
+// columns). Each write REPLACES the declaration: keys (de-duplicated, order
+// kept) with a note; other keys drop the old ones and the note; a none line
+// replaces the keys; an empty write clears it — and every write stamps
+// set_at. Nothing touches the focus or the name.
+func TestASessionsTaskLinkReplacesNoneAndClears(t *testing.T) {
 	s, _ := pgStore(t)
 	sub := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000bb01")
-	by := sub.String()
-	set := func(l TaskLink, mode TaskLinkMode) TaskLink {
+	set := func(l TaskLink) TaskLink {
 		t.Helper()
-		l.SetBy = by
-		got, err := s.SetTaskLink(as(2), sub, l, mode)
+		got, err := s.SetTaskLink(as(2), sub, l)
 		if err != nil {
-			t.Fatalf("set %+v (%s): %v", l, mode, err)
+			t.Fatalf("set %+v: %v", l, err)
 		}
-		if got.SetAt.IsZero() || got.SetBy != by {
-			t.Fatalf("set %+v (%s): set_at %v set_by %q; want both stamped", l, mode, got.SetAt, got.SetBy)
+		if got.SetAt.IsZero() {
+			t.Fatalf("set %+v: set_at not stamped", l)
 		}
 		return got
 	}
-	got := set(TaskLink{Keys: []string{"ex:b2", "ex:a1", "ex:b2"}, Note: "  the \nbilling fix "}, TaskLinkReplace)
+	got := set(TaskLink{Keys: []string{"ex:b2", "ex:a1", "ex:b2"}, Note: "  the \nbilling fix "})
 	if !reflect.DeepEqual(got.Keys, []string{"ex:b2", "ex:a1"}) || got.Note != "the billing fix" || got.None != "" {
 		t.Fatalf("replace: %+v; want [ex:b2 ex:a1] with the note cleaned", got)
 	}
 	if f, ok, _ := s.Get(as(2), sub); !ok || f.Has() || f.Name != (Name{}) {
 		t.Fatalf("a task link alone: row %v, focus %v, name %+v; want a title-less, nameless row", ok, f.Has(), f.Name)
 	}
-	got = set(TaskLink{Keys: []string{"ex:a1", "ex:c3"}}, TaskLinkAdd)
-	if !reflect.DeepEqual(got.Keys, []string{"ex:b2", "ex:a1", "ex:c3"}) || got.Note != "the billing fix" {
-		t.Fatalf("add: %+v; want [ex:b2 ex:a1 ex:c3] and the note kept", got)
+	got = set(TaskLink{Keys: []string{"ex:c3"}})
+	if !reflect.DeepEqual(got.Keys, []string{"ex:c3"}) || got.Note != "" {
+		t.Fatalf("a second replace: %+v; want only [ex:c3] and no note", got)
 	}
-	got = set(TaskLink{None: "a scratch experiment"}, TaskLinkReplace)
-	if got.Keys != nil || got.None != "a scratch experiment" || got.Note != "" {
-		t.Fatalf("none: %+v; want no keys, the none line, no note", got)
-	}
-	got = set(TaskLink{Keys: []string{"ex:d4"}}, TaskLinkAdd)
-	if !reflect.DeepEqual(got.Keys, []string{"ex:d4"}) || got.None != "" {
-		t.Fatalf("add after none: %+v; want [ex:d4] and the none line dropped", got)
+	got = set(TaskLink{None: "a scratch experiment"})
+	if got.Keys != nil || got.None != "a scratch experiment" {
+		t.Fatalf("none: %+v; want no keys, the none line", got)
 	}
 	first := got.SetAt
-	got = set(TaskLink{}, TaskLinkReplace)
+	got = set(TaskLink{})
 	if got.Declared() || got.Note != "" || got.SetAt.Before(first) {
 		t.Fatalf("clear: %+v; want nothing declared, set_at kept fresh", got)
 	}
-	if f, _, _ := s.Get(as(2), sub); f.Tasks.Declared() || f.Tasks.SetBy != by {
+	if f, _, _ := s.Get(as(2), sub); f.Tasks.Declared() || f.Tasks.SetAt.IsZero() {
 		t.Fatalf("Get after the clear: %+v", f.Tasks)
 	}
 }
 
 // TestATaskLinkIsRefusedOutOfShape: the store's own refusals — an agent
-// subject, keys beside none, none on an add, more than MaxTaskKeys (also when
-// an add would merge past it: the column's CHECK), an over-long note, and no
-// set_by.
+// subject, keys beside none, a note with no keys, more than MaxTaskKeys, and
+// an over-long note.
 func TestATaskLinkIsRefusedOutOfShape(t *testing.T) {
 	s, pool := pgStore(t)
 	sub := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000bb02")
@@ -72,31 +64,21 @@ func TestATaskLinkIsRefusedOutOfShape(t *testing.T) {
 		name string
 		sub  Subject
 		l    TaskLink
-		mode TaskLinkMode
 		want error
 	}{
-		{"agent subject", AgentSubject(a.ID), TaskLink{Keys: []string{"ex:1"}, SetBy: "x"}, TaskLinkReplace, ErrTaskLinkAgent},
-		{"keys and none", sub, TaskLink{Keys: []string{"ex:1"}, None: "why", SetBy: "x"}, TaskLinkReplace, ErrTaskLinkNoneKeys},
-		{"none on add", sub, TaskLink{None: "why", SetBy: "x"}, TaskLinkAdd, ErrTaskLinkNoneKeys},
-		{"eleven keys", sub, TaskLink{Keys: eleven, SetBy: "x"}, TaskLinkReplace, ErrTaskLinkTooMany},
-		{"long note", sub, TaskLink{Keys: []string{"ex:1"}, Note: long, SetBy: "x"}, TaskLinkReplace, ErrTaskLinkText},
-		{"no set_by", sub, TaskLink{Keys: []string{"ex:1"}}, TaskLinkReplace, ErrTaskLinkBy},
+		{"agent subject", AgentSubject(a.ID), TaskLink{Keys: []string{"ex:1"}}, ErrTaskLinkAgent},
+		{"keys and none", sub, TaskLink{Keys: []string{"ex:1"}, None: "why"}, ErrTaskLinkNoneKeys},
+		{"note alone", sub, TaskLink{Note: "why"}, ErrTaskLinkNote},
+		{"eleven keys", sub, TaskLink{Keys: eleven}, ErrTaskLinkTooMany},
+		{"long note", sub, TaskLink{Keys: []string{"ex:1"}, Note: long}, ErrTaskLinkText},
 	} {
-		if _, err := s.SetTaskLink(as(2), c.sub, c.l, c.mode); !errors.Is(err, c.want) {
+		if _, err := s.SetTaskLink(as(2), c.sub, c.l); !errors.Is(err, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}
-	// The cap after a merge is the column's: ten stored, one more added.
-	if _, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: eleven[:10], SetBy: "x"}, TaskLinkReplace); err != nil {
-		t.Fatalf("ten keys: %v", err)
-	}
-	if _, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: eleven[10:], SetBy: "x"}, TaskLinkAdd); !errors.Is(err, ErrTaskLinkTooMany) {
-		t.Fatalf("an add past the cap: %v, want ErrTaskLinkTooMany", err)
-	}
-	// A positive control on the same subject: an add of a key already stored
-	// stays inside the cap.
-	if got, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: eleven[:1], SetBy: "x"}, TaskLinkAdd); err != nil || len(got.Keys) != 10 {
-		t.Fatalf("an add of a stored key: %d keys, %v; want the ten", len(got.Keys), err)
+	// A positive control on the same subject: ten keys fit.
+	if got, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: eleven[:10]}); err != nil || len(got.Keys) != 10 {
+		t.Fatalf("ten keys: %d, %v", len(got.Keys), err)
 	}
 }
 
@@ -107,10 +89,10 @@ func TestATaskLinkIsRefusedOutOfShape(t *testing.T) {
 func TestASessionCannotWriteAnotherOwnersSessionsTaskLink(t *testing.T) {
 	s, _ := pgStore(t)
 	sub := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000bb03")
-	if _, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: []string{"ex:owner2"}, SetBy: sub.String()}, TaskLinkReplace); err != nil {
+	if _, err := s.SetTaskLink(as(2), sub, TaskLink{Keys: []string{"ex:owner2"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetTaskLink(as(3), sub, TaskLink{Keys: []string{"ex:owner3"}, SetBy: sub.String()}, TaskLinkReplace); err != nil {
+	if _, err := s.SetTaskLink(as(3), sub, TaskLink{Keys: []string{"ex:owner3"}}); err != nil {
 		t.Fatal(err)
 	}
 	for owner, want := range map[int64]string{2: "ex:owner2", 3: "ex:owner3"} {
