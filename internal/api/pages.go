@@ -100,8 +100,16 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	mux.HandleFunc("GET "+pagesPath+"/{id}", s.requireSession(s.handlePageDetail))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/preview", s.requireSession(s.handlePagePreview))
 	mux.HandleFunc("GET "+pagesPath+"/{id}/versions/{v}/content", s.requireSession(s.handlePageVersionContent))
-	mux.HandleFunc("POST "+pagesPath+"/{id}/links", s.requireOperatorWrite(s.handlePageMintLink))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/links/{link}/revoke", s.requireOperatorWrite(s.handlePageRevokeLink))
+	// The Share button and its ⋯ menu (page_card.go): the page's one reusable
+	// link. And the chat's page card, for the live stream.
+	mux.HandleFunc("POST "+pagesPath+"/{id}/share", s.requireOperatorWrite(s.handlePageShare))
+	mux.HandleFunc("POST "+pagesPath+"/{id}/share/rotate", s.requireOperatorWrite(s.handlePageShareRotate))
+	mux.HandleFunc("POST "+pagesPath+"/{id}/share/revoke", s.requireOperatorWrite(s.handlePageShareRevoke))
+	mux.HandleFunc("GET "+pagesPath+"/{id}/card", s.requireSession(s.handlePageCard))
+	// The owner's own opt-in to their agents sharing without asking
+	// (page_share_pref.go).
+	mux.HandleFunc("POST "+accountPagesAgentSharePath, s.requireOperatorWrite(s.handleAccountPagesAgentShare))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/rollback", s.requireOperatorWrite(s.handlePageRollback))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/delete", s.requireOperatorWrite(s.handlePageDelete))
 }
@@ -527,11 +535,19 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 		s.logger.Printf("pages: list: %v", err)
 		problem = "The pages could not be read."
 	}
+	shared, serr := s.ext.Pages.ShareLinks(r.Context())
+	if serr != nil {
+		s.logger.Printf("pages: list: share links: %v", serr)
+	}
 	esc := html.EscapeString
+	how := "An agent asks you before a link goes live (you can let your agents share without asking, on <a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
+	if s.pageAgentShareOn(r.Context(), requestOwner(r.Context())) {
+		how = "You let your agents share without asking: an agent's link goes live at once; you are told, and can revoke it (<a href=\"" + accountPath + "#" + pagesAgentShareID + "\" class=\"text-accent underline\">Account</a>)."
+	}
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="pages-page">
 <h1 class="text-balance text-base font-semibold text-fg">Pages</h1>
-<p class="text-sm text-fg2">Pages your agents made. Only you can see one until it has a live link; anyone with a live link can open it, without a muster account. An agent asks you before a link goes live.</p>
+<p class="text-sm text-fg2">Pages your agents made. Only you can see one until it has a live link; anyone with a live link can open it, without a muster account. ` + how + ` Share gives you the page's link to send.</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<ul class="flex flex-col gap-2" data-testid="pages">
@@ -546,12 +562,28 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 <span class="text-xs text-fg2">by ` + esc(p.Creator.Label) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + strconv.Itoa(p.LiveLinks) + ` live link(s), ` + strconv.Itoa(p.Pending) + ` waiting for you · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			strconv.Itoa(p.Responses) + ` response(s)</span> · updated ` + esc(ruleTime(p.UpdatedAt)) + `</span>
+<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
 </li>
 `)
 	}
 	b.WriteString(`</ul>
 </section>`)
-	s.writeNavDocument(w, r, code, "Pages", "", false, b.String())
+	// secret: each row's Share button carries its page's live link, a bearer
+	// capability, so the screen loads no telemetry (ui.NavDocumentView.Secret).
+	s.writeNavDocument(w, r, code, "Pages", ui.NavPages, true, b.String())
+}
+
+// pageShareControls is a page's Share button and ⋯ menu (ui/page_card.go),
+// carrying its live reusable link's address when it has one (l).
+func (s *Server) pageShareControls(id int64, title string, l pages.Link) string {
+	url := ""
+	if l.Token != "" {
+		url = s.pageLinkURL(l)
+	}
+	var b strings.Builder
+	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
+	_ = ui.PageShareMenu(id, title, false).Render(&b)
+	return b.String()
 }
 
 func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
@@ -569,9 +601,10 @@ func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
 
 // renderPageDetail writes /pages/{id}: its versions, links and responses.
 //
-// shown, when not "", is a link's address shown ONCE — the link the owner just
-// made (handlePageMintLink). Only the token's hash is stored, so this response
-// is the only place the owner sees it.
+// shown, when not "", is a link's address shown ONCE — the one-off link the
+// owner's Share just made on a server with no link key (handlePageShare's
+// no-script answer). Only the token's hash is stored, so this response is the
+// only place the owner sees it.
 func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int64, code int, problem, notice, shown string) {
 	ctx := r.Context()
 	p, err := s.ext.Pages.Page(ctx, id)
@@ -608,6 +641,30 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 </div>
 `)
 	}
+	// Share: the page's one reusable link, one tap (ui/page_card.go).
+	shared, serr := s.ext.Pages.ShareLinks(ctx)
+	if serr != nil {
+		s.logger.Printf("pages: page %d: share link: %v", id, serr)
+	}
+	cur := shared[id]
+	b.WriteString(`<section id="share" class="flex flex-col gap-2" data-page-share-box data-page-id="` + pid + `">
+<h2 class="text-sm font-semibold text-fg">Share</h2>
+`)
+	switch {
+	case cur.Token != "":
+		b.WriteString(`<p class="text-sm text-fg2">Anyone with this link can open the page. Share gives you the same link every time; New link (⋯) replaces it, and the old one stops working.</p>
+<input type="text" readonly value="` + esc(s.pageLinkURL(cur)) + `" class="w-full rounded-md bg-bg px-3 py-2 font-mono text-xs text-fg ring-1 ring-inset ring-edge" data-share-url-field data-page-id="` + pid + `" aria-label="This page's link">
+`)
+	case s.ext.Pages.LinksReusable():
+		b.WriteString(`<p class="text-sm text-fg2">No link yet. Share makes the page's link — the same one every time after — and hands it to your phone's share sheet, or copies it.</p>
+`)
+	default:
+		b.WriteString(`<p class="text-sm text-fg2">Share makes a new one-off link and copies it. This server keeps no reusable links (MUSTER_CONNECTOR_ENCRYPTION_KEY is unset), so each address is shown only when it is made; revoke the ones you no longer need below.</p>
+`)
+	}
+	b.WriteString(`<div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(id, p.Title, cur) + `</div>
+</section>
+`)
 	// Links.
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Links</h2>
 <p class="text-sm text-fg2">Anyone with a live link can open this page and send responses. Revoking one stops it at once.</p>
@@ -629,7 +686,6 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		b.WriteString("</li>\n")
 	}
 	b.WriteString(`</ul>
-<form method="POST" action="` + base + `/links"><button type="submit" class="` + flowsQuietButton + `" data-link-mint>Make a new link</button></form>
 `)
 	// Versions.
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Versions</h2>
@@ -684,20 +740,33 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 </section>`)
 	// secret: it shows each live share link, a bearer capability, so it
 	// loads no telemetry (ui.NavDocumentView.Secret).
-	s.writeNavDocument(w, r, code, textplain.Title(p.Title), "", true, b.String())
+	s.writeNavDocument(w, r, code, textplain.Title(p.Title), ui.NavPages, true, b.String())
 }
 
-// pageLinkStateText is a link's state in words.
+// pageLinkStateText is a link's state in words: who made it (an agent that
+// made it live WITHOUT asking — its owner opted in — says so), and
+// what kind it is (the page's reusable Share link, or an older hash-only one
+// whose address cannot be shown again).
 func pageLinkStateText(l pages.Link) string {
 	by := ""
 	if l.RequestedBy != "" {
 		by = " — asked for by " + l.RequestedBy
 	}
+	if l.ByAgent && l.AskID == 0 && l.State != pages.LinkPending && l.RequestedBy != "" {
+		by = " — made live by " + l.RequestedBy + " without asking you"
+	}
+	kind := ""
+	switch {
+	case l.Reusable && l.State == pages.LinkLive:
+		kind = " · the page's Share link"
+	case l.State == pages.LinkLive:
+		kind = " · an older link: its address cannot be shown again"
+	}
 	switch l.State {
 	case pages.LinkPending:
 		return "Waiting for your approval" + by + " (on Asks)"
 	case pages.LinkLive:
-		return "Live" + by
+		return "Live" + by + kind
 	case pages.LinkDenied:
 		return "Not approved" + by
 	}
@@ -766,34 +835,6 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions(true)))
-}
-
-// handlePageMintLink is the owner's "Make a new link": a live link at once.
-func (s *Server) handlePageMintLink(w http.ResponseWriter, r *http.Request) {
-	if !s.pagesOn() {
-		s.writeFeatureDisabled(w, r, features.Pages)
-		return
-	}
-	id, ok := pageIDParam(r)
-	if !ok {
-		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
-		return
-	}
-	l, err := s.ext.Pages.CreateLink(r.Context(), id, pages.LinkLive, "you")
-	switch {
-	case err == nil:
-		metrics.PageShareDecisions.WithLabelValues("minted").Inc()
-		// Not a redirect: the token is in this response alone (the page is
-		// no-store and loads no telemetry), never in a URL or a later read.
-		s.renderPageDetail(w, r, id, http.StatusOK, "", "", s.pageLinkURL(l))
-	case errors.Is(err, pages.ErrNotFound):
-		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
-	case errors.Is(err, pages.ErrTooMany):
-		s.renderPageDetail(w, r, id, http.StatusConflict, strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "), "", "")
-	default:
-		s.logger.Printf("pages: page %d: mint a link: %v", id, err)
-		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The link could not be made.", "", "")
-	}
 }
 
 // handlePageRevokeLink is the owner's Revoke.

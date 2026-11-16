@@ -1011,6 +1011,8 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				g.If(!feat.Connectors, featureOffNavLink("sidebar-connectors-off", features.Connectors, "Connectors", "🔌")),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
+				// The shareable pages (page_card.go): a standalone screen too.
+				pagesLink(feat, activeTab == NavPages, currentTab == NavPages),
 				// The install button (shown only where the browser offers one) and
 				// the account links. The theme toggle that once sat here is gone —
 				// the UI is dark only (theme.go).
@@ -1564,26 +1566,34 @@ var appScriptSrc = staticJS("app", `
   // "Copied" affordance. Boost-safe (looked up at call time). Falls back to a
   // hidden-textarea execCommand when the async Clipboard API is unavailable
   // (insecure context / older browser).
+  // cgCopyText is cgCopy's copy on its own: a Promise that resolves once text
+  // is on the clipboard (the page share button's copy, page_card.go, uses it).
+  window.cgCopyText = function (text) {
+    return new Promise(function (resolve, reject) {
+      function fallback() {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          var ok = document.execCommand('copy'); document.body.removeChild(ta);
+          if (ok) resolve(); else reject(new Error('copy refused'));
+        } catch (e) { reject(e); }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(resolve, fallback);
+      } else { fallback(); }
+    });
+  };
   window.cgCopy = function (btn) {
     if (!btn) return;
     var text = btn.getAttribute('data-copy-text') || '';
-    var done = function () {
+    window.cgCopyText(text).then(function () {
       var prev = btn.textContent;
       btn.textContent = 'Copied';
       setTimeout(function () { btn.textContent = prev; }, 1200);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(function () { fallback(); });
-    } else { fallback(); }
-    function fallback() {
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); document.body.removeChild(ta); done();
-      } catch (e) {}
-    }
+    }, function () {});
   };
+`+pageShareJS+`
 
   // setOpen looks elements up live (not via captured refs) so it stays correct
   // after an hx-boost body swap re-creates the shell.

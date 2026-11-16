@@ -214,6 +214,8 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 		".innerHTML = serverHTML",
 		// A dispatched agent's card, fetched from the server.
 		".innerHTML = html.trim()",
+		// A page tool's card (ui.PageCard), fetched from the server.
+		".innerHTML = html.trim()",
 		// A sent message's echo.
 		".innerHTML = msg.html",
 	}

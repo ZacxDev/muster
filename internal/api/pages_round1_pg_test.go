@@ -174,6 +174,9 @@ func TestAnUploadThatCannotBeTakenBackIsLoggedAndCounted(t *testing.T) {
 	var logged bytes.Buffer
 	f.srv.logger = log.New(&logged, "", 0)
 	id := f.create(t, f.agent, "Rollback", formBlocks)
+	// page_create's push logs on its own goroutine: let it finish before
+	// the log is read.
+	f.srv.WaitForPushes()
 	l := f.liveLink(t, f.owner, id)
 	defer func(n int) { pages.MaxUploadsPerLink = n }(pages.MaxUploadsPerLink)
 	pages.MaxUploadsPerLink = 0

@@ -386,7 +386,7 @@ var apiNavSecret = map[string]bool{
 	"renderAskPage":                false, // one ask and its answer box
 	"renderNotice":                 false, // one sentence
 	"renderRulesPage":              false, // the owner's rules: matches, actions, counts; no secret
-	"renderPagesList":              false, // titles and counts; no link is shown here
+	"renderPagesList":              true,  // each row's Share button carries its live link: a bearer capability
 	"renderPageDetail":             true,  // shows each live share link: a bearer capability
 	"handleUsagePage":              false, // token counts and senders the owner already sees; no secret
 	"handleAnswersPage":            false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
