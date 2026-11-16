@@ -690,7 +690,10 @@ Known gaps (the host types into these panes as into any other):
 
 muster-mirror reads a host's opencode v2 server (the background service every
 opencode TUI on the host is a client of, `127.0.0.1:<port>`) through its HTTP
-API, with a **pair token** of its own — never the server's password. Pair each
+API, with a **pair token** of its own — never the server's password. It needs
+**opencode 2 or later**: opencode 1 has no background service and writes no
+registration file (upgrade a 1.x with `opencode upgrade --major`;
+`opencode-pair` reads `opencode --version` and says which case it is). Pair each
 host once:
 
 ```sh

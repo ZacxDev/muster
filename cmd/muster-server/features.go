@@ -80,7 +80,7 @@ func featureCatalog() []features.Feature {
 				v(envBrowserPort, "browser listener port")}},
 		{ID: features.Connectors, Name: "Connectors and credentials",
 			Description: "Stored platform credentials agents use through muster's proxy, and each member's own Claude and OpenRouter credentials.",
-			Enable:      []features.Var{v(envConnectorEncKey, "32-byte base64 key")},
+			Enable:      []features.Var{v(envConnectorEncKey, "32 random bytes, hex or base64")},
 			Settings: []string{envConnectPort, envAgentConnectURL, envInternalHTTPConnectors,
 				connectors.InternalHTTPTokenEnvPrefix + "<NAME>"}},
 		{ID: features.GitHubApp, Name: "GitHub App",
@@ -113,7 +113,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Chief, Name: "Chief",
 			Description: "A fleet agent that reports on your sessions and agents, and routes work to them; the admin turns it on under Account.",
 			Enable: []features.Var{features.ProfileVar("chief"), is(envChiefRuntime, chiefRuntimeCompose),
-				v(envConnectorEncKey, "32 random bytes, base64")},
+				v(envConnectorEncKey, "32 random bytes, hex or base64")},
 			Note:     composeChiefCredentialNote,
 			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
@@ -241,6 +241,81 @@ func openRouterStatus(ext api.Extensions) features.Status {
 	return features.Status{State: features.Off, Reason: needsOpenRouterKey()}
 }
 
+// agentConnectorsOff is why the agent half of the connector store is off when
+// the key is set without MUSTER_AGENT_CONNECT_URL: the ONE sentence the
+// feature's reason and the boot banner's `connector store:` line both use.
+func agentConnectorsOff() string {
+	return "agent connectors are OFF: " + envAgentConnectURL + " is unset, so no agent could reach the store " +
+		"(set it with " + envConnectPort + " to the connect listener's URL to turn them on)"
+}
+
+// connectorsStatus is the connectors feature's state.
+//
+//   - the agent-facing store is wired: ON.
+//   - the key without the agent connect URL (validateConnectors accepts it):
+//     members' own credentials are ON and the agent half is off. With nothing
+//     that could dispatch an agent, that is the whole feature this deployment
+//     can have: ON, the reason saying which half. With an agent provisioner it
+//     is MISCONFIGURED (so `muster doctor` FAILs): agents run here and cannot
+//     use connectors.
+//   - otherwise OFF, naming what is missing.
+//
+// 🔴 AND IN EVERY STATE BUT ON, A HOST OFFICER THAT DECLARES `connectors` MAKES
+// IT MISCONFIGURED, naming the officers and the fix (#706 round 0, F1). Its
+// instances reach the connector tools through the mirror door
+// (api.hostConnectorToolsOn), which lists them only with the agent-facing
+// store; without it they are silently not offered, while the roster asked for
+// them. The store is NOT built from the key alone for them: every other
+// consumer reads Extensions.Connectors != nil as "agents can reach it on
+// $MUSTER_CONNECT_URL" (pod agents' connector tools and their usage text, a
+// claude-code chief's MCP server, the gateway prompt's push recipe).
+func connectorsStatus(c config, ext api.Extensions) features.Status {
+	if ext.Connectors != nil {
+		return features.Status{State: features.On}
+	}
+	var st features.Status
+	switch {
+	case ext.Credentials != nil && c.AgentConnectURL == "":
+		st = features.Status{State: features.On, Reason: "members' own credentials only; " + agentConnectorsOff()}
+		// A DISPATCH question (the provisioner gate ledger). No ComposeChief
+		// clause: the Compose chief always has a connect URL
+		// (applyComposeChief defaults it, validateComposeChief requires it), so
+		// it never reaches this arm.
+		if ext.Provisioner != nil {
+			st.State = features.Misconfigured
+		}
+	case len(c.ConnectorEncKey) > 0 && c.Database == "":
+		st = features.Status{State: features.Off, Reason: "there is no database (" + envDatabase + ") to hold it"}
+	default:
+		st = features.Status{State: features.Off, Reason: envConnectorEncKey + " is unset"}
+	}
+	if ids := hostOfficersDeclaringConnectors(c); len(ids) > 0 {
+		st.State = features.Misconfigured
+		st.Reason += "; " + hostOfficerConnectorsLost(ids)
+	}
+	return st
+}
+
+// hostOfficersDeclaringConnectors is the ids of the declared host officers
+// that declare `connectors`, in roster order.
+func hostOfficersDeclaringConnectors(c config) []string {
+	var ids []string
+	for _, o := range c.Officers {
+		if o.OnHost() && len(o.Connectors) > 0 {
+			ids = append(ids, o.ID)
+		}
+	}
+	return ids
+}
+
+// hostOfficerConnectorsLost is what connectorsStatus adds for those officers
+// when the agent-facing store is not built: who, what they lose, the fix.
+func hostOfficerConnectorsLost(ids []string) string {
+	return "host officer(s) " + strings.Join(ids, ", ") + " declare connectors in " + envOfficers +
+		", but their instances are offered no connector tools without the agent connector store. Set " +
+		envConnectorEncKey + ", " + envAgentConnectURL + " and " + envConnectPort + ", or remove their `connectors`"
+}
+
 // chiefMissing is why a feature that acts through the chief cannot, or "": the
 // chief needs an agent provisioner and a runtime to run on (the Chief entry's
 // own predicate, chiefRuntimeMissing).
@@ -346,7 +421,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 
 	st[features.Accounts] = pick(gotrue && c.goTrueConfigured() && a.pool != nil, gotrue,
 		"", envAuthMode+"=gotrue but GoTrue or the database is not configured", envAuthMode+" is not gotrue (the shared password is in use)")
-	st[features.Connectors] = pick(ext.Connectors != nil, false, "", "", envConnectorEncKey+" is unset")
+	st[features.Connectors] = connectorsStatus(c, ext)
 	st[features.GitHubApp] = pick(ext.GitHubApp != nil, false, "", "", envGitHubAppID+" is unset")
 	// The Compose chief's provisioner runs the chief alone: dispatch is off
 	// there, for the reason api.dispatchServed reads it as off.

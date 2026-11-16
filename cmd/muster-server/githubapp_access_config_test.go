@@ -153,6 +153,7 @@ func TestBuildAppMintsInTheConfiguredAccessMode(t *testing.T) {
 		cfg := testConfig()
 		cfg.Database = dbtest.DSN(t)
 		cfg.ConnectorEncKey = []byte(strings.Repeat("k", 32))
+		cfg.AgentConnectURL = "http://muster.example.test:18191" // the agent-facing store needs it
 		cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAppAccounts, cfg.GitHubAppAccess =
 			key.GitHubAppID, key.GitHubAppKey, key.GitHubAppAccounts, key.GitHubAppAccess
 		var buf lockedBuffer // buildApp's background App check logs into it too

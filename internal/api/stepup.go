@@ -114,7 +114,7 @@ type stepUpResult struct {
 
 func (s *Server) handleStepUpConfirm(w http.ResponseWriter, r *http.Request) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -248,7 +248,7 @@ func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password 
 // session itself was required by the route's wrapper.
 func (s *Server) stepUpPasskeyRefusal(w http.ResponseWriter, r *http.Request) (gotrueCreds, bool) {
 	if !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return gotrueCreds{}, true
 	}
 	creds, ok := gotrueCredsFrom(r.Context())

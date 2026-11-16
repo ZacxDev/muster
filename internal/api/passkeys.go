@@ -139,7 +139,7 @@ func (s *Server) passkeySignInRefusal(w http.ResponseWriter, r *http.Request) bo
 	case !viaBrowserListener(r):
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": OffBrowserListenerRefusal})
 	case !s.isSameOrigin(r):
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	case !s.passkeysServed(r.Context()):
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": PasskeysOffRefusal})
 	default:
@@ -273,7 +273,7 @@ func isStatus(err error, code int) bool {
 // on the request, or a cross-origin write.
 func (s *Server) passkeyAccountCreds(w http.ResponseWriter, r *http.Request) (gotrueCreds, bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 		return gotrueCreds{}, false
 	}
 	creds, ok := gotrueCredsFrom(r.Context())

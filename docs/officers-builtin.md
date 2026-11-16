@@ -198,8 +198,12 @@ What happens:
   `officer_ask_person` and `officer_post_draft` (with the type's
   `outbound_drafts` grant), and — when the officer declares `connectors` —
   `connectors_list`, `connector_request`, `connector_status` and
-  `postgres_query`, through the mirror door. Every call is bound to the Claude
-  session muster recorded for that spawn, in the window it recorded, and runs
+  `postgres_query`, through the mirror door. Those need the agent connector
+  store (`MUSTER_CONNECTOR_ENCRYPTION_KEY`, `MUSTER_AGENT_CONNECT_URL` and
+  `MUSTER_CONNECT_PORT`); without it they are not offered, and the connectors
+  feature reports MISCONFIGURED, naming the officer, so `muster doctor` fails.
+  Every call is bound to the Claude session muster recorded for that spawn, in
+  the window it recorded, and runs
   as the instance's agent row; any other session gets a tool error. A bound
   instance gets ONLY these (and `attention_ask`). While a host officer is
   declared, every mirrored session's tool list shows these tools (a list
