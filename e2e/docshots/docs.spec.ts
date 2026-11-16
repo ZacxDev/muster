@@ -13,6 +13,7 @@ import { authenticator } from '../lib/webauthn';
 import { writeFileAtomic } from '../lib/atomic';
 import { landedHome } from '../lib/nav';
 import { revealBox } from '../lib/composer';
+import { namedSessions, namesControls } from './names';
 
 // THE DOCS SCREENSHOTS (docs/img/*.png) AND THE README'S TWO ANIMATIONS
 // (docs/img/phone-flow.gif and docs/img/ask-flow.gif), generated rather than hand-made, so they can be
@@ -68,6 +69,8 @@ const mirrorBin = path.join(binDir, 'muster-mirror-e2e-docs');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-docshots-'));
 const windowsFile = path.join(dir, 'windows');
 const windowsFile2 = path.join(dir, 'windows2');
+const labelsFile = path.join(dir, 'labels.json');
+const labelsFile2 = path.join(dir, 'labels2.json');
 const pasteFile = path.join(dir, 'pasted');
 const tr = (n: string) => path.join(dir, `${n}.jsonl`);
 
@@ -100,7 +103,7 @@ const call = (id: string, name: string, input: object) => ({ type: 'tool_use', i
 const result = (id: string, out: string) => rec({ type: 'user', promptId: 'p1', message: { content: [{ type: 'tool_result', tool_use_id: id, content: out }] } });
 const prompt = (t: string, id = 'p1') => rec({ type: 'user', promptId: id, origin: { kind: 'human' }, message: { role: 'user', content: t } });
 
-// otter: the session the animation and most shots open. Three tool calls in a
+// tasks: the session the animation and most shots open. Three tool calls in a
 // row (one "3 tool calls" group), each followed by a turn with usage, so every
 // row carries a measured context badge: +1.2k, +4.8k, +610.
 const OTTER =
@@ -126,25 +129,103 @@ const simple = (q: string, a: string) => prompt(q) + asst(say(a), 15000);
 
 const now = Math.floor(Date.now() / 1000);
 // <session>|<window id>|<index>|<active 0/1>|<command>|<activity>|<transcript>
-// The session names are the codenames the switcher's search finds.
+// The tmux session names, as a person names them for the work (`tmux new -s
+// release`): they still show where muster draws a window's tmux address (an
+// ask's card: `tmux release:1 @ workstation`), so they are never bare
+// codenames either. A conversation is called by its NAME (NAMES below), a
+// window with none by its host label (LABELS).
 const windows = [
-  ['otter', '@1', 1, 1, 'claude', now - 20, tr('otter')],
-  ['falcon', '@2', 1, 1, 'claude', now - 95, tr('falcon')],
-  ['quartz', '@3', 1, 1, 'codex', now - 400, ''],
-  ['kestrel', '@4', 1, 1, 'zsh', now - 900, ''],
-  ['otter', '@5', 2, 0, 'zsh', now - 1500, ''],
+  ['tasks', '@1', 1, 1, 'claude', now - 20, tr('tasks')],
+  ['release', '@2', 1, 1, 'claude', now - 95, tr('release')],
+  ['web', '@3', 1, 1, 'codex', now - 400, ''],
+  ['logs', '@4', 1, 1, 'zsh', now - 900, ''],
+  ['tasks', '@5', 2, 0, 'zsh', now - 1500, ''],
 ];
 const windows2 = [
-  ['juniper', '@1', 1, 1, 'claude', now - 60, tr('juniper')],
-  ['maple', '@2', 1, 1, 'opencode', now - 700, ''],
-  ['heron', '@3', 1, 1, 'claude', now - 2400, tr('heron')],
+  ['flags', '@1', 1, 1, 'claude', now - 60, tr('flags')],
+  ['csv', '@2', 1, 1, 'opencode', now - 700, ''],
+  ['nightly', '@3', 1, 1, 'claude', now - 2400, tr('nightly')],
 ];
 
+// 🔴 EVERY SESSION IS CALLED BY ITS WORK, NEVER BY ITS CODENAME (names.ts
+// checks every image). A Claude Code window's NAME is its conversation's first
+// good focus title, frozen (docs/focus.md, "A session's name"): written here
+// through e2e/mkchat as a focus refresh writes it — judged by focus.Nameable
+// over the conversation's own first turn (`tail`) — keyed by the session id
+// the fake host reads from the transcript's file name. No model is called.
+// Each session's focus then moves on, as a refresh's would: `focus` is the
+// line under the name, and the name stays put.
+const NAMES: Record<string, { name: string; focus: string; description: string; tail: [string, string] }> = {
+  tasks: {
+    name: 'Speed up the task-list endpoint',
+    focus: 'Batching the per-task comment queries',
+    description: 'Comments loaded one query per task; they now load in one batched query.',
+    tail: ['The task-list endpoint is slow with 5k tasks. Find out why and fix it.', "I'll profile the list query first."],
+  },
+  release: {
+    name: 'Write the 2.4 release notes',
+    focus: 'Drafting the 2.4 changelog',
+    description: 'Three features and two fixes, drafted in CHANGELOG.md.',
+    tail: ['Write the release notes for 2.4.', 'Drafted in CHANGELOG.md — three features, two fixes.'],
+  },
+  flags: {
+    name: 'Rename the billing feature flags',
+    focus: 'Renaming 14 flags to the new scheme',
+    description: 'Fourteen flags renamed to the new scheme across nine files.',
+    tail: ['Rename the billing feature flags to the new scheme.', 'Renamed 14 flags across 9 files; the tests pass.'],
+  },
+  nightly: {
+    name: 'Fix the flaky nightly upload test',
+    focus: "Pinning the upload test's fake clock",
+    description: 'The upload test timed out against the real clock; the fake clock is now pinned.',
+    tail: ['Why is the nightly build red?', 'A flaky timeout in the upload test. I pinned the fake clock.'],
+  },
+};
+// A window with no conversation (a shell, the Codex window, the opencode
+// window this harness runs no server for) has nothing muster can name: each
+// host gives its tmux sessions work-style LABELS instead (muster-mirror
+// -labels-file), drawn `<label>:<index>`, as an operator labels a real host.
+// The tasks session's label also titles its shell (tasks:2 is drawn
+// tasks-api:2); its Claude window is called by its name.
+const LABELS = { tasks: 'tasks-api', web: 'web-lint', logs: 'api-logs' };
+const LABELS2 = { csv: 'csv-import' };
+
+function writeNames() {
+  const specs = Object.entries(NAMES).map(([sid, n]) => ({
+    subject: 'mirror:' + sid,
+    title: n.name,
+    description: n.description,
+    tail: [
+      { role: 'user', text: n.tail[0] },
+      { role: 'assistant', text: n.tail[1] },
+    ],
+  }));
+  // FOCUS_ONLY against a seeded agent: writes the mirrored sessions' focus
+  // and nothing else (no agent of its own to show up in the sidebar). First
+  // the title that freezes the name, then the focus it moved on to.
+  const later = Object.entries(NAMES).map(([sid, n]) => ({ subject: 'mirror:' + sid, title: n.focus, description: n.description }));
+  for (const focus of [specs, later]) {
+    execFileSync('go', ['run', './e2e/mkchat'], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: 'docs-sweeper', MUSTER_E2E_FOCUS_ONLY: '1', MUSTER_E2E_FOCUS: JSON.stringify(focus) },
+    });
+  }
+}
+
+// The session a sidebar row, palette option or switcher entry OPENS (its
+// link's session=): rows are titled by name, so a step finds a session by the
+// window it opens, never by its codename in the text.
+const opens = async (el: Locator) => {
+  const href = (await el.getAttribute('href')) || (await el.getAttribute('data-href')) || '';
+  return new URLSearchParams(href.split('?')[1] || '').get('session') || '';
+};
+
 function writeTranscripts() {
-  fs.writeFileSync(tr('otter'), OTTER);
-  fs.writeFileSync(tr('falcon'), simple('Write the release notes for 2.4.', 'Drafted in CHANGELOG.md — three features, two fixes.'));
-  fs.writeFileSync(tr('juniper'), simple('Rename the billing feature flags to the new scheme.', 'Renamed 14 flags across 9 files; the tests pass.'));
-  fs.writeFileSync(tr('heron'), simple('Why is the nightly build red?', 'A flaky timeout in the upload test. I pinned the fake clock.'));
+  fs.writeFileSync(tr('tasks'), OTTER);
+  fs.writeFileSync(tr('release'), simple('Write the release notes for 2.4.', 'Drafted in CHANGELOG.md — three features, two fixes.'));
+  fs.writeFileSync(tr('flags'), simple('Rename the billing feature flags to the new scheme.', 'Renamed 14 flags across 9 files; the tests pass.'));
+  fs.writeFileSync(tr('nightly'), simple('Why is the nightly build red?', 'A flaky timeout in the upload test. I pinned the fake clock.'));
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -163,7 +244,7 @@ const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL:
 // The terminal shot's shell, in the fake's MUSTER_MIRROR_E2E_PROMPT.
 const TERMINAL_LINES = ['~/board $ git status', 'On branch main', 'nothing to commit, working tree clean', '~/board $ '];
 
-function startMirror(name: string, file: string) {
+function startMirror(name: string, file: string, labels: string) {
   const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', name], { env: serverEnv() }).toString().trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   mirrorTokens[name] = token;
@@ -176,6 +257,7 @@ function startMirror(name: string, file: string) {
       MUSTER_MIRROR_HOST: name,
       MUSTER_MIRROR_INTERACTIVE: '1',
       MUSTER_MIRROR_E2E_WINDOWS_FILE: file,
+      MUSTER_MIRROR_LABELS_FILE: labels,
       MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile,
       MUSTER_MIRROR_E2E_WINDOW: '120x40',
       // A shell's last lines, drawn ending on the window's bottom row, where a
@@ -217,11 +299,15 @@ test.beforeAll(async () => {
     MUSTER_STT_URL: `http://127.0.0.1:${sttPort}`,
     MUSTER_STT_TOKEN: sttToken,
   });
+  namesControls();
   writeTranscripts();
+  writeNames();
   writeFileAtomic(windowsFile, windows.map((w) => w.join('|')).join('\n') + '\n');
   writeFileAtomic(windowsFile2, windows2.map((w) => w.join('|')).join('\n') + '\n');
-  startMirror(host, windowsFile);
-  startMirror(host2, windowsFile2);
+  fs.writeFileSync(labelsFile, JSON.stringify(LABELS));
+  fs.writeFileSync(labelsFile2, JSON.stringify(LABELS2));
+  startMirror(host, windowsFile, labelsFile);
+  startMirror(host2, windowsFile2, labelsFile2);
 });
 
 test.afterAll(async () => {
@@ -251,11 +337,25 @@ const view = (h: string, session: string) => {
 // The push-permission line reads "Notifications are blocked…" in a headless
 // browser: true of the harness, not of the app. Hidden, as e2e/capture does.
 const HIDE = '#push-status{display:none!important} *{caret-color:transparent!important}';
-async function shoot(page: Page, file: string) {
+async function shoot(page: Page, file: string, minNamed = 0) {
   await page.addStyleTag({ content: HIDE });
   await page.waitForTimeout(600);
+  await namedSessions(page, file, minNamed);
   await page.screenshot({ path: path.join(outDir, file) });
 }
+
+// The sidebar's server row names the server you are on: the label you gave it
+// in this browser (Manage servers, web/static/servers.js, kept in localStorage)
+// or, with none, its address. The harness's address (localhost:<port>) is
+// true of the harness only, so this browser has labelled its server "Home",
+// as a person does.
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript((origin) => {
+    try {
+      localStorage.setItem('muster-servers', JSON.stringify({ v: 1, servers: [{ origin, label: 'Home' }] }));
+    } catch {}
+  }, browserURL);
+});
 
 // One sign-in for the whole file: the admin claims user 1 (the owner of the
 // seeded board and of the mirror tokens), and the cookies are reused.
@@ -288,21 +388,21 @@ async function listed(page: Page) {
   await expect
     .poll(async () => {
       const html = await (await page.request.get(browserURL + '/ui/nav/agents')).text();
-      return ['heron', 'otter', 'juniper'].every((s) => html.includes('session=' + s));
+      return ['nightly', 'tasks', 'flags'].every((s) => html.includes('session=' + s));
     }, { message: 'both machines are listed', timeout: 20_000 })
     .toBe(true);
 }
 
 // visitAll opens each session once, so the switcher's Recent view (the
-// viewer's server-side recents) has entries, otter newest.
+// viewer's server-side recents) has entries, tasks newest.
 let visited = false;
 async function visitAll(page: Page) {
   if (visited) return;
   for (const [h, s] of [
-    [host2, 'heron'],
-    [host, 'kestrel'],
-    [host2, 'juniper'],
-    [host, 'falcon'],
+    [host2, 'nightly'],
+    [host, 'logs'],
+    [host2, 'flags'],
+    [host, 'release'],
   ]) {
     await page.goto(view(h, s));
     // Enabled, not visible: on a touch screen the box is collapsed behind
@@ -313,7 +413,7 @@ async function visitAll(page: Page) {
 }
 
 async function openOtter(page: Page) {
-  await page.goto(view(host, 'otter'));
+  await page.goto(view(host, 'tasks'));
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText('batched query', { timeout: 20_000 });
 }
 
@@ -347,7 +447,7 @@ test('stepup-passkey.png — confirm it is you, with a passkey', async ({ page, 
   await page.locator('#passkey-add').click();
   await expect(page.locator('#passkey-list [data-passkey-id]')).toHaveCount(1);
 
-  await page.goto(view(host, 'falcon'));
+  await page.goto(view(host, 'release'));
   await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
   const real = (await context.cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;
   const claims = b64urlJSON(real.split('.')[1]);
@@ -362,7 +462,7 @@ test('stepup-passkey.png — confirm it is you, with a passkey', async ({ page, 
   await expect(page.locator('#term-confirm')).toBeVisible();
   await expect(page.locator('#term-confirm-passkey')).toBeVisible();
   await shoot(page, 'stepup-passkey.png');
-  expect(fs.existsSync(tr('falcon') + '.pasted'), 'nothing was pasted while the sign-in is stale').toBe(false);
+  expect(fs.existsSync(tr('release') + '.pasted'), 'nothing was pasted while the sign-in is stale').toBe(false);
   expect(mirrorLog).not.toContain('panic');
 });
 
@@ -375,7 +475,8 @@ test('sidebar.png — every session on two machines, in the sidebar', async ({ p
   await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
   await expect(page.locator('#sidebar-agents-list a[data-nav-current]')).toHaveCount(1);
   await page.waitForTimeout(400);
-  await shoot(page, 'sidebar.png');
+  // The four Claude Code windows are in the list: the name check must read them.
+  await shoot(page, 'sidebar.png', 4);
 });
 
 test('sidebar-search.png — the palette from the sidebar, matching a kind on both machines', async ({ page }) => {
@@ -403,13 +504,15 @@ test("agent-actions.png — an agent's page: its live status and its ⋯ menu", 
   await shoot(page, 'agent-actions.png');
 });
 
-test('switcher-search.png — a session page, its bottom bar, and the search palette finding a codename', async ({ page }) => {
+test('switcher-search.png — a session page, its bottom bar, and the search palette finding a session by its name', async ({ page }) => {
   await signIn(page);
   await visitAll(page);
   await openOtter(page);
   await page.locator('#switcher-search-open').click();
-  await page.locator('#switcher-search-input').fill('fal');
-  await expect(page.locator('#switcher-search-results [role="option"]').first()).toContainText('falcon');
+  await page.locator('#switcher-search-input').fill('release notes');
+  const first = page.locator('#switcher-search-results [role="option"]').first();
+  await expect(first).toContainText(NAMES.release.name);
+  expect(await opens(first), 'the first match opens release').toBe('release');
   await shoot(page, 'switcher-search.png');
 });
 
@@ -447,6 +550,7 @@ test('dictation.png — the mic recording into the message box', async ({ page }
   await expect(page.locator('#mv-dictate-note')).toContainText('Recording 0:0');
   await page.waitForTimeout(1200);
   await page.addStyleTag({ content: HIDE });
+  await namedSessions(page, 'dictation.png');
   await page.screenshot({ path: path.join(outDir, 'dictation.png') });
   await mic.click();
   await expect(page.locator('#mv-input')).toHaveValue(new RegExp(DICTATED.replace(/[.]/g, '\\.')));
@@ -459,7 +563,7 @@ test('dictation.png — the mic recording into the message box', async ({ page }
 // the rows drawn inside #term-scroll's visible rect that carry text.
 test('mirror-terminal.png — the terminal view of a shell window', async ({ page }) => {
   await signIn(page);
-  await page.goto(browserURL + '/mirror/terminal?' + q(host, 'kestrel', '@4'));
+  await page.goto(browserURL + '/mirror/terminal?' + q(host, 'logs', '@4'));
   await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 20_000 });
   await expect(page.locator('#mv-input')).toBeEnabled();
   await page.locator('#mv-input').fill('make test');
@@ -499,8 +603,9 @@ class Reel {
   n = 0;
   concat: string[] = [];
   constructor(readonly dir: string) {}
-  async frame(page: Page, hold: number) {
+  async frame(page: Page, hold: number, minNamed = 0) {
     const f = path.join(this.dir, `f${String(this.n++).padStart(3, '0')}.png`);
+    await namedSessions(page, f, minNamed);
     await page.screenshot({ path: f });
     this.concat.push(`file '${f}'`, `duration ${hold}`);
   }
@@ -531,27 +636,29 @@ test('phone-flow.gif frames — open, switch by search, dictate, send', async ({
   test.setTimeout(120_000);
   await signIn(page);
   await visitAll(page);
-  // Start from juniper's page, on the other machine.
-  await page.goto(view(host2, 'juniper'));
+  // Start from flags's page, on the other machine.
+  await page.goto(view(host2, 'flags'));
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toBeVisible({ timeout: 20_000 });
   await page.addStyleTag({ content: HIDE });
   await page.waitForTimeout(500);
   await frame(page, 1.4);
 
-  // The bar's search: type a codename.
+  // The bar's search: type a word of the session's name.
   await tapDot(page, page.locator('#switcher-search-open'));
   await page.locator('#switcher-search-open').click();
   await expect(page.locator('#switcher-search-input')).toBeVisible();
   await page.waitForTimeout(250);
   await frame(page, 0.5);
-  for (const ch of 'ott') {
+  for (const ch of 'task') {
     await page.keyboard.type(ch);
     await page.waitForTimeout(120);
     await frame(page, 0.3);
   }
-  await expect(page.locator('#switcher-search-results [role="option"]').first()).toContainText('otter');
+  const first = page.locator('#switcher-search-results [role="option"]').first();
+  await expect(first).toContainText(NAMES.tasks.name);
+  expect(await opens(first), 'the first match opens tasks').toBe('tasks');
   await frame(page, 0.8);
-  await Promise.all([page.waitForURL(/session=otter/), page.keyboard.press('Enter')]);
+  await Promise.all([page.waitForURL(/session=tasks/), page.keyboard.press('Enter')]);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText('batched query', { timeout: 20_000 });
   await page.addStyleTag({ content: HIDE });
   await page.waitForTimeout(500);
@@ -579,10 +686,10 @@ test('phone-flow.gif frames — open, switch by search, dictate, send', async ({
   await tapDot(page, send);
   await send.click();
   await expect(page.locator('#mv-input')).toHaveValue('');
-  await expect.poll(() => (fs.existsSync(tr('otter') + '.pasted') ? fs.readFileSync(tr('otter') + '.pasted', 'utf8') : ''), { message: `pasted (log:\n${mirrorLog})` }).toContain(DICTATED);
+  await expect.poll(() => (fs.existsSync(tr('tasks') + '.pasted') ? fs.readFileSync(tr('tasks') + '.pasted', 'utf8') : ''), { message: `pasted (log:\n${mirrorLog})` }).toContain(DICTATED);
   await page.waitForTimeout(300);
   await frame(page, 0.6);
-  fs.appendFileSync(tr('otter'), OTTER_NEXT);
+  fs.appendFileSync(tr('tasks'), OTTER_NEXT);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText('9 ms → 6 ms', { timeout: 20_000 });
   await page.waitForTimeout(500);
   await frame(page, 3.0);
@@ -661,13 +768,15 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await page.locator('#sidebar-open').click();
   await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
   await page.waitForTimeout(400);
-  await askFlow.frame(page, 2.4);
+  // The list is open: the name check must read its Claude Code windows.
+  await askFlow.frame(page, 2.4, 4);
 
-  // 2. falcon asks. Its row moves to the top with a question mark and the Asks
+  // 2. release asks. Its row moves to the top with a question mark and the Asks
   // count goes up.
-  await askHook(host, 'falcon', 'toolu_docs_release');
+  await askHook(host, 'release', 'toolu_docs_release');
   await expect(page.locator('#attention-badge')).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toContainText('falcon');
+  await expect.poll(() => opens(page.locator('#sidebar-agents-list a[data-nav-agent]').first()), { timeout: 20_000 }).toBe('release');
+  await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toContainText(NAMES.release.name);
   await page.waitForTimeout(600);
   await askFlow.frame(page, 2.2);
 
@@ -692,13 +801,15 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   // The held question's card is one link to its question card.
   const open = item.locator('a[data-attention-open]');
   await tapDot(page, open, 0.5, askFlow);
-  await Promise.all([page.waitForURL(/session=falcon/), open.click()]);
+  await Promise.all([page.waitForURL(/session=release/), open.click()]);
   const card = page.locator('#mv-asks [data-ask-live][data-ask-tool="toolu_docs_release"]');
   await expect(card).toHaveAttribute('data-ask-state', 'pending', { timeout: 20_000 });
   await page.addStyleTag({ content: HIDE });
   await card.scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);
   await askFlow.frame(page, 2.0);
+  // The README's still of the same moment: the question as a form, unanswered.
+  await shoot(page, 'ask-card.png');
   const choice = card.getByText('Publish now', { exact: true });
   await tapDot(page, choice, 0.6, askFlow);
   await choice.tap();
@@ -726,10 +837,10 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await askFlow.frame(page, 1.4);
 
   // 4. The agent carries on: no longer waiting, it writes its next turn.
-  fs.rmSync(tr('falcon') + '.waiting', { force: true });
-  const lines = fs.readFileSync(tr('falcon'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  fs.rmSync(tr('release') + '.waiting', { force: true });
+  const lines = fs.readFileSync(tr('release'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(lines.find((l) => l.toolUseResult)?.toolUseResult?.answers).toEqual({ [RELEASE_Q.question]: 'Publish now' });
-  fs.appendFileSync(tr('falcon'), FALCON_NEXT);
+  fs.appendFileSync(tr('release'), FALCON_NEXT);
   await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText('Published v2.4.0', { timeout: 20_000 });
   await page.waitForTimeout(500);
   await shownOnce();
