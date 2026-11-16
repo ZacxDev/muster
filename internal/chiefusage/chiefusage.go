@@ -95,6 +95,7 @@ const RuleProposeTool = "routing_rule_propose"
 // toolOutcomes maps the chief's tools (bare names) to the outcome they mean.
 var toolOutcomes = map[string]string{
 	"route_to_session":      OutcomeRouted,
+	"route_many":            OutcomeRouted,
 	"plugin_message_settle": OutcomeSettled,
 	"ask_owner":             OutcomeAsk,
 	"attention_ask":         OutcomeAsk,

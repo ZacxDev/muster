@@ -236,7 +236,13 @@ func TestEveryFocusToolMarksItsTextUntrusted(t *testing.T) {
 	for tool, args := range map[string]string{"fleet_list": `{}`, "focus_search": `{"query":"x"}`} {
 		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, tool, args) {
 			var env struct{ Untrusted string }
-			if err := json.Unmarshal([]byte(text), &env); err != nil || env.Untrusted != focus.UntrustedNote {
+			// fleet_list also carries what sessions declared with track_task:
+			// its note says that is untrusted too.
+			want := focus.UntrustedNote
+			if tool == "fleet_list" {
+				want = focus.UntrustedTasksNote
+			}
+			if err := json.Unmarshal([]byte(text), &env); err != nil || env.Untrusted != want {
 				t.Errorf("%s %s: no untrusted envelope: %s", tool, surface, text)
 			}
 		}
