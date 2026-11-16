@@ -81,13 +81,21 @@ export function namesControls() {
 }
 
 // namedSessions fails the shot when any title on the page is a bare codename,
-// and returns how many nameable titles it read (a caller can require > 0, so a
-// selector that matches nothing cannot pass every image).
-export async function namedSessions(page: Page, where: string): Promise<number> {
+// or when it read fewer than `min` nameable titles. 🔴 THE MINIMUM IS THE
+// CHECK'S POSITIVE CONTROL ON THE PAGE: if a UI change renames or drops the
+// attributes collectSessionTitles reads, it reads nothing, and "no bare
+// codename" holds of every image. A shot that shows the session list
+// (sidebar.png, the ask-flow's first frame) passes min > 0, so that case
+// fails instead of passing.
+export async function namedSessions(page: Page, where: string, min = 0): Promise<number> {
   const titles = await page.evaluate(collectSessionTitles);
   const bare = bareCodenames(titles);
   if (bare.length) {
     throw new Error(`${where}: ${bare.length} session(s) titled by codename, not by their work: ${bare.map((t) => `${t.where} "${t.name}"`).join(', ')}`);
   }
-  return titles.filter((t) => t.nameable).length;
+  const named = titles.filter((t) => t.nameable).length;
+  if (named < min) {
+    throw new Error(`${where}: read ${named} nameable session title(s), expected at least ${min}: the name check sees no session list (has a data-switcher-name attribute moved?)`);
+  }
+  return named;
 }

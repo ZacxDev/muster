@@ -194,7 +194,8 @@ row, switcher entry or page header that calls a session by its codename fails
 the run.
 
 Three README images are not made here, and `make screenshots` does not
-regenerate them: `hero.gif`, `queue-next.png` and `officer-ask.png`. They are
+regenerate them, nor re-compress them: `hero.gif`, `queue-next.png` and
+`officer-ask.png`. They are
 shot by a Playwright script outside this repository, against a throwaway
 server built from this repository and two `muster-mirror -tags e2emirror` fake
 hosts (the same fake as here), with an invented fleet: invented hosts,
@@ -202,9 +203,10 @@ sessions, transcripts and focus rows, and SQL stand-ins for the rows a fake
 host cannot make (an officer's ask). The question in `hero.gif` is registered
 by the real `muster-mirror ask` hook and answered through the UI, as in
 `ask-flow.gif`. Every frame is checked before it is kept: no real host, user or
-home-directory name, no permission prompt, and no session called by its
-codename (the rule `names.ts` holds here). No model is called. `hero.gif` is a
-frame reel like the two above, with a caption band drawn above each frame.
+home-directory name, no permission prompt, no session called by its codename
+(the rule `names.ts` holds here), and no page text showing beside an open
+sidebar. No model is called. `hero.gif` is a frame reel like the two above,
+with a caption band drawn above each frame.
 
 Then it compresses each PNG with pngquant when it is installed, and fails if a
 PNG is over 200 KB or a GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the

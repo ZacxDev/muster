@@ -337,10 +337,10 @@ const view = (h: string, session: string) => {
 // The push-permission line reads "Notifications are blocked…" in a headless
 // browser: true of the harness, not of the app. Hidden, as e2e/capture does.
 const HIDE = '#push-status{display:none!important} *{caret-color:transparent!important}';
-async function shoot(page: Page, file: string) {
+async function shoot(page: Page, file: string, minNamed = 0) {
   await page.addStyleTag({ content: HIDE });
   await page.waitForTimeout(600);
-  await namedSessions(page, file);
+  await namedSessions(page, file, minNamed);
   await page.screenshot({ path: path.join(outDir, file) });
 }
 
@@ -475,7 +475,8 @@ test('sidebar.png — every session on two machines, in the sidebar', async ({ p
   await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
   await expect(page.locator('#sidebar-agents-list a[data-nav-current]')).toHaveCount(1);
   await page.waitForTimeout(400);
-  await shoot(page, 'sidebar.png');
+  // The four Claude Code windows are in the list: the name check must read them.
+  await shoot(page, 'sidebar.png', 4);
 });
 
 test('sidebar-search.png — the palette from the sidebar, matching a kind on both machines', async ({ page }) => {
@@ -602,9 +603,9 @@ class Reel {
   n = 0;
   concat: string[] = [];
   constructor(readonly dir: string) {}
-  async frame(page: Page, hold: number) {
+  async frame(page: Page, hold: number, minNamed = 0) {
     const f = path.join(this.dir, `f${String(this.n++).padStart(3, '0')}.png`);
-    await namedSessions(page, f);
+    await namedSessions(page, f, minNamed);
     await page.screenshot({ path: f });
     this.concat.push(`file '${f}'`, `duration ${hold}`);
   }
@@ -767,7 +768,8 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await page.locator('#sidebar-open').click();
   await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
   await page.waitForTimeout(400);
-  await askFlow.frame(page, 2.4);
+  // The list is open: the name check must read its Claude Code windows.
+  await askFlow.frame(page, 2.4, 4);
 
   // 2. release asks. Its row moves to the top with a question mark and the Asks
   // count goes up.

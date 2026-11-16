@@ -13,7 +13,7 @@ Self-hosted: start on this machine at `http://localhost`, then add your phone ov
 [![Self-hosted with Docker Compose](https://img.shields.io/badge/self--hosted-Docker%20Compose-2496ED?logo=docker&logoColor=white)](INSTALL.md)
 [![Runs on your tailnet](https://img.shields.io/badge/network-your%20tailnet-242424?logo=tailscale&logoColor=white)](#how-it-works)
 
-<img src="docs/img/hero.gif" width="300" alt="On a phone: the sidebar lists every session on two machines, called by their work. Searching 'opencode' finds the opencode session and 'codex' finds the two Codex windows; one Codex window opens as a live terminal. Back in the list, the Claude Code session 'Rate-limit the public API' asks whether to limit per API key or per client IP and jumps to the top with a count; one tap opens its chat, Per API key and Submit answer it, the session runs its tests and says it is done, and the list ends with nothing waiting">
+<img src="docs/img/hero.gif" width="300" alt="On a phone: the sidebar lists every session on two machines, called by their work. Searching 'opencode' finds the opencode session and 'codex' finds the two Codex windows; one Codex window opens as a live terminal. The Claude Code session 'Rate-limit the public API' then asks whether to limit per API key or per client IP, and its question shows on the Asks page with a count; one tap opens its chat, Per API key and Submit answer it, the session runs its tests and says it is done, and the list ends with nothing waiting">
 
 </div>
 
@@ -71,7 +71,7 @@ Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main
 <sub>Optional dictation: tap the mic and speak, and read the transcript in the box before you press Send.</sub>
 </td>
 <td align="center" valign="top">
-<img src="docs/img/queue-next.png" width="220" alt="A busy Claude Code session, 'Migrate billing to Stripe webhooks', on a phone, with two messages queued under its box: the queue sends one at a time, each when Claude Code has been idle a while"><br>
+<img src="docs/img/queue-next.png" width="220" alt="A busy Claude Code session, 'Migrate billing to Stripe webhooks', on a phone, with two messages queued above its box: the queue sends one at a time, each when Claude Code has been idle a while"><br>
 <b>Queue the next message</b><br>
 <sub>Queue messages while the agent works: the server sends each one once Claude Code has been idle for 30 s, even with your phone closed.</sub>
 </td>
@@ -87,7 +87,8 @@ Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main
 their first good focus title ([focus](docs/features.md#focus): optional, needs
 an OpenRouter key). Without either, a window shows its tmux session and window
 (`work:1`), or a label you give that tmux session (`muster-mirror
--labels-file`), as the shells and Codex windows in these pictures do.</sub>
+-labels-file`), as the shells, the Codex windows and the opencode window in
+these pictures do.</sub>
 
 - **A push when a session needs you, and one queue for everything waiting.** A
   session's stop is pushed once and never quoted; asks are pushed with their
