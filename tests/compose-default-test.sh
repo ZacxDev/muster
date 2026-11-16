@@ -145,6 +145,8 @@ MIN=0.13.0; commit 0.12.0 c16
 expect "the bootstrap (minimum = the next release, default = the newest) WARNS" 0 \
   "WARN deploy/docker-compose.yml needs muster 0.13.0 (x-muster-min-version), the NEXT release, not yet cut; it defaults to 0.12.0" "$(run || true)"
 state "the bootstrap" bootstrap
+GITHUB_ACTIONS=true state "the bootstrap, in GitHub Actions (no ::warning on --state's stdout)" bootstrap
+expect "in GitHub Actions the warning is also a ::warning annotation" 0 "::warning title=compose default::deploy/docker-compose.yml needs muster 0.13.0" "$(GITHUB_ACTIONS=true run || true)"
 MIN=0.14.0; commit 0.12.0 c17
 expect "a minimum two releases out FAILS" 1 "The only unreleased minimum allowed is the NEXT release, 0.13.0" "$(run || true)"
 MIN=0.12.1; commit 0.12.0 c18

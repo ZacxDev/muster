@@ -147,10 +147,7 @@ failed() {
   for l in "$@"; do echo "FAIL: $l" >&2; done
   exit 1
 }
-say_warn() {
-  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning title=compose default::$1"; fi
-  warn+=("WARN $1")
-}
+say_warn() { warn+=("$1"); }
 
 # 1. The minimum.
 if ! vle "$min" "$cur"; then
@@ -187,8 +184,12 @@ else
   failed "deploy/docker-compose.yml defaults to $cur, AHEAD of the newest release before this commit (v$latest): a clone would pull an image that does not exist."
 fi
 
+# --state prints the state word ONLY (callers compare it), in Actions too.
 if [ "$mode" = --state ]; then echo "$state"; exit 0; fi
-for w in "${warn[@]+"${warn[@]}"}"; do echo "$w"; done
+for w in "${warn[@]+"${warn[@]}"}"; do
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning title=compose default::$w"; fi
+  echo "WARN $w"
+done
 case "$state" in
   ok) echo "ok   deploy/docker-compose.yml defaults to $cur, the newest release (v$latest), and this file needs $min or newer" ;;
   *)  echo "ok   ($state) deploy/docker-compose.yml defaults to $cur; the newest release is v$latest; this file needs $min" ;;
