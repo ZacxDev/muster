@@ -2220,6 +2220,26 @@ func routeRowSurvived(ctx context.Context) bool {
 // hand-back's).
 func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
 	done, refused func(context.Context)) bool {
+	return s.startRouteTurnIfOwed(ctx, chief, sess, routeID, text, nil, done, refused)
+}
+
+// startRouteTurnIfOwed is startRouteTurn with a re-check UNDER THE CLAIM:
+// owed (when not nil) runs once the chief's delivery claim is won and before
+// anything is stored or sent, and when it reports false the claim is released
+// and nothing is delivered — startRouteTurnIfOwed then reports TRUE (there is
+// nothing to deliver, so the caller's "cannot take it now" fallback must not
+// run either).
+//
+// 🔴 THIS IS WHAT MAKES A CALLER'S OWN "STILL OWED?" CHECK EXACTLY-ONCE. A
+// check made before the claim (deliverRouteBatch's "owed, not in flight, not
+// on record") can be stale by the time the claim is won: a racing delivery
+// may have won it first, run its whole turn, stored the reply, taken what it
+// carried and released the claim in between, and the late one would then
+// deliver a second time (issue #732: 2 digest turns from one batch). The
+// claim serialises the deliveries; only a check made while holding it sees
+// the first one's result.
+func (s *Server) startRouteTurnIfOwed(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
+	owed func(context.Context) bool, done, refused func(context.Context)) bool {
 	if agents.KickoffOwed(chief) {
 		return false
 	}
@@ -2233,6 +2253,10 @@ func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess ag
 		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, owner); err != nil {
 			s.logger.Printf("routes: %s: release the chief's claim: %v", routeID, err)
 		}
+	}
+	if owed != nil && !owed(ctx) {
+		release(ctx)
+		return true // delivered already (or unreadable: left for the next sweep)
 	}
 	if ok, _ := s.turns.enterIdle(chief.ID); !ok {
 		release(ctx)

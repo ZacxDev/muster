@@ -266,13 +266,15 @@ func firstInSweep(ctx context.Context, batchID string) bool {
 //     chief's session claim (ClaimKickoff), and the record is re-checked
 //     inside it, so racing deliveries write it once.
 //
-// ⚠ The turn path checks "owed, not in flight, not on record" BEFORE taking
-// the chief's claim (startRouteTurn takes it itself): a second delivery whose
-// check ran before the first cleared the hand-backs and whose claim ran after
-// the first released it would deliver again. In one muster the route sweep is
-// a single goroutine, so its deliveries never race; 8 deliveries forced past
-// the check together made one digest in every measured run
-// (route_many_race_pg_test.go). ctx acts as the routes' owner.
+// 🔴 The turn path checks "owed, not in flight, not on record" before taking
+// the chief's claim AND AGAIN UNDER IT (startRouteTurnIfOwed): a second
+// delivery whose first check ran before the first delivery cleared the
+// hand-backs, and whose claim was won after that delivery released it, finds
+// the batch no longer owed and delivers nothing. Without the re-check it
+// delivered again (issue #732: 2 digest turns in 99 of 200 runs of the
+// racer test); route_many_race_pg_test.go now queues the claim so every
+// racer takes it in turn, the exact interleaving. ctx acts as the routes'
+// owner.
 //
 // 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S (deliverRouteAnswer's rule):
 // owner_asked refuses in it, so no answer routes text onward in their name.
@@ -354,7 +356,21 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 					note(ctx)
 				}
 			}
-			if !s.startRouteTurn(ctx, chief, sess, batchID, text, finish, fallback) {
+			// Re-checked under the chief's delivery claim: a racing delivery
+			// may have delivered the digest between the checks above and
+			// this one winning the claim.
+			owed := func(ctx context.Context) bool {
+				b, err := s.ext.Routes.BatchRoutes(ctx, batchID)
+				if err != nil || !b.Owed {
+					return false // delivered already, or unreadable: the next sweep
+				}
+				if s.batchDigestOnRecord(ctx, batchID, sessID) {
+					finish(ctx) // on record, and no turn of it in flight: the claim is ours
+					return false
+				}
+				return true
+			}
+			if !s.startRouteTurnIfOwed(ctx, chief, sess, batchID, text, owed, finish, fallback) {
 				fallback(ctx) // the chief cannot take a turn NOW: the digest stays owed
 			}
 			return
