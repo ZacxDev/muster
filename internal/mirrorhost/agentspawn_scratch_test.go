@@ -79,7 +79,10 @@ func TestAScratchSpawnIsAnOfficersOnAPlainAgentSpawnHost(t *testing.T) {
 // — so a host whose chief spent its 3 per 10 minutes still starts an officer,
 // and the officers' ceiling refuses an officer once ITS admissions reach it,
 // while a chief spawn still passes it. Both directions, counted from the
-// audit log's admit lines (an older line with no officer flag is a chief's).
+// audit log's admit lines. A line with NO officer flag (a build before the
+// ceiling; O-B round 0) counts against neither: three of them do not spend the
+// chief's 3 per 10 minutes, nor the officers' 2, while three flagged chief
+// lines do (the control).
 func TestOfficerSpawnsHaveTheirOwnRateCeiling(t *testing.T) {
 	now := time.Now()
 	officerWidgets := widgets(officerPrompt)
@@ -88,14 +91,18 @@ func TestOfficerSpawnsHaveTheirOwnRateCeiling(t *testing.T) {
 		officerRate string
 		chief       int // chief admits in the last minutes
 		officer     int // officer admits in the last minutes
+		legacy      int // admits with no officer field, in the last minutes
 		req         mirror.AgentSpawnReq
 		want        string // the rate refusal, "" for none
 	}{
-		{"the chief's limit spent: an officer still passes", "3/10m", 3, 0, officerWidgets, ""},
-		{"the chief's limit spent: the chief is refused (control)", "", 3, 0, widgets(testPrompt), "rate limited: 3 spawns in the last 10 minutes"},
-		{"the officers' ceiling spent: an officer is refused", "2/10m", 0, 2, officerWidgets, "rate limited: 2 officer spawns in the last 10 minutes (this host's -agent-spawn-officer-rate)"},
-		{"the officers' ceiling spent: the chief still passes", "2/10m", 0, 2, widgets(testPrompt), ""},
-		{"under the officers' ceiling", "3/10m", 0, 2, officerWidgets, ""},
+		{"the chief's limit spent: an officer still passes", "3/10m", 3, 0, 0, officerWidgets, ""},
+		{"the chief's limit spent: the chief is refused (control)", "", 3, 0, 0, widgets(testPrompt), "rate limited: 3 spawns in the last 10 minutes"},
+		{"the officers' ceiling spent: an officer is refused", "2/10m", 0, 2, 0, officerWidgets, "rate limited: 2 officer spawns in the last 10 minutes (this host's -agent-spawn-officer-rate)"},
+		{"the officers' ceiling spent: the chief still passes", "2/10m", 0, 2, 0, widgets(testPrompt), ""},
+		{"under the officers' ceiling", "3/10m", 0, 2, 0, officerWidgets, ""},
+		{"older unflagged lines do not spend the chief's limit", "", 0, 0, 3, widgets(testPrompt), ""},
+		{"older unflagged lines do not spend the officers' ceiling", "2/10m", 0, 0, 3, officerWidgets, ""},
+		{"older unflagged lines beside a spent chief limit (control)", "", 3, 0, 3, widgets(testPrompt), "rate limited: 3 spawns in the last 10 minutes"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := newSpawnUnit(t)
@@ -109,6 +116,13 @@ func TestOfficerSpawnsHaveTheirOwnRateCeiling(t *testing.T) {
 			}
 			for i := 0; i < c.officer; i++ {
 				if err := appendAudit(u.log, spawnAuditAdmit{At: now.Add(-time.Minute), Kind: "admit", Dispatch: int64(20 + i), Officer: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < c.legacy; i++ {
+				// The older build's line, as it wrote it: no officer field.
+				legacy := map[string]any{"at": now.Add(-time.Minute), "kind": "admit", "dispatch": 30 + i}
+				if err := appendAudit(u.log, legacy); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -129,8 +143,8 @@ func TestOfficerSpawnsHaveTheirOwnRateCeiling(t *testing.T) {
 					last = l
 				}
 			}
-			if last == nil || (last["officer"] == true) != strings.HasPrefix(c.req.Prompt, mirror.OfficerSpawnPreface) {
-				t.Fatalf("the admission line %v does not say whose spawn it was", last)
+			if flag, ok := last["officer"].(bool); last == nil || !ok || flag != strings.HasPrefix(c.req.Prompt, mirror.OfficerSpawnPreface) {
+				t.Fatalf("the admission line %v does not say whose spawn it was (a chief's says officer false, never nothing)", last)
 			}
 		})
 	}

@@ -703,9 +703,13 @@ type spawnAuditAdmit struct {
 	Kind     string    `json:"kind"` // "admit"
 	Dispatch int64     `json:"dispatch"`
 	// Officer marks an officer spawn's admission: -agent-spawn-officer-rate
-	// counts those, -agent-spawn-rate every other (a line written before the
-	// field existed is a chief spawn's, as every spawn then was).
-	Officer bool `json:"officer,omitempty"`
+	// counts those, -agent-spawn-rate the chief's. 🔴 ALWAYS WRITTEN, false
+	// included (O-B round 0): a line with NO officer field is from a build
+	// before the officer ceiling, when an officer's spawn was not told apart,
+	// and counts against NEITHER limit (admittedSince) — counted as the
+	// chief's, a host's officer spawns of the last day could hold the chief
+	// at its limit for up to 24 hours after the upgrade.
+	Officer bool `json:"officer"`
 }
 
 // The audit log's bounds. Every string field is cut to auditFieldMax bytes
@@ -773,7 +777,8 @@ func appendAudit(path string, v any) error {
 }
 
 // admittedSince counts the audit log's admissions ("admit" lines) at or after
-// since whose Officer flag is officer. A log that cannot be read is an error
+// since whose Officer flag is officer; a line with no flag (an older build's,
+// spawnAuditAdmit.Officer) counts for neither. A log that cannot be read is an error
 // (the caller refuses: the limit is never skipped because its record failed);
 // a line that is corrupt or longer than auditLineMax is skipped, so one bad
 // line cannot disable every later check.
@@ -795,8 +800,12 @@ func admittedSince(path string, since time.Time, officer bool) (int, error) {
 			_, err = r.ReadSlice('\n')
 		}
 		if !long && len(line) > 0 {
-			var a spawnAuditAdmit
-			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && a.Officer == officer && !a.At.Before(since) {
+			var a struct {
+				At      time.Time `json:"at"`
+				Kind    string    `json:"kind"`
+				Officer *bool     `json:"officer"`
+			}
+			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && a.Officer != nil && *a.Officer == officer && !a.At.Before(since) {
 				n++
 			}
 		}
