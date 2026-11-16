@@ -114,14 +114,14 @@ for (const vp of [
       const card = page.locator(`[data-draft-id="${id}"]`);
       await expect(card).toBeVisible();
       // The fixture is the card the issue reports: the expiry line and a
-      // multi-line body (positive controls on the fixture itself).
+      // multi-line body (positive controls on the fixture itself). The card
+      // draws a newline as a visible `\n` (flows.VisibleEscape), so the body
+      // is multi-line when it shows the fixture's three newlines as markers
+      // and counts them in its length.
       await expect(card.locator('[data-draft-state]')).toContainText('expires');
-      const lines = await card.locator('[data-draft-body]').evaluate((el) => {
-        const r = document.createRange();
-        r.selectNodeContents(el);
-        return new Set(Array.from(r.getClientRects(), (x) => Math.round(x.top))).size;
-      });
-      expect(lines, 'the reply takes several lines').toBeGreaterThan(1);
+      const body = card.locator('[data-draft-body]');
+      expect((await body.textContent())!.split('\\n').length - 1, 'the reply shows its three newlines').toBe(3);
+      await expect(card.locator('[data-draft-text]')).toHaveAttribute('data-runes', String(Array.from(BODY).length));
 
       await card.scrollIntoViewIfNeeded();
       const shot = testInfo.outputPath(`draft-card-${vp.key}.png`);
