@@ -207,6 +207,9 @@ type handBackAgents struct{ tokenedAgents }
 func (handBackAgents) ClaimKickoff(context.Context, int64, string, time.Duration) (bool, error) {
 	return true, nil
 }
+func (h handBackAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, o string, ttl time.Duration) (bool, error) {
+	return h.ClaimKickoff(ctx, id, o, ttl)
+}
 func (handBackAgents) ReleaseKickoffClaim(context.Context, int64, string) error { return nil }
 
 // TestARouteHandBackThatGivesUpIsWordedForTheHandBack: the hand-back is

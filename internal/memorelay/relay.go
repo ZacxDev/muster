@@ -579,7 +579,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	//
 	// It is also what makes "once" hold across PROCESSES: two replicas cannot be inside this
 	// section for one agent, and the winner re-reads the row and the ledger below.
-	won, err := r.agents.ClaimKickoff(ctx, a.ID, r.owner, turn+claimMargin)
+	won, err := r.agents.ClaimKickoffForDelivery(ctx, a.ID, r.owner, turn+claimMargin)
 	if err != nil {
 		r.count(familyDelivery, ResultClaimFailed)
 		r.log.Printf("memorelay: agent %d (%s): the session claim could not be taken; sending nothing: %v", a.ID, a.Name, err)

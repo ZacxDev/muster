@@ -12,8 +12,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -1652,9 +1654,14 @@ func (s *Server) failCancelledRoute(ctx context.Context, routeID string) {
 // delivered at least once instead (deliverRouteAnswer): its hand-back is
 // cleared only after the answer is on record in the chief's chat.
 func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
-	if r, err := s.ext.Routes.Route(ctx, routeID); err == nil && r.AnswersToChief() && r.State == plugins.RouteRelayed {
-		s.deliverRouteAnswer(ctx, r)
-		return
+	if r, err := s.ext.Routes.Route(ctx, routeID); err == nil {
+		if r.AnswersToChief() && r.State == plugins.RouteRelayed {
+			s.deliverRouteAnswer(ctx, r)
+			return
+		}
+		if s.handBackDeferred(ctx, r) {
+			return
+		}
 	}
 	r, reason, ok, err := s.ext.Routes.TakeHandBack(ctx, routeID)
 	if err != nil {
@@ -1682,6 +1689,35 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 	}
 	s.logger.Printf("routes: %s: handing it back to the chief (%s)", routeID, reason)
 	s.handBackRoute(ctx, r, s.handBackText(ctx, r, reason))
+}
+
+// handBackDeferred reports whether ended route r's hand-back should stay owed
+// for a later sweep rather than be taken now: its chief could take it as a turn
+// but not at this moment — its owner's turn is in flight, another turn holds
+// its session claim, or one of its turns runs here — and the hand-back has not
+// waited routeChiefWaitMax. Taken now, the hand-back's turn could not claim the
+// session (ClaimKickoffForDelivery loses during the owner's turn) and would be
+// written as a note the chief's CLI never sees. A READ: a turn starting right
+// after it can still win that race, and then the hand-back is a note, as
+// before.
+func (s *Server) handBackDeferred(ctx context.Context, r plugins.Route) bool {
+	if r.AgentID == nil || s.ext.Agents == nil || s.ext.Provisioner == nil || s.ext.Gateway == nil || routeChiefWaitOver(r, time.Now()) {
+		return false
+	}
+	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
+	if err != nil || !agentCanBeSent(chief.Status) {
+		return false
+	}
+	if s.turns.busy(chief.ID) {
+		return true
+	}
+	if st, ok := s.ext.Agents.(ownerTurnStore); ok {
+		if t, err := st.OwnerTurnInFlight(ctx, chief.ID); err == nil && t.MessageID > 0 {
+			return true
+		}
+	}
+	holder, err := s.ext.Agents.KickoffClaimHolder(ctx, chief.ID)
+	return err == nil && holder != ""
 }
 
 // redraftRoute hands send_failed route r's message back to the session it was
@@ -1800,12 +1836,99 @@ func (s *Server) deliverRouteAnswer(ctx context.Context, r plugins.Route) {
 	}
 	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
 	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
-		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID &&
-			s.startClaimedChiefTurnThen(ctx, chief, sess, r.RouteID, text, record) {
-			return
+		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
+			if s.startRouteAnswerTurn(ctx, chief, sess, r.RouteID, text, take) {
+				return
+			}
+			// The chief cannot take a turn NOW (another turn holds its session,
+			// or its owner's turn is in flight): the answer stays owed and the
+			// next sweep offers it again — never a note the chief's CLI cannot
+			// see, which is how answers that arrived during a turn were lost.
+			if !routeChiefWaitOver(r, time.Now()) {
+				return
+			}
+			s.logger.Printf("routes: %s: the chief could not take its answer for %s; recorded as a note in its session %d",
+				r.RouteID, routeChiefWaitMax, sessID)
 		}
 	}
 	record(ctx)
+}
+
+// routeChiefWaitMax bounds how long an ended route's answer or hand-back waits
+// for its chief to be free to take it as a turn (deliverRouteAnswer,
+// handBackDeferred) before it is recorded as a note instead: far longer than
+// any one turn's budget (agentTurnBudget), so only a chief that never frees —
+// stuck, or turning continuously — reaches it.
+const routeChiefWaitMax = 2 * time.Hour
+
+// routeChiefWaitOver reports whether route r ended (FinishedAt) more than
+// routeChiefWaitMax before now. A route with no end time has not waited.
+func routeChiefWaitOver(r plugins.Route, now time.Time) bool {
+	return r.FinishedAt != nil && now.Sub(*r.FinishedAt) > routeChiefWaitMax
+}
+
+// startRouteAnswerTurn delivers a route's answer (text) to chief as ONE TURN OF
+// ITS OWN, in session sess, and reports false — with nothing sent and nothing
+// stored — when the chief cannot take it now; the answer then stays owed.
+//
+// 🔴 IT NEVER WAITS WHILE HOLDING THE CHIEF'S SESSION CLAIM, and it never takes
+// the claim during its owner's turn. Before this, the answer turn took the
+// claim (startClaimedChiefTurnThen) while the owner's turn ran and then waited
+// in chatTurnWhenFree for the CLI: the held claim made owner_asked refuse
+// (ownerTurnFor → chiefReleaseOutsideTurn) for the rest of the owner's own turn,
+// and every LATER answer, finding the claim held, was written as a note the
+// chief's CLI never sees. Now: the claim is ClaimKickoffForDelivery's (it loses
+// while an owner turn is in flight), the turn gate is enterIdle's (it loses
+// while any turn of the chief's runs or waits in this process — the owner's
+// typed line first), and the turn is runDeliveredTurn's (a runtime that
+// refuses — busy — takes nothing and stores nothing: agentgateway.Unsent).
+// Each answer is therefore its own turn, one after another, as the attention
+// delivery's are; done (when not nil) runs once the turn's answer row is on
+// record, and the sweep is woken for the next owed answer.
+func (s *Server) startRouteAnswerTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
+	done func(context.Context)) bool {
+	if agents.KickoffOwed(chief) {
+		return false
+	}
+	owner := "route-answer/" + routeID
+	budget := agentTurnBudget(chief.Kind)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
+	if err != nil || !won {
+		return false
+	}
+	release := func(ctx context.Context) {
+		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, owner); err != nil {
+			s.logger.Printf("routes: %s: release the chief's claim: %v", routeID, err)
+		}
+	}
+	if ok, _ := s.turns.enterIdle(chief.ID); !ok {
+		release(ctx)
+		return false
+	}
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	tctx = chiefusage.WithTrigger(tctx, turnTriggerFor(notTyped, nil))
+	safeGo(s.logger, "route answer turn", func() {
+		defer cancel()
+		defer s.kickRouteSweep() // the next owed answer, now that this one is done
+		defer release(tctx)
+		defer s.turns.leave(chief.ID)
+		parts, err := s.runDeliveredTurn(tctx, chief, sess, text, nil)
+		if why := agentgateway.Unsent(err); why != "" {
+			// Nothing reached the runtime and nothing was stored: still owed.
+			s.logger.Printf("routes: %s: the chief's runtime took nothing (%s); its answer stays owed", routeID, why)
+			return
+		}
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(tctx), persistTurnTimeout)
+		defer pcancel()
+		if err != nil {
+			parts = turnFailedParts(asHandBack(err))
+		}
+		s.persistTurn(pctx, chief, sess, parts)
+		if done != nil {
+			done(pctx)
+		}
+	})
+	return true
 }
 
 // routeAnswerNote opens a request route's answer in the chief's chat (after
@@ -2020,7 +2143,7 @@ func (s *Server) startClaimedChiefTurnThen(ctx context.Context, chief agents.Age
 	// The claim outlives the turn's own budget (agentTurnBudget: 37m for a
 	// claude-code chief), so it cannot lapse while the turn still runs.
 	budget := agentTurnBudget(chief.Kind)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, chief.ID, owner, routeHandbackClaimTTL(budget))
 	if err != nil || !won {
 		return false
 	}

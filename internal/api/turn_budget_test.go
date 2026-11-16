@@ -88,6 +88,9 @@ func (c *claimTTLAgents) ClaimKickoff(_ context.Context, _ int64, _ string, ttl 
 	c.ttl = ttl
 	return true, nil
 }
+func (c *claimTTLAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, o string, ttl time.Duration) (bool, error) {
+	return c.ClaimKickoff(ctx, id, o, ttl)
+}
 func (c *claimTTLAgents) ReleaseKickoffClaim(context.Context, int64, string) error { return nil }
 
 // TestARouteHandBackIsBudgetedByTheChiefsKindAndItsClaimOutlastsIt: a hand-back

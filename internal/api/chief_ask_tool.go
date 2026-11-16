@@ -261,7 +261,7 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 	}
 	by := "chief-question/" + strconv.FormatInt(q.ID, 10)
 	budget := agentTurnBudget(chief.Kind)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, by, budget+time.Minute)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, chief.ID, by, budget+time.Minute)
 	if err != nil || !won {
 		return false
 	}

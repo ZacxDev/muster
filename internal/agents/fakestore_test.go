@@ -185,6 +185,12 @@ func (f *fakeStore) ClaimKickoff(_ context.Context, id int64, owner string, ttl 
 	return true, nil
 }
 
+// ClaimKickoffForDelivery is ClaimKickoff: this fake keeps no owner-turn
+// marker (the PG store's conjunct is pinned by pgstore_test.go).
+func (f *fakeStore) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return f.ClaimKickoff(ctx, id, owner, ttl)
+}
+
 func (f *fakeStore) KickoffClaimHolder(_ context.Context, id int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

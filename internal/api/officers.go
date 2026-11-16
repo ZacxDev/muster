@@ -1028,7 +1028,7 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 	}
 	turn := agents.KindTurnTimeout(a.Kind) + repromptSlack
 	owner := s.officerRT.claimOwner
-	won, err := s.ext.Agents.ClaimKickoff(octx, a.ID, owner, turn+repromptClaimMargin)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(octx, a.ID, owner, turn+repromptClaimMargin)
 	if err != nil {
 		return fmt.Errorf("officers: take %s's session claim: %w", name, err)
 	}
