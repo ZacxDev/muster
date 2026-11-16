@@ -34,6 +34,7 @@ type fakeFleet struct {
 	pending   map[int]bool // a prompt is owed and not yet delivered
 	busy      map[int]bool // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
 	errored   map[int]bool // the instance is in error (holds its slot)
+	down      map[int]string // why a down instance is down (InstanceState.Down)
 }
 
 func newFleet() *fakeFleet {
@@ -60,7 +61,7 @@ func (f *fakeFleet) Instances(_ context.Context, o officers.Officer) ([]officers
 	var out []officers.InstanceState
 	for n := 1; n <= o.MaxInstances; n++ {
 		out = append(out, officers.InstanceState{N: n, Name: officers.InstanceName(o.ID, n), Exists: f.exists[n], Up: f.up[n] || f.errored[n],
-			Error: f.errored[n], PromptPending: f.pending[n]})
+			Error: f.errored[n], PromptPending: f.pending[n], Down: f.down[n]})
 	}
 	return out, nil
 }

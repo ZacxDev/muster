@@ -746,4 +746,10 @@ func TestTheHostOfficerSeamsAreALedger(t *testing.T) {
 	// Round 2: the fifth writer, from the hub's listing hook alone.
 	assertCallers(t, ".", "ObserveHostListing", []string{"host_stepup.go:officerSpawnsListing"})
 	assertCallers(t, ".", "officerSpawnsListing", []string{"host_dispatch_reconcile.go:HostDispatchListing"})
+	// O-B (migration 0138): the unclaimed notice's three writers, each from
+	// its one caller; the claim mark only from the instance's own claim.
+	assertCallers(t, ".", "MarkHostSpawnClaimed", []string{"officer_unclaimed.go:hostInstanceClaimed"})
+	assertCallers(t, ".", "SetUnclaimedNotice", []string{"officer_unclaimed.go:raiseUnclaimedNotice"})
+	assertCallers(t, ".", "SettleUnclaimedNotice", []string{"officer_unclaimed.go:withdrawUnclaimed"})
+	assertCallers(t, ".", "hostInstanceClaimed", []string{"officers.go:dispatchOfficerTool"})
 }

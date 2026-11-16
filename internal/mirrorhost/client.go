@@ -539,7 +539,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
-	go conn.watchSpawnReady(hello.SpawnReady)
+	go conn.watchSpawnReady(hello.SpawnReady, conn.send)
 	c.curMu.Lock()
 	c.cur = conn
 	c.curMu.Unlock()

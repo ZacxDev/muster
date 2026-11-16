@@ -60,25 +60,28 @@ func builtinToolDef(o officers.Officer, d agents.ToolDef) agents.ToolDef {
 }
 
 // builtinCompleteToolDef is officer_complete for builtin officer o's pool: its
-// outcomes (needs_judgement for a routine pool only), and no hand-off — that
-// is an HQ review loop's. A pool whose completion takes an investigation
-// block is HQ's shape (officers.CompleteTakesInvestigation) and keeps it.
+// outcomes (needs_judgement for a routine pool only), the optional
+// investigation block (every pool but a routine one, as the built-in backend
+// takes it), and no hand-off — that is an HQ review loop's.
 func builtinCompleteToolDef(o officers.Officer) agents.ToolDef {
-	if officers.CompleteTakesInvestigation(o) {
-		return completeToolDef(o)
-	}
 	desc := "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action"
 	if slices.Contains(officers.CompleteOutcomes(o), officers.OutcomeNeedsJudgement) {
 		desc += ", or " + officers.OutcomeNeedsJudgement + " (hand a routine item to the judgement pool: muster makes it a judgement item, open again with your summary kept " +
 			"for the judgement instance that takes it, and your hold ends; its links are not kept — put them in the summary)"
 	}
-	return agents.ToolDef{Type: "function", Name: officers.ToolComplete,
-		Description: desc + ", with a summary (at most 24,576 characters) and optional links. " +
-			"An escalated item goes to your officer's owner (and whoever it names to escalate to) on muster's Attention view.",
-		Parameters: objSchema(map[string]any{
-			"item_id": strProp("The item's id, as officer_items or officer_brief returned it."),
-			"outcome": map[string]any{"type": "string", "enum": officers.CompleteOutcomes(o)},
-			"summary": strProp("What you found and did, at most 24,576 characters."),
-			"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
-		}, "item_id", "outcome", "summary")}
+	desc += ", with a summary (at most 24,576 characters) and optional links. " +
+		"An escalated item goes to your officer's owner (and whoever it names to escalate to) on muster's Attention view."
+	props := map[string]any{
+		"item_id": strProp("The item's id, as officer_items or officer_brief returned it."),
+		"outcome": map[string]any{"type": "string", "enum": officers.CompleteOutcomes(o)},
+		"summary": strProp("What you found and did, at most 24,576 characters."),
+		"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
+	}
+	if officers.CompleteTakesInvestigation(o) {
+		props["investigation"] = map[string]any{"type": "object", "additionalProperties": true,
+			"description": "Optional: your investigation, kept on outcome escalated: {hypotheses: [text], eliminated: [{hypothesis, evidence}], root_cause, " +
+				"confidence: low|medium|high, fix: {pr_urls: [...]} OR {operator_steps: [text]}, not_checked: [text]}. muster checks it and refuses what does not fit, naming the field."}
+	}
+	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
+		Parameters: objSchema(props, "item_id", "outcome", "summary")}
 }

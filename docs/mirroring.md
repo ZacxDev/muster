@@ -1452,7 +1452,10 @@ nothing until you also list repositories:
 | `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means nothing spawns |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
-| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit, counted from the audit log |
+| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit on the chief's spawns, counted from the audit log |
+| `-agent-spawn-officer-rate` | `MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE` | `20/10m,400/24h` | this host's own ceiling on every officer spawn together |
+| `-agent-spawn-scratch` | `MUSTER_MIRROR_AGENT_SPAWN_SCRATCH` | off | start an officer with no repository in a private scratch directory |
+| `-claude-path` | `MUSTER_MIRROR_CLAUDE_PATH` | (the tmux server's PATH) | the absolute path of the `claude` a spawn runs, when the tmux server's PATH does not reach it |
 | `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log |
 | `-agent-spawn-skip-permissions` | `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | **on** | start each spawned agent **without permission prompts** ([below](#permission-prompts-in-a-spawned-agent)). `=false` (env `0` or `false`) starts it in its normal permission mode instead; a value that is not a bool stops the daemon |
 

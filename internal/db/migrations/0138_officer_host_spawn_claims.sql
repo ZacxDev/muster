@@ -1,4 +1,4 @@
--- muster 0137 — A HOST OFFICER INSTANCE THAT NEVER CLAIMS ITS ITEM
+-- muster 0138 — A HOST OFFICER INSTANCE THAT NEVER CLAIMS ITS ITEM
 -- (officers redesign O-B; internal/officers hostspawns.go, internal/api
 -- officer_unclaimed.go).
 --
@@ -20,14 +20,14 @@
 -- No backfill: every row before this one reads "not claimed, no notice", and
 -- the sweep only looks at a spawn younger than a day, so old rows never raise.
 --
--- Must apply after 0136 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
--- another migration takes 0137 first.
+-- Must apply after 0137 (the contiguity test refuses a gap); 🔴 RENUMBER IT if
+-- another migration takes 0138 first.
 --
 -- ROLLBACK. An older image never reads the columns; roll the image back, then
 -- (optionally):
 --   ALTER TABLE public.officer_host_spawns DROP COLUMN IF EXISTS claimed_at,
 --     DROP COLUMN IF EXISTS unclaimed_notice_id, DROP COLUMN IF EXISTS unclaimed_notice_settled;
---   DELETE FROM schema_migrations WHERE version = 137;
+--   DELETE FROM schema_migrations WHERE version = 138;
 
 SET LOCAL lock_timeout = '3s';
 

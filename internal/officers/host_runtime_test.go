@@ -253,6 +253,54 @@ func hostSpawnContract(t *testing.T, ctx context.Context, st officers.HostSpawnS
 	open("two missing listings in a row", false)
 	observe("host-alpha", future, "@3")
 	open("a closed window listed again (a reissued id)", false)
+
+	// O-B (migration 0138): a spawn's first claim is recorded once, on its own
+	// host; its unclaimed notice is set once (a compare-and-swap from none)
+	// and settled once; the open notices are those set and not settled; and
+	// the officer's spawns are counted from a time.
+	if ok, _ := st.MarkHostSpawnClaimed(ctx, a.ID, "host-beta"); ok {
+		t.Fatal("marked a spawn claimed from another host")
+	}
+	if ok, err := st.MarkHostSpawnClaimed(ctx, a.ID, "host-alpha"); !ok || err != nil {
+		t.Fatalf("did not mark the claim: %v", err)
+	}
+	row, _ := st.HostSpawnByID(ctx, a.ID)
+	if row.ClaimedAt == nil {
+		t.Fatalf("the claim is not on the row: %+v", row)
+	}
+	if ok, _ := st.MarkHostSpawnClaimed(ctx, a.ID, "host-alpha"); ok {
+		t.Fatal("a second claim mark wrote again")
+	}
+	if ok, err := st.SetUnclaimedNotice(ctx, b.ID, 41); !ok || err != nil {
+		t.Fatalf("did not set the notice: %v", err)
+	}
+	if ok, _ := st.SetUnclaimedNotice(ctx, b.ID, 42); ok {
+		t.Fatal("a second notice replaced the first (no compare-and-swap)")
+	}
+	if got, err := st.OpenUnclaimedNotices(ctx); err != nil || len(got) != 1 || got[0].ID != b.ID || got[0].UnclaimedNotice != 41 || got[0].NoticeSettled {
+		t.Fatalf("open notices = %+v, %v, want row %d's notice 41", got, err, b.ID)
+	}
+	if ok, err := st.SettleUnclaimedNotice(ctx, b.ID); !ok || err != nil {
+		t.Fatalf("did not settle the notice: %v", err)
+	}
+	if ok, _ := st.SettleUnclaimedNotice(ctx, b.ID); ok {
+		t.Fatal("a settled notice settled again")
+	}
+	if ok, _ := st.SettleUnclaimedNotice(ctx, a.ID); ok {
+		t.Fatal("settled a row that has no notice")
+	}
+	if got, _ := st.OpenUnclaimedNotices(ctx); len(got) != 0 {
+		t.Fatalf("a settled notice still reads open: %+v", got)
+	}
+	if n, err := st.CountHostSpawnsSince(ctx, "marketing:example", time.Now().Add(-time.Minute)); err != nil || n != 2 {
+		t.Fatalf("spawns in the last minute = %d, %v, want 2", n, err)
+	}
+	if n, _ := st.CountHostSpawnsSince(ctx, "marketing:example", time.Now().Add(time.Minute)); n != 0 {
+		t.Fatalf("spawns from a minute ahead = %d, want 0", n)
+	}
+	if n, _ := st.CountHostSpawnsSince(ctx, "marketing:other", time.Now().Add(-time.Minute)); n != 0 {
+		t.Fatalf("another officer's spawns counted: %d", n)
+	}
 }
 
 func TestTheMemHostSpawnStoreKeepsTheContract(t *testing.T) {

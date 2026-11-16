@@ -80,9 +80,10 @@ func claudeLogin(ctx context.Context, bin string) string {
 }
 
 // watchSpawnReady re-reads the readiness every spawnReadyEvery and sends it
-// (TypeSpawnReady) when it differs from what this connection last sent: the
-// hello's at first. It ends with the connection.
-func (h *hostSide) watchSpawnReady(sent *mirror.SpawnReadiness) {
+// (TypeSpawnReady, through send: the connection's own) when it differs from
+// what this connection last sent: the hello's at first. It ends with the
+// connection.
+func (h *hostSide) watchSpawnReady(sent *mirror.SpawnReadiness, send func(mirror.Msg) error) {
 	if sent == nil {
 		return
 	}
@@ -102,7 +103,7 @@ func (h *hostSide) watchSpawnReady(sent *mirror.SpawnReadiness) {
 		if now == nil || now.Same(sent) {
 			continue
 		}
-		if err := h.send(mirror.Msg{Type: mirror.TypeSpawnReady, SpawnReady: now}); err != nil {
+		if err := send(mirror.Msg{Type: mirror.TypeSpawnReady, SpawnReady: now}); err != nil {
 			return
 		}
 		h.logReadyChange(sent, now)
