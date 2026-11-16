@@ -10,7 +10,9 @@ A sealed store of credentials, in two steps:
 
 - **The key alone:** each member's own Claude token and OpenRouter key, stored
   on **Account → Credentials**. The [chief](../features.md#chief) needs this
-  much.
+  much. On Kubernetes, where agents can be dispatched, the key alone is not a
+  finished setup: `connectors` reports itself misconfigured until the connect
+  URL is set too.
 - **The key and the connect URL:** HTTP and read-only Postgres credentials that
   agents use through muster's proxy without ever seeing the secret, with your
   approval per request. [connectors.md](../connectors.md).
@@ -43,8 +45,11 @@ A sealed store of credentials, in two steps:
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON connectors`
-  ([cli.md](../cli.md#muster-doctor)).
+- `muster doctor`: in its feature list (on stderr), the `connectors` line
+  starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +connectors( |$)'`
+  ([cli.md](../cli.md#muster-doctor)). With the key alone on Kubernetes it
+  starts with `MISCONFIGURED` instead, and says agents' connectors are off:
+  set the connect URL.
 - `docker compose logs muster | grep 'connector store:'` reads
   `MEMBERS' CREDENTIALS ONLY` with the key alone, and `ENABLED` with the connect
   URL too; then the Connectors tab appears.

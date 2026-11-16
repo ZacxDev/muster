@@ -42,8 +42,10 @@ What is sent to the model: [suggested-replies.md](../suggested-replies.md#what-i
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON suggested-replies` and
-  `ON focus` ([cli.md](../cli.md#muster-doctor)).
+- `muster doctor`: in its feature list (on stderr), the `suggested-replies`
+  and `focus` lines each start with `ON`:
+  `muster doctor 2>&1 | grep -E '^ +ON +(suggested-replies|focus)( |$)'` prints both
+  ([cli.md](../cli.md#muster-doctor)).
 - After a focus pass, search (`/`) finds a session by its focus title.
 - With suggested replies turned on in Account, chips appear above the box
   when a session finishes a turn with its Rendered view open.

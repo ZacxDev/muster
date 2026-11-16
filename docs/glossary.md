@@ -24,9 +24,8 @@ asks, waiting and stalled sessions, reply drafts. [attention.md](attention.md).
 working on and can route a request or a task to the session already on it.
 [chief.md](chief.md).
 
-**Compose profile.** A named group of optional services in
-`deploy/docker-compose.yml` (`stt`, `stt-cohere`, `s3`, `chief`), started only
-when `COMPOSE_PROFILES` in `.env` names it. [features.md](features.md).
+**Compose profile.** A named group of optional services in the Compose file,
+started only when `.env` asks for it. [features.md](features.md).
 
 **Connector.** A credential stored, sealed, in muster, which an agent uses
 through muster's proxy without seeing it. [connectors.md](connectors.md).
@@ -53,15 +52,15 @@ instead of one shared password. [auth.md](auth.md#gotrue).
 **Host (machine).** A machine whose `muster-mirror` is connected to the hub; its
 tmux windows are your mirrored sessions. [mirroring.md](mirroring.md#how-it-connects).
 
-**Hook token.** `MUSTER_HOOK_TOKEN`, the machine credential the CLI and hooks
-present; it acts as the admin. [features.md](features.md#machine-token).
+**Hook token.** The machine credential the CLI and hooks present.
+[features.md](features.md#machine-token).
 
 **Hub.** The machine that runs the muster server (in Docker Compose, or the
 cluster on Kubernetes). Every other machine connects to it.
 [INSTALL.md](../INSTALL.md).
 
 **Interactive.** A host whose `muster-mirror` lets muster type into its tmux
-windows (`-interactive`); otherwise it is read-only.
+windows; otherwise it is read-only.
 [mirroring.md](mirroring.md#read-only-interactive-and-sending).
 
 **Mirror token.** A host's own credential, minted on the hub, that lets its
@@ -116,5 +115,5 @@ one tmux server each. [multi-tenant-hosts.md](multi-tenant-hosts.md).
 **Terminal view.** Any tmux window as a live terminal you can read and, on an
 interactive host, type into. [mirroring.md](mirroring.md#rendered-and-terminal-views).
 
-**VAPID.** The key pair that identifies muster to the browsers' push services;
-the Compose stack generates it. [push.md](push.md#web-push).
+**VAPID.** The key pair that identifies muster to the browsers' push services.
+[push.md](push.md#web-push).

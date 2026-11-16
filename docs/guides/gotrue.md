@@ -42,7 +42,8 @@ security. [Teams](../features.md#teams) build on it. [auth.md](../auth.md).
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON accounts`
+- `muster doctor`: in its feature list (on stderr), the `accounts` line
+  starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +accounts( |$)'`
   ([cli.md](../cli.md#muster-doctor)).
 - `docker compose logs muster | grep -E 'human web tier:|gotrue:'` reads
   `GOTRUE` and `CONFIGURED`.

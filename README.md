@@ -179,9 +179,7 @@ ends with how to check that feature is on.
 
 Set up the core first, then add one optional dependency at a time, each with a
 short guide (what it adds, what it needs, the settings, how `muster doctor`
-confirms it, how to turn it off): Tailscale, push, dictation, attachments,
-OpenRouter, connectors, GoTrue sign-in, the GitHub App, previews and
-Kubernetes. The list:
+confirms it, how to turn it off). The guides:
 [docs/README.md](docs/README.md#set-it-up-the-core-first-then-one-feature-at-a-time).
 The words muster uses: [docs/glossary.md](docs/glossary.md).
 

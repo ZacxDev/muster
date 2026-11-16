@@ -13,9 +13,14 @@ muster's GitHub identity for its admins, and, for agents, tokens that reach
 ## What it needs
 
 - **A GitHub App you register** and install on your account or organization.
-- **[Connectors](connectors.md):** agents reach GitHub only through muster's
-  proxy, and their grants live in the connector store. muster refuses to boot
-  with the App and no store.
+- **The whole agent-facing [connector store](connectors.md):**
+  `MUSTER_CONNECTOR_ENCRYPTION_KEY`, `MUSTER_AGENT_CONNECT_URL` and
+  `MUSTER_CONNECT_PORT`, all three
+  ([configuration.md](../configuration.md#muster-server-optional-features)
+  for their values). Agents reach GitHub only through muster's proxy, and
+  their grants live in that store; with the App and any of the three missing,
+  muster refuses to boot. The key alone (members' own credentials) is not
+  enough.
 - The tokens are for [dispatched agents](../features.md#dispatch), which need
   Kubernetes (the [Kubernetes guide](kubernetes.md)).
 
@@ -34,7 +39,8 @@ muster's GitHub identity for its admins, and, for agents, tokens that reach
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON github-app`
+- `muster doctor`: in its feature list (on stderr), the `github-app` line
+  starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +github-app( |$)'`
   ([cli.md](../cli.md#muster-doctor)).
 - muster's log says the App authenticates and names the accounts it is
   installed on; every other line it can print, and what each means:

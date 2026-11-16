@@ -43,7 +43,8 @@ The exact values for options 2 and 3 are in
 ## Check it
 
 - `muster doctor`: the `dictation` check sends a bundled spoken sample through
-  muster and expects text back; the feature list reads `ON dictation`
+  muster and expects text back; in the feature list (on stderr), the
+  `dictation` line starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +dictation( |$)'`
   ([cli.md](../cli.md#muster-doctor)).
 - `docker compose logs muster | grep dictation:` names the service and model.
 

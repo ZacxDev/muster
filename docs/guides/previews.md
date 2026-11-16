@@ -42,7 +42,8 @@ variable is in [configuration.md](../configuration.md#muster-preview-the-preview
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON plugin-viewers`
+- `muster doctor`: in its feature list (on stderr), the `plugin-viewers` line
+  starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +plugin-viewers( |$)'`
   ([cli.md](../cli.md#muster-doctor)).
 - On a machine: `muster-mirror -list -previews` prints the servers it would
   offer.

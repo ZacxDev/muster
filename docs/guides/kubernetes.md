@@ -35,8 +35,9 @@ same environment variables as the Compose stack, in
 
 ## Check it
 
-- `muster doctor`: the feature list reads `ON dispatch` (and `ON
-  agent-gateway`, `ON claude-code-agents` for what you turned on)
+- `muster doctor`: in its feature list (on stderr), the `dispatch` line (and
+  the `agent-gateway` and `claude-code-agents` lines, for what you turned on)
+  starts with `ON`: `muster doctor 2>&1 | grep -E '^ +ON +dispatch( |$)'`
   ([cli.md](../cli.md#muster-doctor)).
 - muster's log reads `agent provisioning: LIFECYCLE …`, not `UNWIRED`.
 - [What CI proves, and what it does not](../kubernetes.md#what-ci-proves-and-what-it-does-not).
