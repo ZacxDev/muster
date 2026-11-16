@@ -60,7 +60,10 @@ import (
 //
 // 44 → 45: `pr-session` (pr_session.go), GET /api/pr-sessions — which of your
 // sessions created a pull request, and its `claude --resume` line.
-const wantVerbCount = 46
+//
+// 46 → 47: `officer usage` (officer.go), GET /api/officers/defs/{officer}/usage
+// — an officer's model spend per UTC day.
+const wantVerbCount = 47
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -138,6 +141,8 @@ var wiring = []struct {
 	{"officer schedule ls", []string{"officer", "schedule", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/schedules"},
 	{"officer schedule put", []string{"officer", "schedule", "put", "marketing:example", "nightly", "--cron", "0 6 * * *", "--kind", "k", "--subject", "s"}, "PUT /api/officers/defs/marketing:example/schedules/nightly"},
 	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
+	// An officer's model spend per day (officer_llm_usage).
+	{"officer usage", []string{"officer", "usage", "marketing:example", "--days", "7"}, "GET /api/officers/defs/marketing:example/usage"},
 	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
@@ -318,6 +323,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/officers/defs/marketing:example/schedules", http.StatusOK, `{"schedules":[]}`)
 			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
 			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
+			h.json("GET /api/officers/defs/marketing:example/usage", http.StatusOK, `{"days":[],"total_cost_usd":0}`)
 			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","host":"alpha","kind":"gh-pr-create","first_seen":"2000-01-02T12:00:00Z"}]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+

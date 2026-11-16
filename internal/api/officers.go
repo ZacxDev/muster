@@ -1120,11 +1120,11 @@ func failureKind(err error) string {
 // kept). A claim it still holds is released by the loop's next pass, which
 // sees its holder down.
 //
-// Its Claude usage is pushed to HQ first (usage.Collector.Flush; only when
-// its backend serves usage — never for a builtin officer), while its
-// ccd can still answer: the collector reads only up instances, so without it
-// the hour the instance stopped in would sit partial at HQ until it next
-// runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
+// Its Claude usage is pushed to its backend first (usage.Collector.Flush;
+// only when its backend serves usage: HQ, and the built-in backend, which
+// books it into officer_llm_usage), while its ccd can still answer: the
+// collector reads only up instances, so without it the hour the instance
+// stopped in would sit partial until it next runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
 // whatever the push does.
 func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error {
 	if o.OnHost() {
