@@ -48,6 +48,8 @@ import (
 // mark as the one it belongs to (sidebar's activeTab / currentTab).
 const (
 	NavAttention = "attention"
+	// NavPages is the shareable pages' screens (/pages…).
+	NavPages = "pages"
 	NavAccount   = "account"
 	NavAdmin     = "admin"
 	// NavFeatures is More's link to the Features page.

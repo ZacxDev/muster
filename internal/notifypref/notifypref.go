@@ -9,6 +9,11 @@
 //     goNotify, the title names.go codenameTitle made;
 //     docs/focus.md#tmux-name-first-in-push-titles).
 //
+// And one that is not a notification but is kept beside them, per user, the
+// same way: PagesAgentShare (migration 0135), "Let my agents share pages
+// without asking" on Account → Pages, which internal/api's page_share_request
+// reads for the PAGE'S OWNER (page_tools.go, pageAgentShareOn).
+//
 // 🔴 OFF UNLESS THE USER TURNED IT ON. No row, a row the user wrote off, and a
 // read that fails are all off: off is exactly the text every user had before
 // the preference existed.
@@ -36,6 +41,11 @@ type Store interface {
 	CodenameFirst(ctx context.Context, owner int64) (bool, error)
 	// SetCodenameFirst records owner's choice, leaving TmuxAddress as it is.
 	SetCodenameFirst(ctx context.Context, owner int64, on bool) error
+	// PagesAgentShare reports whether owner let their agents share pages
+	// without asking. No row is false.
+	PagesAgentShare(ctx context.Context, owner int64) (bool, error)
+	// SetPagesAgentShare records owner's choice, leaving the others as they are.
+	SetPagesAgentShare(ctx context.Context, owner int64, on bool) error
 }
 
 // ErrNotOwner refuses a read whose ctx can see neither owner's row nor every
@@ -63,6 +73,11 @@ func (p *PG) TmuxAddress(ctx context.Context, owner int64) (bool, error) {
 // CodenameFirst implements Store, refusing what TmuxAddress refuses.
 func (p *PG) CodenameFirst(ctx context.Context, owner int64) (bool, error) {
 	return p.read(ctx, owner, `SELECT codename_first FROM notify_preferences WHERE owner_id = $1`)
+}
+
+// PagesAgentShare implements Store, refusing what TmuxAddress refuses.
+func (p *PG) PagesAgentShare(ctx context.Context, owner int64) (bool, error) {
+	return p.read(ctx, owner, `SELECT pages_agent_share FROM notify_preferences WHERE owner_id = $1`)
 }
 
 // read is one boolean preference of owner's (q selects it by owner_id), as
@@ -97,5 +112,14 @@ func (p *PG) SetTmuxAddress(ctx context.Context, owner int64, on bool) error {
 func (p *PG) SetCodenameFirst(ctx context.Context, owner int64, on bool) error {
 	_, err := p.pool.Exec(ctx, `INSERT INTO notify_preferences (owner_id, codename_first) VALUES ($1, $2)
 		ON CONFLICT (owner_id) DO UPDATE SET codename_first = EXCLUDED.codename_first, updated_at = now()`, owner, on)
+	return err
+}
+
+// SetPagesAgentShare implements Store: the CALLER's row (row-level security
+// refuses another owner's); an existing row's other choices are left as they
+// are.
+func (p *PG) SetPagesAgentShare(ctx context.Context, owner int64, on bool) error {
+	_, err := p.pool.Exec(ctx, `INSERT INTO notify_preferences (owner_id, pages_agent_share) VALUES ($1, $2)
+		ON CONFLICT (owner_id) DO UPDATE SET pages_agent_share = EXCLUDED.pages_agent_share, updated_at = now()`, owner, on)
 	return err
 }

@@ -195,8 +195,8 @@ func TestNoTabSwitchSwipe(t *testing.T) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if got, want := strings.Join(keys, " "), "document.touchend document.touchstart list.touchcancel list.touchend list.touchstart window.pointerdown window.touchstart"; got != want {
-			t.Errorf("%s: appScript's touch listeners = %q\nwant %q (the sidebar's on document, the dock's on its list, the scroll restore's stop-on-input on window, nothing else)", shape, got, want)
+		if got, want := strings.Join(keys, " "), "document.pointerdown document.touchend document.touchstart list.touchcancel list.touchend list.touchstart window.pointerdown window.touchstart"; got != want {
+			t.Errorf("%s: appScript's touch listeners = %q\nwant %q (the sidebar's on document, the page Share button's address fetch on document's pointerdown (page_card.go, pageShareJS: no gesture, it only fetches), the dock's on its list, the scroll restore's stop-on-input on window, nothing else)", shape, got, want)
 		}
 		for k, body := range all {
 			if strings.HasPrefix(k, "list.") && strings.Contains(body, "document.") {

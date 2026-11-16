@@ -13,6 +13,8 @@ import (
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/pages"
+	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -28,10 +30,17 @@ import (
 // security confines every read to the owner as well, so another owner's page
 // and another creator's page read alike: "no such page".
 //
-// 🔴 NO TOOL MAKES A LINK LIVE. page_share_request files a PENDING link and
-// an owner card; only the owner's own door approves it (page_share.go). The
-// one link verb an agent has besides asking is page_link_revoke, which only
-// takes access away.
+// 🔴 BY DEFAULT NO TOOL MAKES A LINK LIVE. page_share_request files a PENDING
+// link and an owner card; only the owner's own door approves it
+// (page_share.go). The one exception is the PAGE OWNER'S own opt-in, "Let my
+// agents share pages without asking" on Account (notify_preferences
+// .pages_agent_share, off for everyone until they turn it on;
+// pageAgentShareOn): for that owner's pages page_share_request makes the
+// link live at once and the owner is TOLD (a push, the page's card) instead
+// of asked — still only for a page the caller made, under its owner's
+// row-level security (pageShareAuto). The one
+// link verb an agent has besides sharing is page_link_revoke, which only takes
+// access away.
 //
 // 🔴 WHAT VIEWERS SEND IS UNTRUSTED. page_responses hands it over as one
 // fenced block (internal/fence) behind muster's own preface: data, never
@@ -106,8 +115,9 @@ func pageToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: pageCreateTool,
 			Description: "Publish a page for your owner — a small web page that can show what you built, or collect answers, choices, form " +
-				"fields, files or an approval from someone you share it with. It is PRIVATE until your owner approves a share link: " +
-				"your owner can preview it at preview_url, signed in. Returns its id. Revise it with page_update; ask for a link with page_share_request.",
+				"fields, files or an approval from someone you share it with. It is PRIVATE until it has a live share link: " +
+				"your owner is shown it at once (a card in your chat and a notification) and can preview it at preview_url, signed in. " +
+				"Returns its id. Revise it with page_update; share it with page_share_request.",
 			Parameters: objSchema(map[string]any{
 				"title":  strProp("The page's title (up to 200 characters)."),
 				"blocks": pageBlocksSchema(),
@@ -127,11 +137,12 @@ func pageToolDefs() []agents.ToolDef {
 			Description: "List your pages, newest activity first: id, title, current version, live and pending links, responses.",
 			Parameters:  objSchema(map[string]any{})},
 		{Type: "function", Name: pageShareRequestTool,
-			Description: "Ask your owner for a share link to one of your pages: a link anyone can open without a muster account. Your owner " +
-				"sees the request in muster's Attention view and on their phone, previews the page and approves or declines. The link is " +
-				"NOT live until they approve. Returns the link's url — ONCE: muster keeps only its hash, so keep it — and the link's and the ask's ids: " +
-				"a dispatched agent is told the answer as a new message; a mirrored Claude Code session waits for it with attention_wait{id: ask_id}. " +
-				"Once approved, the url opens the page.",
+			Description: "Share one of your pages: a link anyone can open without a muster account. How depends on your owner's own " +
+				"setting (whether they let their agents share without asking), and the result's status says which. status \"live\": the link works now — give url to whoever needs it; your owner is told and can " +
+				"revoke it. status \"pending\": your owner is asked (muster's Attention view and their phone), previews the page and approves " +
+				"or declines, and the link is NOT live until they approve; the result has the ask's id — a dispatched agent is told the answer " +
+				"as a new message, a mirrored Claude Code session waits for it with attention_wait{id: ask_id}. Keep url: a pending link's is " +
+				"shown only this once (muster keeps only its hash).",
 			Parameters: objSchema(map[string]any{
 				"page_id": id,
 				"reason":  strProp("Why, in one sentence your owner reads (e.g. \"to collect the client's launch-date preference\")."),
@@ -221,6 +232,8 @@ func pageToolRefusal(what string, id int64, err error) string {
 		return toolErr("%s", strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": "))
 	case errors.Is(err, pages.ErrTooMany):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "))
+	case errors.Is(err, pages.ErrClosing):
+		return toolErr("page %d is being deleted: it takes no new link", id)
 	}
 	return toolErr("the page could not be %s", what)
 }
@@ -253,10 +266,32 @@ func pageInput(arguments string, needTitle bool) (id int64, title string, blocks
 }
 
 // pageNext is what a create or update says to do next.
-func (s *Server) pageNext(id int64) string {
-	return "Your owner can preview it signed in at " + s.pagePreviewURL(id) + ". To let someone else open it, call page_share_request{page_id: " +
-		strconv.FormatInt(id, 10) + "}; your owner approves the link. Read what viewers send with page_responses{page_id: " +
+func (s *Server) pageNext(ctx context.Context, p pages.Page) string {
+	id := p.ID
+	how := "your owner is asked, and approves the link"
+	if s.pageAgentShareOn(ctx, p.OwnerID) {
+		how = "its link is live at once, and your owner is told"
+	}
+	return "Your owner has been shown it, and can preview it signed in at " + s.pagePreviewURL(id) + ". To let someone else open it, call page_share_request{page_id: " +
+		strconv.FormatInt(id, 10) + "}; " + how + ". Read what viewers send with page_responses{page_id: " +
 		strconv.FormatInt(id, 10) + ", wait_seconds}."
+}
+
+// pagePublished tells the owner an agent published a NEW page: one push,
+// "Page ready: <title>", opening its preview.
+//
+// 🔴 ONLY ON page_create, NOT ON EVERY page_update: an agent iterating on a
+// page publishes many versions in a few minutes, and the owner already has
+// the page (its card in the chat shows each version). The push is the
+// owner's page_published toggle, so a muted owner gets none.
+func (s *Server) pagePublished(p pages.Page) {
+	s.pushTask(p.OwnerID, push.EventPagePublished, RouterNotification{
+		Type:  taskNotificationType,
+		Title: "Page ready: " + truncate(p.Title, 80),
+		Body:  "From " + truncate(p.Creator.Label, 60) + ". Tap to open it.",
+		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-ready",
+		Data:  map[string]string{"url": ui.PagePreviewPath(p.ID)},
+	})
 }
 
 func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments string) string {
@@ -271,8 +306,9 @@ func (s *Server) toolPageCreate(ctx context.Context, c pages.Creator, arguments 
 		}
 		return pageToolRefusal("created", 0, err)
 	}
+	s.pagePublished(p)
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pagePreviewURL(p.ID),
-		"next": s.pageNext(p.ID)})
+		"next": s.pageNext(ctx, p)})
 }
 
 func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments string) string {
@@ -298,7 +334,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, c pages.Creator, arguments 
 		return pageToolRefusal("updated", id, err)
 	}
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pagePreviewURL(p.ID),
-		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(p.ID)})
+		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }
 
 // pageIDArg reads {page_id}.
@@ -323,7 +359,18 @@ func (s *Server) pageLinkView(l pages.Link) map[string]any {
 	if l.AskID > 0 {
 		out["ask_id"] = l.AskID
 	}
+	if l.Reusable {
+		out["reusable"] = true
+	}
 	return out
+}
+
+// pageLinkMaker is who made link l, as its owner reads it.
+func pageLinkMaker(l pages.Link) string {
+	if l.ByAgent && l.RequestedBy != "" {
+		return l.RequestedBy
+	}
+	return "you"
 }
 
 func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments string) string {
@@ -352,7 +399,7 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	}
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "current_version": p.CurrentVersion, "versions": vs, "links": ls,
 		"responses": len(resps), "preview_url": s.pagePreviewURL(p.ID),
-		"note": "A link's url is never shown here: page_share_request gave it once. A link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is for your owner, signed in."})
+		"note": "A link's url is never shown here: page_share_request gave it (a pending link's only once; where links go live at once, page_share_request returns the page's reusable link again). A hash-only link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is for your owner, signed in."})
 }
 
 func (s *Server) toolPageList(ctx context.Context, c pages.Creator) string {
@@ -377,14 +424,19 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil || in.PageID <= 0 {
 		return toolErr("arguments are {page_id, reason?}")
 	}
-	if s.ext.Attention == nil {
-		return toolErr("your owner cannot be asked on this server (no attention queue), so no link can be approved")
-	}
 	p, err := s.ext.Pages.PageFor(ctx, creator, in.PageID)
 	if err != nil {
 		return pageToolRefusal("read", in.PageID, err)
 	}
-	l, err := s.ext.Pages.CreateLink(ctx, p.ID, pages.LinkPending, creator.Label)
+	// 🔴 THE PAGE OWNER'S OPT-IN, read for p.OwnerID — never the caller's or
+	// the operator's (TestTheOptInIsThePageOwners).
+	if s.pageAgentShareOn(ctx, p.OwnerID) {
+		return s.pageShareAuto(ctx, creator, p, in.Reason)
+	}
+	if s.ext.Attention == nil {
+		return toolErr("your owner cannot be asked on this server (no attention queue), so no link can be approved")
+	}
+	l, err := s.ext.Pages.CreateLink(ctx, p.ID, pages.LinkPending, creator.Label, true)
 	if err != nil {
 		if !errors.Is(err, pages.ErrTooMany) {
 			s.logger.Printf("pages: link request for %d: %v", p.ID, err)
@@ -415,10 +467,112 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 	metrics.PageShareDecisions.WithLabelValues("requested").Inc()
 	// 🔴 THE ONE TIME THE ADDRESS IS SHOWN: only its hash is stored. It
 	// serves nothing until the owner approves it.
-	return toolJSON(map[string]any{"page_id": p.ID, "link_id": l.ID, "ask_id": a.ID, "status": "pending", "url": s.pageLinkURL(l),
+	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "link_id": l.ID, "ask_id": a.ID, "status": "pending", "url": s.pageLinkURL(l),
 		"note": "Keep url: it is shown only this once (muster stores only its hash). It opens nothing until your owner approves it, and then opens the page for anyone who has it.",
 		"next": "Your owner decides on the Attention view or their phone. " + askNext(c, a.ID) +
 			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
+}
+
+// pageAgentShareOn reports whether owner turned on "Let my agents share pages
+// without asking" (Account → Pages). Off — no store, no row, a failed read
+// (logged) — is the ask flow. ctx acts as owner here (an agent's or a mirrored
+// session's request runs as the agent's owner); the store refuses any other
+// principal, which reads as off.
+func (s *Server) pageAgentShareOn(ctx context.Context, owner int64) bool {
+	if owner <= 0 || s.ext.NotifyPrefs == nil {
+		return false
+	}
+	on, err := s.ext.NotifyPrefs.PagesAgentShare(ctx, owner)
+	if err != nil {
+		s.logger.Printf("pages: owner %d: read the share-without-asking opt-in: %v (off: ask)", owner, err)
+		return false
+	}
+	return on
+}
+
+// pageShareAuto is page_share_request for a page whose OWNER opted in to
+// their agents sharing without asking: the page's link goes live NOW, with no
+// owner card, and its address is the result.
+//
+// 🔴 THE SAME SCOPE AS ASKING: the page was read with PageFor (the caller's own
+// page — another creator's, the same owner's included, reads as missing) under
+// the request's principal, the agent's OWNER, whose row-level security
+// confines every statement to the owner's rows. So an agent can share only a
+// page it made for its own owner; another owner's page is "no such page".
+// TestAnAgentCannotAutoShareAnotherOwnersPage.
+//
+// 🔴 THE OWNER IS TOLD, NOT ASKED: one push ("Page shared", its OWN toggle,
+// page_shared — muting "Page ready" never hides it — opening the page's
+// screen, where the link and its Revoke are) and the page card in the chat,
+// which says it is shared.
+//
+// With a link key the link is the page's ONE reusable link — the one it has
+// (an owner's or an earlier share's), else a new one made by the agent —
+// so a second request returns the same address. Without one it is a new
+// hash-only live link, its address shown only here.
+func (s *Server) pageShareAuto(ctx context.Context, creator pages.Creator, p pages.Page, reason string) string {
+	var l pages.Link
+	var err error
+	created := true
+	if s.ext.Pages.LinksReusable() {
+		l, created, err = s.ext.Pages.ShareLink(ctx, p.ID, creator.Label, true)
+	} else {
+		l, err = s.ext.Pages.CreateLink(ctx, p.ID, pages.LinkLive, creator.Label, true)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, pages.ErrLinkUnreadable):
+			return toolErr("page %d's link can no longer be shown (the server's encryption key changed); your owner can make a new one on the page", p.ID)
+		case !errors.Is(err, pages.ErrTooMany):
+			s.logger.Printf("pages: auto share of %d: %v", p.ID, err)
+		}
+		return pageToolRefusal("shared", p.ID, err)
+	}
+	if created {
+		metrics.PageShareDecisions.WithLabelValues("auto").Inc()
+		s.logger.Printf("pages: link %d of page %d made live by %s without asking (its owner's opt-in)", l.ID, p.ID, creator.Label)
+	} else {
+		s.logger.Printf("pages: link %d of page %d handed to %s without asking (its owner's opt-in; the link was there already)", l.ID, p.ID, creator.Label)
+	}
+	// 🔴 EVERY AGENT SHARE IS PUSHED, the link new or not: what the owner
+	// must hear is that an agent HANDED the page on — an existing link (the
+	// owner's own, or an earlier one) going to a new reader is that too.
+	ownersLink := !l.ByAgent
+	by := "By " + truncate(creator.Label, 60) + "."
+	if !created {
+		if ownersLink {
+			by = "By " + truncate(creator.Label, 60) + ", with the link you had already shared."
+		} else {
+			by = "By " + truncate(creator.Label, 60) + ", with the page's existing link."
+		}
+	}
+	body := "Anyone with its link can open it. Tap to see the link or revoke it."
+	if reason = strings.TrimSpace(reason); reason != "" {
+		body = "Why: " + truncate(reason, 120) + " — anyone with its link can open it. Tap to revoke it."
+	}
+	s.pushTask(p.OwnerID, push.EventPageShared, RouterNotification{
+		Type:  taskNotificationType,
+		Title: "Page shared: " + truncate(p.Title, 80),
+		Body:  by + " " + body,
+		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-shared",
+		Data:  map[string]string{"url": pagePath(p.ID)},
+	})
+	note := "The link is live now: anyone who has url can open the page. Your owner was told and can revoke it."
+	sharedBy := l.RequestedBy
+	if ownersLink {
+		sharedBy = "your owner"
+		note = "This is the link your owner already shared: anyone who has url can open the page. Your owner was told you are using it, and can revoke it."
+	} else if !created {
+		note = "This is the page's existing link: anyone who has url can open the page. Your owner was told, and can revoke it."
+	}
+	if l.Reusable {
+		note += " It is this page's one link: asking again returns the same url."
+	} else {
+		note += " Keep url: it is shown only this once (muster stores only its hash)."
+	}
+	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "link_id": l.ID, "status": "live", "url": s.pageLinkURL(l),
+		"reusable": l.Reusable, "shared_by": sharedBy, "note": note,
+		"next": "Give url to whoever should open the page. Read what they send with page_responses{page_id: " + strconv.FormatInt(p.ID, 10) + ", wait_seconds}."})
 }
 
 func (s *Server) toolPageLinkRevoke(ctx context.Context, c pages.Creator, arguments string) string {

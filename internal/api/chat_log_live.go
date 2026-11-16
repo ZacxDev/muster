@@ -84,6 +84,7 @@ func relayOf(m agents.ChatMessage) *ui.ChatRelay {
 func (s *Server) withChatLogLive(ctx context.Context, v *ui.AgentDetailView, session agents.ChatSession) {
 	v.TurnInFlight = s.sessionTurns.inFlight(session.SessionKey)
 	v.DispatchCards = s.dispatchCardsFor(ctx, v.Messages)
+	v.PageCards = s.pageCardsFor(ctx, v.Messages)
 	v.OwnerCards = s.ownerCardsFor(ctx, v.Messages)
 	v.Mentions = s.mentionIndex(ctx)
 	for _, l := range v.Messages {

@@ -43,6 +43,10 @@ type Features struct {
 	// (internal/attention). False draws no Attention link and no badge: the
 	// routes behind them would only answer 404.
 	Attention bool
+	// Pages is true when shareable pages are served (internal/pages, the
+	// feature not called off). It draws the sidebar's Pages link; false draws
+	// none, since /pages would only answer that the feature is off.
+	Pages bool
 	// SnapUser and SnapBuild are the signed-in user and the running build: the
 	// key, and the check, of the mirrored view's snapshot store
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.

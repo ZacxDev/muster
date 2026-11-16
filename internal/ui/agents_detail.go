@@ -152,6 +152,10 @@ type AgentDetailView struct {
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
+	// PageCards is each muster page tool call's page card, by its tool id,
+	// read from the page itself under the viewer's principal (internal/api
+	// pageCardsFor); a call whose page the viewer cannot see has none.
+	PageCards map[string]PageCardView
 	// OwnerCards is each STORED ask_owner card's state — its attention ask —
 	// by the call's tool id (internal/api ownerCardsFor). A call whose result
 	// names no stored ask draws from the transcript alone (a server with no
@@ -1501,6 +1505,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 				continue
 			}
 			items = append(items, logItem{chatToolChip(m, result), toolChipState(result)})
+			// A page tool's result is followed by its page card (page_card.go),
+			// which ends the run of rows like any card — as the SERVER read the
+			// page (PageCards), never as the result tells it; a page the viewer
+			// cannot see has none.
+			if pc, ok := v.PageCards[m.ToolID]; ok && result != nil && result.ToolOK {
+				items = append(items, logItem{node: PageCard(pc, PageCardID(m.ToolID))})
+			}
 		case "tool_result":
 			if paired[i] {
 				continue // drawn with its call
@@ -2467,6 +2478,28 @@ func agentChatScript(name string) g.Node {
     }).catch(function () {});
   }
 
+  // pageCard draws a streamed page tool's result as its page card, by the
+  // server's one renderer (ui.PageCard, served at PageCardPath), AFTER its row
+  // — after the row's group when it is in one, so a folded group cannot hide
+  // it. A result it cannot read draws nothing more.
+  function pageCard(row, name, ok, output) {
+    var m = /^(?:mcp__muster__)?(page_create|page_update|page_share_request)$/.exec(String(name || ''));
+    if (!ok || !m) return;
+    var r; try { r = JSON.parse(output || ''); } catch (e) { return; }
+    if (!r || typeof r !== 'object' || r.error || !(r.page_id > 0)) return;
+    var src = '/pages/' + encodeURIComponent(r.page_id) + '/card?tool=' + encodeURIComponent(m[1]) +
+      (r.status ? '&status=' + encodeURIComponent(String(r.status)) : '') +
+      (r.version ? '&version=' + encodeURIComponent(String(r.version)) : '');
+    fetch(src, { credentials: 'include' }).then(function (res) { return res.ok ? res.text() : ''; }).then(function (html) {
+      var anchor = row.closest('[data-tool-group]') || row;
+      if (!html || !anchor.parentNode) return;
+      var t = document.createElement('template'); t.innerHTML = html.trim();
+      var card = t.content.firstElementChild;
+      if (!card) return;
+      anchor.parentNode.insertBefore(card, anchor.nextSibling);
+    }).catch(function () {});
+  }
+
   // The stream renderer for the user-turn WebSocket's {type, content/id/name/args/
   // ok/output} messages: delta/thinking/tool_call/tool_result/user/error/done.
   //
@@ -2530,6 +2563,7 @@ func agentChatScript(name string) g.Node {
         // agent_dispatch's result is drawn as its card, by the server's one
         // renderer (ui.DispatchAgentCard), in place of the row.
         if (cardTool(msg.name) === 'agent_dispatch') dispatchCard(r.details, msg.output);
+        pageCard(r.details, msg.name, msg.ok, msg.output);
         r.status.textContent = msg.ok ? '✓' : '✗';
         r.status.className = 'ml-auto shrink-0 font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
         r.details.setAttribute('data-tool-status', msg.ok ? 'ok' : 'error');

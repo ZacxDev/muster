@@ -282,7 +282,7 @@ var jsKnownGlobals = map[string]bool{
 	"MutationObserver": true, "IntersectionObserver": true, "ResizeObserver": true,
 	"CustomEvent": true, "Event": true, "KeyboardEvent": true, "FormData": true,
 	"URL": true, "URLSearchParams": true, "EventSource": true, "WebSocket": true,
-	"Notification": true, "AbortController": true, "Blob": true, "Image": true,
+	"Notification": true, "AbortController": true, "Blob": true, "Image": true, "ClipboardItem": true,
 	"Intl": true, "TextEncoder": true, "TextDecoder": true,
 	"MouseEvent": true, "DOMParser": true, "Uint8Array": true, "Uint16Array": true,
 	"ArrayBuffer": true, "FileReader": true, "XMLHttpRequest": true, "Element": true,

@@ -81,6 +81,11 @@ var plainingHelpers = map[string]bool{
 	// A session's name (session_name.go): its resolved name is already plain;
 	// the displayName it falls back to goes through plainOr.
 	"sessionTitle": true,
+	// A shareable page's title on its card and its Share controls
+	// (page_card.go): pageCardTitle plains it; the two controls call it.
+	"pageCardTitle":   true,
+	"PageShareButton": true,
+	"PageShareMenu":   true,
 }
 
 // helperNameArgs are, per plaining helper, the argument positions that carry a
@@ -93,6 +98,9 @@ var helperNameArgs = map[string][]int{
 	"mirrorTerminalTitle": {0},    // title
 	"sessionTitle":        {1},    // displayName (the resolved name is plain already; name is the slug fallback)
 	"plainOr":             {0},    // s (the fallback is drawn as written)
+	"pageCardTitle":       {0},    // raw
+	"PageShareButton":     {1},    // title (id and the address are not names)
+	"PageShareMenu":       {1},    // title
 }
 
 type exemption struct {
@@ -168,6 +176,8 @@ var apiExempt = map[string]exemption{
 	"pages.go Server.renderPagesList p.Creator.Label":          {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
 	"pages.go Server.renderPageDetail l.Label":                 {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
 	"pages.go Server.renderPageDetail p.Creator.Label":         {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
+	"pages.go Server.renderPagesList p.Title":                  {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
+	"pages.go Server.renderPageDetail p.Title":                 {1, "passed RAW to pageShareControls, whose ui.PageShareButton / ui.PageShareMenu plain it once (pageCardTitle)"},
 	"push_routes.go Server.pushPreferencesForm e.Label":        {1, whyStatic},
 	"features.go featureRow f.Description":                     {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
 	"cc_usage.go Server.writeCCUsageSection a.Source":          {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},

@@ -72,7 +72,7 @@ func TestAPageIsItsOwnersAndItsCreators(t *testing.T) {
 	if p.OwnerID != 2 || p.CurrentVersion != 1 || v.Version != 1 || p.Creator.AgentID != agentA.AgentID {
 		t.Fatalf("created %+v %+v", p, v)
 	}
-	l, err := s.CreateLink(two, p.ID, LinkLive, "you")
+	l, err := s.CreateLink(two, p.ID, LinkLive, "you", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestAPageIsItsOwnersAndItsCreators(t *testing.T) {
 	if _, err := s.SetCurrent(three, p.ID, 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("user 3 rolled back: %v", err)
 	}
-	if _, err := s.CreateLink(three, p.ID, LinkLive, "x"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.CreateLink(three, p.ID, LinkLive, "x", true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("user 3 minted a link: %v", err)
 	}
 	if _, err := s.RevokeLink(three, p.ID, l.ID); !errors.Is(err, ErrLinkNotFound) {
@@ -195,7 +195,7 @@ func TestALinkServesOnlyWhileLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := s.CreateLink(two, p.ID, LinkPending, "worker-a")
+	l, err := s.CreateLink(two, p.ID, LinkPending, "worker-a", true)
 	if err != nil || l.State != LinkPending || l.DecidedAt != nil || !TokenShapeOK(l.Token) {
 		t.Fatalf("pending link: %+v %v", l, err)
 	}
@@ -231,14 +231,14 @@ func TestALinkServesOnlyWhileLive(t *testing.T) {
 		t.Errorf("revoking twice: %+v %v", again, err)
 	}
 	// Denied.
-	d, _ := s.CreateLink(two, p.ID, LinkPending, "worker-a")
+	d, _ := s.CreateLink(two, p.ID, LinkPending, "worker-a", true)
 	if _, err := s.DecideLink(two, d.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.LinkByToken(context.Background(), d.Token); !errors.Is(err, ErrLinkNotFound) {
 		t.Errorf("a denied link served: %v", err)
 	}
-	e, _ := s.CreateLink(two, p.ID, LinkLive, "you")
+	e, _ := s.CreateLink(two, p.ID, LinkLive, "you", false)
 	if _, err := s.LinkByToken(context.Background(), e.Token); err != nil {
 		t.Fatalf("control: a live link: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestResponsesNeedALiveLinkAndStopAtTheCaps(t *testing.T) {
 	two := asUser(2)
 	b, n := blocksOf(t, qBlocks)
 	p, _, _ := s.Create(two, agentA, "Caps", b, n)
-	l, _ := s.CreateLink(two, p.ID, LinkLive, "you")
+	l, _ := s.CreateLink(two, p.ID, LinkLive, "you", false)
 	defer func(a, f int) { MaxResponsesPerLink, MaxUploadsPerLink = a, f }(MaxResponsesPerLink, MaxUploadsPerLink)
 	MaxResponsesPerLink, MaxUploadsPerLink = 3, 1
 	if _, err := s.AddResponse(two, l, 1, "u1", KindUpload, nil, "file-1"); err != nil {
@@ -284,7 +284,7 @@ func TestResponsesNeedALiveLinkAndStopAtTheCaps(t *testing.T) {
 		t.Fatalf("after %d: %+v", rs[1].ID, after)
 	}
 	// Revoked mid-flight: the row says so, whatever the caller holds.
-	other, _ := s.CreateLink(two, p.ID, LinkLive, "you")
+	other, _ := s.CreateLink(two, p.ID, LinkLive, "you", false)
 	if _, err := s.RevokeLink(two, p.ID, other.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -319,20 +319,20 @@ func TestTheOpenLinkAndPageCaps(t *testing.T) {
 	if _, _, err := s.AddVersion(two, agentA, p.ID, "One", b, n); !errors.Is(err, ErrTooMany) {
 		t.Errorf("a third version past MaxVersionsPerPage: %v", err)
 	}
-	a, _ := s.CreateLink(two, p.ID, LinkPending, "x")
-	if _, err := s.CreateLink(two, p.ID, LinkLive, "x"); err != nil {
+	a, _ := s.CreateLink(two, p.ID, LinkPending, "x", true)
+	if _, err := s.CreateLink(two, p.ID, LinkLive, "x", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateLink(two, p.ID, LinkLive, "x"); !errors.Is(err, ErrTooMany) {
+	if _, err := s.CreateLink(two, p.ID, LinkLive, "x", true); !errors.Is(err, ErrTooMany) {
 		t.Errorf("a third open link past MaxOpenLinksPerPage: %v", err)
 	}
 	if _, err := s.RevokeLink(two, p.ID, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateLink(two, p.ID, LinkLive, "x"); err != nil {
+	if _, err := s.CreateLink(two, p.ID, LinkLive, "x", true); err != nil {
 		t.Errorf("a revoked link still counts toward the cap: %v", err)
 	}
-	if _, err := s.CreateLink(two, p.ID, LinkDenied, "x"); err == nil {
+	if _, err := s.CreateLink(two, p.ID, LinkDenied, "x", true); err == nil {
 		t.Error("a link was created denied")
 	}
 }
@@ -350,7 +350,7 @@ func TestALinksTokenIsNotStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, state := range []LinkState{LinkPending, LinkLive} {
-		l, err := s.CreateLink(two, p.ID, state, "you")
+		l, err := s.CreateLink(two, p.ID, state, "you", false)
 		if err != nil || !TokenShapeOK(l.Token) {
 			t.Fatalf("CreateLink(%s): %+v %v", state, l, err)
 		}
