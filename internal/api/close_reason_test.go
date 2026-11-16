@@ -86,7 +86,7 @@ func TestAWriteToAClosedPageIsTheBrowserLeaving(t *testing.T) {
 		t.Errorf("a failed write during a shutdown ended as %q, want %q", got, telemetry.ReasonShutdown)
 	}
 	// And the terminal's writer marks its failures the same way.
-	if _, werr := (pageWriter{failingWriter{}}).Write([]byte("x")); !errors.Is(werr, errPageGone) {
+	if _, werr := (pageWriter{w: failingWriter{}}).Write([]byte("x")); !errors.Is(werr, errPageGone) {
 		t.Errorf("pageWriter's failure is not marked as the page gone: %v", werr)
 	}
 }

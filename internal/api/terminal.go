@@ -368,6 +368,19 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				// ⚠ THE ONE PAGE WRITE NOT BOUNDED BY armStall, on purpose.
+				// coder/websocket caps the ping FRAME's write at 5 s and closes
+				// the connection itself then, before Ping returns, so output
+				// queued behind a stalled ping can fail before the note below
+				// and be marked as the page gone (audit #713 round 1). That
+				// reaches only the text of the terminal's "detached" log line:
+				// the metric is right (streamEndReason runs after pingDone,
+				// once the note has landed). Bounding it with armStall would
+				// mean telling a blocked frame from an unanswered pong, which
+				// coder/websocket does not expose; doing it at the frame cap
+				// cut the wait for a pong from terminalWriteTimeout (10 s) to
+				// 4 s, which was declined (2026-11-16). Pinned by
+				// TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout.
 				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
 				err := c.Ping(pctx)
 				notePageWrite(c, err)
@@ -488,19 +501,100 @@ func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	if err != nil {
 		return err
 	}
-	wctx, cancel := pageWriteContext(ctx)
+	return pageWrite(ctx, c, websocket.MessageText, b)
+}
+
+// pageWrite writes one message to the page's socket c, bounded as
+// pageWriteContext(ctx) says, with the bound kept by armStall: a write not done
+// by then is a stalled page, NOTED and then the connection closed.
+//
+// 🔴 coder/websocket CLOSES THE CONNECTION ITSELF WHEN A WRITE'S CONTEXT
+// EXPIRES — from a goroutine of its own, before Write returns — and every
+// other writer on c then fails "use of closed network connection" at once: a
+// batch queued behind the asks relay's stalled write failed before the relay's
+// note, written after Write returned, existed, and was marked as the page gone
+// (audit #713 F1). So the write's own context runs stallGrace past the bound
+// (still cancelled, as pageWriteContext cancels, pageWriteGrace after the
+// stream's), and the bound's timer — note first, then close — is what ends it.
+func pageWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageType, b []byte) error {
+	bounded, cancel := pageWriteContext(ctx)
 	defer cancel()
-	err = c.Write(wctx, websocket.MessageText, b)
+	deadline, _ := bounded.Deadline() // pageWriteContext always sets one
+	wctx, wcancel := context.WithDeadline(context.WithoutCancel(bounded), deadline.Add(stallGrace))
+	defer wcancel()
+	// bounded's CANCELLATION ends the write as before; its deadline is the
+	// stall timer's.
+	defer context.AfterFunc(bounded, func() {
+		if !errors.Is(bounded.Err(), context.DeadlineExceeded) {
+			wcancel()
+		}
+	})()
+	disarm := armStall(c, deadline)
+	pageWriteStarting(ctx)
+	err := c.Write(wctx, typ, b)
+	pageWriteReturned(ctx)
+	if disarm() {
+		return stalledWriteErr(err)
+	}
 	notePageWrite(c, err)
 	return err
 }
 
+// stallGrace is how much longer than its bound a write to the page may run,
+// so that the bound's own timer (armStall) — not the write's context — ends a
+// stalled one.
+const stallGrace = time.Second
+
+// armStall arms the bound of one write to c: at deadline it notes the stall
+// (notePageWrite) and then closes the connection, IN THAT ORDER, so a writer
+// that finds c closed by the stall always finds the note (markPageGone,
+// streamEndReason). disarm stops it and reports whether it fired; a fired
+// callback has finished noting and closing by the time disarm returns.
+func armStall(c *websocket.Conn, deadline time.Time) (disarm func() (fired bool)) {
+	done := make(chan struct{})
+	t := time.AfterFunc(time.Until(deadline), func() {
+		defer close(done)
+		stallFiring()
+		notePageWrite(c, context.DeadlineExceeded)
+		_ = c.CloseNow()
+	})
+	return func() bool {
+		if t.Stop() {
+			return false
+		}
+		<-done
+		return true
+	}
+}
+
+// stalledWriteErr is the error of a write whose stall bound fired: a timeout,
+// whatever the write itself returned (it may have landed as the timer fired,
+// or failed on the connection the timer closed).
+func stalledWriteErr(err error) error {
+	switch {
+	case err == nil:
+		return context.DeadlineExceeded
+	case errors.Is(err, context.DeadlineExceeded):
+		return err
+	}
+	return fmt.Errorf("%w: %w", errPageStalled, err)
+}
+
+// Test seams around one write to the page, no-ops in production:
+// pageWriteStarting runs just before the write, pageWriteReturned once it has
+// returned and before its outcome is noted. A test orders writers with them.
+var (
+	pageWriteStarting = func(context.Context) {}
+	pageWriteReturned = func(context.Context) {}
+)
+
 // stalledPages is every page socket a write to which has TIMED OUT — a page
-// alive but not reading. coder/websocket closes the connection itself then, so
-// the NEXT write by anyone else (a batch after the asks relay's or the
-// suggestions' write stalled) fails as if the page had left; this is how the
-// end is still told apart (pageStalled). Only a stalled socket is stored, and
-// its handler forgets it (forgetPage) when it returns.
+// alive but not reading. The stall's bound closes the connection then
+// (armStall, after noting it here), so the next write by anyone else (a batch
+// after the asks relay's or the suggestions' write stalled) fails as if the
+// page had left; this is how the end is still told apart (pageStalled). Only
+// a stalled socket is stored, and its handler forgets it (forgetPage) when it
+// returns.
 var stalledPages sync.Map // *websocket.Conn → struct{}
 
 // notePageWrite records that a write to c timed out, when err says so.
@@ -547,9 +641,7 @@ func (w *terminalWriter) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	wctx, cancel := pageWriteContext(w.ctx)
-	defer cancel()
-	if err := w.c.Write(wctx, websocket.MessageBinary, p); err != nil {
+	if err := pageWrite(w.ctx, w.c, websocket.MessageBinary, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
