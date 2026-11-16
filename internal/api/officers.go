@@ -1783,7 +1783,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	var err error
 	switch name {
 	case officers.ToolBrief:
-		body, err = c.Brief(ctx)
+		if g, ok := c.(officers.CharterGated); ok {
+			// recorded as briefed with the version this answer carries
+			body, err = g.BriefFor(ctx, instance)
+		} else {
+			body, err = c.Brief(ctx)
+		}
 	case officers.ToolItems:
 		status := in.Status
 		if status == "" {
@@ -1795,6 +1800,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		page, err = c.Items(ctx, officers.ItemsQuery{Status: status, Limit: in.Limit, Cursor: in.Cursor, Tier: o.Tier})
 		body = page.Raw
 	case officers.ToolClaim:
+		// 🔴 NO CLAIM ON A STALE CHARTER (charterRefusal), first: nothing is
+		// reserved, marked or sent before it.
+		if refusal := charterRefusal(ctx, c, name, instance); refusal != "" {
+			return refusal, true
+		}
 		if o.ItemCap() > 0 || o.FreshSessionPerItem() {
 			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, AND ONE ITEM PER
 			// FRESH POOL'S CONVERSATION, before HQ and before the session
@@ -1910,6 +1920,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		// A hand-off's head is HQ's to check (409 nothing_pushed /
 		// head_not_live): muster keeps no memory of pushes to decide it.
+		// 🔴 NO COMPLETE ON A STALE CHARTER (charterRefusal): an item claimed
+		// before its type's charter was re-put is not finished against the
+		// old one. The lease is kept (heartbeat and release are not gated).
+		if refusal := charterRefusal(ctx, c, name, instance); refusal != "" {
+			return refusal, true
+		}
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it
 		// (CompleteDroppingCost). It is read here, before officerItemEnded
@@ -2121,6 +2137,22 @@ func (s *Server) officerClaimNext(ctx context.Context, c officers.Backend, insta
 		return nothingToClaim(), "", nil
 	}
 	return body, res.Item.ID, nil
+}
+
+// charterRefusal is THE charter gate of an instance's officer_claim and
+// officer_complete (officers.CharterGated): the tool result refusing it when
+// the backend says instance was not briefed with its type's current
+// charter_version, and "" otherwise — or when the backend keeps no such
+// record (HQ's client). An unreadable record refuses as an outage.
+func charterRefusal(ctx context.Context, c officers.Backend, tool, instance string) string {
+	g, ok := c.(officers.CharterGated)
+	if !ok {
+		return ""
+	}
+	if err := g.CharterCurrent(ctx, instance); err != nil {
+		return officerToolResult(tool, nil, err)
+	}
+	return ""
 }
 
 // oneClaimRefusal is officer_claim's refusal for an instance of a capped

@@ -62,6 +62,7 @@ func TestABuiltinOfficersAskReachesTheOwnerAndTheAnswerComesBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-ask-token")
+	briefInstance(t, srv, a)
 	listed := false
 	for _, d := range srv.MCPToolDefsFor(ctx, a) {
 		listed = listed || d.Name == officers.ToolAskPerson
@@ -114,6 +115,7 @@ func TestABuiltinEscalationNotifiesEachRecipientOnceAndNobodyInShadow(t *testing
 			t.Fatal(err)
 		}
 		a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-esc-token-"+mode)
+		briefInstance(t, srv, a)
 		if out := srv.dispatchAgentTool(ctx, a, officers.ToolClaim, `{}`); isToolErr(out) {
 			t.Fatalf("%s: claim: %s", mode, out)
 		}
@@ -201,6 +203,7 @@ func TestTheAdminAPIDefinesAnOfficerAndFeedsItsQueue(t *testing.T) {
 	}
 	ctx := dbtest.AsOperator(context.Background())
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-admin-token")
+	briefInstance(t, srv, a)
 	claim := srv.dispatchAgentTool(ctx, a, officers.ToolClaim, `{}`)
 	if isToolErr(claim) || !strings.Contains(claim, `"id":`+strconv.FormatInt(id, 10)) || !strings.Contains(claim, `"tag":"v4"`) {
 		t.Fatalf("the instance's claim: %s, want the item the admin API enqueued", claim)

@@ -112,6 +112,39 @@ statement names the caller as owner).
 (409) while something still names the row: a type an officer uses, an officer
 with items or schedules.
 
+### Charter changes reach running instances
+
+An instance is one long Claude Code conversation, resumed across
+scale-to-zero, and its charter reaches it only through `officer_brief`. So
+muster records, per instance, the `charter_version` its last `officer_brief`
+answered (`officer_defs.charter_briefed`, migration 0139; written by the same
+statement that reads the charter it hands over), and holds the instance to the
+type's **current** version:
+
+- `officer_claim` (claim-next and by id) and `officer_complete` are refused
+  `409 charter_changed` while the instance's recorded version is older than
+  its type's `charter_version`, with `charter_version` (the type's) and
+  `briefed_charter_version` (the instance's) in the body. Nothing is claimed
+  or completed. The refusal tells it to call `officer_brief`, follow the
+  charter it returns, and retry.
+- An instance with no record — never briefed, or briefed before 0139 — is
+  briefed version 0, so its first claim is refused the same way.
+- An item it already holds stays its: `officer_heartbeat` and
+  `officer_release` are not gated, so the lease survives the re-brief, and the
+  complete goes through once it has read the new charter. A complete is never
+  made against the old one.
+- The record is in the database, keyed by the instance's name, so it outlives
+  scale-to-zero and a muster restart: a woken instance briefed at the current
+  version claims without a second brief, and a charter put while it was scaled
+  to zero is refused on its first claim after the wake.
+- `muster officer type put` with an unchanged charter keeps the version, so it
+  does not force a re-brief.
+
+Only the instance's own tools are gated; muster's own completions (the
+wall-time cap) are not. An HQ officer is not gated this way: HQ holds its
+charters, and the contract gives muster no read of the current
+`charter_version` short of a whole brief (`officers.CharterGated`).
+
 ## 2b. Let its instances reach the model (egress)
 
 An officer instance's pod is egress-locked: no public address and no DNS,

@@ -200,6 +200,11 @@ func newOutboundWorldWith(t *testing.T, grant bool, fx outboundFixture) *outboun
 	} else {
 		w.agent = startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-outbound-hooks-token")
 	}
+	// the kickoff's step 1: until it is briefed, its claims are refused
+	// charter_changed (officers.CharterGated)
+	if out := w.call(officers.ToolBrief, `{}`); isToolErr(out) {
+		t.Fatalf("brief: %s", out)
+	}
 	sess1 := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
 	w.tok, w.plugin, err = ps.CreatePlugin(sess1, plugins.NewPlugin{Name: outboundPluginName, Label: "Example relay", DataScope: "example",
 		Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, DeliverTo: "officer:" + builtinOfficerID})

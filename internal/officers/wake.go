@@ -1397,8 +1397,14 @@ func RepromptText(o Officer, n int) string {
 	if o.FreshSessionPerItem() {
 		return KickoffText(o, n)
 	}
-	return fmt.Sprintf("New work for officer %s (you are instance %s, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
-		"Call %s again only if you need your charter.", o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
+	again := fmt.Sprintf("Call %s again only if you need your charter.", ToolBrief)
+	if o.IsBuiltin() {
+		// muster refuses a builtin instance's claim and complete while its
+		// charter is newer than its last brief (officers.CharterGated)
+		again = fmt.Sprintf("If %s or %s answers charter_changed, your charter changed: call %s, follow it, and retry.", ToolClaim, ToolComplete, ToolBrief)
+	}
+	return fmt.Sprintf("New work for officer %s (you are instance %s, %s): call %s and work the queue as before — %s, %s while you work, %s when done. ",
+		o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete) + again
 }
 
 // permanentRefusal names an HQ answer that is a configuration fault rather
