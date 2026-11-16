@@ -89,7 +89,7 @@ func (f *attnFixture) toolList(t *testing.T, hdr map[string]string) string {
 // listing every operator tool to opencode's caller.
 func TestAMirroredOpenCodeSessionGetsTheAttentionAndTaskToolsOnly(t *testing.T) {
 	f, ws := newOpenCodeMirrorFixture(t)
-	const want = "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status muster_help"
+	const want = "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status track_task muster_help"
 	for name, hdr := range map[string]map[string]string{
 		"the marker alone":   mirrorAsOpenCode(ws, ""),
 		"marker and key":     mirrorAsOpenCode(ws, "opencode:ses_launch"),

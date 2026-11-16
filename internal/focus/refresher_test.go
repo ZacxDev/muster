@@ -66,6 +66,12 @@ func (m *memStore) SetManualName(_ context.Context, s Subject, name string) (Nam
 	m.rows[s] = f
 	return f.Name, nil
 }
+func (m *memStore) SetTaskLink(_ context.Context, s Subject, l TaskLink, _ TaskLinkMode) (TaskLink, error) {
+	f := m.rows[s]
+	f.Subject, f.Tasks = s, l
+	m.rows[s] = f
+	return l, nil
+}
 func (m *memStore) DismissDrift(_ context.Context, s Subject, title string) error {
 	f := m.rows[s]
 	f.Name.DriftDismissed = title
