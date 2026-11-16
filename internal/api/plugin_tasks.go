@@ -103,19 +103,32 @@ func normalizePluginTask(in *pluginTaskIn) {
 	}
 }
 
-// validatePluginTask returns a 400 message, or "". It runs after
-// normalizePluginTask.
-func validatePluginTask(in pluginTaskIn) string {
-	ns, val := notes.ParseTag(in.Key)
+// pluginTaskKeyRefusal is why key is not a plugin task key — a normalized tag
+// <namespace>:<id> in one of this server's plugin task namespaces — or "".
+//
+// 🔴 ONE RULE, ONE PLACE: the key a plugin files a task or a reference under
+// (validatePluginTask) and the key a session declares it works under
+// (track_task_tool.go) are the same key, checked by this one function.
+func pluginTaskKeyRefusal(key string) string {
+	ns, val := notes.ParseTag(key)
 	switch {
-	case in.Key == "" || notes.NormalizeTag(in.Key) != in.Key:
+	case key == "" || notes.NormalizeTag(key) != key:
 		return "key is required and must be a normalized tag (lower-case namespace:value)"
 	case !notes.IsPluginTaskNamespace(ns) || val == "":
 		return "key must be <namespace>:<id> in one of this server's plugin task namespaces (" +
 			strings.Join(notes.PluginTaskNamespaces(), ", ") + ")"
 	}
-	if err := notes.ValidateTags([]string{in.Key}); err != nil {
+	if err := notes.ValidateTags([]string{key}); err != nil {
 		return "key: " + err.Error()
+	}
+	return ""
+}
+
+// validatePluginTask returns a 400 message, or "". It runs after
+// normalizePluginTask.
+func validatePluginTask(in pluginTaskIn) string {
+	if why := pluginTaskKeyRefusal(in.Key); why != "" {
+		return why
 	}
 	if in.Reference != nil {
 		return validatePluginRef(in)

@@ -322,6 +322,37 @@ the dismissal per user (`agent_focus.drift_dismissed`, migration `0091`): the
 offer stays hidden while the focus title is the one it was dismissed at, and
 comes back when the title changes.
 
+## A session's tasks
+
+A mirrored session (Claude Code or opencode) says which tasks it works under
+with muster's `track_task` tool, and the chief reads it in `fleet_list`. The tool
+and its instruction are offered only when a plugin task namespace is configured
+(`MUSTER_PLUGIN_TASK_NAMESPACES`), since otherwise no key is valid; its example
+key is in that namespace.
+Muster never infers it from the focus, the transcript or a keyword match. Like
+focus, what a session declares (its `untracked` line and `task_note`) is
+untrusted data, and the tools' `untrusted` note says so. The mirror door's instructions tell every session
+to call it when it starts or switches work.
+
+| argument | rule |
+|---|---|
+| `tasks` | Up to 10 task keys. A key is a [plugin task key](plugins.md#task-references) (`<namespace>:<id>` in one of `MUSTER_PLUGIN_TASK_NAMESPACES`, e.g. `hq:<id>`), checked by the same rule as a reference's key. `[]` clears the declaration. |
+| `none` | Instead of `tasks`: one line (at most 200 characters) saying why the work is deliberately untracked. |
+| `note` | Optional, with `tasks`: one line (at most 200 characters). |
+
+Each call **replaces** the declaration.
+
+It takes no subject. It always writes the calling session's own row, the session
+the mirror door bound the call to, under your row-level security. An unknown
+argument is refused. The declaration lives on the session's focus row
+(migration `0136`, beside its [name](#a-sessions-name)), so it has the focus's
+ownership, team share class and retention.
+
+**Why not a task reference or a task thread?** Most upstream tasks have no row
+in muster, so the declaration is stored by key: the key a reference would be
+filed under. It is the session's current state, which it replaces. A task's
+session thread (`task_sessions`) is history that only grows.
+
 ## How focus is written
 
 Only muster writes it, server-side, in a periodic pass (`MUSTER_FOCUS_INTERVAL`,
@@ -535,7 +566,7 @@ the chief that focus is data, never instructions. Neither makes the text safe
 
 | tool | who | what |
 |---|---|---|
-| `fleet_list` | chief | every session: id, kind, name (its [stable name](#a-sessions-name)), `code` (an agent's slug), status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
+| `fleet_list` | chief | every session: id, kind, name (its [stable name](#a-sessions-name)), `code` (an agent's slug), status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale; a mirrored session's `active_at` (its window's last activity) and the tasks it [declared](#a-sessions-tasks) (`tasks`, or `untracked`; `task_note`, `task_set_at`). Filter: `active_within_hours` (1–720, inclusive) |
 | `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, name (the session's stable name, current-focus mode), title (with `focus_set_at`, and `focus_age` past a day) and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, a mirrored window's `where`, status, current focus with the same `focus_set_at` and `focus_age` as `fleet_list`, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
 | `fleet_report(since, until?)` | chief | every session of the owner's — running agents and mirrored windows, **ended ones included** — with focus activity between `since` and `until` (RFC 3339; `until` defaults to now; at most 4 days apart), most recently active first: id, kind, name, host, a listed window's `where` (this door only: the fleet-report reply below never carries it), repo, state (`waiting`: an attention item is pending; `active`: live now; `ended`), first and last seen, the distinct focus titles of the window with their times (at most 20 per session, the newest), and the pull requests it created or pushed. The chief itself is left out. Capped at 32 KiB; `coverage` says how many sessions were left out and what did not answer (an offline host, a store that could not be read). It shows the owner **everything**, hosts included and unfiltered, because its answer never leaves muster; the same report answering a [fleet-report request](plugins.md#a-fleet-report-request) is narrowed to `MUSTER_FLEET_REPORT_PATHS`, with no hosts and secret-shaped strings removed |

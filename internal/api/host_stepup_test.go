@@ -44,6 +44,7 @@ var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
 	"agentDestroyToolDef":        func() []agents.ToolDef { return []agents.ToolDef{agentDestroyToolDef()} },
 	"chiefAskToolDef":            func() []agents.ToolDef { return []agents.ToolDef{chiefAskToolDef()} },
 	"agentsListToolDef":          func() []agents.ToolDef { return []agents.ToolDef{agentsListToolDef()} },
+	"trackTaskToolDef":           func() []agents.ToolDef { return []agents.ToolDef{trackTaskToolDef()} },
 	"chiefRestartToolDef":        func() []agents.ToolDef { return []agents.ToolDef{chiefRestartToolDef()} },
 	"connectorDecideToolDefs":    connectorDecideToolDefs,
 	"pluginDraftToolDefs":        pluginDraftToolDefs,
