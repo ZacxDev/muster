@@ -842,7 +842,7 @@ func TestChiefNudgeCoverageLeavesOutOfficersTheChiefAndOtherUsersAgents(t *testi
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	worker := f.agentFor(t, authz.OperatorUserID, "nudgeworker-"+suffix, "worker", "nudge-worker-tok-"+suffix)
 	officer := f.agentFor(t, authz.OperatorUserID, officers.InstanceName("ci-watch", 1), "", "nudge-officer-tok-"+suffix)
-	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: "ci-watch", MaxInstances: 1}})}
+	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: "ci-watch", MaxInstances: 1, Owner: authz.OperatorUserID}})}
 	_, quoteID := f.stallAgent(t, worker, authz.OperatorUserID)
 	f.stallAgent(t, officer, authz.OperatorUserID)
 	f.stallAgent(t, f.boss, authz.OperatorUserID)

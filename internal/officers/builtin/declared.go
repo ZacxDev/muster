@@ -61,6 +61,16 @@ func (s *Store) ListDeclared(ctx context.Context) ([]DeclaredRow, error) {
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DeclaredRow, error) { return scanDeclared(r) })
 }
 
+// AnyDeclared reports whether the caller's principal reads any DB-declared
+// officer: one probe of the partial unique index on instance_slug (a row
+// declares a runtime iff it has a slug, officer_defs_declared_check), so a
+// muster with none declared pays no list on the roster refresh.
+func (s *Store) AnyDeclared(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE instance_slug IS NOT NULL)`).Scan(&ok)
+	return ok, err
+}
+
 // GetDeclared is owner's DB-declared officer; ErrNotFound when owner has no
 // such officer, ErrNotDeclared when its row declares no runtime (a def an env
 // officer runs on).
@@ -148,8 +158,9 @@ func strs(v []string) []string {
 	return v
 }
 
-// putTypeTx creates or updates owner's type key inside tx: name always, the
+// putTypeTx updates (or creates) owner's type key inside tx: name always, the
 // charter and policy only when given (a charter change bumps its version).
+// UpdateDeclared calls it on the officer's own type only.
 func putTypeTx(ctx context.Context, tx pgx.Tx, owner int64, key string, w DeclaredWrite) error {
 	policy := w.Policy
 	_, err := tx.Exec(ctx, `INSERT INTO officer_types (owner_id, key, name, charter, policy) VALUES ($1, $2, $3, $4, coalesce($5::jsonb, '{}'::jsonb))
@@ -173,6 +184,13 @@ func nullJSON(raw json.RawMessage) any {
 // no other officer holds (the global unique index decides, across owners).
 // ErrExists when owner already defines that officer (declared or not);
 // ErrNoSlug when every candidate is taken.
+//
+// 🔴 ITS TYPE IS ITS OWN (round 0's F5): the type is created under the
+// officer's instance slug, never the id's part before the colon, so its
+// charter is private to it — creating DB officer scout:main no longer rewrites
+// type scout, the charter an env officer scout:ops runs on. A candidate whose
+// key owner already has a type under is passed over like a taken slug: the
+// create never adopts or rewrites a type it did not make.
 func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite, slugs []string) (DeclaredRow, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -180,8 +198,12 @@ func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	id := w.Fields.ID
-	if err := putTypeTx(ctx, tx, owner, officers.TypeOf(id), w); err != nil {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND officer = $2)`, owner, id).Scan(&exists); err != nil {
 		return DeclaredRow{}, classify(err)
+	}
+	if exists {
+		return DeclaredRow{}, fmt.Errorf("%w: %s", ErrExists, id)
 	}
 	mode, esc := w.defaults()
 	f := w.Fields
@@ -191,11 +213,15 @@ func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite
 		if err != nil {
 			return DeclaredRow{}, err
 		}
-		_, err = sp.Exec(ctx, `INSERT INTO officer_defs (owner_id, officer, type_key, enabled, mode, escalate_to,
-				runtime, host, repo, connectors, read_repos, max_instances, idle_after_seconds, poll_seconds, model, instance_slug)
-			VALUES ($1, $2, split_part($2, ':', 1), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-			owner, id, w.Enabled, mode, esc, f.Runtime, f.Host, nullStr(f.Repo), strs(f.Connectors), strs(f.ReadRepos),
-			nullInt(f.MaxInstances), nullInt(int(f.IdleAfter/time.Second)), nullInt(int(f.PollInterval/time.Second)), f.Model, slug)
+		_, err = sp.Exec(ctx, `INSERT INTO officer_types (owner_id, key, name, charter, policy) VALUES ($1, $2, $3, $4, coalesce($5::jsonb, '{}'::jsonb))`,
+			owner, slug, w.TypeName, w.Charter, nullJSON(w.Policy))
+		if err == nil {
+			_, err = sp.Exec(ctx, `INSERT INTO officer_defs (owner_id, officer, type_key, enabled, mode, escalate_to,
+					runtime, host, repo, connectors, read_repos, max_instances, idle_after_seconds, poll_seconds, model, instance_slug)
+				VALUES ($1, $2, $15, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+				owner, id, w.Enabled, mode, esc, f.Runtime, f.Host, nullStr(f.Repo), strs(f.Connectors), strs(f.ReadRepos),
+				nullInt(f.MaxInstances), nullInt(int(f.IdleAfter/time.Second)), nullInt(int(f.PollInterval/time.Second)), f.Model, slug)
+		}
 		var pg *pgconn.PgError
 		switch {
 		case err == nil:
@@ -203,7 +229,7 @@ func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite
 				return DeclaredRow{}, err
 			}
 			placed = true
-		case errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "officer_defs_instance_slug":
+		case errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "officer_defs_instance_slug" || pg.ConstraintName == "officer_types_one_key"):
 			_ = sp.Rollback(ctx)
 			continue
 		case errors.As(err, &pg) && pg.Code == "23505":
@@ -225,20 +251,38 @@ func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite
 	return d, tx.Commit(ctx)
 }
 
+// ErrTypeShared is a replace whose officer's type another officer of the
+// owner's also names (a row written before round 0's F5, or a def put on the
+// slug's key by hand): its name, charter and policy are left as they are, and
+// the replace is refused, rather than changing another officer's charter.
+var ErrTypeShared = errors.New("builtin: another officer runs on this officer's type")
+
 // UpdateDeclared replaces owner's DB-declared officer's def and runtime
-// declaration with w (and its type's name, charter and policy as putTypeTx
-// does), in one transaction; its instance slug never changes. ErrNotFound /
-// ErrNotDeclared as GetDeclared.
+// declaration with w (and its OWN type's name, charter and policy as
+// putTypeTx does), in one transaction; its instance slug and type key never
+// change. ErrNotFound / ErrNotDeclared as GetDeclared; ErrTypeShared when
+// another officer names its type.
 func (s *Store) UpdateDeclared(ctx context.Context, owner int64, officer string, w DeclaredWrite) (DeclaredRow, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return DeclaredRow{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err := getDeclared(ctx, tx, owner, officer, true); err != nil {
+	cur, err := getDeclared(ctx, tx, owner, officer, true)
+	if err != nil {
 		return DeclaredRow{}, err
 	}
-	if err := putTypeTx(ctx, tx, owner, officers.TypeOf(officer), w); err != nil {
+	// 🔴 ONLY ITS OWN TYPE (F5): the row's type_key, and only while no other
+	// officer of owner's names it.
+	var shared bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND type_key = $2 AND officer <> $3)`,
+		owner, cur.TypeKey, officer).Scan(&shared); err != nil {
+		return DeclaredRow{}, classify(err)
+	}
+	if shared {
+		return DeclaredRow{}, fmt.Errorf("%w: %s's type %s", ErrTypeShared, officer, cur.TypeKey)
+	}
+	if err := putTypeTx(ctx, tx, owner, cur.TypeKey, w); err != nil {
 		return DeclaredRow{}, classify(err)
 	}
 	mode, esc := w.defaults()

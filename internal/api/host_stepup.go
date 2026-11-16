@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -157,9 +158,18 @@ func (h *hostDecisions) peek(id int64) (hostDecision, bool) {
 	return d, ok
 }
 
-// hostOfficersOnMachine is the host officers of owner declared on host: a
-// non-empty answer is what gates that machine's door.
-func (s *Server) hostOfficersOnMachine(owner int64, host string) []string {
+// hostOfficersOnMachine is what gates owner's machine host: the host officers
+// of owner declared on it, and every officer one of whose windows is still
+// open there (hostOfficerWindowsOpen). A non-empty answer gates the door.
+//
+// 🔴 THE ROSTER IS NOT ENOUGH (round 0's F4). Deleting a host officer takes
+// it out of the roster at once, but its teardown closes only an IDLE window
+// (agent-close at once would cut a mid-turn one off): a window still working
+// its last turn stays open, running as the machine user, and with the roster
+// alone the gate dropped while it did. So an officer-spawned window muster
+// recorded and the host still lists gates the machine too, whether its
+// officer is paused, deleted or moved, until the window is gone.
+func (s *Server) hostOfficersOnMachine(ctx context.Context, owner int64, host string) []string {
 	if s.officerRT == nil {
 		return nil
 	}
@@ -169,6 +179,48 @@ func (s *Server) hostOfficersOnMachine(owner int64, host string) []string {
 			out = append(out, o.ID)
 		}
 	}
+	for _, id := range s.hostOfficerWindowsOpen(ctx, owner, host) {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// hostOfficerWindowsOpen is the officers (ids, sorted) with a window open on
+// owner's host now: a spawn muster recorded whose window — the id the host's
+// own reply named, never a tag a window can set — the host lists. A host this
+// muster cannot see answers none (no call reaches the door from it).
+// ⚠ An unreadable spawn store answers one entry, "unknown", so the gate holds
+// rather than drop on a read error.
+func (s *Server) hostOfficerWindowsOpen(ctx context.Context, owner int64, host string) []string {
+	st := s.officerHostSpawns()
+	if st == nil {
+		return nil
+	}
+	octx := s.officerPrincipal(ctx, owner)
+	v, _ := s.officerHostView(octx, host)
+	var windows []string
+	for _, w := range v.Windows {
+		if w.ID != "" {
+			windows = append(windows, w.ID)
+		}
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	rows, err := st.HostSpawnsInWindows(octx, host, windows)
+	if err != nil {
+		s.logger.Printf("officers: read host %s's officer windows: %v; its door stays gated", host, err)
+		return []string{"unknown: its officer windows could not be read"}
+	}
+	var out []string
+	for _, r := range rows {
+		if !slices.Contains(out, r.Officer) {
+			out = append(out, r.Officer)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -188,7 +240,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 		return "", false
 	}
 	p, _ := authz.From(ctx)
-	ids := s.hostOfficersOnMachine(p.UserID, host)
+	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
 	if len(ids) == 0 && !c.remote {
 		return "", false
 	}

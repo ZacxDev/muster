@@ -235,6 +235,12 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 	if err != nil {
 		return fmt.Errorf("officers: record %s's spawn: %w", name, err)
 	}
+	// Asked again before the spawn leaves (officerFleet.Start's rule, round
+	// 0's F2): a window sent for an officer deleted meanwhile could not be
+	// closed by the delete's teardown, which finds no recorded window yet.
+	if !f.stillDeclared(ctx, o) {
+		return fmt.Errorf("officers: %s was deleted while %s started; not sending its spawn", o.ID, name)
+	}
 	req := mirror.AgentSpawnReq{Runtime: mirror.SpawnRuntimeClaude, Repo: o.Repo, Prompt: prompt, Name: name}
 	owner, host := o.Owner, o.Host
 	// Ends with the server's streams (shutdown): the request was written or

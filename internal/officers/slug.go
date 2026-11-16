@@ -40,7 +40,7 @@ func Slug(id string) string { return strings.ReplaceAll(id, ":", "-") }
 // built the same name, one would be the other plus `-<x>`, and the shorter's
 // number would then contain a `-` — which a number never does. So distinct
 // slugs (unique within env, unique within the DB, and a DB slug never equal to
-// an env one: AllocateSlug) are all ForAgentName needs.
+// an env one: SlugCandidates) are all ForAgentName needs.
 func (o Officer) AgentSlug() string {
 	if o.InstanceSlug != "" {
 		return o.InstanceSlug

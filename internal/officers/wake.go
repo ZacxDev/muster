@@ -137,10 +137,35 @@ type switchReader interface {
 // is THE way muster reaches an officer's backend: the wake loop (as HQ), the
 // MCP tools, the ship gates and the transcript, usage and pools pushers all
 // go through Backend(o).
+//
+// 🔴 CACHED BY THE OFFICER'S WHOLE IDENTITY — (owner, id, key) — NEVER BY ITS
+// KEY ALONE. A backend holds the officer it was built from, and the built-in
+// one runs every statement AS THAT OFFICER'S OWNER. A DB-declared officer's
+// key is its instance slug, and a deleted officer's slug is not the cache's to
+// know about: Forget on the roster swap cannot win against a pass that read
+// the roster BEFORE the swap and calls Backend with the old officer after it
+// (round 0's F1, reproduced by that interleaving). Keyed by slug alone, that
+// late call re-cached the old owner's backend, and another owner's officer
+// given the same slug then read the first owner's queue. Keyed by identity, a
+// late call can only re-cache a backend for ITS OWN officer, and every get
+// checks the entry it found was built for the officer asked about
+// (TestABackendCachedForOneOwnerIsNeverServedToAnother).
 type Backends struct {
 	mu       sync.Mutex
-	backends map[string]Backend
+	backends map[backendIdentity]Backend
 	build    func(Officer) Backend
+}
+
+// backendIdentity is what a cached backend is for: the officer's owner, its
+// id and its key (an env officer's id, a DB officer's slug). Two officers
+// that differ in any of them never share a backend.
+type backendIdentity struct {
+	owner   int64
+	id, key string
+}
+
+func identityOf(o Officer) backendIdentity {
+	return backendIdentity{owner: o.Owner, id: o.ID, key: o.Key()}
 }
 
 // NewBackends returns the backends built by build. build nil talks to each
@@ -149,30 +174,56 @@ func NewBackends(build func(Officer) Backend) *Backends {
 	if build == nil {
 		build = func(o Officer) Backend { return NewClient(o, nil) }
 	}
-	return &Backends{backends: map[string]Backend{}, build: build}
+	return &Backends{backends: map[backendIdentity]Backend{}, build: build}
 }
 
-// Backend returns the cached backend for o, keyed on o.Key() (two owners'
-// DB-declared officers may share an id, never a key).
+// Backend returns the cached backend for o, keyed on o's identity (owner, id,
+// key): two owners' DB-declared officers may share an id, and — one deleted,
+// the other created — even a slug, never an identity. An entry whose backend
+// says it acts for another officer (a builder that ignored its argument) is
+// rebuilt, never served.
 func (h *Backends) Backend(o Officer) Backend {
+	id := identityOf(o)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	b, ok := h.backends[o.Key()]
-	if !ok {
-		b = h.build(o)
-		h.backends[o.Key()] = b
+	b, ok := h.backends[id]
+	if ok && identityOf(b.Officer()) == id {
+		return b
 	}
+	b = h.build(o)
+	h.backends[id] = b
 	return b
 }
 
-// Forget drops the cached backend of the officer keyed key, so the next
-// Backend builds one from the officer as it is now: a DB-declared officer
-// changed or deleted through the admin API (its backend holds the Officer it
-// was built from).
+// Forget drops every cached backend of an officer keyed key (whoever owns
+// it), so the next Backend builds one from the officer as it is now: a
+// DB-declared officer changed or deleted through the admin API (its backend
+// holds the Officer it was built from).
 func (h *Backends) Forget(key string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.backends, key)
+	for id := range h.backends {
+		if id.key == key {
+			delete(h.backends, id)
+		}
+	}
+}
+
+// Retain drops every cached backend whose officer is not in live, so an entry
+// a late call re-cached for an officer that is gone does not outlive the next
+// roster load.
+func (h *Backends) Retain(live []Officer) {
+	keep := make(map[backendIdentity]bool, len(live))
+	for _, o := range live {
+		keep[identityOf(o)] = true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id := range h.backends {
+		if !keep[id] {
+			delete(h.backends, id)
+		}
+	}
 }
 
 // AllItems implements HQ.

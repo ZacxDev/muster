@@ -41,6 +41,12 @@ const (
 	declTeam  = int64(987302)
 )
 
+// declSlug is the slug a create of owner's id gets on an empty server: its
+// first candidate (officers.SlugCandidates under the rigs' prefix).
+func declSlug(owner int64, id string) string {
+	return officers.SlugCandidates(owner, id, officers.SlugMaxFor("muster-agent-", 0))[0]
+}
+
 // declRig is a server running DB-declared officers.
 type declRig struct {
 	f     *connFixture
@@ -61,6 +67,8 @@ type declRigOpts struct {
 	hosts []mirror.HostView
 	hub   bool
 	env   string
+	// now is the runtime's clock (nil: time.Now).
+	now func() time.Time
 }
 
 func newDeclRig(t *testing.T, o declRigOpts) *declRig {
@@ -89,7 +97,7 @@ func newDeclRigOn(t *testing.T, f *connFixture, o declRigOpts) *declRig {
 	})
 	r := &declRig{f: f, store: builtin.NewStore(f.pool), ag: &officerAgents{}, logs: &bytes.Buffer{}}
 	ext := Extensions{Agents: r.ag, SessionLiveness: stubLiveness{}, Users: users.NewPG(f.pool), AgentNamespacePrefix: "muster-agent-"}
-	ocfg := OfficersConfig{Builtin: r.store, HostSpawns: officers.NewMemHostSpawnStore()}
+	ocfg := OfficersConfig{Builtin: r.store, HostSpawns: officers.NewMemHostSpawnStore(), Now: o.now}
 	if o.pods {
 		r.prov = &officerProv{store: r.ag, phase: map[string]provision.Phase{}}
 		ext.Provisioner, ext.Gateway, ext.Kinds = r.prov, &repromptChat{}, stubKinds{pick: "acct-one"}
@@ -198,13 +206,14 @@ func TestADeclaredOfficerStartsWithNoRestart(t *testing.T) {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
 	}
 	v := decodeView(t, rec)
-	if !v.Running || v.RunsOn != officers.RuntimePod || v.ManagedBy != officers.ManagedByDB || v.ReadOnly || v.InstanceSlug != "scout-main" || v.Backend != officers.BackendBuiltin {
-		t.Fatalf("created view %+v, want running in pods, managed by db, slug scout-main, builtin", v)
+	slug := declSlug(1, declID)
+	if !v.Running || v.RunsOn != officers.RuntimePod || v.ManagedBy != officers.ManagedByDB || v.ReadOnly || v.InstanceSlug != slug || v.Backend != officers.BackendBuiltin {
+		t.Fatalf("created view %+v, want running in pods, managed by db, slug %s, builtin", v, slug)
 	}
 	ctx := dbtest.AsOperator(context.Background())
-	ty, err := r.store.GetType(ctx, 1, "scout")
+	ty, err := r.store.GetType(ctx, 1, slug)
 	if err != nil || ty.Charter != "Scan the queue; never post." || ty.Name != "Scout" {
-		t.Fatalf("the type was not written with the officer: %+v, %v", ty, err)
+		t.Fatalf("the officer's own type (key %s) was not written with it: %+v, %v", slug, ty, err)
 	}
 	o := r.officerFor(t, 1, declID)
 	if !o.FromDB() || !o.IsBuiltin() || o.OnHost() || o.Tiers != nil {
@@ -219,8 +228,8 @@ func TestADeclaredOfficerStartsWithNoRestart(t *testing.T) {
 	if len(res.Decision.Start) != 1 || len(res.ActErrs) != 0 {
 		t.Fatalf("with an item, the pass decided %+v (errors %v); want one start\n%s", res.Decision, res.ActErrs, r.logs)
 	}
-	if _, ok := r.agentNamed("officer-scout-main-1"); !ok {
-		t.Fatalf("no instance agent officer-scout-main-1 was created")
+	if _, ok := r.agentNamed(o.InstanceName(1)); !ok {
+		t.Fatalf("no instance agent %s was created", o.InstanceName(1))
 	}
 	// The dispatch runs in the background (createAndDispatchAgent).
 	officerWaitFor(t, func() bool { d, _, _ := r.prov.counts(); return d == 1 })
@@ -278,7 +287,7 @@ func TestDeletingADeclaredOfficerCleansUp(t *testing.T) {
 	o := r.officerFor(t, 1, declID)
 	r.enqueue(t, 1, declID, "work")
 	r.pass(t, o)
-	inst, ok := r.agentNamed("officer-scout-main-1")
+	inst, ok := r.agentNamed(o.InstanceName(1))
 	if !ok {
 		t.Fatal("control: no instance was started")
 	}
@@ -287,7 +296,7 @@ func TestDeletingADeclaredOfficerCleansUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := r.hook(t, http.MethodDelete, "/api/officers/declared/"+declID, "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "officer-scout-main-1") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), o.InstanceName(1)) {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
 	}
 	if !waitDestroyed(r.prov, inst.ID) {
@@ -315,7 +324,7 @@ func TestDeletingADeclaredOfficerCleansUp(t *testing.T) {
 	if err := (officerFleet{s: r.s}).Start(context.Background(), o, 2, "kick"); err == nil {
 		t.Fatal("a start for a deleted officer was let through")
 	}
-	if _, ok := r.agentNamed("officer-scout-main-2"); ok {
+	if _, ok := r.agentNamed(o.InstanceName(2)); ok {
 		t.Fatal("a start for a deleted officer created an agent")
 	}
 }
@@ -358,16 +367,18 @@ func TestTwoOwnersMayDeclareTheSameOfficerID(t *testing.T) {
 	}
 }
 
-// TestADeletedSlugReusedByAnotherOwnerGetsItsOwnBackend: owner 1's scout:main
-// (slug scout-main) runs and is deleted; another owner then creates
-// scout:main and is given the freed slug. Its backend must be its own, not
-// the cached one owner 1's officer was built with (Backends.Forget on the
-// swap): its item starts its instance.
-func TestADeletedSlugReusedByAnotherOwnerGetsItsOwnBackend(t *testing.T) {
+// TestASlugFreedByOneOwnerIsNeverGivenToAnother (round 0's F1 and F10):
+// owner 1's scout:main runs and is deleted; another owner then creates
+// scout:main. It is NOT given the freed slug (every candidate carries its
+// owner: officers.SlugCandidates), its backend is its own — its item starts
+// its instance — and nothing in its slug says another owner declared the id.
+// Owner 1's re-create of the same id gets its old slug back (a stable name).
+func TestASlugFreedByOneOwnerIsNeverGivenToAnother(t *testing.T) {
 	r := newDeclRig(t, declRigOpts{pods: true})
 	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
 	}
+	freed := r.officerFor(t, 1, declID).InstanceSlug
 	r.pass(t, r.officerFor(t, 1, declID)) // builds and caches owner 1's backend
 	if rec := r.hook(t, http.MethodDelete, "/api/officers/declared/"+declID, ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
@@ -377,12 +388,15 @@ func TestADeletedSlugReusedByAnotherOwnerGetsItsOwnBackend(t *testing.T) {
 		t.Fatalf("the other owner's create: %d %s", rec.Code, rec.Body.String())
 	}
 	o := r.officerFor(t, declOther, declID)
-	if o.InstanceSlug != "scout-main" {
-		t.Fatalf("the freed slug was not reused (got %q): this test needs the reuse", o.InstanceSlug)
+	if o.InstanceSlug == freed || o.InstanceSlug != declSlug(declOther, declID) {
+		t.Fatalf("the other owner's officer got slug %q (owner 1's freed one: %q); want its own %q", o.InstanceSlug, freed, declSlug(declOther, declID))
 	}
 	r.enqueue(t, declOther, declID, "theirs")
 	if res := r.pass(t, o); len(res.Decision.Start) != 1 {
-		t.Fatalf("the reused slug's officer read another owner's queue: started %v\n%s", res.Decision.Start, r.logs)
+		t.Fatalf("the other owner's officer read another owner's queue: started %v\n%s", res.Decision.Start, r.logs)
+	}
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); rec.Code != http.StatusCreated || decodeView(t, rec).InstanceSlug != freed {
+		t.Fatalf("owner 1's re-create: %d %s; want its old slug %s back", rec.Code, rec.Body.String(), freed)
 	}
 }
 
@@ -519,39 +533,80 @@ func TestCreateRefusesPerFieldWithTheDeclarationChecks(t *testing.T) {
 	}
 }
 
-// TestTheStepUpGateFollowsDeclaredHostOfficers (F8): the mirror door's
-// step-up gate is keyed on the host officers declared for a machine — read
-// live, so a host officer created in the database gates its machine at once,
-// a paused one still does (its window may be open), and a deleted one no
-// longer does.
+// TestTheStepUpGateFollowsDeclaredHostOfficers (F8; round 0's F4): the
+// mirror door's step-up gate is keyed on the host officers declared for a
+// machine — read live, so a host officer created in the database gates its
+// machine at once, a paused one still does — AND on every officer window
+// still open there. A deleted officer whose window is mid-turn (the teardown
+// closes only an idle one) keeps its machine gated while the host lists that
+// window; once the window is gone, the gate drops.
+//
+// Red at 3b4296b7: the gate read the roster alone and dropped at the delete.
 func TestTheStepUpGateFollowsDeclaredHostOfficers(t *testing.T) {
 	h := spawnableHost(hostOffHost, true)
 	h.AgentClose = true
 	r := newDeclRig(t, declRigOpts{hosts: []mirror.HostView{h}})
-	if got := r.s.hostOfficersOnMachine(hostOffOwner, hostOffHost); len(got) != 0 {
+	ctx := context.Background()
+	if got := r.s.hostOfficersOnMachine(ctx, hostOffOwner, hostOffHost); len(got) != 0 {
 		t.Fatalf("control: the machine is gated before any officer: %v", got)
 	}
 	body := `{"id":"` + declID + `","charter":"c","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `"}`
 	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", body); rec.Code != http.StatusCreated || !decodeView(t, rec).Running {
 		t.Fatalf("create a host officer: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := r.s.hostOfficersOnMachine(hostOffOwner, hostOffHost); len(got) != 1 || got[0] != declID {
+	if got := r.s.hostOfficersOnMachine(ctx, hostOffOwner, hostOffHost); len(got) != 1 || got[0] != declID {
 		t.Fatalf("after the create the machine's gate names %v, want %s", got, declID)
 	}
 	if !r.s.hostOfficersOn() {
 		t.Fatal("hostOfficersOn does not see the declared host officer")
 	}
+	// An instance starts, and its window is mid-turn (not idle).
+	o := r.officerFor(t, 1, declID)
+	r.enqueue(t, 1, declID, "work")
+	if res := r.pass(t, o); len(res.Decision.Start) != 1 {
+		t.Fatalf("control: the host officer's pass started %v\n%s", res.Decision.Start, r.logs)
+	}
+	select {
+	case <-r.m.spawned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the spawn was never sent")
+	}
+	var window string
+	officerWaitFor(t, func() bool {
+		rows, _ := r.s.officerHostSpawns().LatestHostSpawns(authz.WithPrincipal(ctx, authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaToken}), declID)
+		window = rows[o.InstanceName(1)].Window
+		return window != ""
+	})
+	sp := r.s.officerHostSpawns().(*officers.MemHostSpawnStore).All()
+	r.m.list(hostOffHost, mirror.Window{ID: window, Dispatch: sp[len(sp)-1].ID, Claude: true, ClaudeSession: hostOffSess})
+	r.m.mu.Lock()
+	r.m.state[hostOffHost+"/"+window] = mirror.AgentState{Status: mirror.StatusBusy, Session: hostOffSess}
+	r.m.mu.Unlock()
 	if rec := r.hook(t, http.MethodPost, "/api/officers/declared/"+declID+"/pause", ""); rec.Code != http.StatusOK {
 		t.Fatalf("pause: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := r.s.hostOfficersOnMachine(hostOffOwner, hostOffHost); len(got) != 1 {
+	if got := r.s.hostOfficersOnMachine(ctx, hostOffOwner, hostOffHost); len(got) != 1 {
 		t.Fatalf("a paused host officer no longer gates its machine: %v", got)
 	}
 	if rec := r.hook(t, http.MethodDelete, "/api/officers/declared/"+declID, ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := r.s.hostOfficersOnMachine(hostOffOwner, hostOffHost); len(got) != 0 {
-		t.Fatalf("a deleted host officer still gates its machine: %v", got)
+	if _, ok := r.s.officerRT.reg.ForOwner(1, declID); ok {
+		t.Fatal("control: the deleted officer is still in the roster")
+	}
+	if _, closes, _ := r.m.counts(); closes != 0 {
+		t.Fatalf("control: the teardown closed the mid-turn window (%d closes)", closes)
+	}
+	if got := r.s.hostOfficersOnMachine(ctx, hostOffOwner, hostOffHost); len(got) != 1 || got[0] != declID {
+		t.Fatalf("a deleted host officer's mid-turn window is open, and the gate names %v; want it held for %s", got, declID)
+	}
+	// Another owner's machine of the same name is not gated by it.
+	if got := r.s.hostOfficersOnMachine(ctx, declOther, hostOffHost); len(got) != 0 {
+		t.Fatalf("another owner's door is gated by owner 1's window: %v", got)
+	}
+	r.m.list(hostOffHost) // the window ends
+	if got := r.s.hostOfficersOnMachine(ctx, hostOffOwner, hostOffHost); len(got) != 0 {
+		t.Fatalf("with the window gone the deleted host officer still gates its machine: %v", got)
 	}
 }
 
@@ -610,15 +665,14 @@ func TestRuntimeAutoDetection(t *testing.T) {
 	}
 }
 
-// TestTeamOfficerRules: a team's manager creates a TEAM pod officer through
-// the team door (owned by the team); an operator of the team is refused; a
-// team cannot own a host officer — at the door (400, naming the runtime) and
-// at the roster load for a row written by hand (officers.CheckOwners, the one
-// rule).
+// TestTeamOfficerRules: a team's officers are the store's and the roster
+// load's — a team's pod officer row runs, owned by the team — but no door
+// writes them yet (round 0's D1: O-C adds the team door with its UI), and a
+// team cannot own a host officer: the roster load refuses a hand-written one
+// (officers.CheckOwners, the one rule).
 func TestTeamOfficerRules(t *testing.T) {
 	w := newIsoWorld(t)
 	team := w.aTeam
-	w.setRole(t, team, w.b.uid, authz.TeamOperator)
 	st := builtin.NewStore(w.pool)
 	if _, err := w.srv.EnableOfficers(OfficersConfig{Builtin: st, HostSpawns: officers.NewMemHostSpawnStore()}); err != nil {
 		t.Fatal(err)
@@ -629,42 +683,31 @@ func TestTeamOfficerRules(t *testing.T) {
 		}
 	})
 	path := "/teams/" + strconv.FormatInt(team, 10) + "/officers/declared"
-	pod := `{"id":"tm:pod","charter":"team charter","runtime":"pod"}`
-	if rec := w.do(w.h, http.MethodPost, path, pod, cred{sessionUser: w.b.uid}); rec.Code != http.StatusForbidden {
-		t.Fatalf("an operator's create of a team officer: %d %s; want 403", rec.Code, rec.Body.String())
+	if rec := w.do(w.h, http.MethodPost, path, `{"id":"tm:pod","charter":"c","runtime":"pod"}`, cred{sessionUser: w.a.uid}); rec.Code != http.StatusNotFound {
+		t.Fatalf("the team door (deferred to O-C): %d %s; want 404", rec.Code, rec.Body.String())
 	}
-	rec := w.do(w.h, http.MethodPost, path, pod, cred{sessionUser: w.a.uid})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("the manager's create of a team pod officer: %d %s", rec.Code, rec.Body.String())
-	}
-	if v := decodeView(t, rec); v.Owner != team {
-		t.Fatalf("the team officer is owned by %d, want the team %d", v.Owner, team)
-	}
-	if _, err := st.GetDeclared(w.sys, team, "tm:pod"); err != nil {
-		t.Fatalf("the team's officer row: %v", err)
-	}
-	host := `{"id":"tm:host","charter":"c","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `"}`
-	rec = w.do(w.h, http.MethodPost, path, host, cred{sessionUser: w.a.uid})
-	var refused struct {
-		Fields []fieldRefusal `json:"fields"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &refused)
-	if rec.Code != http.StatusBadRequest || len(refused.Fields) != 1 || refused.Fields[0].Field != "runtime" || !strings.Contains(refused.Fields[0].Error, officers.ErrTeamHostOfficer.Error()) {
-		t.Fatalf("a team host officer: %d %s; want 400 on runtime with %q", rec.Code, rec.Body.String(), officers.ErrTeamHostOfficer)
-	}
-	// By hand, past the door: the roster load refuses to run it.
-	if _, err := w.pool.Exec(authz.System(context.Background()), `INSERT INTO officer_types (owner_id, key, name) VALUES ($1, 'tmh', 'x') ON CONFLICT DO NOTHING`, team); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.pool.Exec(authz.System(context.Background()), `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, host, repo, instance_slug)
-		VALUES ($1, 'tmh:x', 'tmh', 'host', $2, $3, 'tmh-x-iso')`, team, hostOffHost, hostOffRepo); err != nil {
-		t.Fatal(err)
+	for _, q := range []string{
+		`INSERT INTO officer_types (owner_id, key, name) VALUES ($1, 'tmh-x-iso', 'x'), ($1, 'tmp-x-iso', 'x') ON CONFLICT DO NOTHING`,
+		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, host, repo, instance_slug) VALUES ($1, 'tmh:x', 'tmh-x-iso', 'host', '` + hostOffHost + `', '` + hostOffRepo + `', 'tmh-x-iso')`,
+		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES ($1, 'tmp:x', 'tmp-x-iso', 'pod', 'tmp-x-iso')`,
+	} {
+		if _, err := w.pool.Exec(authz.System(context.Background()), q, team); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.srv.reloadDeclaredOfficers(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if stt, ok := w.srv.officerRT.declaredView(team, "tmh:x"); !ok || stt.officer != nil || !strings.Contains(stt.reason, officers.ErrTeamHostOfficer.Error()) {
 		t.Fatalf("a hand-written team host officer: %+v; want not running", stt)
+	}
+	if stt, ok := w.srv.officerRT.declaredView(team, "tmp:x"); !ok || stt.row.Owner != team {
+		t.Fatalf("a team's pod officer row: %+v; want it loaded, owned by the team", stt)
+	}
+	// The team rule at the create door's check, as O-C's door will call it.
+	d := officers.Declaration{ID: "tm:host", Owner: team, Runtime: officers.RuntimeHost, Host: hostOffHost, Repo: hostOffRepo, InstanceSlug: "tm-host-iso"}
+	if err := w.srv.checkDeclaredOwner(d); err == nil || officers.Fields(err)[0].Field != "runtime" || !strings.Contains(err.Error(), officers.ErrTeamHostOfficer.Error()) {
+		t.Fatalf("a team host declaration at the door's check: %v; want refused on runtime", err)
 	}
 }
 
@@ -713,7 +756,7 @@ func TestTheRegistrySwapIsRaceFreeUnderTheWakeLoop(t *testing.T) {
 				r.s.officerRT.reg.ForAgentName(o.InstanceName(1))
 			}
 			r.s.hostOfficersOn()
-			r.s.hostOfficersOnMachine(1, hostOffHost)
+			r.s.hostOfficersOnMachine(context.Background(), 1, hostOffHost)
 		}
 	}()
 	wg.Add(1)

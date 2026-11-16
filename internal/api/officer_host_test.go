@@ -81,6 +81,21 @@ func (m *hostOfficerMirror) Hosts(ctx context.Context) []mirror.HostView {
 	return out
 }
 
+// LiveTokenHosts is the owner's hosts by token name: every host the fake
+// lists, connected or not.
+func (m *hostOfficerMirror) LiveTokenHosts(ctx context.Context) ([]string, error) {
+	if p, ok := authz.From(ctx); !ok || p.UserID != m.owner {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, h := range m.hosts {
+		out = append(out, h.Host)
+	}
+	return out, nil
+}
+
 func (m *hostOfficerMirror) setHost(name string, f func(*mirror.HostView)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -714,7 +729,7 @@ func TestBothRuntimesShareTheOfficerPolicy(t *testing.T) {
 // Reconciler built only by EnableOfficers.
 func TestTheHostOfficerSeamsAreALedger(t *testing.T) {
 	assertCallers(t, ".", "hostInstances", []string{"officers.go:Instances"})
-	assertCallers(t, ".", "hostStart", []string{"officers.go:Start"})
+	assertCallers(t, ".", "hostStart", []string{"officers.go:start"})
 	assertCallers(t, ".", "hostReprompt", []string{"officers.go:Reprompt"})
 	assertCallers(t, ".", "hostStop", []string{"officers.go:Stop"})
 	assertCallers(t, ".", "hostOfficerMirrorTool", []string{"mirror_mcp.go:handleMirrorMCP"})

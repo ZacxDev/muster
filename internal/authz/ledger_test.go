@@ -273,7 +273,12 @@ var (
 		// charter) to run each as its owner — as the scheduler below reads
 		// every owner's due schedules.
 		"internal/api.(*Server).escalationRefusal",
-		"internal/api.(*Server).reloadDeclaredOfficers",
+		"internal/api.(*Server).loadDeclaredRoster",
+		// …and its slug allocator, which asks whether an instance agent of a
+		// candidate slug exists for ANY owner (an agent name is global), so
+		// an orphan is never adopted by a new officer (round 0's F2): it
+		// answers only taken or not.
+		"internal/api.(*Server).slugHasAgents",
 		// …and its scheduler (#503 slice 8): FireDue reads every owner's due
 		// schedules and fires each with a compare-and-set, inserting the item
 		// with that schedule's own owner_id.

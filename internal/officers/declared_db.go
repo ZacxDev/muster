@@ -1,6 +1,8 @@
 package officers
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"regexp"
@@ -55,7 +57,7 @@ type Declaration struct {
 	PollInterval time.Duration
 	// Model is the pod's model ("" for the account default).
 	Model string
-	// InstanceSlug is the server-allocated agent slug (AllocateSlug).
+	// InstanceSlug is the server-allocated agent slug (SlugCandidates).
 	InstanceSlug string
 }
 
@@ -142,30 +144,56 @@ const MaxSlugLen = 54
 // ValidSlug reports whether s may be an instance slug.
 func ValidSlug(s string) bool { return len(s) <= MaxSlugLen && instanceSlugRE.MatchString(s) }
 
-// SlugCandidates are the slugs AllocateSlug tries for id, in order: Slug(id),
-// then Slug(id)-2 … Slug(id)-9, each cut to fit maxLen. A slug equal to an env
-// officer's, or one another owner holds (the 0136 unique index refuses it),
-// is passed over.
-func SlugCandidates(id string, maxLen int) []string {
+// SlugCandidates are the instance slugs the create of owner's officer id
+// tries, in order: Slug(id), cut to fit maxLen, then `-` and a short tag
+// DERIVED FROM (owner, id, n) for n = 1…9 (SlugTag). A candidate equal to an
+// env officer's slug, one whose instance agents exist, or one another officer
+// holds (the 0136 unique index refuses it) is passed over by the caller.
+//
+// 🔴 EVERY CANDIDATE CARRIES ITS OWNER. Round 0 found two consequences of
+// the old `scout-main`, `scout-main-2`, … sequence: a slug freed by one
+// owner's delete was the next owner's first candidate (F1: with a backend
+// cached for the old owner, the new one read the old owner's queue), and the
+// suffix a create got told its caller how many OTHER owners had declared the
+// same id (F10). A tag from (owner, id) is the same for one owner's re-create
+// of one id and differs between owners, so a slug never passes from one owner
+// to another, and a collision moves the create to its next tag without the
+// tag saying anything about whose slug was in the way.
+func SlugCandidates(owner int64, id string, maxLen int) []string {
 	if maxLen > MaxSlugLen {
 		maxLen = MaxSlugLen
 	}
 	base := Slug(id)
 	var out []string
 	for n := 1; n <= 9; n++ {
-		sfx := ""
-		if n > 1 {
-			sfx = "-" + strconv.Itoa(n)
-		}
+		sfx := "-" + SlugTag(owner, id, n)
 		b := base
 		if len(b)+len(sfx) > maxLen {
 			b = strings.TrimRight(b[:max(0, maxLen-len(sfx))], "-")
 		}
-		if c := b + sfx; ValidSlug(c) {
+		c := b + sfx
+		if b == "" {
+			c = sfx[1:]
+		}
+		if ValidSlug(c) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// slugTagLen is a slug tag's length: 36^6 ≈ 2.2e9 tags per (owner, id, n).
+const slugTagLen = 6
+
+// SlugTag is candidate n's tag for owner's officer id: slugTagLen base-36
+// characters of SHA-256 over (owner, id, n). Deterministic, so a test (and a
+// person reading a log) can name the slug a create gets.
+func SlugTag(owner int64, id string, n int) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(owner, 10) + "\x00" + id + "\x00" + strconv.Itoa(n)))
+	v := binary.BigEndian.Uint64(sum[:8])
+	const space = 36 * 36 * 36 * 36 * 36 * 36
+	t := strconv.FormatUint(v%space, 36)
+	return strings.Repeat("0", slugTagLen-len(t)) + t
 }
 
 // SlugMaxFor is the longest instance slug whose highest instance name

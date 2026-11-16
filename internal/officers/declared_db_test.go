@@ -1,6 +1,7 @@
 package officers
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,18 +45,19 @@ func TestADeclarationIsRefusedByTheOneDeclarationCheck(t *testing.T) {
 }
 
 // TestSlugCandidatesFitAndDistinctSlugsNeverShareANameSpace: the candidates
-// are the id's slug then -2…-9, each cut to fit; and two distinct slugs, one
-// the other's prefix, never bind each other's instance names.
+// are the id's slug and a tag of (owner, id, n), each cut to fit; and two
+// distinct slugs, one the other's prefix, never bind each other's instance
+// names.
 func TestSlugCandidatesFitAndDistinctSlugsNeverShareANameSpace(t *testing.T) {
-	c := SlugCandidates("scout:main", 40)
-	if len(c) != 9 || c[0] != "scout-main" || c[1] != "scout-main-2" || c[8] != "scout-main-9" {
+	c := SlugCandidates(7, "scout:main", 40)
+	if len(c) != 9 || c[0] != "scout-main-"+SlugTag(7, "scout:main", 1) || c[8] != "scout-main-"+SlugTag(7, "scout:main", 9) {
 		t.Fatalf("candidates %v", c)
 	}
 	long := strings.Repeat("a", 30) + ":" + strings.Repeat("b", 30)
 	max := SlugMaxFor("muster-agent-", 8)
-	for _, s := range SlugCandidates(long, max) {
-		if len(s) > max || !ValidSlug(s) {
-			t.Fatalf("candidate %q over %d or invalid", s, max)
+	for _, s := range SlugCandidates(7, long, max) {
+		if len(s) > max || !ValidSlug(s) || !strings.HasPrefix(s, "aaaa") {
+			t.Fatalf("candidate %q over %d, invalid or not the id's", s, max)
 		}
 	}
 	a := Officer{ID: "a:b", InstanceSlug: "a-b", MaxInstances: 8}
@@ -70,6 +72,42 @@ func TestSlugCandidatesFitAndDistinctSlugsNeverShareANameSpace(t *testing.T) {
 		if !ok || o.InstanceSlug != tc.want || n != tc.n {
 			t.Errorf("%s binds to %q #%d (%v), want %q #%d", tc.name, o.InstanceSlug, n, ok, tc.want, tc.n)
 		}
+	}
+}
+
+// TestASlugNeverPassesFromOneOwnerToAnother (round 0's F1 and F10): two
+// owners' candidates for one id share no slug, so a slug one owner frees is
+// never another owner's candidate; one owner's re-create of an id gets the
+// same candidates (a stable name); and no candidate says how many other
+// owners declared the id (no `-2`: every candidate is the id's slug and a
+// tag). The tags are fixed literals, so a mutant that drops the owner (or
+// the id) from the hash is seen.
+func TestASlugNeverPassesFromOneOwnerToAnother(t *testing.T) {
+	a, b := SlugCandidates(1, "scout:main", 40), SlugCandidates(987311, "scout:main", 40)
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			t.Fatalf("owners 1 and 987311 share candidate %q", x)
+		}
+	}
+	if again := SlugCandidates(1, "scout:main", 40); !slices.Equal(a, again) {
+		t.Fatalf("one owner's candidates for one id changed: %v then %v", a, again)
+	}
+	if other := SlugCandidates(1, "scout:other", 40); slices.ContainsFunc(other, func(s string) bool {
+		return strings.TrimPrefix(s, "scout-other-") == strings.TrimPrefix(a[0], "scout-main-")
+	}) {
+		t.Fatalf("one owner's two ids got the same tag: %v / %v", a, other)
+	}
+	if a[0] != "scout-main-"+SlugTag(1, "scout:main", 1) || a[1] == a[0] {
+		t.Fatalf("candidates %v", a)
+	}
+	for _, c := range append(a, b...) {
+		if c == "scout-main" || c == "scout-main-2" {
+			t.Fatalf("candidate %q is the id's bare slug or a counter", c)
+		}
+	}
+	// The tag is fixed by (owner, id, n): literals, pinned.
+	if got := []string{SlugTag(1, "scout:main", 1), SlugTag(987311, "scout:main", 1), SlugTag(1, "scout:main", 2)}; !slices.Equal(got, slugTagsPinned) {
+		t.Fatalf("SlugTag %v, want %v", got, slugTagsPinned)
 	}
 }
 
@@ -98,3 +136,7 @@ func TestTheRegistrySwapsWholeRosters(t *testing.T) {
 		t.Fatalf("after the swap the DB officer is still there: %v", r.All())
 	}
 }
+
+// slugTagsPinned is SlugTag(1, "scout:main", 1), (987311, "scout:main", 1)
+// and (1, "scout:main", 2), computed once.
+var slugTagsPinned = []string{"cwtgtu", "kgcfmb", "x8j16h"}

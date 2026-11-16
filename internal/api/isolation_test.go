@@ -714,13 +714,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/chief/provision":         classParam,
 	"POST /teams/{id}/chief/stop":              classParam,
 	"POST /teams/{id}/chief/restart":           classParam,
-	// A team's DB-declared officers (0136): a manager's writes, {officer}
-	// A's officer id under the team.
-	"POST /teams/{id}/officers/declared":                  classParam,
-	"PUT /teams/{id}/officers/declared/{officer}":         classParam,
-	"DELETE /teams/{id}/officers/declared/{officer}":      classParam,
-	"POST /teams/{id}/officers/declared/{officer}/pause":  classParam,
-	"POST /teams/{id}/officers/declared/{officer}/resume": classParam,
 	// A team's connector requests (slice 4.8): {id} is a team A manages,
 	// {grant} one of that team's requests.
 	"GET /teams/{id}/connectors":                             classParam,
@@ -2154,12 +2147,6 @@ var controlMarkers = map[string]string{
 	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
 	// another owner's) to its place on the queue.
 	"GET /attention/open/{key}": `href="/attention/asks/`,
-	// A team's DB-declared officer writes: A (the team's manager) is let in
-	// and the officer is looked up under the team — "no such officer" — where
-	// a ghost team (and B) is refused at the team: "no such team".
-	"DELETE /teams/{id}/officers/declared/{officer}":      "no such officer",
-	"POST /teams/{id}/officers/declared/{officer}/pause":  "no such officer",
-	"POST /teams/{id}/officers/declared/{officer}/resume": "no such officer",
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

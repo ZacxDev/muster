@@ -33,9 +33,10 @@ import (
 //	POST   /api/officers/declared/{officer}/resume   its switch on
 //	GET    /api/officers/runtime-options             where the caller's officer could run, and why not
 //
-// and, for a TEAM's officers, the same writes under /teams/{id}/officers/declared
-// (a signed-in MANAGER of the team: a personal API token carries no team
-// access, so the JSON admin API never names a team).
+// A TEAM's officers are the store's and the loader's already (a row a team
+// owns runs, under the team rule officers.CheckOwners), but no door writes
+// them yet: the team door is O-C's, with the UI that is its first consumer
+// (round 0's D1).
 //
 // 🔴 NO RESTART. Every write swaps the registry (reloadDeclaredOfficers), and
 // every consumer reads the registry live: the wake loop, hostOfficersOn, the
@@ -102,17 +103,47 @@ func (s *Server) refreshDeclaredOfficers(ctx context.Context) {
 
 // reloadDeclaredOfficers reads every DB-declared officer, resolves where each
 // runs (or why it does not), and swaps the registry to the env officers plus
-// the runnable DB ones. A read failure changes nothing.
+// the runnable DB ones. A read failure changes nothing. An officer the load
+// MOVED (another runtime or host) has its old placement's instances torn
+// down once the new roster is in (teardownMoved).
 func (s *Server) reloadDeclaredOfficers(ctx context.Context) error {
 	rt := s.officerRT
 	if rt == nil || rt.store == nil {
 		return nil
 	}
-	rt.reloadMu.Lock()
-	defer rt.reloadMu.Unlock()
-	rows, err := rt.store.ListDeclared(authz.System(ctx))
+	moved, err := s.loadDeclaredRoster(ctx)
 	if err != nil {
 		return err
+	}
+	for _, old := range moved {
+		s.teardownMoved(ctx, old)
+	}
+	return nil
+}
+
+// loadDeclaredRoster is reloadDeclaredOfficers' load and swap, under
+// reloadMu; it answers each DB-declared officer the swap moved, as it ran
+// before.
+func (s *Server) loadDeclaredRoster(ctx context.Context) ([]officers.Officer, error) {
+	rt := s.officerRT
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+	// 🔴 IDLE WITH NOTHING DECLARED (round 0's F9). Every database install
+	// runs this every DefaultRefreshEvery; while the last load found no
+	// DB-declared officer, one index probe (AnyDeclared) stands in for the
+	// list, the resolution and the swap.
+	rt.declMu.Lock()
+	idle := rt.loaded && len(rt.declared) == 0
+	rt.declMu.Unlock()
+	if idle {
+		any, err := rt.store.AnyDeclared(authz.System(ctx))
+		if err != nil || !any {
+			return nil, err
+		}
+	}
+	rows, err := rt.store.ListDeclared(authz.System(ctx))
+	if err != nil {
+		return nil, err
 	}
 	envSlugs := map[string]string{}
 	for _, o := range rt.env {
@@ -137,17 +168,30 @@ func (s *Server) reloadDeclaredOfficers(ctx context.Context) error {
 	for _, o := range list {
 		now[o.Key()] = o
 	}
+	var moved []officers.Officer
 	for _, o := range old {
-		if n, ok := now[o.Key()]; o.FromDB() && (!ok || !reflect.DeepEqual(n, o)) {
+		n, ok := now[o.Key()]
+		if o.FromDB() && (!ok || !reflect.DeepEqual(n, o)) {
 			rt.hq.Forget(o.Key())
 		}
+		if o.FromDB() && ok && n.Owner == o.Owner && n.ID == o.ID && (n.RuntimeKind() != o.RuntimeKind() || n.Host != o.Host) {
+			moved = append(moved, o)
+		}
 	}
+	// A backend a late call re-cached for an officer that is gone is dropped
+	// (Backends.Retain): the cache holds the live roster's, no more.
+	rt.hq.Retain(list)
 	rt.declMu.Lock()
 	prev := rt.declared
-	rt.declared = states
+	rt.declared, rt.loaded = states, true
+	for slug := range rt.autoHost {
+		if !slices.ContainsFunc(rows, func(r builtin.DeclaredRow) bool { return r.Fields.InstanceSlug == slug }) {
+			delete(rt.autoHost, slug)
+		}
+	}
 	rt.declMu.Unlock()
 	s.logDeclaredChanges(prev, states)
-	return nil
+	return moved, nil
 }
 
 // logDeclaredChanges logs each DB-declared officer that appeared, went, or
@@ -209,23 +253,15 @@ func (s *Server) resolveDeclared(ctx context.Context, r builtin.DeclaredRow, env
 	if err := officers.CheckOwners([]officers.Officer{o}, s.officerOwnerKind); err != nil {
 		return officers.Officer{}, err.Error()
 	}
-	if runtime == officers.RuntimeHost && r.Fields.Runtime == officers.RuntimeAuto {
-		rt.declMu.Lock()
-		if rt.autoHost == nil {
-			rt.autoHost = map[string]string{}
-		}
-		rt.autoHost[r.Fields.InstanceSlug] = host
-		rt.declMu.Unlock()
-	}
 	return o, ""
 }
 
 // resolveRuntime is where declaration d runs: its own runtime and host when it
 // names one (refused, with the reason, when this server cannot run it), and
-// for RuntimeAuto a pod when this server can run one, else the first of its
-// owner's qualifying hosts — or the host auto last picked, while it is still
-// one of the owner's (so a host that drops offline for a moment does not move
-// the officer) — else no runtime, with both reasons.
+// for RuntimeAuto a pod when this server can run one, else a host of its
+// owner's (autoHostFor: the host it already runs on, while that host
+// qualifies or has been gone for less than autoHostGrace; else the first that
+// qualifies) — else no runtime, with both reasons.
 func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (runtime, host, why string) {
 	switch d.Runtime {
 	case officers.RuntimePod:
@@ -254,27 +290,115 @@ func (s *Server) resolveRuntime(ctx context.Context, d officers.Declaration) (ru
 		}
 	}
 	if hostWhy == "" {
-		opts := s.ownerHostOptions(ctx, d.Owner, d.Repo)
-		for _, h := range opts {
-			if h.Qualifies {
-				return officers.RuntimeHost, h.Host, ""
-			}
-		}
-		prev := ""
-		if rt := s.officerRT; rt != nil {
-			rt.declMu.Lock()
-			prev = rt.autoHost[d.InstanceSlug]
-			rt.declMu.Unlock()
-		}
-		if prev != "" && slices.ContainsFunc(opts, func(h hostOption) bool { return h.Host == prev }) {
-			return officers.RuntimeHost, prev, ""
-		}
-		hostWhy = "none of its owner's hosts qualifies"
-		if len(opts) == 0 {
-			hostWhy = "its owner has no mirrored host"
+		var h string
+		if h, hostWhy = s.autoHostFor(ctx, d); h != "" {
+			return officers.RuntimeHost, h, ""
 		}
 	}
 	return "", "", "runtime auto found nowhere to run: pods: " + podWhy + "; hosts: " + hostWhy
+}
+
+// autoHostGrace is how long a "runtime": "auto" officer stays on the host it
+// runs on after that host stops qualifying (disconnected, or an older
+// muster-mirror), before it moves to another of its owner's hosts.
+const autoHostGrace = 10 * time.Minute
+
+// autoPlacement is where a "runtime": "auto" officer was last placed on a
+// host, and when that host last qualified.
+type autoPlacement struct {
+	host string
+	ok   time.Time
+}
+
+// autoHostFor is the host a "runtime": "auto" declaration d runs on, or ""
+// and why none.
+//
+// 🔴 IT STICKS (round 0's F3). It used to pick the FIRST qualifying host on
+// every load, and fall back to the previous one only when none qualified —
+// so a blip of the host it ran on moved it to another, and the start there
+// was then refused, because the instance's agent row is the old host's
+// (ensureHostInstanceRow never adopts one). Now the host it runs on — this
+// process's memory of it, else the host its instance agent rows run on
+// (so a restart or another replica agrees) — is kept while it qualifies, and
+// while it has been gone for less than autoHostGrace (the pass then sees it
+// offline and changes nothing: fail-blind). Only past the grace, and only to
+// a host that qualifies, does it move; the load that moves it tears the old
+// placement's instances down (teardownMoved). With nowhere else to go it
+// stays where it is.
+func (s *Server) autoHostFor(ctx context.Context, d officers.Declaration) (string, string) {
+	opts := s.ownerHostOptions(ctx, d.Owner, d.Repo)
+	qualifies := func(host string) bool {
+		return slices.ContainsFunc(opts, func(h hostOption) bool { return h.Host == host && h.Qualifies })
+	}
+	first := ""
+	for _, h := range opts {
+		if h.Qualifies {
+			first = h.Host
+			break
+		}
+	}
+	if d.InstanceSlug == runtimeProbeSlug {
+		// runtime-options' probe: what a new officer would get, remembered
+		// nowhere.
+		if first == "" {
+			return "", noHostWhy(opts)
+		}
+		return first, ""
+	}
+	rt := s.officerRT
+	now := rt.now()
+	rt.declMu.Lock()
+	prev, known := rt.autoHost[d.InstanceSlug]
+	rt.declMu.Unlock()
+	if !known {
+		if h := s.autoHostOfRows(ctx, d); h != "" {
+			// The rows say where it ran, not when that host last qualified:
+			// the grace starts now.
+			prev = autoPlacement{host: h, ok: now}
+		}
+	}
+	place := prev
+	switch {
+	case prev.host != "" && qualifies(prev.host):
+		place.ok = now
+	case prev.host != "" && (now.Sub(prev.ok) < autoHostGrace || first == ""):
+		// Gone for less than the grace, or nowhere else qualifies: it stays.
+	case first != "":
+		place = autoPlacement{host: first, ok: now}
+	default:
+		return "", noHostWhy(opts)
+	}
+	rt.declMu.Lock()
+	if rt.autoHost == nil {
+		rt.autoHost = map[string]autoPlacement{}
+	}
+	rt.autoHost[d.InstanceSlug] = place
+	rt.declMu.Unlock()
+	return place.host, ""
+}
+
+// noHostWhy is why none of opts takes an auto officer.
+func noHostWhy(opts []hostOption) string {
+	if len(opts) == 0 {
+		return "its owner has no mirrored host"
+	}
+	return "none of its owner's hosts qualifies"
+}
+
+// autoHostOfRows is the host d's instance agent rows run on ("" for none, or
+// pod rows only): where the officer ran before this process placed it.
+func (s *Server) autoHostOfRows(ctx context.Context, d officers.Declaration) string {
+	if s.ext.Agents == nil || d.InstanceSlug == "" {
+		return ""
+	}
+	octx := s.officerPrincipal(ctx, d.Owner)
+	probe := officers.Officer{ID: d.ID, Owner: d.Owner, InstanceSlug: d.InstanceSlug}
+	for n := 1; n <= officers.MaxInstancesCap; n++ {
+		if a, err := s.ext.Agents.GetByName(octx, probe.InstanceName(n)); err == nil && a.RunsOnHost != "" && a.OwnerID == d.Owner {
+			return a.RunsOnHost
+		}
+	}
+	return ""
 }
 
 // podRuntimeRefusal is why this server cannot run an officer in a pod now, or
@@ -320,13 +444,9 @@ type hostOption struct {
 	Spawnable bool `json:"spawnable"`
 	// Closable: it ends an agent window on muster's request (AgentClose), so
 	// muster can scale the officer to zero.
-	Closable bool `json:"closable"`
-	// RepoAllowed: whether the host's spawn allow-list takes the officer's
-	// repository — nil while hosts do not advertise that list (the spawn
-	// itself refuses a repository it does not allow).
-	RepoAllowed *bool  `json:"repo_allowed"`
-	Qualifies   bool   `json:"qualifies"`
-	Reason      string `json:"reason,omitempty"`
+	Closable  bool   `json:"closable"`
+	Qualifies bool   `json:"qualifies"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // ownerHostOptions is owner's hosts, sorted, each with whether a host officer
@@ -375,6 +495,11 @@ type runtimeOptions struct {
 	} `json:"auto"`
 }
 
+// runtimeProbeSlug is the slug of runtime-options' probe declaration: not a
+// slug any officer is given (every allocated one carries a tag), so the auto
+// rule remembers nothing for it.
+const runtimeProbeSlug = "probe-probe"
+
 func (s *Server) runtimeOptionsFor(ctx context.Context, owner int64, repo string) runtimeOptions {
 	var out runtimeOptions
 	out.Pod.Reason = s.podRuntimeRefusal()
@@ -386,7 +511,7 @@ func (s *Server) runtimeOptionsFor(ctx context.Context, owner int64, repo string
 	}
 	// 🔴 THE ONE AUTO RULE: what the wake loop's roster load resolves a stored
 	// "auto" to (resolveRuntime), asked of a probe declaration of repo.
-	probe := officers.Declaration{ID: "probe:probe", Owner: owner, Runtime: officers.RuntimeAuto, Repo: strings.TrimSpace(repo), InstanceSlug: "probe-probe"}
+	probe := officers.Declaration{ID: "probe:probe", Owner: owner, Runtime: officers.RuntimeAuto, Repo: strings.TrimSpace(repo), InstanceSlug: runtimeProbeSlug}
 	out.Auto.Runtime, out.Auto.Host, out.Auto.Reason = s.resolveRuntime(ctx, probe)
 	return out
 }
@@ -524,16 +649,10 @@ func (s *Server) registerDeclaredOfficerRoutes(mux Mux) {
 	mux.HandleFunc("POST "+officerAdminPrefix+"/declared/{officer}/pause", h(s.personalDeclared(s.declaredPause)))
 	mux.HandleFunc("POST "+officerAdminPrefix+"/declared/{officer}/resume", h(s.personalDeclared(s.declaredResume)))
 	mux.HandleFunc("GET "+officerAdminPrefix+"/runtime-options", h(s.handleOfficerRuntimeOptions))
-	// A team's: its signed-in managers (teamDeclared).
-	mux.HandleFunc("POST /teams/{id}/officers/declared", s.requireOperatorWrite(s.teamDeclared(s.declaredCreate)))
-	mux.HandleFunc("PUT /teams/{id}/officers/declared/{officer}", s.requireOperatorWrite(s.teamDeclared(s.declaredUpdate)))
-	mux.HandleFunc("DELETE /teams/{id}/officers/declared/{officer}", s.requireOperatorWrite(s.teamDeclared(s.declaredDelete)))
-	mux.HandleFunc("POST /teams/{id}/officers/declared/{officer}/pause", s.requireOperatorWrite(s.teamDeclared(s.declaredPause)))
-	mux.HandleFunc("POST /teams/{id}/officers/declared/{officer}/resume", s.requireOperatorWrite(s.teamDeclared(s.declaredResume)))
 }
 
-// declaredWrite is one write handler: owner is whose officer it writes (the
-// caller, or a team its manager acts for), team whether owner is a team.
+// declaredWrite is one write handler: owner is whose officer it writes, team
+// whether owner is a team (no door passes one yet: O-C's team door will).
 type declaredWrite func(w http.ResponseWriter, r *http.Request, owner int64, team bool)
 
 // personalDeclared is the hook-tier door: the caller's own officers.
@@ -543,26 +662,6 @@ func (s *Server) personalDeclared(f declaredWrite) http.HandlerFunc {
 			return
 		}
 		f(w, r, adminOwner(r), false)
-	}
-}
-
-// teamDeclared is the team door: team {id}, and the signed-in principal
-// MANAGES it (TeamOfficerManagerOnly otherwise) — Postgres refuses anyone
-// below manager again (officer_defs and officer_types are managed, 0127).
-func (s *Server) teamDeclared(f declaredWrite) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		team, role, ok := s.teamOfficerRole(w, r)
-		if !ok {
-			return
-		}
-		if role != authz.TeamManager {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamOfficerManagerOnly})
-			return
-		}
-		if !s.requireDeclared(w) {
-			return
-		}
-		f(w, r, team, true)
 	}
 }
 
@@ -641,9 +740,29 @@ type declaredIn struct {
 	IdleAfter    string          `json:"idle_scale_to_zero_after"`
 	PollInterval string          `json:"poll_interval"`
 	Model        string          `json:"model"`
-	Mode         string          `json:"mode"`
-	EscalateTo   []int64         `json:"escalate_to"`
-	Paused       bool            `json:"paused"`
+	// Mode and Paused are nil when the body leaves them out: a create then
+	// takes the defaults (live, running), and a replace is REFUSED
+	// (requireSwitches) rather than flipping a shadow officer live or
+	// resuming a paused one by omission (round 0's F6).
+	Mode       *string `json:"mode"`
+	EscalateTo []int64 `json:"escalate_to"`
+	Paused     *bool   `json:"paused"`
+}
+
+// requireSwitches refuses a replace whose body leaves out mode or paused,
+// each per field.
+func (in declaredIn) requireSwitches() error {
+	var list []officers.FieldError
+	if in.Mode == nil {
+		list = append(list, officers.FieldError{Field: "mode", Err: errors.New(`a replace states "mode" ("live" or "shadow"): it is never changed by leaving it out`)})
+	}
+	if in.Paused == nil {
+		list = append(list, officers.FieldError{Field: "paused", Err: errors.New(`a replace states "paused" (true or false): it is never changed by leaving it out`)})
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	return &officers.FieldErrors{List: list}
 }
 
 // fieldRefusal is one refused field in a 400's "fields".
@@ -729,9 +848,49 @@ func (s *Server) checkDeclaredOwner(d officers.Declaration) error {
 	return nil
 }
 
-// slugCandidates are the instance slugs a create tries for id at max
-// instances: officers.SlugCandidates, less every env officer's slug.
-func (s *Server) slugCandidates(id string, maxInstances int) []string {
+// declarationRefusal is every check a create or replace of d goes through
+// before the store: the one declaration check (Validate), the team rule
+// (checkDeclaredOwner), and an explicit host's being one of its owner's
+// (hostRefusal).
+func (s *Server) declarationRefusal(ctx context.Context, d officers.Declaration) error {
+	if err := d.Validate(s.ext.AgentNamespacePrefix); err != nil {
+		return err
+	}
+	if err := s.checkDeclaredOwner(d); err != nil {
+		return err
+	}
+	return s.hostRefusal(ctx, d)
+}
+
+// hostRefusal refuses a "runtime": "host" declaration naming a host its owner
+// has no mirror token for (round 0's F7): a typo, or another person's
+// machine, would otherwise be stored and only ever reported as offline. The
+// owner's hosts are the live token names (Mirror.LiveTokenHosts), connected
+// or not. Without a mirror hub there is nothing to check against, and the
+// roster load reports the officer cannot run.
+func (s *Server) hostRefusal(ctx context.Context, d officers.Declaration) error {
+	if d.Runtime != officers.RuntimeHost || s.ext.Mirror == nil {
+		return nil
+	}
+	hosts, err := s.ext.Mirror.LiveTokenHosts(s.officerPrincipal(ctx, d.Owner))
+	if err != nil {
+		return fmt.Errorf("officers: read the owner's hosts: %w", err)
+	}
+	if !slices.Contains(hosts, d.Host) {
+		return fieldError("host", fmt.Sprintf("host %q is not one of its owner's mirrored hosts: a host is named by the mirror token it connects with", d.Host))
+	}
+	return nil
+}
+
+// slugCandidates are the instance slugs a create of owner's officer id at
+// max instances tries: officers.SlugCandidates (each carries a tag of owner
+// and id, so no slug passes between owners), less every env officer's slug
+// and every slug an instance agent of which already exists — an orphan left
+// by a teardown that failed, or by a replica that started an instance after
+// a delete, is never adopted by a new officer (round 0's F2). The existence
+// probe is the agents table's, in the system scope (an agent name is global),
+// answering only taken or not.
+func (s *Server) slugCandidates(ctx context.Context, owner int64, id string, maxInstances int) ([]string, error) {
 	taken := map[string]bool{}
 	if s.officerRT != nil {
 		for _, o := range s.officerRT.env {
@@ -739,12 +898,36 @@ func (s *Server) slugCandidates(id string, maxInstances int) []string {
 		}
 	}
 	var out []string
-	for _, c := range officers.SlugCandidates(id, officers.SlugMaxFor(s.ext.AgentNamespacePrefix, maxInstances)) {
-		if !taken[c] {
+	for _, c := range officers.SlugCandidates(owner, id, officers.SlugMaxFor(s.ext.AgentNamespacePrefix, maxInstances)) {
+		if taken[c] {
+			continue
+		}
+		used, err := s.slugHasAgents(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		if !used {
 			out = append(out, c)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// slugHasAgents reports whether an instance agent of slug exists, for any
+// owner: officer-<slug>-1 … -<MaxInstancesCap>.
+func (s *Server) slugHasAgents(ctx context.Context, slug string) (bool, error) {
+	if s.ext.Agents == nil {
+		return false, nil
+	}
+	probe := officers.Officer{InstanceSlug: slug}
+	sys := authz.System(ctx)
+	for n := 1; n <= officers.MaxInstancesCap; n++ {
+		ok, err := s.ext.Agents.NameExists(sys, probe.InstanceName(n))
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
 }
 
 // declaredStoreErr answers a store error of the declared-officer API.
@@ -758,6 +941,8 @@ func (s *Server) declaredStoreErr(w http.ResponseWriter, err error) {
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such officer"})
 	case errors.Is(err, builtin.ErrNoSlug):
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "every instance name for that id is taken; choose another id"})
+	case errors.Is(err, builtin.ErrTypeShared):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "another of your officers runs on this officer's type, so its charter is not changed here: " + err.Error()})
 	default:
 		s.adminStoreErr(w, "officer", err)
 	}
@@ -786,7 +971,11 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 	if s.refuseEnvManaged(w, owner, id) {
 		return
 	}
-	slugs := s.slugCandidates(id, in.MaxInstances)
+	slugs, err := s.slugCandidates(r.Context(), owner, id, in.MaxInstances)
+	if err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	}
 	first := ""
 	if len(slugs) > 0 {
 		first = slugs[0]
@@ -796,10 +985,7 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 		err = fieldError("id", fmt.Sprintf("id %q leaves no room for an instance name under this deployment's namespace prefix", id))
 	}
 	if err == nil {
-		err = d.Validate(s.ext.AgentNamespacePrefix)
-	}
-	if err == nil {
-		err = s.checkDeclaredOwner(d)
+		err = s.declarationRefusal(r.Context(), d)
 	}
 	if err != nil {
 		s.writeFieldErrors(w, err)
@@ -823,8 +1009,14 @@ func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.
 	if name == "" {
 		name = d.ID
 	}
-	return builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: !in.Paused, Mode: in.Mode,
-		EscalateTo: in.EscalateTo, Fields: d}
+	w := builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: true, EscalateTo: in.EscalateTo, Fields: d}
+	if in.Paused != nil {
+		w.Enabled = !*in.Paused
+	}
+	if in.Mode != nil {
+		w.Mode = *in.Mode
+	}
+	return w
 }
 
 // answerDeclared reloads the roster, then answers owner's officer id.
@@ -864,12 +1056,13 @@ func (s *Server) declaredUpdate(w http.ResponseWriter, r *http.Request, owner in
 		s.declaredStoreErr(w, err)
 		return
 	}
+	if err := in.requireSwitches(); err != nil {
+		s.writeFieldErrors(w, err)
+		return
+	}
 	d, err := in.declaration(owner, id, cur.Fields.InstanceSlug)
 	if err == nil {
-		err = d.Validate(s.ext.AgentNamespacePrefix)
-	}
-	if err == nil {
-		err = s.checkDeclaredOwner(d)
+		err = s.declarationRefusal(r.Context(), d)
 	}
 	if err != nil {
 		s.writeFieldErrors(w, err)
@@ -885,12 +1078,13 @@ func (s *Server) declaredUpdate(w http.ResponseWriter, r *http.Request, owner in
 		return
 	}
 	s.logger.Printf("officers: user %d replaced officer %s of owner %d in the database", authz.MustFrom(r.Context()).UserID, id, owner)
+	// A move (another runtime or host) is the roster load's to tear down
+	// (teardownMoved): the old instances are not the new ones' — a pod row
+	// would block a host start of the same name. One that no longer runs at
+	// all has its instances torn down here.
 	s.reloadAfterWrite(r.Context())
-	// Moved (another runtime or host): the old instances are not the new
-	// ones' — a pod row would block a host start of the same name — so they
-	// are torn down now; the wake loop starts the new ones.
 	after, _ := s.officerRT.declaredView(owner, id)
-	if old := before.officer; old != nil && (after.officer == nil || old.RuntimeKind() != after.officer.RuntimeKind() || old.Host != after.officer.Host) {
+	if old := before.officer; old != nil && after.officer == nil {
 		s.teardownInstances(r.Context(), *old)
 	}
 	s.answerDeclared(w, r, http.StatusOK, owner, id)
@@ -966,32 +1160,68 @@ func (s *Server) declaredDelete(w http.ResponseWriter, r *http.Request, owner in
 // registry, so neither the delete protection nor the wake loop holds it.
 // Best-effort: failures are logged. It answers the names it removed.
 func (s *Server) teardownInstances(ctx context.Context, o officers.Officer) []string {
-	if s.ext.Agents == nil {
-		return nil
-	}
-	octx := s.officerPrincipal(context.WithoutCancel(ctx), o.Owner)
 	var removed []string
 	for n := 1; n <= officers.MaxInstancesCap; n++ {
-		name := o.InstanceName(n)
-		a, err := s.ext.Agents.GetByName(octx, name)
-		if err != nil {
-			continue
+		if s.teardownInstance(ctx, o, n, nil) {
+			removed = append(removed, o.InstanceName(n))
 		}
-		if o.OnHost() && a.RunsOnHost == o.Host && n <= o.MaxInstances {
-			if err := (officerFleet{s: s}).Stop(octx, o, n); err != nil {
-				s.logger.Printf("officers: %s: close its window: %v", name, err)
-			}
-		}
-		if a.Provisioned() && !s.lifecycleServed() {
-			s.logger.Printf("officers: %s: no provisioner to tear it down; remove it with `muster agent rm %s`", name, name)
-			continue
-		}
-		destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-		if _, err := s.destroyAgent(octx, a.ID, destroy, destroyHooks{}); err != nil {
-			s.logger.Printf("officers: %s: remove its agent: %v", name, err)
-			continue
-		}
-		removed = append(removed, name)
 	}
 	return removed
+}
+
+// teardownMoved removes the instance agents of old's PLACEMENT — its pod
+// rows, or the rows of the host it ran on — once the roster load has moved
+// it elsewhere (round 0's F3: an auto officer whose host was gone past the
+// grace; or a replace naming another runtime or host). A row of the new
+// placement, which the wake loop may already have created under the same
+// name, is never touched.
+func (s *Server) teardownMoved(ctx context.Context, old officers.Officer) {
+	ofOld := func(a agents.Agent) bool {
+		if old.OnHost() {
+			return !a.Provisioned() && a.RunsOnHost == old.Host
+		}
+		return a.Provisioned()
+	}
+	var removed []string
+	for n := 1; n <= officers.MaxInstancesCap; n++ {
+		if s.teardownInstance(ctx, old, n, ofOld) {
+			removed = append(removed, old.InstanceName(n))
+		}
+	}
+	where := "its pods"
+	if old.OnHost() {
+		where = "host " + old.Host
+	}
+	if len(removed) > 0 {
+		s.logger.Printf("officers: %s (owner %d) moved off %s; removed %s", old.ID, old.Owner, where, strings.Join(removed, ", "))
+	}
+}
+
+// teardownInstance removes instance n of o, when its agent exists (and keep,
+// when given, says it is one to remove), reporting whether it removed it.
+func (s *Server) teardownInstance(ctx context.Context, o officers.Officer, n int, keep func(agents.Agent) bool) bool {
+	if s.ext.Agents == nil {
+		return false
+	}
+	octx := s.officerPrincipal(context.WithoutCancel(ctx), o.Owner)
+	name := o.InstanceName(n)
+	a, err := s.ext.Agents.GetByName(octx, name)
+	if err != nil || keep != nil && !keep(a) {
+		return false
+	}
+	if o.OnHost() && a.RunsOnHost == o.Host && n <= o.MaxInstances {
+		if err := (officerFleet{s: s}).Stop(octx, o, n); err != nil {
+			s.logger.Printf("officers: %s: close its window: %v", name, err)
+		}
+	}
+	if a.Provisioned() && !s.lifecycleServed() {
+		s.logger.Printf("officers: %s: no provisioner to tear it down; remove it with `muster agent rm %s`", name, name)
+		return false
+	}
+	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
+	if _, err := s.destroyAgent(octx, a.ID, destroy, destroyHooks{}); err != nil {
+		s.logger.Printf("officers: %s: remove its agent: %v", name, err)
+		return false
+	}
+	return true
 }

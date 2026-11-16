@@ -41,7 +41,7 @@ func newNudgeCandFixture(t *testing.T) *nudgeCandFixture {
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.worker = f.agentFor(t, authz.OperatorUserID, "nudgecand-"+suffix, "cand worker", "nudge-cand-tok-"+suffix)
 	f.officer = f.agentFor(t, authz.OperatorUserID, officers.InstanceName("ci-watch", 1), "", "nudge-cand-off-tok-"+suffix)
-	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: "ci-watch", MaxInstances: 1}})}
+	f.srv.officerRT = &officerRuntime{reg: officers.NewRegistry([]officers.Officer{{ID: "ci-watch", MaxInstances: 1, Owner: authz.OperatorUserID}})}
 	f.workerSess, _ = f.stallAgent(t, f.worker, authz.OperatorUserID)
 	f.stallAgent(t, f.officer, authz.OperatorUserID)
 	f.stallAgent(t, f.boss, authz.OperatorUserID)

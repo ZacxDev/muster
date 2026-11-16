@@ -50,7 +50,7 @@ func TestEveryOfficerInstanceSessionDisablesAutoMemory(t *testing.T) {
 		{stem + "r3", false}, // past the routine max: not an instance
 		{agents.ChiefName, false},
 	} {
-		sess, ok := installed(agents.Agent{Name: c.name, Kind: agents.KindClaudeCode})
+		sess, ok := installed(agents.Agent{Name: c.name, Kind: agents.KindClaudeCode, OwnerID: 1})
 		if ok != c.ok || sess.DisableAutoMemory != c.ok {
 			t.Errorf("%s: session %+v (ok %v), want ok %v with DisableAutoMemory %v", c.name, sess, ok, c.ok, c.ok)
 		}

@@ -247,13 +247,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /teams/{id}/officers",
 		"POST /teams/{id}/officers/types/{key}",
 		"POST /teams/{id}/officers/defs/{officer}",
-		// A team's DB-declared officers (officer_declared.go): requireOperatorWrite;
-		// the manager check (teamDeclared) is AFTER the principal.
-		"POST /teams/{id}/officers/declared",
-		"PUT /teams/{id}/officers/declared/{officer}",
-		"DELETE /teams/{id}/officers/declared/{officer}",
-		"POST /teams/{id}/officers/declared/{officer}/pause",
-		"POST /teams/{id}/officers/declared/{officer}/resume",
 		// A team's chief (team sharing phase 4, team_admin.go) and an agent's
 		// credential rotation: requireSession (+ same-origin for the writes);
 		// the member/manager check and the team acting context

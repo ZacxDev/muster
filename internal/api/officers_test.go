@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/hqtest"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -39,12 +40,15 @@ const (
 // officerAgents is an agents.Store holding rows in memory, with the re-arm.
 type officerAgents struct {
 	agents.Store
-	mu      sync.Mutex
-	rows    []agents.Agent
-	nextID  int64
-	rearmed map[int64]string
-	created []agents.Agent
-	claims  map[int64]string
+	// beforeCreate, when set, runs at the start of every Create, before the
+	// row exists: a test's deterministic interleaving.
+	beforeCreate func(agents.Agent)
+	mu           sync.Mutex
+	rows         []agents.Agent
+	nextID       int64
+	rearmed      map[int64]string
+	created      []agents.Agent
+	claims       map[int64]string
 }
 
 func (s *officerAgents) List(context.Context) ([]agents.Agent, error) {
@@ -75,9 +79,22 @@ func (s *officerAgents) GetByName(_ context.Context, name string) (agents.Agent,
 	return agents.Agent{}, errors.New("no such agent")
 }
 
-func (s *officerAgents) Create(_ context.Context, a agents.Agent) (agents.Agent, error) {
+func (s *officerAgents) NameExists(ctx context.Context, name string) (bool, error) {
+	_, err := s.GetByName(ctx, name)
+	return err == nil, nil
+}
+
+func (s *officerAgents) Create(ctx context.Context, a agents.Agent) (agents.Agent, error) {
+	if s.beforeCreate != nil {
+		s.beforeCreate(a)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The agents table's owner_id defaults to the acting principal
+	// (muster.uid): an officer instance is created as its officer's owner.
+	if p, ok := authz.From(ctx); ok && a.OwnerID == 0 && p.UserID > 0 {
+		a.OwnerID = p.UserID
+	}
 	for _, r := range s.rows {
 		if r.Name == a.Name {
 			return agents.Agent{}, errors.New("duplicate name")

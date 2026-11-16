@@ -27,7 +27,10 @@ func TestMigration0136OfficerDeclared(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT runtime FROM officer_defs WHERE officer = 'scout:env'`).Scan(&runtime); err != nil || runtime != nil {
 		t.Fatalf("an existing def after 0136: runtime %v (%v), want NULL", runtime, err)
 	}
+	mustExec(ctx, t, pool, `INSERT INTO officer_types (owner_id, key) VALUES (1, 'scout-own'), (1, 'scout-other')`)
 	mustExec(ctx, t, pool, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:main', 'scout', 'pod', 'scout-main')`)
+	// F5: a declared def's type may be its own, keyed by its slug.
+	mustExec(ctx, t, pool, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:own', 'scout-own', 'pod', 'scout-own')`)
 	for _, bad := range []struct{ why, sql string }{
 		{"another owner's row with a taken slug", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (` + two + `, 'scout:main', 'scout', 'pod', 'scout-main')`},
 		{"a runtime with no slug", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime) VALUES (1, 'scout:a', 'scout', 'pod')`},
@@ -37,6 +40,9 @@ func TestMigration0136OfficerDeclared(t *testing.T) {
 		{"max_instances past the cap", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, max_instances, instance_slug) VALUES (1, 'scout:e', 'scout', 'pod', 9, 'scout-e')`},
 		{"a poll under the floor", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, poll_seconds, instance_slug) VALUES (1, 'scout:f', 'scout', 'pod', 5, 'scout-f')`},
 		{"a slug that is not a label", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:g', 'scout', 'pod', 'Scout_G')`},
+		// F5: a declared def's own type is its slug's, never another key.
+		{"a declared def on a type that is neither its id's nor its slug's", `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:h', 'scout-other', 'pod', 'scout-h')`},
+		{"an env def (no runtime) on a type that is not its id's", `INSERT INTO officer_defs (owner_id, officer, type_key) VALUES (1, 'scout:i', 'scout-own')`},
 	} {
 		if _, err := pool.Exec(ctx, bad.sql); err == nil {
 			t.Errorf("accepted %s", bad.why)
@@ -46,8 +52,8 @@ func TestMigration0136OfficerDeclared(t *testing.T) {
 	if _, err := pool.Exec(ctx, readMigration(t, "0136_officer_declared.sql")); err != nil {
 		t.Fatalf("re-applying 0136: %v", err)
 	}
-	if n := countRows(ctx, t, pool, "officer_defs"); n != 3 {
-		t.Fatalf("re-applying 0136 left %d defs, want 3", n)
+	if n := countRows(ctx, t, pool, "officer_defs"); n != 4 {
+		t.Fatalf("re-applying 0136 left %d defs, want 4", n)
 	}
 	for _, q := range asksRollbackSQL(t, "0136_officer_declared.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {

@@ -73,13 +73,15 @@ type officerRuntime struct {
 	// sessionInstalled: the provisioner takes the officer session settings
 	// (OfficersConfig.InstallSession was given), which a pod officer needs.
 	sessionInstalled bool
-	// reloadMu serialises roster loads; declMu guards declared and autoHost:
-	// the last load's DB-declared officers by declKey, and the host each
-	// "runtime": "auto" officer last resolved to, by instance slug.
+	// reloadMu serialises roster loads; declMu guards declared, loaded and
+	// autoHost: the last load's DB-declared officers by declKey, whether a
+	// load has run, and where each "runtime": "auto" officer was last placed
+	// on a host, by instance slug (autoPlacement).
 	reloadMu sync.Mutex
 	declMu   sync.Mutex
 	declared map[string]declaredState
-	autoHost map[string]string
+	loaded   bool
+	autoHost map[string]autoPlacement
 	hq       *officers.Backends
 	rec      *officers.Reconciler
 	// claimOwner names this process on an instance's session claim while it
@@ -703,11 +705,23 @@ func (s *Server) instanceOnNoClaudeAccount(a agents.Agent) bool {
 // of, and which instance. Not an officer instance → ok false. The officer is
 // the instance's pool (officers.Registry.ForAgentName): a tiered officer's
 // routine instance gets the routine Tier, Model and MaxInstances.
+//
+// 🔴 THE NAME AND THE OWNER (round 0's F2). An agent binds to the officer its
+// name parses as ONLY when the agent is that officer's owner's: a name alone
+// is not enough once officers are created and deleted at runtime, because an
+// agent row can outlive its officer (a teardown that failed, a replica that
+// started an instance after the delete) and a later officer of another owner
+// could come to parse the same name. The host door has always held this
+// (officerHostCaller); this is the same rule for every other door.
 func (s *Server) officerOf(a agents.Agent) (officers.Officer, int, bool) {
 	if s.officerRT == nil {
 		return officers.Officer{}, 0, false
 	}
-	return s.officerRT.reg.ForAgentName(a.Name)
+	o, n, ok := s.officerRT.reg.ForAgentName(a.Name)
+	if !ok || a.OwnerID != o.Owner {
+		return officers.Officer{}, 0, false
+	}
+	return o, n, true
 }
 
 // agentRepo is THE repository agent a acts on for its connectors: the one
@@ -920,9 +934,47 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	// 🔴 NOT FOR AN OFFICER THAT IS GONE. A pass reads the roster once; a
 	// DB-declared officer deleted meanwhile has had its instances torn down,
 	// and a start now would leave an agent no officer owns.
-	if _, err := f.s.officerRT.reg.Get(o.Key()); err != nil {
+	if !f.stillDeclared(ctx, o) {
 		return fmt.Errorf("officers: %s is no longer declared; not starting %s", o.ID, o.InstanceName(n))
 	}
+	if err := f.start(ctx, o, n, kickoff); err != nil {
+		return err
+	}
+	// 🔴 AND ASKED AGAIN AFTER (round 0's F2). The check above and the create
+	// are not one step: a delete landing between them swaps the roster and
+	// runs its teardown before this create — which then leaves exactly the
+	// orphan the check exists to prevent. So the officer is asked about again
+	// once the instance exists, and removed if it is gone. Every delete's
+	// teardown runs after its swap, so either the teardown sees this instance
+	// or this check sees the delete.
+	if !f.stillDeclared(ctx, o) {
+		if f.s.teardownInstance(ctx, o, n, nil) {
+			f.s.logger.Printf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
+		}
+		return fmt.Errorf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
+	}
+	return nil
+}
+
+// stillDeclared reports whether o is still the officer it was: in the live
+// roster under its key, the same owner and id — and, for a DB-declared
+// officer, still in the database with the same slug, so a delete made on
+// ANOTHER replica (whose roster this one reads up to a refresh later) is
+// seen too. An unreadable database is not "still there".
+func (f officerFleet) stillDeclared(ctx context.Context, o officers.Officer) bool {
+	cur, err := f.s.officerRT.reg.Get(o.Key())
+	if err != nil || cur.Owner != o.Owner || cur.ID != o.ID {
+		return false
+	}
+	if !o.FromDB() || f.s.officerRT.store == nil {
+		return true
+	}
+	row, err := f.s.officerRT.store.GetDeclared(f.s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID)
+	return err == nil && row.Fields.InstanceSlug == o.InstanceSlug
+}
+
+// start is Start once the officer is known to be declared.
+func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
 	if o.OnHost() {
 		return f.hostStart(ctx, o, n, kickoff)
 	}

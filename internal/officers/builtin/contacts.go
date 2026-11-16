@@ -1117,7 +1117,7 @@ func (s *Store) cooldownTx(ctx context.Context, tx pgx.Tx, owner int64, officer 
 	var raw *string
 	err := tx.QueryRow(ctx, `SELECT CASE WHEN jsonb_typeof(policy->'outreach'->'cooldown_days') = 'number'
 			THEN policy->'outreach'->>'cooldown_days' END
-		FROM officer_types WHERE owner_id = $1 AND key = split_part($2, ':', 1)`, owner, officer).Scan(&raw)
+		FROM officer_types WHERE owner_id = $1 AND key = `+officerTypeKey, owner, officer).Scan(&raw)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return DefaultCooldown, nil

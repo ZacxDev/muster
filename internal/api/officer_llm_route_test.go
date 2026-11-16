@@ -63,7 +63,7 @@ func TestOnlyARoutineLLMInstanceIsRoutedToTheProxy(t *testing.T) {
 		{stem + "r3", false, false, ""}, // past the routine max: not an instance
 		{officers.InstanceName(flatOff, 1), true, false, "sonnet"},
 	} {
-		sess, ok := installed(agents.Agent{Name: c.name, Kind: agents.KindClaudeCode})
+		sess, ok := installed(agents.Agent{Name: c.name, Kind: agents.KindClaudeCode, OwnerID: 1})
 		if ok != c.ok || routed(sess) != c.routed || sess.Model != c.model {
 			t.Errorf("%s: session %+v (ok %v, routed %v), want ok %v, routed %v, model %q", c.name, sess, ok, routed(sess), c.ok, c.routed, c.model)
 		}

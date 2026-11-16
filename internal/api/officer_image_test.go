@@ -53,7 +53,7 @@ func TestAnOfficerInstanceRunsItsPoolsImage(t *testing.T) {
 		tier.Pool(officers.TierRoutine).InstanceName(1):   routine,
 		officers.InstanceName(offNone, 1):                 "",
 	} {
-		sess, ok := s.OfficerClaudeCodeSession(agents.Agent{Name: name, Kind: agents.KindClaudeCode})
+		sess, ok := s.OfficerClaudeCodeSession(agents.Agent{Name: name, Kind: agents.KindClaudeCode, OwnerID: 1})
 		if !ok || sess.Image != want {
 			t.Errorf("%s: session image %q (officer %v), want %q", name, sess.Image, ok, want)
 		}

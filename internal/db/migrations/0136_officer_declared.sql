@@ -20,6 +20,15 @@
 --                     globally unique and two owners may each declare
 --                     `marketing:main`. Set iff runtime is.
 --
+-- 🔴 A DECLARED OFFICER'S TYPE IS ITS OWN (round 0's F5). Its type row holds
+-- its charter, and 0118 tied every def to the type named by its id's part
+-- before the colon — so creating or changing DB officer `scout:main` rewrote
+-- type `scout`, the charter an env officer `scout:ops` of the same owner runs
+-- on. officer_defs_type_is_the_id now also admits a declared def whose type
+-- key IS its instance slug: a type no env officer's id can name by accident
+-- (the slug carries a tag of the owner and id), written and deleted with the
+-- officer. An env officer's def is held to the old rule, unchanged.
+--
 -- PAUSED IS THE EXISTING SWITCH, enabled (0118): a paused officer is one whose
 -- switch is off, which the wake loop already honours (it stops the instances
 -- and starts none). One switch, not two.
@@ -48,6 +57,9 @@
 -- (`muster agent rm officer-<slug>-<n>` removes one). Then, optionally:
 --
 -- ROLLBACK (after rolling the image back):
+--   ALTER TABLE public.officer_defs DROP CONSTRAINT IF EXISTS officer_defs_type_is_the_id;
+--   ALTER TABLE public.officer_defs ADD CONSTRAINT officer_defs_type_is_the_id
+--     CHECK (type_key = split_part(officer, ':', 1)) NOT VALID;
 --   DROP INDEX IF EXISTS public.officer_defs_instance_slug;
 --   ALTER TABLE public.officer_defs DROP CONSTRAINT IF EXISTS officer_defs_declared_check,
 --     DROP COLUMN IF EXISTS runtime, DROP COLUMN IF EXISTS host, DROP COLUMN IF EXISTS repo,
@@ -92,3 +104,10 @@ ALTER TABLE public.officer_defs ADD CONSTRAINT officer_defs_declared_check CHECK
 
 CREATE UNIQUE INDEX IF NOT EXISTS officer_defs_instance_slug
     ON public.officer_defs (instance_slug) WHERE instance_slug IS NOT NULL;
+
+-- A declared officer's type is its own: its key is its instance slug (F5).
+ALTER TABLE public.officer_defs DROP CONSTRAINT IF EXISTS officer_defs_type_is_the_id;
+ALTER TABLE public.officer_defs ADD CONSTRAINT officer_defs_type_is_the_id CHECK (
+    type_key = split_part(officer, ':', 1)
+    OR (instance_slug IS NOT NULL AND type_key = instance_slug)
+);

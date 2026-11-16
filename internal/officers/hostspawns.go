@@ -3,6 +3,7 @@ package officers
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -87,6 +88,10 @@ type HostSpawnStore interface {
 	HostSpawnForSession(ctx context.Context, host, session string) (HostSpawn, error)
 	// HostSpawnIDs is which of ids are host spawns of the principal's on host.
 	HostSpawnIDs(ctx context.Context, host string, ids []int64) (map[int64]bool, error)
+	// HostSpawnsInWindows is the principal's spawns on host whose RECORDED
+	// window (the id from the host's own spawn reply, never a tag) is one of
+	// windows: the officer windows among a host's listing.
+	HostSpawnsInWindows(ctx context.Context, host string, windows []string) ([]HostSpawn, error)
 }
 
 // PGHostSpawnStore is HostSpawnStore over muster's Postgres.
@@ -186,6 +191,28 @@ func (s *PGHostSpawnStore) HostSpawnIDs(ctx context.Context, host string, ids []
 			return nil, err
 		}
 		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// HostSpawnsInWindows implements HostSpawnStore.
+func (s *PGHostSpawnStore) HostSpawnsInWindows(ctx context.Context, host string, windows []string) ([]HostSpawn, error) {
+	if len(windows) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
+		WHERE host = $1 AND tmux_window = ANY($2) AND tmux_window <> '' AND refusal = '' ORDER BY id`, host, windows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HostSpawn
+	for rows.Next() {
+		h, err := scanHostSpawn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
 	}
 	return out, rows.Err()
 }
@@ -388,6 +415,20 @@ func (m *MemHostSpawnStore) HostSpawnIDs(_ context.Context, host string, ids []i
 			}
 		}
 	}
+	return out, nil
+}
+
+// HostSpawnsInWindows implements HostSpawnStore.
+func (m *MemHostSpawnStore) HostSpawnsInWindows(_ context.Context, host string, windows []string) ([]HostSpawn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []HostSpawn
+	for _, r := range m.rows {
+		if r.Host == host && r.Window != "" && r.Refusal == "" && slices.Contains(windows, r.Window) {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
