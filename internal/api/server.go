@@ -311,6 +311,10 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// turnRoleChecked, test-only (nil in production): called when a member's
+	// turn on a team agent has passed turnActingContext's first role read, so
+	// a test can change the membership between that read and the send.
+	turnRoleChecked func(a agents.Agent)
 	// routeAnswersCap is how many owed route answers one combined turn carries
 	// (deliverRouteAnswers); zero = routeAnswersPerTurn. A test lowers it.
 	routeAnswersCap int

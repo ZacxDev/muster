@@ -1039,6 +1039,24 @@ rule the later phases' rows will meet.
     through `ViaAgent`) after a fresh read of the member's role, on every
     send attempt. A member removed or downgraded while their message is
     queued is answered "not sent", and the message never reaches the runtime.
+    The authoritative read is the **send fence**: immediately before each
+    request opens, the role is read again under a `FOR KEY SHARE` on the
+    team's row (`users.Store.HoldTeamRole`). The lock is held until the
+    first of: ccd's 103 (the text was accepted), the status line, a
+    transport error, `agents.SendFenceHoldCap` (5s) after the request was
+    written, or the hard bound `agents.SendFenceHoldMax` (8s) after the lock
+    was taken, connect and TLS included. Every membership change waits on
+    that row (`lockTeam`), so a removal lands wholly before the read (the
+    message is refused) or after the runtime took the text. Both bounds are
+    operator decisions (#731): a membership change never waits longer than
+    the hard bound (8s) behind a member's turn, under the 10s statement
+    timeout. **Accepted residual:** on any runtime whose 103 does not arrive
+    within the cap — one that never sends it (an older ccd, the
+    chat-completions fallback), or a ccd whose submit takes longer (its
+    window runs to 20s) — a message already transmitted before a removal may
+    still be delivered after it. Before the fence (#673 until the fix), a removal committing
+    between the attempt's first role read and its request let the text
+    through.
   - **One shared room.** A member types into the team chief's one
     conversation, behind the per-agent FIFO turn gate. The runtime is handed
     `[muster] typed by <name> (<role>) in team <team>` before the text, in

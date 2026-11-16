@@ -155,7 +155,7 @@ func (h *tenantHost) defaultEnv(srv *tenantServer) map[string]string {
 		envWriteHookConfig: "1", "TMUX_TMPDIR": h.tmpdir}
 }
 
-// unitEnv is what muster-mirror@<n>.service's Environment= lines set (INSTALL.md).
+// unitEnv is what muster-mirror@<n>.service's Environment= lines set (docs/multi-tenant-hosts.md).
 func (h *tenantHost) unitEnv(n string) map[string]string {
 	return map[string]string{envHookConfig: h.tenantRec(n), envWriteHookConfig: "1", envOpenCodeReadOnly: "1", "TMUX_TMPDIR": h.tmpdir}
 }
