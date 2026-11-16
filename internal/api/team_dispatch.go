@@ -141,6 +141,40 @@ func (s *Server) teamDispatchCard(ctx context.Context, id int64) (int64, bool, e
 	return a.Owner, true, nil
 }
 
+// teamCardStepUpWhy is "" unless ctx's person — an operator or a manager of
+// the team that owns owner card a, answering it here — must answer it with a
+// FRESH sign-in: a team's dispatch card (teamCardRefusal's TeamCardStepUp) or
+// a team's end card (teamEndCardRefusal's TeamEndCardStepUp). It is then the
+// confirm dialog's sentence for that card, and the Asks list draws the card's
+// answer form data-step-up-form (withAskBoxes): it confirms in place instead
+// of answering into the refusal. A card that cannot be read is gated: asking
+// once too often costs a password, answering into a refusal costs the answer.
+func (s *Server) teamCardStepUpWhy(ctx context.Context, a attention.Ask) string {
+	if !a.OwnerCard || a.Owner <= 0 || a.Owner == requestOwner(ctx) || teamWatcherOf(ctx, a.Owner) {
+		return ""
+	}
+	if card, err := s.teamCardHold(ctx, a); err != nil || card {
+		return TeamDispatchCardWhy()
+	}
+	if st := s.proposals(); st != nil {
+		x, err := st.ProposalByAsk(s.attentionPrincipal(ctx, a.Owner), a.ID)
+		if err == nil && x.Kind == plugins.ProposalEndSession {
+			return TeamEndCardWhy()
+		}
+	}
+	return ""
+}
+
+// TeamDispatchCardWhy and TeamEndCardWhy are the confirm dialog's sentences
+// for a team's dispatch card and a team's end card.
+func TeamDispatchCardWhy() string {
+	return "Approving an agent start for your team needs a sign-in from the last " + stepup.WindowText() + "."
+}
+
+func TeamEndCardWhy() string {
+	return "Ending one of your team's sessions needs a sign-in from the last " + stepup.WindowText() + "."
+}
+
 // teamCardHold is THE test of whether owner card a — an ask of a team's — is
 // a team's DISPATCH card: an agent_dispatch hold names it. The hold is read as
 // the team (attentionPrincipal), never as ctx's person (see teamDispatchCard).

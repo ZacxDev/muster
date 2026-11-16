@@ -1641,10 +1641,20 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// What the retired Agents list's card showed: the header's status strip,
 	// its ⋯ menu and the notices (ui/agent_actions.go).
 	view.Card = s.agentPageCard(op.begin("card"), a, idx)
-	// Rotate credentials asks "Confirm it's you" first (team_admin.go).
-	if view.Card.CanRotateCredentials {
+	// The page's step-up gated forms confirm in place: Rotate credentials
+	// (team_admin.go), and — on a TEAM's chief read by an operator or a
+	// manager of the team — the team's end and dispatch cards in its asks
+	// block, which the chief files and which can arrive with the block's live
+	// refresh (teamCardStepUpWhy; each form carries its own sentence).
+	switch {
+	case view.Card.CanRotateCredentials:
 		view.StepUp = s.stepUpView(r)
 		view.StepUp.Why = ui.AgentRotateWhy(view.StepUp.Window)
+	case memberOnTeamAgent(ctx, a) && !teamWatcherOf(ctx, a.OwnerID) && s.isChiefAgent(s.attentionPrincipal(ctx, a.OwnerID, true), a):
+		// (Whether it is the TEAM's chief is read among the team's agents,
+		// as the team: the member's own list mixes in their own.)
+		view.StepUp = s.stepUpView(r)
+		view.StepUp.Why = TeamDispatchCardWhy()
 	}
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).

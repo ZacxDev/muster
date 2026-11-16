@@ -208,6 +208,13 @@ func (s *Server) handlePairDeny(w http.ResponseWriter, r *http.Request) {
 	s.decidePairForm(w, r, false)
 }
 
+// PairStepUpWhy is the confirm dialog's sentence for a pairing request's
+// Approve on /plugins.
+func PairStepUpWhy() string {
+	return "Approving a pairing request lets a plugin hold a token in your name, so it needs a sign-in from the last " +
+		stepup.WindowText() + "."
+}
+
 // decidePairForm is the /plugins card's decision. An approval needs a fresh
 // sign-in (it lets a process hold a token in the owner's name); a denial
 // does not.

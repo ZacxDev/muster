@@ -266,16 +266,31 @@ func (s *Server) windowHosts(ctx context.Context) []mirror.HostView {
 // cards' answers for typing (team sharing 2b.4). Drawing only — every typing
 // route is gated again (mirrorTeamOperate), on a fresh read.
 func teamOperatorOn(r *http.Request) bool {
-	if !onTeamHost(r) {
-		return false
-	}
-	p, ok := authz.From(r.Context())
-	if !ok {
-		return false
-	}
-	role, in := p.TeamScope().RoleIn(mirror.TargetOwner(r.Context()))
-	return in && role.AtLeast(authz.TeamOperator)
+	return onTeamHost(r) && !teamWatcherOf(r.Context(), mirror.TargetOwner(r.Context()))
 }
+
+// teamWatcherOf is THE ONE RULE for whether ctx's principal reads something
+// owner owns — a team host session's question cards (handleMirrorAsks), a
+// team's ask on the Asks list (withAskBoxes) — as a WATCHER, drawn with no
+// answer: owner is not the principal's own, and the principal is not an
+// operator or a manager of it (by the request's own memberships; a viewer,
+// or — failing closed — no member at all). Drawing only: every write is
+// gated again on its own route.
+func teamWatcherOf(ctx context.Context, owner int64) bool {
+	if owner <= 0 || owner == requestOwner(ctx) {
+		return false
+	}
+	p, ok := authz.From(ctx)
+	if !ok {
+		return true
+	}
+	role, in := p.TeamScope().RoleIn(owner)
+	return !in || !role.AtLeast(authz.TeamOperator)
+}
+
+// TeamAskViewerNote is what a team's ask on the Asks list says, in place of
+// its answer controls, to a VIEWER of the team (withAskBoxes).
+const TeamAskViewerNote = "This is your team's question and you are a viewer of the team: an operator or a manager answers it."
 
 // onTeamHost reports whether r is a member's request on a TEAM host's entry
 // (mirrorTeamGate aimed it there): the pages then leave out every extra that

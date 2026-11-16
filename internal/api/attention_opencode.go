@@ -157,7 +157,10 @@ func openCodeAskHTML(it attentionItem) string {
 	}
 	ref := it.card.ref
 	var b strings.Builder
-	b.WriteString(`<form method="POST" action="` + attentionOpenCodePath + `" class="flex flex-col gap-2" data-opencode-answer>
+	// Relaying an answer types into the window: step-up gated
+	// (handleAttentionOpenCodeAnswer), so the form confirms in place.
+	b.WriteString(`<form method="POST" action="` + attentionOpenCodePath + `" class="flex flex-col gap-2" data-opencode-answer data-step-up-form data-step-up-why="` +
+		esc(OpenCodeAnswerWhy()) + `">
 <input type="hidden" name="host" value="` + esc(ref.Host) + `">
 <input type="hidden" name="session" value="` + esc(ref.Session) + `">
 <input type="hidden" name="window" value="` + esc(ref.Window) + `">
@@ -283,4 +286,10 @@ func attentionNotice(r *http.Request) string {
 	}
 	return `<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="attention-notice">` +
 		html.EscapeString(openCodeAnsweredText) + `</p>`
+}
+
+// OpenCodeAnswerWhy is the confirm dialog's sentence for relaying an answer
+// into an opencode window from the Asks list.
+func OpenCodeAnswerWhy() string {
+	return "Answering in a session types into it, so it needs a sign-in from the last " + stepup.WindowText() + "."
 }

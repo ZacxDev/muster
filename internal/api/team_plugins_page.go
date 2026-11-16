@@ -105,13 +105,13 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 			b.WriteString(`<span class="text-sm font-medium text-fg" data-rotate-reason>` + html.EscapeString(s.teamRotateLine(r.Context(), team, *p.RotateAt)) + `</span>`)
 		}
 		b.WriteString(`` +
-			`<form method="POST" action="/teams/` + id + `/plugins/` + pid + `/revoke"><button type="submit" class="` + adminQuiet + `">Revoke</button></form></li>`)
+			`<form method="POST" action="/teams/` + id + `/plugins/` + pid + `/revoke" data-step-up-form><button type="submit" class="` + adminQuiet + `">Revoke</button></form></li>`)
 	}
 	if live == 0 {
 		b.WriteString(`<li class="text-sm text-fg2" id="team-plugins-none">This team has no viewer plugin, so its sessions' previews do not open.</li>`)
 	}
 	b.WriteString(`</ul></section>
-<form method="POST" action="/teams/` + id + `/plugins" class="` + adminCard + `">
+<form method="POST" action="/teams/` + id + `/plugins" class="` + adminCard + `" data-step-up-form>
 <h2 class="text-base font-semibold text-fg">Add a viewer plugin</h2>
 <label for="team-plugin-name" class="text-sm font-medium text-fg">Name</label>
 <input id="team-plugin-name" name="name" required autocomplete="off" class="` + adminInput + `">
@@ -120,7 +120,17 @@ func (s *Server) renderTeamPlugins(w http.ResponseWriter, r *http.Request, team 
 <label for="team-plugin-entry" class="text-sm font-medium text-fg">Entry URL (under that origin)</label>
 <input id="team-plugin-entry" name="entry_url" required autocomplete="off" class="` + adminInput + `">
 <button type="submit" class="` + adminButton + `">Mint a token</button></form>`)
+	// 🔴 "CONFIRM IT'S YOU" IN PLACE: both writes are step-up gated
+	// (teamPluginsFresh), so their forms ask before they submit on a stale
+	// sign-in (stepUpFormsHTML) — without it the only way past the 403 was to
+	// sign out and in again.
+	b.WriteString(s.stepUpFormsHTML(r, TeamPluginsStepUpWhy()))
 	s.writeNavDocument(w, r, code, "Team plugins", ui.NavAccount, true, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+}
+
+// TeamPluginsStepUpWhy is the confirm dialog's sentence on the page.
+func TeamPluginsStepUpWhy() string {
+	return "Adding or revoking a team viewer plugin needs a sign-in from the last " + stepup.WindowText() + "."
 }
 
 // teamPluginsFresh is the step-up check of the page's writes: false has

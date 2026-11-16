@@ -182,7 +182,7 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 		}
 		b.WriteString(`</ul>`)
 		if coded {
-			b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/replace" class="flex flex-col gap-2" id="team-host-code-form">` +
+			b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/replace" class="flex flex-col gap-2" id="team-host-code-form" data-step-up-form>` +
 				`<label for="team-host-code" class="text-sm font-medium text-fg">The code the machine you moved shows</label>` +
 				`<input id="team-host-code" name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" class="` + adminInput + `">` +
 				`<button type="submit" class="` + adminButton + `">Replace with the machine showing this code</button></form>`)
@@ -210,18 +210,28 @@ func (s *Server) renderTeamHosts(w http.ResponseWriter, r *http.Request, team in
 		if t.RotateAt != nil {
 			b.WriteString(`<span class="text-sm font-medium text-fg" data-rotate-reason>` + html.EscapeString(s.teamRotateLine(r.Context(), team, *t.RotateAt)) + `</span>`)
 		}
-		b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/` + tid + `/revoke"><button type="submit" class="` + adminQuiet + `">Revoke</button></form></li>`)
+		b.WriteString(`<form method="POST" action="/teams/` + id + `/hosts/` + tid + `/revoke" data-step-up-form><button type="submit" class="` + adminQuiet + `">Revoke</button></form></li>`)
 	}
 	if live == 0 {
 		b.WriteString(`<li class="text-sm text-fg2" id="team-host-tokens-none">This team has no host tokens.</li>`)
 	}
 	b.WriteString(`</ul></section>
-<form method="POST" action="/teams/` + id + `/hosts" class="` + adminCard + `">
+<form method="POST" action="/teams/` + id + `/hosts" class="` + adminCard + `" data-step-up-form>
 <h2 class="text-base font-semibold text-fg">Add a team host</h2>
 <label for="team-host-name" class="text-sm font-medium text-fg">Host name (as its muster-mirror names it)</label>
 <input id="team-host-name" name="host" required autocomplete="off" class="` + adminInput + `">
 <button type="submit" class="` + adminButton + `">Mint a token</button></form>`)
+	// 🔴 "CONFIRM IT'S YOU" IN PLACE: minting, revoking and replacing are
+	// step-up gated (teamHostsFresh), so their forms ask before they submit on
+	// a stale sign-in (stepUpFormsHTML) — without it the only way past the 403
+	// was to sign out and in again.
+	b.WriteString(s.stepUpFormsHTML(r, TeamHostsStepUpWhy()))
 	s.writeNavDocument(w, r, code, "Team hosts", ui.NavAccount, true, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+}
+
+// TeamHostsStepUpWhy is the confirm dialog's sentence on the page.
+func TeamHostsStepUpWhy() string {
+	return "Minting, revoking or replacing a team host needs a sign-in from the last " + stepup.WindowText() + "."
 }
 
 // teamRotateLine is a rotate mark's sentence: "rotate: ben left on <date>",
