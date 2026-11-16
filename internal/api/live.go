@@ -84,9 +84,10 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 // that stopped reading (the beat its only writer) was counted client_left, not
 // timeout (audit #299 round 2: 1 in 60 single sockets, most runs of 12). So the
 // beat keeps the deadline itself: a timer at bound notes the stall and then
-// closes the connection (armStall, shared with every write to the page), and
-// the write's own context runs stallGrace longer, so it is never the one to
-// close it first. A write that lands in time stops the timer.
+// closes the connection (armStall, shared with every page write but the
+// terminal keepalive's ping), and the write's own context runs stallGrace
+// longer, so it is never the one to close it first. A write that lands in time
+// stops the timer.
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+stallGrace)
 	defer cancel()

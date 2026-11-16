@@ -368,7 +368,24 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := keepalivePing(sockCtx, c, terminalWriteTimeout); err != nil {
+				// ⚠ THE ONE PAGE WRITE NOT BOUNDED BY armStall, on purpose.
+				// coder/websocket caps the ping FRAME's write at 5 s and closes
+				// the connection itself then, before Ping returns, so output
+				// queued behind a stalled ping can fail before the note below
+				// and be marked as the page gone (audit #713 round 1). That
+				// reaches only the text of the terminal's "detached" log line:
+				// the metric is right (streamEndReason runs after pingDone,
+				// once the note has landed). Bounding it with armStall would
+				// mean telling a blocked frame from an unanswered pong, which
+				// coder/websocket does not expose; doing it at the frame cap
+				// cut the wait for a pong from terminalWriteTimeout (10 s) to
+				// 4 s, which was declined (2026-11-16). Pinned by
+				// TestAnUnansweredKeepaliveWaitsTheFullWriteTimeout.
+				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
+				err := c.Ping(pctx)
+				notePageWrite(c, err)
+				pcancel()
+				if err != nil {
 					cancel()
 					return
 				}
@@ -522,36 +539,6 @@ func pageWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageType
 	notePageWrite(c, err)
 	return err
 }
-
-// keepalivePing pings the page's socket c and waits for its pong, within
-// bound, kept by armStall like every other write to the page: a ping not
-// answered by then is a stalled page, NOTED and then the connection closed.
-//
-// 🔴 coder/websocket bounds a control frame's write by a context of its own
-// (writeControl: at most 5 s) and closes the connection itself when that
-// expires, before Ping returns — so a note written after Ping returned came
-// too late for output queued behind the stalled ping, which then failed as
-// the page gone (audit #713 round 1). The bound is therefore kept at most
-// pingFrameBound, stallGrace inside that cap, and the ping's own context runs
-// stallGrace past it: the timer, note first, is what ends a stalled ping.
-func keepalivePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
-	bound = min(bound, pingFrameBound)
-	pctx, cancel := context.WithTimeout(ctx, bound+stallGrace)
-	defer cancel()
-	disarm := armStall(c, time.Now().Add(bound))
-	pageWriteStarting(ctx)
-	err := c.Ping(pctx)
-	pageWriteReturned(ctx)
-	if disarm() {
-		return stalledWriteErr(err)
-	}
-	notePageWrite(c, err)
-	return err
-}
-
-// pingFrameBound is the longest a keepalive ping may take: coder/websocket's
-// own 5 s cap on a control frame's write, less stallGrace.
-const pingFrameBound = 5*time.Second - stallGrace
 
 // stallGrace is how much longer than its bound a write to the page may run,
 // so that the bound's own timer (armStall) — not the write's context — ends a
