@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -448,6 +450,161 @@ func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
 	if !errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, errPageGone) {
 		t.Errorf("the batch queued behind the relay's stall returned %v: want the timeout, not marked as the page gone", berr)
 	}
+}
+
+// keepaliveWrite tags the keepalive's ping in TestAnOutputWriteQueuedBehindAStalledKeepaliveIsATimeout.
+type keepaliveWrite struct{}
+
+// TestAnOutputWriteQueuedBehindAStalledKeepaliveIsATimeout: the terminal's
+// keepalive pings the same socket its output is written to. When the PING is
+// the write stuck on a page that stopped reading — its frame holding the write
+// lock, output queued behind it — the ping's bound closes the connection and
+// the queued output fails on it at once. That failure is the timeout, never
+// the page gone: the ping's stall must be noted BEFORE the close
+// (audit #713 round 1 F1; coder/websocket closes a control frame's write
+// itself when its context ends, before Ping returns).
+//
+// The socket's writes are gated (gatedConn): from the ping on, a write blocks
+// until the connection is closed — a full socket, with no guessing at buffer
+// sizes. The ping is held after it returns, and its stall callback before it
+// notes, until the output has failed.
+//
+// Two bounds: a short one, and production's terminalWriteTimeout (10 s), which
+// is past coder/websocket's own 5 s cap on a control frame's write — that cap,
+// not the bound, would close the socket first unless the keepalive keeps its
+// bound inside it (pingFrameBound).
+func TestAnOutputWriteQueuedBehindAStalledKeepaliveIsATimeout(t *testing.T) {
+	for _, bound := range []time.Duration{300 * time.Millisecond, 10 * time.Second} {
+		t.Run(bound.String(), func(t *testing.T) { outputBehindAStalledKeepalive(t, bound) })
+	}
+}
+
+func outputBehindAStalledKeepalive(t *testing.T, bound time.Duration) {
+	saved := terminalWriteTimeout
+	terminalWriteTimeout = 30 * time.Second // the output's own bound, never reached
+	t.Cleanup(func() { terminalWriteTimeout = saved })
+	c, gate := gatedPage(t)
+	outputFailed := make(chan struct{})
+	hold := func() {
+		select {
+		case <-outputFailed:
+		case <-time.After(300 * time.Millisecond): // well inside stallGrace
+		}
+	}
+	savedS, savedR, savedF := pageWriteStarting, pageWriteReturned, stallFiring
+	pageWriteStarting = func(ctx context.Context) {
+		if ctx.Value(keepaliveWrite{}) != nil {
+			gate.block.Store(true) // from the ping's frame on, the socket is full
+		}
+	}
+	pageWriteReturned = func(ctx context.Context) {
+		if ctx.Value(keepaliveWrite{}) != nil {
+			hold()
+		}
+	}
+	stallFiring = hold // only the ping can stall here: the output's bound is 30 s
+	t.Cleanup(func() { pageWriteStarting, pageWriteReturned, stallFiring = savedS, savedR, savedF })
+
+	pingErr := make(chan error, 1)
+	go func() {
+		pingErr <- keepalivePing(context.WithValue(context.Background(), keepaliveWrite{}, true), c, bound)
+	}()
+	select {
+	case <-gate.blocked: // the ping's frame holds the write lock
+	case <-time.After(10 * time.Second):
+		t.Fatal("CONTROL: the ping never wrote")
+	}
+	var oerr error
+	go func() {
+		_, err := (pageWriter{w: &terminalWriter{ctx: context.Background(), c: c, ready: true}, c: c}).Write([]byte("output"))
+		oerr = err
+		close(outputFailed)
+	}()
+	var perr error
+	select {
+	case perr = <-pingErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ping never returned")
+	}
+	<-outputFailed
+	if !errors.Is(perr, context.DeadlineExceeded) {
+		t.Fatalf("CONTROL: the ping did not time out (%v)", perr)
+	}
+	if !errors.Is(oerr, net.ErrClosed) {
+		t.Fatalf("CONTROL: the output did not fail on the closed connection (%v); that is the case under test", oerr)
+	}
+	if !errors.Is(oerr, context.DeadlineExceeded) || errors.Is(oerr, errPageGone) {
+		t.Errorf("the output queued behind the keepalive's stall returned %v: want the timeout, not marked as the page gone", oerr)
+	}
+}
+
+// gatedConn is a server socket whose writes can be made to block — as on a
+// full socket — until it is closed.
+type gatedConn struct {
+	net.Conn
+	block     atomic.Bool
+	blocked   chan struct{} // closed when the first write blocks
+	blockOnce sync.Once
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (g *gatedConn) Write(p []byte) (int, error) {
+	if g.block.Load() {
+		g.blockOnce.Do(func() { close(g.blocked) })
+		<-g.closed
+		return 0, net.ErrClosed
+	}
+	return g.Conn.Write(p)
+}
+
+func (g *gatedConn) Close() error {
+	g.closeOnce.Do(func() { close(g.closed) })
+	return g.Conn.Close()
+}
+
+// gatedWriter hands websocket.Accept the gated socket on hijack, for both
+// the connection and its buffered writer.
+type gatedWriter struct {
+	http.ResponseWriter
+	g *gatedConn
+}
+
+func (w gatedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	nc, brw, err := w.ResponseWriter.(http.Hijacker).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	w.g.Conn = nc
+	return w.g, bufio.NewReadWriter(brw.Reader, bufio.NewWriterSize(w.g, brw.Writer.Size())), nil
+}
+
+// gatedPage is the server side of a websocket over a gatedConn, its page
+// alive and never reading.
+func gatedPage(t *testing.T) (*websocket.Conn, *gatedConn) {
+	t.Helper()
+	g := &gatedConn{blocked: make(chan struct{}), closed: make(chan struct{})}
+	got := make(chan *websocket.Conn, 1)
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(gatedWriter{w, g}, r, nil)
+		if err != nil {
+			return
+		}
+		got <- c
+		<-hold
+	}))
+	t.Cleanup(func() { close(hold); srv.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = page.CloseNow() })
+	c := <-got
+	t.Cleanup(func() { _ = c.CloseNow(); forgetPage(c) })
+	return c, g
 }
 
 // unreadPage is the server side of a websocket whose page is alive and never
