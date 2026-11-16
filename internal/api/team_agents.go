@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -256,6 +259,54 @@ func TeamAgentTerminalWhy() string {
 func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && !p.Team && a.OwnerID > 0 && p.UserID != a.OwnerID
+}
+
+// withAgentTeams marks each TEAM agent's card (cards[i] is list[i]'s) with
+// its team: TeamOwner, the team's id, and Team, its display name — the
+// sidebar draws the row in that team's group, the one its hosts' sessions are
+// drawn in (ui's listEntry.team), and the switcher and the palette label it
+// with its team. A team agent is one memberOnTeamAgent holds for, the one
+// rule; a person's own agent is left unmarked. It answers the names it read
+// (nil for none), so teamMirrorCards reads only a team not among them.
+func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards []ui.AgentCardView) map[int64]string {
+	var teams []int64
+	for i, a := range list {
+		if !memberOnTeamAgent(ctx, a) {
+			continue
+		}
+		cards[i].TeamOwner = a.OwnerID
+		if !slices.Contains(teams, a.OwnerID) {
+			teams = append(teams, a.OwnerID)
+		}
+	}
+	if len(teams) == 0 {
+		return nil
+	}
+	names := s.teamNames(ctx, teams)
+	for i := range cards {
+		if o := cards[i].TeamOwner; o != 0 {
+			cards[i].Team = names[o]
+		}
+	}
+	return names
+}
+
+// teamNamesBeside is teamNames for ids, reading only those known does not
+// already name.
+func (s *Server) teamNamesBeside(ctx context.Context, known map[int64]string, ids []int64) map[int64]string {
+	out := map[int64]string{}
+	var missing []int64
+	for _, id := range ids {
+		if n, ok := known[id]; ok {
+			out[id] = n
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		maps.Copy(out, s.teamNames(ctx, missing))
+	}
+	return out
 }
 
 // ErrNotTheTeamRoom answers a member's message to a team agent that names a

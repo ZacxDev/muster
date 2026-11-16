@@ -1126,9 +1126,15 @@ rule the later phases' rows will meet.
     on a team agent as the member.
   - **`outcomeViewed`:** an operator of the owning team opening the agent's
     page marks its wait seen. A viewer's look leaves the push owed.
-  - **Not yet:** the viewer's disabled composer and the team badge in the
-    sidebar (UI); home falling back to a team chief; stop and start by an
-    operator (4.5, so the team's credentials are used, not the member's).
+  - **Not yet:** the viewer's disabled composer (UI); home falling back to a
+    team chief; stop and start by an operator (4.5, so the team's
+    credentials are used, not the member's). **Built since:** the sidebar
+    groups a team's agents, its chief included, under the team's heading,
+    in the one group its hosts' sessions use (`withAgentTeams` marks each
+    card from `memberOnTeamAgent`; ui's `listEntry.team`). The team's chief
+    is marked `data-nav-team-chief`, never `data-nav-chief`, and the
+    switcher and the palette label a team entry whose name is shared with
+    its team ("chief · <team>").
 
 - **Slice 4.5: the team's credentials, its chief, and the managers' door.**
   - **`MUSTER_TEAMS_ON_SERVER_POOL=<team ids>`** lends the server's Claude

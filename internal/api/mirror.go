@@ -155,7 +155,10 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 // tags, no attention count — each of those is keyed by host NAME or by the
 // viewer's conversation, and would put the viewer's own build-01 on the
 // team's. They are built after the decorators that add those (agentsListEntries).
-func (s *Server) teamMirrorCards(ctx context.Context) []ui.MirrorCardView {
+//
+// known is the team names already read for this list (withAgentTeams); only a
+// team not in it is read here, so a team with agents and hosts costs one read.
+func (s *Server) teamMirrorCards(ctx context.Context, known map[int64]string) []ui.MirrorCardView {
 	if s.ext.Mirror == nil {
 		return nil
 	}
@@ -174,7 +177,7 @@ func (s *Server) teamMirrorCards(ctx context.Context) []ui.MirrorCardView {
 	if len(teams) == 0 {
 		return nil
 	}
-	names := s.teamNames(ctx, teams)
+	names := s.teamNamesBeside(ctx, known, teams)
 	var out []ui.MirrorCardView
 	for _, team := range teams {
 		for _, m := range mirror.Ordered(byTeam[team]) {

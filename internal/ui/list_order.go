@@ -125,6 +125,26 @@ func (e listEntry) waiting() bool {
 // window is never the chief.
 func (e listEntry) chief() bool { return e.agent != nil && e.agent.IsChief }
 
+// team is the TEAM the entry is its, and that team's name: a team agent's
+// (AgentCardView.TeamOwner) or a team host's session's (MirrorCardView.Owner);
+// 0 for the viewer's own. 🔴 ONE KEY FOR BOTH KINDS: the sidebar draws a
+// team's agents and its hosts' sessions in ONE group (NavAgentsList), and the
+// switcher labels both with their team (sessionSwitcherLabels).
+func (e listEntry) team() (int64, string) {
+	if e.agent != nil {
+		return e.agent.TeamOwner, e.agent.Team
+	}
+	return e.mirror.Owner, e.mirror.Team
+}
+
+// teamChief reports whether the entry is a team's chief: the chief (chief)
+// of a team, not the viewer's own. Its sidebar row says so with
+// data-nav-team-chief, never data-nav-chief, which marks only the viewer's.
+func (e listEntry) teamChief() bool {
+	owner, _ := e.team()
+	return e.chief() && owner != 0
+}
+
 // primaryChief reports whether the entry is THE chief — where `/` opens
 // (AgentCardView.PrimaryChief, internal/api's primaryChief).
 func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
