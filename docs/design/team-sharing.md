@@ -654,7 +654,7 @@ team. Managers read the team's rows on `/teams/12/audit`.
 | The team host's MCP door acts as the team | A reduced tool set for team tokens (above). |
 | A leaked team mirror token | Same as today's leaked token, scoped to the team: revoke on `/teams/12/hosts`. Revocation already cuts the tunnel (`watchToken`, `internal/mirror/service.go:239`). |
 | **A removed member keeps a copy of the team host token** (they had a shell there) | Removing an operator or manager marks every team host token **rotate**, shown to managers until rotated. Not auto-revoked: that would cut every team session at once ([decision 6](#operator-decisions-2026-11-13)). |
-| Removal, leaving, role downgrade | The membership row goes in one statement. Next request: no access. Open terminal and Rendered streams re-check membership on the same timer that already cuts a disabled user's streams within 10 s ([auth.md:51-53](../auth.md)). Their queued sends to that team are cancelled. Pushes already on their phone stay; the withdraw push clears them. |
+| Removal, leaving, role downgrade | The membership row goes in one statement. Next request: no access. Open terminal and Rendered streams re-check membership on the same timer that already cuts a disabled user's streams within 10 s ([auth.md:60-62](../auth.md)). Their queued sends to that team are cancelled. Pushes already on their phone stay; the withdraw push clears them. Three short windows remain: [known windows after a removal](#known-windows-after-a-removal). |
 | A disabled user | Their principal fails, as today; `CancelQueuedBy` cancels their sends on every team; their memberships stay (re-enabling restores them) but grant nothing while disabled. |
 | A deleted user | The team's rows are the team's, so nothing they shared is lost. Their `queued_by`/`answered_by_user` values stay as ids; the name function returns nothing for them ("a former member"). |
 | A team row signing in | No `gotrue_sub`, no email, refused by every credential-minting route by kind, pinned by a test per route class. |
@@ -662,6 +662,26 @@ team. Managers read the team's rows on `/teams/12/audit`.
 | A manager reading the team's model key | No member principal can SELECT `user_credentials`; it is written under System by one handler and read only by the paths that already decrypt it. |
 | An approver approving their own reply | Refused when `requested_by_user` = the approver. |
 | A stale `muster.teams` on a pooled connection | It is set on every acquire and cleared on release, with `muster.uid` (`internal/db/scope.go:26-32`). |
+
+### Known windows after a removal
+
+A removal or a downgrade to viewer commits in one statement, and every check
+reads it fresh afterwards. Three paths act on a check made just BEFORE it, so
+the removed member can still reach the team for a moment after the removal has
+returned to the manager. The first two are accepted (operator, 2026-11-16,
+issue #724: "Accept a short gap"), because closing them would mean holding a
+lock across a network hand-off, which would block team management behind every
+member's send. The third is narrowed by such a lock, bounded so team
+management waits at most a few seconds (the send fence, #731), and only its
+residual is accepted.
+
+| path | the check | what still gets through after the removal returns |
+|---|---|---|
+| An open terminal, Rendered or chat stream (a team agent's chat socket included, even with a turn in flight) | Re-checked on the timer that cuts a disabled user's streams ([auth.md:60-62](../auth.md)); a team agent's terminal and chat socket are registered with it at the door (`teamAgentSocketOpen`, `internal/api/team_live.go`) | Up to **10 s** of the stream they already had open. The turn itself is the team's and runs on, and its reply is stored; only the removed member stops receiving it. Pinned by `TestARemovedMembersChatSocketClosesWithinTheSweep`. |
+| A queued send into a team host window (`send_queue`, 2b.4) | A fresh read of `queued_by`'s membership and role at delivery (`sendQueueOwnerRefusal`, `internal/api/send_queue.go`), then the paste | A delivery whose read came before the removal commit may still paste. The window lasts from that read to the paste. `CancelQueuedByTx` cancels every row that is still queued. |
+| A member's queued message to a team agent (the team chief, 4.4) | A fresh read of the member's role on every send attempt (`turnActingContext`, `internal/api/team_agents.go`), then the **send fence**: the role read again under a hold on the team's row immediately before each request (`users.Store.HoldTeamRole`), held until ccd's 103, the status line, a transport error, `agents.SendFenceHoldCap` (5s) after the request was written, or `agents.SendFenceHoldMax` (8s) after the hold was taken | A removal waits on the hold, so it lands before the fence's read (the message is dropped) or after the runtime took the text. The residual: on a runtime whose 103 does not arrive within the cap (an older ccd, the chat-completions fallback, a slow submit), the removal commits at the bound and a message already transmitted before it may still be delivered after it. An attempt that STARTS after the removal is always dropped. Pinned by `TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage`, `TestARemovalWaitsForAMembersSendInFlight`, `TestARemovalIsNotStalledByARuntimeThatSendsNo103`, `TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval` (the residual) and `TestARemovedMembersQueuedMessageIsDropped`. |
+
+This list is the one place these windows are named. Name any new one here.
 
 ### The proof: the isolation walk grows
 
@@ -1056,7 +1076,8 @@ rule the later phases' rows will meet.
     window runs to 20s) — a message already transmitted before a removal may
     still be delivered after it. Before the fence (#673 until the fix), a removal committing
     between the attempt's first role read and its request let the text
-    through.
+    through. The residual is listed with the other paths in
+    [known windows after a removal](#known-windows-after-a-removal).
   - **One shared room.** A member types into the team chief's one
     conversation, behind the per-agent FIFO turn gate. The runtime is handed
     `[muster] typed by <name> (<role>) in team <team>` before the text, in

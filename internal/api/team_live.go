@@ -57,6 +57,10 @@ var (
 	// errTeamTerminalClosed: a member's terminal on a team AGENT, once they
 	// are no longer an operator of the team.
 	errTeamTerminalClosed = errors.New("team terminal closed: no longer an operator of the team")
+	// errTeamChatClosed: a member's chat socket on a team AGENT, once they
+	// are no longer an operator of the team (Issue #724 round 1, F1): the
+	// reply of a turn in flight stops streaming to them.
+	errTeamChatClosed = errors.New("team chat closed: no longer an operator of the team")
 	// errTeamStreamClosed: a member's view of a team host, or their event
 	// stream subscribed to the team, once they are no longer a member at the
 	// role it needs.
@@ -188,13 +192,15 @@ func (s *Server) sweepTeamLive(ctx context.Context) {
 	}
 }
 
-// teamTerminalOpen registers r — person's terminal socket on an agent of team,
-// let through by the door — so a removal, a downgrade or the sweep ends it,
+// teamAgentSocketOpen registers r — person's terminal or chat socket on an
+// agent of sock.team, let through by the door — so a removal, a downgrade or
+// the sweep ends it (with sock.cause),
 // and returns the request to serve under, with its unregister. Then it reads
 // the person's role in the team AGAIN, fresh (teamOperatorNow): the door judged
 // the request's principal, resolved before a removal or downgrade that may
 // have landed since — and that change's close ran before this socket
-// registered, so it would never close it. Not an operator now: 403, and nil.
+// registered, so it would never close it. Not an operator now: 403 with
+// sock.refusal, and nil.
 //
 // 🔴 A MEMBER'S TERMINAL CLOSES WHEN THEY STOP BEING AN OPERATOR (PR #682
 // round 1). The shell holds the team's credentials; the door alone checked
@@ -202,12 +208,12 @@ func (s *Server) sweepTeamLive(ctx context.Context) {
 // session tier's live requests, accounts.go); a removal and a downgrade
 // below operator end it here (teamMembershipEnded, teamRoleSet, and since
 // 2b.3 the sweep for one made elsewhere).
-func (s *Server) teamTerminalOpen(w http.ResponseWriter, r *http.Request, team int64) (*http.Request, func()) {
+func (s *Server) teamAgentSocketOpen(w http.ResponseWriter, r *http.Request, sock teamAgentSocket) (*http.Request, func()) {
 	p, _ := authz.From(r.Context())
-	ctx, done := s.teamLiveOpen(r.Context(), team, p.UserID, authz.TeamOperator, errTeamTerminalClosed)
-	if !s.teamOperatorNow(ctx, p.UserID, team) {
+	ctx, done := s.teamLiveOpen(r.Context(), sock.team, p.UserID, authz.TeamOperator, sock.cause)
+	if !s.teamOperatorNow(ctx, p.UserID, sock.team) {
 		done()
-		http.Error(w, TeamAgentTerminalOperator, http.StatusForbidden)
+		http.Error(w, sock.refusal, http.StatusForbidden)
 		return nil, nil
 	}
 	return r.WithContext(ctx), done
@@ -240,7 +246,7 @@ func (s *Server) teamEventsOpen(ctx context.Context) (context.Context, []int64, 
 		cancel(nil)
 	}
 	// Read the memberships AGAIN, after registering (#690 round 1, 🟢1; as
-	// teamTerminalOpen does): a removal that landed between the principal's
+	// teamAgentSocketOpen does): a removal that landed between the principal's
 	// read and the registration ran its close before this stream was there.
 	// A team the person is no longer in ends the stream now, and the page
 	// reconnects subscribed to the teams as they are.

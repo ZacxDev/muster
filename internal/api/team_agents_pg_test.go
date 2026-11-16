@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/users"
+	"github.com/coder/websocket"
 )
 
 // THE TEAM-AGENT WALK (team sharing phase 4, slice 4.4; plan §6 and §7). Team
@@ -46,17 +47,58 @@ type teamAgentWalk struct {
 }
 
 // authCCD is busyCCD recording each request's Authorization header.
+//
+// parkOn, when set, PARKS the first request whose input ends with it on its
+// way in — before busyCCD decides busy or answers — telling parked and waiting
+// for unpark: an attempt in flight between the sender's role check and the
+// runtime, held there while the test changes the world
+// (TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval).
 type authCCD struct {
 	*busyCCD
-	mu    sync.Mutex
-	auths []string
+	mu     sync.Mutex
+	auths  []string
+	parkOn string
+	parked chan struct{}
+	unpark chan struct{}
 }
 
 func (f *authCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(body, &req)
 	f.mu.Lock()
 	f.auths = append(f.auths, r.Header.Get("Authorization"))
+	park := f.parkOn != "" && strings.HasSuffix(inputText(req.Input), f.parkOn)
+	if park {
+		f.parkOn = ""
+	}
+	parked, unpark := f.parked, f.unpark
 	f.mu.Unlock()
+	if park {
+		parked <- struct{}{}
+		<-unpark
+	}
 	f.busyCCD.ServeHTTP(w, r)
+}
+
+// waiters is how many turns wait in the team chief's turn gate
+// (chatTurnWhenFree's join): the oldest asks, the rest queue behind it.
+func (tw *teamAgentWalk) waiters() int {
+	g := &tw.w.srv.turns
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.waiters[tw.chief.ID])
+}
+
+// arrivals is every input the runtime was asked, in arrival order (busyCCD
+// seen: refused or answered).
+func (f *authCCD) arrivals() []string {
+	f.busyCCD.mu.Lock()
+	defer f.busyCCD.mu.Unlock()
+	return append([]string(nil), f.busyCCD.seen...)
 }
 
 func (f *authCCD) authorizations() []string {
@@ -362,11 +404,25 @@ func TestAMembersTurnOnTheTeamChiefRunsAsTheTeam(t *testing.T) {
 // TestARemovedMembersQueuedMessageIsDropped (plan §3.1 "Turns and
 // concurrency", §6): B's message waits behind a turn holding the team chief's
 // session; B is removed from the team while it waits; A's message queues
-// behind it. When the session frees, B's message is NOT sent (the role is
-// re-read before each send attempt) and A's is. CONTROL: A's — a member's
-// message through the same queue — is answered, so the drop is about B.
+// behind it. Every send attempt that STARTS after the removal returned re-reads
+// B's role and drops the message: it never reaches the runtime, so it is never
+// sent. CONTROL: A's — a member's message through the same queue — is answered,
+// so the drop is about B.
 //
-// 🔴 RED at origin/main 006bbe5c: B cannot see the team chief (404).
+// ⚠ AN ATTEMPT ALREADY PAST THE ROLE CHECK WHEN THE REMOVAL COMMITS MAY STILL
+// BE SENT — the send fence's accepted residual (docs/design/team-sharing.md,
+// "Known windows after a removal"; TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval
+// pins it). So
+// the runtime stays busy until an attempt that provably started after the
+// removal returned has arrived: attempts on one agent are one at a time
+// (chatTurnWhenFree: only the oldest waiter asks), so of the arrivals after the
+// removal returned only the FIRST can have read the role before it; the second
+// started after it. B's straggler, if any, is therefore refused, never sent.
+//
+// 🔴 Issue #724: this test freed the runtime right after A's send, so B's
+// straggler — past the role check before the removal — was answered after it
+// (2/200 under -race at af368efa). That is the accepted gap, not a drop that
+// failed; the test asserted a guarantee the design does not make.
 func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	tw := newTeamAgentWalk(t)
 	w := tw.w
@@ -381,8 +437,17 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
 		t.Fatal(err)
 	}
+	k := len(tw.ccd.arrivals())
 	if rec := tw.send(t, w.a.uid, fromA); rec.Code != http.StatusNoContent {
 		t.Fatalf("A (manager) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	eventuallyAPI(t, "an attempt that started after the removal returned to reach the runtime", func() bool {
+		return len(tw.ccd.arrivals()) >= k+2
+	})
+	for i, in := range tw.ccd.arrivals()[k+1:] {
+		if strings.HasSuffix(in, fromB) {
+			t.Fatalf("arrival %d, which started after the removal returned, was the removed member's message: the role was not re-read", k+1+i)
+		}
 	}
 	tw.ccd.free()
 	eventuallyAPI(t, "A's message to be answered", func() bool {
@@ -400,6 +465,155 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 			t.Errorf("the removed member's queued message was sent to the team chief: %q", a)
 		}
 	}
+}
+
+// TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval pins the accepted
+// semantics of a removal racing a member's queued messages (issue #724;
+// docs/design/team-sharing.md, "Known windows after a removal"), with the
+// interleaving FORCED: B's first message B1 is on its way to the runtime —
+// parked at the fake ccd, after the fresh role check — and B's second, B2, waits
+// behind it, when B is removed and the removal RETURNS. Then the session frees
+// and B1 arrives.
+//
+//   - B1, already past the role check, IS sent. Since the send fence (#731)
+//     B1's hold is taken before its request opens, so the removal WAITS on it;
+//     the parked fake ccd sends no 103, so the hold ends at
+//     agents.SendFenceHoldCap and the removal commits with B1 already
+//     transmitted: the fence's accepted residual (a runtime whose 103 does not
+//     arrive within the cap). Should that change, this assertion is the one to
+//     turn round.
+//   - B2's attempt starts after the removal: it re-reads the role, is dropped,
+//     and never reaches the runtime.
+func TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	b1, b2 := "B1 "+tw.canary, "B2 "+tw.canary
+	parked, unpark := make(chan struct{}, 1), make(chan struct{})
+	var unparkOnce sync.Once
+	letGo := func() { unparkOnce.Do(func() { close(unpark) }) }
+	t.Cleanup(letGo) // a failed test must not leave the parked handler holding the fake ccd's Close
+	tw.ccd.mu.Lock()
+	tw.ccd.parkOn, tw.ccd.parked, tw.ccd.unpark = b1, parked, unpark
+	tw.ccd.mu.Unlock()
+	if rec := tw.send(t, w.b.uid, b1); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending B1: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-parked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("B1 never reached the runtime")
+	}
+	if rec := tw.send(t, w.b.uid, b2); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending B2: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	// B2 is QUEUED behind B1 — a waiter in the agent's turn gate, which asks
+	// (and reads the role) only once it is the oldest — before the removal, so
+	// "B2 waits behind it" holds and a role read made once, at queue time,
+	// would have passed.
+	eventuallyAPI(t, "B2 to wait behind B1 in the turn gate", func() bool { return tw.waiters() == 2 })
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	letGo()
+	eventuallyAPI(t, "B's messages to be settled", func() bool { return !w.srv.sessionTurns.inFlight(tw.session.SessionKey) })
+	_, answered := tw.ccd.counts()
+	sentB1 := false
+	for _, a := range answered {
+		sentB1 = sentB1 || strings.HasSuffix(a, b1)
+	}
+	if !sentB1 {
+		t.Errorf("B1, past the role check when the removal returned, was not sent (%v): the accepted window has changed — update the design doc's \"Known windows after a removal\" with it", answered)
+	}
+	for _, in := range tw.ccd.arrivals() {
+		if strings.HasSuffix(in, b2) {
+			t.Errorf("B2, whose attempt started after the removal returned, reached the runtime: the role was not re-read")
+		}
+	}
+}
+
+// TestARemovedMembersChatSocketClosesWithinTheSweep (Issue #724 round 1, F1;
+// docs/design/team-sharing.md "Known windows after a removal", row 1): B and A
+// each hold the team chief's chat socket open, and B's turn is IN FLIGHT — the
+// runtime took B's text and is still answering — when B is removed through the
+// store (nothing in this process closes anything, as for a removal another
+// replica or the CLI made). B's socket ends within the sweep (100 ms here, 10 s
+// in production), while the turn is still running. CONTROL: A's socket, a
+// still-member's, stays open. The turn itself is the team's and runs on: its
+// reply is stored once the runtime answers.
+//
+// 🔴 RED at 456a4aaf: the chat socket was never registered for the membership
+// sweep, so it streamed B's turn to B until the turn ended.
+func TestARemovedMembersChatSocketClosesWithinTheSweep(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	setTeamLiveEvery(w.srv, 100*time.Millisecond)
+	ts := httptest.NewServer(w.h)
+	t.Cleanup(ts.Close)
+	hold, arrived := make(chan struct{}), make(chan struct{}, 1)
+	var holdOnce sync.Once
+	letGo := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(letGo)
+	tw.ccd.mu.Lock()
+	tw.ccd.hold, tw.ccd.arrivedCh = hold, arrived
+	tw.ccd.mu.Unlock()
+	open := func(uid int64) (*websocket.Conn, <-chan struct{}) {
+		h := http.Header{}
+		h.Set("Cookie", sessionCookieFor(w.srv))
+		h.Set(isoUserHeader, strconv.FormatInt(uid, 10))
+		h.Set("Origin", ts.URL)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/agents/" + tw.chief.Name + "/ws?session=" + strconv.FormatInt(tw.session.ID, 10)
+		c, resp, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: h})
+		if err != nil {
+			code := 0
+			if resp != nil {
+				code = resp.StatusCode
+			}
+			t.Fatalf("dial the team chief's chat socket as %d: %v (%d)", uid, err, code)
+		}
+		t.Cleanup(func() { c.CloseNow() })
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			for {
+				if _, _, err := c.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		return c, ended
+	}
+	bc, bEnded := open(w.b.uid)
+	_, aEnded := open(w.a.uid)
+	if err := bc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"message","text":"from B `+tw.canary+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fixture: B's turn never reached the runtime")
+	}
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	removed := time.Now()
+	select {
+	case <-bEnded:
+	case <-time.After(3 * time.Second):
+		t.Errorf("B's chat socket is still open %v after B left the team, with B's turn in flight", time.Since(removed))
+	}
+	select {
+	case <-aEnded:
+		t.Error("CONTROL: A's chat socket ended too")
+	case <-time.After(500 * time.Millisecond):
+	}
+	letGo()
+	eventuallyAPI(t, "the team's turn to run on and its reply to be stored", func() bool {
+		var n int
+		_ = w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND role = 'assistant' AND content LIKE 'answer to:%'`, tw.chief.ID).Scan(&n)
+		return n == 1
+	})
 }
 
 // TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage forces the
