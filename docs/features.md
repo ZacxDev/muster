@@ -648,8 +648,11 @@ Out-of-process plugins bring another system's messages (an inbox, ClankMail)
 to your chief and send the replies you approve. [plugins.md](plugins.md).
 
 - **Needs a plugin process you run** (this repository has the ClankMail one,
-  `muster-clankmail`), and the [chief](#chief) to act on what arrives: without
-  an agent gateway, messages queue and the log warns.
+  `muster-clankmail`), and something to deliver its messages to: the
+  [chief](#chief) through an agent gateway, or an officer the plugin is bound
+  to (**Deliver to** `officer:<id>` on `/plugins`), which needs no chief. With
+  neither, nothing can deliver: messages queue, and the feature reads
+  misconfigured. Whether a plugin is bound is read at startup.
 - **`.env`:** `MUSTER_PLUGINS=1`. The features below build on it; their
   grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu

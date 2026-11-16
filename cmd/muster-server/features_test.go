@@ -19,6 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/features"
@@ -196,7 +198,17 @@ func TestEveryGatingVariableHasAFeatureAndViceVersa(t *testing.T) {
 // featureStatuses.
 func featureSet(t *testing.T, cfg config, ext api.Extensions, withDB bool) features.Set {
 	t.Helper()
+	return featureSetWith(t, cfg, ext, withDB, nil)
+}
+
+// featureSetWith is featureSet with the app adjusted first (what buildApp
+// reads at boot: a plugin bound to an officer).
+func featureSetWith(t *testing.T, cfg config, ext api.Extensions, withDB bool, adjust func(*app)) features.Set {
+	t.Helper()
 	a := &app{cfg: cfg, logger: log.New(&bytes.Buffer{}, "", 0)}
+	if adjust != nil {
+		adjust(a)
+	}
 	if withDB {
 		// featureStatuses reads `a.pool != nil` and calls nothing on it.
 		a.pool = &pgxpool.Pool{}
@@ -589,6 +601,7 @@ func TestEveryRegistryIDIsAFeaturesHeading(t *testing.T) {
 		featureSet(t, config{ChiefNudges: true, SessionRouting: true}, api.Extensions{ChiefNudge: &api.ChiefNudges{},
 			Routing: &api.Routing{}}, true),
 		featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true),
+		featureSetWith(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true, func(a *app) { a.pluginsBound = true }),
 	}
 	var texts []string
 	for i, set := range sets {
@@ -676,9 +689,7 @@ func TestEveryHintWorksOnTheComposeInstall(t *testing.T) {
 // TestChiefDependentHintsSayTheChiefFirst: plugins, session routing and task
 // routing are forwarded by the Compose stack but act through the chief, so
 // their hint — and the doctor's fix line, which is the hint — says that first
-// (#441 round 1). Plugins with no gateway are ON, not misconfigured: a plugin
-// bound to an officer needs no chief (officers O-B; REGRESSION: red at
-// origin/main, which read them misconfigured — the doctor's false positive).
+// (#441 round 1).
 func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
 	set := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true)
 	f, _ := set.Get(features.Plugins)
@@ -686,16 +697,6 @@ func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
 		envPlugins + "=1 in .env and restart (docs/features.md#plugins)"
 	if f.EnableHint() != want {
 		t.Fatalf("plugins hint\n got %q\nwant %q", f.EnableHint(), want)
-	}
-	// 🔴 NOT MISCONFIGURED (officers O-B): with no gateway a plugin bound to
-	// an officer is still delivered (the built-in store the database gives),
-	// so the feature is on, and says what an unbound plugin needs. The
-	// no-database arm keeps its refusal (the control below).
-	if f.State != features.On || !strings.Contains(f.Reason, "bound to an officer") || !strings.Contains(f.Reason, envAgentGateway) {
-		t.Fatalf("plugins on Compose with no chief: %s %q, want on, naming the officer binding and the gateway", f.State, f.Reason)
-	}
-	if g, _ := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, false).Get(features.Plugins); g.State != features.Misconfigured {
-		t.Fatalf("control: plugins with no gateway and no database: %s, want misconfigured", g.State)
 	}
 	for _, id := range []string{features.SessionRouting, features.TaskRouting} {
 		if g, _ := set.Get(id); !strings.HasPrefix(g.EnableHint(), features.NeedsChiefHint+"; then set ") {
@@ -747,5 +748,134 @@ func TestAKeylessAccountPageSaysSuggestedRepliesAreOff(t *testing.T) {
 	}
 	if strings.Contains(body, `data-state="on"`) || strings.Contains(body, ">On.") {
 		t.Fatalf("the keyless Account page says suggested replies are On")
+	}
+}
+
+// TestThePluginsFeatureIsOnOnlyWhenSomethingDelivers (officers O-B round 0,
+// finding 3): the plugins feature is ON with an agent gateway (the chief takes
+// every message), or with no gateway when a plugin is bound to an officer
+// (that officer takes its messages); with neither, NOTHING can deliver one,
+// and it says so — misconfigured, naming both ways out. REGRESSION: the third
+// state read ON at e2dd6178 (the doctor's false negative). Each state from
+// its own fixture, so a mutant that swaps two arms shows.
+func TestThePluginsFeatureIsOnOnlyWhenSomethingDelivers(t *testing.T) {
+	ext := api.Extensions{Plugins: plugins.NewPG(nil)}
+	get := func(ext api.Extensions, bound bool) features.Feature {
+		t.Helper()
+		f, _ := featureSetWith(t, config{Plugins: true}, ext, true, func(a *app) { a.pluginsBound = bound }).Get(features.Plugins)
+		return f
+	}
+	withGW := ext
+	withGW.PluginGateway = featuresStubGateway{}
+	for _, bound := range []bool{false, true} {
+		if f := get(withGW, bound); f.State != features.On || f.Reason != "" {
+			t.Errorf("a gateway (bound %v): %s %q, want on with nothing to add", bound, f.State, f.Reason)
+		}
+	}
+	if f := get(ext, true); f.State != features.On || !strings.Contains(f.Reason, "bound to an officer") || !strings.Contains(f.Reason, envAgentGateway) {
+		t.Errorf("no gateway, a plugin bound to an officer: %s %q, want on, naming the binding and the gateway", f.State, f.Reason)
+	}
+	f := get(ext, false)
+	if f.State != features.Misconfigured || f.Reason != pluginsNothingDelivers {
+		t.Errorf("no gateway, no plugin bound: %s %q, want misconfigured: %q", f.State, f.Reason, pluginsNothingDelivers)
+	}
+	for _, want := range []string{"nothing can deliver", "Deliver to officer:<id>", envAgentGateway, "stay queued"} {
+		if !strings.Contains(pluginsNothingDelivers, want) {
+			t.Errorf("the nothing-delivers reason %q does not say %q", pluginsNothingDelivers, want)
+		}
+	}
+	// No database: no store is wired, the request is misconfigured for that.
+	if g, _ := featureSet(t, config{Plugins: true}, api.Extensions{}, false).Get(features.Plugins); g.State != features.Misconfigured || !strings.Contains(g.Reason, envPlugins+"=1 but") {
+		t.Errorf("plugins asked for with no database: %s %q", g.State, g.Reason)
+	}
+}
+
+// featuresStubGateway is a plugins.Gateway the evaluator only checks for nil.
+type featuresStubGateway struct{}
+
+func (featuresStubGateway) Resolve(context.Context, agents.Agent) (agentgateway.Target, error) {
+	return agentgateway.Target{}, nil
+}
+
+// TestABootedServerReadsWhetherAPluginIsBound: the plugins feature's binding
+// half is READ at boot, from the plugins table (pluginsBoundAtBoot), not
+// assumed: a booted server with no gateway reads misconfigured with no bound
+// plugin — an unbound one, and a REVOKED bound one, do not count — and on once
+// a live plugin is bound to an officer.
+func TestABootedServerReadsWhetherAPluginIsBound(t *testing.T) {
+	dsn := dbtest.DSN(t)
+	const names = `('example-boot-unbound', 'example-boot-revoked', 'example-boot-bound')`
+	dbtest.OwnerExec(t, dsn, `DELETE FROM plugins WHERE name IN `+names)
+	t.Cleanup(func() { dbtest.OwnerExec(t, dsn, `DELETE FROM plugins WHERE name IN `+names) })
+	var bound int
+	conn, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.QueryRow(context.Background(), `SELECT count(*) FROM plugins WHERE revoked_at IS NULL AND deliver_to IS NOT NULL`).Scan(&bound); err != nil || bound != 0 {
+		t.Fatalf("fixture: %d live bound plugin(s) already in this database (%v)", bound, err)
+	}
+	state := func() (string, string) {
+		t.Helper()
+		env := map[string]string{
+			envDatabase: dsn, envUIPassword: "a-synthetic-operator-password", envHookToken: "a-synthetic-hook-token-0123456789",
+			envStandalone: "1", envPlugins: "1",
+		}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := buildApp(context.Background(), cfg, log.New(&bytes.Buffer{}, "", 0))
+		if err != nil {
+			t.Fatalf("buildApp: %v", err)
+		}
+		defer a.Close()
+		req := httptest.NewRequest(http.MethodGet, api.DoctorPath, nil)
+		req.Header.Set("Authorization", "Bearer "+env[envHookToken])
+		w := httptest.NewRecorder()
+		a.srv.Handler().ServeHTTP(w, req)
+		var rep struct {
+			Features []struct{ ID, State, Reason string } `json:"features"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &rep) != nil {
+			t.Fatalf("/api/doctor: %d %s", w.Code, w.Body)
+		}
+		for _, f := range rep.Features {
+			if f.ID == features.Plugins {
+				return f.State, f.Reason
+			}
+		}
+		t.Fatal("/api/doctor reports no plugins feature")
+		return "", ""
+	}
+	ins := func(name, deliverTo string, revoked bool) {
+		t.Helper()
+		var to any
+		if deliverTo != "" {
+			to = deliverTo
+		}
+		dbtest.OwnerExec(t, dsn, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope, deliver_to, revoked_at)
+			VALUES (1, $1, $1, $1 || '-hash', $1, $2, CASE WHEN $3 THEN now() END)`, name, to, revoked)
+	}
+	ins("example-boot-unbound", "", false)
+	ins("example-boot-revoked", "officer:marketing:example", true)
+	if st, why := state(); st != string(features.Misconfigured) || why != pluginsNothingDelivers {
+		t.Fatalf("booted with only an unbound and a revoked bound plugin: %s %q, want misconfigured (nothing delivers)", st, why)
+	}
+	ins("example-boot-bound", "officer:marketing:example", false)
+	if st, why := state(); st != string(features.On) || !strings.Contains(why, "bound to an officer") {
+		t.Fatalf("booted with a live plugin bound to an officer: %s %q, want on", st, why)
+	}
+	// A read that fails counts as bound, and is logged: never a false
+	// "nothing delivers" (the live read's control is the first boot above).
+	closed, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	var logged bytes.Buffer
+	if !pluginsBoundAtBoot(context.Background(), plugins.NewPG(closed), log.New(&logged, "", 0)) || !strings.Contains(logged.String(), "plugins reads on") {
+		t.Fatalf("a failed read: not counted bound, or not logged (%q)", logged.String())
 	}
 }

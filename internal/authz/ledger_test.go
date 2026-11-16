@@ -86,6 +86,10 @@ var (
 		// already do anything — with the team's audit row in the same
 		// transaction; it mints only for an id that names a team.
 		"cmd/muster-server.mirrorCreateTeamToken",
+		// The feature registry's one boolean, at boot (officers O-B round 0):
+		// is any live plugin bound to an officer, deployment-wide. It reads
+		// EXISTS and hands on nothing else.
+		"cmd/muster-server.pluginsBoundAtBoot",
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",

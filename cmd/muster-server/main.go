@@ -261,6 +261,10 @@ type app struct {
 	// their own app — see askSweepInterval for why they are not package vars.
 	askSweepEvery time.Duration
 	jobReapEvery  time.Duration
+	// pluginsBound is whether a live plugin was bound to an officer at boot
+	// (pluginsBoundAtBoot): with no agent gateway, whether anything delivers
+	// a plugin message (the plugins feature's state).
+	pluginsBound bool
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -1062,6 +1066,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	// The feature registry (features.go): evaluated once, from what was wired.
+	if ps, ok := ext.Plugins.(*plugins.PGStore); ok && ext.PluginGateway == nil {
+		a.pluginsBound = pluginsBoundAtBoot(ctx, ps, logger)
+	}
 	feats, err := a.buildFeatures(ext, port)
 	if err != nil {
 		a.Close()

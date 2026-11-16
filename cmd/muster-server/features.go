@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"log"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -486,17 +490,17 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	switch {
 	case ext.Plugins != nil && ext.PluginGateway != nil:
 		st[features.Plugins] = on("")
-	case ext.Plugins != nil && a.pool != nil:
-		// 🔴 NOT MISCONFIGURED (officers redesign O-B): a plugin BOUND TO AN
-		// OFFICER (Deliver to officer:<id>, the built-in store a database
-		// gives) is delivered to that officer with no chief and no gateway.
-		// Only an unbound plugin's messages wait for a chief — its binding,
-		// not this switch, decides — so the feature is on, with that said.
+	case ext.Plugins != nil && a.pluginsBound:
+		// 🔴 ON ONLY WHEN SOMETHING DELIVERS (officers O-B round 0): with no
+		// gateway, a plugin BOUND TO AN OFFICER (Deliver to officer:<id>) is
+		// delivered to that officer with no chief; an unbound one's messages
+		// wait for a chief.
 		st[features.Plugins] = on("a plugin bound to an officer (Deliver to officer:<id>) is delivered to it; an unbound plugin's messages reach your chief " +
 			"only through the agent gateway (" + envAgentGateway + ", docs/features.md#agent-gateway) and stay queued until then")
 	case ext.Plugins != nil:
-		st[features.Plugins] = bad("plugin messages reach your chief through the agent gateway (" + envAgentGateway + "), which " +
-			features.KubernetesHint + " — see docs/features.md#agent-gateway; until then they are stored and stay queued")
+		// No gateway and no plugin bound to an officer: NOTHING CAN DELIVER a
+		// plugin message — the store takes them and they stay queued.
+		st[features.Plugins] = bad(pluginsNothingDelivers)
 	case c.Plugins:
 		st[features.Plugins] = bad(envPlugins + "=1 but " + noDB)
 	default:
@@ -585,6 +589,27 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		st[id] = s
 	}
 	return st
+}
+
+// pluginsNothingDelivers is the plugins feature's reason when nothing can
+// deliver a plugin message: no agent gateway for the chief, and no plugin
+// bound to an officer.
+const pluginsNothingDelivers = "nothing can deliver a plugin message: no plugin is bound to an officer (Deliver to officer:<id>, on /plugins) " +
+	"and there is no agent gateway for your chief (" + envAgentGateway + ", docs/features.md#agent-gateway); messages are stored and stay queued. " +
+	"Bind a plugin to an officer and restart (this is read at startup)"
+
+// pluginsBoundAtBoot is whether any live plugin is bound to an officer, read
+// once at boot for the feature registry. 🔴 System, deployment-wide: the
+// registry is one per process, and this reads one boolean, nothing else. A
+// read that fails counts as bound (the feature reads on, as it did before
+// round 0), logged — never a false "nothing delivers".
+func pluginsBoundAtBoot(ctx context.Context, ps *plugins.PGStore, logger *log.Logger) bool {
+	bound, err := ps.AnyBoundToOfficer(authz.System(ctx))
+	if err != nil {
+		logger.Printf("muster: features: read whether a plugin is bound to an officer: %v (plugins reads on)", err)
+		return true
+	}
+	return bound
 }
 
 // buildFeatures is the evaluated registry this process serves.
