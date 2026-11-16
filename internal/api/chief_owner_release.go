@@ -84,12 +84,10 @@ import (
 //     therefore taken BEFORE the owner's text was accepted (a turn genuinely
 //     started by something else), and still refuses. Before this, a route's
 //     answer arriving mid-turn took the claim and waited for the CLI, and
-//     every owner_asked call left in the owner's own turn was refused.
-//     ⚠ NAMED LIMIT: a delivery that won the claim a moment before the owner's
-//     text was accepted, and then waits (a route hand-back,
-//     startClaimedChiefTurnThen → chatTurnWhenFree), still holds it for that
-//     owner turn. Route answers no longer wait under the claim
-//     (startRouteAnswerTurn); a hand-back still can, in that window.
+//     every owner_asked call left in the owner's own turn was refused. No
+//     delivery WAITS under the claim either: a route's answers and hand-back
+//     (startRouteAnswerTurn), a plugin message, an answer to an ask and a nudge
+//     each take the runtime's busy refusal at once and let the claim go.
 //  4. THE CALL CAME OVER MCP. A gateway-runtime session's tool calls run in
 //     muster's own process (AgentToolDispatch), from a session that is no CLI
 //     and so invisible to 2; they never release.

@@ -135,7 +135,8 @@ func (s *Server) recordHandling(ctx context.Context, p plugins.Plugin, m plugins
 
 // turnTriggerFor is what started a turn entered by runEnteredTurn: a line
 // the owner typed on a session's view (about set), one they typed in the
-// chat, or — typed by nobody — a route's hand-back (runUserTurn's one caller).
+// chat, or — typed by nobody — muster's own (a route's answer or hand-back:
+// startRouteAnswerTurn).
 func turnTriggerFor(typedBy int64, about *chatSubject) chiefusage.Trigger {
 	switch {
 	case typedBy > 0 && about != nil:

@@ -101,6 +101,10 @@ type RouteStore interface {
 	// OwesHandBack reports whether routeID owes its chief a hand-back, without
 	// taking it: a request route's answer is taken only once delivered.
 	OwesHandBack(ctx context.Context, routeID string) (bool, error)
+	// HandBackOwed is OwesHandBack with the reason it is owed: a hand-back is
+	// delivered as a turn first and taken (TakeHandBack) only once that turn
+	// is on record, so its text is built from the reason read here.
+	HandBackOwed(ctx context.Context, routeID string) (reason string, owed bool, err error)
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
@@ -1231,6 +1235,22 @@ func (s *PGStore) OwesHandBack(ctx context.Context, routeID string) (bool, error
 		return false, nil
 	}
 	return owed, err
+}
+
+// HandBackOwed: see RouteStore. A route the principal cannot see owes nothing.
+func (s *PGStore) HandBackOwed(ctx context.Context, routeID string) (string, bool, error) {
+	if !ValidRouteID(routeID) {
+		return "", false, nil
+	}
+	var reason *string
+	err := s.pool.QueryRow(ctx, `SELECT handback FROM session_routes WHERE route_id = $1`, routeID).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && reason == nil {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return *reason, true, nil
 }
 
 // TakeHandBack clears routeID's owed hand-back and returns it with the route,

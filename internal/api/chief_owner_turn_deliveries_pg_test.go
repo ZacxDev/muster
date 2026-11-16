@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -138,6 +139,22 @@ func (f *routeFixture) sweepUntil(t *testing.T, ok func() bool) bool {
 	return ok()
 }
 
+// answerNonces is the distinct nonces of the route-answer fences opened in text.
+func answerNonces(text string) map[string]bool {
+	out := map[string]bool{}
+	const open = "<<<route-answer untrusted nonce="
+	for rest := text; ; {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			return out
+		}
+		rest = rest[i+len(open):]
+		if j := strings.IndexAny(rest, " >"); j > 0 {
+			out[rest[:j]] = true
+		}
+	}
+}
+
 // turnsCarrying is how many of turns carry sub.
 func turnsCarrying(turns []string, sub string) int { return countContaining(turns, sub) }
 
@@ -149,8 +166,9 @@ func answerBody(i int) string {
 // the owner's request to many sessions: in ONE owner-typed turn the chief
 // relays it 11 times, and the answer to each relay arrives (and is owed to the
 // chief) before the next relay — while the owner's turn still runs in the CLI.
-// Every relay passes; every answer then reaches the chief as its own turn once
-// the owner's turn is over, and none is left only as a chat row.
+// Every relay passes; once the owner's turn is over, every answer reaches the
+// chief — the 11 queued together in ONE turn, each fenced on its own (operator
+// decision, PR #715 round 0 Q1) — and none is left only as a chat row.
 //
 // 🔴 REGRESSION (both halves): at the base, the first answer's delivery takes
 // the chief's session claim and waits for the CLI, so relay 2 is refused
@@ -187,6 +205,11 @@ func TestElevenOwnerAskedRelaysInOneOwnerTurnAllPassWhileTheirAnswersArrive(t *t
 				return false
 			}
 		}
+		for _, id := range ids { // taken once the turn is on record
+			if f.handBackOwed(t, id) != "" {
+				return false
+			}
+		}
 		return true
 	}
 	if !f.sweepUntil(t, all) {
@@ -199,16 +222,21 @@ func TestElevenOwnerAskedRelaysInOneOwnerTurnAllPassWhileTheirAnswersArrive(t *t
 		}
 		t.Fatalf("answers %v never reached the chief's runtime as a turn (%d turns taken)", missing, len(turns))
 	}
-	// One answer per turn: none batched, and each stored once where the owner asked.
-	for _, turn := range pod.taken() {
-		n := 0
-		for i := 1; i <= relays; i++ {
-			if strings.Contains(turn, answerBody(i)) {
-				n++
-			}
-		}
-		if n != 1 {
-			t.Fatalf("a turn carried %d answers, want 1:\n%s", n, turn)
+	// Queued together, they arrive together: ONE turn, each answer fenced on
+	// its own under its own route id; and each is stored once where the owner asked.
+	if turns := pod.taken(); len(turns) != 1 {
+		t.Fatalf("the %d answers queued together reached the chief in %d turns, want 1", relays, len(turns))
+	}
+	combined := pod.taken()[0]
+	if n := strings.Count(combined, "<<<route-answer untrusted nonce="); n != relays {
+		t.Fatalf("the combined turn holds %d fenced answers, want %d:\n%s", n, relays, combined)
+	}
+	if n := len(answerNonces(combined)); n != relays {
+		t.Fatalf("the combined turn's answers share fences: %d distinct nonces for %d answers", n, relays)
+	}
+	for _, id := range ids {
+		if !strings.Contains(combined, "\n\n[muster] Route "+id+" ") {
+			t.Fatalf("the combined turn lacks route %s's own head:\n%s", id, combined)
 		}
 	}
 	chat := f.chatText(t, said.SessionID)
@@ -355,7 +383,184 @@ func TestAnOwnerLineAndTwoAnswersQueuedDuringATurnAllReachTheChief(t *testing.T)
 		t.Fatalf("not every queued delivery reached the chief's runtime once: owner line %d, answer 1 %d, answer 2 %d (turns %q)",
 			turnsCarrying(pod.taken(), line), turnsCarrying(pod.taken(), answerBody(1)), turnsCarrying(pod.taken(), answerBody(2)), pod.taken())
 	}
-	if turns := pod.taken(); len(turns) != 3 {
-		t.Fatalf("%d turns, want 3 (one per delivery): %q", len(turns), turns)
+	// The owner's line is its own turn, FIRST; the two answers, queued
+	// together, are one turn after it.
+	turns := pod.taken()
+	if len(turns) != 2 || turns[0] != line || turnsCarrying(turns[1:], answerBody(1)) != 1 || turnsCarrying(turns[1:], answerBody(2)) != 1 {
+		t.Fatalf("turns %q; want the owner's line, then one turn with both answers", turns)
 	}
 }
+
+// answerRoutesWhileBusy makes n request routes in one owner turn whose answers
+// all become owed while a turn of the chief's runs in the CLI (busy), and ends
+// that owner turn — the chief is still busy. It returns the route ids.
+func (f *routeFixture) answerRoutesWhileBusy(t *testing.T, pod *answerPod, tok string, n int) []string {
+	t.Helper()
+	said := f.typed(t, f.owner, "Ask the changelog session, again and again.")
+	pod.setBusy(true)
+	var ids []string
+	for i := 1; i <= n; i++ {
+		id := f.relayAsOwner(t, i, "Your owner asks: status? ("+strconv.Itoa(i)+")")
+		ids = append(ids, id)
+		f.answer(t, tok, id, answerBody(i))
+	}
+	if err := agents.NewPG(f.pool).ClearOwnerTurn(f.asOwner, f.chief.ID, said.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A sweep while the chief is still busy (no owner turn now): the runtime
+	// refuses, nothing is stored, every answer stays owed.
+	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for _, id := range ids {
+		if f.handBackOwed(t, id) == "" {
+			t.Fatalf("route %s's answer was taken while the chief was busy", id)
+		}
+	}
+	if got := pod.taken(); len(got) != 0 {
+		t.Fatalf("%d turn(s) reached a busy runtime: %q", len(got), got)
+	}
+	return ids
+}
+
+// TestAnswersQueuedDuringABusyTurnArriveInOneTurn: N answers owed while the
+// chief is busy reach it, once it is free, in EXACTLY ONE turn holding all N,
+// each fenced on its own; and past routeAnswersPerTurn the rest go in the next
+// turn, none lost and none twice.
+//
+// 🔴 REGRESSION: at 665971ca each answer is a turn of its own (N turns).
+func TestAnswersQueuedDuringABusyTurnArriveInOneTurn(t *testing.T) {
+	t.Run("three answers: one turn", func(t *testing.T) {
+		f, pod, tok := newRouteAnswerFixture(t)
+		const n = 3
+		ids := f.answerRoutesWhileBusy(t, pod, tok, n)
+		pod.setBusy(false)
+		if !f.sweepUntil(t, func() bool { return len(pod.taken()) >= 1 }) {
+			t.Fatal("no turn reached the chief once it was free")
+		}
+		time.Sleep(200 * time.Millisecond) // a second turn, if one were coming
+		if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		turns := pod.taken()
+		if len(turns) != 1 {
+			t.Fatalf("%d answers queued during a busy turn reached the chief in %d turns, want exactly 1", n, len(turns))
+		}
+		for i := 1; i <= n; i++ {
+			if turnsCarrying(turns, answerBody(i)) != 1 {
+				t.Fatalf("the one turn lacks answer %d:\n%s", i, turns[0])
+			}
+		}
+		if got := len(answerNonces(turns[0])); got != n {
+			t.Fatalf("%d distinct answer fences for %d answers", got, n)
+		}
+		if !strings.HasPrefix(turns[0], routeAnswersHead(n)) {
+			t.Fatalf("the combined turn does not open with muster's head:\n%s", turns[0])
+		}
+		for _, id := range ids {
+			if hb := f.handBackOwed(t, id); hb != "" {
+				t.Fatalf("route %s still owed after the combined turn: %q", id, hb)
+			}
+		}
+	})
+	t.Run("past the cap: the rest in the next turn", func(t *testing.T) {
+		f, pod, tok := newRouteAnswerFixture(t)
+		const most = 3 // routeAnswersPerTurn (20) would need more queued pastes than one target holds
+		f.srv.routeAnswersCap = most
+		n := most + 2
+		f.answerRoutesWhileBusy(t, pod, tok, n)
+		pod.setBusy(false)
+		all := func() bool {
+			turns := pod.taken()
+			for i := 1; i <= n; i++ {
+				if turnsCarrying(turns, answerBody(i)) != 1 {
+					return false
+				}
+			}
+			return true
+		}
+		if !f.sweepUntil(t, all) {
+			t.Fatalf("not every one of %d answers reached the chief once: turns %d", n, len(pod.taken()))
+		}
+		turns := pod.taken()
+		if len(turns) != 2 || len(answerNonces(turns[0])) != most || len(answerNonces(turns[1])) != 2 {
+			t.Fatalf("%d turns; want 2 (%d answers, then 2)", len(turns), most)
+		}
+	})
+}
+
+// TestAHandBackDuringTheOwnersTurnIsDeliveredAfterIt: a request route that
+// times out during the owner's turn owes its chief a hand-back. While that turn
+// is in flight the hand-back is not taken, writes nothing and never takes the
+// chief's session claim; once the turn ends it reaches the chief as a turn, and
+// only then is it taken. A CLI busy with a turn muster did not claim (typed in
+// the terminal) does not lose it either: the runtime refuses, it stays owed.
+//
+// 🔴 REGRESSION: at 665971ca the hand-back is TAKEN before its turn, which then
+// waits for the busy CLI under the claim and gives up — "this hand-back was not
+// delivered" — and the hand-back is gone.
+func TestAHandBackDuringTheOwnersTurnIsDeliveredAfterIt(t *testing.T) {
+	f, pod, _ := newRouteAnswerFixture(t)
+	f.srv.chatBusyWait = 300 * time.Millisecond
+	st := agents.NewPG(f.pool)
+	said := f.typed(t, f.owner, "Ask the changelog session something.")
+	id := f.relayAsOwner(t, 1, "Your owner asks: anything new?")
+	pod.setBusy(true)
+	if _, err := f.pool.Exec(authzSystem(), `UPDATE session_routes SET timeout_at = now() - interval '1 second' WHERE route_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.srv.RouteTimeoutPass(context.Background()); err != nil || n != 1 {
+		t.Fatalf("the sweep timed out %d route(s): %v", n, err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	holder, err := st.KickoffClaimHolder(f.asOwner, f.chief.ID)
+	if err != nil || holder != "" {
+		t.Fatalf("a hand-back took the chief's claim during the owner's turn: %q (%v)", holder, err)
+	}
+	if f.handBackOwed(t, id) == "" {
+		t.Fatal("the hand-back was taken during the owner's turn")
+	}
+	if n := countContaining(f.chatText(t, said.SessionID), "[muster] Route "+id+" "); n != 0 {
+		t.Fatalf("the hand-back was written into the chat (%d row(s)) during the owner's turn", n)
+	}
+
+	// The owner's turn ends, but the CLI is still busy with a turn muster did
+	// not start (typed in the terminal): no claim, no marker.
+	if err := st.ClearOwnerTurn(f.asOwner, f.chief.ID, said.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(chatBusyWaitSlack(f.srv))
+	}
+	if f.handBackOwed(t, id) == "" {
+		t.Fatal("the hand-back was taken while the CLI refused it")
+	}
+
+	// The CLI frees: the next sweep delivers it as a turn, then takes it.
+	pod.setBusy(false)
+	got := func() bool {
+		return turnsCarrying(pod.taken(), "[muster] Route "+id+" ") == 1 && f.handBackOwed(t, id) == ""
+	}
+	if !f.sweepUntil(t, got) {
+		t.Fatalf("the hand-back never reached the chief as a turn (turns %q, still owed %q)", pod.taken(), f.handBackOwed(t, id))
+	}
+	for _, m := range f.chatText(t, said.SessionID) {
+		if strings.Contains(m, "was not delivered") {
+			t.Fatalf("a hand-back give-up was stored: %q", m)
+		}
+	}
+	if n := countContaining(f.chatText(t, said.SessionID), "[muster] Route "+id+" "); n != 1 {
+		t.Fatalf("the hand-back is in the chat %d time(s), want 1", n)
+	}
+}
+
+// chatBusyWaitSlack is a little longer than s's busy wait: long enough for a
+// message waiting on a busy runtime to give up.
+func chatBusyWaitSlack(s *Server) time.Duration { return s.chatBusyWait + 200*time.Millisecond }
+
+func authzSystem() context.Context { return authz.System(context.Background()) }

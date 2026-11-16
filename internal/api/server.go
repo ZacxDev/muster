@@ -311,6 +311,9 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// routeAnswersCap is how many owed route answers one combined turn carries
+	// (deliverRouteAnswers); zero = routeAnswersPerTurn. A test lowers it.
+	routeAnswersCap int
 	// sessionTurns counts the turns running per chat session, which is what
 	// draws a reloaded page's "working…" (session_turns.go).
 	sessionTurns sessionTurnCount

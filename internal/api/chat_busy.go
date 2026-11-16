@@ -58,14 +58,13 @@ const ChatQueuedForDialogNotice = "Its terminal is showing a prompt that needs a
 // The words a message that waited and was never sent ends with: Error() of a
 // chatBusyError. %s: how long it waited.
 //
-// The hand-back forms are for a route hand-back (session_routes.go), which is
-// muster's own text, not something the owner typed — "send it again" is not an
-// action the owner can take there (asHandBack).
+// A route's answer or hand-back never waits here: it is offered to a chief
+// that is free and otherwise stays owed for the next sweep
+// (session_routes.go startRouteAnswerTurn), so these words are only ever a
+// person's message's.
 const (
-	chatBusyGaveUpFormat     = "It was still busy with another turn after %s, so this message was not sent. It is kept above — send it again once the agent is free."
-	chatBusyReplaced         = "The agent was replaced or restarted while this message waited, so it was not sent. It is kept above — send it again once the agent is up."
-	handBackBusyGaveUpFormat = "The chief was still busy with another turn after %s, so this hand-back was not delivered to it."
-	handBackBusyReplaced     = "The chief was replaced or restarted while this hand-back waited, so it was not delivered to it."
+	chatBusyGaveUpFormat = "It was still busy with another turn after %s, so this message was not sent. It is kept above — send it again once the agent is free."
+	chatBusyReplaced     = "The agent was replaced or restarted while this message waited, so it was not sent. It is kept above — send it again once the agent is up."
 )
 
 // chatBusyError is a message that waited for the turn in flight and was never
@@ -77,33 +76,15 @@ type chatBusyError struct {
 	waited   time.Duration
 	cause    error
 	replaced bool
-	handBack bool
 }
 
 func (e *chatBusyError) Error() string {
-	switch {
-	case e.handBack && e.replaced:
-		return handBackBusyReplaced
-	case e.handBack:
-		return fmt.Sprintf(handBackBusyGaveUpFormat, e.waited.Round(time.Second))
-	case e.replaced:
+	if e.replaced {
 		return chatBusyReplaced
 	}
 	return fmt.Sprintf(chatBusyGaveUpFormat, e.waited.Round(time.Second))
 }
 func (e *chatBusyError) Unwrap() error { return e.cause }
-
-// asHandBack is err worded for the route hand-back's door when it is a
-// chatBusyError, else err unchanged.
-func asHandBack(err error) error {
-	var b *chatBusyError
-	if !errors.As(err, &b) {
-		return err
-	}
-	c := *b
-	c.handBack = true
-	return &c
-}
 
 func (s *Server) chatBusyBounds() (wait, poll time.Duration) {
 	wait, poll = s.chatBusyWait, s.chatBusyPoll

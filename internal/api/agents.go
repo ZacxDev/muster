@@ -2188,8 +2188,8 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 		return nil, ErrAgentBeingReplaced
 	}
 	defer s.turns.leave(a.ID)
-	// 🔴 notTyped: this door's one caller is the route hand-back
-	// (startClaimedChiefTurn), muster's words, never a line the owner typed.
+	// 🔴 notTyped: its callers (the chief chats' fresh-primary handover, tests)
+	// pass muster's words, never a line the owner typed.
 	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit, nil)
 }
 

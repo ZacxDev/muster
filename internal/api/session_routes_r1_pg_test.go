@@ -448,7 +448,7 @@ func TestAHandBackTurnTakesTheChiefsClaim(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	// Held: the hand-back starts nothing and writes nothing — it stays owed for
-	// a later sweep (handBackDeferred), never a note the chief's CLI cannot see.
+	// a later sweep (deliverToChief), never a note the chief's CLI cannot see.
 	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if gw.n.Load() != 0 || len(msgs) != 0 || f.handBackOwed(t, id) == "" {
 		t.Fatalf("with the claim held: %d turns, messages %+v, owed %q; want no turn, no note, still owed", gw.n.Load(), msgs, f.handBackOwed(t, id))
