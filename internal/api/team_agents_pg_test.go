@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,16 +46,44 @@ type teamAgentWalk struct {
 }
 
 // authCCD is busyCCD recording each request's Authorization header.
+//
+// parkOn, when set, PARKS the first request whose input ends with it on its
+// way in — before busyCCD decides busy or answers — telling parked and waiting
+// for unpark, then running atUnpark: an attempt in flight between the
+// sender's role check and the runtime, held there while the test changes the
+// world (TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage).
 type authCCD struct {
 	*busyCCD
-	mu    sync.Mutex
-	auths []string
+	mu       sync.Mutex
+	auths    []string
+	parkOn   string
+	parked   chan struct{}
+	unpark   chan struct{}
+	atUnpark func()
 }
 
 func (f *authCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(body, &req)
 	f.mu.Lock()
 	f.auths = append(f.auths, r.Header.Get("Authorization"))
+	park := f.parkOn != "" && strings.HasSuffix(inputText(req.Input), f.parkOn)
+	if park {
+		f.parkOn = ""
+	}
+	parked, unpark, atUnpark := f.parked, f.unpark, f.atUnpark
 	f.mu.Unlock()
+	if park {
+		parked <- struct{}{}
+		<-unpark
+		if atUnpark != nil {
+			atUnpark()
+		}
+	}
 	f.busyCCD.ServeHTTP(w, r)
 }
 
@@ -395,6 +427,94 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 		if strings.HasSuffix(a, fromB) {
 			t.Errorf("the removed member's queued message was sent to the team chief: %q", a)
 		}
+	}
+}
+
+// TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage is issue #724's
+// interleaving, FORCED: B's attempt passes the fresh role check and is on its
+// way to the runtime (parked at the fake ccd, which has not yet decided busy
+// or answered) when B is removed from the team; then the session frees and the
+// attempt arrives. A removal that has RETURNED must never be followed by the
+// removed member's message reaching the runtime — so either the removal waits
+// for the attempt in flight (the attempt holds B's role until the runtime
+// accepts or refuses it: users.PGStore.HoldTeamRole), or the attempt is
+// dropped. CONTROL: the parked attempt is answered, so the interleaving was
+// exercised (an attempt that never reached a free runtime proves nothing).
+//
+// 🔴 RED at origin/main af368efa: turnActingContext read B's role with a plain
+// SELECT and let go of it, RemoveTeamMember returned at once, and the attempt
+// that had read "operator" a moment earlier was answered after it.
+func TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	fromB := "from B " + tw.canary
+	var removed, removedAtArrival atomic.Bool
+	parked, unpark := make(chan struct{}, 1), make(chan struct{})
+	var unparkOnce sync.Once
+	letGo := func() { unparkOnce.Do(func() { close(unpark) }) }
+	t.Cleanup(letGo) // a failed test must not leave the parked handler holding the fake ccd's Close
+	tw.ccd.mu.Lock()
+	tw.ccd.busy = true
+	tw.ccd.parkOn, tw.ccd.parked, tw.ccd.unpark = fromB, parked, unpark
+	tw.ccd.atUnpark = func() { removedAtArrival.Store(removed.Load()) }
+	tw.ccd.mu.Unlock()
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-parked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("B's attempt never reached the runtime")
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
+		removed.Store(true)
+		done <- err
+	}()
+	// The removal has either returned or is WAITING on a lock (lockTeam's
+	// FOR UPDATE on the team's row) — either way it has been tried while the
+	// attempt is in flight, which is the interleaving.
+	eventuallyAPI(t, "the removal to return or to wait on a lock", func() bool {
+		if removed.Load() {
+			return true
+		}
+		// A FOR UPDATE that must wait for a share-locked row holds that
+		// row's TUPLE lock while it waits for the holder's transaction; a
+		// locker that need not wait takes none. pg_stat_activity is not
+		// readable by the test's role; pg_locks is. With the hold, the
+		// removal cannot return until unpark, so this wait passes ONLY by
+		// seeing the lock: the detector's positive control is this test
+		// passing at all (it timed out when it read pg_stat_activity).
+		var n int
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM pg_locks WHERE locktype = 'tuple'
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND relation = 'users'::regclass`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	})
+	tw.ccd.free()
+	letGo()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the removal never returned")
+	}
+	eventuallyAPI(t, "B's message to be settled", func() bool { return !w.srv.sessionTurns.inFlight(tw.session.SessionKey) })
+	_, answered := tw.ccd.counts()
+	sent := false
+	for _, a := range answered {
+		sent = sent || strings.HasSuffix(a, fromB)
+	}
+	if !sent {
+		t.Fatalf("control: the parked attempt was not answered (%v), so the interleaving was not exercised", answered)
+	}
+	if removedAtArrival.Load() {
+		t.Errorf("RemoveTeamMember RETURNED while B's attempt was in flight, and the attempt was then sent to the team chief: a removal is followed by the removed member's message")
 	}
 }
 

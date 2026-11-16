@@ -2419,10 +2419,15 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// its credentials, usage row, tools and reply are the team's, and the
 	// member's role is re-read now — every attempt, so a removed member's
 	// queued message is not sent. FIRST, so nothing below runs as the member.
-	ctx, err = s.turnActingContext(ctx, a)
+	// The role stays HELD until the runtime takes or refuses the text (issue
+	// #724): a membership change waits for this attempt or lands before it.
+	held := memberOnTeamAgent(ctx, a)
+	ctx, release, err := s.turnActingContext(ctx, a)
 	if err != nil {
 		return "", err
 	}
+	defer release()
+	ctx, emit = holdUntilAccepted(ctx, emit, release, held)
 	// A member's message answers the agent's asks only now that the role check
 	// passed, and once the runtime takes it (team_agents.go addressAsker).
 	ctx, emit = addressAskerOnAccept(ctx, emit)
