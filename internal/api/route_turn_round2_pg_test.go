@@ -51,7 +51,7 @@ func TestARefusedRouteTurnReleasesItsClaimOnce(t *testing.T) {
 		}
 		otherWon.Store(won)
 	}
-	if !f.srv.startRouteTurn(f.asOwner, f.chief, f.chiefChat(t), routeID, "[muster] a route turn the runtime refuses", nil, refused) {
+	if !f.srv.startRouteTurn(f.asOwner, f.chief, f.chiefChat(t), routeID, "[muster] a route turn the runtime refuses", nil, nil, refused) {
 		t.Fatal("control: the route turn did not start")
 	}
 	f.waitRouteTurns(t)
@@ -97,7 +97,7 @@ func TestARefusedRouteTurnLeavesItsSessionAsItWas(t *testing.T) {
 		return at, title
 	}
 	beforeAt, beforeTitle := read()
-	if !f.srv.startRouteTurn(f.asOwner, f.chief, sess, "rt_0000000000000000000000bb", "[muster] Route answers a refused turn carried", nil, nil) {
+	if !f.srv.startRouteTurn(f.asOwner, f.chief, sess, "rt_0000000000000000000000bb", "[muster] Route answers a refused turn carried", nil, nil, nil) {
 		t.Fatal("control: the route turn did not start")
 	}
 	f.waitRouteTurns(t)
