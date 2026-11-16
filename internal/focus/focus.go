@@ -149,7 +149,7 @@ type Focus struct {
 	// session never summarized): Has is false for it.
 	Name Name
 	// Tasks is what a mirrored session declared it works under (tasklink.go,
-	// migration 0136); zero when it declared nothing. Like Name, a row can
+	// migration 0137); zero when it declared nothing. Like Name, a row can
 	// carry it with no focus.
 	Tasks TaskLink
 }

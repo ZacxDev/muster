@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ROUTE BATCHES (migration 0136; internal/api route_many.go): the chief's
+// ROUTE BATCHES (migration 0137; internal/api route_many.go): the chief's
 // route_many sends one request — the owner's, relayed under the same
 // owner_asked check as route_to_session's text — to several mirrored sessions
 // at once. Each target is an ordinary REQUEST route (CreateRequestRouteFrom)
