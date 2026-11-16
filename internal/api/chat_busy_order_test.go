@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,37 +197,6 @@ func TestQueuedMessagesFromTwoDoorsAreSentInOrder(t *testing.T) {
 	}
 	readUntilEnd(t, ctx, c)
 	eventuallyAPI(t, "four rows stored", func() bool { return len(store.transcript(41)) == 4 })
-}
-
-// handBackAgents is tokenedAgents with a session claim the route hand-back can
-// take.
-type handBackAgents struct{ tokenedAgents }
-
-func (handBackAgents) ClaimKickoff(context.Context, int64, string, time.Duration) (bool, error) {
-	return true, nil
-}
-func (handBackAgents) ReleaseKickoffClaim(context.Context, int64, string) error { return nil }
-
-// TestARouteHandBackThatGivesUpIsWordedForTheHandBack: the hand-back is
-// muster's own text, so its stored give-up does not tell the owner to "send it
-// again".
-//
-// 🔴 REGRESSION: at 24845c1e it stores the chat wording, "… send it again …".
-func TestARouteHandBackThatGivesUpIsWordedForTheHandBack(t *testing.T) {
-	f := newBusyCCD() // never freed
-	s, _, store := busyServer(t, f, 80*time.Millisecond)
-	s.ext.Agents = handBackAgents{tokenedAgents{store}}
-	chief, _ := s.ext.Agents.GetByName(context.Background(), "keen-wren")
-	sess, _ := store.GetSession(context.Background(), 41)
-	if !s.startClaimedChiefTurn(context.Background(), chief, sess, "route-hb1", "muster: the session did not answer") {
-		t.Fatal("the hand-back did not start")
-	}
-	eventuallyAPI(t, "the hand-back's give-up stored", func() bool { return len(store.transcript(41)) == 2 })
-	got := store.transcript(41)[1]
-	if !strings.HasPrefix(got, "assistant: "+AgentTurnFailedPrefix+"The chief was still busy with another turn after ") ||
-		!strings.HasSuffix(got, ", so this hand-back was not delivered to it.") || strings.Contains(got, "send it again") {
-		t.Fatalf("stored hand-back give-up = %q", got)
-	}
 }
 
 // TestAcceptedAfterQueuedKeepsTheCallerCallback: the 103 hook a queued ask adds

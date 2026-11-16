@@ -1218,7 +1218,7 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, 
 		return "", errNudgeChiefBusy
 	}
 	by := "chief-nudge/" + strconv.FormatInt(chief.ID, 10)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, by, chiefNudgeTurnBudget+time.Minute)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, chief.ID, by, chiefNudgeTurnBudget+time.Minute)
 	if err != nil || !won {
 		return "", errNudgeChiefBusy
 	}

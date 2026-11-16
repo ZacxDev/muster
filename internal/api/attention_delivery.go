@@ -312,7 +312,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 		return leave("the agent's session could not be opened")
 	}
 	budget := agentTurnBudget(ag.Kind)
-	won, err := s.ext.Agents.ClaimKickoff(ctx, ag.ID, by, budget+time.Minute)
+	won, err := s.ext.Agents.ClaimKickoffForDelivery(ctx, ag.ID, by, budget+time.Minute)
 	if err != nil || !won {
 		return leave("the agent is busy with another delivery")
 	}

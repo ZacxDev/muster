@@ -182,11 +182,12 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	}
 
 	// 🔴 THE CHIEF'S SESSION CLAIM, THE ONE A FIRST TURN AND A MEMO TURN HOLD
-	// (agents.Store.ClaimKickoff). It keeps a plugin turn from taking the session
+	// (taken here with agents.Store.ClaimKickoffForDelivery, which also loses while the
+	// owner's typed turn is in flight). It keeps a plugin turn from taking the session
 	// from a first turn still being handed over, and it makes "one message per
 	// turn" hold across processes: two deliveries cannot be inside this section for
 	// one chief, and the winner re-reads the message below.
-	won, err := d.agents.ClaimKickoff(ctx, chief.ID, d.owner, turn+claimMargin)
+	won, err := d.agents.ClaimKickoffForDelivery(ctx, chief.ID, d.owner, turn+claimMargin)
 	if err != nil {
 		return d.attempted(parent, messageID, "claim_failed")
 	}

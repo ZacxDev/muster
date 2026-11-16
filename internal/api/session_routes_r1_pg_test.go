@@ -447,18 +447,17 @@ func TestAHandBackTurnTakesTheChiefsClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
+	// Held: the hand-back starts nothing and writes nothing — it stays owed for
+	// a later sweep (deliverToChief), never a note the chief's CLI cannot see.
 	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
-	if gw.n.Load() != 0 || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) {
-		t.Fatalf("with the claim held: %d turns, messages %+v; want no turn and one note", gw.n.Load(), msgs)
+	if gw.n.Load() != 0 || len(msgs) != 0 || f.handBackOwed(t, id) == "" {
+		t.Fatalf("with the claim held: %d turns, messages %+v, owed %q; want no turn, no note, still owed", gw.n.Load(), msgs, f.handBackOwed(t, id))
 	}
 
-	// The control: the claim released, the next hand-back is a turn.
+	// The control: the claim released, the next sweep delivers it as a turn.
 	if err := f.srv.ext.Agents.ReleaseKickoffClaim(f.asOwner, f.chief.ID, "another-turn"); err != nil {
 		t.Fatal(err)
 	}
-	_, m2 := f.pluginMessage(t, "example-inbox", "r1-claim-2", "someone@example.test", false)
-	id2 := f.route(t, m2)
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+id2+`'`)
 	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
