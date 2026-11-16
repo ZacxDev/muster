@@ -654,7 +654,7 @@ team. Managers read the team's rows on `/teams/12/audit`.
 | The team host's MCP door acts as the team | A reduced tool set for team tokens (above). |
 | A leaked team mirror token | Same as today's leaked token, scoped to the team: revoke on `/teams/12/hosts`. Revocation already cuts the tunnel (`watchToken`, `internal/mirror/service.go:239`). |
 | **A removed member keeps a copy of the team host token** (they had a shell there) | Removing an operator or manager marks every team host token **rotate**, shown to managers until rotated. Not auto-revoked: that would cut every team session at once ([decision 6](#operator-decisions-2026-11-13)). |
-| Removal, leaving, role downgrade | The membership row goes in one statement. Next request: no access. Open terminal and Rendered streams re-check membership on the same timer that already cuts a disabled user's streams within 10 s ([auth.md:51-53](../auth.md)). Their queued sends to that team are cancelled. Pushes already on their phone stay; the withdraw push clears them. |
+| Removal, leaving, role downgrade | The membership row goes in one statement. Next request: no access. Open terminal and Rendered streams re-check membership on the same timer that already cuts a disabled user's streams within 10 s ([auth.md:51-53](../auth.md)). Their queued sends to that team are cancelled. Pushes already on their phone stay; the withdraw push clears them. Three short windows are accepted, not closed: [known windows after a removal](#known-windows-after-a-removal). |
 | A disabled user | Their principal fails, as today; `CancelQueuedBy` cancels their sends on every team; their memberships stay (re-enabling restores them) but grant nothing while disabled. |
 | A deleted user | The team's rows are the team's, so nothing they shared is lost. Their `queued_by`/`answered_by_user` values stay as ids; the name function returns nothing for them ("a former member"). |
 | A team row signing in | No `gotrue_sub`, no email, refused by every credential-minting route by kind, pinned by a test per route class. |
@@ -662,6 +662,24 @@ team. Managers read the team's rows on `/teams/12/audit`.
 | A manager reading the team's model key | No member principal can SELECT `user_credentials`; it is written under System by one handler and read only by the paths that already decrypt it. |
 | An approver approving their own reply | Refused when `requested_by_user` = the approver. |
 | A stale `muster.teams` on a pooled connection | It is set on every acquire and cleared on release, with `muster.uid` (`internal/db/scope.go:26-32`). |
+
+### Known windows after a removal
+
+A removal or a downgrade to viewer commits in one statement, and every check
+reads it fresh afterwards. Three paths act on a check made just BEFORE it, so
+the removed member can still reach the team for a moment after the removal has
+returned to the manager. All three are accepted (operator, 2026-11-16, issue
+#724: "Accept a short gap"), because closing them would mean holding a lock
+across a network hand-off, which would block team management behind every
+member's send.
+
+| path | the check | what still gets through after the removal returns |
+|---|---|---|
+| An open terminal, Rendered or chat stream | Re-checked on the timer that cuts a disabled user's streams ([auth.md:51-53](../auth.md)) | Up to **10 s** of the stream they already had open. |
+| A queued send into a team host window (`send_queue`, 2b.4) | A fresh read of `queued_by`'s membership and role at delivery (`sendQueueOwnerRefusal`, `internal/api/send_queue.go`), then the paste | A delivery whose read came before the removal commit may still paste. The window lasts from that read to the paste. `CancelQueuedByTx` cancels every row that is still queued. |
+| A member's queued message to a team agent (the team chief, 4.4) | A fresh read of the member's role on every send attempt (`turnActingContext`, `internal/api/team_agents.go`) | An attempt that read the role before the removal commit and is on its way to the runtime may still be typed in. The window lasts from that read to ccd taking the text. An attempt that STARTS after the removal is always dropped. Pinned by `TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval` and `TestARemovedMembersQueuedMessageIsDropped`. |
+
+This list is the one place these windows are named. Name any new one here.
 
 ### The proof: the isolation walk grows
 
@@ -1038,7 +1056,10 @@ rule the later phases' rows will meet.
     chat door) re-mints the team acting principal (`turnActingContext`,
     through `ViaAgent`) after a fresh read of the member's role, on every
     send attempt. A member removed or downgraded while their message is
-    queued is answered "not sent", and the message never reaches the runtime.
+    queued is answered "not sent", and the message never reaches the runtime
+    from any attempt that starts after the removal. One attempt that is
+    already past the check may still be sent:
+    [known windows after a removal](#known-windows-after-a-removal).
   - **One shared room.** A member types into the team chief's one
     conversation, behind the per-agent FIFO turn gate. The runtime is handed
     `[muster] typed by <name> (<role>) in team <team>` before the text, in

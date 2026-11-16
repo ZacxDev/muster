@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,17 +48,16 @@ type teamAgentWalk struct {
 //
 // parkOn, when set, PARKS the first request whose input ends with it on its
 // way in — before busyCCD decides busy or answers — telling parked and waiting
-// for unpark, then running atUnpark: an attempt in flight between the
-// sender's role check and the runtime, held there while the test changes the
-// world (TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage).
+// for unpark: an attempt in flight between the sender's role check and the
+// runtime, held there while the test changes the world
+// (TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval).
 type authCCD struct {
 	*busyCCD
-	mu       sync.Mutex
-	auths    []string
-	parkOn   string
-	parked   chan struct{}
-	unpark   chan struct{}
-	atUnpark func()
+	mu     sync.Mutex
+	auths  []string
+	parkOn string
+	parked chan struct{}
+	unpark chan struct{}
 }
 
 func (f *authCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -75,16 +73,21 @@ func (f *authCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if park {
 		f.parkOn = ""
 	}
-	parked, unpark, atUnpark := f.parked, f.unpark, f.atUnpark
+	parked, unpark := f.parked, f.unpark
 	f.mu.Unlock()
 	if park {
 		parked <- struct{}{}
 		<-unpark
-		if atUnpark != nil {
-			atUnpark()
-		}
 	}
 	f.busyCCD.ServeHTTP(w, r)
+}
+
+// arrivals is every input the runtime was asked, in arrival order (busyCCD
+// seen: refused or answered).
+func (f *authCCD) arrivals() []string {
+	f.busyCCD.mu.Lock()
+	defer f.busyCCD.mu.Unlock()
+	return append([]string(nil), f.busyCCD.seen...)
 }
 
 func (f *authCCD) authorizations() []string {
@@ -390,11 +393,24 @@ func TestAMembersTurnOnTheTeamChiefRunsAsTheTeam(t *testing.T) {
 // TestARemovedMembersQueuedMessageIsDropped (plan §3.1 "Turns and
 // concurrency", §6): B's message waits behind a turn holding the team chief's
 // session; B is removed from the team while it waits; A's message queues
-// behind it. When the session frees, B's message is NOT sent (the role is
-// re-read before each send attempt) and A's is. CONTROL: A's — a member's
-// message through the same queue — is answered, so the drop is about B.
+// behind it. Every send attempt that STARTS after the removal returned re-reads
+// B's role and drops the message: it never reaches the runtime, so it is never
+// sent. CONTROL: A's — a member's message through the same queue — is answered,
+// so the drop is about B.
 //
-// 🔴 RED at origin/main 006bbe5c: B cannot see the team chief (404).
+// ⚠ AN ATTEMPT ALREADY PAST THE ROLE CHECK WHEN THE REMOVAL COMMITS MAY STILL
+// BE SENT — the accepted gap (docs/design/team-sharing.md, "Known windows after
+// a removal"; TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval pins it). So
+// the runtime stays busy until an attempt that provably started after the
+// removal returned has arrived: attempts on one agent are one at a time
+// (chatTurnWhenFree: only the oldest waiter asks), so of the arrivals after the
+// removal returned only the FIRST can have read the role before it; the second
+// started after it. B's straggler, if any, is therefore refused, never sent.
+//
+// 🔴 Issue #724: this test freed the runtime right after A's send, so B's
+// straggler — past the role check before the removal — was answered after it
+// (2/200 under -race at af368efa). That is the accepted gap, not a drop that
+// failed; the test asserted a guarantee the design does not make.
 func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	tw := newTeamAgentWalk(t)
 	w := tw.w
@@ -409,8 +425,17 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
 		t.Fatal(err)
 	}
+	k := len(tw.ccd.arrivals())
 	if rec := tw.send(t, w.a.uid, fromA); rec.Code != http.StatusNoContent {
 		t.Fatalf("A (manager) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	eventuallyAPI(t, "an attempt that started after the removal returned to reach the runtime", func() bool {
+		return len(tw.ccd.arrivals()) >= k+2
+	})
+	for i, in := range tw.ccd.arrivals()[k+1:] {
+		if strings.HasSuffix(in, fromB) {
+			t.Fatalf("arrival %d, which started after the removal returned, was the removed member's message: the role was not re-read", k+1+i)
+		}
 	}
 	tw.ccd.free()
 	eventuallyAPI(t, "A's message to be answered", func() bool {
@@ -430,91 +455,58 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 	}
 }
 
-// TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage is issue #724's
-// interleaving, FORCED: B's attempt passes the fresh role check and is on its
-// way to the runtime (parked at the fake ccd, which has not yet decided busy
-// or answered) when B is removed from the team; then the session frees and the
-// attempt arrives. A removal that has RETURNED must never be followed by the
-// removed member's message reaching the runtime — so either the removal waits
-// for the attempt in flight (the attempt holds B's role until the runtime
-// accepts or refuses it: users.PGStore.HoldTeamRole), or the attempt is
-// dropped. CONTROL: the parked attempt is answered, so the interleaving was
-// exercised (an attempt that never reached a free runtime proves nothing).
+// TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval pins the accepted
+// semantics of a removal racing a member's queued messages (issue #724;
+// docs/design/team-sharing.md, "Known windows after a removal"), with the
+// interleaving FORCED: B's first message B1 is on its way to the runtime —
+// parked at the fake ccd, after the fresh role check — and B's second, B2, waits
+// behind it, when B is removed and the removal RETURNS. Then the session frees
+// and B1 arrives.
 //
-// 🔴 RED at origin/main af368efa: turnActingContext read B's role with a plain
-// SELECT and let go of it, RemoveTeamMember returned at once, and the attempt
-// that had read "operator" a moment earlier was answered after it.
-func TestARemovalThatReturnedIsNeverFollowedByTheMembersMessage(t *testing.T) {
+//   - B1, already past the role check, IS sent: the window is the role read to
+//     the runtime taking the text, and it is accepted, not closed. Should that
+//     change, this assertion is the one to turn round.
+//   - B2's attempt starts after the removal: it re-reads the role, is dropped,
+//     and never reaches the runtime.
+func TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval(t *testing.T) {
 	tw := newTeamAgentWalk(t)
 	w := tw.w
-	fromB := "from B " + tw.canary
-	var removed, removedAtArrival atomic.Bool
+	b1, b2 := "B1 "+tw.canary, "B2 "+tw.canary
 	parked, unpark := make(chan struct{}, 1), make(chan struct{})
 	var unparkOnce sync.Once
 	letGo := func() { unparkOnce.Do(func() { close(unpark) }) }
 	t.Cleanup(letGo) // a failed test must not leave the parked handler holding the fake ccd's Close
 	tw.ccd.mu.Lock()
-	tw.ccd.busy = true
-	tw.ccd.parkOn, tw.ccd.parked, tw.ccd.unpark = fromB, parked, unpark
-	tw.ccd.atUnpark = func() { removedAtArrival.Store(removed.Load()) }
+	tw.ccd.parkOn, tw.ccd.parked, tw.ccd.unpark = b1, parked, unpark
 	tw.ccd.mu.Unlock()
-	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
-		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	if rec := tw.send(t, w.b.uid, b1); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending B1: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
 	select {
 	case <-parked:
 	case <-time.After(10 * time.Second):
-		t.Fatal("B's attempt never reached the runtime")
+		t.Fatal("B1 never reached the runtime")
 	}
-	done := make(chan error, 1)
-	go func() {
-		err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
-		removed.Store(true)
-		done <- err
-	}()
-	// The removal has either returned or is WAITING on a lock (lockTeam's
-	// FOR UPDATE on the team's row) — either way it has been tried while the
-	// attempt is in flight, which is the interleaving.
-	eventuallyAPI(t, "the removal to return or to wait on a lock", func() bool {
-		if removed.Load() {
-			return true
-		}
-		// A FOR UPDATE that must wait for a share-locked row holds that
-		// row's TUPLE lock while it waits for the holder's transaction; a
-		// locker that need not wait takes none. pg_stat_activity is not
-		// readable by the test's role; pg_locks is. With the hold, the
-		// removal cannot return until unpark, so this wait passes ONLY by
-		// seeing the lock: the detector's positive control is this test
-		// passing at all (it timed out when it read pg_stat_activity).
-		var n int
-		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM pg_locks WHERE locktype = 'tuple'
-			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-			AND relation = 'users'::regclass`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n > 0
-	})
-	tw.ccd.free()
+	if rec := tw.send(t, w.b.uid, b2); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending B2: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
 	letGo()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the removal never returned")
-	}
-	eventuallyAPI(t, "B's message to be settled", func() bool { return !w.srv.sessionTurns.inFlight(tw.session.SessionKey) })
+	eventuallyAPI(t, "B's messages to be settled", func() bool { return !w.srv.sessionTurns.inFlight(tw.session.SessionKey) })
 	_, answered := tw.ccd.counts()
-	sent := false
+	sentB1 := false
 	for _, a := range answered {
-		sent = sent || strings.HasSuffix(a, fromB)
+		sentB1 = sentB1 || strings.HasSuffix(a, b1)
 	}
-	if !sent {
-		t.Fatalf("control: the parked attempt was not answered (%v), so the interleaving was not exercised", answered)
+	if !sentB1 {
+		t.Errorf("B1, past the role check when the removal returned, was not sent (%v): the accepted window has changed — update the design doc's \"Known windows after a removal\" with it", answered)
 	}
-	if removedAtArrival.Load() {
-		t.Errorf("RemoveTeamMember RETURNED while B's attempt was in flight, and the attempt was then sent to the team chief: a removal is followed by the removed member's message")
+	for _, in := range tw.ccd.arrivals() {
+		if strings.HasSuffix(in, b2) {
+			t.Errorf("B2, whose attempt started after the removal returned, reached the runtime: the role was not re-read")
+		}
 	}
 }
 

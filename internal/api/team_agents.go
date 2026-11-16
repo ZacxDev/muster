@@ -335,86 +335,24 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // a busy turn is re-checked when its turn comes: a member removed from the
 // team — or made a viewer — while it waited gets ErrNoLongerTeamOperator and
 // the message is not sent (plan §6). An unreadable account fails closed.
-//
-// 🔴 AND IT IS HELD UNTIL THE RUNTIME TAKES OR REFUSES THE TEXT (issue #724).
-// A read that let go at once left a window between it and the runtime: a
-// removal committed there RETURNED, and the attempt that had just read
-// "operator" was typed into the team's session after it. Through the users
-// store (users.PGStore.HoldTeamRole) the role is read under a share lock on
-// the team's row, which every membership change takes FOR UPDATE first, and
-// the returned release ends it: chatTurn calls it on the runtime's 103 or the
-// turn's first stream event (holdUntilAccepted), and when the attempt returns
-// (a busy refusal included). A membership change then either lands before the
-// read (dropped) or waits for the attempt (sent while the role was held).
-// release is never nil.
-func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, func(), error) {
-	none := func() {}
+func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, error) {
 	if !memberOnTeamAgent(ctx, a) {
-		return ctx, none, nil
+		return ctx, nil
 	}
 	p, _ := authz.From(ctx)
-	role, in, release, err := s.teamRoleForSend(ctx, a.OwnerID, p.UserID)
+	acct, err := s.accountOfChecked(ctx, p.UserID)
 	if err != nil {
-		return ctx, none, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
+		return ctx, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
 	}
+	role, in := acct.Teams.RoleIn(a.OwnerID)
 	if !in || !role.AtLeast(authz.TeamOperator) {
-		release()
-		return ctx, none, ErrNoLongerTeamOperator
+		return ctx, ErrNoLongerTeamOperator
 	}
 	tp, ok := s.agentPrincipal(ctx, a, authz.ViaAgent)
 	if !ok || !tp.Team || tp.RoleUncertain {
-		release()
-		return ctx, none, fmt.Errorf("not sent: agent %q is not a team's (owner %d)", a.Name, a.OwnerID)
+		return ctx, fmt.Errorf("not sent: agent %q is not a team's (owner %d)", a.Name, a.OwnerID)
 	}
-	return authz.WithPrincipal(ctx, tp), release, nil
-}
-
-// teamRoleHolder is the users store's held role read (users.PGStore
-// HoldTeamRole). cmd/muster-server always wires the PG store, which has it
-// (asserted below); a fake without it — unit tests over in-memory accounts —
-// gets the plain fresh read, with nothing held.
-type teamRoleHolder interface {
-	HoldTeamRole(ctx context.Context, team, user int64) (authz.TeamRole, bool, func(), error)
-}
-
-var _ teamRoleHolder = (*users.PGStore)(nil)
-
-// teamRoleForSend is user's role in team for one send attempt, and the
-// release of whatever holds it (never nil). See turnActingContext.
-func (s *Server) teamRoleForSend(ctx context.Context, team, user int64) (authz.TeamRole, bool, func(), error) {
-	if h, ok := s.ext.Users.(teamRoleHolder); ok {
-		return h.HoldTeamRole(ctx, team, user)
-	}
-	none := func() {}
-	acct, err := s.accountOfChecked(ctx, user)
-	if err != nil {
-		return "", false, none, err
-	}
-	role, in := acct.Teams.RoleIn(team)
-	return role, in, none, nil
-}
-
-// holdUntilAccepted is ctx and emit for an attempt whose role is held:
-// release runs on the first sign the runtime took the text — ccd's 103
-// (agents.WithTurnAccepted, chained to any callback ctx already carries) or the
-// turn's first stream event. chatTurn also defers it, for an attempt that
-// ends without either (a busy refusal, a failure). With nothing held (release
-// is turnActingContext's no-op) it changes nothing.
-func holdUntilAccepted(ctx context.Context, emit agents.StreamEmit, release func(), held bool) (context.Context, agents.StreamEmit) {
-	if !held {
-		return ctx, emit
-	}
-	parent := ctx
-	ctx = agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) {
-		release()
-		agents.MarkTurnAccepted(parent, acc)
-	})
-	return ctx, func(ev agents.StreamEvent) {
-		release()
-		if emit != nil {
-			emit(ev)
-		}
-	}
+	return authz.WithPrincipal(ctx, tp), nil
 }
 
 // teamGatewayToolless reports whether a's turn must go out WITHOUT tools: a

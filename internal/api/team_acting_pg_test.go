@@ -179,8 +179,7 @@ var perOwnerSites = map[string]perOwnerSite{
 	"turnActingContext": {actsAsTeam: true, via: authz.ViaAgent,
 		mint: func(s *Server, ctx context.Context, team int64, a agents.Agent) context.Context {
 			a.OwnerID = team
-			out, release, err := s.turnActingContext(authz.WithPrincipal(ctx, teamActingPrincipal(team, authz.ViaAgent)), a)
-			release()
+			out, err := s.turnActingContext(authz.WithPrincipal(ctx, teamActingPrincipal(team, authz.ViaAgent)), a)
 			if err != nil {
 				return nil
 			}
