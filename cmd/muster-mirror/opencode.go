@@ -151,7 +151,7 @@ func openCodeCredentials(path string) (*opencodehost.Credentials, string) {
 	if errors.Is(err, os.ErrNotExist) {
 		// The usual case on a host that does not run opencode, and the daemon
 		// logs it at every start: worded so a new install does not read it as
-		// a fault (INSTALL.md, Step 7, names this line as expected).
+		// a fault (INSTALL.md's "Install muster on this machine" names this line as expected).
 		return nil, fmt.Sprintf(openCodeNotPairedWhy, path)
 	}
 	if err != nil {
