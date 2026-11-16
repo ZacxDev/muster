@@ -478,6 +478,23 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envDatabaseFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envUIPasswordFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envHookTokenFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envVAPIDPublicKeyFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envVAPIDPrivateKeyFile: "a _FILE twin (secretfiles.go): it only says where its variable's value is read from, and the value it yields is " +
+		"announced on that variable's own line (set, or unset), so a second line would say the same thing twice; an unreadable " +
+		"file refuses boot",
+	envPostgresPassword: "read by `muster-server compose-init` only (the Compose stack's muster-init one-shot), never by the " +
+		"server, which has no banner line to give it: compose-init writes it into Postgres's password file and DATABASE_URL's",
 	envInternalHTTPConnectors: "announced at boot on its own `internal_http connector <name>:` line per connector (withInternalHTTP), " +
 		"and only when set: a bad entry or a missing token REFUSES boot, so there is no silently half-on state; unset, there " +
 		"is no such connector and internal_http_request answers that the name is not one",

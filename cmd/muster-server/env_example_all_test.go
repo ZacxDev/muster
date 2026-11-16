@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sort"
@@ -470,14 +471,28 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 }
 
 // loadComposeExample is loadConfig and validate over the muster environment
-// deploy/docker-compose.yml builds from dotenv.
+// deploy/docker-compose.yml builds from dotenv, its _FILE secrets resolved as
+// the server resolves them (withSecretFilesFrom). The secrets volume holds
+// only what muster-init writes there: the DATABASE_URL (a fixture here; the
+// stack's is written from Postgres's password) and nothing else, since every
+// other secret these tests need is filled in through .env, which wins.
 func loadComposeExample(t *testing.T, dotenv map[string]string) (config, error) {
 	t.Helper()
 	server := composeMusterEnv(t, dotenv)
-	if server["MUSTER_PORT"] != "8105" || server["DATABASE_URL"] == "" {
-		t.Fatalf("instrument check FAILED: the compose environment is not muster's: port %q", server["MUSTER_PORT"])
+	if server["MUSTER_PORT"] != "8105" || server[envDatabaseFile] == "" {
+		t.Fatalf("instrument check FAILED: the compose environment is not muster's: port %q, %s %q",
+			server["MUSTER_PORT"], envDatabaseFile, server[envDatabaseFile])
 	}
-	cfg, err := loadConfig(func(k string) string { return server[k] })
+	get, err := withSecretFilesFrom(func(k string) string { return server[k] }, func(path string) ([]byte, error) {
+		if path == server[envDatabaseFile] {
+			return []byte("postgres://muster:fixture-db-password@postgres:5432/muster?sslmode=disable\n"), nil
+		}
+		return nil, fs.ErrNotExist
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(get)
 	if err != nil {
 		return cfg, err
 	}

@@ -46,6 +46,8 @@ saying whether that feature is on, off or degraded, and why.
 | variable | default | required | what it does |
 |---|---|---|---|
 | `DATABASE_URL` | none | yes | The Postgres DSN. Migrations run at boot. `muster-migrate` and the `muster-server mirror token …` subcommands read it too. |
+| `DATABASE_URL_FILE` | none | no | A file whose contents are `DATABASE_URL`, read only when `DATABASE_URL` is empty. The Compose stack's `muster-init` writes it from `POSTGRES_PASSWORD` (see [Secrets from files](#secrets-from-files)). |
+| `POSTGRES_PASSWORD` | generated | no | The Compose stack's database password. Read only by `muster-server compose-init` (the stack's `muster-init` one-shot), and only when the stack has no database password yet: set in `.env` then, it is used; unset, one is generated. Either way it is kept on the stack's `secrets` volume (Postgres's password file) and goes into `DATABASE_URL_FILE`. Postgres reads it only when it creates the database, so once kept it is **never** overwritten: a different value in `.env` is refused, naming the way out ([docs/quickstart-local.md](quickstart-local.md#the-database-password)). |
 | `MUSTER_PORT` | `8105` | no | The main listener. |
 | `MUSTER_PUBLIC_URL` | none | for invites and passkeys | The external base URL. It is used to build links (invites, the admin claim), and its host is accepted as muster's own origin. |
 | `MUSTER_STANDALONE` | off | one of this or the router | Declares that there is no permission router. If neither this nor a router is configured, `/readyz` answers 503 and names the missing setting. |
@@ -63,6 +65,22 @@ saying whether that feature is on, off or degraded, and why.
 | `MUSTER_SUGGEST_MODEL` | `openai/gpt-6-luna` | no | The OpenRouter model suggestions are generated with, spelled as OpenRouter's model list names it. It is called with the session owner's OpenRouter key, as focus is. |
 | `MUSTER_TAG_AUTODISPATCH` | off | no | Reserved. When on, eligible tasks are logged and counted in a metric. Nothing is dispatched. |
 
+### Secrets from files
+
+`DATABASE_URL`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN` and the two VAPID keys
+each have a `_FILE` twin naming a file to read the value from. The plain
+variable wins whenever it is set. A `_FILE` naming a file that does not exist
+reads as unset; one that exists and cannot be read stops the server from
+starting. One trailing newline is dropped.
+
+The Compose stack uses them: its `muster-init` one-shot (`muster-server
+compose-init`) generates every secret `.env` does not set, once, onto the
+`secrets` volume, prints the sign-in password the run it makes it, and then
+runs the server's own boot checks, so a refused setting fails
+`docker compose up --wait` in seconds. Read a secret back with
+`docker compose exec muster /muster-server show-secret ui-password` (or
+`hook-token`).
+
 ## muster-server: sign-in and machine credentials
 
 See [auth.md](auth.md).
@@ -71,11 +89,13 @@ See [auth.md](auth.md).
 |---|---|---|---|
 | `MUSTER_AUTH_MODE` | `password` | no | `password` means one shared operator password, acting as user 1. `gotrue` means per-user accounts through GoTrue. |
 | `MUSTER_UI_PASSWORD` | none | in password mode | The operator password. If it is unset or shorter than 12 characters, every browser page answers 503. This fails closed. |
-| `MUSTER_SECURE_COOKIES` | off | behind TLS | Marks the password-mode session cookie `Secure`. The cookies used in gotrue mode are always `Secure`. |
+| `MUSTER_UI_PASSWORD_FILE` | none | no | A file whose contents are `MUSTER_UI_PASSWORD`, read only when that is empty. The Compose stack generates it once when `.env` sets no password ([Secrets from files](#secrets-from-files)). |
+| `MUSTER_SECURE_COOKIES` | off (`1` in the Compose stack) | behind TLS | Marks the password-mode session cookie `Secure`. One exception: a sign-in from a page this machine serves itself over plain `http://localhost`, `127.0.0.0/8` or `[::1]` (the request's Host and its Origin both loopback, no TLS, no forwarded https) gets the cookie without `Secure`, because WebKit does not keep a `Secure` cookie there (measured with Playwright's WebKit; Chromium keeps it) and that traffic never leaves the machine. The cookies used in gotrue mode are always `Secure`. |
 | `MUSTER_GOTRUE_URL` | none | in gotrue mode | The base URL of muster's GoTrue. Set it together with the secret, or set neither. |
 | `MUSTER_GOTRUE_JWT_SECRET` | none | in gotrue mode | The HS256 secret GoTrue signs with. At least 32 characters. |
 | `MUSTER_BROWSER_PORT` | none | in gotrue mode | A second listener, the only one that serves browser sessions in gotrue mode. On that mode's browser listener, the shared tokens below are refused with 403. |
 | `MUSTER_HOOK_TOKEN` | none (machine routes open) | in gotrue mode | A shared machine secret that acts as user 1, the admin. It is enforced only when set. When set, it must be at least 12 characters and not the `.env.example` placeholder `CHANGE-ME`; otherwise muster refuses to boot. |
+| `MUSTER_HOOK_TOKEN_FILE` | none | no | A file whose contents are `MUSTER_HOOK_TOKEN`, read only when that is empty. The Compose stack generates it once when `.env` sets no token. |
 | `MUSTER_SERVICE_TOKEN` | none (routes answer 503) | no | A service-to-service secret that acts as user 1. Requests must also send an `X-Muster-Actor` header. At least 32 characters. |
 | `MUSTER_STEPUP_WINDOW` | `12h` | no | How recent a sign-in must be before you can type into a mirrored session. Range: `1m`–`24h`. |
 | `MUSTER_LIVE_HEARTBEAT` | `15s` | no | How often every live socket and event stream sends a heartbeat. A page reconnects a stream that stays silent for about two of them. Range: `250ms`–`5m`. |
@@ -130,9 +150,11 @@ See [auth.md](auth.md).
 | `MUSTER_UPLOAD_SIGNING_KEY` | none | for file attachments | At least 32 bytes. The key the links handed to agents are signed with (HMAC-SHA256). Rotating it ends every link already given out. |
 | `MUSTER_UPLOAD_MAX_BYTES` | `26214400` (25 MiB) | no | The largest file that can be attached, in bytes (1 to 104857600). Files are streamed to the store, so this bounds the bucket, not memory. |
 | `MUSTER_UPLOAD_LINK_TTL` | `24h` | no | How long a link handed to an agent works (a Go duration, `1m`–`168h`). |
-| `MUSTER_VAPID_PUBLIC_KEY` | none | no | [Web push](push.md). The three VAPID variables are all-or-none. Generate a keypair with `muster-server vapid generate`. |
+| `MUSTER_VAPID_PUBLIC_KEY` | none | no | [Web push](push.md). The keypair is all-or-none, and the subject goes with it. Generate a keypair with `muster-server vapid generate`. |
 | `MUSTER_VAPID_PRIVATE_KEY` | none | no | The private half of that keypair. It must match the public key. |
-| `MUSTER_VAPID_SUBJECT` | none | no | A `mailto:` or `https:` contact address that is sent to push services. |
+| `MUSTER_VAPID_PUBLIC_KEY_FILE` | none | no | A file holding the public key, read only when `MUSTER_VAPID_PUBLIC_KEY` is empty. The Compose stack generates the pair once when `.env` sets neither key and no `POSTGRES_PASSWORD` (an `.env` written before generated secrets keeps its own push setting). |
+| `MUSTER_VAPID_PRIVATE_KEY_FILE` | none | no | The same for the private key. |
+| `MUSTER_VAPID_SUBJECT` | `MUSTER_PUBLIC_URL` when it is https, else `mailto:muster@localhost` | no | A `mailto:` or `https:` contact address that is sent to push services. Unset with the keypair set, it defaults as shown; it is never taken from an `http://` URL, which push services refuse. |
 | `MUSTER_ANDROID_ALLOW_PIN_KEYS` | off | no | `1` lets a phone with no strong biometric pair the [Android app](design/android.md#the-step-up-key) with a biometric-or-PIN step-up key. Off, such a phone pairs read-only. A biometric-or-PIN key survives a new fingerprint being enrolled, so anyone who knows the PIN can use it. |
 | `MUSTER_ANDROID_PACKAGE` | none | with the certificates | The [Android app](design/android.md)'s package name, for `/.well-known/assetlinks.json`, which lets the app use this site's passkeys ([auth.md](auth.md#passkeys-in-the-android-app)). Set both Android variables or neither: one alone, or a malformed value, stops the server from starting. Unset, that path is 404. |
 | `MUSTER_ANDROID_CERT_SHA256` | none | with the package | The SHA-256 fingerprints of the app's signing certificates, separated by commas: 64 hex digits each, colons optional, any case. They are served as `AA:BB:…`. |

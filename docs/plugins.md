@@ -736,6 +736,35 @@ address, no internal host name (`.lan`, `.local`, `.internal`, `.svc`,
 one of the deployment's own names, no hidden character. A reply your chief
 drafts is screened as before, host names refused.
 
+##### Venue rules
+
+For the venues below, `officer_post_draft` also refuses, **when the draft is
+filed**, a body or media list the venue cannot take, so the officer can fix
+and re-file it in the same turn instead of learning it from a refused check
+later. The refusal names the part, its length and the limit (`x part 2 of 3
+is 281 characters as X counts them; the limit is 280 …`). Nothing is filed.
+The rules live in one place, `internal/plugins/venue_rules.go`.
+
+| venue | target | rule |
+|---|---|---|
+| `x` | `post` | A post becomes a **thread** at each line that is exactly `---8<---` (trailing whitespace ignored); without one it is a single post. Each part is at most **280** characters as X counts them (below), none is empty, at most **25** parts. In a thread `media[i]` goes on part i+1, so there are never more media than parts; a single post carries all its media (at most 4). |
+| `x` | `reply` | **One part**: `---8<---` in a reply is not a split, it is posted as text. At most 280 characters as X counts them; up to 4 media. |
+| `reddit` | `reply` | No media. |
+
+**How X counts.** twitter-text v3's weighting: every link counts **23** (X
+wraps it in a `t.co` link), whatever its length; a code point in U+0000-U+10FF,
+U+2000-U+200D, U+2010-U+201F or U+2032-U+2037 counts 1; every other code point
+(CJK, emoji) counts 2. A link is a word of dot-separated labels ending in a
+letters-only label of two or more, with an optional `http(s)://` and path. A
+part is counted as posted: trailing whitespace off every line, leading and
+trailing blank lines dropped. The count errs **long**, never short: X counts a
+whole emoji sequence (a flag, a ZWJ family) as 2 where muster counts each code
+point, and muster takes a word like `file.go` for a link. So a part muster
+passes, X takes; the plugin's check is still the final word.
+
+Any other venue, or another target kind, has no rule here: muster does not
+guess limits for a venue it does not know.
+
 ##### Public links in an outbound draft
 
 A project's own repository link usually spells one of the deployment's own

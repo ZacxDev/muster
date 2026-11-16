@@ -43,6 +43,12 @@ func InstanceName(id string, n int) string {
 // a lowered max leaves the higher-numbered agents behind as ordinary
 // (deletable) agents rather than as instances the runtime would start.
 func parseInstance(o Officer, name string) (Officer, int, bool) {
+	return ParseInstance(o, name)
+}
+
+// ParseInstance is parseInstance, for a backend outside this package that
+// books per instance (builtin.Backend.PutUsage).
+func ParseInstance(o Officer, name string) (Officer, int, bool) {
 	rest, ok := strings.CutPrefix(name, InstanceNamePrefix+Slug(o.ID)+"-")
 	if !ok {
 		return Officer{}, 0, false

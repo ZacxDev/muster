@@ -1,5 +1,12 @@
 # Setting muster up with one prompt
 
+**To try it on this machine first** — no Tailscale, no account, nothing to
+fill in — run the one-liner in [quickstart-local.md](quickstart-local.md):
+muster at `http://localhost:8105`, this machine's sessions in it. Adding your
+phone afterwards is one step there
+([Add your phone](quickstart-local.md#add-your-phone)). The prompt below is
+the full install: the phone, HTTPS and every machine, in one go.
+
 Paste this into the coding agent on the machine that should run muster (Claude
 Code, Codex, opencode, Gemini CLI, or any agent that can run shell commands):
 

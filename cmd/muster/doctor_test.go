@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +18,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+)
+
+// Private (RFC 1918) test hosts, each derived from its block's NAME so no test
+// spells an address anybody's network might use (tests/leakscan.py).
+var (
+	testLAN10  = netip.MustParsePrefix("10.0.0.0/8").Addr().Next().String()
+	testLAN192 = netip.MustParsePrefix("192.168.0.0/16").Addr().Next().String()
+	testLAN172 = netip.MustParsePrefix("172.16.0.0/12").Addr().Next().String()
 )
 
 // TestMain makes EVERY test in this package hermetic for doctor: run() builds
@@ -36,6 +46,8 @@ type fakeSystem struct {
 	tmux      bool
 	tmuxV     string // `tmux -V`'s stdout; "" = "tmux 3.4\n"
 	qrencode  bool
+	who       string // `who`'s stdout (this user is "me")
+	whoErr    bool   // ... and whether it fails
 
 	mu   sync.Mutex
 	runs []string
@@ -52,7 +64,7 @@ var doctorCwd string
 
 func (f *fakeSystem) sys() doctorSystem {
 	return doctorSystem{
-		goos: f.goos, uid: 1000,
+		goos: f.goos, uid: 1000, user: "me",
 		getwd: func() (string, error) { return doctorCwd, nil },
 		lookPath: func(name string) (string, error) {
 			switch {
@@ -85,6 +97,11 @@ func (f *fakeSystem) sys() doctorSystem {
 				return "tmux 3.4\n", nil
 			case "/usr/bin/qrencode":
 				return "QRBLOCKS:" + args[len(args)-1] + "\n", nil
+			case "who":
+				if f.whoErr { // realRun hands back what the command printed, with the error
+					return f.who, errors.New("exit status 1")
+				}
+				return f.who, nil
 			}
 			return "", fmt.Errorf("fake system: unexpected command %s", name)
 		},
@@ -94,16 +111,21 @@ func (f *fakeSystem) sys() doctorSystem {
 // fakeMuster is a muster server, scriptable per check. Its zero-value-plus-
 // healthy() state passes every check.
 type fakeMuster struct {
-	healthBroken   bool
-	healthJSON     string // "" = muster's own; else this JSON (another service's health)
-	manifestBody   string
-	unarmed        bool
-	hookToken      string
-	noDoctorRoute  bool
-	report         map[string]any
-	password       string
-	loginStatus    int // 0 = check the password
-	dropCookie     bool
+	healthBroken  bool
+	healthJSON    string // "" = muster's own; else this JSON (another service's health)
+	manifestBody  string
+	unarmed       bool
+	hookToken     string
+	noDoctorRoute bool
+	report        map[string]any
+	password      string
+	loginStatus   int // 0 = check the password
+	dropCookie    bool
+	// secureCookie: the session cookie is set Secure (MUSTER_SECURE_COOKIES
+	// on a server older than the loopback exception, or a LAN port).
+	secureCookie bool
+	// loginOrigin is the Origin the last POST /login carried.
+	loginOrigin    string
 	pushKey        string
 	transcribeCode int
 	transcribeText string
@@ -217,6 +239,7 @@ func (f *fakeMuster) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		f.loginAttempts++
+		f.loginOrigin = r.Header.Get("Origin")
 		_ = r.ParseForm()
 		switch {
 		case f.loginStatus != 0:
@@ -225,7 +248,7 @@ func (f *fakeMuster) handler() http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 		default:
 			if !f.dropCookie {
-				http.SetCookie(w, &http.Cookie{Name: "muster_session", Value: "signed", Path: "/"})
+				http.SetCookie(w, &http.Cookie{Name: "muster_session", Value: "signed", Path: "/", Secure: f.secureCookie})
 			} else {
 				http.SetCookie(w, &http.Cookie{Name: "muster_other", Value: "x", Path: "/"})
 			}
@@ -307,7 +330,10 @@ func (r doctorResult) check(name string) doctorCheck {
 // options say otherwise. It goes through the real command tree with an
 // injected transport, as runCapturingTimeout does.
 type doctorOpts struct {
-	plain      bool
+	plain bool
+	// host replaces the server URL's 127.0.0.1 (the client still dials the
+	// test server): a non-loopback name such as a LAN host.
+	host       string
 	noToken    bool
 	token      string
 	noPassword bool
@@ -335,7 +361,7 @@ type doctorOpts struct {
 	// attemptCode, when set, is written where muster-mirror leaves its
 	// attempt code (internal/mirrorpath's default, under XDG_CONFIG_HOME).
 	attemptCode string
-	extra      []string
+	extra       []string
 	// stdout and stderr, when set, are the streams instead of buffers (the
 	// result's stdout/stderr are then empty: the caller reads its files).
 	stdout, stderr io.Writer
@@ -350,8 +376,12 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		ts = httptest.NewTLSServer(m.handler())
 	}
 	t.Cleanup(ts.Close)
+	base := ts.URL
+	if o.host != "" {
+		base = strings.Replace(ts.URL, "127.0.0.1", o.host, 1)
+	}
 	dir := t.TempDir()
-	args := []string{"--api-url", ts.URL, "--env-file", filepath.Join(dir, "absent.env")}
+	args := []string{"--api-url", base, "--env-file", filepath.Join(dir, "absent.env")}
 	token := fakeHookToken
 	if o.token != "" {
 		token = o.token
@@ -364,7 +394,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		if o.password != "" {
 			pw = o.password
 		}
-		deployURL := ts.URL
+		deployURL := base
 		if o.deployURL != "" {
 			deployURL = o.deployURL
 		}
@@ -401,7 +431,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		if err := os.WriteFile(tokPath, []byte(tok+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		murl := ts.URL
+		murl := base
 		if o.mirrorURL != "" {
 			murl = o.mirrorURL
 		}
@@ -457,6 +487,14 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		newHTTP: func(timeout time.Duration) *http.Client {
 			c := ts.Client() // trusts the test server's certificate
 			c.Timeout = timeout
+			if o.host != "" {
+				tr := c.Transport.(*http.Transport).Clone()
+				addr := ts.Listener.Addr().String()
+				tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				}
+				c.Transport = tr
+			}
 			return c
 		},
 		doctorSys: fs.sys(),
@@ -521,7 +559,11 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 		opts   doctorOpts
 		detail string // a fragment the FAIL's detail must carry
 	}{
-		{check: "server", why: "plain http", opts: doctorOpts{plain: true}, detail: "plain http"},
+		// Plain http to ANOTHER machine: still a FAIL (loopback http is a PASS,
+		// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR).
+		{check: "server", why: "plain http", opts: doctorOpts{plain: true, host: "muster.example"}, detail: "plain http"},
+		{check: "server", why: "plain http to a LAN address", opts: doctorOpts{plain: true, host: testLAN192}, detail: "plain http"},
+		{check: "server", why: "plain http to localhost.evil.com", opts: doctorOpts{plain: true, host: "localhost.evil.com"}, detail: "plain http"},
 		{check: "server", why: "not muster", breakM: func(m *fakeMuster) { m.healthBroken = true }, detail: "not muster's health"},
 		{check: "server", why: "another service's JSON health", breakM: func(m *fakeMuster) { m.healthJSON = `{"healthy":true}` }, detail: "not muster's health"},
 		{check: "manifest", why: "not a manifest", breakM: func(m *fakeMuster) { m.manifestBody = "<html>portal</html>" }, detail: "not a manifest"},
@@ -1009,5 +1051,112 @@ func TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine(t *testing.T) {
 	}
 	if r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{}); r.status("this-host") != statusPass {
 		t.Fatalf("CONTROL: without held_unknown this-host = %s; want PASS", r.status("this-host"))
+	}
+}
+
+// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR: muster at plain http on
+// THIS machine (localhost, 127.0.0.1, [::1]) is the local quickstart. The
+// server check PASSes and says the phone needs HTTPS (with where to read how),
+// and no phone QR code is drawn — a phone scanning a loopback URL opens its
+// own localhost. The control, in TestDoctorEachCheckGoesRedWhenBroken: the
+// same over plain http to a LAN name or address FAILs, as before.
+func TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR(t *testing.T) {
+	for _, host := range []string{"", "localhost", "[::1]"} {
+		sys := healthySystem()
+		sys.qrencode = true
+		r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{plain: true, host: host})
+		c := r.check("server")
+		if c.Status != statusPass || !strings.Contains(c.Detail, "phone needs HTTPS") || !strings.Contains(c.Detail, "#add-your-phone") {
+			t.Errorf("host %q: server check %+v, want a PASS saying the phone needs HTTPS and where to add it", host, c)
+		}
+		if r.code != exitOK {
+			t.Errorf("host %q: exit %d, want 0:\n%s", host, r.code, r.stderr)
+		}
+		if strings.Contains(r.stderr, "QRBLOCKS") || strings.Contains(r.stderr, "Open muster on your phone") {
+			t.Errorf("host %q: a phone QR code was drawn for a loopback URL:\n%s", host, r.stderr)
+		}
+		if !strings.Contains(r.stderr, "on this machine only") || !strings.Contains(r.stderr, r.doc.URL) {
+			t.Errorf("host %q: no 'this machine only' note naming the URL:\n%s", host, r.stderr)
+		}
+	}
+	// The control for the QR half: a non-loopback URL still gets its code.
+	sys := healthySystem()
+	sys.qrencode = true
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{host: "example.com"})
+	if !strings.Contains(r.stderr, "QRBLOCKS:"+r.doc.URL) {
+		t.Errorf("an https URL drew no QR code:\n%s", r.stderr)
+	}
+}
+
+// TestDoctorWarnsOfOtherUsersOnALoopbackURL (#707 round 0, F2): plain http to
+// localhost is private from other machines only, so on a loopback URL the
+// server check (still a PASS) warns when `who` lists users other than this
+// one, naming each once, sorted, with the single-user doc. No warning when only
+// this user is logged in, when `who` fails, or on an https URL (the controls).
+func TestDoctorWarnsOfOtherUsersOnALoopbackURL(t *testing.T) {
+	const who = "me       pts/0        2026-11-15 10:00 (:0)\nbob      pts/3        2026-11-15 10:02 (laptop.example)\n" +
+		"alice    tty2         2026-11-15 09:00\nbob      pts/4        2026-11-15 10:05\n"
+	sys := healthySystem()
+	sys.who = who
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{plain: true, host: "localhost"})
+	c := r.check("server")
+	if c.Status != statusPass || !strings.Contains(c.Detail, "WARNING: other users are logged in to this machine (alice, bob).") ||
+		!strings.Contains(c.Detail, "#this-machine-is-yours-alone") || !strings.Contains(c.Detail, "mirror token") {
+		t.Errorf("server check %+v, want a PASS warning of alice and bob with the single-user doc", c)
+	}
+	if r.code != exitOK {
+		t.Errorf("exit %d, want 0 (a warning, not a failure)", r.code)
+	}
+	for name, s := range map[string]*fakeSystem{
+		"only this user": {goos: "linux", unitState: "active", tmux: true, who: "me pts/0 2026-11-15 10:00\nme pts/1 2026-11-15 10:01\n"},
+		"who fails":      {goos: "linux", unitState: "active", tmux: true, who: who, whoErr: true},
+	} {
+		r := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{plain: true, host: "localhost"})
+		if c := r.check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+			t.Errorf("%s: server check %+v, want a PASS with no warning", name, c)
+		}
+	}
+	https := healthySystem()
+	https.who = who
+	if c := runDoctorAgainst(t, healthyMuster(), https, doctorOpts{}).check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+		t.Errorf("an https URL: server check %+v, want a PASS with no warning", c)
+	}
+}
+
+// TestDoctorSignInNamesASecureCookieOverHTTP: when the session cookie comes
+// back Secure on a plain-http URL — it is then never sent back — the sign-in
+// FAIL says so, instead of blaming a proxy. The control: a cookie the server
+// simply did not set (dropCookie) still gets the proxy line.
+func TestDoctorSignInNamesASecureCookieOverHTTP(t *testing.T) {
+	m := healthyMuster()
+	m.secureCookie = true
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true, host: "muster.example"})
+	c := r.check("sign-in")
+	if c.Status != statusFail || !strings.Contains(c.Detail, "Secure session cookie on a plain-http URL") ||
+		strings.Contains(c.Fix, "proxy") || !strings.Contains(c.Fix, "https") {
+		t.Errorf("sign-in %+v, want a FAIL naming the Secure cookie over http, not a proxy", c)
+	}
+	d := healthyMuster()
+	d.dropCookie = true
+	r = runDoctorAgainst(t, d, healthySystem(), doctorOpts{plain: true, host: "muster.example"})
+	if c := r.check("sign-in"); c.Status != statusFail || !strings.Contains(c.Fix, "proxy") || strings.Contains(c.Detail, "Secure") {
+		t.Errorf("control: a dropped cookie gives %+v, want the proxy line", c)
+	}
+	// Over https a Secure cookie is the normal case: PASS.
+	s := healthyMuster()
+	s.secureCookie = true
+	if r := runDoctorAgainst(t, s, healthySystem(), doctorOpts{}); r.status("sign-in") != statusPass {
+		t.Errorf("a Secure cookie over https: sign-in %+v", r.check("sign-in"))
+	}
+}
+
+// TestDoctorSignsInWithThePagesOrigin: the sign-in POST carries the server's
+// own origin, as the sign-in page in a browser does — the server decides the
+// cookie's Secure attribute from it (internal/api passwordCookieSecure).
+func TestDoctorSignsInWithThePagesOrigin(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true})
+	if m.loginOrigin == "" || m.loginOrigin != r.doc.URL {
+		t.Errorf("POST /login carried Origin %q, want %q", m.loginOrigin, r.doc.URL)
 	}
 }

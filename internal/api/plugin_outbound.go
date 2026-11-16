@@ -455,7 +455,11 @@ func postDraftToolDef() agents.ToolDef {
 				"ref":    strProp("For a reply: the upstream reference of what it answers (an item's thread). For a like: what to like. Omit for a post, a dm and a follow."),
 				"handle": strProp("For a dm or a follow: the person's handle (as their engagement item names it). Omit otherwise."),
 			}, "kind"),
-			"body":        strProp("The exact text to post or send, at most 16 KiB. Required for a post, a reply and a dm; omit for a follow and a like."),
+			"body": strProp("The exact text to post or send, at most 16 KiB. Required for a post, a reply and a dm; omit for a follow and a like. " +
+				fmt.Sprintf("On venue %s each post is at most %d characters as X counts them (a link %d, CJK and emoji 2): a reply is one post; a post becomes a thread "+
+					"at each line that is exactly %s (at most %d parts, none empty, media[i] on part i+1). A reddit reply carries no media. ",
+					plugins.VenueX, plugins.XMaxWeight, plugins.XURLWeight, plugins.XThreadSeparator, plugins.XMaxThreadParts) +
+				"A body that breaks its venue's rules is refused when filed, naming the part."),
 			"because_ref": strProp("For a dm, a follow and a like (optional for a reply): the ref of the person's recorded engagement that motivates it."),
 			"contact":     strProp("For a like or a reply whose target is not one of the person's recorded engagements: the person's handle."),
 			"reason":      strProp("Your one-line reason (at most 200 characters): required for a follow and a like, shown on your owner's outreach batch."),

@@ -7,11 +7,20 @@ import (
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+)
+
+// Private (RFC 1918) test hosts, each derived from its block's NAME so no test
+// spells an address anybody's network might use (tests/leakscan.py).
+var (
+	testLAN10  = netip.MustParsePrefix("10.0.0.0/8").Addr().Next().String()
+	testLAN192 = netip.MustParsePrefix("192.168.0.0/16").Addr().Next().String()
+	testLAN172 = netip.MustParsePrefix("172.16.0.0/12").Addr().Next().String()
 )
 
 // `muster-mirror ask` as the CLI runs it: it reads the hook payload on stdin,
@@ -87,11 +96,16 @@ func TestAskPrintsNothingWithoutASafeConfiguration(t *testing.T) {
 		args []string
 		env  map[string]string
 	}{
-		"no url":                  {nil, map[string]string{envToken: "mmt_x"}},
-		"no token":                {[]string{"-url", srv.URL, "-allow-http"}, nil},
-		"http without allow-http": {[]string{"-url", srv.URL}, map[string]string{envToken: "mmt_x"}},
-		"missing token file":      {[]string{"-url", srv.URL, "-allow-http", "-token-file", "/nonexistent/token"}, nil},
-		"a bad flag":              {[]string{"-nope"}, nil},
+		"no url":   {nil, map[string]string{envToken: "mmt_x"}},
+		"no token": {[]string{"-url", srv.URL, "-allow-http"}, nil},
+		// Plain http to ANOTHER machine (TEST-NET-1, never dialled): refused
+		// without -allow-http. srv itself is loopback, which needs no flag
+		// (TestAskAcceptsLoopbackHTTPWithoutAFlag).
+		"http without allow-http":     {[]string{"-url", "http://192.0.2.10:8105"}, map[string]string{envToken: "mmt_x"}},
+		"lan http without allow-http": {[]string{"-url", "http://" + testLAN10 + ":8105"}, map[string]string{envToken: "mmt_x"}},
+		"localhost.evil.com":          {[]string{"-url", "http://localhost.evil.com:8105"}, map[string]string{envToken: "mmt_x"}},
+		"missing token file":          {[]string{"-url", srv.URL, "-allow-http", "-token-file", "/nonexistent/token"}, nil},
+		"a bad flag":                  {[]string{"-nope"}, nil},
 	}
 	for name, c := range cases {
 		var out, errb bytes.Buffer
@@ -232,5 +246,36 @@ func TestTheDaemonRecordsItsConfigForTheHook(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(home, ".muster", "mirror-hook.json"))
 	if strings.Contains(string(b), "mmt_") {
 		t.Fatalf("the recorded config holds the token: %s", b)
+	}
+}
+
+// TestAskAcceptsLoopbackHTTPWithoutAFlag: muster on this machine over plain
+// http (srv is on 127.0.0.1) is a safe configuration with no -allow-http: the
+// token never leaves the loopback interface.
+func TestAskAcceptsLoopbackHTTPWithoutAFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var seen []string
+	srv := fakeAskMuster(t, map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Fish"}, &seen)
+	if !strings.HasPrefix(srv.URL, "http://127.0.0.1:") {
+		t.Fatalf("the fake muster is not on loopback http: %s", srv.URL)
+	}
+	var out bytes.Buffer
+	runAsk([]string{"-url", srv.URL}, env(map[string]string{envToken: "mmt_x"}), bytes.NewReader(askPayload(t)), &out, &bytes.Buffer{})
+	registered(t, seen, "mmt_x", &out)
+}
+
+// TestAskRefusesPlainHTTPToAnotherMachine: http to any address that is not this
+// machine is refused BEFORE anything is dialled, and says so — not merely
+// "nothing came back" (a dial to an unreachable address prints nothing too).
+func TestAskRefusesPlainHTTPToAnotherMachine(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, u := range []string{"http://192.0.2.10:8105", "http://" + testLAN10 + ":8105", "http://localhost.evil.com:8105"} {
+		var out, errb bytes.Buffer
+		if code := runAsk([]string{"-url", u}, env(map[string]string{envToken: "mmt_x"}), bytes.NewReader(askPayload(t)), &out, &errb); code != 0 || out.Len() != 0 {
+			t.Errorf("%s: exit %d, stdout %q", u, code, out.String())
+		}
+		if !strings.Contains(errb.String(), "needs an https:// -url") {
+			t.Errorf("%s: not refused for its scheme (stderr %q)", u, errb.String())
+		}
 	}
 }

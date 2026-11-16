@@ -613,6 +613,11 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 			return Draft{}, err
 		}
 	}
+	// The venue's own rules (venue_rules.go), on the body as stored: refused
+	// here, in the officer's turn, rather than by the plugin's check later.
+	if err := CheckVenueRules(in.Venue, in.Target.Kind, body, len(in.Media)); err != nil {
+		return Draft{}, err
+	}
 	if err := s.sweep(ctx); err != nil {
 		return Draft{}, err
 	}
