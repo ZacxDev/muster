@@ -78,8 +78,8 @@ func navGroupsOf(t *testing.T, markup string) map[string][]string {
 // their own list (data-nav-chief); the team's chief and its agent are in the
 // team's group, the SAME group as the team host's session (one heading for
 // the team); the own list holds no team agent, and the team's idle agent is
-// not in the viewer's Idle group. The team's chief is marked as a team's
-// (data-nav-team-chief), so a[data-nav-chief] is only the viewer's.
+// not in the viewer's Idle group. The team's chief does not carry
+// data-nav-chief: a[data-nav-chief] is only the viewer's.
 //
 // 🔴 RED at origin/main 41f8bc34 (this test, with AgentCardView's TeamOwner
 // and Team added): the team's chief and agent were in the viewer's own list
@@ -121,12 +121,12 @@ func TestATeamsAgentsAreDrawnInTheTeamsOneGroup(t *testing.T) {
 	if id, _ := ccAttr(chiefs[0], "id"); id != "nav-agent-7" {
 		t.Errorf("data-nav-chief is on %s, want the viewer's own chief nav-agent-7", id)
 	}
-	tc := ccWithAttr(root, "data-nav-team-chief", "")
-	if len(tc) != 1 {
-		t.Fatalf("%d rows carry data-nav-team-chief, want 1 (the team's)", len(tc))
-	}
-	if id, _ := ccAttr(tc[0], "id"); id != "nav-agent-40" {
-		t.Errorf("data-nav-team-chief is on %s, want the team's chief nav-agent-40", id)
+	// The team's chief is told apart by its group (asserted above), never
+	// by the viewer's marker.
+	for _, a := range ccWithAttr(root, "id", "nav-agent-40") {
+		if _, ok := ccAttr(a, "data-nav-chief"); ok {
+			t.Errorf("the team's chief nav-agent-40 carries data-nav-chief, which marks only the viewer's own")
+		}
 	}
 }
 

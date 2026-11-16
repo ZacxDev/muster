@@ -138,8 +138,8 @@ func (e listEntry) team() (int64, string) {
 }
 
 // teamChief reports whether the entry is a team's chief: the chief (chief)
-// of a team, not the viewer's own. Its sidebar row says so with
-// data-nav-team-chief, never data-nav-chief, which marks only the viewer's.
+// of a team, not the viewer's own. Its sidebar row is drawn in its team's
+// group and never carries data-nav-chief, which marks only the viewer's.
 func (e listEntry) teamChief() bool {
 	owner, _ := e.team()
 	return e.chief() && owner != 0

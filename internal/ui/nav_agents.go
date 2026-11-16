@@ -524,11 +524,9 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			Href(href),
 			hx("hx-boost", "false"),
 			g.Attr("data-nav-agent", kind),
-			// The viewer's own chief is data-nav-chief; a team's chief,
-			// drawn in its team's group, is data-nav-team-chief — so
-			// a[data-nav-chief] is only ever the viewer's.
+			// Only the viewer's own chief is data-nav-chief. A team's chief
+			// is told apart by the group it is drawn in (its team's).
 			g.If(e.chief() && !e.teamChief(), g.Attr("data-nav-chief", "")),
-			g.If(e.teamChief(), g.Attr("data-nav-team-chief", "")),
 			g.If(e.waiting(), g.Attr("data-nav-wait", "")),
 			g.If(current, g.Group([]g.Node{g.Attr("aria-current", "true"), g.Attr("data-nav-current", "")})),
 			// A link to a window's Rendered view warms its snapshot, as a

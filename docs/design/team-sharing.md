@@ -1132,7 +1132,7 @@ rule the later phases' rows will meet.
     groups a team's agents, its chief included, under the team's heading,
     in the one group its hosts' sessions use (`withAgentTeams` marks each
     card from `memberOnTeamAgent`; ui's `listEntry.team`). The team's chief
-    is marked `data-nav-team-chief`, never `data-nav-chief`, and the
+    never carries `data-nav-chief` (its group tells it apart), and the
     switcher and the palette label a team entry whose name is shared with
     its team ("chief · <team>").
 

@@ -14,11 +14,9 @@ import (
 type tsNamedUsers struct {
 	tsUsers
 	names map[int64]string
-	reads int
 }
 
 func (u *tsNamedUsers) TeamNames(_ context.Context, ids []int64) (map[int64]string, error) {
-	u.reads++
 	out := map[int64]string{}
 	for _, id := range ids {
 		if n, ok := u.names[id]; ok {
@@ -66,8 +64,5 @@ func TestATeamAgentsCardCarriesItsTeam(t *testing.T) {
 		if got := (team{c.TeamOwner, c.Team}); got != w {
 			t.Errorf("card %d (%s) carries team %+v, want %+v", c.ID, c.Name, got, w)
 		}
-	}
-	if u.reads != 1 {
-		t.Errorf("the team names were read %d times, want once for the list", u.reads)
 	}
 }

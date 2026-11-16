@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -266,9 +265,8 @@ func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
 // sidebar draws the row in that team's group, the one its hosts' sessions are
 // drawn in (ui's listEntry.team), and the switcher and the palette label it
 // with its team. A team agent is one memberOnTeamAgent holds for, the one
-// rule; a person's own agent is left unmarked. It answers the names it read
-// (nil for none), so teamMirrorCards reads only a team not among them.
-func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards []ui.AgentCardView) map[int64]string {
+// rule; a person's own agent is left unmarked.
+func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards []ui.AgentCardView) {
 	var teams []int64
 	for i, a := range list {
 		if !memberOnTeamAgent(ctx, a) {
@@ -280,7 +278,7 @@ func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards 
 		}
 	}
 	if len(teams) == 0 {
-		return nil
+		return
 	}
 	names := s.teamNames(ctx, teams)
 	for i := range cards {
@@ -288,25 +286,6 @@ func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards 
 			cards[i].Team = names[o]
 		}
 	}
-	return names
-}
-
-// teamNamesBeside is teamNames for ids, reading only those known does not
-// already name.
-func (s *Server) teamNamesBeside(ctx context.Context, known map[int64]string, ids []int64) map[int64]string {
-	out := map[int64]string{}
-	var missing []int64
-	for _, id := range ids {
-		if n, ok := known[id]; ok {
-			out[id] = n
-		} else {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) > 0 {
-		maps.Copy(out, s.teamNames(ctx, missing))
-	}
-	return out
 }
 
 // ErrNotTheTeamRoom answers a member's message to a team agent that names a
