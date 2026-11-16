@@ -344,14 +344,16 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // carries an agents.SendFence: immediately before each request of the turn
 // opens, the role is read again inside users.Store.HoldTeamRole, which holds
 // the team's row until the runtime accepts the text (ccd's 103) or gives its
-// verdict — but at most agents.SendFenceHoldCap after the request was written
-// (operator decision, #731 round 0 Q1: a membership change must not stall
-// behind a runtime that sends no 103, nor hit the statement timeout). Every
+// verdict — but at most agents.SendFenceHoldCap after the request was
+// written, and at most agents.SendFenceHoldMax after the hold was taken
+// (operator decisions, #731 rounds 0 and 1: a membership change must not
+// stall behind a member's turn, nor reach the statement timeout). Every
 // membership change waits for the hold (lockTeam). A removal is therefore
 // ordered wholly before the read (refused: ErrNoLongerTeamOperator), or after
-// the runtime accepted the text, or — ⚠ the accepted residual — after the cap
-// on a runtime that sends no 103, when text already transmitted before the
-// removal may still be delivered. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage,
+// the runtime accepted the text, or — ⚠ the accepted residual — after a bound
+// on any runtime whose 103 does not arrive within the cap (one that never
+// sends it, or a ccd whose submit takes longer), when text already
+// transmitted before the removal may still be delivered. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage,
 // TestARemovalWaitsForAMembersSendInFlight and
 // TestARemovalIsNotStalledByARuntimeThatSendsNo103 pin the three. The read
 // above stays: it refuses before anything runs as the team.

@@ -570,13 +570,20 @@ func TestARemovalWaitsForAMembersSendInFlight(t *testing.T) {
 	}
 }
 
-// TestTheSendFenceCapIsUnderTheStatementTimeout: a membership change waiting
-// on a send fence's hold waits at most agents.SendFenceHoldCap, which must
-// leave it most of db.StatementTimeout — else it fails rather than waits.
-func TestTheSendFenceCapIsUnderTheStatementTimeout(t *testing.T) {
-	if agents.SendFenceHoldCap <= 0 || 2*agents.SendFenceHoldCap > db.StatementTimeout {
-		t.Errorf("agents.SendFenceHoldCap = %s, db.StatementTimeout = %s; want 0 < cap <= half the statement timeout",
-			agents.SendFenceHoldCap, db.StatementTimeout)
+// TestTheSendFenceBoundsAreUnderTheStatementTimeout: a membership change
+// waiting on a send fence's hold waits at most agents.SendFenceHoldMax (the
+// hard bound, from when the hold was taken), which must leave it clear
+// headroom under db.StatementTimeout — else it fails rather than waits — and
+// the cap (from when the request was written) is never longer than it.
+func TestTheSendFenceBoundsAreUnderTheStatementTimeout(t *testing.T) {
+	const headroom = 2 * time.Second
+	if agents.SendFenceHoldMax <= 0 || agents.SendFenceHoldMax+headroom > db.StatementTimeout {
+		t.Errorf("agents.SendFenceHoldMax = %s, db.StatementTimeout = %s; want 0 < hard bound <= statement timeout - %s",
+			agents.SendFenceHoldMax, db.StatementTimeout, headroom)
+	}
+	if agents.SendFenceHoldCap <= 0 || agents.SendFenceHoldCap > agents.SendFenceHoldMax {
+		t.Errorf("agents.SendFenceHoldCap = %s, agents.SendFenceHoldMax = %s; want 0 < cap <= hard bound",
+			agents.SendFenceHoldCap, agents.SendFenceHoldMax)
 	}
 }
 

@@ -1043,15 +1043,18 @@ rule the later phases' rows will meet.
     request opens, the role is read again under a `FOR KEY SHARE` on the
     team's row (`users.Store.HoldTeamRole`). The lock is held until the
     first of: ccd's 103 (the text was accepted), the status line, a
-    transport error, or `agents.SendFenceHoldCap` (5s, under the 10s
-    statement timeout) after the request was written. Every membership
-    change waits on that row (`lockTeam`), so a removal lands wholly before
-    the read (the message is refused) or after the runtime took the text.
-    The cap is an operator decision (#731): a membership change never waits
-    longer than the cap behind a member's turn. **Accepted residual:** on a
-    runtime that sends no 103 (an older ccd, the chat-completions fallback),
-    a message already transmitted before a removal may still be delivered
-    after it. Before the fence (#673 until the fix), a removal committing
+    transport error, `agents.SendFenceHoldCap` (5s) after the request was
+    written, or the hard bound `agents.SendFenceHoldMax` (8s) after the lock
+    was taken, connect and TLS included. Every membership change waits on
+    that row (`lockTeam`), so a removal lands wholly before the read (the
+    message is refused) or after the runtime took the text. Both bounds are
+    operator decisions (#731): a membership change never waits longer than
+    the hard bound (8s) behind a member's turn, under the 10s statement
+    timeout. **Accepted residual:** on any runtime whose 103 does not arrive
+    within the cap — one that never sends it (an older ccd, the
+    chat-completions fallback), or a ccd whose submit takes longer (its
+    window runs to 20s) — a message already transmitted before a removal may
+    still be delivered after it. Before the fence (#673 until the fix), a removal committing
     between the attempt's first role read and its request let the text
     through.
   - **One shared room.** A member types into the team chief's one

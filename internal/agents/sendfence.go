@@ -25,15 +25,22 @@ import (
 //   - the response's status line (a refusal, a 404, an answer);
 //   - the request failing;
 //   - SendFenceHoldCap after the request (its body included) was fully
-//     WRITTEN (httptrace WroteRequest), so a slow connect spends none of it.
+//     WRITTEN (httptrace WroteRequest), so a slow connect spends none of it;
+//   - SendFenceHoldMax after the hold was TAKEN, whatever the request is
+//     doing — the hard bound, which a connect or TLS handshake that never
+//     finishes (a blackholed runtime) cannot outlast.
 //
-// 🔴 THE CAP (operator decision, #731 round 0 Q1). Without it a membership
-// change waited behind any member turn in flight and, on a runtime that sends
-// no 103 (a ccd that predates it; the chat-completions fallback, whose status
-// line comes only after the turn), failed at db.StatementTimeout. With it the
-// change waits at most the cap. ⚠ THE ACCEPTED RESIDUAL: on such a runtime, a
-// message transmitted before a removal can still be delivered after it. On a
-// ccd that sends the 103, the text is accepted (or refused) inside the hold.
+// 🔴 THE CAP AND THE HARD BOUND (operator decision, #731 rounds 0 and 1).
+// Without them a membership change waited behind any member turn in flight
+// and, on a runtime whose 103 does not come (a ccd that predates it; the
+// chat-completions fallback, whose status line comes only after the turn) or
+// a runtime it cannot reach, failed at db.StatementTimeout. With them the
+// change waits at most SendFenceHoldMax — under the statement timeout.
+// ⚠ THE ACCEPTED RESIDUAL: on ANY runtime whose 103 does not arrive within
+// the cap — one that never sends it, and also a ccd that does but takes
+// longer (its submit window runs to 20s, with an extra Enter at 10s) — a
+// message transmitted before a removal can still be delivered after it. Only
+// a 103 (or a refusal) inside the cap settles the text inside the hold.
 //
 // ONCE ACCEPTED, DISARMED: a turn whose first request was accepted (103 or a
 // 200) runs each later round of its tool loop unfenced — those carry tool
@@ -47,18 +54,26 @@ import (
 // a database connection never waits for a second one.
 
 // SendFenceHoldCap bounds a send fence's hold after the request was written.
-// 🔴 WELL UNDER db.StatementTimeout (10s), so a membership change waiting on a
-// hold finishes rather than timing out: TestTheSendFenceCapIsUnderTheStatementTimeout
-// (internal/api) pins the relation.
 const SendFenceHoldCap = 5 * time.Second
 
-// sendFenceHoldCap is the cap in force; a test of this package shortens it.
-var sendFenceHoldCap = SendFenceHoldCap
+// SendFenceHoldMax bounds a send fence's hold from the moment it was taken,
+// connect and TLS included. 🔴 UNDER db.StatementTimeout (10s) WITH HEADROOM,
+// and at least the cap, so a membership change waiting on a hold finishes
+// rather than timing out: TestTheSendFenceBoundsAreUnderTheStatementTimeout
+// (internal/api) pins both relations.
+const SendFenceHoldMax = 8 * time.Second
+
+// sendFenceHoldCap and sendFenceHoldMax are the bounds in force; a test of
+// this package shortens them.
+var (
+	sendFenceHoldCap = SendFenceHoldCap
+	sendFenceHoldMax = SendFenceHoldMax
+)
 
 // SendFence checks, immediately before a request of a turn opens, that the turn
 // may still be sent. It returns a non-nil error to refuse (nothing is sent; the
 // error is the turn's), or release, which the transport calls exactly once
-// (the first of the verdicts above, or the cap).
+// (the first of the verdicts above, the cap, or the hard bound).
 type SendFence func(ctx context.Context) (release func(), err error)
 
 type sendFenceKey struct{}
@@ -81,7 +96,7 @@ func WithSendFence(ctx context.Context, fn SendFence) context.Context {
 // fenceRequest runs req's context's fence, if any, for req about to open. It
 // returns req carrying the cap's trace (WroteRequest starts it) and done,
 // which the caller calls when the request has its verdict (accepted: a 200 or
-// ccd's 103) — idempotent, it also stops the cap's timer — or the fence's
+// ccd's 103) — idempotent, it also stops both timers — or the fence's
 // refusal. For a context without a fence, or with a disarmed one, req is
 // returned as is and done is a no-op.
 func fenceRequest(req *http.Request) (*http.Request, func(accepted bool), error) {
@@ -101,6 +116,7 @@ func fenceRequest(req *http.Request) (*http.Request, func(accepted bool), error)
 		return nil, nil, err
 	}
 	h := &fenceHold{release: release}
+	h.startMax(sendFenceHoldMax) // from the moment the hold was taken
 	done := func(accepted bool) {
 		if accepted {
 			st.mu.Lock()
@@ -121,13 +137,14 @@ func fenceRequest(req *http.Request) (*http.Request, func(accepted bool), error)
 	return req, done, nil
 }
 
-// fenceHold is one request's hold: released exactly once, by its verdict or
-// its cap, whichever is first.
+// fenceHold is one request's hold: released exactly once, by its verdict, its
+// cap or its hard bound, whichever is first.
 type fenceHold struct {
-	mu      sync.Mutex
-	ended   bool
-	timer   *time.Timer
-	release func()
+	mu       sync.Mutex
+	ended    bool
+	timer    *time.Timer // the cap's, armed at WroteRequest
+	maxTimer *time.Timer // the hard bound's, armed when the hold is taken
+	release  func()
 }
 
 // startCap arms the cap, once, unless the hold already ended.
@@ -140,7 +157,14 @@ func (h *fenceHold) startCap(d time.Duration) {
 	h.timer = time.AfterFunc(d, h.end)
 }
 
-// end releases the hold and stops the cap's timer; idempotent.
+// startMax arms the hard bound; called once, before anything can end the hold.
+func (h *fenceHold) startMax(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.maxTimer = time.AfterFunc(d, h.end)
+}
+
+// end releases the hold and stops both timers; idempotent.
 func (h *fenceHold) end() {
 	h.mu.Lock()
 	if h.ended {
@@ -150,6 +174,9 @@ func (h *fenceHold) end() {
 	h.ended = true
 	if h.timer != nil {
 		h.timer.Stop()
+	}
+	if h.maxTimer != nil {
+		h.maxTimer.Stop()
 	}
 	release := h.release
 	h.mu.Unlock()

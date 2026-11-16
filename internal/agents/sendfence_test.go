@@ -149,6 +149,14 @@ func withFenceCap(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { sendFenceHoldCap = prev })
 }
 
+// withFenceMax sets the package's hard bound for one test.
+func withFenceMax(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := sendFenceHoldMax
+	sendFenceHoldMax = d
+	t.Cleanup(func() { sendFenceHoldMax = prev })
+}
+
 // countingFence is a SendFence tracking its hold and counting its releases.
 func countingFence(held *atomic.Bool, releases *atomic.Int32) SendFence {
 	return func(context.Context) (func(), error) {
@@ -214,12 +222,64 @@ func slowDialClient(d time.Duration) *http.Client {
 	}}}
 }
 
+// TestASendFenceHardBoundReleasesDuringAConnectThatDoesNotFinish (#731 round
+// 1, 🟡2): the cap starts only once the request is written, so a connect that
+// never finishes (a blackholed runtime) would hold the lock for the
+// transport's whole dial budget. The hard bound, counted from when the hold
+// was taken, releases it while the connect is still blocked — exactly once,
+// and nothing more when the request later completes.
+func TestASendFenceHardBoundReleasesDuringAConnectThatDoesNotFinish(t *testing.T) {
+	const hardBound = 200 * time.Millisecond
+	withFenceCap(t, 100*time.Millisecond)
+	withFenceMax(t, hardBound)
+	var held atomic.Bool
+	var releases atomic.Int32
+	rt := &fenceRuntime{held: &held}
+	srv := httptest.NewServer(rt)
+	t.Cleanup(srv.Close)
+	gate, dialing := make(chan struct{}), make(chan struct{})
+	var dialOnce sync.Once
+	dialer := &net.Dialer{}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialOnce.Do(func() { close(dialing) })
+		<-gate // the connect does not finish until the test says so
+		return dialer.DialContext(ctx, network, addr)
+	}}}
+	ctx := WithSendFence(context.Background(), countingFence(&held, &releases))
+	errc := make(chan error, 1)
+	go func() {
+		_, err := streamResponses(ctx, client, srv.URL+"/v1/responses", "", "", responsesRequest{}, nil)
+		errc <- err
+	}()
+	<-dialing
+	start := time.Now()
+	for held.Load() && time.Since(start) < 15*hardBound {
+		time.Sleep(time.Millisecond)
+	}
+	stillHeld := held.Load()
+	close(gate)
+	if err := <-errc; err != nil {
+		t.Fatalf("the request, once connected: %v", err)
+	}
+	if stillHeld {
+		t.Fatalf("the hold was still held %s into a connect that had not finished; want it released at the hard bound (%s)", 15*hardBound, hardBound)
+	}
+	if got := rt.arrivals(); len(got) != 1 || got[0] {
+		t.Errorf("held when the request arrived after the blocked connect: %v; want [false] (released at the hard bound)", got)
+	}
+	time.Sleep(3 * hardBound) // a timer left running would release again here
+	if got := releases.Load(); got != 1 {
+		t.Errorf("the hold was released %d time(s); want exactly 1", got)
+	}
+}
+
 // TestASendFenceCapStartsWhenTheRequestIsWritten: a connect slower than the
 // cap spends none of it — the request arrives at the runtime INSIDE the hold,
 // because the cap starts at WroteRequest, not at the request's start.
 func TestASendFenceCapStartsWhenTheRequestIsWritten(t *testing.T) {
 	const capped = 100 * time.Millisecond
 	withFenceCap(t, capped)
+	withFenceMax(t, 3*time.Second) // well past the 400ms connect: only the cap is under test
 	var held atomic.Bool
 	var releases atomic.Int32
 	rt := &fenceRuntime{held: &held}
