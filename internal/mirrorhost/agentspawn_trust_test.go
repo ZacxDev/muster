@@ -209,3 +209,63 @@ func TestATrustReadBackMismatchIsRefusedAndNeverRestored(t *testing.T) {
 		t.Fatalf("the other writer's file was changed: %s", got)
 	}
 }
+
+// TestTheTrustWriterRefusesANonScratchPathForAScratchSpawn (O-B round 0,
+// finding 4): a SCRATCH spawn's call (clone "") is refused unless dir is
+// EXACTLY <agent-spawn-dir>/scratch/<this dispatch>, by the writer itself and
+// with that guard's own detail — every other check passes for each case
+// (each directory exists, is its own real path, is outside the roots, was
+// created), so only the scratch guard can refuse it. The control: the
+// scratch directory itself is written. The state file is unchanged on every
+// refusal, byte for byte.
+func TestTheTrustWriterRefusesANonScratchPathForAScratchSpawn(t *testing.T) {
+	r := newTrustRig(t)
+	spawnDir := r.u.c.spawnDir()
+	mk := func(parts ...string) string {
+		t.Helper()
+		d := filepath.Join(append([]string{spawnDir}, parts...)...)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	mine := mk(scratchDirName, "31")
+	const why = "trust entry not written: not a scratch directory of this spawn under the agents directory"
+	for _, c := range []struct {
+		name string
+		dir  string
+	}{
+		{"this dispatch's directory under another parent", mk("elsewhere", "31")},
+		{"this dispatch's directory as a worktree path", mk("acme__widgets", "31")},
+		{"another dispatch's scratch directory", mk(scratchDirName, "32")},
+		{"the scratch root itself", filepath.Join(spawnDir, scratchDirName)},
+		{"a directory inside this dispatch's", mk(scratchDirName, "31", "sub")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := os.WriteFile(r.state, []byte(trustStateFixture), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := r.u.c.trustSpawnedWorktree(context.Background(), "", c.dir, 31, true)
+			e, ok := err.(*errSpawn)
+			if !ok || e.code != "failed" || e.detail != why {
+				t.Fatalf("a scratch spawn's trust for %s: %v; want failed %q", c.dir, err, why)
+			}
+			if got, _ := os.ReadFile(r.state); string(got) != trustStateFixture {
+				t.Fatal("the state file changed on a refusal")
+			}
+		})
+	}
+	if err := os.WriteFile(r.state, []byte(trustStateFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.u.c.trustSpawnedWorktree(context.Background(), "", mine, 31, true); err != nil {
+		t.Fatalf("control: this dispatch's scratch directory was refused: %v", err)
+	}
+	var st struct {
+		Projects map[string]map[string]any `json:"projects"`
+	}
+	got, _ := os.ReadFile(r.state)
+	if json.Unmarshal(got, &st) != nil || st.Projects[mine]["hasTrustDialogAccepted"] != true {
+		t.Fatalf("control: no trust entry for %s in %s", mine, got)
+	}
+}

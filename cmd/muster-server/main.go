@@ -261,6 +261,10 @@ type app struct {
 	// their own app — see askSweepInterval for why they are not package vars.
 	askSweepEvery time.Duration
 	jobReapEvery  time.Duration
+	// pluginsBound is whether a live plugin was bound to an officer at boot
+	// (pluginsBoundAtBoot): with no agent gateway, whether anything delivers
+	// a plugin message (the plugins feature's state).
+	pluginsBound bool
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -1065,6 +1069,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	// The feature registry (features.go): evaluated once, from what was wired.
+	if ps, ok := ext.Plugins.(*plugins.PGStore); ok && ext.PluginGateway == nil {
+		a.pluginsBound = pluginsBoundAtBoot(ctx, ps, logger)
+	}
 	feats, err := a.buildFeatures(ext, port)
 	if err != nil {
 		a.Close()
@@ -1896,8 +1903,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("plugins: ENABLED (%s=1) — owners mint plugin tokens on /plugins; a plugin POSTs messages to "+
 			"/plugin/v1/messages and each is handed to its owner's chief as a fenced turn", envPlugins)
 	case ext.Plugins != nil:
-		l.Printf("WARNING — plugins: ENABLED (%s=1) but there is NO agent gateway (%s), so plugin messages are "+
-			"stored and stay queued: nothing is delivered to any chief", envPlugins, envAgentGateway)
+		l.Printf("plugins: ENABLED (%s=1) with NO agent gateway (%s): a plugin bound to an officer (Deliver to officer:<id>) is "+
+			"delivered to it; an unbound plugin's messages are stored and stay queued, since no chief can be reached", envPlugins, envAgentGateway)
 	default:
 		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
 			"answer 404", envPlugins)

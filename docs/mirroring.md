@@ -1442,17 +1442,20 @@ start a Claude Code agent there (or an opencode one, when the host also has
 `-opencode-send`, an opencode token, `opencode` on its tmux server's `PATH` and
 an absolute path to its muster-mirror binary, [above](#sending-to-opencode)) — or, on a tenant's mirror that also opts in
 with `-agent-spawn-tenant-server`, into that tenant's tmux server (below) ([design](design/chief-dispatch.md), section 3).
-It is off by default, because it starts a process on the host, and it does
-nothing until you also list repositories:
+It is off by default, because it starts a process on the host. Your chief
+starts nothing until you also list repositories; an [officer](officers-builtin.md#officers-in-the-compose-stack-host-sessions)
+with no repository starts in a private scratch directory with `-agent-spawn` alone:
 
 | flag | env | default | |
 |---|---|---|---|
 | `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses unless it also sets `-agent-spawn-tenant-server`) |
 | `-agent-spawn-tenant-server` | `MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER` | empty | a tenant's mirror only: opt in to spawning on its tmux server. The value must name **the same server** as the mirror's own `-tmux-socket` (a socket name) or `-tmux-socket-path` (an absolute path); see [tenants](#starting-agents-on-a-tenants-tmux-server) |
-| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means nothing spawns |
+| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means your chief spawns nothing (an officer with no repository still starts, in a scratch directory) |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
-| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit, counted from the audit log |
+| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit on the chief's spawns, counted from the audit log. Officer spawns do not count against it |
+| `-agent-spawn-officer-rate` | `MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE` | `20/10m,400/24h` | this host's own ceiling on every officer spawn together ([below](#officer-spawns-have-their-own-ceiling)) |
+| `-claude-path` | `MUSTER_MIRROR_CLAUDE_PATH` | (the tmux server's PATH) | the absolute path of the `claude` a spawn runs, when the tmux server's PATH does not reach it |
 | `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log |
 | `-agent-spawn-skip-permissions` | `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | **on** | start each spawned agent **without permission prompts** ([below](#permission-prompts-in-a-spawned-agent)). `=false` (env `0` or `false`) starts it in its normal permission mode instead; a value that is not a bool stops the daemon |
 
@@ -1482,9 +1485,14 @@ repository, a base branch, the prompt and a display name. The host:
   is not one of its clones (`bad_clone`, written to the audit log with the
   request), and refuses several clones with no hint (`no_repo`), as before. A
   mirror older than this sends no list and is sent no hint;
-- counts its rate limit from the audit log (an `admit` line, written before the
-  next request is checked), so a restart does not reset it and concurrent
-  requests cannot pass it;
+- counts its rate limits from the audit log (an `admit` line, written before the
+  next request is checked), so a restart does not reset them and concurrent
+  requests cannot pass them: the chief's spawns against `-agent-spawn-rate`, and
+  officer spawns against `-agent-spawn-officer-rate` ([below](#officer-spawns-have-their-own-ceiling));
+- starts an officer with no repository in a private scratch directory,
+  `<agent-spawn-dir>/scratch/<dispatch>`, made `0700` by the spawn, with the
+  same trust-entry checks, and removes it (and its trust entry) once its window
+  is gone. Only an officer's prompt starts there;
 - writes the trust entry in Claude Code's state file under Claude Code's own
   lock (`<file>.lock`), keeping the file's mode and never through a symlink; if
   the lock is not had within 5 seconds the window shows the trust dialog;
@@ -1534,6 +1542,34 @@ reply's last line is `MUSTER-DONE: <summary>`, and **waiting** otherwise; a
 later turn in the window puts the card back to Working. An older host sends no
 `outcomes` message, so its opencode dispatches stay Working until their window
 closes. Details: [design](design/chief-dispatch.md), section 3.7.
+
+### Officer spawns have their own ceiling
+
+A spawn whose prompt begins with muster's officer preface is an **officer's**:
+it counts against `-agent-spawn-officer-rate` (default `20/10m,400/24h`, every
+officer on the host together) and **not** against `-agent-spawn-rate`, which is
+the chief's alone. muster also limits each officer below that ceiling by its own
+budget (its idle window, poll and shortest schedule), so one officer's restart
+loop cannot spend the others' share.
+
+🔴 **What bounds a misbehaving server.** Only the prompt prefix, which the
+server chooses, marks a spawn as an officer's. So a muster that sent every
+spawn as an officer's could start up to 400 a day under the officer ceiling
+(beside the chief's 10), where before the ceiling the chief's limit of 10 a
+day bounded every spawn. Lower
+`-agent-spawn-officer-rate` if that is more than you would let this host start
+unattended.
+
+**Upgrading from a muster-mirror without this ceiling.** Before it, every spawn,
+officers' included, counted against `-agent-spawn-rate`. After the upgrade:
+
+- officer spawns stop counting against `-agent-spawn-rate`, and start counting
+  against the new `-agent-spawn-officer-rate` with no action from you. Set it
+  explicitly if the default is too high for this host;
+- the audit log's older `admit` lines carry no officer flag, so they cannot be
+  told apart. For the next 24 hours they count against **neither** limit, rather
+  than all of them against the chief's (which could hold the chief at its limit
+  for a day); new lines count as above.
 
 ### Permission prompts in a spawned agent
 
@@ -1950,7 +1986,8 @@ server and its own `muster-mirror`.
 - **Team host officers (team sharing 2b.5).** A team's `"runtime": "host"`
   officer runs its instances on the team host its `host` names, as windows
   in that host's `agents` session, so the host needs `-interactive
-  -agent-spawn` and the officer's `repo`, as a personal host does. Only the
+  -agent-spawn` (and the officer's `repo`, if it names one), as a personal
+  host does. Only the
   team's host is used: a member's personal `build-01` is never spawned on,
   even if it is the only `build-01` online. An instance's officer tools are
   served on the team host's MCP door. No session there is offered an

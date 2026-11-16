@@ -142,6 +142,8 @@ type Config struct {
 	FakeSpawnRuntimes []string
 	// AgentCloseGrace replaces mirror.AgentCloseGrace (tests).
 	AgentCloseGrace time.Duration
+	// SpawnReadyEvery replaces spawnReadyEvery (tests).
+	SpawnReadyEvery time.Duration
 	// ResumeSpawn lets muster ask this host to RESUME an ended Claude Code
 	// session in a new tmux window (muster-mirror's -resume-spawn,
 	// MUSTER_MIRROR_RESUME_SPAWN; resume.go): with -interactive, the host
@@ -473,6 +475,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	// The clone list and the clone hint (clones.go): every host that spawns.
 	hello.AgentSpawnClones = len(hello.AgentSpawn) > 0
 	hello.AgentClose = conn.agentCloseOn()
+	// The spawn readiness (spawnready.go): re-read every minute after this
+	// and sent again when it changes.
+	hello.SpawnReady = conn.spawnReadiness()
+	conn.logSpawnReady(hello.SpawnReady)
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -533,6 +539,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	}
 	go conn.refresh(first)
 	go conn.keepalive(cancel)
+	go conn.watchSpawnReady(hello.SpawnReady, conn.send)
 	c.curMu.Lock()
 	c.cur = conn
 	c.curMu.Unlock()

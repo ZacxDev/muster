@@ -470,31 +470,52 @@ type hostOption struct {
 	Spawnable bool `json:"spawnable"`
 	// Closable: it ends an agent window on muster's request (AgentClose), so
 	// muster can scale the officer to zero.
-	Closable  bool   `json:"closable"`
+	Closable bool `json:"closable"`
+	// RepoAllowed: the repo asked about is on the host's -agent-spawn-repos
+	// (its readiness, mirror.SpawnReadiness); absent when that cannot be told
+	// (an older muster-mirror) or no repo was asked about.
+	RepoAllowed *bool `json:"repo_allowed,omitempty"`
+	// Scratch: the host starts an officer with no repository (any current
+	// muster-mirror with -agent-spawn). Claude is "found" or "missing", Login "yes",
+	// "no" or "unknown": what the host reported, absent from an older one.
+	Scratch   bool   `json:"scratch"`
+	Claude    string `json:"claude,omitempty"`
+	Login     string `json:"login,omitempty"`
 	Qualifies bool   `json:"qualifies"`
 	Reason    string `json:"reason,omitempty"`
 }
 
 // ownerHostOptions is owner's hosts, sorted, each with whether a host officer
-// of repo could run there and why not. The signals are the ones the host
-// fleet itself refuses a start on (officerFleet.hostStart): online,
-// spawnable, closable.
+// of repo ("" for none: a scratch directory) could run there and why not.
+// The signals are the ones the host fleet itself refuses a start on
+// (officerFleet.hostStart: online, spawnable, closable), and the host's spawn
+// readiness (hostReadyRefusal: the allow-list, scratch spawns, claude found
+// and logged in) — so auto placement never picks a host whose window would
+// sit at Claude Code's login screen.
 func (s *Server) ownerHostOptions(ctx context.Context, owner int64, repo string) []hostOption {
 	if s.ext.Mirror == nil {
 		return nil
 	}
+	repo = strings.TrimSpace(repo)
 	var out []hostOption
 	for _, v := range s.ext.Mirror.Hosts(s.officerPrincipal(ctx, owner)) {
-		h := hostOption{Host: v.Host, Online: v.Online, Spawnable: hostSpawnable(v, mirror.SpawnRuntimeClaude), Closable: v.AgentClose}
+		h := hostOption{Host: v.Host, Online: v.Online, Spawnable: hostSpawnable(v, mirror.SpawnRuntimeClaude), Closable: v.AgentClose,
+			RepoAllowed: hostRepoAllowed(v, repo)}
+		if r := v.SpawnReady; r != nil {
+			h.Scratch, h.Claude, h.Login = r.Scratch, r.Claude, r.Login
+		}
+		ready := hostReadyRefusal(v, repo, true)
 		switch {
 		case !v.Online:
 			h.Reason = "not connected"
+		case !h.Spawnable && ready != "":
+			h.Reason = ready
 		case !h.Spawnable:
 			h.Reason = "it does not start Claude Code agents (it needs a current muster-mirror with -interactive and -agent-spawn)"
 		case !h.Closable:
 			h.Reason = "it does not close windows (an older muster-mirror), so muster could never scale an officer there to zero"
-		case strings.TrimSpace(repo) == "":
-			h.Reason = "a host officer needs a repo (the host cuts each instance's worktree from its clone of it)"
+		case ready != "":
+			h.Reason = ready
 		default:
 			h.Qualifies = true
 		}

@@ -28,13 +28,15 @@ import (
 // the branch muster/<id>-<slug>), so it is drawn from host_dispatches' own
 // sequence: it can never equal a chief dispatch's id on any host.
 //
-// 🔴 FIVE WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
+// 🔴 EIGHT WRITERS, EACH WITH ITS NAMED CALLER (a ledger test asserts them over
 // internal/api): InsertHostSpawn (the fleet's Start), RecordHostSpawnWindow
 // and RecordHostSpawnRefusal (the one reply application, for the waiter and
 // the hub's late-reply hook alike), RecordHostSpawnSession (the fleet's
-// read, when the recorded window runs another conversation), and
+// read, when the recorded window runs another conversation),
 // ObserveHostListing (the hub's listing hook, which counts a recorded window's
-// missing listings and closes it for good). The two records write only a row whose
+// missing listings and closes it for good), and migration 0139's three:
+// MarkHostSpawnClaimed (a host instance's claim), SetUnclaimedNotice and
+// SettleUnclaimedNotice (the unclaimed-instance sweep). The two records write only a row whose
 // window and refusal are both still empty, on the row's own host: a late or
 // repeated reply never moves a recorded window.
 // ---------------------------------------------------------------------------
@@ -64,7 +66,31 @@ type HostSpawn struct {
 	// moves, and HostSpawnsInWindows never answers the row again, so a tmux
 	// window id the host later reissues to another window is not this one.
 	MissingListings int
+	// ClaimedAt is when the instance this spawn started first claimed an
+	// item (migration 0139, MarkHostSpawnClaimed); nil until it has.
+	ClaimedAt *time.Time
+	// UnclaimedNotice is the Attention notice raised because the instance
+	// had not claimed its item in time (SetUnclaimedNotice), 0 for none;
+	// NoticeSettled reports it withdrawn (SettleUnclaimedNotice).
+	UnclaimedNotice int64
+	NoticeSettled   bool
 }
+
+// ownRowSQL confines a statement to the ACTING PRINCIPAL'S OWN rows: the
+// spawn's owner is the principal itself (muster.uid), never a team it is a
+// member of (team_owner_read, migration 0133) nor a team a teammate lent a row
+// to (team_lent_read, 0130).
+//
+// 🔴 ROW-LEVEL SECURITY ALONE IS TOO WIDE FOR THE RUNTIME. Those two policies
+// let a person READ their teams' spawn rows (the /officers/spawns page,
+// VisibleHostSpawns — the one read that wants them). Every other read here is
+// the officer runtime acting AS ONE OWNER (officerPrincipal, the mirror door,
+// the reconcilers), and a row another owner holds is not that owner's to
+// settle, count, bind a session to or recognise as one of its windows: round
+// 0 of O-B found the unclaimed-notice settle withdrawing a team's notice from
+// a member's sweep. Hosts are named per owner, so a host-keyed read without it
+// reaches a team's host of the same name.
+const ownRowSQL = `owner_id = nullif(current_setting('muster.uid', true), '')::bigint`
 
 // HostSpawnMissingToClose is how many listings in a row must miss a recorded
 // window before it is gone for good: one transient miss closes nothing (the
@@ -75,7 +101,9 @@ const HostSpawnMissingToClose = 2
 var ErrHostSpawnNotFound = errors.New("officers: no such host spawn")
 
 // HostSpawnStore keeps the host spawns. Every call acts as the principal on
-// ctx: row-level security confines it to that owner's rows.
+// ctx, and reads ONLY that principal's own rows (ownRowSQL) — never a team's,
+// which row-level security alone would admit (VisibleHostSpawns, the
+// HostSpawnLender's, is the one read that includes them).
 type HostSpawnStore interface {
 	// InsertHostSpawn records a spawn about to be sent and returns its row.
 	InsertHostSpawn(ctx context.Context, officer, instance, host string) (HostSpawn, error)
@@ -114,6 +142,22 @@ type HostSpawnStore interface {
 	// which the row is closed and neither moves again (round 2's second
 	// finding: a reissued window id).
 	ObserveHostListing(ctx context.Context, host string, windows []string, settled time.Time) error
+	// CountHostSpawnsSince is how many of officer's spawns were recorded at
+	// or after since: the officer's own spawn budget (SpawnBudgetFor).
+	CountHostSpawnsSince(ctx context.Context, officer string, since time.Time) (int, error)
+	// MarkHostSpawnClaimed records, once, that row id's instance on host
+	// claimed an item, reporting whether it wrote (false: already recorded,
+	// or not host's row).
+	MarkHostSpawnClaimed(ctx context.Context, id int64, host string) (bool, error)
+	// SetUnclaimedNotice records notice as row id's unclaimed notice, ONLY
+	// while it has none (a compare-and-swap from none): false means another
+	// writer raised one first, and the caller withdraws its own.
+	SetUnclaimedNotice(ctx context.Context, id, notice int64) (bool, error)
+	// SettleUnclaimedNotice marks row id's notice withdrawn, once.
+	SettleUnclaimedNotice(ctx context.Context, id int64) (bool, error)
+	// OpenUnclaimedNotices is the principal's rows whose unclaimed notice is
+	// raised and not settled.
+	OpenUnclaimedNotices(ctx context.Context) ([]HostSpawn, error)
 }
 
 // PGHostSpawnStore is HostSpawnStore over muster's Postgres.
@@ -122,11 +166,13 @@ type PGHostSpawnStore struct{ pool *pgxpool.Pool }
 // NewPGHostSpawnStore is the store over pool.
 func NewPGHostSpawnStore(pool *pgxpool.Pool) *PGHostSpawnStore { return &PGHostSpawnStore{pool: pool} }
 
-const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at, owner_id, coalesce(shared_team_id, 0), missing_listings`
+const hostSpawnCols = `id, officer, instance, host, tmux_window, agent_session, refusal, created_at, owner_id, coalesce(shared_team_id, 0), missing_listings,
+	claimed_at, coalesce(unclaimed_notice_id, 0), unclaimed_notice_settled`
 
 func scanHostSpawn(row pgx.Row) (HostSpawn, error) {
 	var h HostSpawn
-	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt, &h.OwnerID, &h.SharedTeam, &h.MissingListings)
+	err := row.Scan(&h.ID, &h.Officer, &h.Instance, &h.Host, &h.Window, &h.AgentSession, &h.Refusal, &h.CreatedAt, &h.OwnerID, &h.SharedTeam, &h.MissingListings,
+		&h.ClaimedAt, &h.UnclaimedNotice, &h.NoticeSettled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HostSpawn{}, ErrHostSpawnNotFound
 	}
@@ -166,7 +212,7 @@ func (s *PGHostSpawnStore) RecordHostSpawnSession(ctx context.Context, id int64,
 // LatestHostSpawns implements HostSpawnStore.
 func (s *PGHostSpawnStore) LatestHostSpawns(ctx context.Context, officer string) (map[string]HostSpawn, error) {
 	rows, err := s.pool.Query(ctx, `SELECT DISTINCT ON (instance) `+hostSpawnCols+` FROM officer_host_spawns
-		WHERE officer = $1 ORDER BY instance, id DESC`, officer)
+		WHERE officer = $1 AND `+ownRowSQL+` ORDER BY instance, id DESC`, officer)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +239,7 @@ func (s *PGHostSpawnStore) HostSpawnForSession(ctx context.Context, host, sessio
 		return HostSpawn{}, ErrHostSpawnNotFound
 	}
 	return scanHostSpawn(s.pool.QueryRow(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
-		WHERE host = $1 AND agent_session = $2 ORDER BY id DESC LIMIT 1`, host, session))
+		WHERE host = $1 AND agent_session = $2 AND `+ownRowSQL+` ORDER BY id DESC LIMIT 1`, host, session))
 }
 
 // HostSpawnIDs implements HostSpawnStore.
@@ -202,7 +248,7 @@ func (s *PGHostSpawnStore) HostSpawnIDs(ctx context.Context, host string, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id FROM officer_host_spawns WHERE host = $1 AND id = ANY($2)`, host, ids)
+	rows, err := s.pool.Query(ctx, `SELECT id FROM officer_host_spawns WHERE host = $1 AND id = ANY($2) AND `+ownRowSQL, host, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +269,7 @@ func (s *PGHostSpawnStore) HostSpawnsInWindows(ctx context.Context, host string,
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
-		WHERE host = $1 AND tmux_window = ANY($2) AND tmux_window <> '' AND refusal = '' AND missing_listings < $3 ORDER BY id`,
+		WHERE host = $1 AND tmux_window = ANY($2) AND tmux_window <> '' AND refusal = '' AND missing_listings < $3 AND `+ownRowSQL+` ORDER BY id`,
 		host, windows, HostSpawnMissingToClose)
 	if err != nil {
 		return nil, err
@@ -257,6 +303,51 @@ func (s *PGHostSpawnStore) ObserveHostListing(ctx context.Context, host string, 
 		WHERE host = $1 AND tmux_window <> '' AND refusal = '' AND NOT (tmux_window = ANY($2))
 		AND missing_listings < $3 AND created_at < $4`, host, windows, HostSpawnMissingToClose, settled)
 	return err
+}
+
+// CountHostSpawnsSince implements HostSpawnStore.
+func (s *PGHostSpawnStore) CountHostSpawnsSince(ctx context.Context, officer string, since time.Time) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM officer_host_spawns WHERE officer = $1 AND created_at >= $2 AND `+ownRowSQL, officer, since).Scan(&n)
+	return n, err
+}
+
+// MarkHostSpawnClaimed implements HostSpawnStore.
+func (s *PGHostSpawnStore) MarkHostSpawnClaimed(ctx context.Context, id int64, host string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET claimed_at = now() WHERE id = $1 AND host = $2 AND claimed_at IS NULL`, id, host)
+	return tag.RowsAffected() == 1, err
+}
+
+// SetUnclaimedNotice implements HostSpawnStore.
+func (s *PGHostSpawnStore) SetUnclaimedNotice(ctx context.Context, id, notice int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET unclaimed_notice_id = $2 WHERE id = $1 AND unclaimed_notice_id IS NULL`, id, notice)
+	return tag.RowsAffected() == 1, err
+}
+
+// SettleUnclaimedNotice implements HostSpawnStore.
+func (s *PGHostSpawnStore) SettleUnclaimedNotice(ctx context.Context, id int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE officer_host_spawns SET unclaimed_notice_settled = true
+		WHERE id = $1 AND unclaimed_notice_id IS NOT NULL AND NOT unclaimed_notice_settled`, id)
+	return tag.RowsAffected() == 1, err
+}
+
+// OpenUnclaimedNotices implements HostSpawnStore.
+func (s *PGHostSpawnStore) OpenUnclaimedNotices(ctx context.Context) ([]HostSpawn, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
+		WHERE unclaimed_notice_id IS NOT NULL AND NOT unclaimed_notice_settled AND `+ownRowSQL+` ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HostSpawn
+	for rows.Next() {
+		h, err := scanHostSpawn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +442,7 @@ func (s *PGHostSpawnStore) LendHostSpawn(ctx context.Context, id, team int64) (H
 		to = team
 	}
 	h, err := scanHostSpawn(s.pool.QueryRow(ctx, `UPDATE officer_host_spawns SET shared_team_id = $2
-		WHERE id = $1 AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
+		WHERE id = $1 AND `+ownRowSQL+`
 		RETURNING `+hostSpawnCols, id, to))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Hint == lendTargetHint {
@@ -514,6 +605,76 @@ func (m *MemHostSpawnStore) ObserveHostListing(_ context.Context, host string, w
 		}
 	}
 	return nil
+}
+
+// CountHostSpawnsSince implements HostSpawnStore.
+func (m *MemHostSpawnStore) CountHostSpawnsSince(_ context.Context, officer string, since time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, r := range m.rows {
+		if r.Officer == officer && !r.CreatedAt.Before(since) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// MarkHostSpawnClaimed implements HostSpawnStore.
+func (m *MemHostSpawnStore) MarkHostSpawnClaimed(_ context.Context, id int64, host string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.ID == id && r.Host == host && r.ClaimedAt == nil {
+			at := m.now()
+			r.ClaimedAt = &at
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SetUnclaimedNotice implements HostSpawnStore.
+func (m *MemHostSpawnStore) SetUnclaimedNotice(_ context.Context, id, notice int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.ID == id && r.UnclaimedNotice == 0 {
+			r.UnclaimedNotice = notice
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SettleUnclaimedNotice implements HostSpawnStore.
+func (m *MemHostSpawnStore) SettleUnclaimedNotice(_ context.Context, id int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		r := &m.rows[i]
+		if r.ID == id && r.UnclaimedNotice != 0 && !r.NoticeSettled {
+			r.NoticeSettled = true
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// OpenUnclaimedNotices implements HostSpawnStore.
+func (m *MemHostSpawnStore) OpenUnclaimedNotices(_ context.Context) ([]HostSpawn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []HostSpawn
+	for _, r := range m.rows {
+		if r.UnclaimedNotice != 0 && !r.NoticeSettled {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 // All is every row, by id (tests).

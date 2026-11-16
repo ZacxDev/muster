@@ -339,9 +339,8 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 		drop    []string
 		refusal string
 	}{
-		// Open: the Compose chief refuses MUSTER_OFFICERS beside it, even an
-		// all-host roster that needs no provisioner.
-		{[]string{"MUSTER_OFFICERS"}, "MUSTER_CHIEF_RUNTIME=compose runs the chief in its Compose container and sets the agent plane itself, but MUSTER_OFFICERS is also set"},
+		// (Fixed in officers O-B: the Compose chief runs beside an all-host
+		// MUSTER_OFFICERS roster, the .env.example's.)
 		// By design: the Compose chief is not offered the task-event tools.
 		{[]string{"MUSTER_TASK_ROUTING"}, "MUSTER_CHIEF_RUNTIME=compose runs the chief in its Compose container, which cannot decide a task event"},
 	}

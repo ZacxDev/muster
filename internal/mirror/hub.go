@@ -161,6 +161,10 @@ type HostView struct {
 	// AgentClose: the host ends an agent window on muster's request
 	// (Msg.AgentClose, agentclose.go), for an -interactive host only.
 	AgentClose bool
+	// SpawnReady is the host's spawn readiness (Msg.SpawnReady,
+	// spawnready.go): nil from an older or read-only muster-mirror (unknown),
+	// and for an offline host.
+	SpawnReady *SpawnReadiness
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -520,7 +524,10 @@ type hostConn struct {
 	// agentSpawnClones: the host advertised Msg.AgentSpawnClones beside a
 	// runtime it spawns (clones.go).
 	agentSpawnClones bool
-	next             uint32
+	// spawnReady is the host's spawn readiness (spawnready.go), cleaned; nil
+	// from a host that sent none (an older or read-only muster-mirror).
+	spawnReady *SpawnReadiness
+	next       uint32
 }
 
 type stream struct {
@@ -550,6 +557,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		out = append(out, HostView{Owner: owner, Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentSpawnClones: hc.agentSpawnClones, AgentClose: hc.agentClose,
+			SpawnReady:     hc.spawnReady.clone(),
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
 			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
 		hc.mu.Unlock()
@@ -831,6 +839,11 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.agentSpawnClones = hello.AgentSpawnClones && len(hc.agentSpawn) > 0
 		// Ending an agent (agentclose.go): -interactive hosts only.
 		hc.agentClose = hello.AgentClose && hello.Interactive
+		// The spawn readiness (spawnready.go): a hint about starting an
+		// agent, so -interactive hosts only, like the spawn itself.
+		if hello.Interactive {
+			hc.spawnReady = CleanSpawnReady(hello.SpawnReady)
+		}
 		// Each runtime's answer switch: answering its ask is a write into
 		// the session (it can let a command run): -interactive hosts only,
 		// like the rest.
@@ -1154,6 +1167,22 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			case TypeAgentClonesList:
 				if hc.version >= 2 {
 					h.agentClonesListed(hc, m)
+				}
+			case TypeSpawnReady:
+				// A changed readiness, from a host that sent one in its hello
+				// (an -interactive host): kept like the hello's.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					next := hc.spawnReady
+					if hc.interactive && m.SpawnReady != nil {
+						next = CleanSpawnReady(m.SpawnReady)
+					}
+					same := next.Same(hc.spawnReady)
+					hc.spawnReady = next
+					hc.mu.Unlock()
+					if !same {
+						h.changed(hc.key.owner)
+					}
 				}
 			case TypeClosed:
 				var why error

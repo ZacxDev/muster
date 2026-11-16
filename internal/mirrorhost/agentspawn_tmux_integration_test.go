@@ -443,3 +443,62 @@ func TestTmuxTheSweepRemovesOnlyWorktreesThatHoldNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestTmuxAScratchSpawnRunsInAPrivateDirectoryAndIsSweptAway (officers O-B,
+// B6): an officer with no repository, on a plain -agent-spawn host, starts in <agent-spawn-dir>/scratch/<dispatch> — a directory the spawn made,
+// 0700 — with its prompt verbatim, Claude Code's trust entry for it, no branch
+// and no git call; once its window is gone the sweep removes the directory,
+// with whatever the instance wrote in it.
+func TestTmuxAScratchSpawnRunsInAPrivateDirectoryAndIsSweptAway(t *testing.T) {
+	r := newSpawnRig(t)
+	r.c.cfg.AgentSpawn.Repos = nil // nothing allow-listed: a scratch spawn needs none
+	callsBefore := r.gitCalls()
+	prompt := mirror.OfficerSpawnPreface + ".\n\nYou are officer sentinel:sessions"
+	w, e := r.spawn(t, 91, mirror.AgentSpawnReq{Runtime: "claude", Prompt: prompt, Name: "officer-sentinel-sessions-1", Scratch: true})
+	if e != nil {
+		t.Fatalf("the scratch spawn was refused: %+v", e)
+	}
+	want := filepath.Join(r.c.spawnDir(), scratchDirName, "91")
+	if w.Worktree != want || w.Branch != "" {
+		t.Fatalf("spawned in %q on branch %q; want %q and no branch", w.Worktree, w.Branch, want)
+	}
+	if fi, err := os.Stat(want); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the scratch directory: %v %v; want a 0700 directory", fi, err)
+	}
+	argv := r.argvOf(t, 91)
+	if len(argv) == 0 || argv[len(argv)-1] != prompt {
+		t.Fatalf("the stub saw %q; want the prompt last", argv)
+	}
+	if cwd := r.tmux(t, "display-message", "-p", "-t", w.Pane, "#{pane_current_path}"); realOrClean(cwd) != want {
+		t.Fatalf("the window runs in %q, not the scratch directory", cwd)
+	}
+	var st map[string]any
+	b, _ := os.ReadFile(r.c.cfg.AgentSpawn.ClaudeState)
+	_ = json.Unmarshal(b, &st)
+	if e, ok := st["projects"].(map[string]any)[want].(map[string]any); !ok || e["hasTrustDialogAccepted"] != true {
+		t.Fatalf("no trust entry for the scratch directory %s", want)
+	}
+	if n := r.gitCalls() - callsBefore; n != 0 {
+		t.Fatalf("a scratch spawn ran the version-control binary %d times", n)
+	}
+	// The instance writes in it; its window goes; the sweep removes it whole.
+	if err := os.WriteFile(filepath.Join(want, "notes.md"), []byte("draft\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.c.sweepOnce(context.Background())
+	if _, err := os.Stat(want); err != nil {
+		t.Fatal("the sweep removed a scratch directory whose window is live")
+	}
+	r.tmux(t, "kill-window", "-t", w.Window)
+	r.c.sweepOnce(context.Background())
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("the scratch directory outlived its window: %v", err)
+	}
+	// Its trust entry went with it (O-B round 0).
+	st = nil
+	b, _ = os.ReadFile(r.c.cfg.AgentSpawn.ClaudeState)
+	_ = json.Unmarshal(b, &st)
+	if _, ok := st["projects"].(map[string]any)[want]; ok {
+		t.Fatalf("the swept scratch directory's trust entry %s is still in Claude Code's state file", want)
+	}
+}

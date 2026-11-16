@@ -485,7 +485,7 @@ func TestADeclaredOfficersDefReadsDeclaredAtOnce(t *testing.T) {
 
 // TestCreateRefusesPerFieldWithTheDeclarationChecks: the API refuses what the
 // boot would (the one declaration check), naming each field: a host officer
-// with no repo (B6) and a model; a bad repo; a pod officer naming a host; a
+// with a model (no repo is allowed since O-B: a scratch directory); a bad repo; a pod officer naming a host; a
 // bad duration; and an id whose instance names cannot fit the namespace.
 func TestCreateRefusesPerFieldWithTheDeclarationChecks(t *testing.T) {
 	r := newDeclRig(t, declRigOpts{pods: true, hub: true})
@@ -493,7 +493,7 @@ func TestCreateRefusesPerFieldWithTheDeclarationChecks(t *testing.T) {
 		name, body string
 		fields     []string
 	}{
-		{"host without repo, with model", `{"id":"` + declID + `","runtime":"host","host":"` + hostOffHost + `","model":"opus"}`, []string{"repo", "model"}},
+		{"host without repo, with model", `{"id":"` + declID + `","runtime":"host","host":"` + hostOffHost + `","model":"opus"}`, []string{"model"}},
 		{"bad repo", `{"id":"` + declID + `","runtime":"pod","repo":"not a repo"}`, []string{"repo"}},
 		{"pod naming a host", `{"id":"` + declID + `","runtime":"pod","host":"` + hostOffHost + `"}`, []string{"host"}},
 		{"bad poll", `{"id":"` + declID + `","runtime":"pod","poll_interval":"1s"}`, []string{"poll_interval"}},

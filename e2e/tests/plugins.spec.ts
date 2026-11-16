@@ -153,14 +153,20 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await page.locator('#passkey-add').click();
   await expect(page.locator('#passkey-list [data-passkey-id]')).toHaveCount(1);
 
-  // 1. Mint the plugin's token on /plugins.
+  // 1. Mint the plugin's token on /plugins — with NO data scope: it takes the
+  //    name (officers O-B; it was refused). The one-time token is TEXT on the
+  //    page, not a form field's value (a reader of the page lost it).
   await page.goto(browserURL + '/plugins');
   await page.fill('#plugin-name', 'example-inbox');
   await page.fill('#plugin-label', 'Example inbox');
-  await page.fill('#plugin-scope', 'example-inbox');
   await page.getByRole('button', { name: 'Create plugin token' }).click();
-  const token = await page.locator('#minted-plugin-token').inputValue();
+  await expect(page.locator('[data-testid="minted-plugin-token"]')).toContainText(/mpl_[A-Za-z0-9_-]{43}/);
+  await expect(page.locator('input#minted-plugin-token')).toHaveCount(0);
+  const token = (await page.locator('#minted-plugin-token').innerText()).trim();
   expect(token).toMatch(/^mpl_[A-Za-z0-9_-]{43}$/);
+  await expect(page.locator('[data-plugin-id]').filter({ hasText: 'example-inbox' })).toContainText('scope example-inbox');
+  // Each card says where its messages go, in text.
+  await expect(page.locator('[data-plugin-delivers-to]').first()).toContainText(/Delivers to (your chief|officer:)/);
   plugin = await pwRequest.newContext({ baseURL: machineURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
 
   // 2. NEGATIVE CONTROL: the shared hook token is not a plugin credential.

@@ -219,7 +219,7 @@ func TestConcurrentSpawnsNeverPassTheRateLimit(t *testing.T) {
 			}(int64(200 + i))
 		}
 		wg.Wait()
-		n, err := admittedSince(u.log, time.Now().Add(-time.Hour))
+		n, err := admittedSince(u.log, time.Now().Add(-time.Hour), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +270,7 @@ func TestAnOversizeFieldCannotDisableTheLimit(t *testing.T) {
 			t.Fatalf("spawn %d: rate limited %v (%+v); want %v", i, got, e, want)
 		}
 	}
-	if n, err := admittedSince(u.log, time.Now().Add(-time.Hour)); err != nil || n != 2 {
+	if n, err := admittedSince(u.log, time.Now().Add(-time.Hour), false); err != nil || n != 2 {
 		t.Fatalf("admittedSince = %d, %v; want 2", n, err)
 	}
 	// The big request was refused before the rate check (its base), so it

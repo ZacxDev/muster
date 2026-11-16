@@ -168,7 +168,9 @@ A builtin officer can run without Kubernetes: with `"runtime": "host"` each
 instance is a Claude Code window that muster asks ONE of your machines to
 start, through that machine's `muster-mirror` — the same host spawn the chief
 uses ([design/officers-on-hosts.md](design/officers-on-hosts.md)). This is how
-officers run in the Compose stack, which forwards `MUSTER_OFFICERS`.
+officers run in the Compose stack, which forwards `MUSTER_OFFICERS` — with the
+Compose chief (`MUSTER_CHIEF_RUNTIME=compose`) or without it: the chief runs
+beside host officers, and refuses only an officer that runs in pods, naming it.
 
 ```sh
 # .env on the Compose install
@@ -181,6 +183,24 @@ under `-agent-spawn-roots`), and be current enough to close windows and to
 accept an officer's first message (a muster-mirror from this version). Its
 user-scope `mcpServers.muster` entry ([attention.md](attention.md#mirrored-claude-code-sessions))
 is how an instance reaches its officer tools.
+
+- **No repository.** An officer with nothing to do with a repository (a
+  session minder, a marketing officer) declares none: each instance then starts
+  in a private scratch directory of its own on the host,
+  `<-agent-spawn-dir>/scratch/<n>`, removed once its window is gone. Any host
+  with `-agent-spawn` does this; nothing more to set, and no allow-listed
+  repository is needed.
+- **Claude Code on the host.** muster-mirror runs `claude` from the tmux
+  server's global PATH, which an install that put it in `~/.local/bin` may not
+  reach: set `-claude-path` (`MUSTER_MIRROR_CLAUDE_PATH`) to its absolute path
+  (`command -v claude`). Log in to Claude Code once as that user (run `claude`
+  there): a window started before that stops at Claude Code's login screen. The
+  host tells muster in its hello — and again whenever it changes — its
+  allow-list, whether it offers scratch spawns, and whether claude is found and
+  logged in; `"runtime": "auto"` never picks a host whose claude is missing or
+  not logged in, `GET /api/officers/runtime-options` shows each host's
+  `repo_allowed`, `claude` and `login`, and `muster doctor`'s `officers` check
+  names what is in each officer's way, with the fix.
 
 What happens:
 
@@ -249,8 +269,19 @@ What happens:
   (a host row needs no provisioner; drafts and grants on it go with it).
 - **Host offline.** The officer changes nothing until the host is back: its
   items wait.
+- **An instance that never claims.** An instance that has not claimed its
+  item 10 minutes after it started — its window listed, work open — raises ONE
+  notice on the Attention view, naming the likely cause the host reported
+  ("Claude Code is not logged in on `<host>`", or a window where Claude Code
+  started no conversation: its first-run, login or folder-trust screen) and the
+  window to open. It is withdrawn the moment the instance claims (or its window
+  goes), and never raised twice for one start.
+- **Why it started.** Every start's log line says why: `first start`, `woken
+  for new work after muster scaled it to zero (idle 30m0s)`, or `restart:` and
+  what ended the last one (its window gone, its last start refused or never
+  answered).
 
-Refused at boot, each named: `backend` other than `builtin`, no `host` or `repo`,
+Refused at boot, each named: `backend` other than `builtin`, no `host`,
 and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos` (so a
 [standing read](#letting-it-read-public-repositories-read_grant-standing) too:
 it is served through muster's proxy with the agent token a host session never
@@ -263,10 +294,14 @@ network and other tmux windows; no egress lock and no read-only GitHub token —
 its `repo` worktree is a pushable checkout with that user's credentials, and
 the first message telling it not to is prose, not a gate. muster's approval of
 its drafts is the sanctioned path, not a boundary: it could post directly with
-whatever that user can reach. The host's own allow-list, spawn rate
-limit (`-agent-spawn-rate`, default 3 per 10 minutes and 10 a day — it counts
-each wake, so raise it on that host if the officer wakes more often) and audit
-log still bound what muster can make it do. Declare one only on a machine whose
+whatever that user can reach. The host's own allow-list, its ceiling on
+officer spawns (`-agent-spawn-officer-rate`, default 20 per 10 minutes and 400
+a day, all officers together; the chief's own `-agent-spawn-rate` no longer
+counts them) and audit log still bound what muster can make it do. Under that
+ceiling muster limits each officer by its own budget, sized from its idle
+window, poll and shortest schedule (a 10-minute schedule gets 150 starts a day;
+the defaults 53), and refuses a start past it, saying so — so one officer's
+restart loop cannot spend the others' share. Declare one only on a machine whose
 user you would let run that charter unattended. The full list is in the
 [design](design/officers-on-hosts.md#security-what-changes-against-a-pod).
 
@@ -278,8 +313,8 @@ and the ON line's `S on hosts` count.
 A [team](auth.md#teams) may own a `"runtime": "host"` officer (team sharing
 2b.5). Its `host` is a **team host**: a `muster-mirror` connected with the
 team's own mirror token ([mirroring.md](mirroring.md#team-hosts)), set up as
-above (`-interactive -agent-spawn`, the officer's `repo` on
-`-agent-spawn-repos`).
+above (`-interactive -agent-spawn`, and the officer's `repo`, if it names
+one, on `-agent-spawn-repos`).
 
 - **Only the team's host.** The runtime acts as the team, so it spawns,
   closes and lists windows only on the team's host of that name. A member's
@@ -596,7 +631,8 @@ muster officer delete scout:main    # its queue, schedules and instances go too
   token's host name); any other is refused on the `host` field.
 - It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
   refusal names each field (`{"error", "fields": [{field, error}]}`). A host
-  officer still needs a `repo`.
+  officer with no `repo` starts in a scratch directory (any host with
+  `-agent-spawn`).
 - Its instance names are built on a **server-allocated slug**
   (`instance_slug`): the id's slug and a short tag derived from you and the
   id (`scout-main-k3x9q2`), unique across owners, so two people may each have
@@ -627,7 +663,7 @@ muster officer delete scout:main    # its queue, schedules and instances go too
 | GET / POST | `/api/officers/declared` | POST `{id, name?, charter?, policy?, runtime?, host?, repo?, connectors?, read_repos?, max_instances?, idle_scale_to_zero_after?, poll_interval?, model?, mode?, escalate_to?, paused?}` |
 | GET / PUT / DELETE | `/api/officers/declared/{officer}` | PUT: the whole record, as POST, with `mode` and `paused` required (its id and slug never change) |
 | POST | `/api/officers/declared/{officer}/pause`, `…/resume` | |
-| GET | `/api/officers/runtime-options` | `?repo=`: pod available or not, each of your hosts (spawnable, closable, qualifies, reason), what `auto` picks |
+| GET | `/api/officers/runtime-options` | `?repo=`: pod available or not, each of your hosts (spawnable, closable, repo_allowed, scratch, claude, login, qualifies, reason), what `auto` picks |
 
 ### Every database install runs the officer machinery
 

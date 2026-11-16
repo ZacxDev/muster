@@ -164,7 +164,12 @@ func (f officerFleet) hostInstances(ctx context.Context, o officers.Officer) ([]
 		if ok {
 			s.followHostSpawnSession(octx, st, r, v.Windows)
 		}
-		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && hostSpawnUp(r, v.Windows, now)})
+		up := ok && hostSpawnUp(r, v.Windows, now)
+		in := officers.InstanceState{N: n, Name: name, Exists: ok, Up: up}
+		if !up {
+			in.Down = hostDownReason(r, ok, o.Host, v.Windows)
+		}
+		out = append(out, in)
 	}
 	return out, nil
 }
@@ -218,10 +223,23 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 	switch {
 	case !online:
 		return fmt.Errorf(officerHostOffline, o.ID, o.Host)
+	case !hostSpawnable(v, mirror.SpawnRuntimeClaude) && hostReadyRefusal(v, o.Repo, false) != "":
+		// Why the host does not offer claude, in its own words (its
+		// readiness: no claude on the tmux server's PATH, spawn off …).
+		return fmt.Errorf("officers: %s: host %s cannot start it: %s", o.ID, o.Host, hostReadyRefusal(v, o.Repo, false))
 	case !hostSpawnable(v, mirror.SpawnRuntimeClaude):
 		return fmt.Errorf(officerHostNoSpawn, o.ID, o.Host)
 	case !v.AgentClose:
 		return fmt.Errorf(officerHostNoClose, o.ID, o.Host)
+	}
+	// What the host's readiness says it would refuse (a repository off its
+	// allow-list, no scratch spawns, no claude): refused here, before the
+	// spawn spends any of the host's rate.
+	if why := hostReadyRefusal(v, o.Repo, false); why != "" {
+		return fmt.Errorf("officers: %s: host %s cannot start it: %s", o.ID, o.Host, why)
+	}
+	if err := f.hostSpawnBudget(octx, o); err != nil {
+		return err
 	}
 	prompt := officerSpawnPrompt(kickoff)
 	if len(prompt) > mirror.MaxSpawnPrompt {
@@ -241,7 +259,8 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 	if !f.stillDeclared(ctx, o) {
 		return fmt.Errorf("officers: %s was deleted while %s started; not sending its spawn", o.ID, name)
 	}
-	req := mirror.AgentSpawnReq{Runtime: mirror.SpawnRuntimeClaude, Repo: o.Repo, Prompt: prompt, Name: name}
+	// No repo: a SCRATCH spawn (the host makes a private directory for it).
+	req := mirror.AgentSpawnReq{Runtime: mirror.SpawnRuntimeClaude, Repo: o.Repo, Prompt: prompt, Name: name, Scratch: o.Repo == ""}
 	owner, host := o.Owner, o.Host
 	// Ends with the server's streams (shutdown): the request was written or
 	// not; a reply after that arrives on the late-reply hook.
@@ -267,7 +286,7 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 		defer cancel()
 		s.applyOfficerSpawnReply(rctx, owner, host, m)
 	})
-	s.logger.Printf("officers: %s: asked host %s to start it (spawn %d, a worktree of %s)", name, host, row.ID, o.Repo)
+	s.logger.Printf("officers: %s: asked host %s to start it (spawn %d, in %s)", name, host, row.ID, spawnWhere(o))
 	return nil
 }
 
@@ -613,7 +632,8 @@ func hostOfficerToolDefs() []agents.ToolDef {
 	var out []agents.ToolDef
 	for _, d := range officerToolDefs() {
 		if officers.ToolOffered(probe, d.Name) {
-			out = append(out, d)
+			// A host officer is builtin: worded for muster's own queue.
+			out = append(out, builtinToolDef(probe, d))
 		}
 	}
 	return out
@@ -646,9 +666,13 @@ func (s *Server) officerSpawnIDs(ctx context.Context, host string, ids []int64) 
 
 // officerHostLine is a host officer's boot line.
 func officerHostLine(o officers.Officer) string {
-	return fmt.Sprintf("officers: %s on: runtime host on %s — instances %s..%s, each a window in its agents session in a fresh worktree of %s; idle scale-to-zero after %s, poll %s. "+
-		"The host must run -interactive -agent-spawn with %s on -agent-spawn-repos, and a muster-mirror that closes windows. %s",
-		o.ID, o.Host, o.InstanceName(1), o.InstanceName(o.MaxInstances), o.Repo, o.IdleAfter, o.PollInterval, o.Repo,
+	where, needs := "a fresh worktree of "+o.Repo, " with "+o.Repo+" on -agent-spawn-repos"
+	if o.Repo == "" {
+		where, needs = "a private scratch directory (it has no repository)", ""
+	}
+	return fmt.Sprintf("officers: %s on: runtime host on %s — instances %s..%s, each a window in its agents session in %s; idle scale-to-zero after %s, poll %s. "+
+		"The host must run -interactive -agent-spawn%s, and a muster-mirror that closes windows. %s",
+		o.ID, o.Host, o.InstanceName(1), o.InstanceName(o.MaxInstances), where, o.IdleAfter, o.PollInterval, needs,
 		strings.TrimSpace(officerHostSecurityLine))
 }
 

@@ -455,6 +455,11 @@ type Msg struct {
 	// and sends it no hint (and a hint it was sent anyway it ignores, refusing
 	// a repository with several clones as it always did).
 	AgentSpawnClones bool `json:"agentSpawnClones,omitempty"`
+	// SpawnReady (hello, and TypeSpawnReady) is the host's spawn readiness
+	// (spawnready.go): its allow-list, scratch spawns, and whether claude is
+	// found and logged in. A hint muster reads, never a gate the host skips.
+	// Backward-compatible both ways; nil from an older host reads as unknown.
+	SpawnReady *SpawnReadiness `json:"spawnReady,omitempty"`
 	// CloneRepo is an agent-clones request's repository (<owner>/<repo>);
 	// Clones an agent-clones-list's answer (clones.go).
 	CloneRepo string       `json:"cloneRepo,omitempty"`

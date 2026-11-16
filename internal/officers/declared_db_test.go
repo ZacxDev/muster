@@ -8,8 +8,9 @@ import (
 )
 
 // TestADeclarationIsRefusedByTheOneDeclarationCheck: a DB declaration goes
-// through declared.officer, so a host officer with no repo and a model is
-// refused per field exactly as a MUSTER_OFFICERS entry is at boot, and a
+// through declared.officer, so a host officer with a model and a tier block
+// is refused per field exactly as a MUSTER_OFFICERS entry is at boot — and
+// NOT for having no repo (O-B: it starts in a scratch directory) — and a
 // valid one becomes a builtin officer carrying its slug.
 func TestADeclarationIsRefusedByTheOneDeclarationCheck(t *testing.T) {
 	d := Declaration{ID: "scout:main", Owner: 7, Runtime: RuntimeHost, Host: "box", Model: "opus", InstanceSlug: "scout-main"}
@@ -18,8 +19,8 @@ func TestADeclarationIsRefusedByTheOneDeclarationCheck(t *testing.T) {
 	for _, f := range Fields(err) {
 		fields[f.Field] = true
 	}
-	if !fields["repo"] || !fields["model"] || len(fields) != 2 {
-		t.Fatalf("a host declaration with no repo and a model: %v (fields %v), want repo and model", err, fields)
+	if !fields["model"] || len(fields) != 1 {
+		t.Fatalf("a host declaration with no repo and a model: %v (fields %v), want model alone", err, fields)
 	}
 	// The same declaration through MUSTER_OFFICERS says the same thing.
 	_, envErr := Parse(`[{"id":"scout:main","backend":"builtin","runtime":"host","host":"box","model":"opus"}]`, func(string) string { return "" }, "muster-agent-")

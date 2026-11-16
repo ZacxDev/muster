@@ -351,6 +351,16 @@ func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, offic
 		"plugin_id": p.ID, "officer": officer, "item_id": id, "kind": kind})
 }
 
+// AnyBoundToOfficer reports whether a live (unrevoked) plugin the principal
+// reads is bound to an officer: with no agent gateway, the only plugins whose
+// messages anything delivers (the feature registry's plugins state, read once
+// at boot as the System principal: cmd/muster-server pluginsBoundAtBoot).
+func (s *PGStore) AnyBoundToOfficer(ctx context.Context) (bool, error) {
+	var any bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugins WHERE revoked_at IS NULL AND coalesce(deliver_to, '') <> '')`).Scan(&any)
+	return any, err
+}
+
 // SetDeliverTo binds one of the principal's live plugins to an officer
 // ("officer:<id>"), or unbinds it (""). The officer must be defined for the
 // plugin's owner (OfficerLink.Defined, under row-level security):

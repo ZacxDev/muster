@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log"
@@ -34,7 +33,7 @@ func teamHostOfficerRig(t *testing.T, hostsOwner int64, connectors ...string) (*
 	t.Helper()
 	hq := hqtest.New(map[string]string{offBTok: offB})
 	t.Cleanup(hq.Close)
-	logs := &bytes.Buffer{}
+	logs := &lockedBuffer{}
 	r := &hostOfficerRig{m: newHostOfficerMirrorFor(hostsOwner), hq: hq, spawns: officers.NewMemHostSpawnStore(), logs: logs, clock: time.Now()}
 	r.spawns.Now = r.now
 	hq.Now = r.now

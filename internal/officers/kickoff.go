@@ -21,10 +21,31 @@ import (
 // an instance is never told about a tool its backend does not serve — the
 // same rule (ToolServed) the tool listing, the allow-list and dispatch apply.
 // An HQ officer's text is pinned byte for byte by internal/api's golden.
-func KickoffText(o Officer, n int) string {
+func KickoffText(o Officer, n int) string { return KickoffTextWith(o, n, KickoffGrants{}) }
+
+// KickoffGrants is what a builtin officer's TYPE grants (its policy's
+// capabilities, read when the instance starts): the tools offered on a grant
+// are listed in the kickoff only when granted, as officer_post_draft and the
+// contact tools are served only then (internal/api, at call time).
+type KickoffGrants struct {
+	// OutboundDrafts: the type grants outbound_drafts (officer_post_draft).
+	OutboundDrafts bool
+	// Contacts: the type grants contacts (the contact tools).
+	Contacts bool
+}
+
+// KickoffTextWith is KickoffText for an officer whose type grants g.
+func KickoffTextWith(o Officer, n int, g KickoffGrants) string {
 	caps := DeclaredCapabilities(o)
 	w := kickoffWordingFor(o)
-	tools := strings.Join([]string{ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease}, ", ")
+	list := []string{ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease}
+	if g.OutboundDrafts && ToolServed(o, caps, ToolPostDraft) {
+		list = append(list, ToolPostDraft)
+	}
+	if g.Contacts && ToolServed(o, caps, ToolContactGet) {
+		list = append(list, ContactTools...)
+	}
+	tools := strings.Join(list, ", ")
 	ask := ""
 	if ToolServed(o, caps, ToolAskPerson) {
 		ask = fmt.Sprintf(w.ask, ToolAskPerson)
@@ -54,6 +75,9 @@ const podWhere = "You have no muster task and no repository checkout; that is ex
 func whereNote(o Officer) string {
 	if !o.OnHost() {
 		return podWhere
+	}
+	if o.Repo == "" {
+		return fmt.Sprintf("You have no muster task and no repository. You run in a tmux window on %s that muster started for this officer, in a private scratch directory of your own (removed when muster closes this window); that is expected.", o.Host)
 	}
 	return fmt.Sprintf("You have no muster task. You run in a tmux window on %s that muster started for this officer, in a fresh git worktree of %s; that is expected.", o.Host, o.Repo)
 }
@@ -93,13 +117,13 @@ var hqKickoffWording = kickoffWording{
 // live in muster's own database (internal/officers/builtin), and there is no
 // token at all.
 var builtinKickoffWording = kickoffWording{
-	produces:   "queued in muster",
-	credential: "muster serves them from its own database (this officer's backend is muster's built-in one), so there is no token to hold or ask for.",
-	backendNote: "\nWherever a tool's description says HQ, read muster: this officer has no HQ. A tool muster does not list for you is one this backend does not serve; do not look for another way to it.",
+	produces:    "queued in muster",
+	credential:  "muster serves them from its own database (this officer's backend is muster's built-in one), so there is no token to hold or ask for.",
+	backendNote: "\nA tool muster does not list for you is one this officer's backend does not serve; do not look for another way to it.",
 	source:      "muster",
 	escalated:   "that is how this officer reaches its owner",
 	newWork:     "there is new work",
-	ask: "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, to: \"owner\", question, options?, deadline_seconds?} (the question always goes to the officer's owner, on muster's Attention view and their phone, whatever `to` says; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer (its asks[]), and wakes an instance to take it up again; an ask left unanswered past its deadline escalates the item to the owner.\n",
+	ask:         "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, to: \"owner\", question, options?, deadline_seconds?} (the question always goes to the officer's owner, on muster's Attention view and their phone, whatever `to` says; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer (its asks[]), and wakes an instance to take it up again; an ask left unanswered past its deadline escalates the item to the owner.\n",
 }
 
 func kickoffWordingFor(o Officer) kickoffWording {
@@ -190,6 +214,12 @@ func tierNote(o Officer, source string) string {
 // closingLine is the kickoff's last paragraph: what the officer may never do.
 // A shipping officer may merge and release, through muster's gated tools only.
 func closingLine(o Officer) string {
+	if o.OnHost() {
+		// 🔴 NOT "no production credentials": a host instance runs as the
+		// machine's user, with that user's files and credentials (the
+		// design's security section). Prose, not a gate.
+		return fmt.Sprintf("You watch, triage, record and dispatch. You never merge, deploy or release. You run as %s's own user, with that user's files and credentials: use them only for what your charter asks.", o.Host)
+	}
 	if o.Ship == nil {
 		return "You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials."
 	}

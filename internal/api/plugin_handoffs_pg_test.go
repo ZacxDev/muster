@@ -125,7 +125,7 @@ func (f *handoffSeam) as(uid int64, stale bool) func(*http.Request) {
 	}
 }
 
-var mintedTokenRE = regexp.MustCompile(`id="minted-plugin-token" readonly value="(mpl_[A-Za-z0-9_-]+)"`)
+var mintedTokenRE = regexp.MustCompile(`id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]+)<`)
 
 // create mints a plugin through the /plugins form as uid and returns its token
 // and id ("" and the page's code when refused).
