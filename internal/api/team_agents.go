@@ -146,18 +146,35 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 	return refused
 }
 
-// teamAgentGate is refuseTeamAgentRoute, and the team whose agent's terminal
-// it let a member through to (0 for anything else): admit registers that
-// socket for the membership sweep (teamTerminalOpen).
-func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, int64) {
+// teamAgentChatSocket is the team agent's chat socket: the one teamAgentChat
+// route a member holds OPEN, so admit registers it for the membership sweep
+// (the composer's POST and mark-read end with their response).
+const teamAgentChatSocket = "GET /agents/{name}/ws"
+
+// teamAgentSocket is a member's socket on a team's agent that the door let
+// through and admit registers for the membership sweep (teamAgentSocketOpen):
+// the team, the cause it is ended with, and the refusal for a member whose
+// fresh role no longer reaches it. team 0: nothing to register.
+type teamAgentSocket struct {
+	team    int64
+	cause   error
+	refusal string
+}
+
+// teamAgentGate is refuseTeamAgentRoute, and the member's socket on a team
+// agent it let through — its terminal, or (Issue #724 round 1, F1) its chat
+// socket — for admit to register (teamAgentSocketOpen); zero for anything
+// else.
+func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, teamAgentSocket) {
+	none := teamAgentSocket{}
 	rule, ok := teamAgentRoutes[r.Pattern]
 	if !ok || rule == teamAgentRead || s.ext.Agents == nil {
-		return false, 0
+		return false, none
 	}
 	ctx := r.Context()
 	p, ok := authz.From(ctx)
 	if !ok || p.All() || p.TeamScope() == "" {
-		return false, 0
+		return false, none
 	}
 	var a agents.Agent
 	var err error
@@ -172,30 +189,33 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 			a, err = s.ext.Agents.Get(ctx, sess.AgentID)
 		}
 	} else {
-		return false, 0
+		return false, none
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false, 0
+		return false, none
 	case err != nil:
 		s.logger.Printf("team agents: %s: read the agent: %v", r.Pattern, err)
 		http.Error(w, "could not load the agent", http.StatusInternalServerError)
-		return true, 0
+		return true, none
 	}
 	if a.OwnerID <= 0 || a.OwnerID == p.UserID {
-		return false, 0
+		return false, none
 	}
 	role, in := p.TeamScope().RoleIn(a.OwnerID)
 	if !in {
-		return false, 0 // not a team agent of theirs: row-level security decided
+		return false, none // not a team agent of theirs: row-level security decided
 	}
 	switch {
 	case rule == teamAgentChat && role.AtLeast(authz.TeamOperator):
-		return false, 0
+		if r.Pattern == teamAgentChatSocket {
+			return false, teamAgentSocket{team: a.OwnerID, cause: errTeamChatClosed, refusal: TeamAgentViewerRefusal}
+		}
+		return false, none
 	case rule == teamAgentManage && role == authz.TeamManager:
-		return false, 0
+		return false, none
 	case rule == teamAgentTerminal && role.AtLeast(authz.TeamOperator) && stepup.Fresh(ctx, s.stepUpNow()):
-		return false, a.OwnerID
+		return false, teamAgentSocket{team: a.OwnerID, cause: errTeamTerminalClosed, refusal: TeamAgentTerminalOperator}
 	}
 	msg := TeamAgentRouteRefusal
 	switch rule {
@@ -212,7 +232,7 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 		}
 	}
 	http.Error(w, msg, http.StatusForbidden)
-	return true, 0
+	return true, none
 }
 
 // TeamAgentTerminalWhy is the confirm dialog's sentence on a team agent's
