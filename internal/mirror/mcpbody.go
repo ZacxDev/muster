@@ -18,7 +18,7 @@ import (
 // page_update document a page of up to pages.MaxVersionBytes (512 KiB) with
 // its images inline as data: URIs. Both hops used to cap every request at a
 // flat 64 KiB, so a page with a couple of screenshots was refused HTTP 413 by
-// the host proxy (measured 2026-11-16: ~440 KB, 10 inline WebP screenshots)
+// the host proxy (a ~440 KB page of 10 inline WebP screenshots, at af368efa)
 // and unread by muster: the documented limit could not be reached at all.
 // The body is read before the tool's name is known, so the read bound is the
 // LARGEST input any tool documents — the blocks as a request may carry them

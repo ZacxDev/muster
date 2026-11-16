@@ -24,8 +24,8 @@ import (
 // data: URIs; until the MCP request bound was derived from that limit
 // (mirror.MaxMCPRequestBytes) every MCP request was capped at 64 KiB, by
 // muster and by the host proxy alike, so a page with a couple of screenshots
-// could not be published at all (measured 2026-11-16: ~440 KB, HTTP 413 from
-// a mirrored session's local proxy). Every name and image here is invented.
+// could not be published at all (~440 KB, HTTP 413 from a mirrored
+// session's local proxy, at af368efa). Every name and image here is invented.
 
 // screenshotBlocks is a page of n html blocks, each one inline base64 "WebP"
 // of per bytes (random, so it does not compress into anything smaller), as a
