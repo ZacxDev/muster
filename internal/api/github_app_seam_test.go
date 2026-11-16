@@ -698,6 +698,15 @@ func (u failingUsers) Account(ctx context.Context, id int64) (users.Account, err
 	return users.Account{Role: r}, err
 }
 
+// HoldTeamRole: failingUsers holds no memberships; when failing, the read
+// fails as its role read does. Either way the send fence REFUSES.
+func (u failingUsers) HoldTeamRole(context.Context, int64, int64) (authz.TeamRole, bool, func(), error) {
+	if u.fail.Load() {
+		return "", false, nil, errors.New("synthetic: the users table could not be read")
+	}
+	return "", false, func() {}, nil
+}
+
 func (u failingUsers) Role(_ context.Context, id int64) (authz.Role, error) {
 	if u.fail.Load() {
 		return "", errors.New("synthetic: the users table could not be read")

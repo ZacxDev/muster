@@ -202,6 +202,9 @@ var isolationClasses = map[string]routeClass{
 	"DELETE /api/tokens/{id}": classAPIToken,
 	// The attention summary: the token owner's own queue and hosts.
 	"GET /api/attention/summary": classAPIToken,
+	// Reading the ask log (ask_log_read.go): the token owner's own asks.
+	"GET /api/asks/log":     classAPIToken,
+	"GET /api/asks/summary": classAPIToken,
 	// Creating an agent (agent_create_api.go): an agent-create token only. Its
 	// note_id is read under the caller's row-level security, so B naming A's
 	// task is "no such task" (TestAnAgentCreateNamingAnotherUsersTaskIsNotFound).
@@ -667,6 +670,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention":        classList,
 	"GET /attention/items":  classList,
 	"GET /attention/drafts": classList,
+	// The Log tab's panel reads the caller's own asks (row-level security;
+	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
+	"GET /attention/log": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":      classParam,

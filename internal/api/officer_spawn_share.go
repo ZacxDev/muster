@@ -137,6 +137,10 @@ func hostSpawnObject(id int64) string { return "officer_host_spawn:" + strconv.F
 
 const officerSpawnsPath = "/officers/spawns"
 
+// spawnPageWindow is how many of the newest rows each section of
+// /officers/spawns draws: the personal section, and each team's own.
+const spawnPageWindow = 200
+
 func (s *Server) registerOfficerSpawnPages(mux Mux) {
 	mux.HandleFunc("GET "+officerSpawnsPath, s.requireSession(s.handleOfficerSpawnsPage))
 	mux.HandleFunc("POST "+officerSpawnsPath+"/{id}/share", s.requireOperatorWrite(s.handleOfficerSpawnShare))
@@ -154,15 +158,27 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 		s.renderNotice(w, r, http.StatusNotFound, "No officer spawns", ErrLendOff.Error())
 		return
 	}
-	rows, err := s.spawnLender.VisibleHostSpawns(ctx, 200)
+	var teamIDs []int64
+	for _, m := range p.Teams.List() {
+		teamIDs = append(teamIDs, m.Team)
+	}
+	// 🔴 ONE BOUNDED WINDOW PER SECTION (#729 round 1, F1): the personal
+	// section (the viewer's own rows and the rows lent to their teams) reads
+	// its own newest spawnPageWindow, and each team's own rows theirs — a
+	// busy team host officer never pushes a member's own lend, and its Stop
+	// sharing form, off the page.
+	own, err := s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{NotOwnedBy: teamIDs}, spawnPageWindow)
+	teamOwned := map[int64][]officers.HostSpawn{}
+	for _, t := range teamIDs {
+		if err != nil {
+			break
+		}
+		teamOwned[t], err = s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{Team: t}, spawnPageWindow)
+	}
 	if err != nil {
 		s.logger.Printf("officers: read host spawns: %v", err)
 		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load officer spawns", "Try again in a moment.")
 		return
-	}
-	var teamIDs []int64
-	for _, m := range p.Teams.List() {
-		teamIDs = append(teamIDs, m.Team)
 	}
 	// team_tasks.go's one team-name read (#664): "Team <id>" when unnamed.
 	names := s.teamNames(ctx, teamIDs)
@@ -172,21 +188,26 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 			lendable = append(lendable, m)
 		}
 	}
+	// 🔴 A TEAM'S OWN SPAWNS (team sharing 2b.5): a team host officer's spawn
+	// rows are owned by the team, and its members read them at viewer
+	// (team_owner_read, migration 0133). They are drawn under the team, and
+	// are nobody's to lend (lend_target: the actor is not the owner): only
+	// the team acting principal (the officer runtime) writes them. A row is
+	// the TEAM'S when its owner is one of the viewer's teams — never a row
+	// merely lent to that team, whose owner is a person.
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Officer spawns</h1>
 <p class="text-sm text-fg2">The Claude Code sessions muster asked a host to start for your host officers. Each is yours alone until you share it with a team you operate; its members can then see it, and only you can change it.</p>`)
-	if len(rows) == 0 {
+	if len(own) == 0 {
 		b.WriteString(`<p class="text-sm text-fg2" id="officer-spawns-empty">No officer spawns yet.</p>`)
 	}
 	b.WriteString(`<ul class="flex flex-col gap-3" id="officer-spawns">`)
-	for _, h := range rows {
+	for _, h := range own {
 		id := strconv.FormatInt(h.ID, 10)
 		mine := h.OwnerID == p.UserID
 		b.WriteString(`<li class="flex flex-col gap-2" data-spawn-id="` + id + `" data-spawn-team="` + strconv.FormatInt(h.SharedTeam, 10) +
-			`" data-spawn-mine="` + strconv.FormatBool(mine) + `"><span class="text-sm text-fg">` +
-			html.EscapeString(h.Officer+" · "+h.Instance+" on "+h.Host) + `</span><span class="text-xs text-fg2">` + html.EscapeString(spawnState(h)) +
-			` · ` + fmtTime(h.CreatedAt) + `</span>`)
+			`" data-spawn-mine="` + strconv.FormatBool(mine) + `">` + spawnLine(h))
 		switch {
 		case !mine:
 			b.WriteString(`<span class="text-xs text-fg2">Shared with ` + html.EscapeString(names[h.SharedTeam]) + ` by a teammate (read-only).</span>`)
@@ -204,7 +225,29 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 		b.WriteString(`</li>`)
 	}
 	b.WriteString(`</ul></section>`)
+	for _, m := range p.Teams.List() {
+		list := teamOwned[m.Team]
+		if len(list) == 0 {
+			continue
+		}
+		team := strconv.FormatInt(m.Team, 10)
+		b.WriteString(`<section class="` + adminCard + `" id="officer-spawns-team-` + team + `" data-spawn-owner-team="` + team + `">
+<h2 class="text-base font-semibold text-fg">` + html.EscapeString(names[m.Team]) + `'s officers</h2>
+<p class="text-sm text-fg2">The sessions muster started on the team's hosts for the team's host officers. Every member sees them; nobody changes them here.</p>
+<ul class="flex flex-col gap-3">`)
+		for _, h := range list {
+			b.WriteString(`<li class="flex flex-col gap-2" data-spawn-id="` + strconv.FormatInt(h.ID, 10) + `" data-spawn-owner-team="` + team +
+				`" data-spawn-mine="false">` + spawnLine(h) + `</li>`)
+		}
+		b.WriteString(`</ul></section>`)
+	}
 	s.writeNavDocument(w, r, code, "Officer spawns", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+}
+
+// spawnLine is spawn h's officer, instance, host, state and time, drawn.
+func spawnLine(h officers.HostSpawn) string {
+	return `<span class="text-sm text-fg">` + html.EscapeString(h.Officer+" · "+h.Instance+" on "+h.Host) + `</span><span class="text-xs text-fg2">` +
+		html.EscapeString(spawnState(h)) + ` · ` + fmtTime(h.CreatedAt) + `</span>`
 }
 
 // spawnState is a spawn's state in words.
@@ -305,7 +348,7 @@ func (s *Server) toolOfficerSpawnShare(ctx context.Context, arguments string) st
 		}
 		// The chief's door carries no teams, so this reads its owner's own
 		// rows only.
-		rows, err := s.spawnLender.VisibleHostSpawns(ctx, 50)
+		rows, err := s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{}, 50)
 		if err != nil {
 			return toolErr("could not read the spawns")
 		}
