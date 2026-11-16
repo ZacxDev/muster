@@ -492,6 +492,7 @@ var agentReadCallers = map[string]string{
 	"Get Server.teamAgentGate":                "visible: the team-agent route gate itself",
 	"Get Server.deliverRouteAnswer":           "visible: a turn (chatTurn: as the team after the fresh role check)",
 	"Get Server.handBackRoute":                "visible: a turn or a chief note (chatTurn: as the team after the fresh role check)",
+	"Get Server.handBackDeferred":             "visible: whether the chief can take a hand-back now (read; acts on nothing)",
 	"Get Server.relayRoute":                   "visible: the chief's name for a reply draft (read)",
 	"Get Server.chiefPrimaryID":               "visible: the chief's primary session id (read)",
 	"Get Server.episodeWho":                   "machine: session push, as the episode's owner",
