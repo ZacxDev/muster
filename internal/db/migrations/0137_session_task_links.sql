@@ -1,4 +1,4 @@
--- muster 0136 — A SESSION'S DECLARED TASKS, AND ONE DIGEST PER BATCH OF ROUTES
+-- muster 0137 — A SESSION'S DECLARED TASKS, AND ONE DIGEST PER BATCH OF ROUTES
 -- (docs/focus.md#a-sessions-tasks, docs/chief.md#route_many).
 --
 --   agent_focus.task_keys     the tasks a MIRRORED session says it works
@@ -53,7 +53,7 @@
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_is_request;
 --   ALTER TABLE session_routes DROP CONSTRAINT IF EXISTS session_routes_batch_size_range;
 --   ALTER TABLE session_routes DROP COLUMN IF EXISTS batch_id, DROP COLUMN IF EXISTS batch_size;
---   DELETE FROM schema_migrations WHERE version = 136;
+--   DELETE FROM schema_migrations WHERE version = 137;
 
 SET LOCAL lock_timeout = '3s';
 

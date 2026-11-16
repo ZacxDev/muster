@@ -38,7 +38,7 @@ type Store interface {
 	// names.go.
 	SetManualName(ctx context.Context, s Subject, name string) (Name, error)
 	// SetTaskLink writes a MIRRORED session's declared tasks (tasklink.go,
-	// migration 0136).
+	// migration 0137).
 	SetTaskLink(ctx context.Context, s Subject, l TaskLink) (TaskLink, error)
 	// DismissDrift records the owner's "not now" on a rename offer at focus
 	// title title (drift.go, migration 0091).

@@ -345,7 +345,7 @@ Each call **replaces** the declaration.
 It takes no subject. It always writes the calling session's own row, the session
 the mirror door bound the call to, under your row-level security. An unknown
 argument is refused. The declaration lives on the session's focus row
-(migration `0136`, beside its [name](#a-sessions-name)), so it has the focus's
+(migration `0137`, beside its [name](#a-sessions-name)), so it has the focus's
 ownership, team share class and retention.
 
 **Why not a task reference or a task thread?** Most upstream tasks have no row
