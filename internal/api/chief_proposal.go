@@ -434,15 +434,35 @@ func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string,
 	if err != nil || a.Status != attention.Open {
 		return nil, nil // the store's Answer says what is wrong with the ask itself
 	}
-	x, err := st.ProposalByAsk(ctx, id)
+	// 🔴 A TEAM's card (team sharing 2b.4): proposals are read owner by
+	// owner (ProposalByAsk names the principal's own), so a member's read of
+	// the team's would find none — and the tap would then be recorded as a
+	// plain answer, closing the card with nothing done. A member's tap on a
+	// team's card is read, and decided, AS THE TEAM (teamEndCardRefusal
+	// decides who may).
+	pctx := ctx
+	if p, ok := authz.From(ctx); ok && !p.All() && !p.Team && a.Owner != p.UserID {
+		if _, in := p.TeamScope().RoleIn(a.Owner); in {
+			pctx = s.attentionPrincipal(ctx, a.Owner)
+		}
+	}
+	x, err := st.ProposalByAsk(pctx, id)
 	if err != nil {
 		return nil, nil
 	}
 	// 🔴 THE OWNER'S OWN DOOR: a signed-in browser or the paired phone, as the
 	// card's owner. A mirrored session's attention_answer, a token, a plugin:
 	// refused before anything is recorded or done.
-	if src.ViaSession() || !attention.IsOwnerDoor(ctx, a.Owner) {
+	if src.ViaSession() {
 		return nil, errReleaseRefused(proposalNotOwnersDoor)
+	}
+	// A TEAM's end card (team sharing 2b.4, an operator decision):
+	// no person is the team, so its owner's door is an operator's or a
+	// manager's browser with a fresh sign-in (teamEndCardRefusal).
+	if !attention.IsOwnerDoor(ctx, a.Owner) {
+		if why := s.teamEndCardRefusal(ctx, a, x); why != "" {
+			return nil, errReleaseRefused(why)
+		}
 	}
 	if x.Decided != plugins.ProposalOpen {
 		return nil, errReleaseRefused(proposalDecidedAlready)
@@ -463,7 +483,7 @@ func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string,
 	}
 	choice := strings.TrimSpace(answer)
 	if choice == proposalDeclineLabel {
-		if err := st.DeclineProposal(ctx, x.ID); err != nil {
+		if err := st.DeclineProposal(pctx, x.ID); err != nil {
 			return nil, errReleaseRefused(proposalDecidedAlready)
 		}
 		s.logger.Printf("proposal %d (%s): declined by its owner", x.ID, x.Kind)

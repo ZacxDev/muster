@@ -431,9 +431,19 @@ export const pagesPort = port + 400;
 export const pagesFakeS3Port = port + 401;
 export const pagesRouterPort = port + 402;
 export const pagesMirrorMCPPort = port + 403;
+// tests/pages-share.spec.ts: shareable pages shared at once
+// (a link key; its owner opts in to their agents sharing without asking) — its own server and its fake
+// host's loopback MCP endpoint, and the connect listener a link key needs
+// beside it. (+405 to +407: clear of the block above.)
+export const pagesSharePort = port + 405;
+export const pagesShareMirrorMCPPort = port + 406;
+export const pagesShareConnectPort = port + 407;
 // tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
 // 127.0.0.1) whose instance document and icon the spec controls.
 export const serverSwitcherStubPort = port + 404;
+// tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
+// desktop width — its own server (plugins on), no mirror host.
+export const draftCardPort = port + 405;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

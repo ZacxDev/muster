@@ -146,16 +146,32 @@ const (
 )
 
 func main() {
+	// `muster-server compose-init` (secretfiles.go): the Compose stack's
+	// one-shot. It writes the secret files the rest of this function reads.
+	if len(os.Args) > 1 && os.Args[1] == "compose-init" {
+		os.Exit(runComposeInit(os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
+	// Every _FILE twin resolved (secretfiles.go), for every command below: the
+	// mirror-token admin and the account commands need DATABASE_URL as much as
+	// the server does.
+	getenv, err := withSecretFiles(osGetenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(1)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "show-secret" {
+		os.Exit(runShowSecret(os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+	}
 	// `muster-server healthcheck` (selfcmds.go): no database, no configuration.
 	// Before the account-command catch-all below, which would otherwise read it
 	// as an unknown account command.
 	if isHealthcheck(os.Args[1:]) {
-		os.Exit(runHealthcheck(context.Background(), osGetenv, os.Stdout, os.Stderr))
+		os.Exit(runHealthcheck(context.Background(), getenv, os.Stdout, os.Stderr))
 	}
 	// `muster-server mirror …` is the operator's mirror-token admin, run where
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {
-		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], osGetenv, os.Stdout, os.Stderr))
+		os.Exit(runMirrorCLI(context.Background(), os.Args[2:], getenv, os.Stdout, os.Stderr))
 	}
 	// `muster-server vapid generate`: mint muster's Web Push keypair. Needs no
 	// database and no configuration.
@@ -167,10 +183,10 @@ func main() {
 	// One-shot account commands (`muster-server invite --claim-admin`,
 	// `muster-server user disable <id>`): run and exit. See accounts_cmd.go.
 	if len(os.Args) > 1 {
-		os.Exit(runAccountCommand(context.Background(), os.Args[1:], osGetenv, os.Stdout, os.Stderr))
+		os.Exit(runAccountCommand(context.Background(), os.Args[1:], getenv, os.Stdout, os.Stderr))
 	}
 
-	cfg, err := loadConfig(osGetenv)
+	cfg, err := loadConfig(getenv)
 	if err != nil {
 		logger.Fatalf("config: %v", err)
 	}
@@ -389,7 +405,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Attention = attention.NewPG(pool)
 		// Shareable pages (migration 0116): off unless MUSTER_PAGES=1.
 		if cfg.Pages {
-			ext.Pages = pages.NewPG(pool)
+			ps := pages.NewPG(pool)
+			// A page's one reusable link keeps its token sealed under a key
+			// derived from the connector key (internal/pages seal.go). Without
+			// that key, every link is hash-only and its address is shown once.
+			if len(cfg.ConnectorEncKey) > 0 {
+				if _, err := ps.WithLinkKey(cfg.ConnectorEncKey); err != nil {
+					a.Close()
+					return nil, fmt.Errorf("page link store: %w", err)
+				}
+			}
+			ext.Pages = ps
 		}
 		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
 		if cfg.AskLog.On {
@@ -1688,7 +1714,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// refusing state are byte-identical" case this function's own header is about.
 	if a.cfg.SecureCookies {
 		l.Printf("session cookie: SECURE — %s is set, so the cookie is sent over HTTPS only. "+
-			"A plain-HTTP LAN port will NOT be able to log in against this process",
+			"A plain-HTTP LAN port will NOT be able to log in against this process. The one exception is "+
+			"a page this machine serves itself over http://localhost, 127.0.0.1 or [::1]: it gets the cookie "+
+			"without Secure, so every browser keeps it, and that traffic never leaves the loopback interface",
 			envSecureCookies)
 	} else {
 		gotrueNote := ""
@@ -1835,6 +1863,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		}
 		l.Printf("connector store: ENABLED — %s is set; secrets are sealed with AES-256-GCM and agents use them "+
 			"only through the proxy. %s; %s", envConnectorEncKey, listener, agentsTold)
+	} else if ext.Credentials != nil && a.cfg.AgentConnectURL == "" {
+		l.Printf("connector store: MEMBERS' CREDENTIALS ONLY — %s is set, so each member's own Claude and OpenRouter "+
+			"credentials are stored (Account → Credentials); %s. Until then every connector route answers 503 and "+
+			"the Connectors tab is hidden", envConnectorEncKey, agentConnectorsOff())
 	} else {
 		l.Printf("connector store: DISABLED — %s is unset, so every connector route answers 503, the "+
 			"Connectors tab is hidden, and %s / %s have no effect", envConnectorEncKey, envConnectPort, envAgentConnectURL)
@@ -1979,9 +2011,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		if quota <= 0 {
 			quota = pages.DefaultUploadBytesPerPage
 		}
-		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner and ask before a share link goes live; "+
+		reuse := "each page keeps one reusable link, its token sealed under " + envConnectorEncKey
+		if !ext.Pages.LinksReusable() {
+			reuse = "links are hash-only, each address shown once (" + envConnectorEncKey + " is unset)"
+		}
+		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner, and ask before a share link goes live unless the owner "+
+			"lets their agents share without asking (a per-owner Account setting); %s; "+
 			"links are served at %s<token>, sandboxed (an opaque origin, no page network); a page's files are kept under %s "+
-			"until it is deleted, %d bytes per page at most (%s)", envPages, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
+			"until it is deleted, %d bytes per page at most (%s)", envPages, reuse, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
 	case a.cfg.Pages:
 		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
 	default:

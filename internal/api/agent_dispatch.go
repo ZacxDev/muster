@@ -438,23 +438,14 @@ var ownerAskedNoTaskSibling = map[string]string{
 // sharing phase 4, slice 4.7). The audit row's user_id is the team.
 const DetailRequestedByUser = "requested_by_user"
 
-// ownerAskedRefusal is THE one place the three sets of owner_asked sentences
-// meet: why (an ownerTurnFor / verifyGateRelease refusal, always today's
-// constant) worded for task kind k. On a task the chief gated it is unchanged;
-// with no task or on an ungated task, a sentence that would talk about "the
-// gate" or end in task_route_attention is replaced by its sibling.
+// ownerAskedRefusal is why (an ownerTurnFor / verifyGateRelease refusal,
+// always today's constant) worded for task kind k on a PERSON's chief: on a
+// task the chief gated it is unchanged; with no task or on an ungated task, a
+// sentence that would talk about "the gate" or end in task_route_attention is
+// replaced by its sibling. ownerTurnWords is the one table (a team's chief:
+// ownerTurnRefusal).
 func ownerAskedRefusal(why string, k ownerAskedTask) string {
-	if k == ownerAskedGated {
-		return why
-	}
-	sib, ok := ownerAskedNoTaskSibling[why]
-	if !ok {
-		return why // not an owner's-turn sentence (chiefReleaseNotChiefsGate is a gated task's only)
-	}
-	if k == ownerAskedUngated {
-		return sib + ownerAskedUngatedTail
-	}
-	return sib
+	return ownerTurnWords(why, sayUseOf(k), false)
 }
 
 // chiefDispatchRulesNoTask is chiefDispatchRules for an agent started with no
@@ -895,7 +886,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			if n.Status == notes.StatusOpen {
 				r, why := s.verifyGateRelease(ctx, a, n)
 				if why != "" {
-					return refuse(why)
+					return refuse(s.ownerTurnRefusal(ctx, a, why, sayGated))
 				}
 				rel, ownerMsg = r, r.msg
 				detail["gate_released_by_owner_message"] = r.msg.ID
@@ -923,10 +914,10 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		} else if in.OwnerAsked && !needCard {
 			msg, why := s.ownerTurnFor(ctx, a)
 			if why != "" {
-				return errTaskDispatch(ownerAskedRefusal(why, taskKind))
+				return errTaskDispatch(s.ownerTurnRefusal(ctx, a, why, sayUseOf(taskKind)))
 			}
 			if rel != nil && msg.ID != ownerMsg.ID {
-				return errTaskDispatch(ownerAskedRefusal(chiefReleaseChanged, taskKind))
+				return errTaskDispatch(s.ownerTurnRefusal(ctx, a, chiefReleaseChanged, sayUseOf(taskKind)))
 			}
 			// Written into the reservation's row, which is inserted after check.
 			detail["owner_message"] = msg.ID

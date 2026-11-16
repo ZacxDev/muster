@@ -51,7 +51,8 @@ type Store interface {
 	// CloseLinks revokes every pending or live link of page id, under the page
 	// row's lock, and returns them (their cards are the caller's to withdraw).
 	// From its commit on, no response — no upload — is recorded through any
-	// of them (AddResponse re-reads the link's state under its own lock).
+	// of them (AddResponse re-reads the link's state under its own lock), and
+	// the page takes no NEW link (every link maker answers ErrClosing).
 	CloseLinks(ctx context.Context, id int64) ([]Link, error)
 	// UploadBytes is the size of every file page id holds now (its upload
 	// responses' files, not revoked).
@@ -61,9 +62,28 @@ type Store interface {
 	// pending, whose owner cards the caller withdraws.
 	Delete(ctx context.Context, id int64) ([]Link, error)
 
-	// CreateLink files a link to page id in state (LinkPending or LinkLive),
-	// asked for by requestedBy. ErrTooMany past MaxOpenLinksPerPage.
-	CreateLink(ctx context.Context, id int64, state LinkState, requestedBy string) (Link, error)
+	// CreateLink files a hash-only link to page id in state (LinkPending or
+	// LinkLive), asked for by requestedBy (an agent when byAgent). ErrTooMany
+	// past MaxOpenLinksPerPage.
+	CreateLink(ctx context.Context, id int64, state LinkState, requestedBy string, byAgent bool) (Link, error)
+	// LinksReusable reports whether this store keeps reusable links (it holds
+	// an encryption key: WithLinkKey).
+	LinksReusable() bool
+	// ShareLink is page id's REUSABLE live link, its Token set: the one it has,
+	// or — when it has none — a new one made by requestedBy (created true).
+	// ErrNoLinkKey without a key; ErrLinkUnreadable when the one it has does
+	// not open; ErrTooMany past MaxOpenLinksPerPage.
+	ShareLink(ctx context.Context, id int64, requestedBy string, byAgent bool) (l Link, created bool, err error)
+	// RotateShareLink revokes page id's reusable link (if it has one) and makes
+	// a new one, in one transaction. It returns the new link and the revoked.
+	RotateShareLink(ctx context.Context, id int64, requestedBy string) (Link, []Link, error)
+	// RevokeShareLink revokes page id's reusable link (ErrLinkNotFound when it
+	// has none live).
+	RevokeShareLink(ctx context.Context, id int64) (Link, error)
+	// ShareLinks is the live reusable link of each of the caller's pages that
+	// has one, Token set, by page id. A link whose token does not open is left
+	// out (its page reads as unshared, and Share says why).
+	ShareLinks(ctx context.Context) (map[int64]Link, error)
 	// SetLinkAsk records the owner card that decides pending link id.
 	SetLinkAsk(ctx context.Context, linkID, askID int64) error
 	// Links is page id's links, newest first.
@@ -92,10 +112,29 @@ type Store interface {
 }
 
 // PGStore is Store on Postgres.
-type PGStore struct{ pool *pgxpool.Pool }
+type PGStore struct {
+	pool *pgxpool.Pool
+	// seal keeps reusable links' tokens (nil: no key, no reusable links).
+	seal *linkSealer
+}
 
 // NewPG returns a Store on pool.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
+
+// WithLinkKey gives the store the master key reusable links are sealed under
+// (MUSTER_CONNECTOR_ENCRYPTION_KEY's bytes). Without it the store makes only
+// hash-only links.
+func (s *PGStore) WithLinkKey(master []byte) (*PGStore, error) {
+	ls, err := newLinkSealer(master)
+	if err != nil {
+		return nil, err
+	}
+	s.seal = ls
+	return s, nil
+}
+
+// LinksReusable reports whether the store holds a key.
+func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 
 // sys is this package's ONE authz.System call (ledgered in
 // internal/authz/ledger_test.go): LinkByToken's read of one live link by the
@@ -331,13 +370,15 @@ func (s *PGStore) CloseLinks(ctx context.Context, id int64) ([]Link, error) {
 	var out []Link
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var pid int64
-		if err := tx.QueryRow(ctx, `SELECT id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&pid); err != nil {
+		// The page is marked closing in the same statement that locks it:
+		// lockPage refuses every new link from here to the delete.
+		if err := tx.QueryRow(ctx, `UPDATE pages SET links_closed_at = coalesce(links_closed_at, now()) WHERE id = $1 RETURNING id`, id).Scan(&pid); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
 			return err
 		}
-		rows, err := tx.Query(ctx, `UPDATE page_links SET state = 'revoked', decided_at = coalesce(decided_at, now())
+		rows, err := tx.Query(ctx, `UPDATE page_links SET state = 'revoked', decided_at = coalesce(decided_at, now()), token_sealed = NULL
 			WHERE page_id = $1 AND state IN ('pending', 'live') RETURNING `+linkCols, id)
 		if err != nil {
 			return err
@@ -404,12 +445,14 @@ func (s *PGStore) Delete(ctx context.Context, id int64) ([]Link, error) {
 	return pending, nil
 }
 
-const linkCols = `id, owner_id, page_id, token_sha256, state, coalesce(ask_id, 0), requested_by, created_at, decided_at`
+const linkCols = `id, owner_id, page_id, token_sha256, state, coalesce(ask_id, 0), requested_by, reusable, made_by_agent, created_at, decided_at`
 
-func scanLink(row pgx.Row) (Link, error) {
+func scanLink(row pgx.Row, extra ...any) (Link, error) {
 	var l Link
 	var state string
-	err := row.Scan(&l.ID, &l.OwnerID, &l.PageID, &l.TokenSHA256, &state, &l.AskID, &l.RequestedBy, &l.CreatedAt, &l.DecidedAt)
+	dest := append([]any{&l.ID, &l.OwnerID, &l.PageID, &l.TokenSHA256, &state, &l.AskID, &l.RequestedBy, &l.Reusable, &l.ByAgent,
+		&l.CreatedAt, &l.DecidedAt}, extra...)
+	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Link{}, ErrLinkNotFound
 	}
@@ -418,7 +461,7 @@ func scanLink(row pgx.Row) (Link, error) {
 }
 
 // CreateLink files a link under the page row's lock (the open-link cap).
-func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, requestedBy string) (Link, error) {
+func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, requestedBy string, byAgent bool) (Link, error) {
 	if state != LinkPending && state != LinkLive {
 		return Link{}, fmt.Errorf("pages: a new link is pending or live, not %q", state)
 	}
@@ -428,25 +471,17 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 	}
 	var l Link
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var pid int64
-		if err := tx.QueryRow(ctx, `SELECT id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&pid); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
+		if _, err := lockPage(ctx, tx, id); err != nil {
 			return err
 		}
-		var open int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM page_links WHERE page_id = $1 AND state IN ('pending', 'live')`, id).Scan(&open); err != nil {
+		if err := openLinkRoom(ctx, tx, id); err != nil {
 			return err
-		}
-		if open >= MaxOpenLinksPerPage {
-			return fmt.Errorf("%w: page %d has %d open links (pending or live), the most a page may; revoke one first", ErrTooMany, id, open)
 		}
 		var err error
 		// 🔴 ONLY THE HASH IS WRITTEN; the token goes back to the caller once.
-		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, decided_at)
-			VALUES ($1, $2, $3, $4, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
-			id, TokenHash(tok), string(state), truncate(requestedBy, 200)))
+		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, decided_at)
+			VALUES ($1, $2, $3, $4, $5, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
+			id, TokenHash(tok), string(state), truncate(requestedBy, 200), byAgent))
 		return err
 	})
 	if err != nil {
@@ -454,6 +489,176 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 	}
 	l.Token = tok
 	return l, nil
+}
+
+// lockPage takes page id's row lock and returns its owner (ErrNotFound for a
+// page the caller cannot see).
+//
+// 🔴 IT IS EVERY NEW LINK'S GATE, AND IT REFUSES A PAGE BEING DELETED
+// (ErrClosing): CloseLinks, a delete's first step, marks the page
+// links_closed_at under this same lock, so no link — an opted-in agent's, the
+// owner's Share — goes live between the close and the delete, when an upload
+// through it could land after the delete swept the page's files.
+func lockPage(ctx context.Context, tx pgx.Tx, id int64) (int64, error) {
+	var owner int64
+	var closing bool
+	if err := tx.QueryRow(ctx, `SELECT owner_id, links_closed_at IS NOT NULL FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &closing); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if closing {
+		return 0, ErrClosing
+	}
+	return owner, nil
+}
+
+// openLinkRoom refuses a new open link past MaxOpenLinksPerPage (under the
+// page row's lock).
+func openLinkRoom(ctx context.Context, tx pgx.Tx, id int64) error {
+	var open int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM page_links WHERE page_id = $1 AND state IN ('pending', 'live')`, id).Scan(&open); err != nil {
+		return err
+	}
+	if open >= MaxOpenLinksPerPage {
+		return fmt.Errorf("%w: page %d has %d open links (pending or live), the most a page may; revoke one first", ErrTooMany, id, open)
+	}
+	return nil
+}
+
+// insertReusable makes page id's new reusable live link, its token sealed to
+// the row (owner, page, hash), under the page row's lock.
+func (s *PGStore) insertReusable(ctx context.Context, tx pgx.Tx, owner, id int64, requestedBy string, byAgent bool) (Link, error) {
+	if err := openLinkRoom(ctx, tx, id); err != nil {
+		return Link{}, err
+	}
+	tok, err := NewToken()
+	if err != nil {
+		return Link{}, err
+	}
+	sealed, err := s.seal.seal(owner, id, tok)
+	if err != nil {
+		return Link{}, err
+	}
+	// 🔴 THE LOOKUP KEY IS STILL THE HASH; the sealed copy is only ever read
+	// back to show the owner (or the agent, in auto mode) the same address.
+	l, err := scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, made_by_agent, reusable, token_sealed, decided_at)
+		VALUES ($1, $2, 'live', $3, $4, true, $5, now()) RETURNING `+linkCols,
+		id, TokenHash(tok), truncate(requestedBy, 200), byAgent, sealed))
+	if err != nil {
+		return Link{}, err
+	}
+	l.Token = tok
+	return l, nil
+}
+
+// ShareLink returns the page's reusable link, making it when it has none.
+func (s *PGStore) ShareLink(ctx context.Context, id int64, requestedBy string, byAgent bool) (Link, bool, error) {
+	if s.seal == nil {
+		return Link{}, false, ErrNoLinkKey
+	}
+	var l Link
+	created := false
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		var blob []byte
+		l, err = scanLink(tx.QueryRow(ctx, `SELECT `+linkCols+`, token_sealed FROM page_links
+			WHERE page_id = $1 AND reusable AND state = 'live'`, id), &blob)
+		switch {
+		case err == nil:
+			tok, oerr := s.seal.open(l.OwnerID, l.PageID, l.TokenSHA256, blob)
+			if oerr != nil {
+				return ErrLinkUnreadable
+			}
+			l.Token = tok
+			return nil
+		case !errors.Is(err, ErrLinkNotFound):
+			return err
+		}
+		l, err = s.insertReusable(ctx, tx, owner, id, requestedBy, byAgent)
+		created = err == nil
+		return err
+	})
+	if err != nil {
+		return Link{}, false, wrap("share link", err)
+	}
+	return l, created, nil
+}
+
+// RotateShareLink revokes the page's reusable link and makes a new one.
+func (s *PGStore) RotateShareLink(ctx context.Context, id int64, requestedBy string) (Link, []Link, error) {
+	if s.seal == nil {
+		return Link{}, nil, ErrNoLinkKey
+	}
+	var l Link
+	var old []Link
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		owner, err := lockPage(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `UPDATE page_links SET state = 'revoked', decided_at = now(), token_sealed = NULL
+			WHERE page_id = $1 AND reusable AND state = 'live' RETURNING `+linkCols, id)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			o, err := scanLink(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			old = append(old, o)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		l, err = s.insertReusable(ctx, tx, owner, id, requestedBy, false)
+		return err
+	})
+	if err != nil {
+		return Link{}, nil, wrap("rotate share link", err)
+	}
+	return l, old, nil
+}
+
+// RevokeShareLink revokes the page's live reusable link.
+func (s *PGStore) RevokeShareLink(ctx context.Context, id int64) (Link, error) {
+	l, err := scanLink(s.pool.QueryRow(ctx, `UPDATE page_links SET state = 'revoked', decided_at = now(), token_sealed = NULL
+		WHERE page_id = $1 AND reusable AND state = 'live' RETURNING `+linkCols, id))
+	return l, wrap("revoke share link", err)
+}
+
+// ShareLinks reads every live reusable link of the caller's, opened.
+func (s *PGStore) ShareLinks(ctx context.Context) (map[int64]Link, error) {
+	out := map[int64]Link{}
+	if s.seal == nil {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+linkCols+`, token_sealed FROM page_links WHERE reusable AND state = 'live'`)
+	if err != nil {
+		return nil, wrap("share links", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var blob []byte
+		l, err := scanLink(rows, &blob)
+		if err != nil {
+			return nil, wrap("share links", err)
+		}
+		tok, oerr := s.seal.open(l.OwnerID, l.PageID, l.TokenSHA256, blob)
+		if oerr != nil {
+			continue
+		}
+		l.Token = tok
+		out[l.PageID] = l
+	}
+	return out, wrap("share links", rows.Err())
 }
 
 // SetLinkAsk records the deciding card.
@@ -518,7 +723,7 @@ func (s *PGStore) DecideLink(ctx context.Context, linkID int64, live bool) (Link
 // RevokeLink revokes a pending or live link; a denied or revoked one is
 // returned as it is.
 func (s *PGStore) RevokeLink(ctx context.Context, id, linkID int64) (Link, error) {
-	l, err := scanLink(s.pool.QueryRow(ctx, `UPDATE page_links SET state = 'revoked', decided_at = coalesce(decided_at, now())
+	l, err := scanLink(s.pool.QueryRow(ctx, `UPDATE page_links SET state = 'revoked', decided_at = coalesce(decided_at, now()), token_sealed = NULL
 		WHERE page_id = $1 AND id = $2 AND state IN ('pending', 'live') RETURNING `+linkCols, id, linkID))
 	if errors.Is(err, ErrLinkNotFound) {
 		return s.Link(ctx, id, linkID)
@@ -631,7 +836,7 @@ func wrap(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending} {
+	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing} {
 		if errors.Is(err, e) {
 			return err
 		}

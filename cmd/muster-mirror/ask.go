@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/noredirect"
 )
 
@@ -52,7 +53,7 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
 	base := fs.String("url", getenv(envURL), "muster's base URL, https://… ("+envURL+"; default: the URL the host's muster-mirror recorded in "+defaultHookConfig+")")
 	tokenFile := fs.String("token-file", getenv(envTokenFile), "file holding this host's mirror token ("+envTokenFile+"; or the token itself in "+envToken+"; default, only with the recorded URL: the file the host's muster-mirror recorded, else "+DefaultTokenFile+")")
-	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL ("+envAllowHTTP+")")
+	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS ONLY: permit a plain http:// muster URL to another machine (http:// to localhost, 127.0.0.1 or [::1] needs no flag) ("+envAllowHTTP+")")
 	if err := fs.Parse(args); err != nil {
 		return 0
 	}
@@ -121,8 +122,10 @@ func runAsk(args []string, getenv func(string) string, in io.Reader, _, stderr i
 		return 0
 	}
 	u, err := url.Parse(*base)
-	if *base == "" || token == "" || err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && *allowHTTP)) {
-		logf("needs an https:// -url and a token (-token-file); the question is the terminal's only")
+	// https, or plain http to this machine's loopback interface (never leaves
+	// it), or plain http anywhere with -allow-http (tests).
+	if *base == "" || token == "" || err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (*allowHTTP || loopback.Host(u.Host)))) {
+		logf("needs an https:// -url (or http:// to this machine) and a token (-token-file); the question is the terminal's only")
 		return 0
 	}
 	h := askq.Hook{

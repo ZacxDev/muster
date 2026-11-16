@@ -896,3 +896,42 @@ func mintPersonalToken(t *testing.T, f *connFixture, uid int64) string {
 	})
 	return tok
 }
+
+// TestAnXDraftOverTheVenuesLengthIsRefusedWhenFiled (regression: outbound
+// draft 447, a reply on venue x whose one part was over X's 280, was filed and
+// only refused later by the plugin's check, a round trip and a draft.refused
+// item later): officer_post_draft refuses it in the officer's own turn,
+// naming the part, its length and the limit, and files NOTHING; the same draft
+// at exactly 280 is filed (the positive control), as is a long body on a venue
+// with no rules.
+func TestAnXDraftOverTheVenuesLengthIsRefusedWhenFiled(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	draft := func(venue, body string) string {
+		b, _ := json.Marshal(map[string]any{"plugin": outboundPluginName, "venue": venue,
+			"target": map[string]string{"kind": "reply", "ref": "t1_abc"}, "body": body})
+		return string(b)
+	}
+	// prose of exactly n characters, ending in a letter (a run of one letter
+	// is refused by the secret screen as token-shaped, before any venue rule).
+	prose := func(n int) string { return strings.Repeat("go on ", n)[:n] }
+	outbound := func() int {
+		var n int
+		if err := w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM plugin_reply_drafts WHERE message_id IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	id, out := w.postDraft(draft("x", prose(281)))
+	if id != 0 || !strings.Contains(out, "x part 1 of 1 is 281 characters as X counts them; the limit is 280") {
+		t.Fatalf("a 281-character x reply: %s; want refused naming part 1, 281 and the limit 280", out)
+	}
+	if n := outbound(); n != 0 {
+		t.Fatalf("%d outbound drafts filed after the refusal; want 0", n)
+	}
+	if id, out := w.postDraft(draft("x", prose(280))); id == 0 {
+		t.Fatalf("a 280-character x reply: %s; want filed", out)
+	}
+	if id, out := w.postDraft(draft("example.forum", prose(2000))); id == 0 {
+		t.Fatalf("a 2000-character reply on a venue with no rules: %s; want filed", out)
+	}
+}

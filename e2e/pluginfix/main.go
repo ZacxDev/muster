@@ -11,7 +11,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question> [option…]   → prints the ask id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
-//		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> [body] → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix notifypref <owner-id> clear
@@ -50,7 +50,8 @@
 //	    elsewhere), so later specs on the shared database never see it.
 //	  - draft: a PENDING reply draft by the named agent, to a delivered message
 //	    of a plugin of that name made for it — the attention queue's "plugin"
-//	    item on that agent's card.
+//	    item on that agent's card. [body] replaces the draft's one-line text
+//	    (draft-card.spec.ts: a long, multi-line reply).
 //	  - rmplugin: removes one plugin of the owner's by name (its message and
 //	    draft cascade), leaving the owner's other plugins alone.
 //	  - rmchiefs: deletes every agent of the owner's that would be its chief
@@ -354,8 +355,12 @@ func run(args []string) error {
 		}
 	case "draft":
 		owner, err := num(1)
-		if err != nil || len(args) != 4 {
-			return fmt.Errorf("usage: draft <owner-id> <agent-name> <plugin-name>")
+		if err != nil || (len(args) != 4 && len(args) != 5) {
+			return fmt.Errorf("usage: draft <owner-id> <agent-name> <plugin-name> [body]")
+		}
+		body := "Yes, noon works."
+		if len(args) == 5 {
+			body = args[4]
 		}
 		var agentID int64
 		if err := conn.QueryRow(ctx, `SELECT id FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]).Scan(&agentID); err != nil {
@@ -372,8 +377,8 @@ func run(args []string) error {
 			return fmt.Errorf("message: %w", err)
 		}
 		if err := conn.QueryRow(ctx, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
-			VALUES ($1, $2, $3, $4, 'Yes, noon works.', now() + interval '1 hour') RETURNING id`,
-			owner, msgID, agentID, args[2]).Scan(&draftID); err != nil {
+			VALUES ($1, $2, $3, $4, $5, now() + interval '1 hour') RETURNING id`,
+			owner, msgID, agentID, args[2], body).Scan(&draftID); err != nil {
 			return fmt.Errorf("draft: %w", err)
 		}
 		fmt.Println(draftID)

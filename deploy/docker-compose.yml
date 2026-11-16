@@ -1,11 +1,36 @@
 # muster — a production stack in one file.
 #
-#   cp .env.example .env        # then fill in every CHANGE-ME value
-#   (from a GitHub Release: download docker-compose.yml and env.example — no
-#   leading dot — and save the latter as .env)
-#   docker compose up -d --wait
+#   docker compose up -d --wait          # no .env needed
+#   docker compose exec muster /muster-server show-secret ui-password
+#   open http://localhost:8105 and sign in with that password
+#
+# NO .env IS NEEDED. Every secret the stack needs is generated on the first
+# start by the muster-init one-shot and kept on the `secrets` volume: the
+# sign-in password (printed once, in `docker compose logs muster-init`, and
+# shown again by the command above), the hook token, the Web Push keys and
+# Postgres's password. A .env (from .env.example; a release attaches it as
+# env.example, no leading dot) is only for what you want to set yourself:
+# a value it sets is used instead of the generated one — except Postgres's
+# password, which is used only on the stack's first start (the database keeps
+# it; a different one later is refused) — and an .env written before secrets
+# were generated keeps working exactly as it did.
+#
+# THE VERSION. The images are tagged MUSTER_VERSION, which defaults to the
+# value written in this file: a release's copy of it is stamped with that
+# release (scripts/release-build.sh), so a downloaded docker-compose.yml runs
+# the release it came from; the repository's copy says the LATEST release
+# (the release flow opens the bump pull request after each one;
+# scripts/check-compose-default.sh, which CI runs, warns for 3 days and then
+# fails while it names the PREVIOUS release). Never a moving tag, and never one
+# older than x-muster-min-version below: a default below the minimum fails at
+# once — the 3 days cover only "the default is the previous release". Set
+# MUSTER_VERSION in .env to pin another.
 #
 # Services:
+#   muster-init   the one-shot above: secrets, then the server's own boot
+#                 checks. A setting muster would refuse makes it exit 1, so
+#                 `up --wait` fails in seconds naming muster-init; the reason
+#                 is the last line of `docker compose logs muster-init`
 #   postgres      muster's database (a named volume holds the data)
 #   muster        the server; it migrates the schema itself on every boot
 #
@@ -36,9 +61,11 @@
 # A third dictation option, your own OpenAI-compatible API key, needs no
 # container. See docs/features.md and docs/dictation.md.
 #
-# muster listens on 127.0.0.1 only. Put HTTPS in front of it (for example
-# `tailscale serve --bg 8105`) — passkeys, the microphone and secure cookies all
-# need an https origin.
+# muster listens on 127.0.0.1 only, so out of the box it is this machine's
+# http://localhost:8105, which browsers treat as a secure origin. To reach it
+# from a phone or another machine, put HTTPS in front of it (for example
+# `tailscale serve --bg 8105`): passkeys, the microphone and secure cookies on
+# any other origin need https (docs/quickstart-local.md#add-your-phone).
 #
 # Every service has a healthcheck, so `docker compose up -d --wait` returns only
 # once the stack is actually serving (muster's /readyz answers 200).
@@ -54,18 +81,38 @@
 # same variables, and that every variable the server reads is forwarded here
 # or listed there with the reason it is not.
 
+# 🔴 THE OLDEST MUSTER THIS FILE RUNS. It uses what that release added (the
+# muster-init one-shot `compose-init`, DATABASE_URL_FILE); an older image cannot
+# start it — measured on #707 round 2: 0.231.0 under this file stops with
+# "DATABASE_URL is not set". scripts/check-compose-default.sh fails CI when the
+# version written below (the MUSTER_VERSION default) is lower, except in the
+# one documented bootstrap state: this number is the NEXT release, not yet cut,
+# and the default is the newest release (see that script) — allowed for 3 days
+# from the commit that raised this line, then it fails too. A default below
+# this number fails at once in every other case; the 3-day grace period after a
+# release covers only "the default is the previous release". Raise it whenever
+# this file starts using something a release added.
+x-muster-min-version: "0.234.0"
+
 name: ${COMPOSE_PROJECT_NAME:-muster}
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    depends_on:
+      muster-init:
+        condition: service_completed_successfully
     environment:
       POSTGRES_USER: muster
       POSTGRES_DB: muster
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Written once by muster-init (.env's POSTGRES_PASSWORD on the stack's
+      # first start, else generated) and never overwritten: Postgres reads it
+      # only when it creates the database.
+      POSTGRES_PASSWORD_FILE: /run/muster-secrets/postgres_password
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - secrets:/run/muster-secrets:ro
     healthcheck:
       # 🔴 `-h 127.0.0.1`: TCP, which is how muster connects. Without it
       # pg_isready asks the unix socket, which answers "ready" during initdb's
@@ -80,36 +127,52 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:?set MUSTER_VERSION in .env (the release version, e.g. 1.2.3)}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.234.0}
     restart: unless-stopped
     depends_on:
+      muster-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     ports:
       - "${MUSTER_BIND:-127.0.0.1}:${MUSTER_HTTP_PORT:-8105}:8105"
-    environment:
-      DATABASE_URL: postgres://muster:${POSTGRES_PASSWORD}@postgres:5432/muster?sslmode=disable
+    # 🔴 ANCHORED: muster-init (below) runs the server's boot checks on THIS
+    # environment, so what it checks is what muster gets.
+    environment: &muster-env
+      # muster-init writes it from Postgres's password.
+      DATABASE_URL_FILE: /run/muster-secrets/database_url
       MUSTER_PORT: "8105"
-      # Shared-password sign-in for the web UI.
-      MUSTER_UI_PASSWORD: ${MUSTER_UI_PASSWORD:?set MUSTER_UI_PASSWORD in .env}
+      # Shared-password sign-in for the web UI: .env's, else the generated one.
+      MUSTER_UI_PASSWORD: ${MUSTER_UI_PASSWORD:-}
+      MUSTER_UI_PASSWORD_FILE: /run/muster-secrets/ui_password
       # The machine secret mirrors and hooks present (acts as the admin).
-      MUSTER_HOOK_TOKEN: ${MUSTER_HOOK_TOKEN:?set MUSTER_HOOK_TOKEN in .env}
+      MUSTER_HOOK_TOKEN: ${MUSTER_HOOK_TOKEN:-}
+      MUSTER_HOOK_TOKEN_FILE: /run/muster-secrets/hook_token
       MUSTER_MIRROR: "1"
       # Without a permission router muster runs standalone. Pointing it at one
       # (docs/features.md#approval-router) needs MUSTER_STANDALONE=0 in .env:
       # the two refuse to boot together.
       MUSTER_STANDALONE: ${MUSTER_STANDALONE:-1}
       MUSTER_PUBLIC_URL: ${MUSTER_PUBLIC_URL:-}
+      # On: the session cookie is Secure, except on this machine's own
+      # http://localhost page, which gets it without (docs/configuration.md).
       MUSTER_SECURE_COOKIES: ${MUSTER_SECURE_COOKIES:-1}
 
       # ---- optional: every value below is empty unless .env sets it --------
       # docs/features.md names what each feature needs; .env.example has every
       # line, commented out, grouped the same way.
 
-      # Web Push (docs/features.md#push): all three or none. Generate the keypair with
+      # Web Push (docs/features.md#push): ON out of the box, with a keypair
+      # muster-init generates (unless .env sets POSTGRES_PASSWORD, as every
+      # .env from before generated secrets does: that install keeps its own
+      # setting). Your own keypair in .env replaces it:
       #   docker compose run --rm --no-deps muster vapid generate >> .env
+      # The subject defaults to MUSTER_PUBLIC_URL when it is https, else to a
+      # mailto: (never an http URL, which push services refuse).
       MUSTER_VAPID_PUBLIC_KEY: ${MUSTER_VAPID_PUBLIC_KEY:-}
+      MUSTER_VAPID_PUBLIC_KEY_FILE: /run/muster-secrets/vapid_public_key
       MUSTER_VAPID_PRIVATE_KEY: ${MUSTER_VAPID_PRIVATE_KEY:-}
+      MUSTER_VAPID_PRIVATE_KEY_FILE: /run/muster-secrets/vapid_private_key
       MUSTER_VAPID_SUBJECT: ${MUSTER_VAPID_SUBJECT:-}
       MUSTER_PUSH_EXTRA_HOSTS: ${MUSTER_PUSH_EXTRA_HOSTS:-}
 
@@ -277,6 +340,7 @@ services:
     # by itself (a volume `subpath` would refuse this whole file on Compose
     # before 2.25, whether or not the chief is used).
     volumes:
+      - secrets:/run/muster-secrets:ro
       - chief-spec:/run/muster-spec
       - chief-instructions:/run/muster-spec/chief/files/etc/claude-code
     group_add: ["1000", "1001"]
@@ -289,10 +353,47 @@ services:
       retries: 6
       start_period: 20s
 
+  # The one-shot that makes a .env unnecessary (muster-server compose-init,
+  # cmd/muster-server/secretfiles.go). Each start: every secret .env does not
+  # set is generated once into the secrets volume and kept; Postgres's password
+  # is kept there too (POSTGRES_PASSWORD only when there is none yet; a
+  # different one later is refused) with muster's DATABASE_URL built from it;
+  # and muster's configuration — muster's own environment, the anchor above —
+  # goes through the server's boot validation BEFORE anything is written, so a
+  # refusal exits 1 at once, changing nothing, instead of a restart loop. Root only to write the volume
+  # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
+  # postgres:16-alpine); no network.
+  muster-init:
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.234.0}
+    user: "0:0"
+    command:
+      - compose-init
+      - -dir
+      - /run/muster-secrets
+      - -database-url
+      - postgres://muster:{password}@postgres:5432/muster?sslmode=disable
+      - -owner
+      - "65532:65532"
+      - -postgres-owner
+      - "70:70"
+      # Read-only: an existing database (an install from before muster-init)
+      # never gets a generated password, only the POSTGRES_PASSWORD it was
+      # created with (docs/quickstart-local.md#the-database-password).
+      - -postgres-data
+      - /var/lib/postgresql/data
+    environment:
+      <<: *muster-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - secrets:/run/muster-secrets
+      - pgdata:/var/lib/postgresql/data:ro
+    network_mode: none
+    restart: "no"
+
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.234.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -459,7 +560,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.234.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -476,7 +577,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.234.0}
     restart: unless-stopped
     depends_on:
       chief-init:
@@ -517,6 +618,9 @@ networks:
   chief: {}
 
 volumes:
+  # muster-init's generated secrets. 🔴 `down -v` deletes it with the database;
+  # new ones are generated on the next start.
+  secrets:
   pgdata:
   hf-cache:
   whisper-cache:

@@ -2829,6 +2829,54 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `owner=` in its action, keeps no draft (drafts are keyed by host name)
    >   and has no paperclip (an upload is the uploader's own file);
    >   dictation stays.
+   > - **A team chief's other say-so (operator decision 2026-11-15, its own
+   >   PR).** On a team's chief, end_session_propose, a text route and
+   >   agent_dispatch's gate release take a typed turn on the team dispatch
+   >   rule: a fresh typed turn from an operator or above of the team (the
+   >   marker is set only then), the role re-read when the chief calls, else
+   >   the call's own card path. The base already sent all four uses through
+   >   ONE predicate, `ownerTurnFor` (`typerSpeaksForOwner`,
+   >   `typerSignedOutSince`); `TestEverySaySoIsTheOneTypedTurnPredicate`
+   >   pins it (its `ownerTurnFor` half fails only when a use stops calling
+   >   it — round 0 on #703, D2: growth is the safe direction —; the
+   >   `typerSpeaksForOwner` half is exact). The gate release is exercised on
+   >   a team task (`TestATeamChiefsGateReleaseTakesTheTeamDispatchRule`).
+   > - **One wording table (round 0 on #703).** `ownerTurnWords` is THE
+   >   translation of an `ownerTurnFor` refusal into the chief's sentence, by
+   >   use (gated release, no-task and ungated dispatch, route, end) and by
+   >   whose chief it is; agent_dispatch, a route and end_session_propose
+   >   call it (`ownerTurnRefusal`; host_dispatch keeps the person's words: a
+   >   team's chief is refused a host target first, `agentDispatchTeamHost`).
+   >   A gate a member set (`chiefReleaseNotChiefsGate`) is worded for the
+   >   team too (round 1). A PERSON's chief
+   >   reads each use's sentences unchanged. A TEAM's chief never reads "your
+   >   owner": every refusal that said it — a stale sign-in's no-marker
+   >   included — is worded for an operator or a manager of the team, with
+   >   the use's action and fallback (`teamTurnWords`); the member refusals
+   >   (removed or demoted, signed out since) were team words already.
+   > - **The team's END CARD (operator decision 2026-11-15, "Operator+, fresh
+   >   sign-in").** An operator or a manager of the team ends a team session
+   >   from the chief's card, from a signed-in BROWSER with a fresh sign-in;
+   >   a viewer, a stale sign-in and a paired phone are refused by name and
+   >   the card stays open (`teamEndCardRefusal`; the dispatch card's shape).
+   >   The card's proposal is read, decided and accepted AS THE TEAM
+   >   (`attentionPrincipal`), so `acceptEndSession` resolves and closes the
+   >   TEAM's window — never the tapper's own window of the same address
+   >   (`TestATeamsEndCardIsAnOperatorsWithAFreshSignIn`).
+   >   🔴 **Found while building:** proposals are read owner by owner, so at
+   >   base a member's tap on a team's end card found no proposal and was
+   >   recorded as a PLAIN answer — the card closed with nothing ended
+   >   (red at base: a stale operator's tap "answered" it).
+   >   🔴 **Decided (fail closed):** a team chief's end card for one of the
+   >   team's AGENTS is not filed (`endSessionTeamAgent`): stopping and
+   >   removing a team agent is a manager's, on the team's agents page (4.5),
+   >   and an operator's tap would bypass that. A card filed before this
+   >   release is refused on the tap too (`TestATeamAgentIsNeverEndedFromACard`).
+   >   An operator's "Not now" declines a team's card as the team
+   >   (`TestATeamMemberDeclinesATeamsEndCard`).
+   >   Its push carries no answer actions: every proposal card's filing push
+   >   is built with none (`proposalCardFiled`), so a phone has nothing to tap
+   >   (corrected in round 1: the earlier note said otherwise).
    > - ⚠ **Known, not changed:** an answer typed into a team window's picker
    >   records its `ask_attempts` row as the member's own (the table's
    >   `owner_id` default), keyed by host name, so it shows on the member's

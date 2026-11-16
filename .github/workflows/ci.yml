@@ -44,7 +44,16 @@ on:
   push:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  # 🔴 `ready_for_review` IS A TRIGGER BECAUSE A DRAFT PR RUNS NO E2E (the
+  # `e2e-leg` and `e2e` jobs). Without it, marking a draft ready starts no run,
+  # and the PR never gets the required `e2e (playwright, chromium)` check. The
+  # ready run is a FULL run in the PR's usual concurrency group: it cancels a
+  # draft run still in progress and gives the head commit one complete verdict.
+  # The first four types are GitHub's defaults (`edited` and
+  # `converted_to_draft` start nothing). Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # ⚠ NO `schedule` (nightly) TRIGGER, ON PURPOSE (PR #691): a scheduled run
   # lands on main's HEAD sha, and the downstream release tool refuses a sha
   # unless EVERY CI run for it succeeded (see the tag filter above) — so one
@@ -899,10 +908,18 @@ jobs:
   # the JSON report and fails on any failure or ANY skip — the PAIR is printed,
   # never a bare exit code. `playwright test` exits 0 when everything skipped; that is the green
   # this step exists to refuse.
+  #
+  # 🔴 NOT ON A DRAFT PULL REQUEST (operator decision, 2026-11-16). 166 of the
+  # 184 CI runs of the last 50 merged PRs ran while the PR was a draft, and the
+  # four legs were half of each run's job-minutes and its longest path. A
+  # draft's runs skip the legs; marking it ready starts a full run that has
+  # them (the `ready_for_review` trigger), and every push to `main` or a tag
+  # runs them as before. The `e2e` job below is the required check and is never
+  # satisfied by a draft run (see there).
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     strategy:
       # Every leg always finishes, so one red leg never hides another's verdict.
@@ -1015,20 +1032,43 @@ jobs:
   # not red. Not `always()`: that also ran it on a CANCELLED run (a PR run
   # superseded by a newer push), where it went red on a verdict nobody needs and
   # took a runner slot to do it.
+  #
+  # 🔴 `e2e (playwright, chromium)` IS THE CHECK BRANCH PROTECTION REQUIRES ON
+  # `main`, AND A DRAFT RUN NEVER PRODUCES A CHECK OF THAT NAME. Branch
+  # protection counts a SKIPPED job as passing, so a job that merely skipped on
+  # a draft would leave a passing `e2e (playwright, chromium)` on the head
+  # commit, and the PR could merge the moment it was marked ready, before the
+  # ready run's e2e had started. So on a draft this job still RUNS (publish-gate
+  # needs it to succeed), but under another name, `e2e (draft PR, not run)`, and
+  # it only asserts that the legs were skipped. The required name exists only
+  # on a non-draft run, where it fails unless every leg succeeded. A ready PR
+  # therefore waits for e2e that actually ran. Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   e2e:
-    name: e2e (playwright, chromium)
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'e2e (draft PR, not run)' || 'e2e (playwright, chromium)' }}
     needs: [main-verdict, e2e-leg]
     # Skipped with the legs on a tag whose main run vouched for it (main-verdict).
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    env:
+      E2E_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
     steps:
+      - name: a draft PR runs no e2e, so the legs must have been skipped
+        if: ${{ env.E2E_DRAFT == 'true' }}
+        run: |
+          echo "draft pull request: e2e-leg result: ${{ needs.e2e-leg.result }} (the legs run once the PR is marked ready)"
+          test "${{ needs.e2e-leg.result }}" = skipped
+
       - uses: actions/checkout@v6
+        if: ${{ env.E2E_DRAFT != 'true' }}
 
       - uses: actions/setup-node@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           node-version: 22
 
       - name: every leg succeeded
+        if: ${{ env.E2E_DRAFT != 'true' }}
         run: |
           echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
           test "${{ needs.e2e-leg.result }}" = success
@@ -1036,6 +1076,7 @@ jobs:
       # Every attempt's leg artifacts, each in a directory of its own (they are
       # named by attempt, so none overwrites another).
       - uses: actions/download-artifact@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           pattern: e2e-results-leg-*
           path: e2e-legs
@@ -1052,6 +1093,7 @@ jobs:
       # passing test (NOT RUN: a spec in no leg, or a misspelled legs.json
       # entry), none in two reports (RAN TWICE: a spec in two legs).
       - name: verdict — the pass floor and the skip cap, over every leg
+        if: ${{ env.E2E_DRAFT != 'true' }}
         working-directory: e2e
         run: |
           node pick-legs.mjs ../e2e-legs > ../e2e-legs-picked.txt
@@ -1134,9 +1176,12 @@ jobs:
   #
   # Local, in order:
   #   scripts/release-build.sh 0.0.0                 (make release-dry-run)
+  #   tests/compose-default-test.sh && scripts/check-compose-default.sh --images
+  #   tests/install-linger-test.sh
   #   tests/compose-check.sh                          (make compose-check)
   #   tests/release-publish-test.sh && tests/stt-cohere-source-test.sh
   #   make image IMAGE=muster-local VERSION=0.0.0 && tests/compose-up.sh muster-local 0.0.0
+  #   tests/compose-default-image.sh                  (the published default, as a clone runs it)
   #   python3 images/stt-cohere/test_app.py           (needs fastapi, httpx,
   #                                                    python-multipart, numpy, ffmpeg)
   #
@@ -1151,7 +1196,11 @@ jobs:
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
     steps:
+      # Full history and tags: the compose default is checked against the
+      # newest release tag below this commit.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -1160,6 +1209,30 @@ jobs:
 
       - name: build the release assets (placeholder version 0.0.0)
         run: scripts/release-build.sh 0.0.0
+
+      # 🔴 A CLONE RUNS THE NEWEST RELEASE, IT CAN RUN THIS FILE, AND IT EXISTS.
+      # With no .env, deploy/docker-compose.yml runs the version written in it:
+      # that must be at least the file's x-muster-min-version (except the
+      # documented bootstrap: the minimum is the next release, not yet cut),
+      # and the newest vX.Y.Z tag below this commit — the previous one only
+      # WARNS for 3 days after a release, while the bump PR the release flow
+      # (`muster-ops verify`) opens is merged; see the script's header — and
+      # every image it names must be on GHCR under that tag
+      # (`docker manifest inspect`; NEGATIVE CONTROL: a version never released
+      # must be reported missing by the same probe). The rule itself is tested
+      # against a scratch repository first.
+      - name: the compose default is the newest release, and its images exist
+        run: |
+          set -o pipefail
+          tests/compose-default-test.sh
+          scripts/check-compose-default.sh --images | tee /tmp/compose-default.log
+          test "$(grep -c '^ok   ghcr.io/.*:.* exists$' /tmp/compose-default.log)" = 3
+          scripts/stamp-compose-version.sh 0.0.1 < deploy/docker-compose.yml > /tmp/never-released.yml
+          if CHECK_COMPOSE_FILE=/tmp/never-released.yml scripts/check-compose-default.sh --images-only 2> /tmp/never.err; then
+            echo "negative control FAILED: images at 0.0.1 (never released) were reported present"; exit 1
+          fi
+          test "$(grep -c 'does not exist' /tmp/never.err)" = 3
+          echo "ok   negative control: the same probe reports every image at a never-released version missing"
 
       # 🔴 AND ON AN OLD COMPOSE, NOT ONLY THE RUNNER'S. Compose validates the
       # whole file before it applies a profile, so a key an old Compose does not
@@ -1173,7 +1246,7 @@ jobs:
           echo "f45e4cb687df8b48a57f656097ce7175fa8e8bef70be407b011e29ff663f475f  /tmp/docker-compose-2.20.3" | sha256sum -c -
           chmod +x /tmp/docker-compose-2.20.3
           COMPOSE_CHECK_OLD=/tmp/docker-compose-2.20.3 tests/compose-check.sh | tee /tmp/compose-check.log
-          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 5
+          test "$(grep -c '^ok   \[compose 2.20.3' /tmp/compose-check.log)" = 6
 
       # The tag-only jobs' decision logic, without a tag or GitHub writes:
       # release-publish.sh against a fake `gh` (create, draft, no-op, refusals)
@@ -1182,19 +1255,83 @@ jobs:
         run: |
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
+          tests/install-linger-test.sh
 
-      # The default stack, then the s3, stt and chief profiles with the .env
-      # lines docs/features.md gives. espeak-ng speaks the stt phase's test
-      # clips. The chief phase runs this run's claude-code-agent image against
-      # a fake model behind muster's LLM proxy (tests/compose-chief.override.yml,
+      # Node and the two browsers the zero-config phase signs in with
+      # (e2e/localhost: Chromium and WebKit on http://localhost).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # The zero-config stack first (NO .env: muster-init's generated secrets,
+      # the localhost cookie in Chromium and WebKit, a muster-mirror on
+      # http://localhost with no -allow-http), then the .env stack (an install
+      # from before generated secrets, unchanged) and the fail-fast check,
+      # then the s3, stt and chief profiles with the .env lines
+      # docs/features.md gives. espeak-ng speaks the stt phase's test clips.
+      # The chief phase runs this run's claude-code-agent image against a fake
+      # model behind muster's LLM proxy (tests/compose-chief.override.yml,
       # tests/fake-llm): real CLI turns and real muster tool calls, no key.
       - name: bring the compose stack up from this run's images
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng tmux >/dev/null
+          (cd e2e && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium webkit)
           python3 tests/fake-llm/fake_llm_test.py
           make image IMAGE=muster-local VERSION=0.0.0
           docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
-          tests/compose-up.sh muster-local 0.0.0
+          go build -o /tmp/muster-mirror ./cmd/muster-mirror
+          COMPOSE_UP_MIRROR=/tmp/muster-mirror COMPOSE_UP_BROWSERS=1 tests/compose-up.sh muster-local 0.0.0
+
+      # 🔴 THE FILE AT HEAD RUNS THE RELEASE IT DEFAULTS TO, as a clone runs it:
+      # the published image, nothing overridden (#707 round 2, F1 — every
+      # other compose test runs the image this run built, so none could see
+      # that HEAD's file needed a newer muster than its default). SKIPPED only
+      # in the bootstrap (scripts/check-compose-default.sh --state). Both
+      # controls run on every run, bootstrap or not:
+      #   NEGATIVE: the newest release BELOW x-muster-min-version, under this
+      #   file, must NOT SERVE it (COMPOSE_DEFAULT_IMAGE_EXPECT=fail): any
+      #   failure counts — muster-init failing, the server refusing, no ready
+      #   state in time — never one failure's text (#707 round 3); it goes red
+      #   if that release serves, or if its images cannot be pulled;
+      #   POSITIVE: this run's image, tagged as that GHCR name at 0.0.0, under
+      #   a copy stamped 0.0.0, must serve (the harness can go green).
+      - name: the compose file at HEAD runs its default release (and its two controls)
+        run: |
+          set -o pipefail
+          min="$(sed -nE 's/^x-muster-min-version:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' deploy/docker-compose.yml)"
+          test -n "$min"
+          below="$( { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; echo "$min"; } | sort -uV | grep -B1 -xF "$min" | head -1)"
+          if [ -n "$below" ] && [ "$below" != "$min" ]; then
+            scripts/stamp-compose-version.sh "$below" < deploy/docker-compose.yml > deploy/.compose-below-min.yml
+            COMPOSE_DEFAULT_IMAGE_EXPECT=fail COMPOSE_DEFAULT_IMAGE_TIMEOUT=120 COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-below-min.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 \
+              tests/compose-default-image.sh | tee /tmp/below.log
+            test "$(grep -c '^ok   compose-default-image: did not serve, as the negative control requires: ' /tmp/below.log)" = 1
+            echo "ok   negative control: the release below the minimum ($below) does not serve this file"
+          else
+            echo "note no release below the minimum $min: no negative control"
+          fi
+          docker tag muster-local:0.0.0 ghcr.io/zacxdev/muster:0.0.0
+          scripts/stamp-compose-version.sh 0.0.0 < deploy/docker-compose.yml > deploy/.compose-this-run.yml
+          COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-this-run.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 tests/compose-default-image.sh | tee /tmp/positive.log
+          test "$(grep -c '^ok   compose-default-image: ' /tmp/positive.log)" = 1
+          echo "ok   positive control: this run's image under the same harness serves the file"
+          tests/compose-default-image.sh | tee /tmp/default-image.log
+          test "$(grep -cE '^(ok   compose-default-image: |SKIP compose-default-image: the bootstrap)' /tmp/default-image.log)" = 1
+
+      # THE ONE-LINER, as a person runs it: `curl -fsSL <release>/install.sh |
+      # sh`, from the 0.0.0 assets built above (served on loopback, so the
+      # release's own checksums.txt verifies every download) and this run's
+      # image. As a FRESH user with a real systemd user manager (linger): a
+      # container has no user manager, so the user service — the step under
+      # test — could not run in one. It must exit 0 (the doctor passed), the
+      # mirror service must be active and this machine connected; run again it
+      # must change nothing (same password, same token) and keep a hand-added
+      # settings line; and it must refuse, changing nothing, a second install
+      # under the same project name and a ~/muster it did not make.
+      - name: install.sh end to end (a fresh user), twice, and its refusals
+        run: tests/install-sh.sh dist muster-local
 
       # setup-python, not the runner's system python: that one is
       # "externally managed" (PEP 668) and refuses `pip install`.
@@ -1863,7 +2000,8 @@ jobs:
             echo
             echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
             echo
-            echo "Server: download \`docker-compose.yml\` and \`env.example\` (save it as \`.env\`), fill in the CHANGE-ME values, then \`docker compose up -d --wait\`."
+            echo "This machine, in one line: \`curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/install.sh | sh\` (docs/quickstart-local.md)."
+            echo "Server by hand: download \`docker-compose.yml\` and \`docker compose up -d --wait\` (no .env needed: the secrets are generated; \`env.example\`, saved as \`.env\`, sets your own)."
             echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
             echo "Kubernetes: the Helm chart \`muster-$v.tgz\` (its default image is this release): \`helm install muster https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/muster-$v.tgz\` (docs/kubernetes.md)."
             echo

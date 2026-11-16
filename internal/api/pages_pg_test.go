@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
+	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -77,6 +78,7 @@ func newPageFixture(t *testing.T) *pageFixture {
 	f := &pageFixture{objects: &uploadstest.Objects{}, pushes: &pagePushes{}}
 	f.connFixture = newConnFixtureWith(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		f.pages = pages.NewPG(pool)
+		ext.NotifyPrefs = notifypref.NewPG(pool)
 		ext.Pages = f.pages
 		ext.Attention = attention.NewPG(pool)
 		signer, err := uploads.NewSigner("pages-test-upload-signing-key-0123456789abcdef")
@@ -109,6 +111,7 @@ func (f *pageFixture) member(t *testing.T, name string) int64 {
 		sys := authz.System(context.Background())
 		for _, q := range []string{`DELETE FROM pages WHERE owner_id = $1`, `DELETE FROM attention_asks WHERE owner_id = $1`,
 			`DELETE FROM uploads WHERE owner_id = $1`, `DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM audit_log WHERE user_id = $1`,
+			`DELETE FROM notify_preferences WHERE owner_id = $1`,
 			`DELETE FROM users WHERE id = $1`} {
 			_, _ = f.pool.Exec(sys, q, id)
 		}
@@ -183,7 +186,7 @@ func (f *pageFixture) create(t *testing.T, a agents.Agent, title, blocks string)
 // liveLink mints a live link to page id as its owner; its token.
 func (f *pageFixture) liveLink(t *testing.T, owner, id int64) pages.Link {
 	t.Helper()
-	l, err := f.pages.CreateLink(f.as(owner, authz.ViaSession), id, pages.LinkLive, "you")
+	l, err := f.pages.CreateLink(f.as(owner, authz.ViaSession), id, pages.LinkLive, "you", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +392,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 		if to[i] != f.owner {
 			t.Errorf("a push went to user %d", to[i])
 		}
-		if strings.HasPrefix(p.Tag, "page-") {
+		if strings.HasPrefix(p.Tag, "page-") && strings.HasSuffix(p.Tag, "-response") {
 			sent = append(sent, p)
 		}
 		// The share request reached the owner's phone as an ask, with its two
@@ -452,11 +455,21 @@ func pageToolText(v map[string]any) string {
 // (the one door an agent reaches), another principal — and an answer that is
 // not one of its two options; each leaves the link pending and the card open.
 // Not now denies it for good.
+//
+// It is the guard of an owner who did NOT opt in to their agents sharing
+// without asking (the default for every user), so it says so: an opted-in
+// owner's agent files no card at all (TestAnOptedInOwnersAgentSharesAtOnce).
 func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
 	f := newPageFixture(t)
+	if f.srv.pageAgentShareOn(f.as(f.owner, authz.ViaSession), f.owner) {
+		t.Fatal("the owner starts opted in; this is the ask flow's guard")
+	}
 	id := f.create(t, f.agent, "Approve me", `[{"type":"markdown","text":"x"}]`)
 	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
 	askID := pnum(req["ask_id"])
+	if req["status"] != "pending" || askID <= 0 {
+		t.Fatalf("ask mode's request: %v", req)
+	}
 	pending := func(why string) {
 		t.Helper()
 		ls, _ := f.pages.Links(f.as(f.owner, authz.ViaSession), id)
@@ -570,8 +583,10 @@ func TestAPageIsItsCreatorsAndItsOwners(t *testing.T) {
 		}
 	}
 	body, hdr := form(url.Values{"version": {"1"}})
-	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, f.ownerHdr()); w.Code != http.StatusNotFound {
-		t.Errorf("another member minted a link: %d", w.Code)
+	for _, p := range []string{"/share", "/share/rotate"} {
+		if w := f.call(t, http.MethodPost, "/pages/"+sid+p, nil, f.ownerHdr()); w.Code != http.StatusNotFound {
+			t.Errorf("another member's %s: %d", p, w.Code)
+		}
 	}
 	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/rollback", body, merge(f.ownerHdr(), hdr)); w.Code != http.StatusNotFound {
 		t.Errorf("another member rolled back: %d", w.Code)
@@ -617,8 +632,8 @@ func TestEveryRefusedLinkIsTheSameAnswer(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Refusals", formBlocks)
 	ctx := f.as(f.owner, authz.ViaSession)
-	pending, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x")
-	denied, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x")
+	pending, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x", true)
+	denied, _ := f.pages.CreateLink(ctx, id, pages.LinkPending, "x", true)
 	_, _ = f.pages.DecideLink(ctx, denied.ID, false)
 	revoked := f.liveLink(t, f.owner, id)
 	_, _ = f.pages.RevokeLink(ctx, id, revoked.ID)
@@ -705,14 +720,18 @@ func TestAnUploadedFileIsNeverServedAsAPage(t *testing.T) {
 	}
 }
 
-// TestTheOwnersScreenMintsShowsAndRevokesLinks and previews any version,
-// sandboxed exactly as a link's content.
-func TestTheOwnersScreenMintsShowsAndRevokesLinks(t *testing.T) {
+// TestTheOwnersScreenSharesShowsAndRevokesLinks: on a server with NO link key
+// (this fixture's default), the owner's Share without the page script (a plain
+// form post) makes a one-off hash-only link and shows it ONCE; the page's
+// screen then shows its state and label, never the token; Revoke 404s it. And
+// the owner previews any version, sandboxed exactly as a link's content. (The
+// keyed, reusable path: TestTheOwnersShareButtonGivesOneReusableLink.)
+func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Owner screen", `[{"type":"markdown","text":"first"}]`)
 	sid := strconv.FormatInt(id, 10)
-	// The new link is shown ONCE, in the mint's own answer (no-store).
-	mint := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, f.ownerHdr())
+	// The new link is shown ONCE, in the Share's own answer (no-store).
+	mint := f.call(t, http.MethodPost, "/pages/"+sid+"/share", nil, f.ownerHdr())
 	m := regexp.MustCompile(`data-link-new>[^<]*<span[^>]*>[^<]*</span>\s*<input type="text" readonly value="` +
 		regexp.QuoteMeta(pagesPublicURL+pages.SharePrefix) + `([A-Za-z0-9_-]{43})"`).FindStringSubmatch(mint.Body.String())
 	if mint.Code != http.StatusOK || m == nil || mint.Header().Get("Cache-Control") != "no-store" {
@@ -721,7 +740,7 @@ func TestTheOwnersScreenMintsShowsAndRevokesLinks(t *testing.T) {
 	token := m[1]
 	// A mint without muster's Origin is refused (the owner's writes are
 	// same-origin).
-	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "null"}); w.Code != http.StatusForbidden {
+	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/share", nil, map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "null"}); w.Code != http.StatusForbidden {
 		t.Fatalf("a mint with Origin null: %d", w.Code)
 	}
 	ls, _ := f.pages.Links(f.as(f.owner, authz.ViaSession), id)
@@ -871,6 +890,9 @@ func TestTheShellDrawsTheBrandAsEveryBrandedSurface(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Branded", `[{"type":"markdown","text":"x"}]`)
 	l := f.liveLink(t, f.owner, id)
+	// page_create's "Page ready" push reads the branding (its icon) on its
+	// own goroutine: let it finish before the cases swap the branding store.
+	f.srv.WaitForPushes()
 	for _, c := range []struct {
 		name    string
 		b       branding.Branding

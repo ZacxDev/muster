@@ -41,6 +41,8 @@ var noCodenameFirst = map[string]string{
 	"connectors.go Server.onConnectorRequested":            "a connector request: names a connector",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "an officer's pool: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
+	"page_tools.go Server.pagePublished":                   "an agent published a page: names the page",
+	"page_tools.go Server.pageShareAuto":                   "an agent shared a page without asking: names the page",
 	"plugin_drafts.go Server.notifyDraftRefused":           "a plugin draft: fixed title, names no session",
 	"plugin_drafts.go Server.notifyOfficerNotTold":         "an officer's outbound draft: fixed title, names no session",
 	"plugin_pairing.go Server.pairRequested":               "a plugin pairing request: fixed title, names no session",

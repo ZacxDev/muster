@@ -47,7 +47,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
-| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and ask before a link anyone can open goes live | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
+| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
@@ -70,9 +70,11 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 
 ## Core
 
-Needs no optional variable and no extra service. `deploy/.env.example`'s
-required block (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`,
-`MUSTER_VERSION`) and `MUSTER_PUBLIC_URL` are all of it. You get:
+Needs no optional variable and no extra service, and no `.env` at all: the
+Compose stack generates its secrets (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`,
+`MUSTER_HOOK_TOKEN`; [docs/quickstart-local.md](quickstart-local.md)) and runs
+the release its compose file names. `MUSTER_PUBLIC_URL` adds every machine
+beyond this one. You get:
 
 - every tmux window on every machine as a card, a Claude Code window as a chat
   (the Rendered view) and any window in the Terminal view (Linux hosts)
@@ -427,15 +429,20 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
 ### Pages
 
 Agents publish small pages for you — a showcase, questions, a form, file
-uploads, an approval, or their own script in a sandbox — and ask you before a
-link that anyone can open goes live. What viewers send comes back to the agent
-as data, and you are notified. [pages.md](pages.md).
+uploads, an approval, or their own script in a sandbox — shown to you at once
+(a card in the chat, a push), and shared with a link anyone can open: one tap
+on Share, or an agent's request, which waits for your approval unless you
+turned on **Let my agents share pages without asking** on your Account page
+(each user's own choice, off by default). What viewers send comes back to the agent as
+data, and you are notified. [pages.md](pages.md).
 
 - **Needs:** the core's database, and `MUSTER_PUBLIC_URL` (links are written on
   it). An `upload` block needs [attachments](#attachments).
 - **Turn it on:** `MUSTER_PAGES=1` in `.env`.
 - **Safety:** a page is served sandboxed, with no network; it never runs as
-  muster. You approve every link an agent asks for; you can revoke any link.
+  muster. You approve every link an agent asks for, unless you opted in to
+  your agents sharing without asking (Account → Pages; then you are told each
+  time). You can revoke any link.
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
 
@@ -445,14 +452,18 @@ A sealed store of HTTP credentials (and read-only Postgres connectors) that
 agents use through muster's proxy without seeing the secret; it also holds each
 member's own Claude token and OpenRouter key. [connectors.md](connectors.md).
 
-- **Needs:** a 32-byte key. Agents using connectors need [dispatch](#dispatch);
-  the store itself and members' credentials do not.
-- **`.env`:** `MUSTER_CONNECTOR_ENCRYPTION_KEY=<head -c32 /dev/urandom | base64>`.
+- **Needs:** a 32-byte key. Agents using connectors need [dispatch](#dispatch)
+  and `MUSTER_AGENT_CONNECT_URL` with `MUSTER_CONNECT_PORT`; members'
+  credentials need only the key.
+- **`.env`:** `MUSTER_CONNECTOR_ENCRYPTION_KEY=<openssl rand -hex 32>` (64 hex
+  digits, or base64 of 32 bytes).
   Keep it: losing it loses every stored secret. Optionally
   `MUSTER_DIAL_DENY_PRIVATE=1` refuses postgres connectors to loopback and
   private addresses
   ([connectors.md](connectors.md#refusing-private-addresses)).
-- **Check:** `connector store: ENABLED — …`; the Connectors tab appears.
+- **Check:** with the key alone, `connector store: MEMBERS' CREDENTIALS ONLY — …`
+  and Account → Credentials takes keys; with the agent connect URL too,
+  `connector store: ENABLED — …` and the Connectors tab appears.
 
 ### GitHub App
 
@@ -482,18 +493,19 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
   MUSTER_AUTH_MODE=gotrue
   MUSTER_GOTRUE_URL=http://<your gotrue>:9999
   MUSTER_GOTRUE_JWT_SECRET=<GoTrue's HS256 secret, 32+ characters>
-  MUSTER_BROWSER_PORT=8106
+  MUSTER_BROWSER_PORT=8107
   ```
 
 - **Publish the browser port** with a `docker-compose.override.yml` beside
   `docker-compose.yml` (Compose reads it automatically), and point
-  `tailscale serve` at 8106 instead of 8105:
+  `tailscale serve` at 8107 instead of 8105 (not 8106: with the chief on, that
+  is the Compose stack's connect port):
 
   ```yaml
   services:
     muster:
       ports:
-        - "127.0.0.1:8106:8106"
+        - "127.0.0.1:8107:8107"
   ```
 
 - **Then:** `docker compose exec muster /muster-server invite --claim-admin`

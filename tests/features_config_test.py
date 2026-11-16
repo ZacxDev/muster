@@ -95,6 +95,11 @@ NOT_FORWARDED = {
         "MUSTER_CHIEF_NUDGE_ASK_THRESHOLD", "MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS",
     ]},
     "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
+    "DATABASE_URL": "the Compose file hands muster DATABASE_URL_FILE instead, which muster-init writes from Postgres's "
+    "password (kept from the stack's first start: POSTGRES_PASSWORD in .env then, or one it generated)",
+    "POSTGRES_PASSWORD": "read by muster-init (muster-server compose-init) only, which writes it to Postgres's password "
+    "file when the stack has none (never over one: a different value is refused) and into DATABASE_URL_FILE; muster's "
+    "own environment never holds it",
     "MUSTER_INTERNAL_HTTP_CONNECTORS": "deployment-specific: a JSON array naming the admin's own internal services, each with "
     "its own MUSTER_INTERNAL_HTTP_TOKEN_<NAME>; there is no default to forward (docs/connectors.md#internal-http-connectors)",
     **{name: "test fixture: read only by a `-tags e2eterm` build" for name in [
@@ -156,7 +161,8 @@ def muster_env_keys(text: str) -> set[str]:
         if re.match(r"^  [a-z0-9-]+:\s*$", line):
             in_muster, in_env = line.strip() == "muster:", False
             continue
-        if in_muster and re.match(r"^    environment:\s*$", line):
+        # `environment: &muster-env`: the anchor muster-init reuses.
+        if in_muster and re.match(r"^    environment:(\s*&[a-z-]+)?\s*$", line):
             in_env = True
             continue
         if in_env:

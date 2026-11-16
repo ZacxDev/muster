@@ -72,6 +72,13 @@ var (
 	ErrTooMany = errors.New("pages: too many")
 	// ErrNotPending is a decision on a link that is no longer pending.
 	ErrNotPending = errors.New("pages: that link is no longer waiting for a decision")
+	// ErrLinkUnreadable is a page's reusable link whose sealed token does not
+	// open (the server's key changed): it still serves, but its address cannot
+	// be shown again — make a new link (RotateShareLink).
+	ErrLinkUnreadable = errors.New("pages: this page's link can no longer be shown (the server's encryption key changed); make a new link")
+	// ErrClosing is a new link asked of a page whose delete has begun
+	// (CloseLinks ran): it gets none — press Delete again to finish it.
+	ErrClosing = errors.New("pages: this page is being deleted; it takes no new link")
 )
 
 // Creator is who made a page, and so who a tool may act on it as: a
@@ -135,10 +142,12 @@ const (
 
 // Link is one share link.
 //
-// 🔴 ITS TOKEN IS NOT STORED. Token is set only on the Link CreateLink returns
-// — the one moment the token exists outside a request — and on the Link
-// LinkByToken returns (the presented token, already matched); every other read
-// leaves it "". TokenSHA256 is what the table holds.
+// 🔴 ITS TOKEN IS NOT STORED IN THE CLEAR. Token is set only on the Link
+// CreateLink returns — for a hash-only link the one moment the token exists
+// outside a request — on the Link LinkByToken returns (the presented token,
+// already matched), and on a REUSABLE link ShareLink, RotateShareLink or
+// ShareLinks returns (opened from its sealed copy, seal.go); every other read
+// leaves it "". TokenSHA256 is the lookup key.
 type Link struct {
 	ID          int64
 	OwnerID     int64
@@ -148,8 +157,15 @@ type Link struct {
 	State       LinkState
 	AskID       int64
 	RequestedBy string
-	CreatedAt   time.Time
-	DecidedAt   *time.Time
+	// Reusable: the page's one link the owner's Share hands out every time
+	// (migration 0135). Its token is kept sealed while it is live, so
+	// ShareLink can show the address again; a link that is not reusable is
+	// hash-only, and its address was shown once.
+	Reusable bool
+	// ByAgent: an agent made it (its request), not the owner.
+	ByAgent   bool
+	CreatedAt time.Time
+	DecidedAt *time.Time
 }
 
 // Label is a link's short, non-secret name for its owner: when it was made

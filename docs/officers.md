@@ -968,7 +968,7 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `plugin` | the name of one of the owner's live plugins whose `deliver_to` is THIS officer, with `draft_checks` |
 | `venue` | 1 to 64 lower-case letters, digits, `.`, `_` and `-` |
 | `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
-| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)) |
+| `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
 | `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
 
@@ -2509,6 +2509,50 @@ continue. Every attempt is counted on
 `ccd_failed`, `hq_not_found`, `hq_refused` (another 4xx), `hq_unavailable`
 (5xx, a timeout, no answer), `skipped` (a pre-stop push that could not start
 within its 10 s). An HQ refusal is logged by its status, never its body.
+
+### A builtin officer's usage: officer_llm_usage
+
+A [builtin](officers-builtin.md) officer has no HQ to push to, so the same
+collector pushes its instances' usage to the built-in backend, which books it
+into `officer_llm_usage` (the table the [LLM proxy](#the-llm-proxy) books
+into): one row per officer, pool, instance and UTC day, with `requests`
+(`api_calls`), the four token counts, `cost_usd` and `estimated_requests`.
+Before this, the built-in backend did not serve `usage`, the collector
+skipped builtin officers, and their model spend was recorded nowhere.
+
+- 🔴 **`cost_usd` is an ESTIMATE.** A Claude Code transcript carries tokens
+  and a model, never dollars, and an instance on a pooled account runs on a
+  subscription, so nothing is billed per token. The USD is what the tokens
+  would cost at Anthropic's API list price, from the one price list in
+  `internal/officers/pricing.go` (its source and date are in the file; the
+  admin read answers the date as `prices_as_of`). Cache writes are priced at
+  the 1-hour rate (2× input): Claude Code writes 1-hour cache entries
+  (measured: every cache-creation token of a live officer instance's transcript).
+  A model the list does not know is priced at the list's highest rate in
+  every column, never as free. Every request booked this way counts in
+  `estimated_requests` — on these rows it equals `requests`. A pool on the
+  LLM proxy keeps the provider's reported cost and is NOT booked again from
+  its transcript (the proxy already books those calls).
+- **Each push is the whole 25-hour window, so the merge is `GREATEST`, not a
+  sum.** Each column keeps the larger of what is booked and what the push
+  totals for the day. A day only grows while its transcripts are appended to,
+  and the window covers all of today, and all of yesterday for the first hour
+  after midnight UTC, so the day's last full push books its final total and
+  the later pushes that see only its tail leave it. Hours that fell out of the
+  window while the instance was down are not recovered (as for HQ).
+- `pool` is `routine` for a routine instance and `judgement` for a judgement
+  instance and for an untiered officer's instances (named as judgement
+  instances are).
+- **Reading it:** `muster officer usage <officer> [--days N]`
+  (`GET /api/officers/defs/{officer}/usage`, the hook tier like the rest of
+  the [admin API](officers-builtin.md)): the rows newest first over the last N
+  UTC days (default 30, at most 90), `total_cost_usd` over them and
+  `prices_as_of`.
+- ⚠ **Per-item cost is still not recorded for a Claude Code instance**
+  (`item cost omitted … reason=no_source`): the usage is per session and hour,
+  and an untiered instance works many items in one session, often several
+  in one turn, so no figure muster reads is ONE item's. See
+  [Item cost](#item-cost).
 
 **Deploy.** The instance pods need a `ccd` that serves `GET /v1/usage`, i.e.
 a restart onto a `claude-code-agent` image from this version or later; until

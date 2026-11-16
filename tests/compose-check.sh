@@ -6,7 +6,8 @@
 # Static: runs `docker compose config` (no image is pulled, nothing starts) for
 # the default stack and for each profile (stt, its older name stt-whisper,
 # stt-cohere, s3, and stt+s3 together), against deploy/.env.example with its
-# CHANGE-ME values filled in. Asserts:
+# CHANGE-ME values filled in (and its three generated secrets, commented out in
+# the example, uncommented: an .env that sets its own). Asserts:
 #   * the service set per profile is exactly what docs/features.md describes;
 #   * EVERY long-running service has a healthcheck (`docker compose up --wait`
 #     needs them); the only exemption is a ONE-SHOT (restart "no") that a
@@ -24,10 +25,18 @@
 #   * s3: muster's endpoint, bucket and key pair are the store's own (the
 #     store's root credentials ARE muster's key pair), and the store is not
 #     published on the host;
-#   * EMPTY .env: with only the required lines, `config` prints NO warning,
-#     and every optional variable muster is given resolves to EMPTY — the
-#     conditional defaults included — except the three with fixed defaults
-#     (standalone, secure cookies, and session state, ON by default);
+#   * muster-init (the secrets + boot-check one-shot) is in every profile: the
+#     same image as muster, no network, restart "no", awaited by BOTH postgres
+#     and muster; its environment IS muster's (the anchor) plus
+#     POSTGRES_PASSWORD; Postgres reads its password from the file it writes
+#     (POSTGRES_PASSWORD_FILE, never the variable), and muster its DATABASE_URL;
+#   * NO .env AT ALL (the zero-config contract): `config` succeeds with NO
+#     warning, runs ghcr.io/zacxdev/muster:<the file's default release>, and
+#     every optional variable
+#     muster is given resolves to EMPTY — the conditional defaults, the UI
+#     password and the hook token included (muster-init generates those) —
+#     except the three with fixed defaults (standalone, secure cookies, and
+#     session state, ON by default);
 #   * MUSTER_SESSION_STATE set EMPTY or 0 in .env reaches muster as that value
 #     (both off), not as the default 1;
 #   * YOUR OWN S3 store (endpoint + secret, no S3_STORE_SECRET_KEY) is never
@@ -35,8 +44,13 @@
 #   * your own endpoint WITH S3_STORE_SECRET_KEY left set resolves to a bucket
 #     muster refuses, so the bundled credentials are never sent there;
 #   * the bundled store's start script refuses the CHANGE-ME placeholder;
-#   * NEGATIVE CONTROL: the repository's .env.example as shipped (MUSTER_VERSION
-#     empty) is REFUSED — the compose file must not start an unversioned image.
+#   * THE VERSION: the shipped .env.example (MUSTER_VERSION empty) runs the
+#     file's own default (a release X.Y.Z; scripts/check-compose-default.sh
+#     holds it to the newest), never an empty tag; the copy a release
+#     stamps (scripts/stamp-compose-version.sh, which release-build runs) runs
+#     that release in EVERY service with no .env; and NEGATIVE CONTROL, a file
+#     whose default was removed is caught by the same image check — the
+#     compose file must never start an unversioned image.
 #
 # Exit 0 ok, 1 an assertion failed, 2 harness error (no docker compose).
 set -euo pipefail
@@ -49,9 +63,21 @@ EXAMPLE="$ROOT/deploy/.env.example"
 docker compose version >/dev/null 2>&1 || { echo "compose-check: docker compose is not available" >&2; exit 2; }
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# The release the repository's copy defaults to (its one spelling).
+DEFAULT_VERSION="$("$ROOT/scripts/stamp-compose-version.sh" --current < "$COMPOSE")" ||
+  { echo "compose-check: deploy/docker-compose.yml has no single X.Y.Z default" >&2; exit 1; }
+export DEFAULT_VERSION
 
-# The example, filled in the way a user would.
-sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' "$EXAMPLE" > "$tmp/env"
+# The example, filled in the way a user would — its generated secrets
+# (commented out in the example) set too, as an .env that sets its own does.
+# (#707 round 0, D2/F1: an uncommented POSTGRES_PASSWORD=CHANGE-ME, copied
+# into a zero-config stack's .env, used to overwrite its database password.)
+grep -qx '#POSTGRES_PASSWORD=' "$EXAMPLE" && grep -qx '#MUSTER_UI_PASSWORD=' "$EXAMPLE" && grep -qx '#MUSTER_HOOK_TOKEN=' "$EXAMPLE" &&
+  ! grep -Eq '^(POSTGRES_PASSWORD|MUSTER_UI_PASSWORD|MUSTER_HOOK_TOKEN)=' "$EXAMPLE" ||
+  { echo "FAIL [example]: deploy/.env.example must carry its three generated secrets commented out and EMPTY (#NAME=), and never set"; exit 1; }
+echo "ok   [example]: the three generated secrets are commented out and empty in deploy/.env.example"
+sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' \
+  -e 's/^#\(POSTGRES_PASSWORD\|MUSTER_UI_PASSWORD\|MUSTER_HOOK_TOKEN\)=$/\1=fixture-secret/' "$EXAMPLE" > "$tmp/env"
 printf 'MUSTER_STT_TOKEN=fixture-stt\nHF_TOKEN=fixture-hf\n' >> "$tmp/env"
 printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixture-vapid-priv\nMUSTER_VAPID_SUBJECT=mailto:ops@example.com\n' >> "$tmp/env"
 printf 'S3_STORE_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
@@ -78,14 +104,15 @@ profile, path = sys.argv[1], sys.argv[2]
 cfg = json.load(open(path))
 svcs = cfg["services"]
 whisper = {"stt-whisper", "stt-whisper-init"}
-want = {"default": {"postgres", "muster"},
-        "stt": {"postgres", "muster"} | whisper,
-        "stt+model": {"postgres", "muster"} | whisper,
-        "stt-whisper": {"postgres", "muster"} | whisper,
-        "stt-cohere": {"postgres", "muster", "stt-cohere"},
-        "s3": {"postgres", "muster", "s3"},
-        "stt,s3": {"postgres", "muster", "s3"} | whisper,
-        "chief": {"postgres", "muster", "chief", "chief-init"}}[profile]
+core = {"postgres", "muster", "muster-init"}
+want = {"default": core,
+        "stt": core | whisper,
+        "stt+model": core | whisper,
+        "stt-whisper": core | whisper,
+        "stt-cohere": core | {"stt-cohere"},
+        "s3": core | {"s3"},
+        "stt,s3": core | {"s3"} | whisper,
+        "chief": core | {"chief", "chief-init"}}[profile]
 errs = []
 if set(svcs) != want:
     errs.append(f"services {sorted(svcs)} != {sorted(want)}")
@@ -106,9 +133,49 @@ env = m.get("environment", {})
 for k, v in {"MUSTER_MIRROR": "1", "MUSTER_STANDALONE": "1"}.items():
     if env.get(k) != v:
         errs.append(f"muster {k}={env.get(k)!r}, want {v!r}")
-for k in ("MUSTER_UI_PASSWORD", "MUSTER_HOOK_TOKEN", "DATABASE_URL"):
-    if not env.get(k):
-        errs.append(f"muster {k} is empty")
+for k in ("MUSTER_UI_PASSWORD", "MUSTER_HOOK_TOKEN"):
+    if env.get(k) != "fixture-secret":
+        errs.append(f"muster {k}={env.get(k)!r}: the .env's value does not reach muster")
+# The secrets volume: muster-init writes it, Postgres and muster read it.
+SECRETS = "/run/muster-secrets"
+want_files = {"DATABASE_URL_FILE": "database_url", "MUSTER_UI_PASSWORD_FILE": "ui_password",
+              "MUSTER_HOOK_TOKEN_FILE": "hook_token", "MUSTER_VAPID_PUBLIC_KEY_FILE": "vapid_public_key",
+              "MUSTER_VAPID_PRIVATE_KEY_FILE": "vapid_private_key"}
+for k, f in want_files.items():
+    if env.get(k) != f"{SECRETS}/{f}":
+        errs.append(f"muster {k}={env.get(k)!r}, want {SECRETS}/{f}")
+if "DATABASE_URL" in env:
+    errs.append("muster is given DATABASE_URL directly; it must read muster-init's DATABASE_URL_FILE")
+init = svcs.get("muster-init", {})
+if init.get("image") != m.get("image"):
+    errs.append(f"muster-init image {init.get('image')!r} is not muster's {m.get('image')!r}")
+if init.get("restart") != "no" or init.get("network_mode") != "none":
+    errs.append(f"muster-init restart {init.get('restart')!r} network_mode {init.get('network_mode')!r}: a one-shot with no network")
+if (init.get("command") or [None])[0] != "compose-init":
+    errs.append(f"muster-init command {init.get('command')!r} does not run compose-init")
+# It sees Postgres's data directory READ-ONLY, at the path it is told to check
+# (an existing database never gets a generated password: #707 round 2, F3).
+icmd = init.get("command") or []
+pgd = icmd[icmd.index("-postgres-data") + 1] if "-postgres-data" in icmd[:-1] else None
+pg_vol = [v for v in svcs.get("postgres", {}).get("volumes", []) if v.get("source") == "pgdata"]
+init_vol = [v for v in init.get("volumes", []) if v.get("source") == "pgdata"]
+if not (pgd and pg_vol and pg_vol[0].get("target") == pgd and len(init_vol) == 1
+        and init_vol[0].get("target") == pgd and init_vol[0].get("read_only") is True):
+    errs.append(f"muster-init -postgres-data {pgd!r} is not Postgres's data volume mounted read-only "
+                f"(postgres {pg_vol}, muster-init {init_vol})")
+ienv = dict(init.get("environment") or {})
+if ienv.pop("POSTGRES_PASSWORD", None) is None:
+    errs.append("muster-init is not given POSTGRES_PASSWORD")
+if ienv != env:
+    diff = sorted(set(ienv.items()) ^ set(env.items()))[:6]
+    errs.append(f"muster-init's environment is not muster's (it checks what muster gets): {diff}")
+for svc in ("muster", "postgres"):
+    if svcs.get(svc, {}).get("depends_on", {}).get("muster-init", {}).get("condition") != "service_completed_successfully":
+        errs.append(f"{svc} does not wait for muster-init to complete")
+pg = svcs.get("postgres", {})
+pge = pg.get("environment", {})
+if "POSTGRES_PASSWORD" in pge or pge.get("POSTGRES_PASSWORD_FILE") != f"{SECRETS}/postgres_password":
+    errs.append(f"postgres environment {sorted(pge)}: it must read POSTGRES_PASSWORD_FILE={SECRETS}/postgres_password only")
 if m.get("image") != "ghcr.io/zacxdev/muster:1.2.3":
     errs.append(f"muster image {m.get('image')!r}, want ghcr.io/zacxdev/muster:1.2.3")
 if m.get("depends_on", {}).get("postgres", {}).get("condition") != "service_healthy":
@@ -179,6 +246,9 @@ for name, sv in svcs.items():
     for mt in mounts(sv):
         if mt[4] is not None:
             errs.append(f"{name} mounts a volume subpath {mt}: Compose before 2.25 refuses the whole file")
+for svc, ro in (("muster", True), ("postgres", True), ("muster-init", False)):
+    if ("volume", "secrets", SECRETS, ro, None) not in mounts(svcs.get(svc, {})):
+        errs.append(f"{svc} does not mount the secrets volume at {SECRETS} {'read-only' if ro else 'read-write'}: {mounts(svcs.get(svc, {}))}")
 if sorted(str(g) for g in m.get("group_add", [])) != ["1000", "1001"]:
     errs.append(f"muster group_add {m.get('group_add')}, want 1000 and 1001 (it gives the spec and the files their groups)")
 for other in ("postgres", "s3", "stt-whisper", "stt-cohere"):
@@ -235,19 +305,35 @@ sys.exit(1 if errs else 0)
 PY
 done
 
-# EMPTY .env: only the required lines. No warning, and every optional value
-# muster is given is empty — so a feature can only be on because .env says so.
-printf 'MUSTER_VERSION=1.2.3\nPOSTGRES_PASSWORD=p\nMUSTER_UI_PASSWORD=ui-password-fixture\nMUSTER_HOOK_TOKEN=hook-token-fixture\n' > "$tmp/env-min"
-if docker compose -f "$COMPOSE" --env-file "$tmp/env-min" -p compose-check config --format json > "$tmp/min.json" 2> "$tmp/min.err"; then
+# NO .env AT ALL — the zero-config contract (clone, then `docker compose up`).
+# An empty env file, and an environment with nothing of the shell's in it (a
+# MUSTER_VERSION exported in the caller's shell would hide a missing default).
+# No warning, the default release image, and every optional value muster is given is
+# empty — so a feature can only be on because .env says so.
+: > "$tmp/env-min"
+bare() { env -i PATH="$PATH" HOME="$HOME" docker compose "$@"; }
+if bare -f "$COMPOSE" --env-file "$tmp/env-min" -p compose-check config --format json > "$tmp/min.json" 2> "$tmp/min.err"; then
   if [ -s "$tmp/min.err" ]; then
-    echo "FAIL [empty .env]: docker compose config warned: $(cat "$tmp/min.err")"; fail=1
+    echo "FAIL [no .env]: docker compose config warned: $(cat "$tmp/min.err")"; fail=1
   fi
   python3 - "$tmp/min.json" <<'PY' || fail=1
 import json, sys
-env = json.load(open(sys.argv[1]))["services"]["muster"]["environment"]
-fixed = {"DATABASE_URL", "MUSTER_PORT", "MUSTER_MIRROR", "MUSTER_UI_PASSWORD", "MUSTER_HOOK_TOKEN"}
+svcs = json.load(open(sys.argv[1]))["services"]
+env = svcs["muster"]["environment"]
+fixed = {"MUSTER_PORT", "MUSTER_MIRROR", "DATABASE_URL_FILE", "MUSTER_UI_PASSWORD_FILE", "MUSTER_HOOK_TOKEN_FILE",
+         "MUSTER_VAPID_PUBLIC_KEY_FILE", "MUSTER_VAPID_PRIVATE_KEY_FILE"}
 defaults = {"MUSTER_STANDALONE": "1", "MUSTER_SECURE_COOKIES": "1", "MUSTER_SESSION_STATE": "1"}
 errs = [f"{k}={env.get(k)!r}, want {v!r}" for k, v in defaults.items() if env.get(k) != v]
+import os
+want_img = "ghcr.io/zacxdev/muster:" + os.environ["DEFAULT_VERSION"]
+for svc in ("muster", "muster-init"):
+    if svcs[svc]["image"] != want_img:
+        errs.append(f"with no .env, {svc} runs {svcs[svc]['image']!r}, want {want_img}")
+for k in ("MUSTER_UI_PASSWORD", "MUSTER_HOOK_TOKEN"):
+    if env.get(k) != "":
+        errs.append(f"with no .env, {k}={env.get(k)!r}: muster-init's generated one must be read, not a default")
+if svcs["muster-init"]["environment"].get("POSTGRES_PASSWORD") != "":
+    errs.append("with no .env, muster-init is handed a POSTGRES_PASSWORD; it must generate one")
 set_ = sorted(k for k, v in env.items() if v and k not in fixed and k not in defaults)
 if set_:
     errs.append(f"optional variables that are NOT empty with nothing in .env: {set_}")
@@ -256,13 +342,13 @@ optional = [k for k in env if k not in fixed and k not in defaults]
 if len(optional) < 60:
     errs.append(f"positive control FAILED: only {len(optional)} optional variables reached muster")
 for e in errs:
-    print(f"FAIL [empty .env]: {e}")
+    print(f"FAIL [no .env]: {e}")
 if not errs:
-    print(f"ok   [empty .env]: no warning; all {len(optional)} optional variables muster is given are empty")
+    print(f"ok   [no .env]: no warning; the {want_img} image; all {len(optional)} optional variables muster is given are empty")
 sys.exit(1 if errs else 0)
 PY
 else
-  echo "FAIL [empty .env]: docker compose config refused it: $(cat "$tmp/min.err")"; fail=1
+  echo "FAIL [no .env]: docker compose config refused it: $(cat "$tmp/min.err")"; fail=1
 fi
 
 # Session state is on by default, and .env can turn it off with 0 OR an empty
@@ -328,14 +414,45 @@ for pw in CHANGE-ME a-real-secret-123; do
   esac
 done
 
-# Negative control: the shipped example has MUSTER_VERSION empty and must be refused.
-if docker compose -f "$COMPOSE" --env-file "$EXAMPLE" -p compose-check config >/dev/null 2>"$tmp/neg.err"; then
-  echo "FAIL [negative control]: the unfilled .env.example was ACCEPTED (an unversioned image would start)"; fail=1
-elif grep -q MUSTER_VERSION "$tmp/neg.err"; then
-  echo "ok   [negative control]: the unfilled .env.example is refused, naming MUSTER_VERSION"
-else
-  echo "FAIL [negative control]: refused, but not for MUSTER_VERSION: $(cat "$tmp/neg.err")"; fail=1
-fi
+# --- the version every image runs ---------------------------------------------
+# images_at <compose file> <env file> <want tag>: every muster-built image of
+# every profile runs <want tag>, and `config` warned of nothing. The ONE check
+# the three cases below share, so its negative control is a control of it.
+images_at() {
+  local file="$1" envf="$2" want="$3"
+  bare -f "$file" --env-file "$envf" -p compose-check --profile stt-cohere --profile chief config --format json \
+    > "$tmp/ver.json" 2> "$tmp/ver.err" || { echo "config refused: $(cat "$tmp/ver.err")"; return 1; }
+  if [ -s "$tmp/ver.err" ]; then echo "config warned: $(cat "$tmp/ver.err")"; return 1; fi
+  python3 - "$tmp/ver.json" "$want" <<'PY'
+import json, sys
+svcs, want = json.load(open(sys.argv[1]))["services"], sys.argv[2]
+ours = {"muster": "ghcr.io/zacxdev/muster", "muster-init": "ghcr.io/zacxdev/muster",
+        "stt-cohere": "ghcr.io/zacxdev/muster-stt-cohere", "chief": "ghcr.io/zacxdev/claude-code-agent",
+        "chief-init": "ghcr.io/zacxdev/claude-code-agent"}
+bad = [f"{k}={svcs[k]['image']!r}" for k, repo in ours.items() if svcs[k]["image"] != f"{repo}:{want}"]
+if bad:
+    sys.exit("not on " + want + ": " + ", ".join(bad))
+PY
+}
+# The shipped example leaves MUSTER_VERSION empty: the file's default applies.
+if out="$(images_at "$COMPOSE" "$EXAMPLE" "$DEFAULT_VERSION" 2>&1)"; then
+  echo "ok   [version]: the shipped .env.example (MUSTER_VERSION empty) runs the file's default, $DEFAULT_VERSION, in every service"
+else echo "FAIL [version]: the shipped .env.example: $out"; fail=1; fi
+# The release's copy: stamped, it runs that release with no .env.
+"$ROOT/scripts/stamp-compose-version.sh" 1.2.3 < "$COMPOSE" > "$tmp/stamped.yml" || { echo "FAIL [version]: stamping failed"; fail=1; }
+if out="$(images_at "$tmp/stamped.yml" "$tmp/env-min" 1.2.3 2>&1)"; then
+  echo "ok   [version]: the release-stamped copy runs 1.2.3 in every service, with no .env"
+else echo "FAIL [version]: the release-stamped copy: $out"; fail=1; fi
+# NEGATIVE CONTROL: the default removed and MUSTER_VERSION set EMPTY (so compose
+# has nothing to warn about), the IMAGE check itself must catch the empty tag.
+sed "s/\${MUSTER_VERSION:-$DEFAULT_VERSION}/\${MUSTER_VERSION}/g" "$COMPOSE" > "$tmp/nodefault.yml"
+grep -q 'MUSTER_VERSION:-' "$tmp/nodefault.yml" && { echo "FAIL [version, negative control]: a default survived the removal"; fail=1; }
+echo 'MUSTER_VERSION=' > "$tmp/env-emptyver"
+if out="$(images_at "$tmp/nodefault.yml" "$tmp/env-emptyver" "$DEFAULT_VERSION" 2>&1)"; then
+  echo "FAIL [version, negative control]: a file with no version default PASSED the image check (an unversioned image would start)"; fail=1
+elif grep -q "not on $DEFAULT_VERSION: muster=" <<<"$out"; then
+  echo "ok   [version, negative control]: a file with no version default is caught by the image check"
+else echo "FAIL [version, negative control]: refused, but not by the image check: $out"; fail=1; fi
 
 # --- the oldest Compose this file must parse on ------------------------------
 # Compose validates the WHOLE file against its own schema before it applies any
@@ -374,6 +491,15 @@ PY
       echo "FAIL [compose $oldv, $profile]: $(cat "$tmp/old.err")"; fail=1
     fi
   done
+  # The zero-config stack on the old Compose: no .env, and muster-init's
+  # environment (a YAML merge of muster's anchor) resolves to muster's own.
+  if env -i PATH="$PATH" HOME="$HOME" "$old" -f "$COMPOSE" --env-file "$tmp/env-min" -p compose-check config --format json \
+      > "$tmp/old-min.json" 2>"$tmp/old.err" && [ ! -s "$tmp/old.err" ] &&
+     python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]; e=dict(s["muster-init"]["environment"]); e.pop("POSTGRES_PASSWORD"); sys.exit(0 if e == s["muster"]["environment"] and s["muster"]["image"].endswith(":"+sys.argv[2]) else 1)' "$tmp/old-min.json" "$DEFAULT_VERSION"; then
+    echo "ok   [compose $oldv, no .env]: the file parses, and muster-init's merged environment is muster's"
+  else
+    echo "FAIL [compose $oldv, no .env]: $(cat "$tmp/old.err")"; fail=1
+  fi
 else
   echo "note compose-check: the old-Compose tier did not run (set COMPOSE_CHECK_OLD to a docker-compose binary; CI does)"
 fi

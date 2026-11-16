@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -390,6 +391,20 @@ const (
 	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
 	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
 	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
+
+	// The _FILE twins (secretfiles.go): the value is the named file's
+	// contents, read when the plain variable is empty. The Compose stack's
+	// muster-init one-shot writes these files (compose-init), so a stack with
+	// no .env has its secrets generated once and kept on a volume.
+	envDatabaseFile        = "DATABASE_URL_FILE"
+	envUIPasswordFile      = "MUSTER_UI_PASSWORD_FILE"
+	envHookTokenFile       = "MUSTER_HOOK_TOKEN_FILE"
+	envVAPIDPublicKeyFile  = "MUSTER_VAPID_PUBLIC_KEY_FILE"
+	envVAPIDPrivateKeyFile = "MUSTER_VAPID_PRIVATE_KEY_FILE"
+	// The Compose stack's database password, read by compose-init ONLY (it is
+	// in the stack's old .env files): written to Postgres's password file and
+	// into muster's DATABASE_URL file.
+	envPostgresPassword = "POSTGRES_PASSWORD"
 	// The operator's own push hosts (exact names, https, default port), added to
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
@@ -2058,8 +2073,34 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := c.applyComposeChief(getenv); err != nil {
 		return config{}, err
 	}
+	// Push's contact address, when the keypair is set and the subject is not
+	// (defaultVAPIDSubject).
+	if c.VAPIDSubject == "" && c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" {
+		c.VAPIDSubject = defaultVAPIDSubject(c.PublicURL)
+	}
 
 	return c, nil
+}
+
+// fallbackVAPIDSubject is the push contact of a server with no https URL.
+const fallbackVAPIDSubject = "mailto:muster@localhost"
+
+// defaultVAPIDSubject is MUSTER_VAPID_SUBJECT when the keypair is set and it
+// is not: MUSTER_PUBLIC_URL's origin when that is https, else
+// fallbackVAPIDSubject.
+//
+// 🔴 NEVER AN http:// URL. A push service refuses a subject that is not
+// mailto: or https (push.validSubject refuses it at boot), and copying an
+// http MUSTER_PUBLIC_URL into the subject is exactly how a local install
+// restart-looped (INSTALL.md Step 4 did it). The subject is only a contact
+// for the push service's operator; a mailto: with no real mailbox behind it
+// sends push the same.
+func defaultVAPIDSubject(publicURL string) string {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fallbackVAPIDSubject
+	}
+	return "https://" + u.Host
 }
 
 // gotrueIssuer and gotrueAudience are what muster's GoTrue stamps on its
@@ -2223,32 +2264,43 @@ func anyOfficerImage(os []officers.Officer) bool {
 //     would be handed a URL that answers 503, or isolated agents a network
 //     allowance to a port nothing serves the connector surface on.
 //   - a connect port without the store: a listener serving routes that all 503.
-//   - 🔴 the store WITHOUT the agent connect URL. Every agent-facing piece of
-//     the store (the connector tools, the gateway prompt's push recipe, a
-//     claude-code pod's MCP server and git routing) tells the agent to use
-//     $MUSTER_CONNECT_URL, and with no URL configured that variable is empty in
-//     every pod: agents would be offered tools and instructions that lead
-//     nowhere. Refusing here makes "the store is on" imply "agents can reach
-//     it", so the API server's one predicate (Extensions.Connectors != nil)
-//     stays true to what agents can actually do, with no second flag to keep in
-//     step with it.
+//   - a connect port with the key but without the agent connect URL: the
+//     listener would serve a connector surface no agent is told about.
+//   - an internal_http connector or a GitHub App without the AGENT-facing
+//     store (the key AND the agent connect URL): both reach agents only
+//     through it, so either would be configured and do nothing.
+//
+// 🔴 THE KEY ALONE IS ACCEPTED, AND IT TURNS ON ONLY THE MEMBER HALF. The key
+// seals two stores: members' own Claude and OpenRouter credentials (Account →
+// Credentials, internal/credentials) and the agent-facing connector store.
+// The first needs nothing else. The second is built only with
+// MUSTER_AGENT_CONNECT_URL too (connectorStoreConfigured), because every
+// agent-facing piece of it (the connector tools, the gateway prompt's push
+// recipe, a claude-code pod's MCP server and git routing) tells the agent to
+// use $MUSTER_CONNECT_URL: with no URL that variable is empty in every pod.
+// So "Extensions.Connectors != nil" still implies "agents can reach it", and
+// a key without the URL boots with the agent half OFF and says so (the boot
+// banner's `connector store:` line and the connectors feature's reason)
+// instead of refusing to boot.
 func (c config) validateConnectors() error {
-	if len(c.InternalHTTP) > 0 && len(c.ConnectorEncKey) == 0 {
-		return fmt.Errorf("%s is set but %s is not: an internal_http connector is granted through the connector "+
-			"store. Set %s too", envInternalHTTPConnectors, envConnectorEncKey, envConnectorEncKey)
+	agentStore := len(c.ConnectorEncKey) > 0 && c.AgentConnectURL != ""
+	if len(c.InternalHTTP) > 0 && !agentStore {
+		return fmt.Errorf("%s is set but the agent connector store is not (it needs %s and %s, with %s): an "+
+			"internal_http connector is granted through it. Set them too", envInternalHTTPConnectors,
+			envConnectorEncKey, envAgentConnectURL, envConnectPort)
 	}
-	if c.GitHubAppID != 0 && len(c.ConnectorEncKey) == 0 {
-		return fmt.Errorf("%s is set but %s is not: the GitHub App's tokens reach agents only through the "+
-			"connector proxy, whose grants live in the connector store. Set %s too", envGitHubAppID,
-			envConnectorEncKey, envConnectorEncKey)
+	if c.GitHubAppID != 0 && !agentStore {
+		return fmt.Errorf("%s is set but the agent connector store is not (it needs %s and %s, with %s): the "+
+			"GitHub App's tokens reach agents only through the connector proxy, whose grants live in that store. "+
+			"Set them too", envGitHubAppID, envConnectorEncKey, envAgentConnectURL, envConnectPort)
 	}
 	if c.ConnectPort != 0 && len(c.ConnectorEncKey) == 0 {
 		return fmt.Errorf("%s is set but %s is not: the connect listener would serve only refusals", envConnectPort, envConnectorEncKey)
 	}
-	if len(c.ConnectorEncKey) > 0 && c.AgentConnectURL == "" {
-		return fmt.Errorf("%s is set but %s is not: agents would be told to use a connector store they cannot "+
-			"reach. Set %s (with %s) to the connect listener's in-cluster URL, or unset %s",
-			envConnectorEncKey, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
+	if c.ConnectPort != 0 && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s is set but %s is not: the connect listener would serve a connector surface no "+
+			"agent is told about. Set %s to its in-cluster URL, or unset %s (%s alone turns on members' own "+
+			"credentials)", envConnectPort, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
 	if c.ConnectPort != 0 && c.ConnectPort == c.Port {
 		return fmt.Errorf("%s (%d) is the same as the main port: pick a separate port for the connect listener", envConnectPort, c.ConnectPort)
@@ -2382,19 +2434,54 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 // An ephemeral key would make every previously stored secret undecryptable on
 // the next restart — a DATA loss dressed as a UI bug. Unset means the store is
 // not built at all, which is visible on screen.
+//
+// It takes the 32 bytes in either of two encodings, and the two cannot be
+// confused: hex is exactly 64 hex digits, and base64 of 32 bytes is 43 or 44
+// characters. A 64-hex-digit value is therefore read as hex (as base64 it
+// would be 48 bytes, never a key). Anything else must be base64 of exactly 32
+// bytes. The refusal names the encoding it read: a value of hex digits only
+// is reported as a hex key of the wrong length (the INSTALL.md helper's
+// shape), not as base64 of some odd number of bytes.
 func decodeEncryptionKey(v string) ([]byte, error) {
+	const want = "want 32 random bytes as 64 hex digits (openssl rand -hex 32) or as base64 (openssl rand -base64 32)"
+	hexOnly := isHexDigits(v)
+	if hexOnly && len(v) == 64 {
+		return hex.DecodeString(v)
+	}
+	got := -1
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding,
 		base64.URLEncoding, base64.RawURLEncoding,
 	} {
 		if b, err := enc.DecodeString(v); err == nil {
-			if len(b) != 32 {
-				return nil, fmt.Errorf("decodes to %d bytes, want 32 (AES-256)", len(b))
+			if len(b) == 32 {
+				return b, nil
 			}
-			return b, nil
+			got = len(b)
+			break
 		}
 	}
-	return nil, errors.New("not valid base64 (want 32 random bytes, base64-encoded)")
+	switch {
+	case hexOnly:
+		return nil, fmt.Errorf("is %d hex digits, %s", len(v), want)
+	case got >= 0:
+		return nil, fmt.Errorf("is base64 of %d bytes, %s", got, want)
+	}
+	return nil, errors.New("is neither hex nor base64: " + want)
+}
+
+// isHexDigits reports whether v is non-empty and every character is 0-9, a-f
+// or A-F.
+func isHexDigits(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 // validate refuses a configuration this binary must not serve behind.
@@ -2484,8 +2571,13 @@ func (c config) validate() error {
 	// it unset the instance boots with no officer tools and nothing says so.
 	// validateConnectors (below) already holds MUSTER_AGENT_CONNECT_URL to the
 	// key and the port, so this names the one variable and the set.
-	if len(c.Officers) > 0 && c.AgentConnectURL == "" {
-		return fmt.Errorf("%s declares officers but %s is not set: officer instances reach their tools only over muster's "+
+	// ⚠ POD officers only: a "runtime": "host" instance is a mirrored session
+	// and reaches its officer tools through the mirror door (its host's
+	// muster-mirror), not the connect listener — the Compose stack's officers,
+	// which have no connect URL to set (onboarding: the .env.example officers
+	// example could not boot).
+	if slices.ContainsFunc(c.Officers, func(o officers.Officer) bool { return !o.OnHost() }) && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s declares pod officers but %s is not set: pod officer instances reach their tools only over muster's "+
 			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
 			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
@@ -2602,8 +2694,8 @@ func (c config) validateVAPID() error {
 	}
 	if set != 3 {
 		return fmt.Errorf("%s, %s and %s are a triple and only %d of them are set (%s=%s, %s=%s, %s=%s): "+
-			"half a push configuration would boot with no push. Set all three (`muster-server vapid generate`) "+
-			"or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
+			"half a push configuration would boot with no push. Set the keypair (`muster-server vapid generate`; "+
+			"the subject then defaults when unset) or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
 			envVAPIDPublicKey, presence(c.VAPIDPublicKey), envVAPIDPrivateKey, presence(c.VAPIDPrivateKey),
 			envVAPIDSubject, presence(c.VAPIDSubject))
 	}
@@ -2944,10 +3036,13 @@ func (c config) validateKinds() error {
 	return nil
 }
 
-// connectorStoreConfigured reports whether this deployment builds a connector
-// store: a database to hold it and a key to seal its secrets.
+// connectorStoreConfigured reports whether this deployment builds the
+// AGENT-FACING connector store (Extensions.Connectors): a database to hold it,
+// a key to seal its secrets, and the agent connect URL agents reach it on.
+// The key without the URL builds only members' own credential store (buildApp
+// keys that on the key alone); see validateConnectors.
 func (c config) connectorStoreConfigured() bool {
-	return c.Database != "" && len(c.ConnectorEncKey) > 0
+	return c.Database != "" && len(c.ConnectorEncKey) > 0 && c.AgentConnectURL != ""
 }
 
 // ccPoolLimits is the account pool's limits: the configured values, with

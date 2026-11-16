@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -25,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ZacxDev/muster/internal/attemptcode"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirrorpath"
 	"github.com/ZacxDev/muster/internal/tmuxver"
 )
@@ -54,6 +56,11 @@ const (
 	loginRoute     = "/login"
 	transcribePath = "/transcribe"
 	pushKeyRoute   = "/api/push/vapid-public-key"
+
+	// sharedMachineDoc is the local quickstart's single-user assumption.
+	sharedMachineDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#this-machine-is-yours-alone"
+	// addPhoneDoc is where a local (loopback) install learns to add the phone.
+	addPhoneDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#add-your-phone"
 
 	// defaultMirrorUnit and defaultMirrorLabel are the service names INSTALL.md
 	// installs muster-mirror under.
@@ -104,8 +111,11 @@ var doctorChecks = []string{
 // doctorSystem is everything doctor reads from THIS machine, injected so each
 // local check is testable without the machine having (or lacking) the thing.
 type doctorSystem struct {
-	goos     string
-	uid      int
+	goos string
+	uid  int
+	// user is this user's login name ("" unknown): the others-logged-in
+	// warning leaves it out of `who`.
+	user     string
 	lookPath func(string) (string, error)
 	// run runs a command and returns its stdout; err is non-nil for a non-zero
 	// exit (an *exec.ExitError) or a command that could not start.
@@ -119,7 +129,11 @@ type doctorSystem struct {
 // tests replace it for EVERY test (doctor_test.go's TestMain): no test of this
 // binary may read the real machine's services or tmux.
 var newDoctorSystem = func() doctorSystem {
-	return doctorSystem{goos: runtime.GOOS, uid: os.Getuid(), lookPath: exec.LookPath, run: realRun}
+	name := ""
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	return doctorSystem{goos: runtime.GOOS, uid: os.Getuid(), user: name, lookPath: exec.LookPath, run: realRun}
 }
 
 func realRun(ctx context.Context, name string, args ...string) (string, error) {
@@ -435,6 +449,21 @@ func (d *doctorRun) checkServer(ctx context.Context) {
 		return
 	}
 	d.reachable = true
+	// Plain http to THIS machine (internal/loopback) is the local quickstart:
+	// it works in this machine's browser, which treats a loopback origin as
+	// secure. Only the phone needs https, so that is a note, not a failure.
+	if loopback.HTTPURL(d.base) {
+		detail := fmt.Sprintf("%s answers on this machine (muster %s). Your phone needs HTTPS to reach it: "+
+			"add it with Tailscale (%s)", d.base, h.Version, addPhoneDoc)
+		if others := d.otherUsers(ctx); len(others) > 0 {
+			detail += fmt.Sprintf(". WARNING: other users are logged in to this machine (%s). Plain http to localhost "+
+				"is private from other machines, not from them: one could listen on this port while muster is down and "+
+				"receive this machine's mirror token. On a shared machine use HTTPS (%s)",
+				strings.Join(others, ", "), sharedMachineDoc)
+		}
+		d.add(name, statusPass, detail, "")
+		return
+	}
 	if u, _ := url.Parse(d.base); u == nil || u.Scheme != "https" {
 		d.add(name, statusFail, fmt.Sprintf("%s answers (muster %s) but over plain http", d.base, h.Version),
 			"phones allow the microphone, the install and notifications on https only: run `tailscale serve --bg 8105` "+
@@ -442,6 +471,32 @@ func (d *doctorRun) checkServer(ctx context.Context) {
 		return
 	}
 	d.add(name, statusPass, fmt.Sprintf("%s answers over https (muster %s)", d.base, h.Version), "")
+}
+
+// otherUsers is the login names `who` lists that are not this user's: the
+// people (other than you) logged in to this machine, terminal or ssh. Best
+// effort, for a warning only: no `who`, a failure, or no user name of our own
+// gives none (a guess would warn everyone).
+func (d *doctorRun) otherUsers(ctx context.Context) []string {
+	if d.sys.user == "" {
+		return nil
+	}
+	out, err := d.sys.run(ctx, "who")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var others []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] == d.sys.user || seen[f[0]] {
+			continue
+		}
+		seen[f[0]] = true
+		others = append(others, f[0])
+	}
+	slices.Sort(others)
+	return others
 }
 
 func (d *doctorRun) checkManifest(ctx context.Context) {
@@ -817,10 +872,21 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 	form := url.Values{"password": {d.password}}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, d.base+loginRoute, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// The sign-in page's own Origin, as a browser sends it: the server sets the
+	// cookie for that page (on a loopback http page, without Secure).
+	req.Header.Set("Origin", d.base)
 	resp, _, err := d.do(req)
 	if err != nil {
 		d.add(name, statusFail, "POST /login: "+err.Error(), "retry")
 		return
+	}
+	// Whether the session cookie came back Secure on a plain-http URL: such a
+	// cookie is never sent back, so the session cannot open a page (below).
+	secureOverHTTP := false
+	if u, _ := url.Parse(d.base); u != nil && u.Scheme == "http" {
+		for _, c := range resp.Cookies() {
+			secureOverHTTP = secureOverHTTP || c.Secure
+		}
 	}
 	switch {
 	case resp.StatusCode == http.StatusSeeOther && len(resp.Cookies()) > 0:
@@ -846,6 +912,13 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 		code := 0
 		if resp != nil {
 			code = resp.StatusCode
+		}
+		if secureOverHTTP {
+			d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d): the server set a Secure "+
+				"session cookie on a plain-http URL, and a Secure cookie is never sent back over http", code),
+				"serve muster over https (`tailscale serve --bg 8105`, then use its https://… URL), or open it on this machine "+
+					"as http://localhost:8105; on a plain-http LAN port set MUSTER_SECURE_COOKIES=0 in the server's .env")
+			return
 		}
 		d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d)", code),
 			"a proxy in front of muster is dropping the session cookie: use `tailscale serve` with nothing else in between")
@@ -974,6 +1047,13 @@ func (d *doctorRun) print() int {
 // qrencode when this machine has it; the URL itself is printed either way.
 func (d *doctorRun) printQR(ctx context.Context) {
 	w := d.a.stderr
+	// A loopback URL is this machine only: a phone that scanned it would open
+	// its OWN localhost. No code; say how a phone gets in instead.
+	if loopback.HTTPURL(d.base) {
+		fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser).\n"+
+			"To use it from your phone, add HTTPS with Tailscale: %s\n", d.base, addPhoneDoc)
+		return
+	}
 	fmt.Fprintf(w, "\nOpen muster on your phone (it must be on the same tailnet): %s\n", d.base)
 	path, err := d.sys.lookPath("qrencode")
 	if err != nil {

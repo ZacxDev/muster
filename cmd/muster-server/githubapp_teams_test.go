@@ -93,6 +93,7 @@ func newAppTeamsFixture(t *testing.T, list func(team, person int64) string) appT
 	f.cfg = cfg
 	f.cfg.Port, f.cfg.UIPassword, f.cfg.Standalone, f.cfg.RouterActor = base.Port, base.UIPassword, base.Standalone, base.RouterActor
 	f.cfg.Database, f.cfg.ConnectorEncKey = base.Database, base.ConnectorEncKey
+	f.cfg.AgentConnectURL = "http://muster.example.test:18191" // the agent-facing store needs it
 	return f
 }
 

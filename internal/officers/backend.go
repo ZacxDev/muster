@@ -290,7 +290,12 @@ var hqCapabilities = NewCapabilities(AllCapabilities()...)
 // it is OFFERED and served (the backend's Capabilities, read through Backends)
 // are one value: builtin.Backend.Capabilities returns exactly this, and a test
 // there pins it.
-var BuiltinCapabilities = NewCapabilities(CapTiers, CapInvestigation, CapCost, CapAsks)
+//
+// CapUsage: the usage collector (internal/officers/usage) pushes a builtin
+// instance's Claude usage to its own backend, which books it into
+// officer_llm_usage (builtin.Backend.PutUsage) — without it a builtin
+// officer's model spend was read by nothing and recorded nowhere.
+var BuiltinCapabilities = NewCapabilities(CapTiers, CapInvestigation, CapCost, CapAsks, CapUsage)
 
 // DeclaredCapabilities is what officer o's DECLARED backend serves:
 // BuiltinCapabilities for a builtin officer, HQ's (every capability) for any

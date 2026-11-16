@@ -121,7 +121,7 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 		s.renderNotice(w, r, http.StatusForbidden, "Open this link at the public address",
 			"This port serves muster's machine API only. Open the link at muster's public address"+s.publicURLSuffix()+".")
 	case r.Method == http.MethodPost && !s.isSameOrigin(r):
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+		s.refuseCrossOrigin(w, r)
 	default:
 		return false
 	}

@@ -89,6 +89,7 @@ GET /api/officers/defs/{officer}/contacts
 GET /api/officers/defs/{officer}/contacts/{venue}/{handle}
 GET /api/officers/defs/{officer}/items
 GET /api/officers/defs/{officer}/schedules
+GET /api/officers/defs/{officer}/usage
 GET /api/officers/types
 GET /api/officers/types/{key}
 GET /api/openrouter/models
@@ -144,6 +145,7 @@ GET /mirror/view/ws
 GET /officers/spawns
 GET /pages
 GET /pages/{id}
+GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
 GET /plugin/v1/drafts/checks
@@ -211,6 +213,7 @@ POST /account/devices/pair
 POST /account/devices/{id}/remove
 POST /account/notifications/codename
 POST /account/notifications/tmux
+POST /account/pages/agent-share
 POST /account/passkeys/options
 POST /account/passkeys/verify
 POST /account/passkeys/{id}/delete
@@ -312,9 +315,11 @@ POST /mirror/view/suggest/event
 POST /officers/spawns/{id}/share
 POST /officers/spawns/{id}/unshare
 POST /pages/{id}/delete
-POST /pages/{id}/links
 POST /pages/{id}/links/{link}/revoke
 POST /pages/{id}/rollback
+POST /pages/{id}/share
+POST /pages/{id}/share/revoke
+POST /pages/{id}/share/rotate
 POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check
