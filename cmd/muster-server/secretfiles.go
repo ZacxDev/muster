@@ -140,8 +140,13 @@ func withSecretFilesFrom(getenv func(string) string, readFile func(string) ([]by
 //
 // 🔴 ONE RUN AT A TIME. Two concurrent first runs on one volume (two `up`s at
 // once) would each plan and print a sign-in password, and only the last
-// rename would be kept. The run holds an exclusive flock on -dir itself from
-// the plan to the last write, so the second plans against the first's files.
+// rename would be kept. The run holds an exclusive flock on a lock file in
+// -dir (`.lock`, empty, 0600) from the plan to the last write, so the second
+// plans against the first's files. A regular file, not the directory: NFS and
+// CIFS may refuse a lock on a directory. A filesystem that refuses locks at
+// all (ENOLCK, EOPNOTSUPP) gets a WARNING and the run goes on unlocked — the
+// race costs a printed password that may not be the kept one, and refusing
+// to start the stack on such a volume would cost far more (#707 round 3).
 //
 // The files are mode 0400, owned by -owner (muster's uid:gid in its image);
 // postgres_password by -postgres-owner (Postgres's).
@@ -197,7 +202,9 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	if err := os.MkdirAll(*dir, 0o755); err != nil {
 		return fail("%v", err)
 	}
-	unlock, err := lockDir(*dir)
+	unlock, err := lockSecrets(*dir, func(format string, a ...any) {
+		fmt.Fprintf(stderr, "muster-init: WARNING: "+format+"\n", a...)
+	})
 	if err != nil {
 		return fail("lock %s: %v", *dir, err)
 	}
@@ -250,9 +257,15 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 				"it was created by an install from before muster-init, with the %s its .env had then. "+
 				"A generated one could not log in to it, so nothing was changed. "+
 				"Put that line back in .env (the same value) and `up` again: it is kept from then on, "+
-				"and the line can be removed after that start (docs/quickstart-local.md#the-database-password)\n"+
+				"and the line can be removed after that start (docs/quickstart-local.md#the-database-password).\n"+
+				"Lost it? Give the database a new one, in this order:\n"+
+				"  1. put %s=<a new password> in .env\n"+
+				"  2. docker compose up -d   (muster-init keeps the new value; muster cannot log in until step 3)\n"+
+				"  3. docker compose exec postgres psql -U muster -d muster -c '\\password muster'\n"+
+				"     and type that same new password twice (the local socket needs no password)\n"+
+				"  4. docker compose up -d --wait   (muster logs in with it)\n"+
 				"config: %s is not set, and the existing database needs the password it was created with\n",
-				envPostgresPassword, envPostgresPassword)
+				envPostgresPassword, envPostgresPassword, envPostgresPassword)
 			return 1
 		}
 		pg = randomSecret(24)
@@ -364,19 +377,33 @@ func databaseExists(dir string) (bool, error) {
 	return err == nil, err
 }
 
-// lockDir takes an exclusive flock on the directory itself (no lock file, so
-// a refused run still leaves the volume exactly as it was), blocking until it
-// is free, and returns its release.
-func lockDir(dir string) (func(), error) {
-	f, err := os.Open(dir)
+// secretsLockName is the lock file compose-init holds in the secrets
+// directory. It stays there, empty: the one file a refused run may leave.
+const secretsLockName = ".lock"
+
+// flock is syscall.Flock; a test swaps it to inject a filesystem's refusal.
+var flock = syscall.Flock
+
+// lockSecrets takes an exclusive flock on dir/.lock (created 0600 if it is
+// missing), blocking until it is free, and returns its release. A filesystem
+// that does not do locks (ENOLCK, EOPNOTSUPP: some NFS and CIFS mounts) is
+// warned about and the run proceeds unlocked; any other error fails the run.
+func lockSecrets(dir string, warn func(format string, a ...any)) (func(), error) {
+	path := filepath.Join(dir, secretsLockName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		if errors.Is(err, syscall.ENOLCK) || errors.Is(err, syscall.EOPNOTSUPP) {
+			warn("cannot lock %s (%v): this filesystem does not support locks, so going on without one. "+
+				"Two `up`s at once on this volume could each print a sign-in password; start one at a time", path, err)
+			return func() { f.Close() }, nil
+		}
 		f.Close()
 		return nil, err
 	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+	return func() { _ = flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 // runShowSecret prints one secret as muster resolves it (the environment, else

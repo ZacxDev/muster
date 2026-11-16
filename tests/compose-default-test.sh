@@ -26,6 +26,9 @@
 #   * NEGATIVE CONTROL: a default image too old for the file, the
 #     minimum released                                               -> FAIL
 #   * the bootstrap: minimum = next-minor(latest), default = latest  -> rc 0, WARN, state bootstrap
+#     ... for 3 days from the commit that RAISED the minimum           -> then FAIL
+#     ... counted from that commit, not HEAD; CHECK_COMPOSE_BOOTSTRAP_DAYS sets it
+#     ... the minimum raised today; not committed yet (counts from now) -> bootstrap
 #   * a minimum two releases out                                     -> FAIL
 #   * a next-PATCH minimum (not what the release flow mints)         -> FAIL
 #   * the bootstrap minimum with a STALE default                     -> FAIL
@@ -147,6 +150,33 @@ expect "the bootstrap (minimum = the next release, default = the newest) WARNS" 
 state "the bootstrap" bootstrap
 GITHUB_ACTIONS=true state "the bootstrap, in GitHub Actions (no ::warning on --state's stdout)" bootstrap
 expect "in GitHub Actions the warning is also a ::warning annotation" 0 "::warning title=compose default::deploy/docker-compose.yml needs muster 0.13.0" "$(GITHUB_ACTIONS=true run || true)"
+
+# THE BOOTSTRAP WINDOW (#707 round 3): 3 days from the commit that RAISED the
+# minimum (c16, at T0+50d), not from HEAD, the tag, or now.
+c16="$(git -C "$repo" rev-parse --short HEAD)"
+expect "inside the bootstrap window the warning names the raising commit" 0 "The minimum was raised in commit $c16, 24h ago; this fails 3 days after that" "$(run || true)"
+NOW=$((T0 + 53 * DAY - 1))
+state "the bootstrap one second before its window ends" bootstrap
+NOW=$((T0 + 53 * DAY))
+expect "the bootstrap FAILS exactly when its window ends" 1 "has needed muster 0.13.0 (x-muster-min-version), the NEXT release, since commit $c16, 3 days ago, and 0.13.0 is still not released: the bootstrap is allowed for 3 days" "$(run || true)"
+grep -qF 'Release 0.13.0 now (muster-ops ship)' "$tmp/out" || { echo "FAIL the bootstrap refusal does not say how out"; fail=1; }
+state "past the bootstrap window" "rc=1"
+at=$((52 * DAY)); g commit -q --allow-empty -m c16b   # a later commit, the line untouched
+NOW=$((T0 + 54 * DAY))
+expect "the window counts from the commit that raised the minimum, not HEAD" 1 "since commit $c16, 4 days ago" "$(run || true)"
+expect "CHECK_COMPOSE_BOOTSTRAP_DAYS sets its length" 0 "this fails 5 days after that" "$(CHECK_COMPOSE_BOOTSTRAP_DAYS=5 run || true)"
+# The minimum raised TODAY (lowered, then raised again an hour ago): a new window.
+at=$((60 * DAY - 7200)); MIN=0.12.0; commit 0.12.0 c16c
+at=$((60 * DAY - 3600)); MIN=0.13.0; commit 0.12.0 c16d
+NOW=$((T0 + 60 * DAY))
+expect "the minimum raised today is in the bootstrap" 0 "The minimum was raised in commit $(git -C "$repo" rev-parse --short HEAD), 1h ago" "$(run || true)"
+state "the minimum raised today" bootstrap
+# Not committed yet: counted from now (a branch being written).
+NOW=$((T0 + 90 * DAY))
+expect "control: that line, committed 30 days ago, FAILS" 1 "since commit $(git -C "$repo" rev-parse --short HEAD), 30 days ago" "$(run || true)"
+sed -i 's/^x-muster-min-version: "0.13.0"$/x-muster-min-version:  "0.13.0"/' "$repo/c.yml"   # the same minimum, a line no commit has
+expect "a minimum line not committed yet counts from now" 0 "raised in this working tree (not committed yet), 0h ago" "$(run || true)"
+NOW=$((T0 + 51 * DAY)); at=$((60 * DAY))
 MIN=0.14.0; commit 0.12.0 c17
 expect "a minimum two releases out FAILS" 1 "The only unreleased minimum allowed is the NEXT release, 0.13.0" "$(run || true)"
 MIN=0.12.1; commit 0.12.0 c18

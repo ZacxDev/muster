@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/push"
@@ -261,7 +263,8 @@ func TestComposeInitRefusesWhatTheServerWouldRefuse(t *testing.T) {
 }
 
 // volumeState is every file in dir with its mode and contents: what a run
-// left on the secrets volume.
+// left on the secrets volume. The lock file is not counted, but it must be an
+// empty regular file, mode 0600: anything else in it would be a write.
 func volumeState(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	ents, err := os.ReadDir(dir)
@@ -274,6 +277,12 @@ func volumeState(t *testing.T, dir string) map[string]string {
 		st, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if e.Name() == secretsLockName {
+			if !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || st.Size() != 0 {
+				t.Errorf("the lock file is %v, %d bytes; want an empty regular file, 0600", st.Mode(), st.Size())
+			}
+			continue
 		}
 		b, _ := os.ReadFile(p)
 		out[e.Name()] = st.Mode().String() + " " + string(b)
@@ -415,6 +424,28 @@ func TestComposeInitNeverGeneratesAPasswordForAnExistingDatabase(t *testing.T) {
 			t.Errorf("the refusal does not say %q:\n%s", want, errOut)
 		}
 	}
+	// "Lost it?": the order that works (#707 round 3) — a new value in .env,
+	// `up` (muster-init adopts it), THEN the database's own password set to it.
+	// The reverse cannot work: postgres does not start while muster-init refuses.
+	steps := []string{
+		"Lost it? Give the database a new one, in this order:",
+		"  1. put POSTGRES_PASSWORD=<a new password> in .env\n",
+		"  2. docker compose up -d   (muster-init keeps the new value; muster cannot log in until step 3)\n",
+		"  3. docker compose exec postgres psql -U muster -d muster -c '\\password muster'\n",
+		"  4. docker compose up -d --wait",
+	}
+	at := -1
+	for _, s := range steps {
+		i := strings.Index(errOut, s)
+		if i < 0 || i < at {
+			t.Errorf("the refusal does not give %q after the step before it:\n%s", s, errOut)
+			break
+		}
+		at = i
+	}
+	if lines := strings.Split(strings.TrimSuffix(errOut, "\n"), "\n"); !strings.HasPrefix(lines[len(lines)-1], "config: POSTGRES_PASSWORD is not set") {
+		t.Errorf("the refusal's last line is not its config line (the docs send people to the last line): %q", lines[len(lines)-1])
+	}
 	if got := volumeState(t, dir); len(got) != 0 {
 		t.Errorf("the refused run wrote %v", got)
 	}
@@ -487,5 +518,74 @@ func TestComposeInitConcurrentFirstRunsPrintTheKeptPassword(t *testing.T) {
 		if printed != 1 {
 			t.Fatalf("iteration %d: %d of %d concurrent first runs printed a sign-in password, want exactly 1", i, printed, n)
 		}
+	}
+}
+
+// TestComposeInitLocksARegularFileInTheSecretsDir (#707 round 3): the lock is
+// taken on dir/.lock, a regular file (NFS and CIFS may refuse a flock on a
+// directory), not on the directory itself.
+func TestComposeInitLocksARegularFileInTheSecretsDir(t *testing.T) {
+	var locked []os.FileInfo
+	orig := flock
+	t.Cleanup(func() { flock = orig })
+	flock = func(fd int, how int) error {
+		if how == syscall.LOCK_EX {
+			p, _ := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+			fi, err := os.Stat(p)
+			if err != nil {
+				return err
+			}
+			locked = append(locked, fi)
+		}
+		return orig(fd, how)
+	}
+	dir := t.TempDir()
+	if rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil)); rc != 0 {
+		t.Fatalf("rc %d: %s%s", rc, out, errOut)
+	}
+	if len(locked) != 1 {
+		t.Fatalf("%d exclusive locks taken, want 1", len(locked))
+	}
+	if !locked[0].Mode().IsRegular() {
+		t.Errorf("the lock was taken on %q (%v), want a regular file", locked[0].Name(), locked[0].Mode())
+	}
+	want, err := os.Stat(filepath.Join(dir, secretsLockName))
+	if err != nil || !os.SameFile(want, locked[0]) {
+		t.Errorf("the locked file %q is not %s in the secrets dir (%v)", locked[0].Name(), secretsLockName, err)
+	}
+}
+
+// TestComposeInitWithoutLocksWarnsAndGoesOn (#707 round 3): a filesystem that
+// does not do locks (ENOLCK, EOPNOTSUPP) gets a warning and the run proceeds;
+// any other lock error still fails the run, writing nothing.
+func TestComposeInitWithoutLocksWarnsAndGoesOn(t *testing.T) {
+	orig := flock
+	t.Cleanup(func() { flock = orig })
+	for _, errno := range []syscall.Errno{syscall.ENOLCK, syscall.EOPNOTSUPP} {
+		flock = func(int, int) error { return errno }
+		dir := t.TempDir()
+		rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil))
+		if rc != 0 {
+			t.Errorf("%v: rc %d, want 0 (a warning, not a refusal): %s%s", errno, rc, out, errOut)
+			continue
+		}
+		for _, want := range []string{"muster-init: WARNING: cannot lock " + filepath.Join(dir, secretsLockName), errno.Error(), "does not support locks"} {
+			if !strings.Contains(errOut, want) {
+				t.Errorf("%v: the warning does not say %q: %q", errno, want, errOut)
+			}
+		}
+		if readSecret(t, dir, secretUIPassword) == "" || !strings.Contains(out, "configuration OK") {
+			t.Errorf("%v: the unlocked run did not do its work: %s", errno, out)
+		}
+	}
+	// CONTROL: another error is not a filesystem without locks: it fails closed.
+	flock = func(int, int) error { return syscall.EIO }
+	dir := t.TempDir()
+	rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil))
+	if rc != 1 || !strings.Contains(errOut, "lock ") || strings.Contains(errOut, "WARNING") {
+		t.Errorf("EIO: rc %d, want 1 with the lock error: %s%s", rc, out, errOut)
+	}
+	if got := volumeState(t, dir); len(got) != 0 {
+		t.Errorf("a run that failed to lock wrote %v", got)
 	}
 }

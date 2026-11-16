@@ -21,8 +21,10 @@
 # the release it came from; the repository's copy says the LATEST release
 # (the release flow opens the bump pull request after each one;
 # scripts/check-compose-default.sh, which CI runs, warns for 3 days and then
-# fails while it is behind). Never a moving tag, and never one older than
-# x-muster-min-version below. Set MUSTER_VERSION in .env to pin another.
+# fails while it names the PREVIOUS release). Never a moving tag, and never one
+# older than x-muster-min-version below: a default below the minimum fails at
+# once — the 3 days cover only "the default is the previous release". Set
+# MUSTER_VERSION in .env to pin another.
 #
 # Services:
 #   muster-init   the one-shot above: secrets, then the server's own boot
@@ -85,7 +87,10 @@
 # "DATABASE_URL is not set". scripts/check-compose-default.sh fails CI when the
 # version written below (the MUSTER_VERSION default) is lower, except in the
 # one documented bootstrap state: this number is the NEXT release, not yet cut,
-# and the default is the newest release (see that script). Raise it whenever
+# and the default is the newest release (see that script) — allowed for 3 days
+# from the commit that raised this line, then it fails too. A default below
+# this number fails at once in every other case; the 3-day grace period after a
+# release covers only "the default is the previous release". Raise it whenever
 # this file starts using something a release added.
 x-muster-min-version: "0.233.0"
 

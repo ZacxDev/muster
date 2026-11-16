@@ -51,7 +51,10 @@ docker compose -f deploy/docker-compose.yml exec muster /muster-server show-secr
 Open `http://localhost:8105` and sign in with that password. A clone runs the
 latest release: `deploy/docker-compose.yml` names it, and the release flow
 opens the pull request that bumps it right after each release (CI warns for 3
-days, then fails, while it is behind). A release's own `docker-compose.yml`
+days, then fails, while it names the previous release). A default below the
+file's `x-muster-min-version` fails CI at once: those 3 days cover only "the
+default is the previous release", never a default too old to start the file.
+A release's own `docker-compose.yml`
 runs that release. Set `MUSTER_VERSION` in `.env` to run another — not one
 older than the file's `x-muster-min-version`, which cannot start it.
 
@@ -145,8 +148,24 @@ that `.env` no longer sets `POSTGRES_PASSWORD` by then, `up --wait` stops on
 was never kept here"*, and changes nothing: no password is generated for a
 database that already exists, because it could not log in. Put the line back
 in `.env` with the value the database was created with (your old `.env`'s) and
-run `up -d --wait` again; it is kept from then on and the line can go. Lost
-it? Set a new one with step 1 above, then put that value in `.env`.
+run `up -d --wait` again; it is kept from then on and the line can go.
+
+**Lost it?** Give the database a new password, in this order (the refusal
+prints these steps too). Postgres does not start while `muster-init` refuses,
+so the new value goes in `.env` first:
+
+```sh
+# 1. put POSTGRES_PASSWORD=<a new password> in the .env beside docker-compose.yml
+# 2. muster-init keeps it and Postgres starts; muster cannot log in yet
+docker compose up -d
+# 3. the database itself, set to that same value through the local socket
+#    (no password needed); psql asks for it twice
+docker compose exec postgres psql -U muster -d muster -c '\password muster'
+# 4. muster logs in with it
+docker compose up -d --wait
+```
+
+It is kept from then on, and the line can be removed from `.env`.
 
 ## What works on localhost, and what needs HTTPS
 

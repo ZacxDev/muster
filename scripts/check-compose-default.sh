@@ -38,6 +38,13 @@
 #      (the release flow then bumps the default; see below). A minimum two
 #      releases out, or one that is released while the default stays below it,
 #      FAILS.
+#      THE BOOTSTRAP IS TIME-BOXED: it is allowed for CHECK_COMPOSE_BOOTSTRAP_DAYS
+#      (default 3) after the commit that RAISED the minimum to its value (the
+#      newest commit that added that exact x-muster-min-version line, by
+#      committer date: `git log -S`), and FAILS after that — main must not sit
+#      un-startable for a clone. A minimum not committed yet counts from now.
+#      A default BELOW the minimum fails at once in every other case: the
+#      grace period (rule 2) covers only "the default is the previous release".
 #   2. NEWEST. The default equals latest: ok. The default equals previous, and
 #      latest was tagged less than CHECK_COMPOSE_GRACE_DAYS (default 3) days
 #      ago: WARNS (state `grace`) — the release flow (`muster-ops verify`)
@@ -57,7 +64,7 @@
 # rewritten with its stamp, the one spelling release-build.sh uses.
 #
 # Test hooks: CHECK_COMPOSE_FILE, CHECK_COMPOSE_REPO, CHECK_COMPOSE_NOW (unix
-# seconds), CHECK_COMPOSE_GRACE_DAYS. Needs the tags (CI: actions/checkout with
+# seconds), CHECK_COMPOSE_GRACE_DAYS, CHECK_COMPOSE_BOOTSTRAP_DAYS. Needs the tags (CI: actions/checkout with
 # fetch-depth 0). Exit 0 ok (or a warning), 1 the default fails a rule / an
 # image is missing, 2 harness (no tags, usage, an unreadable minimum).
 set -euo pipefail
@@ -66,6 +73,7 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${CHECK_COMPOSE_FILE:-$ROOT/deploy/docker-compose.yml}"
 REPO="${CHECK_COMPOSE_REPO:-$ROOT}"
 GRACE_DAYS="${CHECK_COMPOSE_GRACE_DAYS:-3}"
+BOOTSTRAP_DAYS="${CHECK_COMPOSE_BOOTSTRAP_DAYS:-3}"
 NOW="${CHECK_COMPOSE_NOW:-$(date +%s)}"
 mode="${1:-check}"
 bump_to=""
@@ -75,7 +83,7 @@ case "$mode" in
   *) mode=usage ;;
 esac
 [ "$mode" != usage ] || { echo "usage: $0 [--state|--bump [X.Y.Z]|--images|--images-only]" >&2; exit 2; }
-[[ "$GRACE_DAYS" =~ ^[0-9]+$ && "$NOW" =~ ^[0-9]+$ ]] || { echo "check-compose-default: CHECK_COMPOSE_GRACE_DAYS / CHECK_COMPOSE_NOW must be integers" >&2; exit 2; }
+[[ "$GRACE_DAYS" =~ ^[0-9]+$ && "$BOOTSTRAP_DAYS" =~ ^[0-9]+$ && "$NOW" =~ ^[0-9]+$ ]] || { echo "check-compose-default: CHECK_COMPOSE_GRACE_DAYS / CHECK_COMPOSE_BOOTSTRAP_DAYS / CHECK_COMPOSE_NOW must be integers" >&2; exit 2; }
 
 cur="$("$ROOT/scripts/stamp-compose-version.sh" --current < "$COMPOSE")" || exit 1
 
@@ -153,8 +161,21 @@ say_warn() { warn+=("$1"); }
 if ! vle "$min" "$cur"; then
   # (next-minor(latest) is above latest, so this is also "the minimum is unreleased")
   if [ "$min" = "$(next_minor "$latest")" ] && [ "$cur" = "$latest" ]; then
+    # The window: from the newest commit that added this exact minimum line.
+    raised_by="$(git -C "$REPO" log -1 --format='%ct %h' -S"$mins" HEAD -- "$COMPOSE")" ||
+      { echo "check-compose-default: cannot read which commit raised the minimum (git log -S)" >&2; exit 2; }
+    if [ -n "$raised_by" ]; then
+      raised="${raised_by%% *}"; raised_in="commit ${raised_by#* }"
+    else
+      raised="$NOW"; raised_in="this working tree (not committed yet)"
+    fi
+    since=$(( NOW - raised ))
+    if [ "$since" -ge $(( BOOTSTRAP_DAYS * 86400 )) ]; then
+      failed "deploy/docker-compose.yml has needed muster $min (x-muster-min-version), the NEXT release, since $raised_in, $(( since / 86400 )) days ago, and $min is still not released: the bootstrap is allowed for ${BOOTSTRAP_DAYS} days. A clone of a branch in this state cannot start." \
+        "      Release $min now (muster-ops ship), then merge the bump pull request; or revert what needs it, the minimum with it. (A branch not merged yet: \`git rebase --force-rebase\` re-dates the commit that raised it; then merge and release within ${BOOTSTRAP_DAYS} days.)"
+    fi
     state=bootstrap
-    say_warn "deploy/docker-compose.yml needs muster $min (x-muster-min-version), the NEXT release, not yet cut; it defaults to $cur, the newest release, which cannot run it. A clone of main cannot start until $min is released: merge, then release at once (the release flow bumps the default)."
+    say_warn "deploy/docker-compose.yml needs muster $min (x-muster-min-version), the NEXT release, not yet cut; it defaults to $cur, the newest release, which cannot run it. A clone of main cannot start until $min is released: merge, then release at once (the release flow bumps the default). The minimum was raised in $raised_in, $(( since / 3600 ))h ago; this fails ${BOOTSTRAP_DAYS} days after that."
   elif vle "$min" "$latest"; then
     failed "deploy/docker-compose.yml defaults to $cur, but this file needs muster $min or newer (x-muster-min-version), and a release that can run it is out (v$latest): a clone would pull an image that cannot start it." \
       "      Bump it: scripts/check-compose-default.sh --bump $latest"

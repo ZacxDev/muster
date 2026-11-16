@@ -1249,7 +1249,10 @@ jobs:
       # in the bootstrap (scripts/check-compose-default.sh --state). Both
       # controls run on every run, bootstrap or not:
       #   NEGATIVE: the newest release BELOW x-muster-min-version, under this
-      #   file, must FAIL on muster-init (it cannot start it);
+      #   file, must NOT SERVE it (COMPOSE_DEFAULT_IMAGE_EXPECT=fail): any
+      #   failure counts — muster-init failing, the server refusing, no ready
+      #   state in time — never one failure's text (#707 round 3); it goes red
+      #   if that release serves, or if its images cannot be pulled;
       #   POSITIVE: this run's image, tagged as that GHCR name at 0.0.0, under
       #   a copy stamped 0.0.0, must serve (the harness can go green).
       - name: the compose file at HEAD runs its default release (and its two controls)
@@ -1260,11 +1263,10 @@ jobs:
           below="$( { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; echo "$min"; } | sort -uV | grep -B1 -xF "$min" | head -1)"
           if [ -n "$below" ] && [ "$below" != "$min" ]; then
             scripts/stamp-compose-version.sh "$below" < deploy/docker-compose.yml > deploy/.compose-below-min.yml
-            if COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-below-min.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 tests/compose-default-image.sh > /tmp/below.log 2>&1; then
-              cat /tmp/below.log; echo "negative control FAILED: $below (below the minimum $min) served this file"; exit 1
-            fi
-            grep -q 'service "muster-init" didn.t complete successfully' /tmp/below.log || { cat /tmp/below.log; echo "negative control failed for another reason than muster-init"; exit 1; }
-            echo "ok   negative control: the release below the minimum ($below) cannot start this file (muster-init fails)"
+            COMPOSE_DEFAULT_IMAGE_EXPECT=fail COMPOSE_DEFAULT_IMAGE_TIMEOUT=120 COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-below-min.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 \
+              tests/compose-default-image.sh | tee /tmp/below.log
+            test "$(grep -c '^ok   compose-default-image: did not serve, as the negative control requires: ' /tmp/below.log)" = 1
+            echo "ok   negative control: the release below the minimum ($below) does not serve this file"
           else
             echo "note no release below the minimum $min: no negative control"
           fi

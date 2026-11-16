@@ -21,15 +21,33 @@
 # Any other state runs it, including a failing check (the live result is
 # then the evidence). COMPOSE_DEFAULT_IMAGE_FORCE=1 runs it regardless.
 #
+# SERVED means all of: `up -d --wait` succeeds, muster-init exited 0, and
+# /readyz answers 200 within COMPOSE_DEFAULT_IMAGE_TIMEOUT seconds (default
+# 240). Anything else — muster-init failing, the server refusing or crashing,
+# no ready state in time — is NOT SERVED, whatever the reason.
+#
+# COMPOSE_DEFAULT_IMAGE_EXPECT=fail is the NEGATIVE CONTROL's mode (CI: the
+# release below x-muster-min-version, #707 round 3): it passes only when the
+# stack did NOT serve, by ANY of those failures — never pinned to one failure's
+# text — and FAILS if it served. The images are pulled first, as a harness
+# step: one that cannot be fetched is a harness error (exit 2), never "did not
+# serve", so the control cannot pass by failing to download.
+#
 # Uses a unique project name and a free port; always tears down (`down -v`).
-# Exit 0 served (or the bootstrap skip), 1 it did not.
+# Exit 0 = the expected outcome (served; with EXPECT=fail, did not serve; or
+# the bootstrap skip), 1 = the other one, 2 = harness (pull, an overridden image,
+# usage).
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 FILE="${COMPOSE_DEFAULT_IMAGE_FILE:-$ROOT/deploy/docker-compose.yml}"
+EXPECT="${COMPOSE_DEFAULT_IMAGE_EXPECT:-serve}"
+TIMEOUT="${COMPOSE_DEFAULT_IMAGE_TIMEOUT:-240}"
+[[ "$EXPECT" =~ ^(serve|fail)$ && "$TIMEOUT" =~ ^[0-9]+$ ]] ||
+  { echo "compose-default-image: COMPOSE_DEFAULT_IMAGE_EXPECT must be serve|fail and COMPOSE_DEFAULT_IMAGE_TIMEOUT seconds" >&2; exit 2; }
 cur="$("$ROOT/scripts/stamp-compose-version.sh" --current < "$FILE")"
 
-if [ -z "${COMPOSE_DEFAULT_IMAGE_FORCE:-}" ]; then
+if [ -z "${COMPOSE_DEFAULT_IMAGE_FORCE:-}" ] && [ "$EXPECT" = serve ]; then   # a negative control never skips
   state="$(CHECK_COMPOSE_FILE="$FILE" "$ROOT/scripts/check-compose-default.sh" --state 2>/dev/null || echo fail)"
   if [ "$state" = bootstrap ]; then
     echo "SKIP compose-default-image: the bootstrap — this file needs the next release, not yet cut, and defaults to $cur, which cannot run it (scripts/check-compose-default.sh). Release right after merging."
@@ -48,16 +66,37 @@ d() {
 }
 trap 'd down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
 image="$(d config --images | grep -m1 '/muster:' || true)"
-echo "compose-default-image: project $PROJECT, port $PORT, the file's default $cur ($image)"
-fail() {
-  echo "FAIL compose-default-image: $1"
+echo "compose-default-image: project $PROJECT, port $PORT, the file's default $cur ($image), expect $EXPECT"
+harness() { echo "HARNESS compose-default-image: $1"; exit 2; }
+[ "$image" = "ghcr.io/zacxdev/muster:$cur" ] || harness "compose resolves muster's image to '$image', not the default ghcr.io/zacxdev/muster:$cur (something overrode it)"
+# The images first: a missing one is a harness error, not a failure to serve.
+for i in $(d config --images | sort -u); do
+  docker image inspect "$i" >/dev/null 2>&1 || docker pull -q "$i" >/dev/null 2>&1 || harness "cannot pull $i"
+done
+
+# not_served REASON: the stack did not serve. Under EXPECT=fail that is the pass.
+not_served() {
   d ps -a || true
   d logs --no-color --tail 20 muster-init muster || true
+  if [ "$EXPECT" = fail ]; then
+    echo "ok   compose-default-image: did not serve, as the negative control requires: $1"
+    exit 0
+  fi
+  echo "FAIL compose-default-image: $1"
   exit 1
 }
-[ "$image" = "ghcr.io/zacxdev/muster:$cur" ] || fail "compose resolves muster's image to '$image', not the default ghcr.io/zacxdev/muster:$cur (something overrode it)"
-d up -d --wait --wait-timeout 240 > "$tmp/up" 2>&1 || { cat "$tmp/up"; fail "up -d --wait on the default image $cur did not succeed"; }
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$(d ps -a -q muster-init)")" = 0 ] || fail "muster-init did not exit 0"
-code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz" || true)"
-[ "$code" = 200 ] || fail "/readyz answered $code, not 200"
+start=$SECONDS
+d up -d --wait --wait-timeout "$TIMEOUT" > "$tmp/up" 2>&1 || { cat "$tmp/up"; not_served "up -d --wait on $cur did not succeed"; }
+[ "$(docker inspect -f '{{.State.ExitCode}}' "$(d ps -a -q muster-init)")" = 0 ] || not_served "muster-init did not exit 0"
+code=000
+while :; do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz" 2>/dev/null || true)"
+  [ "$code" != 200 ] && [ $(( SECONDS - start )) -lt "$TIMEOUT" ] || break
+  sleep 2
+done
+[ "$code" = 200 ] || not_served "/readyz answered $code, not 200, within ${TIMEOUT}s"
+if [ "$EXPECT" = fail ]; then
+  echo "FAIL compose-default-image: NEGATIVE CONTROL FAILED: $cur SERVED this file (muster-init exit 0, /readyz 200); it was expected not to"
+  exit 1
+fi
 echo "ok   compose-default-image: the file at HEAD runs its default release $cur as a clone runs it (muster-init exit 0, /readyz 200)"
