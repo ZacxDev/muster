@@ -623,6 +623,12 @@ type Store interface {
 	// session's updated_at, and — when the session is still untitled and the
 	// message is a user turn — names the session from the message's first line.
 	AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessage, error)
+	// DeleteChatMessage removes user row id of agent agentID — a delivery's row
+	// stored BEFORE its turn, whose runtime then provably took nothing
+	// (internal/api startRouteTurn): the delivery stays owed and is offered
+	// again, so the row must not stand as "on record". Only a user row of that
+	// agent is removed; anything else is a no-op.
+	DeleteChatMessage(ctx context.Context, agentID, id int64) error
 	ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error)
 	// ListRecentChatMessages returns the most recent limit messages for ONE
 	// session in chronological order — the capped reader the page render uses so a

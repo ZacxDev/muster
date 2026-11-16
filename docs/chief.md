@@ -84,13 +84,19 @@ Muster also gives the chief turns nobody typed: a plugin message, the answer to
 a request it routed for you, a route's hand-back, your answer to one of its
 asks, a session's question, a nudge. None of them takes the chief's session
 while a turn you typed is in flight, so your turn keeps its authority
-(`owner_asked`) to the end, and none of them jumps a line you typed that is
-waiting for the session. Each waits and is delivered afterwards: a route
-answer or hand-back that cannot be delivered yet stays owed and is offered
-again on the next sweep, and **every answer owed to a chat when the chief is
-next free goes in one turn**, each fenced on its own (up to 20 per turn, the
-rest in the next) — never written into the chat where the chief's Claude Code
-session never reads them
+(`owner_asked`) to the end. A line you typed that is waiting for the session
+goes before a route's answer or hand-back that the same muster process would
+deliver; with two muster replicas, one held on the other replica is not seen,
+and the chief's runtime takes whichever reaches it first once it is free. Each
+delivery waits and is delivered afterwards: a route answer or hand-back that
+cannot be delivered yet stays owed and is offered again on the next sweep
+(every 30 s; a runtime that keeps refusing is asked once per sweep, not in a
+loop), and **every answer owed to a chat when the chief is next free goes in
+one turn**, each fenced on its own (up to 20 per turn, the rest in the next).
+It is written into the chat as a plain note — which the chief's Claude Code
+session never reads — only as a last resort: a chief that cannot take a turn
+at all (not running, no gateway), or an answer that could not be delivered for
+2 hours, refusals included
 ([plugins.md](plugins.md#routing-your-own-request-to-a-session)).
 
 **The last click wins.** Each user's switch changes run one at a time, each

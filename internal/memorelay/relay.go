@@ -570,7 +570,8 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	defer cancel()
 
 	// 🔴 THE AGENT'S SESSION CLAIM IS TAKEN FIRST, AND IT IS THE SAME CLAIM A FIRST TURN HOLDS
-	// (agents.Store.ClaimKickoff). internal/agentkickoff stamps a row kicked-off BEFORE it sends
+	// (taken here with agents.Store.ClaimKickoffForDelivery, which also loses while the owner's
+	// typed turn is in flight). internal/agentkickoff stamps a row kicked-off BEFORE it sends
 	// the first turn and then re-sends it for minutes while the CLI starts; all that time the
 	// row reads as eligible here. A memo that took the session in that window would leave the
 	// first turn answered `busy` — recorded as failed, never retried — and the agent would never

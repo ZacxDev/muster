@@ -3150,20 +3150,26 @@ What differs:
   chief session your message is in (`chief_session_id`), fenced as data, for
   the chief to tell you what it says. While the chief cannot take a turn (your
   turn is in flight, another turn holds its session, or one is running or
-  waiting in muster — your own typed line goes first), the answer **stays
-  owed** and the next sweep (every 30 s, or at once after the previous turn)
-  offers it again, never leaving it as a row the chief's Claude Code session
-  never sees. **Every answer owed to a chat when the chief is next free goes in
-  ONE turn** (operator decision, PR #715): each fenced on its own, under its
-  own route id and nonce, after a line saying how many there are — up to 20
-  answers or 64 KiB in one turn (`routeAnswersPerTurn`,
-  `routeAnswersTurnBytes`), the rest in the next. A `route_many` batch's
-  answers are not combined here: they come as that batch's own digest. Only a chief that cannot take a turn at all (not running,
-  no gateway) or that has not been free for 2 hours (`routeChiefWaitMax`) gets
-  a note instead. A route's timed-out or failed hand-back goes the same way: a
-  turn of its own when the chief is free, taken only once that turn is on
-  record. The route owes the answer until it is on record in that session; a
-  row already there is not written again.
+  waiting in this muster process — your own typed line goes first there), the
+  answer **stays owed** and the next sweep (every 30 s; at most one pass per
+  2 s however often it is woken, and a turn the chief's runtime refused does
+  not wake it) offers it again. **Every answer owed to a chat when the chief
+  is next free goes in ONE turn** (operator decision, PR #715): each fenced on
+  its own, under its own route id and nonce, after a line saying how many
+  there are — up to 20 answers or 64 KiB in one turn (`routeAnswersPerTurn`,
+  `routeAnswersTurnBytes`), the rest in the next. The turn's row is stored
+  **before** the turn and removed if the runtime refuses it, so a muster that
+  stops mid-turn (a rollout) leaves it on record and the next one does not
+  paste it again; a rollout also ends the turn and lets its claim go. The
+  answer is written as a plain note — a row the chief's Claude Code session
+  never reads — only as a last resort: a chief that cannot take a turn at all
+  (not running, no gateway), or an answer that has not been delivered for
+  2 hours (`routeChiefWaitMax`), runtime refusals included; never while its
+  own turn is still running. A route's timed-out or failed hand-back goes the
+  same way: a turn of its own when the chief is free, taken only once that
+  turn is on record; one already taken (a failed redraft) that the runtime
+  refuses is written as a note, never dropped. The route owes the answer until
+  it is on record in that session; a row already there is not written again.
   If that session is gone, cannot be read or is not this chief's, the
   **chief's default session** gets it instead, and muster logs it. That turn
   is muster's, not yours, so `owner_asked` refuses in it. No draft is filed and

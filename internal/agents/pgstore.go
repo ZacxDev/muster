@@ -1412,6 +1412,12 @@ func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error
 	return scanChatMessage(s.pool.QueryRow(ctx, `SELECT `+chatMessageCols+` FROM chat_messages WHERE id = $1`, id))
 }
 
+// DeleteChatMessage removes agentID's user row id (see the Store contract).
+func (s *PGStore) DeleteChatMessage(ctx context.Context, agentID, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM chat_messages WHERE id = $1 AND agent_id = $2 AND role = 'user'`, id, agentID)
+	return err
+}
+
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.
 func (s *PGStore) DeleteChatMessagesOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM chat_messages WHERE created_at < $1`, cutoff)

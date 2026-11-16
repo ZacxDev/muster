@@ -74,8 +74,10 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		// dispatch — through its one writer (agent_outcome.go writeChiefNote).
 		`internal/api/agent_outcome.go (*Server).writeChiefNote → AddChatMessage(role "user", TypedBy -)`: chatAgentSent,
 		// A request route's answer, recorded when no turn stored it (muster's words around the session's answer).
-		`internal/api/session_routes.go (*Server).deliverRouteAnswers → AddChatMessage(role "user", TypedBy -)`:    chatAgentSent,
-		`internal/api/session_routes.go (*Server).deliverToChief → AddChatMessage(role "user", TypedBy -)`:         chatAgentSent,
+		`internal/api/session_routes.go (*Server).deliverRouteAnswers → AddChatMessage(role "user", TypedBy -)`: chatAgentSent,
+		`internal/api/session_routes.go (*Server).deliverToChief → AddChatMessage(role "user", TypedBy -)`:      chatAgentSent,
+		// A route turn's own row (answers, a hand-back), stored before the turn.
+		`internal/api/session_routes.go (*Server).startRouteTurn → AddChatMessage(role "user", TypedBy -)`:         chatAgentSent,
 		`internal/api/jobs.go (*Server).runJobTurn → AddChatMessage(role "user", TypedBy -)`:                       chatAgentSent,
 		`internal/api/jobs.go (*Server).runJobTurn → AddChatMessage(role "assistant", TypedBy -)`:                  chatReply,
 		`internal/api/officers.go Reprompt → AddChatMessage(role "user", TypedBy -)`:                               chatAgentSent,

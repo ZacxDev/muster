@@ -42,6 +42,14 @@ type answerPod struct {
 	mu    sync.Mutex
 	busy  bool
 	turns []string
+	// refused counts the turns the runtime refused (busy).
+	refused int
+}
+
+func (p *answerPod) refusals() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.refused
 }
 
 func (p *answerPod) setBusy(b bool) {
@@ -60,6 +68,7 @@ func (p *answerPod) turn(text string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.busy {
+		p.refused++
 		return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy", Message: "the session is mid-turn"}
 	}
 	p.turns = append(p.turns, text)

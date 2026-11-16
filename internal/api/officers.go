@@ -1002,7 +1002,8 @@ const repromptSlack = 2 * time.Minute
 // for ever (TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance).
 // Now the row is never written: no stuck verdict can be derived from it.
 //
-//   - The session claim (agents.Store.ClaimKickoff) is the one a first turn, a
+//   - The session claim (taken with agents.Store.ClaimKickoffForDelivery, which
+//     also loses while the owner's typed turn is in flight) is the one a first turn, a
 //     memo and this hold for a whole turn. Lost = a turn is running:
 //     officers.ErrInstanceBusy, nothing sent, and the loop tries next pass.
 //   - A kickoff still owed (promptPending) is busy too: the first turn goes first.
