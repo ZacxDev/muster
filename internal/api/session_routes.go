@@ -2130,7 +2130,7 @@ func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plu
 			// have delivered some of these answers between
 			// the checks above and this one winning the claim. Then the turn's
 			// text is stale: nothing is sent, those on record are taken, and the
-			// rest stay owed for the next sweep (which the finished turn woke).
+			// rest stay owed for the next sweep.
 			stillOwed := func(ctx context.Context) bool {
 				all := true
 				for _, a := range turn {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -16,18 +17,20 @@ import (
 // startRouteTurn wins the chief's delivery claim, and that check can be stale
 // once the claim is won: a racing delivery may have delivered in between. So
 // every production caller must hand startRouteTurn an owed re-check (its 6th
-// argument) — never the literal nil — and the set of callers is compared BOTH
+// argument): a local variable whose ONLY binding in the caller is `name :=
+// func…` — so never the literal nil, nor a variable declared nil or ever
+// reassigned (funcLitOnly) — and the set of callers is compared BOTH
 // ways: a new caller fails until it is listed here (and passes a re-check),
 // and so does a listed one that is gone.
 //
-// ⚠ STRUCTURAL: it pins THAT each caller passes a re-check, not that the
+// ⚠ STRUCTURAL: it pins THAT each caller passes a non-nil re-check, not that the
 // re-check is right. The behaviour is TestRacingDeliveriesOfABatchMakeOneDigestTurn,
 // TestRacingDeliveriesOfAnAnswerMakeOneTurn and TestRacingDeliveriesOfAHandBackMakeOneTurn.
 func TestEveryRouteTurnReChecksUnderTheClaim(t *testing.T) {
 	want := []string{
-		"route_many.go (*Server).deliverRouteBatch → owed",
-		"session_routes.go (*Server).deliverRouteAnswers → stillOwed",
-		"session_routes.go (*Server).deliverToChief → owed",
+		"route_many.go (*Server).deliverRouteBatch → owed (func literal)",
+		"session_routes.go (*Server).deliverRouteAnswers → stillOwed (func literal)",
+		"session_routes.go (*Server).deliverToChief → owed (func literal)",
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -79,7 +82,9 @@ func TestEveryRouteTurnReChecksUnderTheClaim(t *testing.T) {
 				if len(call.Args) >= 6 {
 					switch a := call.Args[5].(type) {
 					case *ast.Ident:
-						owed = a.Name
+						owed = a.Name + " (" + funcLitOnly(fn.Body, a.Name) + ")"
+					case *ast.FuncLit:
+						owed = "func literal"
 					default:
 						owed = "<expr>"
 					}
@@ -97,4 +102,37 @@ func TestEveryRouteTurnReChecksUnderTheClaim(t *testing.T) {
 			"a check made before the claim can be stale once it is won (issue #732).",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
+}
+
+// funcLitOnly describes how name is bound in body: "func literal" when its one
+// and only binding is `name := func(…) {…}` (no var declaration, no other
+// assignment), else what was found instead.
+func funcLitOnly(body *ast.BlockStmt, name string) string {
+	var defs, lits int
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for i, l := range x.Lhs {
+				if id, ok := l.(*ast.Ident); ok && id.Name == name {
+					defs++
+					if x.Tok == token.DEFINE && len(x.Rhs) == len(x.Lhs) {
+						if _, ok := x.Rhs[i].(*ast.FuncLit); ok {
+							lits++
+						}
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for _, id := range x.Names {
+				if id.Name == name {
+					defs++
+				}
+			}
+		}
+		return true
+	})
+	if defs == 1 && lits == 1 {
+		return "func literal"
+	}
+	return strconv.Itoa(defs) + " binding(s), " + strconv.Itoa(lits) + " of them `:= func…`"
 }
