@@ -92,6 +92,7 @@ officer type delete
 officer type get
 officer type ls
 officer type put
+officer usage
 plugins deliver-to
 plugins retry
 pr-session
@@ -125,9 +126,11 @@ whoami"
 # 44 -> 45: `pr-session` (which of your sessions created a pull request).
 # 45 -> 46: `agent rm` (DELETE /api/agents/{name}; removes a host officer
 #   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
-# 46 -> 51: `officer ls|create|pause|resume|delete` (officers declared in the
+# 46 -> 47: `officer usage` (an officer's model spend per UTC day,
+#   officer_llm_usage; a builtin officer's Claude usage is booked there).
+# 47 -> 52: `officer ls|create|pause|resume|delete` (officers declared in the
 #   database, migration 0136; no restart).
-WANT_COUNT=51
+WANT_COUNT=52
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

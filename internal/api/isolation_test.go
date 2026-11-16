@@ -398,6 +398,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/officers/defs/{officer}/items":                          classAdmin,
 	"POST /api/officers/defs/{officer}/items/{id}/resolve":             classAdmin,
 	"GET /api/officers/defs/{officer}/schedules":                       classAdmin,
+	"GET /api/officers/defs/{officer}/usage":                           classAdmin,
 	"PUT /api/officers/defs/{officer}/schedules/{name}":                classAdmin,
 	"DELETE /api/officers/defs/{officer}/schedules/{name}":             classAdmin,
 	"GET /api/officers/defs/{officer}/contacts":                        classAdmin,
@@ -1251,6 +1252,15 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
 		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
 	must(err, "an officer schedule")
+	// A's officer's model spend (0075): numbers only, so the owner's answer is
+	// told from the ghost's by a request count no other row carries
+	// (controlMarkers). Today, so the route's default window holds it.
+	_, err = pool.Exec(ua, `INSERT INTO officer_llm_usage (owner_id, officer, pool, instance, day, requests)
+		VALUES ($1, $2, 'judgement', 1, (now() AT TIME ZONE 'UTC')::date, 4242421)`, w.a.uid, aOffType+":a")
+	must(err, "an officer's usage row")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(authz.System(context.Background()), `DELETE FROM officer_llm_usage WHERE officer = $1`, aOffType+":a")
+	})
 	// A's officer's people (0132): one the read and flag routes name (its
 	// display carries the canary) and one the erase route names.
 	for _, h := range []string{"isoperson", "isodelete"} {
@@ -2147,6 +2157,8 @@ var controlMarkers = map[string]string{
 	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
 	// another owner's) to its place on the queue.
 	"GET /attention/open/{key}": `href="/attention/asks/`,
+	// A's officer's usage row (numbers only: no canary can ride it).
+	"GET /api/officers/defs/{officer}/usage": `"requests":4242421`,
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

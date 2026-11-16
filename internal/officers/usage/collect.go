@@ -7,8 +7,11 @@
 // through the agent gateway with the instance's turn bearer. muster-server
 // counts nothing itself: ccd owns the counting rule, next to the files.
 //
-// THE SINK is HQ's PUT /officers/{id}/usage (officers.Client.PutUsage), sent
-// with the officer's own token. HQ upserts each bucket and REPLACES its
+// THE SINK is the officer's backend (officers.UsageBackend): HQ's PUT
+// /officers/{id}/usage (officers.Client.PutUsage), sent with the officer's
+// own token; for a builtin officer, officer_llm_usage
+// (builtin.Backend.PutUsage, which merges a day with GREATEST for the same
+// whole-window reason). HQ upserts each bucket and REPLACES its
 // counts, so every push is the whole of the window (Window) and a push is
 // idempotent: a later one only ever corrects an earlier one.
 //

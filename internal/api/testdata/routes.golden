@@ -92,6 +92,7 @@ GET /api/officers/defs/{officer}/contacts
 GET /api/officers/defs/{officer}/contacts/{venue}/{handle}
 GET /api/officers/defs/{officer}/items
 GET /api/officers/defs/{officer}/schedules
+GET /api/officers/defs/{officer}/usage
 GET /api/officers/runtime-options
 GET /api/officers/types
 GET /api/officers/types/{key}

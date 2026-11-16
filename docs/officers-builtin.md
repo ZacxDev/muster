@@ -9,8 +9,10 @@ contract both backends implement are in
 
 What a builtin officer gets on day 1: the six queue tools (brief, items,
 claim, heartbeat, complete, release), tiers, the investigation block, item
-cost, **asks to its owner through muster's Attention view**, and escalations its owner can answer back. What it does
-not get: HQ's observability, transcripts, usage and pools ledgers, derived
+cost, **asks to its owner through muster's Attention view**, escalations its owner can answer back, and its
+instances' Claude usage booked per day into `officer_llm_usage` (read with
+`muster officer usage <officer>`; [officers.md](officers.md#a-builtin-officers-usage-officer_llm_usage)).
+What it does not get: HQ's observability, transcripts and pools ledgers, derived
 asks, gap tasks, task reads, PR context, the ship gates and the release
 captain — it is not offered those tools and its first message does not
 mention them.
@@ -152,7 +154,7 @@ At boot, one line per officer names its backend, what the backend serves and
 the tools each pool is offered, then whether the store defines it:
 
 ```
-officers: marketing:example backend builtin (officer-backend/v1; serves asks,cost,investigation,tiers); tools officer_brief,…,officer_ask_person
+officers: marketing:example backend builtin (officer-backend/v1; serves asks,cost,investigation,tiers,usage); tools officer_brief,…,officer_ask_person
 officers: marketing:example: defined in the built-in store and switched on
 ```
 
@@ -296,6 +298,13 @@ muster officer item enqueue marketing:example --kind release.post --subject v1.2
     --payload '{"tag":"v1.2.0"}' --priority high
 muster officer item ls marketing:example --status open
 muster officer item resolve marketing:example 42 --outcome no_action --summary "superseded"
+```
+
+What it costs, per UTC day (an estimate at list price for a Claude Code
+instance — [officers.md](officers.md#a-builtin-officers-usage-officer_llm_usage)):
+
+```sh
+muster officer usage marketing:example --days 7
 ```
 
 An enqueue that matches a live item (open, claimed or waiting) of the same
@@ -612,6 +621,7 @@ roster until its next refresh:
 | GET / POST | `/api/officers/defs/{officer}/items` | GET `?status=&limit=`; POST `{kind, subject_key, payload?, tier?, priority?, not_before?}` |
 | POST | `/api/officers/defs/{officer}/items/{id}/resolve` | `{outcome, summary}` |
 | GET | `/api/officers/defs/{officer}/schedules` | |
+| GET | `/api/officers/defs/{officer}/usage` | `?days=` (default 30, at most 90): the officer's model spend per UTC day, pool and instance (`officer_llm_usage`), newest first, with `total_cost_usd` and `prices_as_of` |
 | PUT / DELETE | `/api/officers/defs/{officer}/schedules/{name}` | PUT `{cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}` |
 | GET | `/api/officers/defs/{officer}/contacts` | `?venue=&label=&flag=&handle_prefix=&limit=` |
 | GET | `/api/officers/defs/{officer}/contacts/{venue}/{handle}` | the person and their newest events |
