@@ -1039,6 +1039,14 @@ rule the later phases' rows will meet.
     through `ViaAgent`) after a fresh read of the member's role, on every
     send attempt. A member removed or downgraded while their message is
     queued is answered "not sent", and the message never reaches the runtime.
+    The authoritative read is the **send fence**: immediately before each
+    request opens, the role is read again under a `FOR KEY SHARE` on the
+    team's row (`users.PGStore.HoldTeamRole`), held until the runtime's
+    verdict (ccd's 103 or the status line). Every membership change waits
+    on that row (`lockTeam`), so a removal lands wholly before the read (the
+    message is refused) or wholly after the text reached the runtime. Before
+    the fence (#673 until the fix), a removal committing between the attempt's
+    first role read and its request let the text through.
   - **One shared room.** A member types into the team chief's one
     conversation, behind the per-agent FIFO turn gate. The runtime is handed
     `[muster] typed by <name> (<role>) in team <team>` before the text, in

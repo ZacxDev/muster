@@ -335,6 +335,20 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // a busy turn is re-checked when its turn comes: a member removed from the
 // team — or made a viewer — while it waited gets ErrNoLongerTeamOperator and
 // the message is not sent (plan §6). An unreadable account fails closed.
+//
+// 🔴 AND AGAIN AT THE MOMENT OF SENDING, UNDER A LOCK (the send fence). The
+// read above happens BEFORE the turn's preparation (its usage row, its tools,
+// its credential), and a removal that committed in between used to let the
+// text through: a check-then-act, seen as TestARemovedMembersQueuedMessageIsDropped
+// failing about 1 run in 40 under load (since #673). So the returned ctx also
+// carries an agents.SendFence: immediately before each request of the turn
+// opens, the role is read again inside users.PGStore.HoldTeamRole, which holds
+// the team's row until the runtime's verdict on that request; every
+// membership change waits for it (lockTeam). A removal is therefore ordered
+// wholly before the read (refused: ErrNoLongerTeamOperator) or wholly after
+// the text reached the runtime. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage
+// and TestARemovalWaitsForAMembersSendInFlight pin both halves. The read above
+// stays: it refuses before anything runs as the team.
 func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, error) {
 	if !memberOnTeamAgent(ctx, a) {
 		return ctx, nil
@@ -344,16 +358,49 @@ func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context
 	if err != nil {
 		return ctx, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
 	}
-	role, in := acct.Teams.RoleIn(a.OwnerID)
-	if !in || !role.AtLeast(authz.TeamOperator) {
+	if !operatesTeam(acct.Teams.RoleIn(a.OwnerID)) {
 		return ctx, ErrNoLongerTeamOperator
 	}
 	tp, ok := s.agentPrincipal(ctx, a, authz.ViaAgent)
 	if !ok || !tp.Team || tp.RoleUncertain {
 		return ctx, fmt.Errorf("not sent: agent %q is not a team's (owner %d)", a.Name, a.OwnerID)
 	}
-	return authz.WithPrincipal(ctx, tp), nil
+	ctx = authz.WithPrincipal(ctx, tp)
+	if h, ok := s.ext.Users.(teamRoleHolder); ok {
+		team, person := a.OwnerID, p.UserID
+		ctx = agents.WithSendFence(ctx, func(fctx context.Context) (func(), error) {
+			role, in, release, err := h.HoldTeamRole(fctx, team, person)
+			if err != nil {
+				return nil, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
+			}
+			if !operatesTeam(role, in) {
+				release()
+				return nil, ErrNoLongerTeamOperator
+			}
+			return release, nil
+		})
+	}
+	if s.turnRoleChecked != nil {
+		s.turnRoleChecked(a)
+	}
+	return ctx, nil
 }
+
+// operatesTeam is THE rule a member's turn on a team agent is sent under: an
+// operator or above of the team (turnActingContext's two reads).
+func operatesTeam(role authz.TeamRole, in bool) bool {
+	return in && role.AtLeast(authz.TeamOperator)
+}
+
+// teamRoleHolder is the users store's held role read (users.PGStore.HoldTeamRole),
+// the send fence's lock. A store without it (a test's fake) gets no fence.
+type teamRoleHolder interface {
+	HoldTeamRole(ctx context.Context, team, person int64) (role authz.TeamRole, in bool, release func(), err error)
+}
+
+// 🔴 THE PRODUCTION STORE HOLDS: without this, a refactor of HoldTeamRole's
+// signature would silently drop every member turn's fence.
+var _ teamRoleHolder = (*users.PGStore)(nil)
 
 // teamGatewayToolless reports whether a's turn must go out WITHOUT tools: a
 // GATEWAY-kind agent a team owns (plan §3.1: gateway kind is not a team agent

@@ -557,6 +557,56 @@ func lockTeam(ctx context.Context, tx pgx.Tx, team int64) error {
 	return err
 }
 
+// HoldTeamRole reads person's role in team and HOLDS it: until release is
+// called, no change to the team's membership can commit — every one takes
+// lockTeam's FOR UPDATE on the team's row, which waits for the FOR KEY SHARE
+// taken here — and the person's membership row cannot be deleted (a person's
+// own deletion cascades through it). in is false when person is not a member
+// (or team is not a team). release ends the hold (a read-only transaction,
+// rolled back); call it exactly once, whatever the answer.
+//
+// 🔴 FOR THE MOMENT A MEMBER'S TURN IS SENT (internal/api turnActingContext's
+// send fence): checked here and held until the runtime's verdict, a removal
+// is ordered wholly before the check (the turn is refused) or wholly after
+// the text reached the runtime — never between them. ⚠ It holds one pool
+// connection while held: its caller holds it across a request and nothing
+// else.
+//
+// FOR KEY SHARE, not FOR SHARE: a plain UPDATE of the team's row (a rename)
+// takes FOR NO KEY UPDATE and does not wait; only lockTeam's FOR UPDATE and a
+// DELETE do.
+func (s *PGStore) HoldTeamRole(ctx context.Context, team, person int64) (role authz.TeamRole, in bool, release func(), err error) {
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", false, nil, err
+	}
+	release = func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 AND kind = 'team' FOR KEY SHARE`, team).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, release, nil
+	}
+	if err != nil {
+		release()
+		return "", false, nil, err
+	}
+	var r string
+	err = tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR KEY SHARE`, team, person).Scan(&r)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, release, nil
+	}
+	if err != nil {
+		release()
+		return "", false, nil, err
+	}
+	return authz.TeamRole(r), true, release, nil
+}
+
 // lockPerson locks person user's users row, or answers ErrNotAPerson.
 func lockPerson(ctx context.Context, tx pgx.Tx, user int64) error {
 	var id int64

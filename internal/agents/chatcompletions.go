@@ -97,10 +97,17 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	}
 	applyTurnRoute(req)
 
+	// The send fence, if the turn carries one (sendfence.go).
+	fenced, err := fenceRequest(ctx)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
+		fenced(false)
 		return "", fmt.Errorf("request: %w", err)
 	}
+	fenced(resp.StatusCode == http.StatusOK)
 	defer resp.Body.Close()
 	observeTurnRoute(req, resp)
 	if resp.StatusCode != http.StatusOK {

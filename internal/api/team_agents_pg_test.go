@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -395,6 +398,174 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 		if strings.HasSuffix(a, fromB) {
 			t.Errorf("the removed member's queued message was sent to the team chief: %q", a)
 		}
+	}
+}
+
+// TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage forces the
+// interleaving TestARemovedMembersQueuedMessageIsDropped met under load: B's
+// turn passes turnActingContext's role read (B is an operator then), B is
+// removed from the team, and only THEN does the turn go on to send — to a
+// runtime that is free. B's message must not reach the runtime: the send
+// fence reads the role again, under the team's lock, immediately before the
+// request. CONTROL: A's message afterwards, through the same runtime, is
+// answered — the runtime was taking turns, so the drop is about B.
+//
+// 🔴 RED before the send fence (origin/main e1bb7d57): B's message was
+// answered — the only role read was the one before the removal.
+func TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	checked, proceed := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	w.srv.turnRoleChecked = func(agents.Agent) {
+		first.Do(func() {
+			close(checked)
+			<-proceed
+		})
+	}
+	fromB, fromA := "from B "+tw.canary, "from A "+tw.canary
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's turn never passed its first role read")
+	}
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	answeredWith := func(text string) bool {
+		_, answered := tw.ccd.counts()
+		for _, a := range answered {
+			if strings.HasSuffix(a, text) {
+				return true
+			}
+		}
+		return false
+	}
+	refusedRow := func() bool {
+		var n int
+		_ = w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND role = 'assistant' AND content = $2`,
+			tw.chief.ID, AgentTurnFailedPrefix+ErrNoLongerTeamOperator.Error()).Scan(&n)
+		return n == 1
+	}
+	eventuallyAPI(t, "B's turn to end (refused, or — the bug — answered)", func() bool { return refusedRow() || answeredWith(fromB) })
+	if answeredWith(fromB) {
+		t.Fatalf("the removed member's message reached the team chief: B was removed after the first role read and before the send")
+	}
+	if rec := tw.send(t, w.a.uid, fromA); rec.Code != http.StatusNoContent {
+		t.Fatalf("A (manager) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	eventuallyAPI(t, "control: A's message to be answered", func() bool { return answeredWith(fromA) })
+}
+
+// stallCCD is authCCD that, asked a turn whose input ends with stallOn, tells
+// arrived and answers only once release closes — writing NOTHING before then
+// (no 103), so the request is in flight at the runtime for as long as the test
+// wants.
+type stallCCD struct {
+	*authCCD
+	stallOn string
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (f *stallCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(body, &req)
+	if strings.HasSuffix(inputText(req.Input), f.stallOn) {
+		close(f.arrived)
+		<-f.release
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	f.authCCD.ServeHTTP(w, r)
+}
+
+// TestARemovalWaitsForAMembersSendInFlight is the send fence's lock: while B's
+// message is IN FLIGHT at the runtime (its request open, no verdict yet), B's
+// removal from the team does not commit — it waits on the team's row — and
+// commits once the runtime has answered. So a removal can never land between
+// the fence's role read and the text reaching the runtime. Waiting is observed,
+// not timed: the removal's backend shows in pg_locks waiting on the team's row.
+//
+// 🔴 RED before the send fence (origin/main e1bb7d57): the removal committed
+// at once, with B's message still in flight.
+func TestARemovalWaitsForAMembersSendInFlight(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	fromB := "from B " + tw.canary
+	stall := &stallCCD{authCCD: tw.ccd, stallOn: fromB, arrived: make(chan struct{}), release: make(chan struct{})}
+	up := httptest.NewServer(stall)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client(), Secrets: agents.NewPG(w.pool)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.ext.Gateway = gw
+	released := false
+	defer func() {
+		if !released {
+			close(stall.release)
+		}
+	}()
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-stall.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's message never reached the runtime")
+	}
+	removed := make(chan error, 1)
+	go func() {
+		removed <- users.NewPG(w.pool).RemoveTeamMember(authz.System(context.Background()),
+			users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
+	}()
+	// A row-lock waiter holds the heavyweight TUPLE lock on the row it waits
+	// for (the holder of a FOR KEY SHARE holds none), and pg_locks — unlike
+	// pg_stat_activity's wait columns — is readable by the app role.
+	waiting := func() bool {
+		var n int
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM pg_locks WHERE locktype = 'tuple'
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND relation = 'users'::regclass`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !waiting() {
+		select {
+		case err := <-removed:
+			t.Fatalf("B's removal committed (err %v) while B's message was in flight at the runtime; want it to wait for the runtime's verdict", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("B's removal neither committed nor waited on a lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	released = true
+	close(stall.release)
+	select {
+	case err := <-removed:
+		if err != nil {
+			t.Fatalf("B's removal, after the runtime answered: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("B's removal never committed after the runtime answered")
+	}
+	_, answered := tw.ccd.counts()
+	if len(answered) != 1 || !strings.HasSuffix(answered[0], fromB) {
+		t.Errorf("the runtime answered %q; want B's message, which reached it while B was a member", answered)
 	}
 }
 

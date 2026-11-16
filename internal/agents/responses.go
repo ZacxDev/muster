@@ -311,10 +311,18 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	// LAST, with every header set: ask ccd for its 103 and mark the turn
 	// accepted, in this request's lane, when it comes (turnaccepted.go).
 	req = traceTurnAccepted(req)
+	// The send fence, if the turn carries one (sendfence.go): checked and held
+	// from here to the request's verdict, with nothing else in between.
+	fenced, err := fenceRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
+		fenced(false)
 		return nil, fmt.Errorf("request: %w", err)
 	}
+	fenced(resp.StatusCode == http.StatusOK)
 	defer resp.Body.Close()
 	observeTurnRoute(req, resp)
 	if resp.StatusCode == http.StatusNotFound {
