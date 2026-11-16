@@ -1348,7 +1348,7 @@ reopen them.
 | The minimal team fan-out (phase 3) reaches operators and managers for officer asks, escalations and drafts only, and is not withdrawn from them | `internal/api/team_notify.go:11-25`, `:79-93`; `internal/users/teams.go:268` |
 | An SSE stream subscribes to one owner | `internal/api/server.go:1133-1134` |
 | The disable sweep ends a disabled user's open streams every 10 s | `internal/api/accounts.go:131`, `:300` (`sweepDisabled`) |
-| Boot refuses a team owning a `"runtime": "host"` officer | `internal/officers/owners.go:58-59` (`ErrTeamHostOfficer`) |
+| Boot refuses a team owning a `"runtime": "host"` officer | `internal/officers/owners.go:58-59` (`ErrTeamHostOfficer`). **Lifted in 2b.5:** only a team host officer that declares `connectors` is refused now (`ErrTeamHostOfficerConnectors`, G3) |
 | On a machine that runs a host officer, every owner-authority tool (10 of them) files a confirmation card, answered only from the owner's paired phone | `internal/api/host_stepup.go:57-68` (`hostStepUpTools`), `:184`, owner check at `:257` |
 | `officer_host_spawns` is personal and lendable; a team-owned row is visible only to the team acting principal | `0130_team_officers.sql:112-143`; `lentOwned` in `internal/db/share_ledger_test.go:81` |
 | Focus titles are refreshed for persons only, on each person's own key | `internal/focus/pgstore.go:401-415` |
@@ -2935,7 +2935,13 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   person lent to the team stays in the personal list as a lend. The
    >   chief's `officer_spawn_share` list is unchanged: its door carries no
    >   teams. The share ledger already expected `team_owner_read` (2b.1), so
-   >   `TestTheShareLedgerHoldsForEveryRole` is unchanged.
+   >   `TestTheShareLedgerHoldsForEveryRole` is unchanged. Each section reads
+   >   its own window of the newest 200 rows (`officers.SpawnWindow`: the
+   >   personal section leaves out the viewer's teams' own rows, and each team
+   >   section reads only that team's), so a busy team host officer never
+   >   pushes a member's own lend off the page
+   >   (`TestABusyTeamOfficerNeverPushesAMembersLendOffTheSpawnsPage`: red
+   >   with the one shared window; round 1 on #729, F1).
    > - **The gate order was already structural.** Since 2b.2, a team token's
    >   tool LIST is filtered by `teamHostTools`, and `serveMCP` runs a listed
    >   name only, so the filter runs before `hostStepUpGate` with no code

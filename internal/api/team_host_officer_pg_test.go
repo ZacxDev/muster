@@ -217,3 +217,45 @@ func TestATeamHostOfficerInstanceBindsOnlyOnTheTeamHost(t *testing.T) {
 		t.Fatalf("CONTROL: the same session id from the member's personal host: %s; want the not-an-instance refusal", body)
 	}
 }
+
+// TestABusyTeamOfficerNeverPushesAMembersLendOffTheSpawnsPage (#729 round 1,
+// F1): a team host officer's spawn rows are many and new (one per start). With
+// MORE team rows than the page's window (spawnPageWindow + 1), all newer than
+// the manager's own spawn, the manager's lend of that spawn to the team is
+// still drawn in the personal section, with its Stop sharing form, and the
+// team's section draws its newest rows, at most one window.
+//
+// 🔴 RED before the fix (b9e7bff1/d10dbecc): one newest-first window was
+// shared by every row the viewer reads, so the team's rows filled it.
+func TestABusyTeamOfficerNeverPushesAMembersLendOffTheSpawnsPage(t *testing.T) {
+	w := newIsoWorld(t)
+	team := w.aTeam
+	lent := w.objA.spawn
+	if rec := w.do(w.h, "POST", officerSpawnsPath+"/"+strconv.FormatInt(lent, 10)+"/share", "team="+strconv.FormatInt(team, 10), cred{sessionUser: w.a.uid}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("fixture: the manager lending their spawn: %d %.300s", rec.Code, rec.Body.String())
+	}
+	n := spawnPageWindow + 1
+	if _, err := w.pool.Exec(w.sys, `INSERT INTO officer_host_spawns (owner_id, officer, instance, host)
+		SELECT $1, 'tmo:busy', 'tmo-busy-' || g, 'build-01' FROM generate_series(1, $2) g`, team, n); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM officer_host_spawns WHERE owner_id = $1 AND officer = 'tmo:busy'`, team)
+	})
+	rec := w.do(w.h, "GET", officerSpawnsPath, "", cred{sessionUser: w.a.uid})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the manager's spawns page: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	personal := regexp.MustCompile(`(?s)<ul[^>]*id="officer-spawns">.*?</ul>`).FindString(body)
+	if !strings.Contains(personal, `data-spawn-id="`+strconv.FormatInt(lent, 10)+`"`) || !strings.Contains(personal, officerSpawnsPath+"/"+strconv.FormatInt(lent, 10)+"/unshare") {
+		t.Fatalf("with %d newer team rows the manager's own lend is not drawn with its Stop sharing form\n%.600s", n, personal)
+	}
+	sec := regexp.MustCompile(`(?s)<section[^>]*id="officer-spawns-team-` + strconv.FormatInt(team, 10) + `"[^>]*>.*?</section>`).FindString(body)
+	if got := strings.Count(sec, `data-spawn-owner-team="`+strconv.FormatInt(team, 10)+`" data-spawn-mine`); got != spawnPageWindow {
+		t.Fatalf("the team's section draws %d rows; want its window, %d (of %d)", got, spawnPageWindow, n)
+	}
+	if !strings.Contains(sec, "tmo-busy-"+strconv.Itoa(n)+"<") && !strings.Contains(sec, "tmo-busy-"+strconv.Itoa(n)+" ") {
+		t.Errorf("the team's section does not draw its newest row tmo-busy-%d", n)
+	}
+}

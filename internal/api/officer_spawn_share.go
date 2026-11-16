@@ -137,6 +137,10 @@ func hostSpawnObject(id int64) string { return "officer_host_spawn:" + strconv.F
 
 const officerSpawnsPath = "/officers/spawns"
 
+// spawnPageWindow is how many of the newest rows each section of
+// /officers/spawns draws: the personal section, and each team's own.
+const spawnPageWindow = 200
+
 func (s *Server) registerOfficerSpawnPages(mux Mux) {
 	mux.HandleFunc("GET "+officerSpawnsPath, s.requireSession(s.handleOfficerSpawnsPage))
 	mux.HandleFunc("POST "+officerSpawnsPath+"/{id}/share", s.requireOperatorWrite(s.handleOfficerSpawnShare))
@@ -154,15 +158,27 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 		s.renderNotice(w, r, http.StatusNotFound, "No officer spawns", ErrLendOff.Error())
 		return
 	}
-	rows, err := s.spawnLender.VisibleHostSpawns(ctx, 200)
+	var teamIDs []int64
+	for _, m := range p.Teams.List() {
+		teamIDs = append(teamIDs, m.Team)
+	}
+	// 🔴 ONE BOUNDED WINDOW PER SECTION (#729 round 1, F1): the personal
+	// section (the viewer's own rows and the rows lent to their teams) reads
+	// its own newest spawnPageWindow, and each team's own rows theirs — a
+	// busy team host officer never pushes a member's own lend, and its Stop
+	// sharing form, off the page.
+	own, err := s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{NotOwnedBy: teamIDs}, spawnPageWindow)
+	teamOwned := map[int64][]officers.HostSpawn{}
+	for _, t := range teamIDs {
+		if err != nil {
+			break
+		}
+		teamOwned[t], err = s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{Team: t}, spawnPageWindow)
+	}
 	if err != nil {
 		s.logger.Printf("officers: read host spawns: %v", err)
 		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load officer spawns", "Try again in a moment.")
 		return
-	}
-	var teamIDs []int64
-	for _, m := range p.Teams.List() {
-		teamIDs = append(teamIDs, m.Team)
 	}
 	// team_tasks.go's one team-name read (#664): "Team <id>" when unnamed.
 	names := s.teamNames(ctx, teamIDs)
@@ -174,20 +190,11 @@ func (s *Server) renderOfficerSpawns(w http.ResponseWriter, r *http.Request, cod
 	}
 	// 🔴 A TEAM'S OWN SPAWNS (team sharing 2b.5): a team host officer's spawn
 	// rows are owned by the team, and its members read them at viewer
-	// (team_owner_read, migration 0133). They are grouped under the team, and
+	// (team_owner_read, migration 0133). They are drawn under the team, and
 	// are nobody's to lend (lend_target: the actor is not the owner): only
 	// the team acting principal (the officer runtime) writes them. A row is
 	// the TEAM'S when its owner is one of the viewer's teams — never a row
 	// merely lent to that team, whose owner is a person.
-	var own []officers.HostSpawn
-	teamOwned := map[int64][]officers.HostSpawn{}
-	for _, h := range rows {
-		if _, team := p.Teams.RoleIn(h.OwnerID); team {
-			teamOwned[h.OwnerID] = append(teamOwned[h.OwnerID], h)
-			continue
-		}
-		own = append(own, h)
-	}
 	var b strings.Builder
 	b.WriteString(problemNode(problem))
 	b.WriteString(`<section class="` + adminCard + `"><h1 class="text-base font-semibold text-fg">Officer spawns</h1>
@@ -341,7 +348,7 @@ func (s *Server) toolOfficerSpawnShare(ctx context.Context, arguments string) st
 		}
 		// The chief's door carries no teams, so this reads its owner's own
 		// rows only.
-		rows, err := s.spawnLender.VisibleHostSpawns(ctx, 50)
+		rows, err := s.spawnLender.VisibleHostSpawns(ctx, officers.SpawnWindow{}, 50)
 		if err != nil {
 			return toolErr("could not read the spawns")
 		}
