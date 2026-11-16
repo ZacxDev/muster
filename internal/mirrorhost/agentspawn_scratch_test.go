@@ -219,11 +219,26 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 	if r := (&hostSide{c: u.c, ctx: context.Background(), version: 2}).spawnReadiness(); r != nil {
 		t.Fatalf("a read-only host advertised %+v", r)
 	}
-	// A host with -agent-spawn off says so, and offers no scratch.
+	// A host with -agent-spawn off says so, offers no scratch, and never asks
+	// claude for its login (O-B round 0): the stub records each run. The
+	// control: the same stub on a spawning host is asked once.
+	runs := filepath.Join(dir, "runs")
+	counting := stub("claude-counting", `echo run >> `+runs+`; printf '{"loggedIn": true}'`)
+	ran := func() int {
+		b, _ := os.ReadFile(runs)
+		return strings.Count(string(b), "run")
+	}
 	u = newSpawnUnit(t)
-	u.c.cfg.AgentSpawn.Enabled = false
-	if r := (&hostSide{c: u.c, ctx: context.Background(), version: 2}).spawnReadiness(); r == nil || r.Unavailable != "agent spawn is off" || r.Scratch {
+	u.c.cfg.AgentSpawn.Enabled, u.c.cfg.AgentSpawn.ClaudeBin = false, counting
+	if r := (&hostSide{c: u.c, ctx: context.Background(), version: 2}).spawnReadiness(); r == nil || r.Unavailable != "agent spawn is off" || r.Scratch || r.Login != mirror.LoginUnknown {
 		t.Fatalf("a host with spawn off advertised %+v", r)
+	}
+	if n := ran(); n != 0 {
+		t.Fatalf("a host with spawn off ran claude %d time(s) for its login", n)
+	}
+	u.c.cfg.AgentSpawn.Enabled = true
+	if r := (&hostSide{c: u.c, ctx: context.Background(), version: 2}).spawnReadiness(); r == nil || r.Login != mirror.LoginYes || ran() != 1 {
+		t.Fatalf("control: a spawning host's readiness %+v after %d run(s); want logged in, from one run", r, ran())
 	}
 }
 

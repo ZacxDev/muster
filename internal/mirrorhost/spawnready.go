@@ -52,6 +52,12 @@ func (h *hostSide) spawnReadiness() *mirror.SpawnReadiness {
 		return r
 	}
 	r.Claude = mirror.ClaudeFound
+	if r.Unavailable != "" {
+		// 🔴 NO SPAWN CAPABILITY, NO LOGIN CHECK (O-B round 0): a host that
+		// starts no agent never runs `claude auth status` (every minute, on
+		// spawnReadyEvery) for an answer nothing reads.
+		return r
+	}
 	r.Login = claudeLogin(ctx, bin)
 	return r
 }
