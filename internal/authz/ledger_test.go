@@ -358,6 +358,11 @@ var (
 		// A fixture command, never linked into a binary (modulegate's linkage
 		// ledger), and it refuses any database not ending in _e2e.
 		"e2e/mktoken.run",
+		// The ask-log browser spec's fixture (e2e/askfix): it writes and clears
+		// asks through the real store AS the named fixture user, so row-level
+		// security confines it to that user's rows. A fixture command, never
+		// linked into a binary, and it refuses any database not ending in _e2e.
+		"e2e/askfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

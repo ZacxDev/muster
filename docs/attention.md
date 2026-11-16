@@ -48,6 +48,14 @@ every decision your chief took about one of your stalled sessions, newest
 first. A live decision to point you at a stalled session is a
 [notice](#notices) on the **Ask** tab ([how](chief-nudges.md#live-mode)).
 
+### The Log tab
+
+The page always has a **Log** tab (`/attention?tab=log`): the [ask
+log](asks.md#reading-the-log) read back — what your agents asked you, how you
+answered and how long it took, with a summary on top and the questions asked
+most often. Its panel is read when you open the tab. With `MUSTER_ASK_LOG`
+off, it says how to turn it on.
+
 ### Notices
 
 A **notice** is an item that points at a session and asks nothing. Today only a
