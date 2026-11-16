@@ -23,7 +23,8 @@ import (
 // binding-broken draft goes back to its officer and closes its item in the
 // transaction that ended it; an unconfirmed one (it may have been posted) is
 // never handed back to be redrafted — its item is escalated to the owner;
-// and past the draft.refused bound the item still settles, the owner told.
+// and past the draft.refused bound the follow-up is filed HELD and the item
+// still settles, naming it.
 //
 // The expected strings are written out here, not read from the code under
 // test.
@@ -101,23 +102,31 @@ func TestAnExpiredDraftSettlesItsItem(t *testing.T) {
 	}
 }
 
-// TestAnExpiredDraftPastTheBoundEscalatesItsItem (cases 1 + 4): with the
-// officer's draft.refused items at the bound, nothing is queued, and the
-// item — which no push reaches from the sweep — is escalated to its owner,
-// saying the officer was not told.
-func TestAnExpiredDraftPastTheBoundEscalatesItsItem(t *testing.T) {
+// TestAnExpiredDraftPastTheBoundIsHeld (cases 1 + 4): with the officer's
+// draft.refused items at the bound, the sweep's follow-up is filed HELD (not
+// claimable) and the item is finished naming it — no longer escalated to
+// its owner, since the officer WILL be told.
+func TestAnExpiredDraftPastTheBoundIsHeld(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	item, id := w.fileForItem("x:expired-full", "A post that expired at the bound.")
 	w.fillRefusedBound()
 	w.draftSQL(id, `expires_at = now() - interval '1 minute'`)
 	w.sweepByClaim()
-	if _, _, ok := w.refusedItemOf(id); ok {
-		t.Fatal("a draft.refused item was queued past the bound")
+	held, p, ok := w.refusedItemOf(id)
+	if !ok {
+		t.Fatal("past the bound the expired draft's draft.refused item was dropped")
+	}
+	if p["status"] != "expired" || p["by"] != "muster" {
+		t.Fatalf("the held payload: %v", p)
+	}
+	if out, ok := w.claimItem(held); ok {
+		t.Fatalf("the held item was claimable at the bound: %s", out)
 	}
 	st, outcome, summary, _ := w.itemRow(item)
-	want := "draft " + strconv.FormatInt(id, 10) + " expired, not posted. Its officer was not told: it already has 3 open draft.refused items."
-	if st != officers.StatusEscalated || outcome != "escalated" || summary != want || !strings.Contains(w.notices(item), `"recipient": 1`) {
-		t.Fatalf("the item: %s %s %q notices %s; want escalated to user 1, %q", st, outcome, summary, w.notices(item), want)
+	want := "draft " + strconv.FormatInt(id, 10) + " expired, not posted. Its officer already has 3 open draft.refused items, so the work is held on item " +
+		strconv.FormatInt(held, 10) + " and delivered to it when one of them is finished."
+	if st != officers.StatusDone || outcome != "no_action" || summary != want || w.notices(item) != "[]" {
+		t.Fatalf("the item: %s %s %q notices %s; want done no_action %q, no notices", st, outcome, summary, w.notices(item), want)
 	}
 }
 
@@ -197,8 +206,9 @@ func TestABindingBrokenDraftSettlesItsItem(t *testing.T) {
 	}
 }
 
-// officerNotToldPushes is user 1's pushes on draft id's not-told tag.
-func officerNotToldPushes(srv *Server, p *payloadPusher, id int64) []push.Payload {
+// officerTagPushes is user 1's pushes on draft id's "-officer" tag (the
+// retired "did not reach the officer" push's).
+func officerTagPushes(srv *Server, p *payloadPusher, id int64) []push.Payload {
 	srv.WaitForPushes()
 	var out []push.Payload
 	for _, x := range p.to(ep("outbound-owner")) {
@@ -209,44 +219,43 @@ func officerNotToldPushes(srv *Server, p *payloadPusher, id int64) []push.Payloa
 	return out
 }
 
-// TestAnOwnerRejectionPastTheBoundSettlesAndTellsTheOwner (case 4): with the
-// officer's draft.refused items at the bound, the owner's rejection queues
-// none — and the item STILL settles, saying the officer was not told, and
-// the owner is pushed saying so. CONTROL: below the bound no such push.
-func TestAnOwnerRejectionPastTheBoundSettlesAndTellsTheOwner(t *testing.T) {
+// TestAnOwnerRejectionPastTheBoundIsHeldNotLost (case 4): with the officer's
+// draft.refused items at the bound, the owner's rejection is HELD for the
+// officer — the item settles naming it — and no "did not reach the officer"
+// push goes out: it does reach it, later. Below the bound, as above.
+func TestAnOwnerRejectionPastTheBoundIsHeldNotLost(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	pushes := w.withPushes()
 	_, below := w.fileForItem("x:below", "Rejected under the bound.")
 	if rec := w.rejectForm(below, "no"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject: %d", rec.Code)
 	}
-	if ps := officerNotToldPushes(w.srv, pushes, below); len(ps) != 0 {
-		t.Fatalf("control: below the bound the owner got %d not-told pushes", len(ps))
-	}
 	w.fillRefusedBound()
 	item, at := w.fileForItem("x:at", "Rejected at the bound.")
 	if rec := w.rejectForm(at, "no again"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject: %d", rec.Code)
 	}
-	if _, _, ok := w.refusedItemOf(at); ok {
-		t.Fatal("a draft.refused item was queued past the bound")
+	held, p, ok := w.refusedItemOf(at)
+	if !ok || p["detail"] != "no again" {
+		t.Fatalf("past the bound the rejection: %v %v; want a held draft.refused item with the reason", ok, p)
 	}
 	st, outcome, summary, _ := w.itemRow(item)
-	want := "draft " + strconv.FormatInt(at, 10) + " was rejected by the owner, not posted. Its officer was not told: it already has 3 open draft.refused items."
+	want := "draft " + strconv.FormatInt(at, 10) + " was rejected by the owner, not posted. Its officer already has 3 open draft.refused items, " +
+		"so the work is held on item " + strconv.FormatInt(held, 10) + " and delivered to it when one of them is finished."
 	if st != officers.StatusDone || outcome != "no_action" || summary != want {
 		t.Fatalf("the item: %s %s %q; want %q", st, outcome, summary, want)
 	}
-	ps := officerNotToldPushes(w.srv, pushes, at)
-	if len(ps) != 1 || ps[0].Title != "A rejection did not reach the officer" ||
-		ps[0].Body != "You rejected an outbound draft on example.forum. Its officer was NOT told: it already has 3 open draft.refused items. The item the draft was for is closed." {
-		t.Fatalf("the owner's pushes: %+v; want one saying the officer was not told", ps)
+	for _, id := range []int64{below, at} {
+		if ps := officerTagPushes(w.srv, pushes, id); len(ps) != 0 {
+			t.Fatalf("draft %d: %d not-told pushes; want none", id, len(ps))
+		}
 	}
 }
 
-// TestAPluginRefusalPastTheBoundSettlesAndSaysTheOfficerWasNotTold (case 4,
-// the plugin's door): the refusal push no longer claims the draft went back
-// to the officer when the bound kept it from it, and the item settles.
-func TestAPluginRefusalPastTheBoundSettlesAndSaysTheOfficerWasNotTold(t *testing.T) {
+// TestAPluginRefusalPastTheBoundIsHeld (case 4, the plugin's door): the
+// refusal is held for the officer, the item settles naming it, and the
+// refusal push says it goes back to the officer once it is under the bound.
+func TestAPluginRefusalPastTheBoundIsHeld(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	pushes := w.withPushes()
 	w.fillRefusedBound()
@@ -265,8 +274,13 @@ func TestAPluginRefusalPastTheBoundSettlesAndSaysTheOfficerWasNotTold(t *testing
 	if rec := w.check(w.tok, id, false, "rule: off topic"); rec.Code != http.StatusOK {
 		t.Fatalf("refuse: %d %s", rec.Code, rec.Body.String())
 	}
+	held, p, ok := w.refusedItemOf(id)
+	if !ok || p["by"] != "plugin" {
+		t.Fatalf("past the bound the plugin's refusal: %v %v; want a held draft.refused item", ok, p)
+	}
 	st, outcome, summary, _ := w.itemRow(item)
-	want := "draft " + strconv.FormatInt(id, 10) + " was refused by the plugin, not posted. Its officer was not told: it already has 3 open draft.refused items."
+	want := "draft " + strconv.FormatInt(id, 10) + " was refused by the plugin, not posted. Its officer already has 3 open draft.refused items, " +
+		"so the work is held on item " + strconv.FormatInt(held, 10) + " and delivered to it when one of them is finished."
 	if st != officers.StatusDone || outcome != "no_action" || summary != want {
 		t.Fatalf("the item: %s %s %q; want %q", st, outcome, summary, want)
 	}
@@ -277,8 +291,9 @@ func TestAPluginRefusalPastTheBoundSettlesAndSaysTheOfficerWasNotTold(t *testing
 			bodies = append(bodies, p.Body)
 		}
 	}
-	if len(bodies) != 1 || !strings.Contains(bodies[0], "Its officer was NOT told") || strings.Contains(bodies[0], "went back to the officer") {
-		t.Fatalf("the refusal pushes: %q; want one saying the officer was not told", bodies)
+	const tail = "refused it. It goes back to the officer that wrote it once that officer has fewer than 3 open draft.refused items. It said: "
+	if len(bodies) != 1 || !strings.Contains(bodies[0], tail) || strings.Contains(bodies[0], "NOT told") {
+		t.Fatalf("the refusal pushes: %q; want one saying it is held for the officer", bodies)
 	}
 }
 

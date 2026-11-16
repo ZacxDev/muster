@@ -598,7 +598,8 @@ const ExpiredDetail = "not sent within 7 days of being written: it expired undec
 //
 //   - a REFUSED, REJECTED, EXPIRED, BINDING-BROKEN or CHECKS-OFF draft can
 //     be redrafted:
-//     a draft.refused item for the officer, bounded by maxOpenRefusedItems;
+//     a draft.refused item for the officer, bounded by maxOpenRefusedItems —
+//     past the bound it is HELD and delivered later, never dropped;
 //   - an UNCONFIRMED draft cannot: its plugin collected it and never said
 //     whether it posted it, so it MAY be live. No follow-up is queued (a
 //     redraft would be a blind re-post) and the item is escalated to the
@@ -634,9 +635,6 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 		}
 		e.Ended = "draft " + id + " was " + ended + ", not posted."
 	}
-	// The sweep and the claim have no push to tell the owner with: past the
-	// bound their item is escalated to the owner instead.
-	e.EscalateAtBound = how != ""
 	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
 		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
 	e.FollowUp = &builtin.NewItem{Officer: officer, Kind: draftRefusedKind, SubjectKey: "draft:" + id, Payload: payload}
@@ -650,10 +648,12 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 // plugin's failed send or refused check, or the owner's rejection) queues a
 // draft.refused item saying why — the plugin's detail, or the owner's reason
 // — so the officer can write a better one, and closes the item the draft was
-// for, naming that follow-up (draftEndFor, builtin.DraftEnded). notTold:
-// the bound kept the officer from being told, so the CALLER tells the owner.
-// Best effort: the draft's own state is already recorded.
-func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) (notTold bool) {
+// for, naming that follow-up (draftEndFor, builtin.DraftEnded). held: the
+// officer already had maxOpenRefusedItems claimable draft.refused items, so
+// the follow-up is HELD until one of them is finished (the officer sweep
+// delivers it, promoteHeldRefusals) — the caller's push says so. Best
+// effort: the draft's own state is already recorded.
+func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) (held bool) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
 		return false
 	}
@@ -698,19 +698,33 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	// 🔴 BOUNDED, IN ONE TRANSACTION (builtin.DraftEndedTx): a plugin that
 	// refuses every draft would otherwise turn each refusal into a new item
 	// and each item into a new draft, with no human in the loop. At most
-	// maxOpenRefusedItems wait at once, counted and inserted under one lock so
-	// two settling at once cannot both pass the count. Past it nothing is
-	// queued, the item the draft was for is STILL finished (saying the
-	// officer was not told), and the caller pushes the owner saying so.
+	// maxOpenRefusedItems are claimable at once, counted and filed under one
+	// lock so two settling at once cannot both pass the count. Past it the
+	// follow-up is STILL filed, HELD (not claimable) until one of them is
+	// finished — never dropped (operator decision) — and the item the draft
+	// was for is finished naming it.
 	res, err := s.officerStore.DraftEnded(ctx, owner, draftEndFor(d, officer, "", by, detail), now)
 	if err != nil {
 		s.logger.Printf("plugins: draft %d ended unsent (by %s); %s and its item left as they are: %v", d.ID, by, officer, err)
 		return false
 	}
-	s.logger.Printf("plugins: draft %d ended unsent (by %s); %s item %d for %s (at the bound: %v), its item %q",
-		d.ID, by, draftRefusedKind, res.FollowUp, officer, res.AtBound, res.Item)
+	s.logger.Printf("plugins: draft %d ended unsent (by %s); %s item %d for %s (held: %v), its item %q",
+		d.ID, by, draftRefusedKind, res.FollowUp, officer, res.Held, res.Item)
 	s.withdrawEscalation(ctx, d.ID, res.Withdraw)
-	return res.AtBound
+	return res.Held
+}
+
+// promoteHeldRefusals delivers the HELD draft.refused items (filed past the
+// bound) of every officer that now has fewer than maxOpenRefusedItems
+// claimable ones (builtin.Store.PromoteHeld): the officer sweep's first step.
+func (s *Server) promoteHeldRefusals(sys context.Context) {
+	got, err := s.officerStore.PromoteHeld(sys, draftRefusedKind, maxOpenRefusedItems, s.officerNow())
+	for _, p := range got {
+		s.logger.Printf("officers: %s: held %s item %d delivered (user %d)", p.Officer, draftRefusedKind, p.Item, p.Owner)
+	}
+	if err != nil {
+		s.logger.Printf("officers: the held %s items could not be delivered: %v", draftRefusedKind, err)
+	}
 }
 
 // withdrawEscalation withdraws the raised escalation asks of an item draft
@@ -739,7 +753,7 @@ func (l officerPluginLink) DraftEndedTx(ctx context.Context, tx pgx.Tx, d plugin
 const draftRefusedKind = "draft.refused"
 
 // maxOpenRefusedItems bounds the draft.refused items one officer may have
-// waiting (draftEndFor).
+// claimable at once (draftEndFor); more are held, not dropped.
 const maxOpenRefusedItems = 3
 
 // outboundAttentionText is an outbound draft's Attention line.

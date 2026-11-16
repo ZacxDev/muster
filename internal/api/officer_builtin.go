@@ -24,10 +24,12 @@ import (
 //   - officerAsker raises a builtin officer's officer_ask_person as an
 //     Attention ask to the officer's OWNER (muster's own: no agent waits on
 //     its answer — the item does);
-//   - RunOfficerAttentionSweep settles those asks back onto their items
-//     (re-open on answer or withdrawal, escalate on expiry), raises each
-//     escalated item's recipients' Attention asks once per recipient, and
-//     carries an answer to one back to the officer (the item re-opens).
+//   - RunOfficerAttentionSweep delivers HELD draft.refused items (filed past
+//     their bound) once their officer is back under it, settles those asks
+//     back onto their items (re-open on answer or withdrawal, escalate on
+//     expiry), raises each escalated item's recipients' Attention asks once
+//     per recipient, and carries an answer to one back to the officer (the
+//     item re-opens).
 //
 // Both act through the store (internal/officers/builtin), whose rows are the
 // truth, so they hold across a restart and across replicas.
@@ -104,9 +106,9 @@ const officerAttentionBatch = 100
 const DefaultOfficerAttentionSweep = 15 * time.Second
 
 // RunOfficerAttentionSweep runs SweepOfficerAttention every interval until
-// ctx ends; nothing without the store or the attention store.
+// ctx ends; nothing without the store.
 func (s *Server) RunOfficerAttentionSweep(ctx context.Context, interval time.Duration) {
-	if s.officerStore == nil || s.ext.Attention == nil {
+	if s.officerStore == nil {
 		return
 	}
 	t := time.NewTicker(interval)
@@ -127,12 +129,18 @@ func (s *Server) RunOfficerAttentionSweep(ctx context.Context, interval time.Dur
 // expiry — every escalated item's recipient not yet asked is raised an
 // Attention ask, recorded once (NoticeRaised: a replica that loses the race
 // withdraws its duplicate), and every settled escalation ask is carried back
-// (settleOfficerEscalation).
+// (settleOfficerEscalation). First, with or without the attention store,
+// every HELD draft.refused item whose officer is back under the bound is
+// delivered (promoteHeldRefusals).
 func (s *Server) SweepOfficerAttention(ctx context.Context) {
-	if s.officerStore == nil || s.ext.Attention == nil {
+	if s.officerStore == nil {
 		return
 	}
 	sys := authz.System(ctx)
+	s.promoteHeldRefusals(sys)
+	if s.ext.Attention == nil {
+		return
+	}
 	pageThrough(func(after int64) ([]builtin.OpenAsk, error) {
 		return s.officerStore.OpenAsks(sys, after, officerAttentionBatch)
 	},

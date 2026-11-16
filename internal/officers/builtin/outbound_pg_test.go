@@ -12,6 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/backendtest"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -22,9 +25,9 @@ import (
 
 // TestDraftEndedHoldsItsBoundUnderConcurrency (regression guard for the
 // #636 audit's open race): many drafts ending AT ONCE, each a distinct
-// subject, leave exactly max live follow-ups — the count and the insert are
-// one transaction under one lock. Every caller past the bound is AtBound and
-// writes nothing.
+// subject, leave exactly max CLAIMABLE follow-ups — the count and the insert
+// are one transaction under one lock. Every caller past the bound files its
+// follow-up HELD (blocked): none is dropped.
 func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 	w := newPGWorld(t, false)
 	const max, callers = 3, 24
@@ -33,7 +36,7 @@ func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		var mu sync.Mutex
-		created, atBound := 0, 0
+		created, held := 0, 0
 		var other []error
 		for i := 0; i < callers; i++ {
 			wg.Add(1)
@@ -47,9 +50,9 @@ func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 				switch {
 				case err != nil:
 					other = append(other, err)
-				case res.AtBound && res.FollowUp == 0:
-					atBound++
-				case res.FollowUp > 0 && !res.AtBound:
+				case res.Held && res.FollowUp > 0:
+					held++
+				case res.FollowUp > 0 && !res.Held:
 					created++
 				default:
 					other = append(other, fmt.Errorf("%+v", res))
@@ -58,13 +61,14 @@ func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
-		var live int
-		if err := w.store.Pool().QueryRow(ctxOp(), `SELECT count(*) FROM officer_items WHERE kind = $1`, kind).Scan(&live); err != nil {
+		var claimable, blocked int
+		if err := w.store.Pool().QueryRow(ctxOp(), `SELECT count(*) FILTER (WHERE NOT blocked), count(*) FILTER (WHERE blocked) FROM officer_items WHERE kind = $1`, kind).
+			Scan(&claimable, &blocked); err != nil {
 			t.Fatal(err)
 		}
-		if live != max || created != max || atBound != callers-max || len(other) != 0 {
-			t.Fatalf("round %d: %d live, %d created, %d at the bound, other %v; want %d, %d, %d, none",
-				round, live, created, atBound, other, max, max, callers-max)
+		if claimable != max || blocked != callers-max || created != max || held != callers-max || len(other) != 0 {
+			t.Fatalf("round %d: %d claimable, %d held rows, %d created, %d held, other %v; want %d, %d, %d, %d, none",
+				round, claimable, blocked, created, held, other, max, callers-max, max, callers-max)
 		}
 	}
 }
@@ -75,8 +79,7 @@ func TestDraftEndedHoldsItsBoundUnderConcurrency(t *testing.T) {
 //   - claimed under a LIVE lease (an instance works it): left claimed;
 //   - claimed under a LAPSED lease (filed for before items waited on their
 //     drafts): settled like a waiting one;
-//   - past the bound: done no_action saying the officer was not told, and
-//     nothing written — or escalated with its owner's notice when asked;
+//   - past the bound: done no_action naming the follow-up, filed HELD;
 //   - no follow-up (an unconfirmed draft): escalated, notices for the owner;
 //   - waiting with an OPEN ASK: left waiting (the ask settles it).
 func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
@@ -99,9 +102,9 @@ func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
 		}
 		return id
 	}
-	end := func(item int64, draft int, max int, follow, escalate bool) builtin.DraftSettled {
+	end := func(item int64, draft int, max int, follow bool) builtin.DraftSettled {
 		t.Helper()
-		e := builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(draft), Item: item, Max: max, EscalateAtBound: escalate,
+		e := builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(draft), Item: item, Max: max,
 			Ended: "draft " + strconv.Itoa(draft) + " ended, not posted."}
 		if follow {
 			e.FollowUp = &builtin.NewItem{Officer: backendtest.OfficerA, Kind: "draft.refused", SubjectKey: "draft:" + strconv.Itoa(draft)}
@@ -114,15 +117,15 @@ func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
 	}
 
 	it := waiting("s-1")
-	res := end(it, 1, 3, true, false)
+	res := end(it, 1, 3, true)
 	st, outcome, summary := w.itemState(it)
-	if res.FollowUp == 0 || res.AtBound || res.Item != officers.StatusDone || st != officers.StatusDone || outcome != "no_action" ||
+	if res.FollowUp == 0 || res.Held || res.Item != officers.StatusDone || st != officers.StatusDone || outcome != "no_action" ||
 		summary != "draft 1 ended, not posted. The work continues on item "+strconv.FormatInt(res.FollowUp, 10)+"." {
 		t.Fatalf("a waiting item: %+v, %s %s %q", res, st, outcome, summary)
 	}
 
 	held := hold("s-2", 600)
-	if res := end(held, 2, 3, true, false); res.Item != "" || res.FollowUp == 0 {
+	if res := end(held, 2, 3, true); res.Item != "" || res.FollowUp == 0 {
 		t.Fatalf("an item held under a live lease: %+v; want a follow-up and the item left", res)
 	}
 	if st, _, _ := w.itemState(held); st != officers.StatusClaimed {
@@ -131,7 +134,7 @@ func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
 
 	lapsed := hold("s-3", 60)
 	w.Advance(2 * time.Minute)
-	if res := end(lapsed, 3, 9, true, false); res.Item != officers.StatusDone {
+	if res := end(lapsed, 3, 9, true); res.Item != officers.StatusDone {
 		t.Fatalf("an item claimed under a LAPSED lease: %+v; want it settled", res)
 	}
 	if st, outcome, _ := w.itemState(lapsed); st != officers.StatusDone || outcome != "no_action" {
@@ -140,25 +143,21 @@ func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
 
 	// Three draft.refused items are live now: the bound is 3.
 	full := waiting("s-4")
-	res = end(full, 4, 3, true, false)
+	res = end(full, 4, 3, true)
 	st, outcome, summary = w.itemState(full)
-	if !res.AtBound || res.FollowUp != 0 || st != officers.StatusDone || outcome != "no_action" ||
-		summary != "draft 4 ended, not posted. Its officer was not told: it already has 3 open draft.refused items." {
+	if !res.Held || res.FollowUp == 0 || st != officers.StatusDone || outcome != "no_action" ||
+		summary != "draft 4 ended, not posted. Its officer already has 3 open draft.refused items, so the work is held on item "+
+			strconv.FormatInt(res.FollowUp, 10)+" and delivered to it when one of them is finished." {
 		t.Fatalf("past the bound: %+v, %s %s %q", res, st, outcome, summary)
 	}
 	var n int
-	_ = w.store.Pool().QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE subject_key = 'draft:4'`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("past the bound %d follow-ups were written; want none", n)
+	_ = w.store.Pool().QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE subject_key = 'draft:4' AND status = 'open' AND blocked`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("past the bound %d held follow-ups were written; want one", n)
 	}
-	fullEsc := waiting("s-5")
-	if res := end(fullEsc, 5, 3, true, true); !res.AtBound || res.Item != officers.StatusEscalated {
-		t.Fatalf("past the bound, escalating: %+v", res)
-	}
-	w.wantEscalatedToOwner(fullEsc, "draft 5 ended, not posted. Its officer was not told: it already has 3 open draft.refused items.")
 
 	unconfirmed := waiting("s-6")
-	if res := end(unconfirmed, 6, 3, false, false); res.FollowUp != 0 || res.AtBound || res.Item != officers.StatusEscalated {
+	if res := end(unconfirmed, 6, 3, false); res.FollowUp != 0 || res.Held || res.Item != officers.StatusEscalated {
 		t.Fatalf("no follow-up: %+v; want the item escalated", res)
 	}
 	w.wantEscalatedToOwner(unconfirmed, "draft 6 ended, not posted.")
@@ -167,7 +166,7 @@ func TestDraftEndedSettlesTheItemThatWaitsOnIt(t *testing.T) {
 	if _, err := b.CreateAsk(ctx, officers.ItemID(strconv.FormatInt(asked, 10)), "inst-1", officers.Ask{Question: "which?"}); err != nil {
 		t.Fatal(err)
 	}
-	if res := end(asked, 7, 99, true, false); res.Item != "" {
+	if res := end(asked, 7, 99, true); res.Item != "" {
 		t.Fatalf("an item waiting on an open ask: %+v; want left", res)
 	}
 	if st, _, _ := w.itemState(asked); st != officers.StatusWaiting {
@@ -288,4 +287,127 @@ func (w *pgWorld) itemState(id int64) (status, outcome, summary string) {
 		w.t.Fatalf("item %d: %v", id, err)
 	}
 	return
+}
+
+// TestAHeldFollowUpIsDeliveredOnceInOrderAndAcrossARestart: past the bound
+// follow-ups are filed HELD; PromoteHeld delivers them oldest first, only as
+// claimable ones finish, exactly once — a retried end files no second item,
+// a repeated sweep delivers nothing more — and a store opened afresh over
+// the same database (a restart: the process holds nothing) delivers what
+// the old one left held.
+func TestAHeldFollowUpIsDeliveredOnceInOrderAndAcrossARestart(t *testing.T) {
+	w := newPGWorld(t, false)
+	ctx := ctxOp()
+	const kind, max = "draft.refused", 3
+	end := func(store *builtin.Store, draft int) builtin.DraftSettled {
+		t.Helper()
+		res, err := store.DraftEnded(ctx, 1, builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(draft), Max: max,
+			FollowUp: &builtin.NewItem{Officer: backendtest.OfficerA, Kind: kind, SubjectKey: "draft:" + strconv.Itoa(draft)}}, w.clock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	var ids []int64
+	for d := 1; d <= 5; d++ {
+		res := end(w.store, d)
+		if want := d > max; res.Held != want || res.FollowUp == 0 {
+			t.Fatalf("draft %d: %+v; want a follow-up, held %v", d, res, want)
+		}
+		ids = append(ids, res.FollowUp)
+	}
+	// A retried end of a held draft: the same item, still held, no second.
+	if res := end(w.store, 4); res.FollowUp != ids[3] || !res.Held {
+		t.Fatalf("a retried end: %+v; want item %d, held", res, ids[3])
+	}
+	b := w.b[backendtest.OfficerA]
+	if _, err := b.Claim(ctx, officers.ItemID(strconv.FormatInt(ids[3], 10)), "inst-1", 600, ""); err == nil {
+		t.Fatal("a held item was claimed")
+	}
+	sweep := func(store *builtin.Store) []int64 {
+		t.Helper()
+		got, err := store.PromoteHeld(authz.System(context.Background()), kind, max, w.clock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, p := range got {
+			if p.Owner != 1 || p.Officer != backendtest.OfficerA {
+				t.Fatalf("promoted %+v; want user 1's %s", p, backendtest.OfficerA)
+			}
+			out = append(out, p.Item)
+		}
+		return out
+	}
+	if got := sweep(w.store); len(got) != 0 {
+		t.Fatalf("at the bound a sweep delivered %v; want nothing", got)
+	}
+	finish := func(id int64) {
+		t.Helper()
+		item := officers.ItemID(strconv.FormatInt(id, 10))
+		if _, err := b.Claim(ctx, item, "inst-1", 600, ""); err != nil {
+			t.Fatalf("claim %d: %v", id, err)
+		}
+		if _, err := b.Complete(ctx, item, "inst-1", officers.Completion{Outcome: "done", Summary: "redrafted"}); err != nil {
+			t.Fatalf("complete %d: %v", id, err)
+		}
+	}
+	finish(ids[0])
+	if got := sweep(w.store); len(got) != 1 || got[0] != ids[3] {
+		t.Fatalf("one finished: delivered %v; want the OLDEST held, [%d]", got, ids[3])
+	}
+	if got := sweep(w.store); len(got) != 0 {
+		t.Fatalf("a second sweep delivered %v; want nothing", got)
+	}
+	if _, err := b.Claim(ctx, officers.ItemID(strconv.FormatInt(ids[3], 10)), "inst-1", 600, ""); err != nil {
+		t.Fatalf("the delivered item could not be claimed: %v", err)
+	}
+
+	// A restart: a new pool and store over the same database.
+	finish(ids[1])
+	pool, err := db.Connect(context.Background(), dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	fresh := builtin.NewStore(pool)
+	if got := sweep(fresh); len(got) != 1 || got[0] != ids[4] {
+		t.Fatalf("after a restart: delivered %v; want [%d]", got, ids[4])
+	}
+	var n int
+	_ = w.store.Pool().QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE kind = $1`, kind).Scan(&n)
+	if n != 5 {
+		t.Fatalf("%d %s items; want 5, one per draft", n, kind)
+	}
+}
+
+// TestAHeldItemItsOwnerFinishedIsNeverReopened: an item its owner finishes
+// while held is skipped by the sweep (it is not open), and the next held one
+// is delivered instead.
+func TestAHeldItemItsOwnerFinishedIsNeverReopened(t *testing.T) {
+	w := newPGWorld(t, false)
+	ctx := ctxOp()
+	const kind, max = "draft.refused", 1
+	var ids []int64
+	for d := 1; d <= 3; d++ {
+		res, err := w.store.DraftEnded(ctx, 1, builtin.DraftEnd{Officer: backendtest.OfficerA, Draft: int64(d), Max: max,
+			FollowUp: &builtin.NewItem{Officer: backendtest.OfficerA, Kind: kind, SubjectKey: "draft:" + strconv.Itoa(d)}}, w.clock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, res.FollowUp)
+	}
+	if _, err := w.store.Pool().Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'no_action' WHERE id = ANY($1)`, []int64{ids[0], ids[1]}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.store.PromoteHeld(authz.System(context.Background()), kind, max, w.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Item != ids[2] {
+		t.Fatalf("delivered %+v; want only item %d", got, ids[2])
+	}
+	if st, _, _ := w.itemState(ids[1]); st != officers.StatusDone {
+		t.Fatalf("the finished held item became %s", st)
+	}
 }

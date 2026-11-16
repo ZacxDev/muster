@@ -2290,6 +2290,11 @@ type claimBlockedError struct {
 	item officers.ItemID
 	// tasks are the HQ task ids the item's task waits on.
 	tasks []string
+	// heldKind: the built-in store's refusal of an item HELD past its
+	// kind's bound (a draft.refused item, builtin.DraftEndedTx): it waits on
+	// none of the officer's tasks but on one of its open items of this kind
+	// being finished. "" for HQ's task ordering.
+	heldKind string
 }
 
 // asClaimBlocked is err as a *claimBlockedError when it is HQ's 409
@@ -2302,11 +2307,12 @@ func asClaimBlocked(item officers.ItemID, err error) *claimBlockedError {
 	var refusal struct {
 		Code      string   `json:"code"`
 		BlockedBy []string `json:"blocked_by"`
+		HeldKind  string   `json:"held_kind"`
 	}
 	if json.Unmarshal(hqErr.Body, &refusal) != nil || refusal.Code != "blocked" {
 		return nil
 	}
-	return &claimBlockedError{item: item, tasks: refusal.BlockedBy}
+	return &claimBlockedError{item: item, tasks: refusal.BlockedBy, heldKind: refusal.HeldKind}
 }
 
 func (e *claimBlockedError) Error() string {
@@ -2325,6 +2331,13 @@ func (e *claimBlockedError) result() string {
 	tasks := e.tasks
 	if tasks == nil {
 		tasks = []string{}
+	}
+	if e.heldKind != "" {
+		return toolJSON(map[string]any{
+			"claimed": false, "blocked": true, "held": true, "item_id": e.item, "blocked_by": tasks,
+			"note": fmt.Sprintf("not claimed: item %s is held — you already have the most open %s items muster lets you work at once, and it is delivered to you (claimable) once one of them is finished; finish those first, or claim another open item (%s lists them)",
+				e.item, e.heldKind, officers.ToolItems),
+		})
 	}
 	return toolJSON(map[string]any{
 		"claimed": false, "blocked": true, "item_id": e.item, "blocked_by": tasks,

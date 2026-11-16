@@ -1358,11 +1358,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.officers != nil {
 		a.loop(ctx, "a.officers.Run", func(ctx context.Context) { a.officers.Run(ctx) })
 	}
-	// The built-in officer store's Attention sweep (asks back onto items,
-	// escalation notices out). Unguarded at replicas > 1: every write it makes
-	// is conditional on the row it read (an ask still open, a notice still
-	// unraised), so two pods settle each once and the loser of a notice race
-	// withdraws its copy.
+	// The built-in officer store's Attention sweep (held draft.refused items
+	// delivered, asks back onto items, escalation notices out). Unguarded at
+	// replicas > 1: every write it makes is conditional on the row it read (a
+	// held item still held, under the bound's lock; an ask still open, a
+	// notice still unraised), so two pods settle each once and the loser of a
+	// notice race withdraws its copy.
 	if a.srv != nil && a.srv.OfficerStoreOn() {
 		a.loop(ctx, "a.srv.RunOfficerAttentionSweep", func(ctx context.Context) { a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep) })
 		// Schedules: unguarded at replicas > 1 — a fire is a compare-and-set
