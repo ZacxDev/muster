@@ -413,8 +413,9 @@ words on a lock screen. An ask about any other item is unchanged.
    optional reason, on the card or `plugin_draft_decide`), expired, or
    withdrawn at the claim for a broken binding: muster queues a
    `draft.refused` item whose `detail` says why, and finishes the waiting item
-   `no_action` naming it — at most 3 `draft.refused` items wait at once; past
-   that the item is still settled and the owner told. Unconfirmed (it may
+   `no_action` naming it — at most 3 `draft.refused` items are claimable at
+   once; past that the new one is **held** (filed, `blocked`, not claimable)
+   and delivered once one of the 3 is finished, never dropped. Unconfirmed (it may
    have been posted): nothing is queued and the item is escalated to the
    owner ([plugins.md](plugins.md#the-result)). Put what the officer should do
    with a `draft.refused` item (read `detail`, redraft with its own `item_id`)

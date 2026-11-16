@@ -932,7 +932,10 @@ naming another instance is returned as a refusal. **Claiming a blocked item**
 was claimed, and the instance gets a plain result — `claimed: false`,
 `blocked: true`, `blocked_by` (HQ **task** ids, as strings — not items to
 claim) and the note "not claimed: item N waits on tasks A, B (not done yet);
-claim another open item". At most 10 `links`. `outcome` is `done`,
+claim another open item". On the built-in backend a blocked item is a
+`draft.refused` item **held** past its bound: the result adds `held: true`
+and the note says it is delivered once one of the officer's open ones is
+finished. At most 10 `links`. `outcome` is `done`,
 `escalated` or `no_action` (and `needs_judgement` for a routine instance:
 [Completing an item](#completing-an-item-outcomes-and-investigation)); `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
@@ -970,7 +973,7 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
 | `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
-| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
+| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
 
 It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
 with `item_id`, an `item` note saying the item now waits on the draft). Nothing

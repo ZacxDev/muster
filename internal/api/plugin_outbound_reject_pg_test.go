@@ -167,9 +167,10 @@ func TestAnOwnerRejectionWithNoReasonSaysSo(t *testing.T) {
 }
 
 // TestAnOwnerRejectionIsBounded: with maxOpenRefusedItems draft.refused items
-// already live, another rejection queues none, and the item the draft was for
-// still settles (TestAnOwnerRejectionPastTheBoundSettlesAndTellsTheOwner has
-// what it says). CONTROL: below the bound one is queued.
+// already live, another rejection's item is filed HELD — never claimable
+// alongside them — and the item the draft was for still settles
+// (TestARejectionPastTheBoundIsHeldAndDeliveredLater has its delivery).
+// CONTROL: below the bound one is queued claimable.
 func TestAnOwnerRejectionIsBounded(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	for i := 0; i < maxOpenRefusedItems-1; i++ {
@@ -189,13 +190,14 @@ func TestAnOwnerRejectionIsBounded(t *testing.T) {
 	if rec := w.rejectForm(at, "no again"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("reject: %d", rec.Code)
 	}
-	if _, _, ok := w.refusedItemOf(at); ok {
-		t.Fatal("a draft.refused item was queued past the bound")
+	if _, _, ok := w.refusedItemOf(at); !ok {
+		t.Fatal("past the bound the rejection was dropped: no draft.refused item")
 	}
-	var live int
-	_ = w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FROM officer_items WHERE kind = 'draft.refused' AND status IN ('open', 'claimed', 'waiting')`).Scan(&live)
-	if live != maxOpenRefusedItems {
-		t.Fatalf("%d live draft.refused items; want %d", live, maxOpenRefusedItems)
+	var claimable, held int
+	_ = w.f.pool.QueryRow(authz.System(w.ctx), `SELECT count(*) FILTER (WHERE NOT blocked), count(*) FILTER (WHERE blocked)
+		FROM officer_items WHERE kind = 'draft.refused' AND status IN ('open', 'claimed', 'waiting')`).Scan(&claimable, &held)
+	if claimable != maxOpenRefusedItems || held != 1 {
+		t.Fatalf("%d claimable and %d held draft.refused items; want %d and 1", claimable, held, maxOpenRefusedItems)
 	}
 	if st, outcome, _, _ := w.itemRow(item); st != officers.StatusDone || outcome != "no_action" {
 		t.Fatalf("past the bound the item the draft was for is %s %s; want settled no_action, never left waiting", st, outcome)
