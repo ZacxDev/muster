@@ -188,12 +188,13 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
 
   // The queue is called "Asks" (operator decision "Rename to Asks"), at the
   // same /attention, so every existing /attention#<key> link still lands.
-  // This server serves no plugins, so there is no Reply drafts tab.
+  // This server serves no plugins, so there is no Reply drafts tab: its tabs
+  // are Ask and Log (the Log tab is drawn whatever is served).
   await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
   await expect(page).toHaveTitle('Asks · muster');
-  await expect(page.getByRole('tab'), 'no plugins: no tabs').toHaveCount(0);
+  await expect(page.getByRole('tab'), 'no plugins: Ask and Log only').toHaveText(['Ask', 'Log']);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
