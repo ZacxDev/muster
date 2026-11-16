@@ -1981,7 +1981,23 @@ so a `muster-mirror` older than the mapping reports `shell` as unknown,
 whatever muster runs.
 The same way, a host reports each Claude Code window's **session id**
 (`claudeSession`), which its [focus](focus.md) is keyed by. A host that does not
-report it still works; its windows have no focus.
+report it still works; its windows have no focus, and a message queued for one
+records no session and is delivered as before (see below).
+
+A **queued Claude Code message** records the Claude session the window held
+when it was queued, and muster refuses to paste it into a window whose
+reported session has changed since (Claude Code restarted in the same pane,
+or `/clear`): it fails, saying "the window no longer holds the Claude session
+this was queued for", rather than landing in the new session. The paste then
+carries that session (`agentSession`, the field opencode's gated send already
+uses) and a current `muster-mirror` checks it against the pane's session at
+the moment it types, before the paste and again before its Enter. That closes
+the gap between the host's last report and the paste. 🔴 **Compatibility:**
+an older `muster-mirror` ignores the field on a Claude Code paste (its paste
+path never reads it), so muster's own check against the reported session is
+then the only one; an older muster never sends it, and a current host checks
+nothing for a paste that names no session. A row queued before this (no
+session recorded) is delivered as before.
 And a waiting window's **pending action** (`pending`: a one-line summary of the
 tool call it waits on, its tool's name, and the last thing Claude said — each
 capped, with anything that looks like a secret redacted on the host — on at most 8

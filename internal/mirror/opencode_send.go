@@ -167,9 +167,12 @@ var ErrOpenCodeMoved = errors.New("mirror: muster did not send it: the opencode 
 // listed — launcher-bound (launcher) or not — nil when it may go: shown is
 // the listed session, or, for a launcher-bound window only, none is named
 // (an older page or row: the launcher's record names the session).
+//
+// It is the gated-send half of Window.ShownSessionRefusal (session_pin.go),
+// which the hub applies.
 func ShownSessionCheck(shown, listed string, launcher bool) error {
 	switch {
-	case shown != "" && shown != listed:
+	case sessionMoved(shown, listed):
 		return &PasteRefusedError{Why: PasteRefusedOpenCodeMovedText, Refusal: PasteRefusalOpenCodeMoved, Cause: ErrOpenCodeMoved}
 	case shown == "" && !launcher:
 		return &PasteRefusedError{Why: PasteRefusedOpenCodeUnnamedText, Refusal: PasteRefusalOpenCodeMoved, Cause: ErrOpenCodeMoved}
