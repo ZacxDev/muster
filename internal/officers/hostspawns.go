@@ -34,7 +34,7 @@ import (
 // the hub's late-reply hook alike), RecordHostSpawnSession (the fleet's
 // read, when the recorded window runs another conversation),
 // ObserveHostListing (the hub's listing hook, which counts a recorded window's
-// missing listings and closes it for good), and migration 0138's three:
+// missing listings and closes it for good), and migration 0139's three:
 // MarkHostSpawnClaimed (a host instance's claim), SetUnclaimedNotice and
 // SettleUnclaimedNotice (the unclaimed-instance sweep). The two records write only a row whose
 // window and refusal are both still empty, on the row's own host: a late or
@@ -67,7 +67,7 @@ type HostSpawn struct {
 	// window id the host later reissues to another window is not this one.
 	MissingListings int
 	// ClaimedAt is when the instance this spawn started first claimed an
-	// item (migration 0138, MarkHostSpawnClaimed); nil until it has.
+	// item (migration 0139, MarkHostSpawnClaimed); nil until it has.
 	ClaimedAt *time.Time
 	// UnclaimedNotice is the Attention notice raised because the instance
 	// had not claimed its item in time (SetUnclaimedNotice), 0 for none;

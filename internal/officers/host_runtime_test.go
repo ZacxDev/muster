@@ -254,7 +254,7 @@ func hostSpawnContract(t *testing.T, ctx context.Context, st officers.HostSpawnS
 	observe("host-alpha", future, "@3")
 	open("a closed window listed again (a reissued id)", false)
 
-	// O-B (migration 0138): a spawn's first claim is recorded once, on its own
+	// O-B (migration 0139): a spawn's first claim is recorded once, on its own
 	// host; its unclaimed notice is set once (a compare-and-swap from none)
 	// and settled once; the open notices are those set and not settled; and
 	// the officer's spawns are counted from a time.

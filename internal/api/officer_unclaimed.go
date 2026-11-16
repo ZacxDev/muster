@@ -13,7 +13,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // A HOST OFFICER INSTANCE THAT NEVER CLAIMS ITS ITEM (officers redesign O-B;
-// migration 0138)
+// migration 0139)
 //
 // A host instance can start and sit: at Claude Code's first-run screen, its
 // login, a folder-trust prompt, or simply stuck. The spawn succeeded and the
@@ -42,7 +42,7 @@ import (
 const DefaultOfficerUnclaimedAfter = 10 * time.Minute
 
 // unclaimedHorizon bounds which spawns the sweep looks at: one older than
-// this (from before 0138, or long settled) never raises a notice.
+// this (from before 0139, or long settled) never raises a notice.
 const unclaimedHorizon = 24 * time.Hour
 
 // unclaimedAfter is the runtime's window (OfficersConfig.UnclaimedAfter).
