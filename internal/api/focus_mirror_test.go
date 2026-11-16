@@ -80,6 +80,22 @@ func (m *memFocus) DismissDrift(_ context.Context, s focus.Subject, title string
 	}
 	return nil
 }
+
+// SetTaskLink is a stand-in (the store's own semantics are pinned against
+// Postgres in internal/focus).
+func (m *memFocus) SetTaskLink(_ context.Context, s focus.Subject, l focus.TaskLink) (focus.TaskLink, error) {
+	if s.Kind != focus.KindMirror {
+		return focus.TaskLink{}, focus.ErrTaskLinkAgent
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	l.SetAt = time.Now()
+	f.Subject, f.Tasks = s, l
+	m.rows[s] = f
+	return l, nil
+}
+
 func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string) (focus.Name, error) {
 	if s.Kind != focus.KindMirror {
 		return focus.Name{}, focus.ErrAgentManualName

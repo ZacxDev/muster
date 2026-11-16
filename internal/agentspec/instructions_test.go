@@ -481,12 +481,12 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "claude-code, routing on",
 			got:  ChiefInstructionsClaudeCode(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefBatchRoutingSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefBatchRoutingSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "compose, plugins off, routing off",

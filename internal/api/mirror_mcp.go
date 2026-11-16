@@ -118,6 +118,8 @@ const (
 var openCodeMirrorTools = map[string]bool{
 	attentionAskTool: true, attentionWaitTool: true, attentionCancelTool: true,
 	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
+	// track_task (track_task_tool.go): the session's own declared tasks.
+	trackTaskTool: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +355,12 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 			out = append(out, chiefAskToolDef())
 		}
 	}
+	// track_task — the session recording which tasks it works under
+	// (track_task_tool.go) — with the focus store, whose row holds it, and a
+	// plugin task namespace, without which no key is valid.
+	if s.trackTaskOn() {
+		out = append(out, trackTaskToolDef())
+	}
 	// agents_list — the owner reading their own agents through their own
 	// session (agents_list_tool.go) — with the agent store.
 	if s.ext.Agents != nil {
@@ -527,6 +535,9 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	if s.attentionToolsOn() && !remote {
 		instructions += " " + mirrorAttentionInstruction
 	}
+	if s.trackTaskOn() && !remote {
+		instructions += " " + trackTaskInstruction()
+	}
 	// 🔴 THE SESSION IS BOUND AT tools/call, NOT AT CONNECT. initialize,
 	// tools/list, ping and notifications say nothing session-specific — the
 	// host's token (checked above) is all they need. Claude Code connects at
@@ -599,6 +610,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// dispatchCallerTool, so no gateway agent can name it.
 			if name == chiefRestartTool {
 				return s.toolChiefRestart(ctx, c, args)
+			}
+			// So is track_task (listed only with the focus store): it writes
+			// the calling session's own tasks.
+			if name == trackTaskTool {
+				return s.toolTrackTask(ctx, c, args)
 			}
 			// So is agents_list (listed only with the agent store).
 			if name == agentsListTool {

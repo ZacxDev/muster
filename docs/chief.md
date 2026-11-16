@@ -370,6 +370,49 @@ same as the gateway kind's `AGENTS.md`.
 A `claude-code` **worker** gets no standing instructions: the worker prose
 describes the in-pod CLI and the autosave log, and that image has neither.
 
+### route_many
+
+`route_many {subjects, text, owner_asked: true, deadline_minutes?}` sends **one**
+request you typed in the chief's chat to up to 50 mirrored Claude Code sessions.
+Each target is `route_to_session`'s text route, made under the same
+`owner_asked` check. The check runs once for the call, and a turn you did not
+type routes nothing. A session that cannot take it now (offline, a window muster
+started for the chief, a session no window shows, a repeat) is **refused in the
+call's own result**, with the same reason codes as `route_to_session`. A
+dispatched agent or an opencode session is never a route target, so it is
+**skipped** (listed in `skipped`), not routed.
+
+The answers do **not** come back one by one. Each answer is recorded and owed,
+and no answer starts a turn of the chief's. When every session has answered, or
+at the deadline (default 60 minutes, 10 to 240), whichever is first, the chief
+gets **one digest turn** in the chat you asked in. The digest has one entry per
+session: its answer as it wrote it, cut at 1,500 characters and in a fenced
+block of its own under its own nonce, so one answer cannot pass for another's;
+or `no reply (<why>)`. A session refused in the call's result is not in it. The
+digest is capped at 64 KiB, like a turn of route answers; sessions past the cap
+are named, marked cut. Like every route answer, the digest waits while your own
+turn runs.
+
+The batch is digested only once `route_many` has made every route of the call
+(it **seals** the batch with its size), so a session that ends early never
+starts a digest of part of it. It is owed while any of its sessions' answers is,
+it is delivered under the chief's own claims, so a digest is delivered once, and
+a sweep reads each batch once. A chief that cannot be read for a moment keeps the
+digest owed. A chief that can take no turn gets it as a note in the chat.
+
+**Reconciling sessions with tasks.** The claude-code chief is taught one flow:
+
+1. `fleet_list {active_within_hours}`, reading each session's declared tasks
+   ([focus.md](focus.md#a-sessions-tasks));
+2. one `route_many` to the mirrored Claude Code sessions whose rows show no
+   tasks and no untracked line, with a fixed request: record your task with
+   `track_task` and reply with the key, or `none` and one line;
+3. compare the keys with a compact read of the open tasks.
+
+It never matches a session to a task by its focus title or a keyword search.
+A fan-out this size belongs in a [side chat](#primary-and-side-chats), so it stays
+out of your primary chat.
+
 ### The chief tools over MCP
 
 The chief is offered these tools, and no other agent is:
@@ -379,6 +422,7 @@ The chief is offered these tools, and no other agent is:
 | `task_create_gated`, `reply_draft`, `plugin_message_settle` | plugins on |
 | `fleet_list`, `focus_search`, `sessions_overview`, `fleet_report` | session focus |
 | `route_to_session` (an idea you typed in its chat: [plugins.md](plugins.md#routing-your-own-request-to-a-session); one of your tasks: [plugins.md](plugins.md#routing-a-task-to-a-session); or a plugin message) | session routing (a plugin message also needs plugins) |
+| `route_many` (one request you typed to several sessions, answered in [one digest](#route_many)); Claude Code chief only, not the Compose chief | session routing |
 | `attention_list` | the attention queue |
 | `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
 | `ask_owner` (a question card in its chat: you tap an answer) | the attention queue |

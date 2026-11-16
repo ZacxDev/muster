@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,10 +20,15 @@ import (
 // decision to make here and not a side effect.
 var chiefMCPToolList = []string{
 	"ask_owner", "connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle", "routing_rule_propose", "fleet_list", "focus_search", "sessions_overview",
-	"session_context", "fleet_report", "route_to_session", "task_route_attention", "task_forward", "agent_dispatch", "repos_list",
+	"session_context", "fleet_report", "route_to_session", "route_many", "task_route_attention", "task_forward", "agent_dispatch", "repos_list",
 	"attention_ask", "attention_wait", "attention_cancel", "tasks_list", "task_get", "task_comment", "task_set_status",
 	"attention_list", "answer_session_question",
 }
+
+// mcpOnlyLedger are the registry's mcpOnly tools: on MCP, never offered to a
+// gateway-runtime agent (route_many is always owner_asked, which every
+// in-process call fails).
+var mcpOnlyLedger = []string{"route_many"}
 
 // notChiefToolList are the registry's notChief tools: offered to every agent
 // but the chief.
@@ -60,9 +66,14 @@ func TestTheChiefsToolListIsPinned(t *testing.T) {
 		t.Errorf("the chief's /mcp tools (%d) = %v,\nwant exactly (%d) %v", len(got), got, len(chiefMCPToolList), chiefMCPToolList)
 	}
 	gw := toolNames(s.AgentToolDefsFor(ctx, chief))
-	if want := append(append([]string(nil), gatewayOnlyLedger...), chiefMCPToolList...); len(gw) != len(want) {
-		t.Errorf("the chief's gateway tools (%d) = %v, want the %d gateway-only plus the %d MCP ones", len(gw), gw,
-			len(gatewayOnlyLedger), len(chiefMCPToolList))
+	if want := append(append([]string(nil), gatewayOnlyLedger...), chiefMCPToolList...); len(gw) != len(want)-len(mcpOnlyLedger) {
+		t.Errorf("the chief's gateway tools (%d) = %v, want the %d gateway-only plus the %d MCP ones less the %d MCP-only", len(gw), gw,
+			len(gatewayOnlyLedger), len(chiefMCPToolList), len(mcpOnlyLedger))
+	}
+	for _, n := range mcpOnlyLedger {
+		if slices.Contains(gw, n) {
+			t.Errorf("the MCP-only %s is offered to a gateway chief, whose every call of it is refused", n)
+		}
 	}
 	offered := map[string]bool{}
 	for _, n := range toolNames(s.MCPToolDefsFor(ctx, worker)) {

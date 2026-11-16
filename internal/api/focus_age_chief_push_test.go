@@ -76,7 +76,7 @@ func TestTheChiefsFleetListAndOverviewSayHowOldAFocusTitleIs(t *testing.T) {
 			}}
 			ctx := s.attentionPrincipal(context.Background(), 1)
 			for tool, text := range map[string]string{
-				"fleet_list":        s.toolFleetList(ctx),
+				"fleet_list":        s.toolFleetList(ctx, ""),
 				"sessions_overview": s.toolSessionsOverview(ctx, agents.Agent{ID: 999}, `{}`),
 			} {
 				var got struct {
@@ -109,7 +109,7 @@ func TestTheChiefsFleetListAndOverviewSayHowOldAFocusTitleIs(t *testing.T) {
 	var fl struct {
 		Sessions []focusAgeRow `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1))), &fl); err != nil || len(fl.Sessions) != 3 {
+	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1), "")), &fl); err != nil || len(fl.Sessions) != 3 {
 		t.Fatalf("fleet_list with an agent: %+v %v", fl.Sessions, err)
 	}
 	checkFocusAgeRow(t, "fleet_list agent", fl.Sessions[0], "Indexing the wren archive", "2021-03-08T10:00:00Z", "2d")
@@ -118,7 +118,7 @@ func TestTheChiefsFleetListAndOverviewSayHowOldAFocusTitleIs(t *testing.T) {
 	s = whereServer(t)
 	s.now = func() time.Time { return focusAgeChiefNow }
 	s.ext.Focus = &memFocus{rows: map[focus.Subject]focus.Focus{}}
-	text := s.toolFleetList(s.attentionPrincipal(context.Background(), 1))
+	text := s.toolFleetList(s.attentionPrincipal(context.Background(), 1), "")
 	for _, k := range []string{"focus_set_at", "focus_age", "focus_stale"} {
 		if strings.Contains(text, k) {
 			t.Errorf("fleet_list with no focus carries %s:\n%s", k, text)
