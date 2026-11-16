@@ -22,13 +22,15 @@ function world({ fresh }) {
   const why = { firstChild: { nodeValue: 'The page gate. ' } };
   const appended = [];
   let submitted = 0;
+  let sentWith = null; // the form's hidden fields at submit()
   let asked = null;
   const form = {
     attrs: { 'data-step-up-why': 'Ending one of your team sessions needs a sign-in.' },
     matches: (sel) => sel === 'form[data-step-up-form]',
     getAttribute(n) { return this.attrs[n] ?? null; },
-    appendChild: (el) => appended.push(el),
-    submit: () => { submitted++; },
+    appendChild(el) { appended.push(el); el.parentNode = form; },
+    removeChild(el) { const i = appended.indexOf(el); if (i >= 0) appended.splice(i, 1); el.parentNode = null; },
+    submit: () => { submitted++; sentWith = appended.map((h) => ({ type: h.type, name: h.name, value: h.value })); },
   };
   const button = { name: 'option', value: 'End it', form };
   const sandbox = {
@@ -43,7 +45,7 @@ function world({ fresh }) {
   let prevented = false;
   const ev = { target: form, submitter: button, preventDefault: () => { prevented = true; } };
   for (const l of listeners) if (l.type === 'submit') l.fn(ev);
-  return { ev, why, appended, prevented: () => prevented, submitted: () => submitted, confirm: () => asked && asked() };
+  return { ev, why, appended, sentWith: () => sentWith, prevented: () => prevented, submitted: () => submitted, confirm: () => asked && asked() };
 }
 
 test('the script is found in the Go source', () => {
@@ -57,9 +59,10 @@ test('a stale submit by a named button asks first, then submits WITH that button
   assert.equal(w.why.firstChild.nodeValue, 'Ending one of your team sessions needs a sign-in. ', "the dialog does not say the form's own gate");
   w.confirm();
   assert.equal(w.submitted(), 1, 'the confirm did not submit the form');
-  assert.equal(w.appended.length, 1, 'the tapped button was not carried');
-  assert.deepEqual({ type: w.appended[0].type, name: w.appended[0].name, value: w.appended[0].value },
-    { type: 'hidden', name: 'option', value: 'End it' });
+  assert.deepEqual(w.sentWith(), [{ type: 'hidden', name: 'option', value: 'End it' }], 'the tapped button was not carried');
+  // A page restored from the back-forward cache must not send the old tap
+  // with a later submit (a typed answer would carry option=End it).
+  assert.equal(w.appended.length, 0, 'the hidden copy of the tapped button stayed in the form after the submit');
 });
 
 test('a fresh submit is left alone (the control)', () => {

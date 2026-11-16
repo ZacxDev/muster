@@ -23,8 +23,10 @@ type stepUpChannel struct {
 	//   none:     not a refusal of a person's request (it decides something
 	//             else, or records the freshness).
 	how string
-	// proof shows the page offers the confirm, by behaviour: a Test in this
-	// package, or a browser spec (e2e/tests/…) that drives the dialog.
+	// proof NAMES the test meant to show the page offers the confirm: a Test
+	// in this package, or a browser spec (e2e/tests/…). ⚠ The ledger checks
+	// only that it exists (and, for a spec, that it drives #term-confirm) —
+	// NOT that it exercises this gate; that is the reader's to check.
 	proof string
 	// gap, for a channel with no proof yet, says so — in the ledger, where it
 	// is seen, rather than nowhere. A form channel may not have one.
@@ -34,7 +36,7 @@ type stepUpChannel struct {
 // stepUpChannels is EVERY function in internal/api that calls stepup.Fresh,
 // as <file>:<func>, and how its refusal is confirmed. 🔴 IT FAILS WHEN THE SET
 // GROWS OR SHRINKS: a new step-up gate must say how its person confirms, and
-// prove its page offers it — the gap behind /teams/{id}/plugins, /hosts and
+// name a proof (or a gap) — the gap behind /teams/{id}/plugins, /hosts and
 // /connectors, a team's cards and a team agent's terminal, each of which
 // refused with "Confirm it's you" on a page that offered no confirm (#717).
 var stepUpChannels = map[string]stepUpChannel{
@@ -135,7 +137,8 @@ func testFuncs(t *testing.T) map[string]bool {
 // TestEveryStepUpGateSaysHowItsPersonConfirms is the ledger: every step-up
 // gate in internal/api is in stepUpChannels and every entry is still a gate
 // (the set cannot grow or shrink unnoticed), each says how its person
-// confirms, and each confirm is proven by a test that exists.
+// confirms, and each names a proof that EXISTS (or, outside form, an open
+// gap). Whether the named proof exercises that gate is not checked here.
 func TestEveryStepUpGateSaysHowItsPersonConfirms(t *testing.T) {
 	sites := stepUpGateSites(t)
 	if len(sites) < 10 {

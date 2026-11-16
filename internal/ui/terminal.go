@@ -406,7 +406,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(v.ReadOnlyOnly, g.Attr("data-keys-off", "")),
 								g.Attr("data-size-osc", strconv.Itoa(termsize.ReportOSC)),
 								stepUpAttrs(v.StepUp),
-								g.If(v.StepUp != nil && v.StepUpAttach, g.Attr("data-step-up-attach", "")),
+								stepUpAttachAttrs(v),
 								g.If(v.ScrollForm != "", g.Group([]g.Node{
 									g.Attr("data-scroll", MirrorTerminalScrollPath),
 									g.Attr("data-scroll-form", v.ScrollForm),
@@ -853,13 +853,25 @@ func agentTerminalScript() g.Node {
   var stepUp = confirmPath ? window.musterStepUp : null;
   var justConfirmed = false;
   // attachGated: the WHOLE attach needs a fresh sign-in (StepUpAttach, a team
-  // agent's terminal), not only live keys. gateProbe: as rwProbe, one retry
-  // of an attach refused while the page believed itself fresh.
+  // agent's terminal), not only live keys. attachWhy is its own sentence for
+  // the dialog (data-step-up-why): when this view is framed it asks through
+  // the top window's dialog, whose page sentence is about something else.
   var attachGated = !!confirmPath && host.hasAttribute('data-step-up-attach');
-  var gateProbe = 0;
+  var attachWhy = host.getAttribute('data-step-up-why') || '';
   function gatedStale() { return attachGated && !(stepUp && stepUp.fresh()); }
+  // whyOn writes attachWhy as the gate sentence of the dialog that will ask:
+  // the top window's when this view is framed (stepUpScript's topStepUp),
+  // else this page's.
+  function whyOn() {
+    if (!attachWhy) return;
+    var d = document;
+    try { if (window.parent !== window && window.parent.musterStepUp && window.parent.musterStepUp.framedAsk === true) d = window.parent.document; } catch (e) {}
+    var el = d.getElementById('term-confirm-why');
+    if (el && el.firstChild) el.firstChild.nodeValue = attachWhy + ' ';
+  }
   function askToOpen() {
     if (!stepUp || (stepUp.asking && stepUp.asking())) return;
+    whyOn();
     stepUp.ask('', function () { justConfirmed = true; clearError(); mode = 'rw'; applyMode(); connect('step_up'); });
   }
   // rwProbe: an interactive attach that never opened, while the page still
@@ -1029,20 +1041,26 @@ func agentTerminalScript() g.Node {
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, mode: mode });
       opening = null;
       if (left) return;
-      // A GATED ATTACH (a team agent's terminal) refused before it opened:
-      // stale, or a confirm the gate still refused — say so and wait for
-      // Reconnect, which asks. Believed fresh the first time: retry once.
+      // A GATED ATTACH (a team agent's terminal) that never opened. A
+      // refused upgrade and a server or network that is not there look the
+      // same here, so it is read as the SIGN-IN only when the page already
+      // believes it stale, or it was the attach right after a confirm: then
+      // say so and wait for Reconnect, which asks. Believed fresh, it is the
+      // network or a restart: the ordinary retry with backoff below — never
+      // the mirrored read-only probe (a gated attach has no read-only form).
+      // The page's freshness runs out on its own clock, so a sign-in that
+      // really did expire is asked for on the first failure after that.
       if (!opened && attachGated) {
         var was = justConfirmed;
         justConfirmed = false;
-        if (!was && gateProbe === 0 && stepUp && stepUp.fresh()) { gateProbe = 1; }
-        else {
-          gateProbe = 0;
+        if (was || !fresh()) {
           if (stepUp) stepUp.stale();
           refusedEnd = true;
           showError(was ? 'The terminal could not be opened.' : ` + strconv.Quote(TerminalConfirmToOpen) + `, true);
           return;
         }
+        retryLater();
+        return;
       }
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read: an interactive mirrored attach that never
@@ -1061,17 +1079,19 @@ func agentTerminalScript() g.Node {
         if (asked) showError('The interactive terminal could not be opened.', true);
         return;
       }
-      // The far side refused or ended the attach: say so, and offer
-      // Reconnect. A wake tries it again (the host may be back).
+      retryLater();
+    };
+    // retryLater: the far side refused or ended the attach — say so, and
+    // offer Reconnect; a wake tries it again (the host may be back). Anything
+    // else (a network gone, a server restarting, a phone that slept) comes
+    // back by itself; the button is offered only once that keeps failing.
+    function retryLater() {
       if (refused) { refusedEnd = true; return; }
-      // Anything else (a network gone, a server restarting, a phone that
-      // slept) comes back by itself; the button is offered only once that
-      // keeps failing.
       retry++;
       setStatus(` + strconv.Quote(StatusReconnecting) + `);
       if (retry > ` + strconv.Itoa(LiveManualAfter) + `) showError('The terminal connection keeps closing. Still trying…', true);
       if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
-    };
+    }
     ws = sock;
   }
 

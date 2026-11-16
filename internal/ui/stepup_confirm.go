@@ -69,7 +69,8 @@ func StepUpDialog(s *StepUpView) g.Node {
 //   - 🔴 THE BUTTON THAT SUBMITTED IS KEPT. form.submit() sends no submitter,
 //     so a form answered by WHICH button was tapped (an ask's options, each a
 //     name=option button) would submit without its answer: the submitter's
-//     name and value ride along as a hidden field.
+//     name and value ride along as a hidden field, removed again right after
+//     the submit.
 //   - A form's data-step-up-why, when set, is the dialog's sentence about the
 //     gate for that form, in place of the page's (StepUpView.Why): one page
 //     can hold forms behind different gates (the Asks list).
@@ -91,16 +92,32 @@ const StepUpFormScript = `<script>
       whyEl.firstChild.nodeValue = w ? w + ' ' : pageWhy;
     }
     su.ask('', function () {
+      var h = null;
       if (b && b.name && b.form === f) {
-        var h = document.createElement('input');
+        h = document.createElement('input');
         h.type = 'hidden'; h.name = b.name; h.value = b.value;
         f.appendChild(h);
       }
       f.submit();
+      // The form's data is taken at submit(): the copy goes at once, so a page
+      // restored from the back-forward cache never sends it with a later
+      // submit (a typed answer would carry the old tap's option).
+      if (h && h.parentNode) h.parentNode.removeChild(h);
     });
   });
 })();
 </script>`
+
+// stepUpAttachAttrs marks a StepUpAttach terminal's #term (the whole attach
+// gated) with its dialog sentence; nothing otherwise. A function, not a
+// g.If: g.If's arguments are built whether or not it draws them, and the
+// StepUp of most terminals is nil.
+func stepUpAttachAttrs(v AgentTerminalView) g.Node {
+	if v.StepUp == nil || !v.StepUpAttach {
+		return nil
+	}
+	return g.Group{g.Attr("data-step-up-attach", ""), g.Attr("data-step-up-why", v.StepUp.Why)}
+}
 
 // stepUpAttrs carries a StepUpView to the terminal script on #term; nothing for
 // nil.
