@@ -327,6 +327,10 @@ type agentTool struct {
 	// in place of def (AgentToolDefsFor): its calls run in muster's process, so
 	// a form only an MCP caller can use is left out (route_to_session's text).
 	inProcess *agents.ToolDef
+	// mcpOnly: served over MCP alone, never offered to a GATEWAY-runtime agent
+	// (AgentToolDefsFor): a tool whose every in-process call is refused
+	// (route_many: owner_asked, chiefReleaseNotOverMCP).
+	mcpOnly bool
 	// officerOnly: offered to, and callable by, a declared officer's instance
 	// agents alone (officers.go's officerOf — the binding rule). A THIRD axis,
 	// orthogonal to the chief's: enforced in the listing (toolsFor) and again in
@@ -447,6 +451,9 @@ func (s *Server) agentTools() []agentTool {
 	if routesOn(s.ext) && !s.featureOff(features.SessionRouting) {
 		gw := routeToolDefInProcess()
 		tools = append(tools, agentTool{def: routeToolDef(), inProcess: &gw, mcp: true, chiefOnly: true})
+		// route_many (route_many.go): one owner request to several sessions,
+		// answered in one digest. MCP only: it is always owner_asked.
+		tools = append(tools, agentTool{def: routeManyToolDef(), mcp: true, mcpOnly: true, chiefOnly: true})
 	}
 	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
 	// chief decides what happens to a task a plugin handed it — the attention
@@ -666,6 +673,9 @@ func (s *Server) AgentToolDefsFor(ctx context.Context, a agents.Agent) []agents.
 	tools := s.toolsFor(ctx, a)
 	defs := make([]agents.ToolDef, 0, len(tools))
 	for _, t := range tools {
+		if t.mcpOnly {
+			continue
+		}
 		if t.inProcess != nil {
 			defs = append(defs, *t.inProcess)
 			continue
@@ -1023,7 +1033,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		}
 		return s.toolRoutingRulePropose(ctx, a, arguments)
 	case fleetListToolName:
-		return s.toolFleetList(ctx)
+		return s.toolFleetList(ctx, arguments)
 	case focusSearchToolName:
 		return s.toolFocusSearch(ctx, arguments)
 	case sessionsOverviewToolName:
@@ -1051,6 +1061,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFleetReport(ctx, a, arguments)
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
+	case routeManyToolName:
+		return s.toolRouteMany(ctx, a, arguments)
 	case answerSessionQuestionTool:
 		// Registered only with the attention store (agentTools).
 		if !s.attentionToolsOn() {

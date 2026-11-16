@@ -148,6 +148,10 @@ type Focus struct {
 	// A row can carry a name with no focus (a manual name on a mirrored
 	// session never summarized): Has is false for it.
 	Name Name
+	// Tasks is what a mirrored session declared it works under (tasklink.go,
+	// migration 0136); zero when it declared nothing. Like Name, a row can
+	// carry it with no focus.
+	Tasks TaskLink
 }
 
 // Has reports whether f holds a focus at all (a row that only recorded a

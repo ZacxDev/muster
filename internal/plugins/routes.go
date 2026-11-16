@@ -138,6 +138,12 @@ type RouteStore interface {
 	// that is not that plugin's; ErrStampNoThread / ErrStampThreadMismatch
 	// (with the route as it is) for a stamp not bound to its conversation.
 	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
+	// BatchRoutes, ClaimBatchDigest and FinishBatchDigest are a route_many
+	// batch's members and its ONE digest (route_batches.go, migration 0136).
+	BatchRoutes(ctx context.Context, batchID string) ([]Route, error)
+	ClaimBatchDigest(ctx context.Context, batchID string, ttl time.Duration) (bool, error)
+	ReleaseBatchDigest(ctx context.Context, batchID string) error
+	FinishBatchDigest(ctx context.Context, batchID string) error
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -210,6 +216,10 @@ type Route struct {
 	// rather than to the chief: decided once, when it became send_failed
 	// (refuseRouteDraftTx, bounded by MaxRouteRedrafts).
 	Redraft bool
+	// BatchID is the route_many batch a request route belongs to (migration
+	// 0136; route_batches.go), "" for every other route. A member's answer
+	// goes to its chief in the batch's one digest, never by itself.
+	BatchID string
 }
 
 // IsPRReview reports whether muster made r for a pull-request review: the one
@@ -253,6 +263,8 @@ type RouteRequest struct {
 	Text      string
 	MessageID int64
 	SessionID int64
+	// BatchID makes the route a member of a route_many batch ("" for none).
+	BatchID string
 }
 
 // MaxRouteRequestBytes bounds a request route's text (0084's cap).
@@ -384,14 +396,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, ''), one_way, redraft`
+	coalesce(pr_head_sha, ''), one_way, redraft, coalesce(batch_id, '')`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA, &r.OneWay, &r.Redraft)
+		&r.PRHeadSHA, &r.OneWay, &r.Redraft, &r.BatchID)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -508,13 +520,14 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 	}
 	var text *string
 	var sess *int64
+	batch := ""
 	if req != nil {
-		text, sess = &req.Text, &req.SessionID
+		text, sess, batch = &req.Text, &req.SessionID, req.BatchID
 	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way, batch_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12, nullif($13, '')) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay, batch))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" ||
 		pg.ConstraintName == "session_routes_one_open_task" || pg.ConstraintName == "session_routes_one_open_request") {
@@ -535,6 +548,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 	if r.OneWay {
 		detail["one_way"] = true
 	}
+	if r.BatchID != "" {
+		detail["batch_id"] = r.BatchID
+	}
 	return r, audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
 }
 
@@ -551,6 +567,8 @@ func (s *PGStore) CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID i
 		return Route{}, invalid("a request route needs the owner's message and the chief's session")
 	case strings.TrimSpace(req.Text) == "" || len(req.Text) > MaxRouteRequestBytes:
 		return Route{}, invalid("a request route's text is 1 to %d bytes", MaxRouteRequestBytes)
+	case req.BatchID != "" && !ValidBatchID(req.BatchID):
+		return Route{}, invalid("a batch id is rb_ and 24 hex digits")
 	}
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {

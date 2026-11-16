@@ -90,6 +90,7 @@ var hostStepUpExempt = map[string]string{
 	pageGetTool:                "a read",
 	pageListTool:               "a read",
 	agentReportDoneTool:        "the session's own dispatch",
+	trackTaskTool:              "the session's own declared tasks",
 	pageShareRequestTool:       "asks the owner for a link (their tap decides)",
 	pageResponsesTool:          "a read of the session's own page",
 	pageLinkRevokeTool:         "revokes a link of the session's own page",

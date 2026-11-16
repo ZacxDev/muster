@@ -169,6 +169,8 @@ func (s *Server) routeTimeout(origin plugins.RouteOrigin, item routedItem) time.
 	switch {
 	case origin.Via == plugins.RouteViaPR:
 		return PRRouteTimeout
+	case item.isRequest() && item.req.timeout > 0:
+		return item.req.timeout // a route_many batch's deadline (route_many.go)
 	case item.isRequest():
 		return RequestRouteTimeout
 	case !item.isTask() && item.msg.HumanConversation:
@@ -487,6 +489,10 @@ type routedItem struct {
 type routedRequest struct {
 	text  string
 	owner agents.ChatMessage
+	// batchID and timeout: a route_many member's batch and deadline
+	// (route_many.go); "" and 0 for route_to_session's.
+	batchID string
+	timeout time.Duration
 }
 
 func (it routedItem) isTask() bool    { return it.task.ID != 0 }
@@ -516,7 +522,7 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	case it.isRequest():
 		what = "the owner's request (chat message " + strconv.FormatInt(it.req.owner.ID, 10) + ")"
 		r, err = s.ext.Routes.CreateRequestRouteFrom(ctx, chiefID, ownerID, plugins.RouteRequest{Text: it.req.text,
-			MessageID: it.req.owner.ID, SessionID: it.req.owner.SessionID}, target, s.routeTimeout(origin, it))
+			MessageID: it.req.owner.ID, SessionID: it.req.owner.SessionID, BatchID: it.req.batchID}, target, s.routeTimeout(origin, it))
 	case it.isTask():
 		what = "task " + strconv.FormatInt(it.task.ID, 10)
 		r, err = s.ext.Routes.CreateTaskRouteFrom(ctx, chiefID, ownerID, it.task.ID, target, s.routeTimeout(origin, it), origin)
@@ -1661,6 +1667,11 @@ func (s *Server) failCancelledRoute(ctx context.Context, routeID string) {
 // cleared only after the answer is on record in the chief's chat.
 func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 	if r, err := s.ext.Routes.Route(ctx, routeID); err == nil {
+		if r.BatchID != "" {
+			// A route_many member: never by itself — its batch's one digest.
+			s.deliverRouteBatch(ctx, r.BatchID)
+			return
+		}
 		if r.AnswersToChief() && r.State == plugins.RouteRelayed {
 			s.deliverRouteAnswer(ctx, r)
 			return

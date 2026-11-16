@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,8 +40,20 @@ func focusToolDefs() []agents.ToolDef {
 				"a tool like agent_destroy takes; a mirrored window's codename and tmux address are in where), status, focus title " +
 				"(what it is working on) with how old it is — focus_set_at, and focus_age " +
 				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
-				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
-			Parameters: objSchema(map[string]any{})},
+				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited) — and, for a mirrored session, active_at (its window's " +
+				"last activity) and the tasks it DECLARED it works under with track_task (tasks: task keys such as \"hq:<id>\" or " +
+				"\"#<id>\", or untracked: its one-line reason for none; task_note; task_set_at). A session with neither has declared " +
+				"nothing: never guess its task from its focus title. Filters: active_within_hours, status, undeclared. " +
+				"Use focus_search to find one by topic." + focusUntrustedTail,
+			Parameters: objSchema(map[string]any{
+				"active_within_hours": intProp("Only sessions active within this many hours (1-720): a mirrored session by its "+
+					"window's last activity, a dispatched agent by the later of its start and its focus's last write. "+
+					"A session whose activity is unknown is left out.", 1, fleetListMaxHours),
+				"status": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "Only sessions whose status is one of these (as the rows spell it: e.g. busy, idle, waiting, unknown, running)."},
+				"undeclared": map[string]any{"type": "boolean",
+					"description": "true: only sessions that declared neither tasks nor none with track_task."},
+			})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
 				"matches first: id, kind, name (the session's stable name), title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
@@ -86,9 +99,45 @@ type fleetListRow struct {
 	// latest refresh's short, non-secret reason (focus.Reason). Absent when
 	// the focus is current.
 	FocusProblem string `json:"focus_problem,omitempty"`
+	// ActiveAt is a mirrored session's window's last activity, RFC 3339 (""
+	// when its host does not say): what active_within_hours reads.
+	ActiveAt string `json:"active_at,omitempty"`
+	// TaskLink is what a mirrored session declared with track_task (tasks,
+	// untracked, task_note), and TaskSetAt when — the session's own word,
+	// never inferred (internal/focus tasklink.go).
+	focus.TaskLink
+	TaskSetAt string `json:"task_set_at,omitempty"`
 }
 
-func (s *Server) toolFleetList(ctx context.Context) string {
+// fleetListMaxHours bounds fleet_list's active_within_hours: 30 days, focus
+// history's retention.
+const fleetListMaxHours = 720
+
+// fleetListFilter is fleet_list's arguments: which rows to keep.
+type fleetListFilter struct {
+	ActiveWithinHours int      `json:"active_within_hours"`
+	Status            []string `json:"status"`
+	Undeclared        bool     `json:"undeclared"`
+}
+
+// keep reports whether a row with status, activity at (zero: unknown) and
+// declaration l passes f at now. 🔴 ACTIVE IS INCLUSIVE: a session last
+// active exactly active_within_hours ago is kept; an unknown time never is.
+func (f fleetListFilter) keep(status string, at time.Time, l focus.TaskLink, now time.Time) bool {
+	if f.ActiveWithinHours > 0 && (at.IsZero() || now.Sub(at) > time.Duration(f.ActiveWithinHours)*time.Hour) {
+		return false
+	}
+	if len(f.Status) > 0 && !slices.Contains(f.Status, status) {
+		return false
+	}
+	return !f.Undeclared || !l.Declared()
+}
+
+func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
+	var f fleetListFilter
+	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &f); err != nil || f.ActiveWithinHours < 0 || f.ActiveWithinHours > fleetListMaxHours {
+		return toolErr("arguments are {active_within_hours?: 1-%d, status?: [...], undeclared?: true}", fleetListMaxHours)
+	}
 	fi, now := s.focusIndex(ctx), s.now()
 	rows := []fleetListRow{}
 	if s.ext.Agents != nil {
@@ -102,8 +151,16 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		idx := s.instanceIndex(ctx)
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
+			status := liveStatusIndexed(a, idx)
+			at := a.CreatedAt
+			if u := fi[sub].UpdatedAt; fi[sub].Has() && u.After(at) {
+				at = u
+			}
+			if !f.keep(status, at, focus.TaskLink{}, now) {
+				continue
+			}
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: fi.agentName(a).Text, Code: a.Name, Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
+				Name: fi.agentName(a).Text, Code: a.Name, Status: status, Focus: fi[sub].Title,
 				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 		}
 	}
@@ -119,8 +176,20 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		if status == "" {
 			status = "unknown"
 		}
-		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
-			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
+		tasks := fi[sub].Tasks
+		if !f.keep(status, e.ActiveAt(), tasks, now) {
+			continue
+		}
+		r := fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
+			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem(),
+			TaskLink: focus.TaskLink{Keys: tasks.Keys, None: tasks.None, Note: tasks.Note}}
+		if at := e.ActiveAt(); !at.IsZero() {
+			r.ActiveAt = at.UTC().Format(time.RFC3339)
+		}
+		if !tasks.SetAt.IsZero() {
+			r.TaskSetAt = tasks.SetAt.UTC().Format(time.RFC3339)
+		}
+		rows = append(rows, r)
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
 }
