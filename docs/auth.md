@@ -264,9 +264,16 @@ and managers type into its hosts' sessions, each with their own fresh sign-in
     have to trust each other.
 - **Team officers.**
   - `MUSTER_OFFICERS` accepts a team's id as an officer's `owner`. Boot
-    refuses an owner that names nobody, and a team owning a
-    `"runtime": "host"` officer: team host officers come with team sharing
-    2b.5.
+    refuses an owner that names nobody.
+  - **Team host officers (2b.5).** A team may own a `"runtime": "host"`
+    officer. It runs on the team's own host of that name (a host connected
+    with a team host token, above), never on a member's personal host of the
+    same name. Its spawn rows are the team's, and every member reads them on
+    `/officers/spawns`, grouped under the team. Nobody lends or changes them.
+    A team host officer that declares `connectors` is refused, at boot and
+    at the database declaration's door, because nobody could decide a team's
+    connector request (G3). See
+    [officers-builtin.md](officers-builtin.md#a-teams-host-officer-team-hosts).
   - Every member reads the team's officer types and charters on
     `/teams/<id>/officers`. Only a **manager** changes them, there, signed
     in. Postgres refuses an operator's write too.

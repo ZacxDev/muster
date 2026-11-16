@@ -671,9 +671,16 @@ func TestRuntimeAutoDetection(t *testing.T) {
 
 // TestTeamOfficerRules: a team's officers are the store's and the roster
 // load's — a team's pod officer row runs, owned by the team — but no door
-// writes them yet (round 0's D1: O-C adds the team door with its UI), and a
-// team cannot own a host officer: the roster load refuses a hand-written one
-// (officers.CheckOwners, the one rule).
+// writes them yet (round 0's D1: O-C adds the team door with its UI). Since
+// team sharing 2b.5 a team MAY own a host officer, and the one team rule
+// (officers.CheckOwners) refuses only a team host officer that declares
+// connectors (G3): at the roster load, for a hand-written row, and at the
+// create door's check (checkDeclaredOwner), on `connectors`. CONTROL: the
+// same host declaration without connectors passes the door's check, and its
+// row is not refused by the team rule at the load.
+//
+// 🔴 RED at the base (c96acc08) for the connectors-free host officer (refused
+// by ErrTeamHostOfficer) and for the connectors refusal (no such error).
 func TestTeamOfficerRules(t *testing.T) {
 	w := newIsoWorld(t)
 	team := w.aTeam
@@ -691,8 +698,9 @@ func TestTeamOfficerRules(t *testing.T) {
 		t.Fatalf("the team door (deferred to O-C): %d %s; want 404", rec.Code, rec.Body.String())
 	}
 	for _, q := range []string{
-		`INSERT INTO officer_types (owner_id, key, name) VALUES ($1, 'tmh-x-iso', 'x'), ($1, 'tmp-x-iso', 'x') ON CONFLICT DO NOTHING`,
+		`INSERT INTO officer_types (owner_id, key, name) VALUES ($1, 'tmh-x-iso', 'x'), ($1, 'tmc-x-iso', 'x'), ($1, 'tmp-x-iso', 'x') ON CONFLICT DO NOTHING`,
 		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, host, repo, instance_slug) VALUES ($1, 'tmh:x', 'tmh-x-iso', 'host', '` + hostOffHost + `', '` + hostOffRepo + `', 'tmh-x-iso')`,
+		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, host, repo, connectors, instance_slug) VALUES ($1, 'tmc:x', 'tmc-x-iso', 'host', '` + hostOffHost + `', '` + hostOffRepo + `', '{warehouse-iso}', 'tmc-x-iso')`,
 		`INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES ($1, 'tmp:x', 'tmp-x-iso', 'pod', 'tmp-x-iso')`,
 	} {
 		if _, err := w.pool.Exec(authz.System(context.Background()), q, team); err != nil {
@@ -702,39 +710,59 @@ func TestTeamOfficerRules(t *testing.T) {
 	if err := w.srv.reloadDeclaredOfficers(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if stt, ok := w.srv.officerRT.declaredView(team, "tmh:x"); !ok || stt.officer != nil || !strings.Contains(stt.reason, officers.ErrTeamHostOfficer.Error()) {
-		t.Fatalf("a hand-written team host officer: %+v; want not running", stt)
+	if stt, ok := w.srv.officerRT.declaredView(team, "tmc:x"); !ok || stt.officer != nil || !strings.Contains(stt.reason, officers.ErrTeamHostOfficerConnectors.Error()) {
+		t.Fatalf("a hand-written team host officer with connectors: %+v; want not running, refused by G3", stt)
+	}
+	if stt, ok := w.srv.officerRT.declaredView(team, "tmh:x"); !ok || strings.Contains(stt.reason, "a team") || strings.Contains(stt.reason, officers.ErrTeamHostOfficerConnectors.Error()) {
+		t.Fatalf("CONTROL: a hand-written team host officer without connectors: %+v; want no team-rule refusal", stt)
 	}
 	if stt, ok := w.srv.officerRT.declaredView(team, "tmp:x"); !ok || stt.row.Owner != team {
 		t.Fatalf("a team's pod officer row: %+v; want it loaded, owned by the team", stt)
 	}
 	// The team rule at the create door's check, as O-C's door will call it.
 	d := officers.Declaration{ID: "tm:host", Owner: team, Runtime: officers.RuntimeHost, Host: hostOffHost, Repo: hostOffRepo, InstanceSlug: "tm-host-iso"}
-	if err := w.srv.checkDeclaredOwner(d); err == nil || officers.Fields(err)[0].Field != "runtime" || !strings.Contains(err.Error(), officers.ErrTeamHostOfficer.Error()) {
-		t.Fatalf("a team host declaration at the door's check: %v; want refused on runtime", err)
+	if err := w.srv.checkDeclaredOwner(d); err != nil {
+		t.Fatalf("CONTROL: a team host declaration without connectors at the door's check: %v; want admitted", err)
+	}
+	d.Connectors = []string{"warehouse-iso"}
+	if err := w.srv.checkDeclaredOwner(d); err == nil || officers.Fields(err)[0].Field != "connectors" || !strings.Contains(err.Error(), officers.ErrTeamHostOfficerConnectors.Error()) {
+		t.Fatalf("a team host declaration with connectors at the door's check: %v; want refused on connectors (G3)", err)
 	}
 }
 
-// TestATeamAutoOfficerIsNeverPlacedOnAHost: a TEAM's "runtime": "auto"
-// officer on a server with no pods but a qualifying host of the team's would
-// resolve to that host — and a team cannot own a host officer, so the roster
-// load refuses to run it there (officers.CheckOwners after the resolution),
-// saying why. CONTROL: a person's auto officer on the same server runs there.
-func TestATeamAutoOfficerIsNeverPlacedOnAHost(t *testing.T) {
+// TestATeamAutoOfficerIsPlacedOnTheTeamsHost (team sharing 2b.5): a TEAM's
+// "runtime": "auto" officer on a server with no pods but a qualifying host of
+// the team's resolves to that host and runs there. One that declares
+// connectors is refused there by G3 (officers.CheckOwners after the
+// resolution), saying why. CONTROL: a person's auto officer on the same server
+// runs there.
+//
+// 🔴 RED at the base (c96acc08): the team's auto officer was refused by the
+// team rule (TestATeamAutoOfficerIsNeverPlacedOnAHost pinned that).
+func TestATeamAutoOfficerIsPlacedOnTheTeamsHost(t *testing.T) {
 	h := spawnableHost(hostOffHost, true)
 	h.AgentClose = true
 	r := newDeclRig(t, declRigOpts{hosts: []mirror.HostView{h}})
 	r.m.owner = declTeam // the hub lists this host as the team's
 	dsn := dbtest.DSN(t)
-	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_types (owner_id, key, name) VALUES (987302, 'tauto', 'x')`)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_types (owner_id, key, name) VALUES (987302, 'tauto', 'x'), (987302, 'tautoc', 'x')`)
 	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, repo, instance_slug)
 		VALUES (987302, 'tauto:x', 'tauto', 'auto', '`+hostOffRepo+`', 'tauto-x')`)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, repo, connectors, instance_slug)
+		VALUES (987302, 'tautoc:x', 'tautoc', 'auto', '`+hostOffRepo+`', '{warehouse}', 'tautoc-x')`)
 	if err := r.s.reloadDeclaredOfficers(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	st, ok := r.s.officerRT.declaredView(declTeam, "tauto:x")
-	if !ok || st.officer != nil || !strings.Contains(st.reason, officers.ErrTeamHostOfficer.Error()) {
-		t.Fatalf("a team's auto officer with only a host to run on: %+v; want not running, refused by the team rule", st)
+	if !ok || st.officer == nil || !st.officer.OnHost() || st.officer.Host != hostOffHost || st.officer.Owner != declTeam {
+		t.Fatalf("a team's auto officer with only the team's host to run on: %+v; want it on %s, owned by the team", st, hostOffHost)
+	}
+	if _, _, found := r.s.officerRT.reg.ForAgentName(st.officer.InstanceName(1)); !found {
+		t.Fatalf("the team's host officer is not in the registry the runtime reads")
+	}
+	stc, ok := r.s.officerRT.declaredView(declTeam, "tautoc:x")
+	if !ok || stc.officer != nil || !strings.Contains(stc.reason, officers.ErrTeamHostOfficerConnectors.Error()) {
+		t.Fatalf("a team's auto officer with connectors, placed on a host: %+v; want not running, refused by G3", stc)
 	}
 	r.m.owner = 1
 	body := `{"id":"pauto:x","charter":"c","repo":"` + hostOffRepo + `"}`
