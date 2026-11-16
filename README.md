@@ -3,8 +3,9 @@
 **Drive multiple Claude Code sessions from your phone, and get notified in one
 consolidated queue when they need your input.**
 
-Self-hosted, on your own machines, over your own Tailscale network. Any coding
-agent you run in tmux shows up; Claude Code gets the most.
+Self-hosted, on your own machines: start on this one at `http://localhost`,
+then add your phone over your own Tailscale network. Any coding agent you run
+in tmux shows up; Claude Code gets the most.
 
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
@@ -82,6 +83,25 @@ events have their own switches under **Account → Notifications**. Turning
 this off: [docs/features.md](docs/features.md#session-state).
 
 ## Quickstart
+
+**On this machine, in one line** (Docker with Compose v2, and tmux; nothing
+else, no account):
+
+```sh
+curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh
+```
+
+It starts muster at `http://localhost:8105` with every secret generated (no
+`.env` to fill in), shows this machine's tmux sessions, and runs
+`muster doctor`. Or from a clone:
+`docker compose -f deploy/docker-compose.yml up -d --wait`. Both are in
+[docs/quickstart-local.md](docs/quickstart-local.md).
+
+**Add your phone** with Tailscale: HTTPS on your own tailnet, for the phone,
+push notifications and your other machines
+([docs/quickstart-local.md#add-your-phone](docs/quickstart-local.md#add-your-phone)).
+
+### The full install, phone and every machine
 
 You need:
 

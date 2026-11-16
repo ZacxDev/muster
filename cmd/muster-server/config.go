@@ -391,6 +391,20 @@ const (
 	envVAPIDPublicKey  = "MUSTER_VAPID_PUBLIC_KEY"
 	envVAPIDPrivateKey = "MUSTER_VAPID_PRIVATE_KEY"
 	envVAPIDSubject    = "MUSTER_VAPID_SUBJECT"
+
+	// The _FILE twins (secretfiles.go): the value is the named file's
+	// contents, read when the plain variable is empty. The Compose stack's
+	// muster-init one-shot writes these files (compose-init), so a stack with
+	// no .env has its secrets generated once and kept on a volume.
+	envDatabaseFile        = "DATABASE_URL_FILE"
+	envUIPasswordFile      = "MUSTER_UI_PASSWORD_FILE"
+	envHookTokenFile       = "MUSTER_HOOK_TOKEN_FILE"
+	envVAPIDPublicKeyFile  = "MUSTER_VAPID_PUBLIC_KEY_FILE"
+	envVAPIDPrivateKeyFile = "MUSTER_VAPID_PRIVATE_KEY_FILE"
+	// The Compose stack's database password, read by compose-init ONLY (it is
+	// in the stack's old .env files): written to Postgres's password file and
+	// into muster's DATABASE_URL file.
+	envPostgresPassword = "POSTGRES_PASSWORD"
 	// The operator's own push hosts (exact names, https, default port), added to
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
@@ -2059,8 +2073,34 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := c.applyComposeChief(getenv); err != nil {
 		return config{}, err
 	}
+	// Push's contact address, when the keypair is set and the subject is not
+	// (defaultVAPIDSubject).
+	if c.VAPIDSubject == "" && c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" {
+		c.VAPIDSubject = defaultVAPIDSubject(c.PublicURL)
+	}
 
 	return c, nil
+}
+
+// fallbackVAPIDSubject is the push contact of a server with no https URL.
+const fallbackVAPIDSubject = "mailto:muster@localhost"
+
+// defaultVAPIDSubject is MUSTER_VAPID_SUBJECT when the keypair is set and it
+// is not: MUSTER_PUBLIC_URL's origin when that is https, else
+// fallbackVAPIDSubject.
+//
+// 🔴 NEVER AN http:// URL. A push service refuses a subject that is not
+// mailto: or https (push.validSubject refuses it at boot), and copying an
+// http MUSTER_PUBLIC_URL into the subject is exactly how a local install
+// restart-looped (INSTALL.md Step 4 did it). The subject is only a contact
+// for the push service's operator; a mailto: with no real mailbox behind it
+// sends push the same.
+func defaultVAPIDSubject(publicURL string) string {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fallbackVAPIDSubject
+	}
+	return "https://" + u.Host
 }
 
 // gotrueIssuer and gotrueAudience are what muster's GoTrue stamps on its
@@ -2654,8 +2694,8 @@ func (c config) validateVAPID() error {
 	}
 	if set != 3 {
 		return fmt.Errorf("%s, %s and %s are a triple and only %d of them are set (%s=%s, %s=%s, %s=%s): "+
-			"half a push configuration would boot with no push. Set all three (`muster-server vapid generate`) "+
-			"or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
+			"half a push configuration would boot with no push. Set the keypair (`muster-server vapid generate`; "+
+			"the subject then defaults when unset) or none", envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject, set,
 			envVAPIDPublicKey, presence(c.VAPIDPublicKey), envVAPIDPrivateKey, presence(c.VAPIDPrivateKey),
 			envVAPIDSubject, presence(c.VAPIDSubject))
 	}

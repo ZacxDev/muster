@@ -452,7 +452,7 @@ env_secret MUSTER_UI_PASSWORD 12     # the sign-in password: 24 characters (12 i
 env_secret MUSTER_HOOK_TOKEN 32      # the machine API's token
 env_set MUSTER_PUBLIC_URL "$MUSTER_URL"
 env_set MUSTER_SECURE_COOKIES 1
-# Web push keys: all three or none. muster refuses to start on a partial set.
+# Web push keys: the pair or none (the subject follows). muster refuses to start on half a pair.
 if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ] || [ -z "$(env_get MUSTER_VAPID_PUBLIC_KEY)" ]; then
   # The keys come on stdout; docker's own errors (a failed pull, a missing
   # image) go to vapid.err and are printed if it fails.
@@ -461,7 +461,9 @@ if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ] || [ -z "$(env_get MUSTER_VAPID_
   priv=$(printf '%s\n' "$keys" | sed -n 's/^MUSTER_VAPID_PRIVATE_KEY=//p')
   if [ -n "$pub" ] && [ -n "$priv" ]; then
     env_set MUSTER_VAPID_PUBLIC_KEY "$pub"; env_set MUSTER_VAPID_PRIVATE_KEY "$priv"
-    env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL"
+    # The push contact: the https URL. (Unset, muster derives the same from
+    # MUSTER_PUBLIC_URL, or a mailto: when that is not https; never http.)
+    case "$MUSTER_URL" in https://*) env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL" ;; esac
     rm -f "$MI_DIR/vapid.err"
   else
     echo "PUSH KEYS NOT GENERATED: none of the three were written (see If this fails). docker said:"
@@ -584,9 +586,11 @@ download: wait a few minutes and re-run this block until it is `healthy`.
   (Linux) or `lsof -iTCP:8105 -sTCP:LISTEN` (macOS) and tell the person; do
   not stop it yourself.
 - `up --wait` fails or `muster` is unhealthy: `docker compose logs --tail=80
-  muster`. muster refuses to start on a bad setting and names the variable in
-  that log (a `MUSTER_UI_PASSWORD` under 12 characters is the usual one). Fix it
-  in `.env` and re-run this block.
+  muster-init muster`. muster refuses to start on a bad setting and names the
+  variable in that log: a setting it refuses at boot fails `up --wait` in
+  seconds on `muster-init`, whose last line is the refusal; a `MUSTER_UI_PASSWORD`
+  under 12 characters (the usual one) shows as `muster` unhealthy. Fix it in
+  `.env` and re-run this block.
 - The second `curl` fails but the first works: re-run Step 2, and check
   `tailscale serve status` forwards to `http://127.0.0.1:8105`.
 - A pull fails with **`denied`**, **`unauthorized`** or **`not found`** for

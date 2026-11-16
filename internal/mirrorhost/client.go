@@ -30,6 +30,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/attemptcode"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/noredirect"
 )
@@ -93,9 +94,10 @@ type Config struct {
 	// with one is shown in muster as "<codename>:<active window index>"
 	// (BuildLabels); nil labels nothing, and then no window index is read.
 	Codenames map[string]string
-	// AllowHTTP permits a plain http:// URL — FOR TESTS AND LOCAL DEVELOPMENT
-	// ONLY; the documented install is https. Without it only https is accepted:
-	// the token travels in the Authorization header of every connect.
+	// AllowHTTP permits a plain http:// URL to ANOTHER machine — FOR TESTS
+	// ONLY. Without it only https is accepted, and plain http to this
+	// machine's loopback interface (localhost, 127.0.0.0/8, [::1]), which never
+	// leaves it: the token travels in the Authorization header of every connect.
 	AllowHTTP bool
 	// NoPromptIndex makes this host behave as one that predates the prompt
 	// index (mirror.Msg.PromptIndex): a fresh view gets its backfill and no
@@ -174,8 +176,11 @@ func ConnectURL(base string, allowHTTP bool) (string, error) {
 	case "https":
 		u.Scheme = "wss"
 	case "http":
-		if !allowHTTP {
-			return "", fmt.Errorf("muster-mirror: %q is plain http, which would send the mirror token in cleartext; use https (-allow-http exists for tests and local development only)", base)
+		// Plain http to this machine's loopback interface never leaves it, so
+		// the token is not in cleartext on any network (internal/loopback).
+		// Anything else stays refused without -allow-http.
+		if !allowHTTP && !loopback.Host(u.Host) {
+			return "", fmt.Errorf("muster-mirror: %q is plain http to another machine, which would send the mirror token in cleartext; use https (plain http is accepted to this machine only — localhost, 127.0.0.1, [::1] — and -allow-http exists for tests)", base)
 		}
 		u.Scheme = "ws"
 	default:
