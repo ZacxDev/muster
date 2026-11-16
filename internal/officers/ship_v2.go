@@ -2,6 +2,7 @@ package officers
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,10 +71,17 @@ const (
 var BodySections = []string{"## Root cause", "## Evidence", "## Test", "## Rollback"}
 
 // BodyFirstLine is the first line a draft-stage officer's pull request body
-// must be, exactly.
+// must be, exactly — in a repository NOT marked public (PublicBodyFirstLine is
+// a public one's).
 func BodyFirstLine(officerID string, item int) string {
 	return fmt.Sprintf("Officer: %s · item %d · authored from untrusted inputs; review as such", officerID, item)
 }
+
+// PublicBodyFirstLine is the first line a draft-stage officer's pull request
+// body must be, exactly, in a repository marked public: the same warning to
+// the reviewer, naming neither the officer nor the item (muster keeps both in
+// its own record of the branch: PublicBranchStore).
+const PublicBodyFirstLine = "Authored from untrusted inputs by an automated agent; review as such"
 
 // ShipRepo is one repository a shipping officer writes to.
 type ShipRepo struct {
@@ -324,6 +332,80 @@ func BranchItem(prefix, officerID, branch string) (int, bool) {
 	}
 	n, err := strconv.Atoi(m[1])
 	return n, err == nil
+}
+
+// ---------------------------------------------------------------------------
+// A PUBLIC REPOSITORY'S DRAFT BRANCH (docs/officers.md "Public repositories").
+//
+// A branch name is world-readable the moment GitHub has it, so in a ship
+// repository marked `public` a draft officer's branch carries neither its
+// officer id nor its item number: it is <prefix>fix/<slug>-<token>, the slug
+// lower-case letters and hyphens (no digit, so no number can ride in it), the
+// token PublicTokenLen random lower-case letters minted by muster
+// (NewPublicBranch). The token is RANDOM, not derived from anything: nothing
+// about the item can be computed from it. muster records which officer and
+// item each such branch is for (PublicBranchStore), and every rule that read
+// the item from the branch reads that record instead.
+//
+// The prefix stays the repository's (pinned to DefaultBranchPrefix on the
+// draft stage): the target repository's own checks select officer pull
+// requests by it, and it names no officer.
+// ---------------------------------------------------------------------------
+
+// PublicTokenLen is how many letters a public branch's token has (26^12, about
+// 56 bits).
+const PublicTokenLen = 12
+
+// publicBranchSegment is the neutral segment after the prefix.
+const publicBranchSegment = "fix/"
+
+// maxPublicSlug bounds a public branch's slug.
+const maxPublicSlug = 40
+
+var (
+	publicSlugRE   = regexp.MustCompile(`^[a-z]+(?:-[a-z]+)*$`)
+	publicBranchRE = regexp.MustCompile(`^fix/[a-z]+(?:-[a-z]+)*-[a-z]{` + strconv.Itoa(PublicTokenLen) + `}$`)
+)
+
+// ValidPublicSlug reports whether slug may name a public branch: 1..40
+// lower-case letters in hyphen-separated words, no digit.
+func ValidPublicSlug(slug string) bool {
+	return len(slug) <= maxPublicSlug && publicSlugRE.MatchString(slug)
+}
+
+// NewPublicBranch mints a public repository's draft branch:
+// <prefix>fix/<slug>-<token>, the token PublicTokenLen letters from
+// crypto/rand. An invalid slug is an error.
+func NewPublicBranch(prefix, slug string) (string, error) {
+	if !ValidPublicSlug(slug) {
+		return "", fmt.Errorf("slug %q must be 1..%d lower-case letters in words joined by '-' (no digits)", slug, maxPublicSlug)
+	}
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	var b [PublicTokenLen]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("minting a branch token: %v", err)
+	}
+	tok := make([]byte, PublicTokenLen)
+	for i, c := range b {
+		// 256 = 9*26 + 22: values >= 234 would bias; re-draw them.
+		for c >= 234 {
+			var one [1]byte
+			if _, err := rand.Read(one[:]); err != nil {
+				return "", fmt.Errorf("minting a branch token: %v", err)
+			}
+			c = one[0]
+		}
+		tok[i] = letters[int(c)%26]
+	}
+	return prefix + publicBranchSegment + slug + "-" + string(tok), nil
+}
+
+// PublicBranchShape reports whether branch is a public repository's draft
+// branch shape under prefix (NewPublicBranch's). The shape alone proves
+// nothing about whose it is: that is muster's record (PublicBranchStore).
+func PublicBranchShape(prefix, branch string) bool {
+	rest, ok := strings.CutPrefix(branch, prefix)
+	return ok && ValidRefSuffix(branch) && publicBranchRE.MatchString(rest)
 }
 
 // MatchForbidden reports whether repository path p matches forbidden-path

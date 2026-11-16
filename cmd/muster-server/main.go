@@ -947,6 +947,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A draft officer's review-loop announcements (migration 0119):
 			// shared by replicas, kept across a restart.
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
+			// A draft officer's public branches and their items (migration
+			// 0136): the only proof a public branch is the officer's.
+			ocfg.PublicBranches = officers.NewPGPublicBranchStore(a.pool)
 			// A builtin officer's type, charter, switch and queue live here
 			// too (migration 0118); one declared with no database is refused.
 			ocfg.Builtin = officerStore

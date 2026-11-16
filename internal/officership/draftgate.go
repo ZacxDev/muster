@@ -84,13 +84,19 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	if raw, ok := m["draft"]; !ok || json.Unmarshal(raw, &draft) != nil || !draft {
 		return refused(`a pull request that is not a draft: a draft officer opens every pull request with "draft": true`)
 	}
-	item, _ := officers.BranchItem(sr.BranchPrefix, g.OfficerID, head)
+	item, ok, err := g.branchItem(ctx, sr, head)
+	if !ok {
+		return refused("a pull request from %s: %s", head, g.notOwnBranch(sr, err))
+	}
 	title, body := jsonString(m["title"]), jsonString(m["body"])
-	if err := g.bodyContract(body, item); err != nil {
+	if err := g.bodyContract(sr, body, item); err != nil {
 		return err
 	}
 	if redact.HasSecretValue(title) || redact.HasSecretValue(body) {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, "its title or body has a credential-shaped value")
+	}
+	if why := g.officerNamedWhy(sr, "its title or body", title+"\n"+body); why != "" {
+		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
 	}
 	if why := g.publicTextWhy(sr, "its title or body", title+"\n"+body); why != "" {
 		return g.contentRefusal(ctx, sr, 0, "", head, nil, why)
@@ -101,7 +107,7 @@ func (g *PushGate) draftCreate(ctx context.Context, sr officers.ShipRepo, gh Git
 	if err := g.acquireCreate(ctx); err != nil {
 		return err
 	}
-	err := g.rateLimits(ctx, sr, item)
+	err = g.rateLimits(ctx, sr, item)
 	if err == nil {
 		err = g.refuseOnHit(ctx, sr, 0, head, g.checkComparison(ctx, sr, gh, sr.Base, head))
 	}
@@ -175,16 +181,23 @@ func (g *PushGate) draftEdit(ctx context.Context, sr officers.ShipRepo, gh GitHu
 		if json.Unmarshal(raw, &body) != nil {
 			return refused("a body that is not a string")
 		}
-		item, ok := officers.BranchItem(sr.BranchPrefix, g.OfficerID, pr.HeadRef)
-		if !ok {
+		item, ok, err := g.branchItem(ctx, sr, pr.HeadRef)
+		if !ok && !sr.Public {
 			return refused("pull request #%d's branch %s is not %s%s/<item>-<slug>, so its item is unknown", pr.Number, pr.HeadRef,
 				sr.BranchPrefix, officers.Slug(g.OfficerID))
 		}
-		if err := g.bodyContract(body, item); err != nil {
+		if !ok {
+			return refused("pull request #%d's branch %s is not this officer's, so its item is unknown: %s", pr.Number, pr.HeadRef,
+				g.notOwnBranch(sr, err))
+		}
+		if err := g.bodyContract(sr, body, item); err != nil {
 			return err
 		}
 		if redact.HasSecretValue(body) {
 			return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "its new body has a credential-shaped value")
+		}
+		if why := g.officerNamedWhy(sr, "its new body", body); why != "" {
+			return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
 		}
 		if why := g.publicTextWhy(sr, "its new body", body); why != "" {
 			return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
@@ -192,6 +205,9 @@ func (g *PushGate) draftEdit(ctx context.Context, sr officers.ShipRepo, gh GitHu
 	}
 	if redact.HasSecretValue(jsonString(m["title"])) {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "its new title has a credential-shaped value")
+	}
+	if why := g.officerNamedWhy(sr, "its new title", jsonString(m["title"])); why != "" {
+		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
 	}
 	if why := g.publicTextWhy(sr, "its new title", jsonString(m["title"])); why != "" {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
@@ -204,18 +220,27 @@ func (g *PushGate) draftComment(ctx context.Context, sr officers.ShipRepo, pr PR
 	if redact.HasSecretValue(body) {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, "the comment has a credential-shaped value")
 	}
+	if why := g.officerNamedWhy(sr, "the comment", body); why != "" {
+		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
+	}
 	if why := g.publicTextWhy(sr, "the comment", body); why != "" {
 		return g.contentRefusal(ctx, sr, pr.Number, pr.HeadSHA, pr.HeadRef, nil, why)
 	}
 	return nil
 }
 
-// bodyContract refuses a body without the first line and the sections.
-func (g *PushGate) bodyContract(body string, item int) error {
+// bodyContract refuses a body without the first line and the sections. In a
+// repository NOT marked public the first line names the officer and the
+// branch's item (officers.BodyFirstLine); in a public one it names neither
+// (officers.PublicBodyFirstLine): muster's record of the branch holds the item.
+func (g *PushGate) bodyContract(sr officers.ShipRepo, body string, item int) error {
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
-	want := officers.BodyFirstLine(g.OfficerID, item)
+	want, whose := officers.BodyFirstLine(g.OfficerID, item), "the item is the branch's"
+	if sr.Public {
+		want, whose = officers.PublicBodyFirstLine, "a public repository: no officer id, no item number"
+	}
 	if strings.TrimSpace(lines[0]) != want {
-		return refused("the body's first line must be exactly %q (the item is the branch's)", want)
+		return refused("the body's first line must be exactly %q (%s)", want, whose)
 	}
 	have := map[string]bool{}
 	for _, l := range lines[1:] {
@@ -231,6 +256,22 @@ func (g *PushGate) bodyContract(body string, item int) error {
 		return refused("the body is missing the section heading(s) %s, each on a line of its own", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// officerNamedWhy is why text (a title, a body, a comment) may not go to sr,
+// "" when it may: sr is public and text names this officer — its id or its
+// slug, compared without case. The officer is muster's internal name, which a
+// public repository never shows (its first line, branch and item are kept
+// out the same way). The refusal never quotes the text.
+func (g *PushGate) officerNamedWhy(sr officers.ShipRepo, what, text string) string {
+	if !sr.Public || g.OfficerID == "" {
+		return ""
+	}
+	lt := strings.ToLower(text)
+	if strings.Contains(lt, strings.ToLower(g.OfficerID)) || strings.Contains(lt, strings.ToLower(officers.Slug(g.OfficerID))) {
+		return fmt.Sprintf("%s names this officer's internal id (a public repository)", what)
+	}
+	return ""
 }
 
 // rateLimits refuses a new pull request for item in sr over a limit. EVERY
@@ -295,10 +336,15 @@ func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item in
 // itemOf is the item of the officer's pull request p in r: from its body's
 // first line, else its branch (read from GitHub; a failed read is not
 // guessed: it counts nowhere, and is logged).
+//
+// In a public repository the body names no item: the branch, through muster's
+// record (branchItem), is the only source.
 func (g *PushGate) itemOf(ctx context.Context, r officers.ShipRepo, gh GitHub, p PR) (int, bool) {
-	first, _, _ := strings.Cut(strings.ReplaceAll(p.Body, "\r\n", "\n"), "\n")
-	if n, ok := bodyItem(g.OfficerID, strings.TrimSpace(first)); ok {
-		return n, true
+	if !r.Public {
+		first, _, _ := strings.Cut(strings.ReplaceAll(p.Body, "\r\n", "\n"), "\n")
+		if n, ok := bodyItem(g.OfficerID, strings.TrimSpace(first)); ok {
+			return n, true
+		}
 	}
 	head := p.HeadRef
 	if head == "" {
@@ -309,7 +355,11 @@ func (g *PushGate) itemOf(ctx context.Context, r officers.ShipRepo, gh GitHub, p
 		}
 		head = full.HeadRef
 	}
-	return officers.BranchItem(r.BranchPrefix, g.OfficerID, head)
+	n, ok, err := g.branchItem(ctx, r, head)
+	if err != nil {
+		g.logf("officers: %s: pull request #%d in %s: %v", g.OfficerID, p.Number, r.Repo, err)
+	}
+	return n, ok
 }
 
 // bodyItem is the item a body's first line names, when it is exactly
@@ -861,16 +911,12 @@ func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitH
 	for _, p := range prs {
 		listed[p.Number] = true
 	}
-	prefix := sr.BranchPrefix + officers.Slug(g.OfficerID) + "/"
-	branches, err := gh.Branches(ctx, prefix)
+	branches, err := g.OwnBranches(ctx, sr, gh)
 	if err != nil {
 		return prs, fmt.Errorf("could not list the officer's branches to cross-check the author filter: %v", err)
 	}
 	var missed []string
 	for _, b := range branches {
-		if !strings.HasPrefix(b.Name, prefix) {
-			continue
-		}
 		found, err := gh.PRsForBranch(ctx, b.Name, state)
 		if err != nil {
 			return prs, fmt.Errorf("could not look up the pull requests from %s to cross-check the author filter: %v", b.Name, err)
@@ -889,6 +935,45 @@ func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitH
 			"so it cannot be trusted to list them all", login, strings.Join(missed, ", "))
 	}
 	return prs, nil
+}
+
+// OwnBranches is every branch of the draft officer in sr, as GitHub lists it:
+// in a repository NOT marked public, those under <prefix><officer slug>/; in a
+// public one, those muster's record names (PublicBranches) — the name says
+// nothing of whose it is. No record (or one that cannot be read) for a public
+// repository is an error, never an empty list: a caller counting or reporting
+// the officer's branches must not read "none" from it.
+func (g *PushGate) OwnBranches(ctx context.Context, sr officers.ShipRepo, gh GitHub) ([]Branch, error) {
+	prefix := sr.BranchPrefix + officers.Slug(g.OfficerID) + "/"
+	keep := func(name string) bool { return strings.HasPrefix(name, prefix) }
+	if sr.Public {
+		if g.PublicBranches == nil {
+			return nil, errors.New("muster keeps no record of this officer's public branches")
+		}
+		names, err := g.PublicBranches.Branches(ctx, sr.Repo)
+		if err != nil {
+			return nil, fmt.Errorf("muster's record of this officer's public branches could not be read: %v", err)
+		}
+		if len(names) == 0 {
+			return nil, nil
+		}
+		set := map[string]bool{}
+		for _, n := range names {
+			set[n] = true
+		}
+		prefix, keep = sr.BranchPrefix, func(name string) bool { return set[name] }
+	}
+	branches, err := gh.Branches(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	var out []Branch
+	for _, b := range branches {
+		if keep(b.Name) {
+			out = append(out, b)
+		}
+	}
+	return out, nil
 }
 
 // openPRsFrom is every open pull request from branch in sr (not a fork's).
@@ -1047,7 +1132,7 @@ func (g *PushGate) closeOnHit(ctx context.Context, sr officers.ShipRepo, gh GitH
 		closed = false
 		what = fmt.Sprintf("could NOT close pull request #%d (%s) in %s after %s (%v); a human must", pr.Number, pr.HeadRef, sr.Repo, after, err)
 	}
-	if _, own := officers.BranchItem(sr.BranchPrefix, g.OfficerID, pr.HeadRef); closed && deleteBranch && own &&
+	if _, own, _ := g.branchItem(ctx, sr, pr.HeadRef); closed && deleteBranch && own &&
 		(pr.HeadRepo == "" || strings.EqualFold(pr.HeadRepo, sr.Repo)) {
 		if err := gh.DeleteBranch(ctx, pr.HeadRef); err != nil {
 			what += fmt.Sprintf(", and could NOT delete branch %s, which holds the refused change (%v); a human must", pr.HeadRef, err)
@@ -1122,7 +1207,7 @@ func (g *PushGate) publicBranchCheck(ctx context.Context, sr officers.ShipRepo, 
 		return
 	}
 	what := "left the branch (it is not the officer's own branch shape)"
-	if _, own := officers.BranchItem(sr.BranchPrefix, g.OfficerID, branch); own {
+	if _, own, _ := g.branchItem(ctx, sr, branch); own {
 		if err := gh.DeleteBranch(ctx, branch); err != nil {
 			what = fmt.Sprintf("could NOT delete the branch (%v); a human must", err)
 		} else {

@@ -20,7 +20,7 @@ type Orphan struct {
 }
 
 // OrphanBranches is the daily orphan report of a draft officer: every branch
-// under each ship repository's prefix and the officer's slug that has no pull
+// of the officer in each ship repository (own) that has no pull
 // request in any state, whose head commit is older than
 // officers.OrphanBranchAge at now (each branch's pull requests found by the
 // branch, GitHub's head filter, never in a newest-N window). 🔴 IT ONLY LISTS:
@@ -28,25 +28,23 @@ type Orphan struct {
 // branch deletion. (muster deletes a branch only after closing its pull
 // request on a content hit: draftgate.go closeOnHit.)
 // ghFor is the GitHub of each repository (PushGate.ghFor).
-func OrphanBranches(ctx context.Context, officerID, primary string, ship *officers.Ship, ghFor func(string) GitHub, now time.Time) ([]Orphan, error) {
+//
+// own lists the officer's branches in a repository (PushGate.OwnBranches: by
+// its prefix and slug in a private repository, by muster's record in a public
+// one, whose branch names carry neither).
+func OrphanBranches(ctx context.Context, primary string, ship *officers.Ship, ghFor func(string) GitHub,
+	own func(context.Context, officers.ShipRepo, GitHub) ([]Branch, error), now time.Time) ([]Orphan, error) {
 	var out []Orphan
 	for _, r := range ship.RepoList(primary) {
 		gh := ghFor(r.Repo)
 		if gh == nil {
 			return nil, fmt.Errorf("no GitHub reader for %s", r.Repo)
 		}
-		prefix := r.BranchPrefix + officers.Slug(officerID) + "/"
-		branches, err := gh.Branches(ctx, prefix)
+		branches, err := own(ctx, r, gh)
 		if err != nil {
 			return nil, fmt.Errorf("listing %s's branches: %v", r.Repo, err)
 		}
-		if len(branches) == 0 {
-			continue
-		}
 		for _, b := range branches {
-			if !strings.HasPrefix(b.Name, prefix) {
-				continue
-			}
 			// 🔴 BY THE BRANCH, NOT IN A WINDOW: GitHub's head filter finds a
 			// pull request from it in any state however old (a newest-N list
 			// aged a live draft's branch into "delete it by hand").

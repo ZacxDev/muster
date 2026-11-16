@@ -354,6 +354,14 @@ func publicRig(t *testing.T) *draftRig {
 	}
 	r.g.Ship.InternalPatternsFile = p
 	r.g.Ship.Repos[1].Public = true
+	// muster's record of the officer's public branches: dBranch is item 17's.
+	// (A record only ever holds a name officers.NewPublicBranch minted —
+	// migration 0136 CHECKs the shape — but these tests are about the scans,
+	// which read the name whatever its shape, so the rig's branch is kept.)
+	r.g.PublicBranches = newMemRecord(dOfficer)
+	if _, err := r.g.PublicBranches.Mint(context.Background(), dInfra, 17, dBranch); err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
 
@@ -391,13 +399,13 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 			r.infra.compares["trunk..."+dBranch] = c
 		}, nil, "line 2"},
 		"the title": {nil, func(r *draftRig) error {
-			m := goodCreate()
+			m := goodPublicCreate()
 			m["title"] = "Fix the " + leak + " runbook"
 			return r.create(m)
 		}, "line 2"},
 		"the body": {nil, func(r *draftRig) error {
-			m := goodCreate()
-			m["body"] = goodBody(17) + "\nSee 198.51.100.41\n"
+			m := goodPublicCreate()
+			m["body"] = goodPublicBody() + "\nSee 198.51.100.41\n"
 			return r.create(m)
 		}, "line 4"},
 		"a PATCHed title": {nil, func(r *draftRig) error { return r.patch(map[string]any{"title": "x " + leak}) }, "line 2"},
@@ -411,7 +419,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 		}
 		do := c.do
 		if do == nil {
-			do = func(r *draftRig) error { return r.create(goodCreate()) }
+			do = func(r *draftRig) error { return r.create(goodPublicCreate()) }
 		}
 		err := do(r)
 		if !isConflict(err) || !strings.Contains(err.Error(), "internal-details pattern "+c.line) {
@@ -431,7 +439,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 	r := publicRig(t)
 	r.content("README.md", strings.Replace(readmeBase, "The end.", "Ask "+leak, 1), readmeHead)
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-Ask " + leak + "\n+The finish."})
-	if err := r.create(goodCreate()); err != nil {
+	if err := r.create(goodPublicCreate()); err != nil {
 		t.Errorf("control: removing an internal detail was refused: %v", err)
 	}
 	// Control: the same added line in a repository NOT marked public.
@@ -449,7 +457,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 	}
 	// The branch name is the first thing scanned (allowedRef), so the refusal
 	// may be its 403 rather than the content's 409: refused either way.
-	if err := r.create(goodCreate()); !(isConflict(err) || isGateRefusal(err)) || !strings.Contains(err.Error(), "could not") {
+	if err := r.create(goodPublicCreate()); !(isConflict(err) || isGateRefusal(err)) || !strings.Contains(err.Error(), "could not") {
 		t.Errorf("an unreadable pattern file: err = %v, want refused", err)
 	}
 }
@@ -587,7 +595,7 @@ func TestAnUnreadableForbiddenListStillRunsThePublicScan(t *testing.T) {
 	r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
 	r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"})
-	err := r.create(goodCreate())
+	err := r.create(goodPublicCreate())
 	if !isConflict(err) || !strings.Contains(err.Error(), dListFile) || !strings.Contains(err.Error(), "internal-details pattern line 2") {
 		t.Fatalf("err = %v, want a 409 naming the list file AND the pattern line", err)
 	}

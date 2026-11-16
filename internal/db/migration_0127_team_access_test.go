@@ -15,6 +15,7 @@ import "testing"
 var ownedAfter0127 = []string{
 	"agent_secrets",                                // 0128
 	"officer_contacts", "officer_contact_events", // 0132
+	"officer_public_branches", // 0136
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares
@@ -22,6 +23,7 @@ var ownedAfter0127 = []string{
 var sharedAfter0127 = []string{
 	"agents",                                     // 0131
 	"officer_contacts", "officer_contact_events", // 0132
+	"officer_public_branches", // 0136
 }
 
 func TestMigration0127TeamAccess(t *testing.T) {

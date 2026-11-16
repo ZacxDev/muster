@@ -116,6 +116,10 @@ type officerRuntime struct {
 	// (prLoopsFor), made once.
 	memLoopsOnce sync.Once
 	memLoops     *officers.MemPRLoopStore
+	// memPublicBranches is the in-memory record of draft officers' public
+	// branches when no store is configured (publicBranchesFor), made once.
+	memPublicBranchesOnce sync.Once
+	memPublicBranches     *officers.MemPublicBranchStore
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.
@@ -280,9 +284,13 @@ type OfficersConfig struct {
 	// PRLoops keeps draft officers' review-loop announcements
 	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
 	// which a restart forgets.
-	PRLoops     officers.PRLoopStore
-	LLMUpstream string
-	LLMHTTP     *http.Client
+	PRLoops officers.PRLoopStore
+	// PublicBranches keeps draft officers' public branches and the item each
+	// is for (officers.PGPublicBranchStore, migration 0136); nil keeps them in
+	// this process's memory, which a restart forgets.
+	PublicBranches officers.PublicBranchStore
+	LLMUpstream    string
+	LLMHTTP        *http.Client
 	// HostSpawns keeps the host officers' spawned sessions
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
