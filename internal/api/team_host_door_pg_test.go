@@ -64,7 +64,7 @@ func listedTools(t *testing.T, f *attnFixture, hdr map[string]string) []string {
 func TestATeamHostIsListedOnlyItsKeptTools(t *testing.T) {
 	f, _, teamTok, userTok := newTeamHostFixture(t)
 	got := strings.Join(listedTools(t, f, mirrorAs(teamTok, focusSID)), " ")
-	if want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status track_task muster_help"; got != want {
+	if want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status muster_help"; got != want {
 		t.Fatalf("a team host's tools = %s\nwant %s", got, want)
 	}
 	if control := strings.Join(listedTools(t, f, mirrorAs(userTok, focusSID)), " "); !strings.Contains(control, attentionAnswerTool) || !strings.Contains(control, agentsListTool) {

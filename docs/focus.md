@@ -325,9 +325,13 @@ comes back when the title changes.
 ## A session's tasks
 
 A mirrored session (Claude Code or opencode) says which tasks it works under
-with muster's `track_task` tool, and the chief reads it in `fleet_list`.
-It is the session's own word: muster never infers it from the focus, the
-transcript or a keyword match. The mirror door's instructions tell every session
+with muster's `track_task` tool, and the chief reads it in `fleet_list`. The tool
+and its instruction are offered only when a plugin task namespace is configured
+(`MUSTER_PLUGIN_TASK_NAMESPACES`), since otherwise no key is valid; its example
+key is in that namespace.
+Muster never infers it from the focus, the transcript or a keyword match. Like
+focus, what a session declares (its `untracked` line and `task_note`) is
+untrusted data, and the tools' `untrusted` note says so. The mirror door's instructions tell every session
 to call it when it starts or switches work.
 
 | argument | rule |

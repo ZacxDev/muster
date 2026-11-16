@@ -98,7 +98,8 @@ type fleetListRow struct {
 	// when its host does not say): what active_within_hours reads.
 	ActiveAt string `json:"active_at,omitempty"`
 	// TaskLink is what a mirrored session declared with track_task (tasks,
-	// untracked, task_note), and TaskSetAt when — the session's own word,
+	// untracked, task_note), and TaskSetAt when — what the session declared
+	// (untrusted text, like focus: focus.UntrustedTasksNote names it),
 	// never inferred (internal/focus tasklink.go).
 	focus.TaskLink
 	TaskSetAt string `json:"task_set_at,omitempty"`
@@ -178,7 +179,7 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 		}
 		rows = append(rows, r)
 	}
-	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
+	return toolJSON(map[string]any{"untrusted": focus.UntrustedTasksNote, "sessions": rows})
 }
 
 func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {

@@ -140,7 +140,8 @@ type RouteStore interface {
 	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
 	// BatchRoutes and FinishBatchDigest are a route_many
 	// batch's members and its ONE digest (route_batches.go, migration 0136).
-	BatchRoutes(ctx context.Context, batchID string) ([]Route, error)
+	BatchRoutes(ctx context.Context, batchID string) (Batch, error)
+	SealBatch(ctx context.Context, batchID string, routeIDs []string) error
 	FinishBatchDigest(ctx context.Context, batchID string) error
 }
 

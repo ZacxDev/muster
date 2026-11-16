@@ -356,8 +356,9 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 		}
 	}
 	// track_task — the session recording which tasks it works under
-	// (track_task_tool.go) — with the focus store, whose row holds it.
-	if s.ext.Focus != nil {
+	// (track_task_tool.go) — with the focus store, whose row holds it, and a
+	// plugin task namespace, without which no key is valid.
+	if s.trackTaskOn() {
 		out = append(out, trackTaskToolDef())
 	}
 	// agents_list — the owner reading their own agents through their own
@@ -534,8 +535,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	if s.attentionToolsOn() && !remote {
 		instructions += " " + mirrorAttentionInstruction
 	}
-	if s.ext.Focus != nil && !remote {
-		instructions += " " + trackTaskInstruction
+	if s.trackTaskOn() && !remote {
+		instructions += " " + trackTaskInstruction()
 	}
 	// 🔴 THE SESSION IS BOUND AT tools/call, NOT AT CONNECT. initialize,
 	// tools/list, ping and notifications say nothing session-specific — the
