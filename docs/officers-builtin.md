@@ -64,12 +64,12 @@ empty array is enough:
   value: "[]"
 ```
 
-With a database (`DATABASE_URL`) this turns the **built-in store** on: the
-admin API at `/api/officers/…` (the `muster officer` CLI) and the Attention
-sweep. No officer runs yet. The boot log says:
+The **built-in store** is then on: the admin API at `/api/officers/…` (the
+`muster officer` CLI) and the Attention sweep. No officer runs yet. The boot
+log says:
 
 ```
-officers: ON — empty roster (MUSTER_OFFICERS declares none)
+officers: ON — MUSTER_OFFICERS declares none; officers declared in the database (`muster officer create`) run with no restart
 officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s, schedules every 30s (UTC cron)
 ```
 
