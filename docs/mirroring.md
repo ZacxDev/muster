@@ -235,7 +235,7 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   host's icon.
 
 ![The sidebar's search open, matching Claude Code windows on two hosts by their kind](img/sidebar-search.png)
-![A session page with the switcher's search open, finding a window by its codename](img/switcher-search.png)
+![A session page with the switcher's search open, finding a session by its name](img/switcher-search.png)
 
 ### Session tags
 

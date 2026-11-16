@@ -175,12 +175,27 @@ writes the frames of the README's two animations, each to its own directory with
 an ffmpeg concat list (each frame's hold), and the make target assembles each GIF
 from them:
 
-- `phone-flow.gif` (`e2e/.state/phone-flow/`): switch to a session by search,
-  dictate a reply, send it, and watch the session answer;
+- `phone-flow.gif` (`e2e/.state/phone-flow/`): switch to a session by
+  searching a word of its name, dictate a reply, send it, and watch the session
+  answer;
 - `ask-flow.gif` (`e2e/.state/ask-flow/`): a session asks a question (Claude
   Code's `AskUserQuestion`, registered by the real `muster-mirror ask` hook), it
   shows in the sidebar and on the Asks page, the answer is tapped in the session
   and typed into the fake host's picker, and the session carries on.
+
+🔴 **Every session is called by its work, never by a codename.** A Claude Code
+window's name is written as a focus refresh writes it (`e2e/mkchat`, judged by
+the same name bar over the conversation's first turn); a window with no
+conversation carries a work-style host label (`muster-mirror -labels-file`);
+the fixture's tmux sessions are named for their work too (`release`, `tasks`),
+since an ask's card shows a window's tmux address. `e2e/docshots/names.ts`
+checks every shot and every animation frame before it is written: a sidebar
+row, switcher entry or page header that calls a session by its codename fails
+the run.
+
+Three README images are not made here: `hero.gif`, `queue-next.png` and
+`officer-ask.png` come from a separate synthetic demo fleet (fake hosts and an
+invented fleet, the same checks); `make screenshots` does not regenerate them.
 
 Then it compresses each PNG with pngquant when it is installed, and fails if a
 PNG is over 200 KB or a GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
