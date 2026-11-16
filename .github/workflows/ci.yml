@@ -44,7 +44,16 @@ on:
   push:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  # 🔴 `ready_for_review` IS A TRIGGER BECAUSE A DRAFT PR RUNS NO E2E (the
+  # `e2e-leg` and `e2e` jobs). Without it, marking a draft ready starts no run,
+  # and the PR never gets the required `e2e (playwright, chromium)` check. The
+  # ready run is a FULL run in the PR's usual concurrency group: it cancels a
+  # draft run still in progress and gives the head commit one complete verdict.
+  # The first four types are GitHub's defaults (`edited` and
+  # `converted_to_draft` start nothing). Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # ⚠ NO `schedule` (nightly) TRIGGER, ON PURPOSE (PR #691): a scheduled run
   # lands on main's HEAD sha, and the downstream release tool refuses a sha
   # unless EVERY CI run for it succeeded (see the tag filter above) — so one
@@ -899,10 +908,18 @@ jobs:
   # the JSON report and fails on any failure or ANY skip — the PAIR is printed,
   # never a bare exit code. `playwright test` exits 0 when everything skipped; that is the green
   # this step exists to refuse.
+  #
+  # 🔴 NOT ON A DRAFT PULL REQUEST (operator decision, 2026-11-16). 166 of the
+  # 184 CI runs of the last 50 merged PRs ran while the PR was a draft, and the
+  # four legs were half of each run's job-minutes and its longest path. A
+  # draft's runs skip the legs; marking it ready starts a full run that has
+  # them (the `ready_for_review` trigger), and every push to `main` or a tag
+  # runs them as before. The `e2e` job below is the required check and is never
+  # satisfied by a draft run (see there).
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     strategy:
       # Every leg always finishes, so one red leg never hides another's verdict.
@@ -1015,20 +1032,43 @@ jobs:
   # not red. Not `always()`: that also ran it on a CANCELLED run (a PR run
   # superseded by a newer push), where it went red on a verdict nobody needs and
   # took a runner slot to do it.
+  #
+  # 🔴 `e2e (playwright, chromium)` IS THE CHECK BRANCH PROTECTION REQUIRES ON
+  # `main`, AND A DRAFT RUN NEVER PRODUCES A CHECK OF THAT NAME. Branch
+  # protection counts a SKIPPED job as passing, so a job that merely skipped on
+  # a draft would leave a passing `e2e (playwright, chromium)` on the head
+  # commit, and the PR could merge the moment it was marked ready, before the
+  # ready run's e2e had started. So on a draft this job still RUNS (publish-gate
+  # needs it to succeed), but under another name, `e2e (draft PR, not run)`, and
+  # it only asserts that the legs were skipped. The required name exists only
+  # on a non-draft run, where it fails unless every leg succeeded. A ready PR
+  # therefore waits for e2e that actually ran. Pinned by
+  # TestCIRunsE2EOnlyOnceAPullRequestIsReady (internal/modulegate).
   e2e:
-    name: e2e (playwright, chromium)
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'e2e (draft PR, not run)' || 'e2e (playwright, chromium)' }}
     needs: [main-verdict, e2e-leg]
     # Skipped with the legs on a tag whose main run vouched for it (main-verdict).
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
+    env:
+      E2E_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
     steps:
+      - name: a draft PR runs no e2e, so the legs must have been skipped
+        if: ${{ env.E2E_DRAFT == 'true' }}
+        run: |
+          echo "draft pull request: e2e-leg result: ${{ needs.e2e-leg.result }} (the legs run once the PR is marked ready)"
+          test "${{ needs.e2e-leg.result }}" = skipped
+
       - uses: actions/checkout@v6
+        if: ${{ env.E2E_DRAFT != 'true' }}
 
       - uses: actions/setup-node@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           node-version: 22
 
       - name: every leg succeeded
+        if: ${{ env.E2E_DRAFT != 'true' }}
         run: |
           echo "e2e-leg result: ${{ needs.e2e-leg.result }}"
           test "${{ needs.e2e-leg.result }}" = success
@@ -1036,6 +1076,7 @@ jobs:
       # Every attempt's leg artifacts, each in a directory of its own (they are
       # named by attempt, so none overwrites another).
       - uses: actions/download-artifact@v4
+        if: ${{ env.E2E_DRAFT != 'true' }}
         with:
           pattern: e2e-results-leg-*
           path: e2e-legs
@@ -1052,6 +1093,7 @@ jobs:
       # passing test (NOT RUN: a spec in no leg, or a misspelled legs.json
       # entry), none in two reports (RAN TWICE: a spec in two legs).
       - name: verdict — the pass floor and the skip cap, over every leg
+        if: ${{ env.E2E_DRAFT != 'true' }}
         working-directory: e2e
         run: |
           node pick-legs.mjs ../e2e-legs > ../e2e-legs-picked.txt
