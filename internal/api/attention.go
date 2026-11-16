@@ -299,6 +299,15 @@ type attentionItem struct {
 	// ask, an unrouted message, a chief nudge. It names no session; a chief
 	// nudge's is found through its decision (nudgeSessionPath).
 	systemAsk bool
+	// owner is an ask's owner (attention.Ask.Owner): the reader's own, or —
+	// for a member — a TEAM's (team sharing 2b.3). Set by askItem; zero for
+	// every other item.
+	owner int64
+	// watchOnly, when set, is why this ask is drawn UNANSWERABLE for the
+	// reader (teamWatcherOf: a viewer of the team that owns it): no options,
+	// no answer box, no Dismiss — this sentence in their place. Set by
+	// withAskBoxes, for the pages that draw answer forms.
+	watchOnly string
 }
 
 // attentionCard is the entry an attention item belongs to: an agent's (an
@@ -437,7 +446,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
-		ownerCard: a.OwnerCard}
+		ownerCard: a.OwnerCard, owner: a.Owner}
 	if a.Asker.System {
 		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
@@ -897,7 +906,9 @@ func attentionFocusHTML(title string, age ui.FocusAge) string {
 // withAskBoxes sets what each ask's answer card draws besides its form (in
 // place): the microphone (every ask, when dictation is on) and, with links,
 // its "View in session" link (attentionSessionPath — the ask page's own rule,
-// so the card and the page cannot disagree). ctx is the owner's principal.
+// so the card and the page cannot disagree) — or, for a team's ask read by a
+// viewer of the team, watchOnly in place of the answer controls. ctx is the
+// reader's principal.
 //
 // links is false on a session page's asks block (attention_asker.go): those
 // asks are that very session's, and a link to the page already open is noise.
@@ -913,7 +924,17 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		if items[i].Kind != attentionKindAsk {
 			continue
 		}
-		items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
+		// 🔴 A TEAM'S ASK, READ BY A VIEWER OF THE TEAM (team sharing 2b.3,
+		// 2b.4): drawn unanswerable, as the session view draws a team host's
+		// question cards for a viewer (handleMirrorAsks) — one predicate,
+		// teamWatcherOf. Drawing only: the answer and the dismissal are the
+		// operator's write role (row-level security) and a team's end card is
+		// refused a viewer again on the tap (teamEndCardRefusal).
+		if teamWatcherOf(ctx, items[i].owner) {
+			items[i].watchOnly = TeamAskViewerNote
+		} else {
+			items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
+		}
 		if items[i].ownerCard && owner > 0 {
 			if a, err := s.ext.Attention.Get(ctx, items[i].AskID); err == nil {
 				items[i].proposal = s.proposalKickoffBody(ctx, a)
@@ -1823,8 +1844,8 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(officerContextHTML(it.Context))
-	switch it.Kind {
-	case attentionKindNotice:
+	switch {
+	case it.Kind == attentionKindNotice:
 		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
 		// dismissed, never answered (attention.ErrNotice). Its tmux target is
 		// in the head (the place it names, data-attention-source); Dismiss is
@@ -1832,7 +1853,13 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		b.WriteString(`<div class="flex justify-end">` + dismiss + `</div>
 <form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
-	case attentionKindAsk:
+	case it.Kind == attentionKindAsk && it.watchOnly != "":
+		// A VIEWER of the team that owns it (withAskBoxes): no option, no
+		// answer box and no Dismiss — nothing the reader could tap that the
+		// server would refuse. Why, in their place.
+		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
+`)
+	case it.Kind == attentionKindAsk:
 		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss, returnTo == ""))
 		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)

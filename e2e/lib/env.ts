@@ -444,6 +444,11 @@ export const serverSwitcherStubPort = port + 404;
 // tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
 // desktop width — its own server (plugins on), no mirror host.
 export const draftCardPort = port + 405;
+// tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
+// in through its own real GoTrue (+410 to +412: clear of the blocks above).
+export const teamUxMainPort = port + 410;
+export const teamUxBrowserPort = port + 411;
+export const teamUxGotruePort = Number(process.env.MUSTER_E2E_TEAMUX_GOTRUE_PORT ?? port + 412);
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

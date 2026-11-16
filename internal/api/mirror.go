@@ -460,6 +460,26 @@ func (s *Server) stepUpView(r *http.Request) *ui.StepUpView {
 	return v
 }
 
+// stepUpFormsHTML is "Confirm it's you" for a page whose gated writes are
+// plain forms marked data-step-up-form: the dialog (window.musterStepUp, with
+// why — the page's own sentence about its gate, naming the window — in place
+// of the typing one) and ui.StepUpFormScript, as HTML. On a stale sign-in such
+// a form asks BEFORE it submits, and submits once confirmed — what was typed
+// into it kept. THE ONE WAY a form page offers the dialog (the Asks page's
+// reply drafts, /plugins, a team's hosts and viewer plugins): a form marked
+// data-step-up-form on a page without it submits straight into the server's
+// 403, with no way to confirm.
+func (s *Server) stepUpFormsHTML(r *http.Request, why string) string {
+	v := s.stepUpView(r)
+	v.Why = why
+	var b strings.Builder
+	if err := ui.StepUpDialog(v).Render(&b); err != nil {
+		s.logger.Printf("render the confirm dialog: %v", err)
+		return ""
+	}
+	return b.String() + ui.StepUpFormScript
+}
+
 // freshForMillis is how long the request's sign-in stays fresh enough for a
 // step-up, in milliseconds from now; 0 when it is not fresh (or unknown).
 func freshForMillis(ctx context.Context, now time.Time) int64 {

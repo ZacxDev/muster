@@ -606,7 +606,11 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
-	b.WriteString(s.pairSectionHTML(r))
+	if pairs := s.pairSectionHTML(r); pairs != "" {
+		// A pairing request's Approve is step-up gated (decidePairForm) and
+		// its form is marked data-step-up-form: the dialog it asks with.
+		b.WriteString(pairs + s.stepUpFormsHTML(r, PairStepUpWhy()))
+	}
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
 	// them as it was (/plugins#draft-<id>, on a phone's older notification)

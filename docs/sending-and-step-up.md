@@ -578,6 +578,15 @@ you typed is lost while the dialog is open. You can confirm in two ways:
 
 Both are same-origin only and throttled like sign-in.
 
+The same dialog guards the step-up gated **forms** on other pages: approving a
+reply draft on the Asks page, approving a plugin pairing request on
+`/plugins`, and a team manager's minting, revoking and replacing on
+`/teams/<id>/hosts` and `/teams/<id>/plugins`. On a stale sign-in the form asks
+"Confirm it's you" before it submits, and submits once you confirm, with what
+you typed in it kept. A form the server still refuses as stale (the page
+believed the sign-in fresh) is answered with the same page, saying so, and its
+next submit asks.
+
 **A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
 an owner-authority tool reached through that machine's MCP door is confirmed
 on the owner's paired phone, one decision per signed action — not by this

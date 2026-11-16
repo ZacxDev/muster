@@ -305,8 +305,9 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 	// TEAM's (the hook registers them under the token's owner), read by the
 	// request's target. An answer typed into the pane is typing (2b.4): an
 	// operator's or a manager's (its routes are mirrorTeamOperate), so a
-	// viewer's cards are drawn UNANSWERABLE.
-	watchOnly := onTeamHost(r) && !teamOperatorOn(r)
+	// viewer's cards are drawn UNANSWERABLE (teamWatcherOf, the one rule the
+	// Asks list draws a team's asks by too).
+	watchOnly := teamWatcherOf(r.Context(), mirror.TargetOwner(r.Context()))
 	// An opencode window's ask, read live from its host (mirror_opencode_ask.go).
 	if p, ok := openCodePending(h, e); ok && !watchOnly {
 		vs = append(vs, s.openCodeLiveCard(r, h, e, p))
