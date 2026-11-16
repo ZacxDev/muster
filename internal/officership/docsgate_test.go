@@ -33,7 +33,9 @@ const readmeHead = "# Example\n\nRun the tool:\n\n```sh\nmake deploy\n```\n\nThe
 // proseEdit is the clean change: line 9, outside the fence.
 var proseEdit = File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+The finish."}
 
-var docsHeads = []string{dBranch, fxHead, oidB}
+// docsHeads are the refs a docs check reads at: the private item-form branch,
+// the public rig's recorded branch (dPubBranch), and the two head commits.
+var docsHeads = []string{dBranch, dPubBranch, fxHead, oidB}
 
 func docsRig(t *testing.T) *draftRig {
 	t.Helper()
@@ -354,6 +356,18 @@ func publicRig(t *testing.T) *draftRig {
 	}
 	r.g.Ship.InternalPatternsFile = p
 	r.g.Ship.Repos[1].Public = true
+	// muster's record of the officer's public branches: dPubBranch (a name of
+	// officers.NewPublicBranch's shape, naming neither officer nor item) is
+	// item 17's, and pull request #31 is from it. dBranch (the private item
+	// form) names the officer, so a public repository refuses it outright.
+	r.g.PublicBranches = newMemRecord(dOfficer)
+	if _, err := r.g.PublicBranches.Mint(context.Background(), dInfra, 17, dPubBranch); err != nil {
+		t.Fatal(err)
+	}
+	pr := r.infra.prs[dPR]
+	pr.HeadRef = dPubBranch
+	r.infra.prs[dPR] = pr
+	r.infra.branches[dPubBranch] = fxHead
 	return r
 }
 
@@ -381,23 +395,23 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 			r.docsFiles(proseEdit, File{Path: "docs/db.corp.example.md", Status: "added", Changes: 1, Patch: "@@ -0,0 +1 @@\n+x"})
 		}, nil, "line 2"},
 		"a commit message": {func(r *draftRig) {
-			c := r.infra.compares["trunk..."+dBranch]
+			c := r.infra.compares["trunk..."+dPubBranch]
 			c.CommitTexts = []string{"fix docs, seen on 198.51.100.34\nOfficer <bot@example.test>\nOfficer <bot@example.test>"}
-			r.infra.compares["trunk..."+dBranch] = c
+			r.infra.compares["trunk..."+dPubBranch] = c
 		}, nil, "line 4"},
 		"a commit identity": {func(r *draftRig) {
-			c := r.infra.compares["trunk..."+dBranch]
+			c := r.infra.compares["trunk..."+dPubBranch]
 			c.CommitTexts = []string{"fix docs\nroot <root@pod-7." + leak + ">\nroot <root@pod-7." + leak + ">"}
-			r.infra.compares["trunk..."+dBranch] = c
+			r.infra.compares["trunk..."+dPubBranch] = c
 		}, nil, "line 2"},
 		"the title": {nil, func(r *draftRig) error {
-			m := goodCreate()
+			m := goodPublicCreate()
 			m["title"] = "Fix the " + leak + " runbook"
 			return r.create(m)
 		}, "line 2"},
 		"the body": {nil, func(r *draftRig) error {
-			m := goodCreate()
-			m["body"] = goodBody(17) + "\nSee 198.51.100.41\n"
+			m := goodPublicCreate()
+			m["body"] = goodPublicBody() + "\nSee 198.51.100.41\n"
 			return r.create(m)
 		}, "line 4"},
 		"a PATCHed title": {nil, func(r *draftRig) error { return r.patch(map[string]any{"title": "x " + leak}) }, "line 2"},
@@ -411,7 +425,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 		}
 		do := c.do
 		if do == nil {
-			do = func(r *draftRig) error { return r.create(goodCreate()) }
+			do = func(r *draftRig) error { return r.create(goodPublicCreate()) }
 		}
 		err := do(r)
 		if !isConflict(err) || !strings.Contains(err.Error(), "internal-details pattern "+c.line) {
@@ -431,7 +445,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 	r := publicRig(t)
 	r.content("README.md", strings.Replace(readmeBase, "The end.", "Ask "+leak, 1), readmeHead)
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-Ask " + leak + "\n+The finish."})
-	if err := r.create(goodCreate()); err != nil {
+	if err := r.create(goodPublicCreate()); err != nil {
 		t.Errorf("control: removing an internal detail was refused: %v", err)
 	}
 	// Control: the same added line in a repository NOT marked public.
@@ -449,7 +463,7 @@ func TestAPublicRepositoryIsScannedForInternalDetails(t *testing.T) {
 	}
 	// The branch name is the first thing scanned (allowedRef), so the refusal
 	// may be its 403 rather than the content's 409: refused either way.
-	if err := r.create(goodCreate()); !(isConflict(err) || isGateRefusal(err)) || !strings.Contains(err.Error(), "could not") {
+	if err := r.create(goodPublicCreate()); !(isConflict(err) || isGateRefusal(err)) || !strings.Contains(err.Error(), "could not") {
 		t.Errorf("an unreadable pattern file: err = %v, want refused", err)
 	}
 }
@@ -472,8 +486,12 @@ func TestAPushToAPublicBranchWithNoPullRequestIsCheckedAndDeleted(t *testing.T) 
 	} {
 		r := publicRig(t)
 		r.g.Ship.Repos[1].Public = c.public
+		br := dBranch // the private form
+		if c.public {
+			br = dPubBranch
+		}
 		r.infra.all = nil // no pull request from the branch
-		r.infra.branches[dBranch] = oidB
+		r.infra.branches[br] = oidB
 		r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
 		switch {
 		case c.dirty && !c.public:
@@ -486,8 +504,8 @@ func TestAPushToAPublicBranchWithNoPullRequestIsCheckedAndDeleted(t *testing.T) 
 			r.content("README.md", readmeBase, readmeHead)
 			r.docsFiles(proseEdit)
 		}
-		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
-		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dBranch
+		r.mustPush(t, dInfra, "refs/heads/"+br)(context.Background(), applied("refs/heads/"+br))
+		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == br
 		if deleted != c.wantDeleted {
 			t.Errorf("%s: deleted %v, want deleted=%v", c.name, r.infra.deleted, c.wantDeleted)
 		}
@@ -523,10 +541,10 @@ func TestAPublicBranchNameIsScanned(t *testing.T) {
 	if err := os.Remove(r.g.Ship.InternalPatternsFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := admit(r, "refs/heads/"+dBranch); !isGateRefusal(err) || !strings.Contains(err.Error(), "could not be scanned") {
+	if err := admit(r, "refs/heads/"+dPubBranch); !isGateRefusal(err) || !strings.Contains(err.Error(), "could not be scanned") {
 		t.Fatalf("an unreadable pattern file: err = %v, want a 403", err)
 	}
-	if err := admit(publicRig(t), "refs/heads/"+dBranch); err != nil {
+	if err := admit(publicRig(t), "refs/heads/"+dPubBranch); err != nil {
 		t.Fatalf("control: a clean branch name in a public repository: %v", err)
 	}
 	r = publicRig(t)
@@ -563,10 +581,10 @@ func TestAPublicPushWithNoPullRequestFailsClosed(t *testing.T) {
 	} {
 		r := publicRig(t)
 		r.infra.all = nil // no pull request from the branch
-		r.infra.branches[dBranch] = oidB
+		r.infra.branches[dPubBranch] = oidB
 		c.edit(r)
-		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
-		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dBranch
+		r.mustPush(t, dInfra, "refs/heads/"+dPubBranch)(context.Background(), applied("refs/heads/"+dPubBranch))
+		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dPubBranch
 		if deleted != c.wantDeleted {
 			t.Errorf("%s: deleted %v, want deleted=%v", name, r.infra.deleted, c.wantDeleted)
 		}
@@ -587,7 +605,7 @@ func TestAnUnreadableForbiddenListStillRunsThePublicScan(t *testing.T) {
 	r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
 	r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
 	r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"})
-	err := r.create(goodCreate())
+	err := r.create(goodPublicCreate())
 	if !isConflict(err) || !strings.Contains(err.Error(), dListFile) || !strings.Contains(err.Error(), "internal-details pattern line 2") {
 		t.Fatalf("err = %v, want a 409 naming the list file AND the pattern line", err)
 	}
@@ -599,13 +617,13 @@ func TestAnUnreadableForbiddenListStillRunsThePublicScan(t *testing.T) {
 		r.g.Ship.Repos[1].ForbiddenPathsFile = dListFile
 		r.infra.all = []PR{r.infra.prs[dPR]}
 		r.infra.listed = r.infra.all
-		r.infra.branches[dBranch] = oidB
+		r.infra.branches[dPubBranch] = oidB
 		if leaks {
 			r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
 			r.docsFiles(File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"})
 		}
-		r.mustPush(t, dInfra, "refs/heads/"+dBranch)(context.Background(), applied("refs/heads/"+dBranch))
-		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dBranch
+		r.mustPush(t, dInfra, "refs/heads/"+dPubBranch)(context.Background(), applied("refs/heads/"+dPubBranch))
+		deleted := len(r.infra.deleted) == 1 && r.infra.deleted[0] == dPubBranch
 		if len(r.infra.closed) != 1 || deleted != leaks {
 			t.Errorf("leaks=%v: closed %v, deleted %v; want closed, branch deleted=%v", leaks, r.infra.closed, r.infra.deleted, leaks)
 		}
@@ -654,14 +672,14 @@ func TestAnUnreadablePatternFileFailsClosedOnAPush(t *testing.T) {
 		r := publicRig(t)
 		r.infra.all = []PR{r.infra.prs[dPR]}
 		r.infra.listed = r.infra.all
-		r.infra.branches[dBranch] = oidB
-		after := r.mustPush(t, dInfra, "refs/heads/"+dBranch)
+		r.infra.branches[dPubBranch] = oidB
+		after := r.mustPush(t, dInfra, "refs/heads/"+dPubBranch)
 		if gone {
 			if err := os.Remove(r.g.Ship.InternalPatternsFile); err != nil {
 				t.Fatal(err)
 			}
 		}
-		after(context.Background(), applied("refs/heads/"+dBranch))
+		after(context.Background(), applied("refs/heads/"+dPubBranch))
 		if gone && (len(r.infra.closed) != 1 || len(r.infra.deleted) != 0 || len(r.notices) != 1 ||
 			!strings.Contains(r.notices[0].Summary, "internal-details scan could not run")) {
 			t.Errorf("pattern file gone: closed %v, deleted %v, notices %+v; want closed, kept, one notice", r.infra.closed, r.infra.deleted, r.notices)

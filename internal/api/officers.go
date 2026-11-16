@@ -134,6 +134,10 @@ type officerRuntime struct {
 	// (prLoopsFor), made once.
 	memLoopsOnce sync.Once
 	memLoops     *officers.MemPRLoopStore
+	// memPublicBranches is the in-memory record of draft officers' public
+	// branches when no store is configured (publicBranchesFor), made once.
+	memPublicBranchesOnce sync.Once
+	memPublicBranches     *officers.MemPublicBranchStore
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.
@@ -298,9 +302,13 @@ type OfficersConfig struct {
 	// PRLoops keeps draft officers' review-loop announcements
 	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
 	// which a restart forgets.
-	PRLoops     officers.PRLoopStore
-	LLMUpstream string
-	LLMHTTP     *http.Client
+	PRLoops officers.PRLoopStore
+	// PublicBranches keeps draft officers' public branches and the item each
+	// is for (officers.PGPublicBranchStore, migration 0138); nil keeps them in
+	// this process's memory, which a restart forgets.
+	PublicBranches officers.PublicBranchStore
+	LLMUpstream    string
+	LLMHTTP        *http.Client
 	// HostSpawns keeps the host officers' spawned sessions
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
@@ -2254,6 +2262,11 @@ type claimBlockedError struct {
 	item officers.ItemID
 	// tasks are the HQ task ids the item's task waits on.
 	tasks []string
+	// heldKind: the built-in store's refusal of an item HELD past its
+	// kind's bound (a draft.refused item, builtin.DraftEndedTx): it waits on
+	// none of the officer's tasks but on one of its open items of this kind
+	// being finished. "" for HQ's task ordering.
+	heldKind string
 }
 
 // asClaimBlocked is err as a *claimBlockedError when it is HQ's 409
@@ -2266,11 +2279,12 @@ func asClaimBlocked(item officers.ItemID, err error) *claimBlockedError {
 	var refusal struct {
 		Code      string   `json:"code"`
 		BlockedBy []string `json:"blocked_by"`
+		HeldKind  string   `json:"held_kind"`
 	}
 	if json.Unmarshal(hqErr.Body, &refusal) != nil || refusal.Code != "blocked" {
 		return nil
 	}
-	return &claimBlockedError{item: item, tasks: refusal.BlockedBy}
+	return &claimBlockedError{item: item, tasks: refusal.BlockedBy, heldKind: refusal.HeldKind}
 }
 
 func (e *claimBlockedError) Error() string {
@@ -2289,6 +2303,13 @@ func (e *claimBlockedError) result() string {
 	tasks := e.tasks
 	if tasks == nil {
 		tasks = []string{}
+	}
+	if e.heldKind != "" {
+		return toolJSON(map[string]any{
+			"claimed": false, "blocked": true, "held": true, "item_id": e.item, "blocked_by": tasks,
+			"note": fmt.Sprintf("not claimed: item %s is held — you already have the most open %s items muster lets you work at once, and it is delivered to you (claimable) once one of them is finished; finish those first, or claim another open item (%s lists them)",
+				e.item, e.heldKind, officers.ToolItems),
+		})
 	}
 	return toolJSON(map[string]any{
 		"claimed": false, "blocked": true, "item_id": e.item, "blocked_by": tasks,

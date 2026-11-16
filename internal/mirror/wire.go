@@ -337,6 +337,16 @@ type Msg struct {
 	// paste names none. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host
 	// ignores it and sends only to launcher-bound panes, as before; an older
 	// muster never sends it, and so never reaches a verified pane.
+	//
+	// On a CLAUDE CODE paste (no Runtime, no AnyPane) it is the Claude
+	// session a queued message was queued for (Window.ClaudeSession then),
+	// which the hub has checked the window list still names: the host types
+	// only while the pane's session (ClaudePane.Gen) is still exactly it,
+	// else refuses (PasteRefusalClaudeMoved); "" checks nothing (a person's
+	// Send, a row queued before muster recorded it). 🔴 BACKWARD-COMPATIBLE
+	// BOTH WAYS: an older host ignores it on a Claude paste (its paste path
+	// never reads it), leaving the hub's check against the window list; an
+	// older muster never sends it.
 	AgentSession string `json:"agentSession,omitempty"`
 	// Context (events) is the agent's context fill for the view's header
 	// readout, from a runtime that reports it beside its events (opencode:
@@ -1525,6 +1535,12 @@ const (
 	// this one would be pasted after and submitted with as one turn. Nothing
 	// was typed; a queued message is held, as for PasteRefusalClaudeWaiting.
 	PasteRefusalClaudeBox = "claude-box"
+	// PasteRefusalClaudeMoved: the paste named the Claude session it was
+	// queued for (Msg.AgentSession) and the pane holds another now (its Gen:
+	// Claude Code restarted, or /clear). Nothing was typed. Unlike
+	// PasteRefusalClaudeWaiting it does not clear by waiting, so a queued
+	// message FAILS on it, saying so, rather than landing in the new session.
+	PasteRefusalClaudeMoved = "claude-moved"
 	// The opencode gated send's refusals (docs/design/opencode-first-class.md).
 	// Nothing was sent to opencode, except for PasteRefusalOpenCodeUnconfirmed.
 	//
@@ -1597,6 +1613,11 @@ const (
 	// input box muster-mirror can read, so it cannot tell the box is empty.
 	ClaudeBoxUnreadText = "Not sent: muster-mirror could not find Claude Code's input box on its screen, so it could not " +
 		"tell whether it is empty. Nothing was typed into the pane."
+	// ClaudeMovedText (PasteRefusalClaudeMoved): the window holds another
+	// Claude session now than the one the message was queued for.
+	ClaudeMovedText = "Not sent: the window no longer holds the Claude session this was queued for " +
+		"(Claude Code was restarted or cleared since). Nothing was typed into the pane. " +
+		"To send it there, write it again in the session shown now."
 )
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).

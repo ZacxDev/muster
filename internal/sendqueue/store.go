@@ -141,10 +141,12 @@ type Item struct {
 	QueuedBy int64
 	Target   Target
 	Body     string
-	// AgentSession is the agent session the page showed for the target when
-	// the message was queued (a hand-opened opencode pane's; migration 0106):
-	// it is delivered only while the window still shows that session
-	// (mirror.ShownSession). "" for none (a Claude Code window, an older row).
+	// AgentSession is the agent session the message was queued for (migration
+	// 0106): the one the page showed for an opencode pane, or the Claude Code
+	// session a Claude window held when it was queued (internal/api's
+	// queuedForSession). It is delivered only while the window still holds
+	// that session (mirror.ShownSession, Window.ShownSessionRefusal). "" for
+	// none (an older row, a host that reports no session): delivered as before.
 	AgentSession string
 	// StepUpAt is the sign-in time of the session that queued the message (the
 	// step-up decision, recorded). It was inside the step-up window when the

@@ -932,7 +932,10 @@ naming another instance is returned as a refusal. **Claiming a blocked item**
 was claimed, and the instance gets a plain result — `claimed: false`,
 `blocked: true`, `blocked_by` (HQ **task** ids, as strings — not items to
 claim) and the note "not claimed: item N waits on tasks A, B (not done yet);
-claim another open item". At most 10 `links`. `outcome` is `done`,
+claim another open item". On the built-in backend a blocked item is a
+`draft.refused` item **held** past its bound: the result adds `held: true`
+and the note says it is delivered once one of the officer's open ones is
+finished. At most 10 `links`. `outcome` is `done`,
 `escalated` or `no_action` (and `needs_judgement` for a routine instance:
 [Completing an item](#completing-an-item-outcomes-and-investigation)); `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
@@ -970,7 +973,7 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
 | `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed, and a link to one of the officer's standing-read repositories (`github.com/<owner>/<repo>`) may spell one of the deployment's own names ([plugins.md](plugins.md#public-links-in-an-outbound-draft)). On venues `x` and `reddit` it must also fit the venue's [rules](plugins.md#venue-rules) (on `x`: each part at most 280 characters as X counts them; a reply is one part), or the draft is refused when filed, naming the part, its length and the limit |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
-| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
+| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft, the owner rejects it, it expires, its binding breaks at the claim or Checks replies is turned off before its check, muster queues a `draft.refused` item (the plugin's detail, the owner's reason, or muster's) and finishes this one `no_action` naming it — at most 3 are claimable at once, and past that the new one is held (`blocked`) and delivered when one of them is finished, never dropped; when it ends unconfirmed (it may have been posted) nothing is queued and the item is escalated to the owner. No end leaves the item waiting ([plugins.md](plugins.md#the-result)) |
 
 It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
 with `item_id`, an `item` note saying the item now waits on the draft). Nothing
@@ -1453,9 +1456,9 @@ each one from there. It is offered none of `officer_mark_ready`,
 
 | rule | answer |
 |---|---|
-| A branch is `<prefix><officer slug>/<item>-<slug>` (`officer/cluster-watch-example/134-fix-limit`); a push of any other branch, or a branch **deletion**, is refused. | 403 |
+| A branch is `<prefix><officer slug>/<item>-<slug>` (`officer/cluster-watch-example/134-fix-limit`); in a repository marked `public`, the branch muster named for the item with `officer_public_branch` instead ([Public branches](#public-branches-no-officer-id-no-item-number)). A push of any other branch, or a branch **deletion**, is refused. | 403 |
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
-| The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
+| The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item (in a repository marked `public`: exactly `Authored from untrusted inputs by an automated agent; review as such`, and no title, body or comment may name the officer's id or slug), and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
 | At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
 | At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's pulls list, every page, keeping those whose author is its bot, the login compared case-insensitively; the issues list is never read, since the App has no Issues permission). The list is read newest created first and stops after the first page that reaches back past the App's creation (`GET /app`'s `created_at`: its bot cannot have opened anything older), so what it costs is the repository's pull requests (anyone's) opened since the App was created, not the repository's whole history. More than 3,000 of those to read is a refusal, never a truncated count, and so is a list that is not newest-first, a listed pull request without a creation time, or an App whose creation cannot be read. Each is counted by the item its body's first line names, or else by its branch. An author filter that does not match the App's login keeps nothing, which is not an error, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
 | One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
@@ -1709,6 +1712,50 @@ push was still public**: GitHub stored it at its scratch ref
 ref does not stop GitHub serving its commits by sha. In a public repository
 the refusal notice says so: treat it as a leak, rotate what leaked, never
 rewrite history.
+
+##### Public branches: no officer id, no item number
+
+In a repository marked `public`, a draft officer's branch and pull request
+name neither the officer nor its HQ item: anyone can read them.
+
+- **The branch** is `<prefix>fix/<slug>-<token>` (`officer/fix/raise-limit-qhzkbwmtrepa`):
+  the slug is the instance's, lower-case words joined by `-` with **no
+  digit**; the token is 12 random lower-case letters minted by muster, derived
+  from nothing, so nothing about the item can be computed from it. The
+  instance asks for it with `officer_public_branch{repo, item_id, slug}`
+  (offered to a draft officer with a public repository only): muster checks
+  that HQ shows the instance holding the item (a `*.pr_fix` item is refused:
+  it pushes to its pull request's branch), scans the name with the
+  internal-details patterns, refuses a name holding the officer's id or slug,
+  records it and answers it. A second call for the same item and repository
+  answers the same branch. A push to any branch of a public repository whose
+  name holds the officer's id or slug is refused (403) before ownership is
+  even asked.
+- **muster keeps the mapping**: `officer_public_branches` (migration 0138),
+  one row per (owner, officer, repository, item) naming the branch, under the
+  officer's owner's row-level security. 🔴 **The row is the only proof the
+  branch is the officer's**: the push gate admits a push to a public branch
+  only when the officer has a row for it (no row, or a record muster cannot
+  read, is a refusal); the body contract, the per-item, open and per-day
+  limits, the author-filter cross-check, the orphan report, and the branch
+  deletion after a content hit all read the item and the ownership there,
+  never from the name. A record that cannot be read when a content hit would
+  delete the branch is not "not the officer's": the branch is kept and HQ's
+  notice says ownership could not be confirmed and a human must delete it
+  (still a leak notice). Without a database the record is in memory, and a
+  restart forgets it (the officer is then named a new branch).
+- **The body's first line** is exactly
+  `Authored from untrusted inputs by an automated agent; review as such`,
+  followed by the same four sections; a title, body or comment that names the
+  officer's id or slug is refused (409, and HQ is told) — besides the
+  internal-details scan, which still runs on the branch name, the added lines,
+  the commit messages and identities, and the title, body and comments.
+- A repository NOT marked `public` keeps the form above unchanged.
+- 🔴 **The pull request's author is the officer's GitHub App bot login**,
+  which GitHub shows on every public pull request. "Names no officer" holds
+  only if that App is not itself named after the officer: name the App of a
+  draft officer that ships a public repository neutrally (a deployment
+  choice; muster does not check it).
 
 ### The shepherd stage
 

@@ -121,13 +121,12 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 		*o.Window = resolved
 	}
 	var sup error
-	// The hub's own rule for a gated window (mirror.ShownSessionCheck): the
-	// send goes only while the window shows the session it was written for.
+	// The hub's own rule, the same function (Window.ShownSessionRefusal): a
+	// rendered-view send goes only while the window holds the session it was
+	// written for — a gated window's, or a Claude Code window's.
 	for _, w := range f.windows {
-		if w.Session == session && w.ID == resolved {
-			if rt, ok := w.Spec(); ok && rt.GatedSend {
-				sup = mirror.ShownSessionCheck(o.Shown, w.AgentSession, w.AgentSend)
-			}
+		if w.Session == session && w.ID == resolved && target != mirror.PasteActivePane {
+			sup = w.ShownSessionRefusal(o.Shown)
 		}
 	}
 	if sup == nil && o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {

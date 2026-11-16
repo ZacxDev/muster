@@ -27,9 +27,10 @@ import (
 //     unchecked when Checks replies is turned off: muster
 //     queues a draft.refused item and, in the same transaction, finishes the
 //     waiting item `no_action` naming that follow-up (DraftEndedTx) — so the
-//     work continues on ONE item, never two. Past the bound no follow-up is
-//     queued and the item is STILL finished, saying the officer was not told
-//     (the owner is told: a push, or an escalation);
+//     work continues on ONE item, never two. Past the bound the follow-up is
+//     STILL queued, but HELD (blocked: not claimable) until one of the
+//     officer's claimable items of its kind is finished (PromoteHeld) — never
+//     dropped;
 //   - unconfirmed (its plugin's lease lapsed with no result, so it may have
 //     been posted): no follow-up — the officer must never redraft it blindly
 //     — and the item is ESCALATED to its owner, who is asked through the
@@ -73,16 +74,13 @@ type DraftEnd struct {
 	// ("draft 5 expired, not posted.").
 	Ended string
 	// FollowUp is the item the officer redrafts from (a draft.refused one),
-	// queued unless Max live items of its kind already wait. nil when the
-	// officer must NOT redraft (an unconfirmed draft, which may have been
-	// posted): the item is then ESCALATED to the officer's owner.
+	// always queued: claimable while fewer than Max live items of its kind
+	// are claimable, HELD (blocked) otherwise, and delivered later by
+	// PromoteHeld. nil when the officer must NOT redraft (an unconfirmed
+	// draft, which may have been posted): the item is then ESCALATED to the
+	// officer's owner.
 	FollowUp *NewItem
 	Max      int
-	// EscalateAtBound: past the bound the item is escalated to its owner
-	// (the existing Attention notice), for a caller that has no other way
-	// to tell them; otherwise it is finished no_action and the caller tells
-	// the owner (internal/api's push).
-	EscalateAtBound bool
 	// Quiet: no follow-up and no escalation — the item is finished
 	// no_action with Ended as its summary (an outreach entry its owner did
 	// not tick in its batch: there is nothing to redraft).
@@ -99,9 +97,10 @@ type DraftSettled struct {
 	// FollowUp is the follow-up item's id: new, or the live one of the same
 	// subject. 0 when none was queued.
 	FollowUp int64
-	// AtBound: a follow-up was due and the bound refused it — the officer
-	// was NOT told.
-	AtBound bool
+	// Held: the follow-up was filed HELD — Max items of its kind were
+	// already claimable — and is delivered (made claimable) when one of
+	// them is finished (PromoteHeld).
+	Held bool
 	// Item is what became of the item: its new status (done, escalated),
 	// or "" when it was left as it was.
 	Item string
@@ -130,12 +129,12 @@ func (s *Store) DraftEnded(ctx context.Context, owner int64, e DraftEnd, now tim
 // that ended unsent:
 //
 //   - with e.FollowUp, that item is queued for the officer to redraft from —
-//     unless e.Max live items of its kind already wait (AtBound);
+//     HELD (Held: blocked, not claimable) when e.Max live items of its kind
+//     are already claimable, for PromoteHeld to deliver when one finishes;
 //   - the item the draft was filed for (e.Item) is SETTLED, never left
-//     waiting: finished no_action naming the follow-up; escalated to its
-//     owner when there is no follow-up to queue (e.FollowUp nil); past the
-//     bound, finished no_action saying the officer was not told, or
-//     escalated (e.EscalateAtBound).
+//     waiting: finished no_action naming the follow-up (saying it is held,
+//     when it is); escalated to its owner when there is no follow-up to
+//     queue (e.FollowUp nil).
 //
 // The item is settled only while it waits on this draft: WAITING with no
 // open ask — or CLAIMED under a lapsed lease, an item filed for before items
@@ -145,36 +144,42 @@ func (s *Store) DraftEnded(ctx context.Context, owner int64, e DraftEnd, now tim
 // as it is (an owner who finished or escalated it by hand, an instance
 // working it now).
 //
-// 🔴 THE BOUND'S COUNT AND THE INSERT ARE SERIALISED PER (owner, officer,
-// kind) BY A TRANSACTION-SCOPED ADVISORY LOCK: two refusals settling at once
-// cannot both read max-1 and both insert. A plain transaction would not do
-// it (READ COMMITTED reads neither's uncommitted row).
+// 🔴 THE BOUND'S COUNT, THE PROMOTION AND THE INSERT ARE SERIALISED PER
+// (owner, officer, kind) BY A TRANSACTION-SCOPED ADVISORY LOCK (lockBound):
+// two refusals settling at once cannot both read max-1 and both file a
+// claimable item. A plain transaction would not do it (READ COMMITTED reads
+// neither's uncommitted row).
 func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e DraftEnd, now time.Time) (DraftSettled, error) {
 	var out DraftSettled
 	if n := e.FollowUp; n != nil {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('officer_items.bounded'), hashtext($1::bigint::text || '/' || $2::text || '/' || $3::text))`,
-			owner, n.Officer, n.Kind); err != nil {
+		if err := lockBound(ctx, tx, owner, n.Officer, n.Kind); err != nil {
 			return out, err
 		}
-		// The same draft's follow-up already live is the answer, bound or not.
-		err := tx.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
-			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&out.FollowUp)
+		// The same draft's follow-up already live is the answer, held or not:
+		// a draft ends once, and a retried end never files a second item.
+		err := tx.QueryRow(ctx, `SELECT id, blocked FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
+			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&out.FollowUp, &out.Held)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return out, err
 		}
 		if out.FollowUp == 0 {
-			var live int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
-				AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind).Scan(&live); err != nil {
+			// Older held items go first (and a hold a sweep has not yet
+			// delivered is delivered here): only then is this one counted.
+			claimable, _, err := promoteHeldTx(ctx, tx, owner, n.Officer, n.Kind, e.Max, now)
+			if err != nil {
 				return out, err
 			}
-			if live >= e.Max {
-				out.AtBound = true
-			} else if out.FollowUp, err = s.EnqueueTx(ctx, tx, owner, *n, now); errors.Is(err, ErrNotFound) {
+			if out.FollowUp, err = s.EnqueueTx(ctx, tx, owner, *n, now); errors.Is(err, ErrNotFound) {
 				// The officer is gone: there is no one to redraft, and no item.
 				return DraftSettled{}, nil
 			} else if err != nil {
 				return out, err
+			}
+			if claimable >= e.Max {
+				if _, err := tx.Exec(ctx, `UPDATE officer_items SET blocked = true WHERE id = $1`, out.FollowUp); err != nil {
+					return out, err
+				}
+				out.Held = true
 			}
 		}
 	}
@@ -221,11 +226,11 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 	summary := e.Ended
 	escalate := e.FollowUp == nil && !e.Quiet
 	switch {
+	case out.Held:
+		summary += fmt.Sprintf(" Its officer already has %d open %s items, so the work is held on item %d and delivered to it when one of them is finished.",
+			e.Max, e.FollowUp.Kind, out.FollowUp)
 	case out.FollowUp > 0:
 		summary += fmt.Sprintf(" The work continues on item %d.", out.FollowUp)
-	case out.AtBound:
-		summary += fmt.Sprintf(" Its officer was not told: it already has %d open %s items.", e.Max, e.FollowUp.Kind)
-		escalate = e.EscalateAtBound
 	}
 	if escalate {
 		notices, err := noticesFor(ctx, tx, owner, e.Officer, e.Draft)
@@ -245,6 +250,114 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 	}
 	out.Item = officers.StatusDone
 	return out, nil
+}
+
+// lockBound takes the transaction-scoped advisory lock that serialises the
+// bound of owner's officer's items of kind: its count, its promotions
+// (promoteHeldTx) and a new follow-up's filing (DraftEndedTx).
+func lockBound(ctx context.Context, tx pgx.Tx, owner int64, officer, kind string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('officer_items.bounded'), hashtext($1::bigint::text || '/' || $2::text || '/' || $3::text))`,
+		owner, officer, kind)
+	return err
+}
+
+// promoteHeldTx delivers owner's officer's HELD items of kind — open and
+// blocked, filed past the bound by DraftEndedTx — oldest first, while fewer
+// than max of its live items of kind are claimable (not blocked), inside tx,
+// which must hold lockBound. claimable is the count after it; promoted the
+// items it delivered.
+//
+// 🔴 A HELD ITEM IS AN OPEN, BLOCKED ITEM OF A BOUNDED KIND: the built-in
+// store sets blocked on nothing else (SetBlocked is the conformance suite's
+// fixture), so the bounded kind's blocked items are exactly its held ones.
+// The UPDATE re-checks open and blocked on the row it locks, so an item its
+// owner finished meanwhile is skipped, never re-opened.
+func promoteHeldTx(ctx context.Context, tx pgx.Tx, owner int64, officer, kind string, max int, now time.Time) (claimable int, promoted []int64, err error) {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
+		AND status IN ('open', 'claimed', 'waiting') AND NOT blocked`, owner, officer, kind).Scan(&claimable); err != nil {
+		return 0, nil, err
+	}
+	if claimable >= max {
+		return claimable, nil, nil
+	}
+	rows, err := tx.Query(ctx, `UPDATE officer_items SET blocked = false, updated_at = $5
+		WHERE id IN (SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND status = 'open' AND blocked
+			ORDER BY id LIMIT $4)
+		AND status = 'open' AND blocked
+		RETURNING id`, owner, officer, kind, max-claimable, now)
+	if err != nil {
+		return 0, nil, err
+	}
+	promoted, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+	return claimable + len(promoted), promoted, err
+}
+
+// Promoted is one held item PromoteHeld delivered.
+type Promoted struct {
+	Owner   int64
+	Officer string
+	Item    int64
+}
+
+// promoteBatch bounds the (owner, officer) pairs one PromoteHeld pass reads.
+const promoteBatch = 500
+
+// PromoteHeld is the sweep's delivery of HELD items of kind (DraftEndedTx,
+// past the bound): for every owner's officer with any, each in a transaction
+// of its own under lockBound, its oldest held items are made claimable while
+// fewer than max of its items of kind are (promoteHeldTx). ctx must act for
+// every owner (the system scope).
+//
+// 🔴 EXACTLY ONCE, AND IT SURVIVES A RESTART: a held item is a row — it is
+// filed once (the live-subject index, and DraftEndedTx's lookup of the
+// draft's follow-up), and delivered by an UPDATE conditional on it still
+// being held, so a second pass, a second replica or a process started since
+// finds nothing more to do.
+func (s *Store) PromoteHeld(ctx context.Context, kind string, max int, now time.Time) ([]Promoted, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT owner_id, officer FROM officer_items WHERE kind = $1 AND status = 'open' AND blocked
+		ORDER BY owner_id, officer LIMIT $2`, kind, promoteBatch)
+	if err != nil {
+		return nil, err
+	}
+	type pair struct {
+		owner   int64
+		officer string
+	}
+	pairs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pair, error) {
+		var p pair
+		return p, r.Scan(&p.owner, &p.officer)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []Promoted
+	for _, p := range pairs {
+		ids, err := s.promoteOne(ctx, p.owner, p.officer, kind, max, now)
+		if err != nil {
+			return out, err
+		}
+		for _, id := range ids {
+			out = append(out, Promoted{Owner: p.owner, Officer: p.officer, Item: id})
+		}
+	}
+	return out, nil
+}
+
+// promoteOne is promoteHeldTx for one officer, in a transaction of its own.
+func (s *Store) promoteOne(ctx context.Context, owner int64, officer, kind string, max int, now time.Time) ([]int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := lockBound(ctx, tx, owner, officer, kind); err != nil {
+		return nil, err
+	}
+	_, ids, err := promoteHeldTx(ctx, tx, owner, officer, kind, max, now)
+	if err != nil {
+		return nil, err
+	}
+	return ids, tx.Commit(ctx)
 }
 
 // DraftPosted settles owner's officer's item id, the item outbound draft

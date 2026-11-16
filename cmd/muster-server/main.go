@@ -949,6 +949,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A draft officer's review-loop announcements (migration 0119):
 			// shared by replicas, kept across a restart.
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
+			// A draft officer's public branches and their items (migration
+			// 0138): the only proof a public branch is the officer's.
+			ocfg.PublicBranches = officers.NewPGPublicBranchStore(a.pool)
 			// A builtin officer's type, charter, switch and queue live here
 			// too (migration 0118); one declared with no database is refused.
 			ocfg.Builtin = officerStore
@@ -1358,11 +1361,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.officers != nil {
 		a.loop(ctx, "a.officers.Run", func(ctx context.Context) { a.officers.Run(ctx) })
 	}
-	// The built-in officer store's Attention sweep (asks back onto items,
-	// escalation notices out). Unguarded at replicas > 1: every write it makes
-	// is conditional on the row it read (an ask still open, a notice still
-	// unraised), so two pods settle each once and the loser of a notice race
-	// withdraws its copy.
+	// The built-in officer store's Attention sweep (held draft.refused items
+	// delivered, asks back onto items, escalation notices out). Unguarded at
+	// replicas > 1: every write it makes is conditional on the row it read (a
+	// held item still held, under the bound's lock; an ask still open, a
+	// notice still unraised), so two pods settle each once and the loser of a
+	// notice race withdraws its copy.
 	if a.srv != nil && a.srv.OfficerStoreOn() {
 		a.loop(ctx, "a.srv.RunOfficerAttentionSweep", func(ctx context.Context) { a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep) })
 		// Schedules: unguarded at replicas > 1 — a fire is a compare-and-set

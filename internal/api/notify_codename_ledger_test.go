@@ -44,7 +44,6 @@ var noCodenameFirst = map[string]string{
 	"page_tools.go Server.pagePublished":                   "an agent published a page: names the page",
 	"page_tools.go Server.pageShareAuto":                   "an agent shared a page without asking: names the page",
 	"plugin_drafts.go Server.notifyDraftRefused":           "a plugin draft: fixed title, names no session",
-	"plugin_drafts.go Server.notifyOfficerNotTold":         "an officer's outbound draft: fixed title, names no session",
 	"plugin_pairing.go Server.pairRequested":               "a plugin pairing request: fixed title, names no session",
 	"push_task.go Server.flushCreatedTasks":                "a task: names a task",
 	"push_task.go Server.notifyAgentRunning":               "a task's agent: an agent has no tmux window",

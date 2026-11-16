@@ -58,6 +58,9 @@ var (
 	ErrClaudeBox = errors.New(mirror.ClaudeBoxText)
 	// ErrClaudeBoxUnread: no input box could be read on the screen.
 	ErrClaudeBoxUnread = errors.New(mirror.ClaudeBoxUnreadText)
+	// ErrClaudeMoved: the pane holds another Claude session (its Gen) than
+	// the one the paste named (Msg.AgentSession).
+	ErrClaudeMoved = errors.New(mirror.ClaudeMovedText)
 	// ErrClaudeUncheckable: the backend has no screen read or no checked
 	// paste (ClaudeScreenBackend, ClaudeCheckedPaster), so the guard cannot
 	// run at all. It is no refusal kind: it is not something that clears, so
@@ -110,6 +113,8 @@ func claudeRefusalOf(err error) string {
 		return mirror.PasteRefusalClaudePasted
 	case errors.Is(err, ErrClaudeBox):
 		return mirror.PasteRefusalClaudeBox
+	case errors.Is(err, ErrClaudeMoved):
+		return mirror.PasteRefusalClaudeMoved
 	case errors.Is(err, ErrClaudeWaiting), errors.Is(err, ErrClaudeDialog), errors.Is(err, ErrClaudeScreenUnread),
 		errors.Is(err, ErrClaudeBoxUnread):
 		return mirror.PasteRefusalClaudeWaiting
@@ -128,6 +133,15 @@ func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.M
 	p, ok := h.claudePaneOf(cb, m)(ctx)
 	if !ok || p.Pane != pane {
 		return errNotClaudeNow
+	}
+	// 🔴 THE SESSION IT WAS QUEUED FOR (Msg.AgentSession on a Claude paste;
+	// muster's session_pin.go): read NOW, so a Claude Code restarted (or
+	// cleared) in the same pane since muster's last list is refused here,
+	// before the paste and again before its Enter. A paste naming none (a
+	// person's Send, an older muster's) checks nothing.
+	if m.AgentSession != "" && p.Gen != m.AgentSession {
+		h.c.log.Printf("muster-mirror: Claude Code pane %s holds another session than the one the message was queued for; nothing is typed into it", pane)
+		return ErrClaudeMoved
 	}
 	if p.Status == mirror.StatusWaiting {
 		h.c.log.Printf("muster-mirror: Claude Code in pane %s is waiting on the person (its session status); nothing is typed into it", pane)
