@@ -15,7 +15,10 @@ import { startServer, Running } from '../lib/server';
 // 🔴 RED AT origin/main (bdfacef2): the action row put the Approve form at
 // `flex-1` (a ZERO basis) beside the Reject form at its max-content width —
 // the reason box's intrinsic width plus the Reject button — so Approve got
-// what was left: a sliver at 390, and too little for its label at 1440.
+// what was left: the same 24 px sliver at 390 and at 1440, because the Asks
+// page is one max-w-sm column and the card is 352 px wide at every viewport.
+// The two widths are measured to show the fix holds at both, not because the
+// bug depended on the viewport.
 //
 // The draft is a fixture row (e2e/pluginfix draft): what is under test is how
 // the page DRAWS it, not how a draft is made (plugins.spec.ts drives that).
@@ -115,9 +118,11 @@ for (const vp of [
       await expect(card).toBeVisible();
       // The fixture is the card the issue reports: the expiry line and a
       // multi-line body (positive controls on the fixture itself). The card
-      // draws a newline as a visible `\n` (flows.VisibleEscape), so the body
-      // is multi-line when it shows the fixture's three newlines as markers
-      // and counts them in its length.
+      // draws a newline as a visible `\n` (flows.VisibleEscape); the count of
+      // those markers is the ONLY check here that the body has real newlines.
+      // The data-runes check compares the card's length with the fixture's
+      // own, so it shows the whole body arrived but cannot see newlines (a
+      // space in place of each would pass it).
       await expect(card.locator('[data-draft-state]')).toContainText('expires');
       const body = card.locator('[data-draft-body]');
       expect((await body.textContent())!.split('\\n').length - 1, 'the reply shows its three newlines').toBe(3);
