@@ -465,6 +465,24 @@ jobs:
       - name: servers.js keeps only origins and reads nothing from other servers
         if: ${{ !cancelled() && strategy.job-index == 0 }}
         run: node --test e2e/servers.test.mjs
+      # The step-up form script (internal/ui StepUpFormScript): a stale submit
+      # asks first and, once confirmed, submits WITH the button that was
+      # tapped, under the form's own sentence. Node only, < 1 s.
+      - name: the step-up form script keeps the tapped button
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/stepup-form.test.mjs
+      # A team agent's terminal (its whole attach behind a fresh sign-in) rides
+      # out a restart with the ordinary backoff and asks only when the sign-in
+      # is stale: the rendered script (e2e/testdata, kept current by
+      # internal/ui TestTheTerminalScriptFixtureIsCurrent) on a fake socket
+      # and clock. Node only, < 1 s.
+      - name: a team agent's terminal reconnects without asking a fresh operator
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/terminal-gate.test.mjs
+      # Every e2e port offset in e2e/lib/env.ts is its own. Node only, < 1 s.
+      - name: e2e ports are unique
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: node --test e2e/env-ports.test.mjs
 
   # Local: make leakscan
   #

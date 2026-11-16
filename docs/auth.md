@@ -177,7 +177,8 @@ and managers type into its hosts' sessions, each with their own fresh sign-in
     windows are the team's episodes (2b.3): pushed to its operators and
     managers, with no stall classifier.
   - **Its asks.** A team host session's `attention_ask` is the team's, and
-    shows on every member's Attention (viewer and up). Members answer it there.
+    shows on every member's Attention (viewer and up). An operator or a
+    manager answers it there; a viewer's copy is drawn with no answer.
   - **Who watches it (2b.3).** The team host's sessions are listed to the
     team's members (viewer and up), on a browser session or a paired phone
     only — never through a personal API token, an agent or a background

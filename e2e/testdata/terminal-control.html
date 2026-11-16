@@ -1,0 +1,851 @@
+<div id="term" data-agent="team-chief" data-size-osc="7701" data-step-up="/auth/confirm" data-fresh-for="3600000" class="h-full w-full">
+<script>
+(function () {
+  var host = document.getElementById('term');
+  if (!host || typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
+    var e = document.getElementById('term-error');
+    if (e) { e.hidden = false; document.getElementById('term-error-text').textContent = 'The terminal emulator did not load.'; }
+    return;
+  }
+
+  function liveDelay(n) {
+    var d = Math.min(15000, 500 * Math.pow(2, Math.max(0, n - 1)));
+    return Math.round(d * (0.5 + Math.random() * 0.5));
+  }
+  // liveCanRetry: a closed socket retries on its own only while the page is
+  // shown and online; otherwise the next wake reconnects it.
+  function liveCanRetry() { return !document.hidden && navigator.onLine !== false; }
+
+  var agent = host.getAttribute('data-agent');
+  var unavailable = host.hasAttribute('data-unavailable');
+  // A host that takes no keys (ReadOnlyOnly): the one case live keys are off.
+  var keysOff = host.hasAttribute('data-keys-off');
+  var scrollEl = document.getElementById('term-scroll');
+  var sizer = document.getElementById('term-sizer');
+  var statusEl = document.getElementById('term-status');
+  var errEl = document.getElementById('term-error');
+  var errText = document.getElementById('term-error-text');
+  var reconnectBtn = document.getElementById('term-reconnect');
+  var fitwBtn = document.getElementById('term-fitw');
+  var keys = document.querySelectorAll('#term-keys [data-key]');
+  var moreBtn = document.getElementById('term-keys-more');
+  var keysMenu = document.getElementById('term-keys-menu');
+  // 🔴 NO POPOVER API (iOS Safari < 17): the ⋯'s popovertarget does nothing
+  // there, and the nine menu keys — ^C among them — would be unreachable. So
+  // without HTMLElement.prototype.togglePopover the ⋯ toggles the menu itself:
+  // shown by class, marked data-menu-open so floatingMenuScript places it by
+  // the same rule (its trigger is data-menu-trigger), above the page by
+  // z-index (there is no top layer), closed by a tap outside it or Escape.
+  var noPopover = !!keysMenu && typeof HTMLElement.prototype.togglePopover !== 'function';
+  function fallbackOpen() { return !!keysMenu && keysMenu.hasAttribute('data-menu-open'); }
+  function setFallback(open) {
+    if (open) {
+      // Out of the flow BEFORE it is shown: in the bar's flex row it would
+      // push the ⋯ aside, and place() measures the ⋯ where it is then.
+      keysMenu.style.position = 'fixed';
+      keysMenu.style.top = '0';
+      keysMenu.style.left = '0';
+      keysMenu.setAttribute('data-menu-open', '');
+      keysMenu.classList.remove('hidden');
+      keysMenu.classList.add('grid');
+      if (window.__musterPlaceMenu) window.__musterPlaceMenu(keysMenu);
+      else keysMenu.style.visibility = 'visible';
+      keysMenu.style.zIndex = '60';
+    } else {
+      keysMenu.removeAttribute('data-menu-open');
+      keysMenu.classList.add('hidden');
+      keysMenu.classList.remove('grid');
+      keysMenu.removeAttribute('style');
+    }
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (noPopover) {
+    moreBtn.removeAttribute('popovertarget');
+    keysMenu.removeAttribute('popover');
+    moreBtn.setAttribute('data-menu-trigger', keysMenu.id);
+    moreBtn.addEventListener('click', function () { setFallback(!fallbackOpen()); });
+    document.addEventListener('pointerdown', function (ev) {
+      if (fallbackOpen() && !keysMenu.contains(ev.target) && !moreBtn.contains(ev.target)) setFallback(false);
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && fallbackOpen()) setFallback(false);
+    });
+  }
+  function closeKeysMenu() {
+    if (!keysMenu) return;
+    if (noPopover) { if (fallbackOpen()) setFallback(false); return; }
+    try { if (keysMenu.matches(':popover-open')) keysMenu.hidePopover(); } catch (e) {}
+  }
+
+  var term = new Terminal({
+    fontSize: 13,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    scrollback: 3000,
+    cursorBlink: false,
+    disableStdin: true
+  });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+
+  // mode is the CURRENT attach's: rw (live keys) or ro. Live keys are always
+  // on, so ro is only ever a gate's answer: a host that takes no keys, a
+  // sign-in that is not fresh, or a terminal hidden behind the other view.
+  var mode = 'ro';
+  var ws = null;
+  var enc = new TextEncoder();
+  // Liveness and reconnection (live.go): when the socket last spoke, whether
+  // it has sent a heartbeat (only then can it be judged stale), when it was
+  // made, the failed attempts in a row, the pending retry, and whether the
+  // far side REFUSED or ended the attach (an error or exit frame) — which is
+  // retried at a wake, or by the Reconnect button, never in a loop.
+  var lastAt = 0, beat = false, madeAt = 0, retry = 0, retryTimer = 0, refusedEnd = false, left = false;
+
+  // --- size -------------------------------------------------------------------
+  var oscPrefix = '\x1b]' + host.getAttribute('data-size-osc') + ';';
+  var remote = null;     // {cols, rows} the far side reported for THIS attach
+  var lastSent = '';     // "CxR" last sent on THIS attach
+  var fitWidth = false;  // the Fit width toggle
+  var overflowing = false;
+
+  function proposed() {
+    // Measured with #term back at the container's size: the fit is a property
+    // of the page, not of what the terminal currently draws. (Collapsing the
+    // sizer clamps the scroll area's scrollTop: the page's own scroll.)
+    ownScroll();
+    keepTop = scrollEl.scrollTop;
+    sizer.style.width = ''; sizer.style.height = '';
+    host.style.width = ''; host.style.height = ''; host.style.transform = '';
+    var p = null;
+    try { p = fit.proposeDimensions(); } catch (e) {}
+    return (p && p.cols > 0 && p.rows > 0) ? p : null;
+  }
+  function sendSize(cols, rows) {
+    var k = cols + 'x' + rows;
+    if (k === lastSent || !ws || ws.readyState !== 1) return;
+    lastSent = k;
+    ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
+  }
+  // 🔴 AN OVERFLOW VIEW IS HELD AT ITS BOTTOM (atBottom). A far side taller
+  // than the page has its prompt and status line — a TUI's live rows — at
+  // the bottom; drawn from the top they are off screen on every load (a pod's
+  // window, grown once to a full desktop height, stays that tall: termsize
+  // never shrinks it). So the view starts at its bottom and goes back there
+  // on every redraw — a relayout (the keyboard, the session switcher coming
+  // back), Fit width — UNLESS THE PERSON SCROLLED IT AWAY themselves (a pan, a
+  // wheel, drag-to-scroll's panArea): then it stays where they left it, until
+  // they scroll back to the bottom. Every scroll the page makes itself
+  // (proposed() collapsing the sizer, the pin below) lands inside ownScrollUntil
+  // and is not taken for the person's.
+  var atBottom = true, ownScrollUntil = 0, keepTop = 0;
+  function ownScroll() { ownScrollUntil = Date.now() + 150; }
+  scrollEl.addEventListener('scroll', function () {
+    if (!overflowing || Date.now() < ownScrollUntil) return;
+    atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 2;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
+  }, { passive: true });
+  // pinBottom puts a redrawn overflow view back: at its bottom, or where the
+  // person left it (keepTop, read before proposed() collapsed the sizer).
+  function pinBottom() {
+    ownScroll();
+    scrollEl.scrollTop = atBottom ? scrollEl.scrollHeight : keepTop;
+  }
+  function showOverflow(on) {
+    // Entering overflow (the first layout, or a page that stopped covering the
+    // far side): from its bottom, whatever an earlier overflow was scrolled to.
+    if (on && !overflowing) atBottom = true;
+    host.setAttribute('data-at-bottom', atBottom ? '1' : '0');
+    overflowing = on;
+    fitwBtn.hidden = !on;
+    fitwBtn.classList.toggle('inline-flex', on);
+    host.setAttribute('data-overflow', on ? '1' : '0');
+  }
+  function drawOverflow() {
+    // Render the far side's size; the scroll area scrolls over it. Fit width
+    // scales the drawing (never the far side) to the scroll area's width.
+    var screen = host.querySelector('.xterm-screen');
+    var vp = host.querySelector('.xterm-viewport');
+    if (!screen) return;
+    var sb = vp ? Math.max(0, vp.offsetWidth - vp.clientWidth) : 0;
+    var w = screen.offsetWidth + sb, h = screen.offsetHeight;
+    host.style.width = w + 'px';
+    host.style.height = h + 'px';
+    var k = 1;
+    if (fitWidth) {
+      var avail = scrollEl.clientWidth - 8;
+      if (w > avail && avail > 0) k = avail / w;
+    }
+    host.style.transformOrigin = '0 0';
+    host.style.transform = k === 1 ? '' : 'scale(' + k + ')';
+    sizer.style.width = Math.ceil(w * k) + 'px';
+    sizer.style.height = Math.ceil(h * k) + 'px';
+    fitwBtn.setAttribute('aria-pressed', fitWidth ? 'true' : 'false');
+    fitwBtn.textContent = fitWidth ? 'Actual size' : 'Fit width';
+    pinBottom();
+  }
+  var layouts = 0;
+  function layout() {
+    // An instrument as much as a counter: the browser suite asserts a pinch
+    // does not move it (no refit on zoom).
+    host.setAttribute('data-layouts', String(++layouts));
+    var p = proposed();
+    if (!p) return;
+    if (!remote || (p.cols >= remote.cols && p.rows >= remote.rows)) {
+      // The page covers the far side (or it reports nothing): fit, as always.
+      showOverflow(false);
+      if (term.cols !== p.cols || term.rows !== p.rows) term.resize(p.cols, p.rows);
+      sendSize(p.cols, p.rows);
+      if (remote) remote = { cols: p.cols, rows: p.rows };
+      return;
+    }
+    // The far side is bigger: draw it at ITS size and send nothing.
+    if (term.cols !== remote.cols || term.rows !== remote.rows) term.resize(remote.cols, remote.rows);
+    showOverflow(true);
+    requestAnimationFrame(drawOverflow);
+  }
+  // readReport takes a size report off the FRONT of a frame (the far side
+  // writes it as a frame of its own, before the session's first byte) and
+  // returns the rest.
+  function readReport(bytes) {
+    if (bytes.length < oscPrefix.length + 4 || bytes[0] !== 27 || bytes[1] !== 93) return bytes;
+    var head = '';
+    for (var i = 0; i < Math.min(bytes.length, 32); i++) {
+      if (bytes[i] === 7) {
+        head = String.fromCharCode.apply(null, bytes.subarray(0, i));
+        break;
+      }
+    }
+    if (head.indexOf(oscPrefix) !== 0) return bytes;
+    var m = /^(\d{1,5});(\d{1,5})$/.exec(head.slice(oscPrefix.length));
+    if (!m) return bytes;
+    remote = { cols: +m[1], rows: +m[2] };
+    host.setAttribute('data-remote', remote.cols + 'x' + remote.rows);
+    lastSent = '';
+    layout();
+    return bytes.subarray(head.length + 1);
+  }
+
+  // --- step-up (mirrored sessions) ------------------------------------------
+  // The dialog, the freshness the page believes and both ways of confirming
+  // live in window.musterStepUp (stepup_confirm.go), shared with the composer.
+  var confirmPath = host.getAttribute('data-step-up');
+  var stepUp = confirmPath ? window.musterStepUp : null;
+  var justConfirmed = false;
+  // attachGated: the WHOLE attach needs a fresh sign-in (StepUpAttach, a team
+  // agent's terminal), not only live keys. attachWhy is its own sentence for
+  // the dialog (data-step-up-why): when this view is framed it asks through
+  // the top window's dialog, whose page sentence is about something else.
+  var attachGated = !!confirmPath && host.hasAttribute('data-step-up-attach');
+  var attachWhy = host.getAttribute('data-step-up-why') || '';
+  function gatedStale() { return attachGated && !(stepUp && stepUp.fresh()); }
+  // whyOn writes attachWhy as the gate sentence of the dialog that will ask:
+  // the top window's when this view is framed (stepUpScript's topStepUp),
+  // else this page's.
+  function whyOn() {
+    if (!attachWhy) return;
+    var d = document;
+    try { if (window.parent !== window && window.parent.musterStepUp && window.parent.musterStepUp.framedAsk === true) d = window.parent.document; } catch (e) {}
+    var el = d.getElementById('term-confirm-why');
+    if (el && el.firstChild) el.firstChild.nodeValue = attachWhy + ' ';
+  }
+  function askToOpen() {
+    if (!stepUp || (stepUp.asking && stepUp.asking())) return;
+    whyOn();
+    stepUp.ask('', function () { justConfirmed = true; clearError(); mode = 'rw'; applyMode(); connect('step_up'); });
+  }
+  // rwProbe: an interactive attach that never opened, while the page still
+  // believed its sign-in fresh. That is a refused upgrade (the step-up gate's
+  // 403, which a browser socket cannot read) OR a network that was not there
+  // (a phone waking up). A read-only attach tells them apart: if it opens, the
+  // network is fine, and one more interactive attach decides.
+  var rwProbe = 0;
+  function fresh() { return !!stepUp && stepUp.fresh(); }
+  // canType: may the page attach with live keys now, without asking?
+  function canType() { return !keysOff && (!confirmPath || fresh()); }
+  // openConfirm asks "Confirm it's you" and, once confirmed (passkey or
+  // password), attaches interactively — the action that was waiting on it.
+  //
+  // 🔴 ONE ASK PER CONFIRM. Every key the person presses on a stale attach
+  // comes here, and several can arrive before the modal takes the keyboard (a
+  // paste, key-bar taps, a held key): while the dialog is open (asking — the
+  // top window's, from the view switch's frame) another ask is not sent. The
+  // first one's done still attaches; a key after the dialog closed asks again.
+  function openConfirm(why) {
+    if (!stepUp) return;
+    if (stepUp.asking && stepUp.asking()) return;
+    stepUp.ask(why, function () { justConfirmed = true; goInteractive(); });
+  }
+
+  function setStatus(t) { statusEl.textContent = t; }
+  // statusFor is the status line of a ready attach in mode m.
+  function statusFor(m) {
+    if (m === 'rw') return "Connected";
+    if (keysOff) return "Connected · this host takes no keys";
+    if (confirmPath && !fresh()) return "Connected · confirm it's you to type";
+    return "Connected";
+  }
+  function showError(msg, canReconnect) {
+    errText.textContent = msg;
+    reconnectBtn.hidden = !canReconnect;
+    errEl.hidden = false;
+  }
+  function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; }
+  // applyMode: the keys are on wherever the host takes keys (live keys are
+  // always on) and there is a terminal to type into; what an attach without
+  // them does with a key is send()'s.
+  function applyMode() {
+    var on = !keysOff && !unavailable;
+    term.options.disableStdin = !on;
+    for (var i = 0; i < keys.length; i++) { keys[i].disabled = !on; }
+    if (moreBtn) moreBtn.disabled = !on;
+    if (!on) closeKeysMenu();
+  }
+  // send takes input for the session; byUser says the person produced it (a
+  // key, a paste, a key-bar tap) — see userInput below.
+  function send(data, byUser) {
+    if (keysOff || unavailable) return;
+    if (mode === 'rw') {
+      if (ws && ws.readyState === 1) ws.send(typeof data === 'string' ? enc.encode(data) : data);
+      return;
+    }
+    // 🔴 INPUT NOBODY TYPED IS DROPPED, AS IT ALWAYS WAS. The terminal answers
+    // some of what the far side writes BY ITSELF — tmux asks a client's
+    // Device Attributes and cursor position as it attaches, and with focus
+    // reporting on, a focus change is reported — and xterm.js hands those
+    // answers to the same onData as a keystroke. On an attach without live
+    // keys they go nowhere (the server drops input to a read-only attach);
+    // they must not ask "Confirm it's you" or re-attach, or the dialog opens
+    // with nothing pressed, even in a background tab (live 0.95.0).
+    if (!byUser) return;
+    // 🔴 A KEY ON AN ATTACH WITHOUT LIVE KEYS ASKS FOR THEM, THROUGH THE SAME
+    // GATE: a sign-in that is not fresh asks "Confirm it's you" first. The key
+    // itself is not replayed — it was typed at a terminal that could not take
+    // it. (The server drops input to a read-only attach regardless.)
+    if (confirmPath && !fresh()) { openConfirm(''); return; }
+    goInteractive();
+  }
+  function hexBytes(h) {
+    var out = new Uint8Array(h.length / 2);
+    for (var i = 0; i < out.length; i++) { out[i] = parseInt(h.substr(i * 2, 2), 16); }
+    return out;
+  }
+
+  // drop detaches the current socket and closes it: its close is nobody's.
+  function drop() {
+    var old = ws;
+    ws = null;
+    if (!old) return;
+    old.onopen = null; old.onclose = null; old.onmessage = null;
+    try { old.close(); } catch (e) {}
+  }
+  // connect attaches in the current mode; why is the reconnect's reason
+  // (live.go), nothing for the page's first attach and a mode change.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
+    if (left) return;
+    // 🔴 ONE SOCKET: the one before is detached and closed first.
+    drop();
+    clearError();
+    refusedEnd = false;
+    // A new attach: the far side reports its size afresh (or not at all).
+    remote = null;
+    host.removeAttribute('data-remote');
+    var p = proposed();
+    if (p && (term.cols !== p.cols || term.rows !== p.rows)) term.resize(p.cols, p.rows);
+    showOverflow(false);
+    lastSent = term.cols + 'x' + term.rows;
+    var wsPath = host.getAttribute('data-ws');
+    var base = wsPath ? wsPath + (wsPath.indexOf('?') < 0 ? '?' : '&')
+      : '/agents/' + encodeURIComponent(agent) + '/terminal/ws?';
+    var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host +
+      base + 'mode=' + mode + '&cols=' + term.cols + '&rows=' + term.rows;
+    // The open, measured (faro.go's musterOpen; absent while telemetry is
+    // off): its socket carries the open's trace context as ?tp=. A reconnect
+    // says so, and why.
+    var view = wsPath ? 'mirror_terminal' : 'agent_terminal';
+    var attrs = { mode: mode };
+    if (why) { attrs.reconnect = true; attrs.reconnect_reason = why; }
+    var opening = window.musterOpen ? window.musterOpen.begin(view, attrs) : null, live = null, endReason = '';
+    var tp = opening ? opening.tp() : '';
+    if (tp) url += '&tp=' + encodeURIComponent(tp);
+    setStatus('Connecting…');
+    var sock = new WebSocket(url);
+    sock.binaryType = 'arraybuffer';
+    madeAt = lastAt = Date.now(); beat = false;
+    var refused = false, opened = false;
+    sock.onopen = function () { opened = true; lastAt = Date.now(); if (opening) opening.mark('stream_connected'); };
+    sock.onmessage = function (ev) {
+      lastAt = Date.now();
+      if (typeof ev.data === 'string') {
+        // A heartbeat says only that the socket is alive.
+        if (ev.data === "{\"type\":\"ping\"}") { beat = true; return; }
+        var m;
+        try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (m.type === 'ready') {
+          if (opening) { opening.mark('first_output'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
+          caughtUp();
+          retry = 0;
+          clearError();
+          justConfirmed = false;
+          setStatus(statusFor(m.mode));
+          if (m.mode === 'rw') rwProbe = 0;
+          // The network is fine (this read-only attach opened): one more
+          // interactive attach decides whether the sign-in is.
+          else if (rwProbe === 1 && canType()) { rwProbe = 2; goInteractive(); }
+        } else if (m.type === 'error') {
+          endReason = m.reason || 'error';
+          // "muster is restarting": not a refusal — it comes back by itself.
+          if (m.reason !== 'shutdown') refused = true;
+          caughtUp();
+          showError(m.message, refused);
+        } else if (m.type === 'exit') {
+          endReason = 'exited';
+          refused = true;
+          caughtUp();
+          showError(m.message, true);
+        }
+        return;
+      }
+      var bytes = readReport(new Uint8Array(ev.data));
+      if (bytes.length) { caughtUp(); term.write(bytes); }
+    };
+    sock.onclose = function (ev) {
+      if (ws !== sock) return;
+      ws = null;
+      setStatus('Disconnected');
+      // Why, reported (faro.go): the server's closed word, else the close
+      // code; before the first output (opening) or while live.
+      var o = opening || live, why = endReason || (!opened ? 'not_opened' : 'closed_' + (ev && ev.code));
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, mode: mode });
+      opening = null;
+      if (left) return;
+      // A GATED ATTACH (a team agent's terminal) that never opened. A
+      // refused upgrade and a server or network that is not there look the
+      // same here, so it is read as the SIGN-IN only when the page already
+      // believes it stale, or it was the attach right after a confirm: then
+      // say so and wait for Reconnect, which asks. Believed fresh, it is the
+      // network or a restart: the ordinary retry with backoff below — never
+      // the mirrored read-only probe (a gated attach has no read-only form).
+      // The page's freshness runs out on its own clock, so a sign-in that
+      // really did expire is asked for on the first failure after that.
+      if (!opened && attachGated) {
+        var was = justConfirmed;
+        justConfirmed = false;
+        if (was || !fresh()) {
+          if (stepUp) stepUp.stale();
+          refusedEnd = true;
+          showError(was ? 'The terminal could not be opened.' : "Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you.", true);
+          return;
+        }
+        retryLater();
+        return;
+      }
+      // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
+      // browser socket cannot read: an interactive mirrored attach that never
+      // opened. Just confirmed — the gate said no to a fresh sign-in, and
+      // asking again would loop. Believed fresh the first time — maybe only
+      // the network (rwProbe). Otherwise the sign-in is not fresh any more:
+      // attach without live keys, and the next key pressed asks.
+      if (!opened && mode === 'rw' && confirmPath) {
+        var asked = justConfirmed;
+        justConfirmed = false;
+        mode = 'ro';
+        applyMode();
+        if (!asked && rwProbe === 0 && fresh()) { rwProbe = 1; }
+        else { rwProbe = 0; if (stepUp) stepUp.stale(); }
+        connect('step_up');
+        if (asked) showError('The interactive terminal could not be opened.', true);
+        return;
+      }
+      retryLater();
+    };
+    // retryLater: the far side refused or ended the attach — say so, and
+    // offer Reconnect; a wake tries it again (the host may be back). Anything
+    // else (a network gone, a server restarting, a phone that slept) comes
+    // back by itself; the button is offered only once that keeps failing.
+    function retryLater() {
+      if (refused) { refusedEnd = true; return; }
+      retry++;
+      setStatus("Disconnected · reconnecting…");
+      if (retry > 3) showError('The terminal connection keeps closing. Still trying…', true);
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
+    }
+    ws = sock;
+  }
+
+  function goInteractive() {
+    mode = 'rw';
+    applyMode();
+    connect();
+  }
+  // wake (restore.go): a closed socket reconnects at once (a refused or
+  // ended one only on the page's showing or the network's return); an open
+  // one that has heard no heartbeat for staleMs is replaced; one still
+  // opening is left to finish unless it has been opening for that long too.
+  function wake(why, staleMs) {
+    if (unavailable || left) return;
+    var now = Date.now();
+    if (!ws || ws.readyState > 1) {
+      if (!liveCanRetry()) return;
+      if (refusedEnd) { if (why === 'visibility' || why === 'online') { retry = 0; connect(why); } return; }
+      if (why === 'tick' && retryTimer) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (ws.readyState === 0) { if (now - madeAt > staleMs) connect(why === 'tick' ? 'stale' : why); return; }
+    if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
+  }
+
+  // userInput: the PERSON just made an input event — a key, text entered
+  // (input, beforeinput), text committed by an input method (compositionend:
+  // a phone keyboard's swipe or voice, a CJK IME), a paste — on the terminal.
+  // xterm.js types what such an event makes either from inside its own
+  // handler (keys, paste, plain input) or from a setTimeout(0) the handler
+  // queues (a committed composition; text from a keyCode-229 key): onData
+  // then is the person's. Its answers to the far side's queries come from
+  // parsing output, in tasks of their own, and are not. A structural signal
+  // (the event and its isTrusted), not a guess from the bytes: a keystroke
+  // and an answer can be the very same bytes.
+  //
+  // 🔴 CLEARED TWO TASKS LATER, NOT ONE. These listeners run in the CAPTURE
+  // phase (xterm stops keydown/keypress from propagating), so before
+  // xterm's own handler: a clear queued here as setTimeout(0) would run
+  // BEFORE the timer xterm queues in the same event, and a committed
+  // composition was dropped as nobody's (audit #312). The clear is queued
+  // from a first timer, so it runs after every zero-delay timer the event's
+  // handlers queued.
+  var userInput = false, userInputTimer = 0;
+  ['keydown', 'keypress', 'beforeinput', 'input', 'compositionend', 'paste'].forEach(function (type) {
+    host.addEventListener(type, function (ev) {
+      if (!ev.isTrusted) return;
+      userInput = true;
+      clearTimeout(userInputTimer);
+      userInputTimer = setTimeout(function () {
+        userInputTimer = setTimeout(function () { userInput = false; }, 0);
+      }, 0);
+    }, true);
+  });
+  term.onData(function (d) { send(d, userInput); });
+  term.onBinary(function (d) {
+    var b = new Uint8Array(d.length);
+    for (var i = 0; i < d.length; i++) { b[i] = d.charCodeAt(i) & 255; }
+    send(b, userInput);
+  });
+  for (var i = 0; i < keys.length; i++) {
+    keys[i].addEventListener('click', function (ev) {
+      var b = ev.currentTarget;
+      // A tap on the key bar is the person's, whatever it types.
+      send(hexBytes(b.getAttribute('data-seq')), true);
+      // A key picked from the ⋯ menu closes it, as a context menu does.
+      if (keysMenu && keysMenu.contains(b)) closeKeysMenu();
+    });
+  }
+  // Reconnect: the fallback, offered once the far side refused or ended the
+  // attach, or reconnecting by itself keeps failing.
+  reconnectBtn.addEventListener('click', function () {
+    retry = 0;
+    if (gatedStale()) { askToOpen(); return; }
+    if (mode === 'ro' && canType()) mode = 'rw';
+    connect('manual');
+  });
+  fitwBtn.addEventListener('click', function () {
+    fitWidth = !fitWidth;
+    keepTop = scrollEl.scrollTop;
+    if (overflowing) drawOverflow();
+  });
+
+  var pending = false;
+  function scheduleLayout() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () { pending = false; layout(); });
+  }
+  // The layout box: a rotation, a window resize, the on-screen keyboard.
+  if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(scheduleLayout).observe(scrollEl); }
+  window.addEventListener('resize', scheduleLayout);
+  if (window.visualViewport) {
+    // 🔴 visualViewport also fires on a PINCH. A zoom changes vv.scale and not
+    // the layout, so it is ignored here; only a same-scale change (a keyboard
+    // on a browser that overlays it) re-lays out.
+    var vvScale = window.visualViewport.scale;
+    window.visualViewport.addEventListener('resize', function () {
+      var s = window.visualViewport.scale;
+      if (Math.abs(s - vvScale) > 0.001 || Math.abs(s - 1) > 0.001) { vvScale = s; return; }
+      scheduleLayout();
+    });
+  }
+  // --- drag-to-scroll (a mirrored host that can: data-scroll) ---------------
+  // 🔴 THE HISTORY IS TMUX'S, NOT THIS TERMINAL'S. The viewer's tmux client
+  // paints only the visible screen, so xterm's own scrollback holds no real
+  // history. A vertical drag (or the mouse wheel) is turned into whole lines
+  // and posted; the host scrolls the pane in tmux copy-mode, and the scrolled
+  // view arrives on the socket like any other output. Without data-scroll (an
+  // older muster-mirror, a read-only host, an agent pod) none of this is wired
+  // and touch pans #term-scroll exactly as it always did.
+  //
+  // Coalesced: a drag accumulates pixels, whole lines are sent at most once per
+  // animation frame, and only one request is in flight (the next waits for its
+  // answer), so the order of scrolls is the order of the drag.
+  //
+  // 🔴 A SCROLL THAT DID NOT LAND IS PUT BACK, NOT DROPPED. Any answer but a 2xx
+  // (a 429, a slow host's 504, a 502) and a network failure return the request's
+  // lines to the pending count, to be sent again: on the next frame the first
+  // time, then after 100, 200 and 400 ms. After scrollMaxFails failures in a
+  // row the page gives up: it drops what is pending and shows
+  // #term-scroll-note until a scroll lands again.
+  //
+  // 🔴 A REFUSAL IS READ FROM ITS CODE (the ScrollRefusalHeader), NOT ITS
+  // STATUS, and only "this host cannot scroll" stops the gesture (Reconnect
+  // wires it again). A host that is reconnecting, a pane in a tmux menu, a
+  // window that is gone: each shows its note, drops what is pending (it was
+  // meant for a view that is not there) and keeps the gesture — the next drag
+  // asks again, and the note clears once one lands. A status with no code (a
+  // proxy's 404) is retried like any other failure.
+  var scrollPath = host.getAttribute('data-scroll');
+  if (scrollPath) (function () {
+    var form = host.getAttribute('data-scroll-form') || '';
+    var note = document.getElementById('term-scroll-note');
+    var maxLines = 200;
+    var scrollMaxFails = 5;
+    var px = 0, lines = 0, sent = 0, asked = 0, fails = 0;
+    var inFlight = false, frame = false, dead = true, waiting = false;
+    var refusalHeader = "X-Muster-Scroll-Refusal";
+    var stopCode = "unsupported";
+    var refusalNotes = {};
+    refusalNotes["offline"] = "Host reconnecting. Drag again once it is back.";
+    refusalNotes["mode"] = "The pane is in another mode (e.g. a tmux menu). Close it, then drag again.";
+    refusalNotes["gone"] = "This window is no longer on the host.";
+    refusalNotes["refused"] = "The host refused the scroll. Drag again to retry.";
+    var gaveUpNote = "Scrolling is not reaching the host. Drag again to retry.";
+    function showNote(text) {
+      if (!note) return;
+      if (text) note.textContent = text;
+      note.hidden = !text;
+      // An instrument for the browser suite: which note is up.
+      if (text) host.setAttribute('data-scroll-note', text); else host.removeAttribute('data-scroll-note');
+    }
+    function cellHeight() {
+      // The drawn height (Fit width scales it), per row.
+      var sc = host.querySelector('.xterm-screen');
+      var h = sc ? sc.getBoundingClientRect().height / term.rows : 0;
+      return h > 0 ? h : 16;
+    }
+    function schedule() {
+      if (frame || dead) return;
+      frame = true;
+      requestAnimationFrame(function () { frame = false; flush(); });
+    }
+    function addLines(n) {
+      if (!n) return;
+      lines += n;
+      // An instrument for the browser suite: every line a gesture asked for.
+      asked += n;
+      host.setAttribute('data-scroll-asked', String(asked));
+      schedule();
+    }
+    function addPx(d) {
+      // d > 0 is back in history.
+      px += d;
+      var c = cellHeight();
+      var n = px > 0 ? Math.floor(px / c) : Math.ceil(px / c);
+      px -= n * c;
+      addLines(n);
+    }
+    function flush() {
+      if (inFlight || waiting || dead || !lines) return;
+      var n = Math.max(-maxLines, Math.min(maxLines, lines));
+      lines -= n;
+      inFlight = true;
+      fetch(scrollPath, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form + '&lines=' + n
+      }).then(function (r) {
+        if (r.ok) return 'landed';
+        var code = r.headers.get(refusalHeader) || '';
+        if (code === stopCode) return 'stop';
+        if (refusalNotes.hasOwnProperty(code)) return 'refused:' + code;
+        return 'retry';
+      }, function () { return 'retry'; }).then(function (how) {
+        inFlight = false;
+        if (how === 'landed') {
+          sent += n;
+          fails = 0;
+          host.setAttribute('data-scroll-sent', String(sent));
+          showNote('');
+        } else if (how === 'stop') {
+          lines = 0;
+          px = 0;
+          fails = 0;
+          stop();
+          return;
+        } else if (how.indexOf('refused:') === 0) {
+          // Not this host's to scroll right now: say why, keep the gesture.
+          lines = 0;
+          px = 0;
+          fails = 0;
+          showNote(refusalNotes[how.slice('refused:'.length)]);
+          return;
+        } else {
+          lines += n;
+          fails++;
+          if (fails >= scrollMaxFails) {
+            lines = 0;
+            px = 0;
+            fails = 0;
+            showNote(gaveUpNote);
+            return;
+          }
+          if (fails > 1) {
+            waiting = true;
+            setTimeout(function () { waiting = false; schedule(); }, 100 * Math.pow(2, fails - 2));
+            return;
+          }
+        }
+        if (lines) schedule();
+      });
+    }
+    // A far side taller than the page: the scroll area takes a drag first,
+    // and only what is left of it scrolls the history.
+    function panArea(d) {
+      if (scrollEl.scrollHeight <= scrollEl.clientHeight) return d;
+      var before = scrollEl.scrollTop;
+      scrollEl.scrollTop = before - d;
+      return d - (before - scrollEl.scrollTop);
+    }
+    // Touch: the AXIS IS DECIDED AT THE GESTURE'S START. A horizontal start is
+    // left to the browser (touch-action pan-x: #term-scroll pans as before);
+    // a vertical one is ours, and never reaches xterm, whose own touch scroll
+    // has nothing real to show. Two fingers are a pinch, never a scroll.
+    //
+    // 🔴 A TOUCH'S EVENTS ALL GO TO THE ELEMENT IT STARTED ON, even once that
+    // element has left the page. Here that is a span of xterm's rows, which
+    // xterm replaces whenever it redraws — the host's scrolled view arriving, a
+    // re-attach painting the screen. A node out of the page has no ancestors,
+    // so its touchmoves never passed scrollEl's capture listener and the REST
+    // OF THE DRAG WAS LOST (measured: a drag that began as a re-attach redrew
+    // asked for nothing). So the touch's own target is listened on too. A move
+    // on a target still in the page is not counted twice: scrollEl's capture
+    // listener sees it first and, once the axis is 'y', stops it there, so it
+    // never reaches the target. One it lets through (under the slop, or
+    // sideways) adds no lines either way.
+    var start = null, axis = '', lastY = 0, held = null;
+    function release() {
+      if (!held) return;
+      held.removeEventListener('touchmove', onMove);
+      held.removeEventListener('touchend', onEnd);
+      held.removeEventListener('touchcancel', onEnd);
+      held = null;
+    }
+    function hold(el) {
+      release();
+      if (!el || el === scrollEl) return;
+      held = el;
+      el.addEventListener('touchmove', onMove, { passive: true });
+      el.addEventListener('touchend', onEnd, { passive: true });
+      el.addEventListener('touchcancel', onEnd, { passive: true });
+    }
+    function onStart(ev) {
+      start = null;
+      release();
+      if (ev.touches.length !== 1) return;
+      start = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      axis = '';
+      hold(ev.target);
+    }
+    function onMove(ev) {
+      if (!start) return;
+      if (ev.touches.length !== 1) { start = null; return; }
+      var t = ev.touches[0];
+      if (!axis) {
+        var dx = t.clientX - start.x, dy = t.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        axis = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+        lastY = start.y;
+      }
+      if (axis !== 'y') return;
+      ev.stopPropagation();
+      var d = panArea(t.clientY - lastY);
+      lastY = t.clientY;
+      if (d) addPx(d);
+    }
+    function onEnd() { start = null; release(); }
+    // The wheel: vertical only (a sideways one pans #term-scroll as before).
+    function onWheel(ev) {
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.deltaMode === 1) addLines(-Math.round(ev.deltaY));
+      else if (ev.deltaMode === 2) addLines(-Math.round(ev.deltaY) * term.rows);
+      else addPx(panArea(-ev.deltaY));
+    }
+    var touchTargets = [scrollEl, host.querySelector('.xterm-viewport')];
+    function stop() {
+      if (dead) return;
+      dead = true;
+      scrollEl.removeEventListener('touchstart', onStart, true);
+      scrollEl.removeEventListener('touchmove', onMove, true);
+      scrollEl.removeEventListener('touchend', onEnd, true);
+      scrollEl.removeEventListener('touchcancel', onEnd, true);
+      scrollEl.removeEventListener('wheel', onWheel, true);
+      release();
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
+      host.removeAttribute('data-scroll-on');
+      showNote('');
+    }
+    function wire() {
+      if (!dead) return;
+      dead = false;
+      touchTargets.forEach(function (el) { if (el) el.style.touchAction = 'pan-x pinch-zoom'; });
+      scrollEl.addEventListener('touchstart', onStart, { capture: true, passive: true });
+      scrollEl.addEventListener('touchmove', onMove, { capture: true, passive: true });
+      scrollEl.addEventListener('touchend', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+      scrollEl.addEventListener('wheel', onWheel, { capture: true, passive: false });
+      // An instrument for the browser suite: the handlers are wired.
+      host.setAttribute('data-scroll-on', '1');
+    }
+    wire();
+    // Reconnect wires the gesture again after "this host cannot scroll": the
+    // host may have been upgraded or restarted with -interactive since.
+    reconnectBtn.addEventListener('click', wire);
+  })();
+
+  // ⚠ OFF SCREEN, THE ATTACH IS KEPT AS IT IS (view_swap.go: ONE stream per
+  // view for as long as the person stays on the window). A terminal behind
+  // the other view used to drop live keys — one re-attach going, one coming
+  // back — which, with live keys always on, would be two re-attaches on EVERY
+  // swap. Nothing can type into it there: the hidden frame is inert, so it
+  // takes no key, no tap and no focus until it is shown again.
+
+  // Leaving the page ends the stream now rather than when the socket times out.
+  window.addEventListener('pagehide', function () { left = true; clearTimeout(retryTimer); drop(); });
+  // Back and Forward (restore.go): a restored terminal attaches again — the
+  // far side redraws its screen on an attach — and is caught up at its first
+  // answer: ready, the first bytes, or a refusal.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  (window.__musterRestoreParts = window.__musterRestoreParts || []).push({
+    show: function (why) {
+      if (unavailable) return null;
+      if (gatedStale()) { showError("Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you.", true); return null; }
+      left = false; retry = 0;
+      if (mode === 'ro' && canType()) mode = 'rw';
+      return new Promise(function (resolve) { restoring = resolve; connect(why || 'pageshow'); });
+    },
+    wake: wake
+  });
+
+  // 🔴 LIVE KEYS FROM THE START wherever a gate allows them: a host that
+  // takes keys, and — for a mirrored session — a sign-in the page believes
+  // fresh (the server re-checks it on the attach).
+  if (canType()) mode = 'rw';
+  applyMode();
+  if (!unavailable) {
+    if (gatedStale()) showError("Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you.", true);
+    else connect();
+  }
+})();
+</script>

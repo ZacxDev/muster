@@ -208,6 +208,7 @@
       "tests/server-switcher.spec.ts",
       "tests/share.spec.ts",
       "tests/switcher-search.spec.ts",
+      "tests/team-ux.spec.ts",
       "tests/update.spec.ts",
       "tests/view-swap.spec.ts"
     ],

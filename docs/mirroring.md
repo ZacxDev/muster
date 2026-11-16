@@ -1878,7 +1878,10 @@ server and its own `muster-mirror`.
   the send queue and answering a question in the pane, each with their own
   fresh sign-in ([sending-and-step-up.md](sending-and-step-up.md#a-team-sessions-queue)).
   A **viewer**'s composer is drawn disabled and says so, their question cards
-  are drawn unanswerable, and every typing route answers them 403. The
+  are drawn unanswerable (on the session's view and on the Asks page, where
+  a team's ask, its end card included, shows no option, answer box or
+  Dismiss, and is not counted on the Asks badge as waiting on them), and
+  every typing route answers them 403. The
   composer on a team session keeps no draft (drafts are keyed by host name)
   and has no paperclip (an upload is the uploader's own file).
 - **Not on a team session in this version.** The chief panel, proposals,

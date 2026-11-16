@@ -945,23 +945,13 @@ func draftTextLead(st plugins.DraftStatus) string {
 	return ""
 }
 
-// draftPageScript makes an Approve on a stale sign-in ask "Confirm it's you"
-// BEFORE it submits, and submit once confirmed. It is a convenience: the server
-// refuses a stale approval whatever this script did (decideDraft).
-//
-// BY DELEGATION, on the document: the Asks page re-draws its drafts lists live
-// (asksPageScript), and a listener bound to each form at load would miss every
-// card that arrived later — its Approve would go straight to the server's 403.
-const draftPageScript = ui.StepUpFormScript
-
-// draftStepUpHTML is the confirm dialog, its script and the page's own, as HTML.
+// draftStepUpHTML is the Asks page's confirm dialog and its form script
+// (stepUpFormsHTML): an Approve on a stale sign-in asks "Confirm it's you"
+// BEFORE it submits, and submits once confirmed. It is a convenience: the
+// server refuses a stale approval whatever this did (decideDraft). The form
+// script binds BY DELEGATION, on the document: the Asks page re-draws its
+// drafts lists live (asksPageScript), and a listener bound to each form at
+// load would miss every card that arrived later.
 func (s *Server) draftStepUpHTML(r *http.Request) string {
-	v := s.stepUpView(r)
-	v.Why = DraftStepUpWhy()
-	var b strings.Builder
-	if err := ui.StepUpDialog(v).Render(&b); err != nil {
-		s.logger.Printf("plugins: render the confirm dialog: %v", err)
-		return ""
-	}
-	return b.String() + draftPageScript
+	return s.stepUpFormsHTML(r, DraftStepUpWhy())
 }

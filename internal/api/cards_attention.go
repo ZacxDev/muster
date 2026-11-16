@@ -70,7 +70,7 @@ func (s *Server) cardAttention(ctx context.Context) cardAttentionIndex {
 	if s.ext.Mirror != nil {
 		hosts = s.ext.Mirror.Hosts(ctx)
 	}
-	for _, it := range items {
+	for _, it := range waitingOnReader(ctx, items) {
 		if !slices.Contains(attentionUrgency, it.Kind) {
 			continue
 		}

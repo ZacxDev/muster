@@ -215,6 +215,12 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 	return true, 0
 }
 
+// TeamAgentTerminalWhy is the confirm dialog's sentence on a team agent's
+// terminal page (handleAgentTerminalPage).
+func TeamAgentTerminalWhy() string {
+	return "Opening a team agent's terminal needs a sign-in from the last " + stepup.WindowText() + "."
+}
+
 // memberOnTeamAgent reports whether ctx is a PERSON acting on agent a, which
 // they do not own. Under row-level security (0131) the only agent a person can
 // see and not own is one of their teams' agents. A row that carries no owner

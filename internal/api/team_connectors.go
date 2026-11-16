@@ -160,7 +160,7 @@ func (s *Server) renderTeamConnectors(w http.ResponseWriter, r *http.Request, tc
 		}
 		b.WriteString(`<div class="flex flex-wrap gap-2">`)
 		if lent && g.Connector == githubapp.ConnectorName {
-			b.WriteString(`<form method="POST" action="/teams/` + id + `/connectors/` + gid + `/approve"><button type="submit" class="` +
+			b.WriteString(`<form method="POST" action="/teams/` + id + `/connectors/` + gid + `/approve" data-step-up-form><button type="submit" class="` +
 				adminButton + `" data-approve="` + gid + `">Approve</button></form>`)
 		}
 		b.WriteString(`<form method="POST" action="/teams/` + id + `/connectors/` + gid + `/deny"><button type="submit" class="` +
@@ -177,13 +177,26 @@ func (s *Server) renderTeamConnectors(w http.ResponseWriter, r *http.Request, tc
 		sid := strconv.FormatInt(sg.ID, 10)
 		b.WriteString(`<li class="flex flex-wrap items-center gap-2 text-sm text-fg" data-standing="` + sid + `"><span>` + html.EscapeString(sg.Connector) +
 			` · ` + html.EscapeString(sg.Repo) + `</span><form method="POST" action="/teams/` + id + `/connectors/standing/` + sid +
-			`/revoke"><button type="submit" class="` + adminQuiet + `" data-revoke="` + sid + `">Revoke</button></form></li>`)
+			`/revoke" data-step-up-form data-step-up-why="` + html.EscapeString(TeamConnectorsRevokeWhy()) + `"><button type="submit" class="` + adminQuiet + `" data-revoke="` + sid + `">Revoke</button></form></li>`)
 	}
 	if shown == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No repository yet.</li>`)
 	}
 	b.WriteString(`</ul></section>`)
+	// Approve and the standing revoke are step-up gated (decideTeamConnector,
+	// handleTeamStandingRevoke): their forms confirm in place (stepUpFormsHTML).
+	b.WriteString(s.stepUpFormsHTML(r, TeamConnectorsApproveWhy()))
 	s.writeNavDocument(w, r, code, "Team connectors", ui.NavAccount, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
+}
+
+// TeamConnectorsApproveWhy and TeamConnectorsRevokeWhy are the confirm
+// dialog's sentences for the page's two gated forms.
+func TeamConnectorsApproveWhy() string {
+	return "Approving a team agent onto a repository needs a sign-in from the last " + stepup.WindowText() + "."
+}
+
+func TeamConnectorsRevokeWhy() string {
+	return "Revoking a repository approved for the team needs a sign-in from the last " + stepup.WindowText() + "."
 }
 
 func (s *Server) handleTeamConnectorApprove(w http.ResponseWriter, r *http.Request) {
