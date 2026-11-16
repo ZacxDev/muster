@@ -84,45 +84,31 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 // that stopped reading (the beat its only writer) was counted client_left, not
 // timeout (audit #299 round 2: 1 in 60 single sockets, most runs of 12). So the
 // beat keeps the deadline itself: a timer at bound notes the stall and then
-// closes the connection, and the write's own context runs pingWriteGrace
-// longer, so it is never the one to close it first. A write that lands in time
-// stops the timer.
+// closes the connection (armStall, shared with every write to the page), and
+// the write's own context runs stallGrace longer, so it is never the one to
+// close it first. A write that lands in time stops the timer.
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+pingWriteGrace)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+stallGrace)
 	defer cancel()
-	fired := make(chan struct{})
-	stall := time.AfterFunc(bound, func() {
-		defer close(fired)
-		stallFiring()
-		notePageWrite(c, context.DeadlineExceeded)
-		_ = c.CloseNow()
-	})
+	disarm := armStall(c, time.Now().Add(bound))
 	beatWriting()
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
-	if !stall.Stop() {
-		// The timer fired, so its callback has STARTED — not necessarily
-		// finished. It is waited for: a beat returning before the note
-		// landed could be forgotten first (stop's forgetPage) and the note
-		// left in stalledPages for good, or land after the handler had
-		// classified the end (audit #299 round 3). Noted and closed now; the
-		// beat ends.
-		<-fired
-		if err == nil {
-			err = context.DeadlineExceeded
-		}
-		return err
+	if disarm() {
+		// The timer fired, and disarm has waited for its callback to finish:
+		// a beat returning before the note landed could be forgotten first
+		// (stop's forgetPage) and the note left in stalledPages for good, or
+		// land after the handler had classified the end (audit #299 round 3).
+		// Noted and closed now; the beat ends.
+		return stalledWriteErr(err)
 	}
 	notePageWrite(c, err)
 	return err
 }
 
-// pingWriteGrace is how much longer than its bound a beat's write may run, so
-// that the bound's own timer — not the write's context — ends a stalled one.
-const pingWriteGrace = time.Second
-
-// Test seams around a beat's stall timer, no-ops in production: stallFiring
-// runs as the timer's callback begins, beatWriting just before the beat's
-// write. A test holds them to put the callback and the write in a chosen order.
+// Test seams around a write's stall timer (armStall), no-ops in production:
+// stallFiring runs as the timer's callback begins, beatWriting just before the
+// beat's write. A test holds them to put the callback and the write in a
+// chosen order.
 var (
 	stallFiring = func() {}
 	beatWriting = func() {}

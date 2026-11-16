@@ -358,6 +358,98 @@ func TestAStreamWriteCutByAStalledBeatIsATimeout(t *testing.T) {
 	}
 }
 
+// relayWrite tags the asks relay's write in TestABatchQueuedBehindTheAsksRelaysStallIsATimeout.
+type relayWrite struct{}
+
+// TestABatchQueuedBehindTheAsksRelaysStallIsATimeout: the asks relay writes
+// to the view's socket with terminalWriteJSON. When ITS write stalls on a page
+// that stopped reading while a batch is queued behind it, the relay's bound
+// closes the connection and the queued batch fails on the closed connection
+// at once — before the relay's write has even returned. That batch's failure
+// is the timeout, never the page gone: the stall must be noted BEFORE the
+// close can be seen, not after the relay's write returns (audit #713 F1).
+//
+// The relay is held after its write returns (pageWriteReturned) until the
+// batch has failed, so a note written only then is too late, every run.
+func TestABatchQueuedBehindTheAsksRelaysStallIsATimeout(t *testing.T) {
+	saved := terminalWriteTimeout
+	terminalWriteTimeout = 30 * time.Second // the batch's own bound, never reached
+	t.Cleanup(func() { terminalWriteTimeout = saved })
+	c := unreadPage(t)
+	live := context.Background()
+	batchErr, batchFailed := make(chan error, 1), make(chan struct{})
+	savedHook := pageWriteReturned
+	pageWriteReturned = func(ctx context.Context) {
+		if ctx.Value(relayWrite{}) == nil {
+			return
+		}
+		select {
+		case <-batchFailed:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	relayWriting := make(chan struct{})
+	savedStart := pageWriteStarting
+	pageWriteStarting = func(ctx context.Context) {
+		if ctx.Value(relayWrite{}) != nil {
+			close(relayWriting)
+		}
+	}
+	// And the relay's stall timer is held — until the batch has failed, or
+	// 300 ms, well inside stallGrace — before it notes and closes: a close by
+	// anything else at the bound (coder/websocket's own, on the write's
+	// context) is then seen by the batch with no note, every run. Only the
+	// relay's write can stall here: the batch's bound is 30 s.
+	savedFiring := stallFiring
+	stallFiring = func() {
+		select {
+		case <-batchFailed:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	t.Cleanup(func() { pageWriteReturned, pageWriteStarting, stallFiring = savedHook, savedStart, savedFiring })
+
+	// The relay: one frame far larger than the socket's buffers, so it holds
+	// the write lock mid-frame, bounded at 2 s.
+	rctx, rcancel := context.WithTimeout(context.WithValue(live, relayWrite{}, true), 2*time.Second)
+	defer rcancel()
+	relayErr := make(chan error, 1)
+	go func() {
+		relayErr <- terminalWriteJSON(rctx, c, map[string]string{"type": "asks", "pad": strings.Repeat("z", 16<<20)})
+	}()
+	// The batches, once the relay is writing: small, so they cannot fill the
+	// socket themselves; one ends up queued behind the relay's frame.
+	<-relayWriting
+	go func() {
+		var err error
+		for err == nil {
+			err = writeToPage(live, c, map[string]string{"type": "batch"})
+		}
+		batchErr <- err
+		close(batchFailed)
+	}()
+	var berr, rerr error
+	select {
+	case berr = <-batchErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the queued batch never failed")
+	}
+	select {
+	case rerr = <-relayErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the relay's write never returned")
+	}
+	if !errors.Is(rerr, context.DeadlineExceeded) {
+		t.Fatalf("CONTROL: the relay's write did not time out (%v)", rerr)
+	}
+	if !errors.Is(berr, net.ErrClosed) {
+		t.Fatalf("CONTROL: the batch did not fail on the closed connection (%v); that is the case under test", berr)
+	}
+	if !errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, errPageGone) {
+		t.Errorf("the batch queued behind the relay's stall returned %v: want the timeout, not marked as the page gone", berr)
+	}
+}
+
 // unreadPage is the server side of a websocket whose page is alive and never
 // reads; its stalled note is forgotten when the test ends.
 func unreadPage(t *testing.T) *websocket.Conn {

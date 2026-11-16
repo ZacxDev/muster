@@ -232,9 +232,9 @@ var errPageStalled = fmt.Errorf("the page stopped reading (a write to its socket
 // first closes the connection, and every other writer's in-flight or next
 // write fails "use of closed network connection". If the heartbeat's bound
 // came first, the stream's own write returned that, marked as the page gone
-// (issue #710). The note is written BEFORE the close (writePing,
-// terminalWriteJSON), so a write that finds the socket closed by a stall
-// always sees it here.
+// (issue #710). Every write to the page keeps its bound with armStall, which
+// notes the stall BEFORE it closes the connection, so a write that finds the
+// socket closed by a stall always sees the note here.
 func markPageGone(c *websocket.Conn, err error) error {
 	switch {
 	case err == nil || errors.Is(err, context.DeadlineExceeded):
