@@ -214,30 +214,53 @@ func viewEnded(r *http.Request, view, reason string, since time.Time) {
 // reading, which is a timeout.
 var errPageGone = errors.New("the page's socket is closed")
 
-// markPageGone is err marked errPageGone — unless it is a timeout, returned
-// as it is.
-func markPageGone(err error) error {
-	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+// errPageStalled wraps a failed write to a page's socket that ANOTHER writer's
+// timed-out write had closed (pageStalled): the page was there and not
+// reading, so the failure is that timeout — it is context.DeadlineExceeded —
+// whichever writer's deadline came first.
+var errPageStalled = fmt.Errorf("the page stopped reading (a write to its socket timed out): %w", context.DeadlineExceeded)
+
+// markPageGone is err, a failed write to c, marked for why it failed: a
+// timeout returned as it is; a failure on a socket some writer's timed-out
+// write closed (pageStalled) marked errPageStalled; anything else marked
+// errPageGone.
+//
+// 🔴 A WRITE THAT FINDS THE SOCKET CLOSED IS NOT ALWAYS THE PAGE LEAVING. The
+// view's and the terminal's sockets have more than one writer — the stream,
+// the heartbeat (writePing), the asks relay and the suggestions — each with
+// its own deadline. When the page stops reading, whichever deadline comes
+// first closes the connection, and every other writer's in-flight or next
+// write fails "use of closed network connection". If the heartbeat's bound
+// came first, the stream's own write returned that, marked as the page gone
+// (issue #710). The note is written BEFORE the close (writePing,
+// terminalWriteJSON), so a write that finds the socket closed by a stall
+// always sees it here.
+func markPageGone(c *websocket.Conn, err error) error {
+	switch {
+	case err == nil || errors.Is(err, context.DeadlineExceeded):
 		return err
+	case pageStalled(c):
+		return fmt.Errorf("%w: %w", errPageStalled, err)
 	}
 	return fmt.Errorf("%w: %w", errPageGone, err)
 }
 
-// writeToPage is terminalWriteJSON to the page's socket, a failure other than
-// a timeout marked errPageGone.
+// writeToPage is terminalWriteJSON to the page's socket, its failure marked
+// by markPageGone.
 func writeToPage(ctx context.Context, c *websocket.Conn, v any) error {
-	return markPageGone(terminalWriteJSON(ctx, c, v))
+	return markPageGone(c, terminalWriteJSON(ctx, c, v))
 }
 
-// pageWriter is w — the page's socket, as a terminal's output writer — its
-// failures marked errPageGone.
+// pageWriter is w — the page's socket c, as a terminal's output writer — its
+// failures marked by markPageGone.
 type pageWriter struct {
 	w interface{ Write([]byte) (int, error) }
+	c *websocket.Conn
 }
 
 func (p pageWriter) Write(b []byte) (int, error) {
 	n, err := p.w.Write(b)
-	return n, markPageGone(err)
+	return n, markPageGone(p.c, err)
 }
 
 // firstWriter calls first once, before its first write.
