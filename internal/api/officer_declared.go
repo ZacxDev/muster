@@ -857,12 +857,13 @@ func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, 
 }
 
 // checkDeclaredOwner is the team rule for d, through THE one check
-// (officers.CheckOwners), at the create or replace door: a declaration that
-// names a host runs as a host officer, and a team's host officer that
-// declares connectors is refused there (G3, team sharing 2b.5) — refused on
-// `connectors`, the field to change. A "runtime": "auto" declaration is
-// checked when the roster load resolves where it runs (resolveDeclared): in
-// a pod it is not a host officer at all.
+// (officers.CheckOwners): a declaration that names a host runs as a host
+// officer, so the rule is checked as one — at the create or replace door and
+// at the roster load (resolveDeclared). A team's host officer that declares
+// connectors is refused (G3, team sharing 2b.5). No door accepts a team
+// owner yet: O-C's team door is the first to reach the team arm here, and
+// must refuse that declaration there (and an "auto" one that lands on a host
+// is refused at the load, after its runtime resolves).
 func (s *Server) checkDeclaredOwner(d officers.Declaration) error {
 	if d.Runtime != officers.RuntimeHost {
 		return nil
@@ -872,11 +873,7 @@ func (s *Server) checkDeclaredOwner(d officers.Declaration) error {
 		return err
 	}
 	if err := officers.CheckOwners([]officers.Officer{o}, s.officerOwnerKind); err != nil {
-		field := "runtime"
-		if errors.Is(err, officers.ErrTeamHostOfficerConnectors) {
-			field = "connectors"
-		}
-		return fieldError(field, err.Error())
+		return fieldError("runtime", err.Error())
 	}
 	return nil
 }

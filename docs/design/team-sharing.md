@@ -2897,22 +2897,25 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   `ErrTeamHostOfficer` and refuses, in its place, a team's host officer
    >   that declares `connectors` (`ErrTeamHostOfficerConnectors`, G3). It is
    >   THE team rule for env and DB-declared officers alike: boot
-   >   (`EnableOfficers`), the create/replace door's check
-   >   (`checkDeclaredOwner`) and each roster load (`resolveDeclared`, after
-   >   an auto runtime resolves) all call it
+   >   (`EnableOfficers`) and each roster load (`resolveDeclared`, after an
+   >   auto runtime resolves) call it
    >   (`TestCheckOwnersAdmitsATeamHostOfficer`,
    >   `TestCheckOwnersRefusesATeamHostOfficerWithConnectors`,
-   >   `TestBootRefusesATeamHostOfficerWithConnectors`). 🔴 **Applied at
-   >   declare time too:** a DB-declared officer is declared at runtime, so
-   >   "refused at boot" alone would let one be stored and never run. The
-   >   door's check refuses it on the `connectors` field (the field to
-   >   change). A `"runtime": "auto"` team declaration with connectors is NOT
-   >   refused at the door, because in a pod it is not a host officer (team
-   >   pod officers with connectors stay as phase 3 left them, UNVERIFIED).
-   >   If auto places it on a host, the roster load refuses it there and says
-   >   why (`TestTeamOfficerRules`, `TestATeamAutoOfficerIsPlacedOnTheTeamsHost`,
-   >   which replaces `TestATeamAutoOfficerIsNeverPlacedOnAHost`). No door
-   >   writes a team's DB officers yet (O-C).
+   >   `TestBootRefusesATeamHostOfficerWithConnectors`, `TestTeamOfficerRules`,
+   >   `TestATeamAutoOfficerIsPlacedOnTheTeamsHost`, which replaces
+   >   `TestATeamAutoOfficerIsNeverPlacedOnAHost`). A stored team row that
+   >   breaks G3 does not run, and the load says why.
+   > - 🔴 **Owed to O-C: refuse it at the team door.** No door accepts a team
+   >   owner yet (the create/replace door's owner is the caller's own;
+   >   `TestTeamOfficerRules` pins the team door's 404), so no declare-time
+   >   refusal was added here (round 0 on #729, D1). O-C's team door must
+   >   refuse a team `"runtime": "host"` declaration that declares
+   >   `connectors`, at the door (it reaches `checkDeclaredOwner`, which
+   >   calls `CheckOwners`; report it on the field to change). A team
+   >   `"runtime": "auto"` declaration with connectors cannot be refused at
+   >   the door, because in a pod it is not a host officer: it is refused at
+   >   the load when auto places it on a host, as now. Team pod officers with
+   >   connectors stay as phase 3 left them (UNVERIFIED).
    > - **Which host.** Unchanged code: the runtime acts as the team
    >   (`officerPrincipal` → `ViaOfficer`), so `Mirror.Hosts` lists only the
    >   team's hosts. `TestATeamHostOfficerNeverSpawnsOnAPersonsHost` is an

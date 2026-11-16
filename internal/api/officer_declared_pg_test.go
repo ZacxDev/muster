@@ -674,10 +674,10 @@ func TestRuntimeAutoDetection(t *testing.T) {
 // writes them yet (round 0's D1: O-C adds the team door with its UI). Since
 // team sharing 2b.5 a team MAY own a host officer, and the one team rule
 // (officers.CheckOwners) refuses only a team host officer that declares
-// connectors (G3): at the roster load, for a hand-written row, and at the
-// create door's check (checkDeclaredOwner), on `connectors`. CONTROL: the
-// same host declaration without connectors passes the door's check, and its
-// row is not refused by the team rule at the load.
+// connectors (G3): at the roster load, for a hand-written row. (No door
+// accepts a team owner until O-C, which refuses it at its door.) CONTROL: the
+// same host declaration without connectors is not refused by the team rule
+// at the load.
 //
 // 🔴 RED at the base (c96acc08) for the connectors-free host officer (refused
 // by ErrTeamHostOfficer) and for the connectors refusal (no such error).
@@ -718,15 +718,6 @@ func TestTeamOfficerRules(t *testing.T) {
 	}
 	if stt, ok := w.srv.officerRT.declaredView(team, "tmp:x"); !ok || stt.row.Owner != team {
 		t.Fatalf("a team's pod officer row: %+v; want it loaded, owned by the team", stt)
-	}
-	// The team rule at the create door's check, as O-C's door will call it.
-	d := officers.Declaration{ID: "tm:host", Owner: team, Runtime: officers.RuntimeHost, Host: hostOffHost, Repo: hostOffRepo, InstanceSlug: "tm-host-iso"}
-	if err := w.srv.checkDeclaredOwner(d); err != nil {
-		t.Fatalf("CONTROL: a team host declaration without connectors at the door's check: %v; want admitted", err)
-	}
-	d.Connectors = []string{"warehouse-iso"}
-	if err := w.srv.checkDeclaredOwner(d); err == nil || officers.Fields(err)[0].Field != "connectors" || !strings.Contains(err.Error(), officers.ErrTeamHostOfficerConnectors.Error()) {
-		t.Fatalf("a team host declaration with connectors at the door's check: %v; want refused on connectors (G3)", err)
 	}
 }
 

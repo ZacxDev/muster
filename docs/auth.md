@@ -271,7 +271,7 @@ and managers type into its hosts' sessions, each with their own fresh sign-in
     same name. Its spawn rows are the team's, and every member reads them on
     `/officers/spawns`, grouped under the team. Nobody lends or changes them.
     A team host officer that declares `connectors` is refused, at boot and
-    at the database declaration's door, because nobody could decide a team's
+    when the database roster is loaded, because nobody could decide a team's
     connector request (G3). See
     [officers-builtin.md](officers-builtin.md#a-teams-host-officer-team-hosts).
   - Every member reads the team's officer types and charters on

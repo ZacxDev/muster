@@ -296,9 +296,9 @@ above (`-interactive -agent-spawn`, the officer's `repo` on
   (a team has no phone). An instance gets its officer tools and
   `attention_ask`; its asks are the team's.
 - 🔴 **No `connectors`.** A team's host officer that declares `connectors` is
-  refused: at boot for `MUSTER_OFFICERS`, at the create or replace door for a
-  database declaration (on `connectors`), and, for a `"runtime": "auto"` one
-  placed on a host, at the roster load, which says why it does not run. A
+  refused: at boot for `MUSTER_OFFICERS`, and at the roster load for a
+  database declaration (including a `"runtime": "auto"` one placed on a
+  host), which then says why it does not run. A
   team's connector requests would have no one to decide them (decision G3 in
   [design/team-sharing.md](design/team-sharing.md#g-operator-decided-2026-11-14)).
   Run it in pods, or without connectors.
