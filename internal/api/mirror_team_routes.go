@@ -193,7 +193,7 @@ func (s *Server) mirrorTeamGate(w http.ResponseWriter, r *http.Request) (*http.R
 	}
 	ctx, done := s.teamLiveOpen(mirror.ForOwner(r.Context(), o), o, p.UserID, need, errTeamStreamClosed)
 	// Read the role AGAIN, after registering (#690 round 1, 🟢1; as
-	// teamTerminalOpen does): a removal or a drop that landed between the
+	// teamAgentSocketOpen does): a removal or a drop that landed between the
 	// principal's read and the registration ran its close before this
 	// request was there to be closed. Not a member now: the same 404; a
 	// member below the need now: the viewer's 403.

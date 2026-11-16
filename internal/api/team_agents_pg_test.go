@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/users"
+	"github.com/coder/websocket"
 )
 
 // THE TEAM-AGENT WALK (team sharing phase 4, slice 4.4; plan §6 and §7). Team
@@ -636,6 +637,92 @@ func TestARemovalIsNotStalledByARuntimeThatSendsNo103(t *testing.T) {
 	if _, answered := tw.ccd.counts(); len(answered) != 0 {
 		t.Errorf("the runtime answered %q before the removal returned; want it still holding B's request", answered)
 	}
+}
+
+// TestARemovedMembersChatSocketClosesWithinTheSweep (Issue #724 round 1, F1;
+// docs/design/team-sharing.md "Known windows after a removal", row 1): B and A
+// each hold the team chief's chat socket open, and B's turn is IN FLIGHT — the
+// runtime took B's text and is still answering — when B is removed through the
+// store (nothing in this process closes anything, as for a removal another
+// replica or the CLI made). B's socket ends within the sweep (100 ms here, 10 s
+// in production), while the turn is still running. CONTROL: A's socket, a
+// still-member's, stays open. The turn itself is the team's and runs on: its
+// reply is stored once the runtime answers.
+//
+// 🔴 RED at 41f8bc34 (main with #731's send fence, before this fix): the chat
+// socket was never registered for the membership sweep, so it streamed B's
+// turn to B until the turn ended.
+func TestARemovedMembersChatSocketClosesWithinTheSweep(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	setTeamLiveEvery(w.srv, 100*time.Millisecond)
+	ts := httptest.NewServer(w.h)
+	t.Cleanup(ts.Close)
+	hold, arrived := make(chan struct{}), make(chan struct{}, 1)
+	var holdOnce sync.Once
+	letGo := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(letGo)
+	tw.ccd.busyCCD.mu.Lock()
+	tw.ccd.hold, tw.ccd.arrivedCh = hold, arrived
+	tw.ccd.busyCCD.mu.Unlock()
+	open := func(uid int64) (*websocket.Conn, <-chan struct{}) {
+		h := http.Header{}
+		h.Set("Cookie", sessionCookieFor(w.srv))
+		h.Set(isoUserHeader, strconv.FormatInt(uid, 10))
+		h.Set("Origin", ts.URL)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/agents/" + tw.chief.Name + "/ws?session=" + strconv.FormatInt(tw.session.ID, 10)
+		c, resp, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: h})
+		if err != nil {
+			code := 0
+			if resp != nil {
+				code = resp.StatusCode
+			}
+			t.Fatalf("dial the team chief's chat socket as %d: %v (%d)", uid, err, code)
+		}
+		t.Cleanup(func() { c.CloseNow() })
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			for {
+				if _, _, err := c.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		return c, ended
+	}
+	bc, bEnded := open(w.b.uid)
+	_, aEnded := open(w.a.uid)
+	if err := bc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"message","text":"from B `+tw.canary+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fixture: B's turn never reached the runtime")
+	}
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	removed := time.Now()
+	select {
+	case <-bEnded:
+	case <-time.After(3 * time.Second):
+		t.Errorf("B's chat socket is still open %v after B left the team, with B's turn in flight", time.Since(removed))
+	}
+	select {
+	case <-aEnded:
+		t.Error("CONTROL: A's chat socket ended too")
+	case <-time.After(500 * time.Millisecond):
+	}
+	letGo()
+	eventuallyAPI(t, "the team's turn to run on and its reply to be stored", func() bool {
+		var n int
+		_ = w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND role = 'assistant' AND content LIKE 'answer to:%'`, tw.chief.ID).Scan(&n)
+		return n == 1
+	})
 }
 
 // TestAMemberWritesOnlyInTheTeamRoom ("one shared room", operator decision 4):
