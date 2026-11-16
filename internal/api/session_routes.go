@@ -1325,10 +1325,9 @@ func (s *Server) relayTaskRoute(ctx context.Context, r plugins.Route) (plugins.R
 // chief (Route.AnswersToChief: a REQUEST route, a ONE-WAY route): the route
 // ends relayed owing the chief its answer (FinishAnswerToChiefRoute, one
 // transaction), and the sweep — woken now — delivers it to the chief session
-// (deliverHandBack → deliverRouteAnswer), AT LEAST ONCE: the hand-back is
-// cleared only once the answer is on record there, and a row already there is
-// not written again, so a relay retried or cut off by a crash delivers it once
-// in the ordinary case (two sweeps racing on one route may write it twice).
+// (deliverHandBack → deliverRouteAnswer): the hand-back is cleared only once
+// the answer is on record there, and a row already there is not written again
+// (deliverRouteAnswers states what "on record" does and does not promise).
 func (s *Server) relayAnswerToChiefRoute(ctx context.Context, r plugins.Route) (plugins.Route, error) {
 	got, err := s.ext.Routes.FinishAnswerToChiefRoute(ctx, r.RouteID)
 	if err != nil {
@@ -1672,10 +1671,11 @@ func (s *Server) deliverHandBack(ctx context.Context, routeID string) {
 }
 
 // deliverRouteHandBack hands ended route r's message back to its chief — the
-// hand-back r owes (HandBackOwed) — AT LEAST ONCE, on the route answers' path:
-// a turn of its own (startRouteAnswerTurn: the delivery claim, never during
-// the owner's turn, never waiting while holding it), and the hand-back is
-// taken (TakeHandBack) only once that turn is on record. A chief that cannot
+// hand-back r owes (HandBackOwed) — on the route answers' path, with the same
+// promise (deliverRouteAnswers): a turn of its own (startRouteTurn: the
+// delivery claim, never during the owner's turn, never waiting while holding
+// it), and the hand-back is taken (TakeHandBack) only once that turn's row is
+// on record. A chief that cannot
 // take it NOW leaves it owed for the next sweep; a note is the last resort
 // (deliverToChief). ctx acts as r's owner.
 //
@@ -1771,6 +1771,9 @@ func (s *Server) deliverToChief(ctx context.Context, r plugins.Route, text strin
 	// redraft) must never vanish, and one that has waited routeChiefWaitMax —
 	// refusals count toward it — gives up waiting for a turn.
 	refused := func(ctx context.Context) {
+		if routeRowSurvived(ctx) {
+			return // the refused turn's row stands as the record: no second copy
+		}
 		if taken || routeChiefWaitOver(r, time.Now()) {
 			s.logger.Printf("routes: %s: the chief's runtime refused its hand-back; recorded as a note", r.RouteID)
 			note(ctx)
@@ -1978,8 +1981,18 @@ func (s *Server) routeAnswerText(ctx context.Context, r plugins.Route) string {
 }
 
 // deliverRouteAnswers delivers the answers rs owe chief session sessID — every
-// one still owed and not yet on record — AT LEAST ONCE: in ONE turn of the
-// chief's (startRouteAnswerTurn), up to routeAnswersPerTurn /
+// one still owed and not yet on record.
+//
+// 🔴 WHAT IT PROMISES: each answer is put ON RECORD in that session at least
+// once — a turn's row, or a note — and its hand-back is taken only after; it
+// is SENT to the chief's runtime AT MOST ONCE once on record. The turn's row is
+// stored before the send (startRouteTurn), so a muster process hard-killed
+// between storing it and the send leaves the answer in the chat (the owner
+// sees it) but never delivered to the chief, and it is not sent again. A
+// graceful stop cancels the turn instead (its row stays: the turn may have
+// been pasted). Not "delivered at least once".
+//
+// In ONE turn of the chief's (startRouteTurn), up to routeAnswersPerTurn /
 // routeAnswersTurnBytes, each answer fenced separately with its own route id
 // and nonce; each route's hand-back is taken (TakeHandBack) only once the turn
 // is on record. A chief that can take a turn but not NOW leaves them all OWED:
@@ -2076,7 +2089,12 @@ func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plu
 					}
 				}
 			}
-			refused := func(ctx context.Context) { fallback(ctx, turn) }
+			refused := func(ctx context.Context) {
+				if routeRowSurvived(ctx) {
+					return // the refused turn's row stands as their record: no second copy
+				}
+				fallback(ctx, turn)
+			}
 			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, done, refused) {
 				return
 			}
@@ -2129,6 +2147,18 @@ func (s *Server) routeTurnInFlight(ctx context.Context, chiefID int64) bool {
 	return err != nil || strings.HasPrefix(holder, routeTurnClaimPrefix)
 }
 
+// routeRowSurvivedKey marks the ctx a refused route turn hands its refused
+// callback when the turn's row could not be removed (startRouteTurn): that
+// row stands as the record, so the callback writes no second copy.
+type routeRowSurvivedKey struct{}
+
+// routeRowSurvived reports whether ctx is a refused route turn's whose row
+// could not be removed.
+func routeRowSurvived(ctx context.Context) bool {
+	v, _ := ctx.Value(routeRowSurvivedKey{}).(bool)
+	return v
+}
+
 // startRouteTurn delivers text to chief as ONE TURN OF ITS OWN, in session
 // sess, and reports false — with nothing sent and nothing stored — when the
 // chief cannot take it now; what it carries then stays owed.
@@ -2146,22 +2176,31 @@ func (s *Server) routeTurnInFlight(ctx context.Context, chiefID int64) bool {
 // (agentgateway.Unsent — busy, a dialog, rate-limited, not ready…) took nothing.
 //
 // 🔴 THE ROW IS STORED BEFORE THE TURN, as runEnteredTurn stores a typed line,
-// so a process that stops mid-turn (a rollout, a crash) leaves it on record:
-// the next sweep recognises it (answerOnRecord, textOnRecord) and takes what it
-// carried rather than pasting it a second time. A refusal REMOVES the row
-// (DeleteChatMessage): nothing was sent, and it stays owed. While the turn runs
-// its claim (routeTurnClaimPrefix) tells every sweep to leave its routes alone
-// (routeTurnInFlight). The turn runs under the server's shutdown handling
-// (streamContext, the answer deliveries' wait group), so a rollout ends it and
-// releases the claim instead of holding it for the claim's whole TTL.
+// so a process hard-killed mid-turn leaves it on record: the next sweep
+// recognises it (answerOnRecord, textOnRecord) and takes what it carried
+// rather than pasting it a second time (so a kill between the store and the
+// send leaves it on record but never sent: deliverRouteAnswers' promise). It
+// is stored WITHOUT touching its session (ChatMessage.NoSessionTouch): a
+// refused attempt must not move the chat up the list or name it. A refusal
+// REMOVES the row (DeleteChatMessage, tried twice): nothing was sent, and it
+// stays owed; a row that cannot be removed stays as the record — logged, and
+// the caller's fallback is told (routeRowSurvived) so it writes no second
+// copy. While the turn runs its claim (routeTurnClaimPrefix) tells every sweep
+// to leave its routes alone (routeTurnInFlight). The turn runs under the
+// server's shutdown handling (streamContext, the answer deliveries' wait
+// group), so a graceful stop cancels it and releases the claim instead of
+// holding it for the claim's whole TTL.
 //
 // 🔴 A REFUSAL DOES NOT WAKE THE SWEEP. Only a turn that ran wakes it (for
-// whatever else is owed); a refused one is offered again on the sweep's own
-// interval, so a runtime that keeps refusing is asked once per interval, not
-// in a loop (PR #715 round 1). refused (when not nil) runs after a refusal,
-// once the row is removed and the claim released: the caller's fallback for
-// what has waited too long. done (when not nil) runs once the turn's reply is
-// stored — where the caller takes what it delivered.
+// whatever else is owed); a refused one is offered again on the sweep's next
+// pass — every interval, or as often as routeKickMinGap while OTHER work keeps
+// waking the sweep — not in a loop (PR #715 round 1). refused (when not nil)
+// runs after a refusal, once the row is removed and while the claim is STILL
+// held: the caller's fallback for what has waited too long. done (when not
+// nil) runs once the turn's reply is stored — where the caller takes what it
+// delivered. 🔴 THE CLAIM IS RELEASED EXACTLY ONCE, when the turn ends: its
+// owner string (routeTurnClaimPrefix + routeID) is the same in every process,
+// so a second release could clear another replica's claim on the same route.
 //
 // It is the ONE door for what a route owes its chief: the answers owed to a
 // chief session, combined (deliverRouteAnswers), and a hand-back
@@ -2188,7 +2227,7 @@ func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess ag
 		return false
 	}
 	row, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID,
-		Role: "user", Content: text})
+		Role: "user", Content: text, NoSessionTouch: true})
 	if err != nil {
 		s.logger.Printf("routes: %s: store its row in the chief's session %d: %v (retried on the next sweep)", routeID, sess.ID, err)
 		s.turns.leave(chief.ID)
@@ -2220,17 +2259,27 @@ func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess ag
 		if why := agentgateway.Unsent(err); why != "" {
 			// Nothing reached the runtime: the row goes, and what it carried
 			// stays owed for the sweep's next interval.
-			if derr := s.ext.Agents.DeleteChatMessage(bctx, chief.ID, row.ID); derr != nil {
-				s.logger.Printf("routes: %s: remove the row of a turn the runtime refused: %v", routeID, derr)
+			var derr error
+			for attempt := 0; attempt < 2; attempt++ {
+				if derr = s.ext.Agents.DeleteChatMessage(bctx, chief.ID, row.ID); derr == nil {
+					break
+				}
+			}
+			rctx := bctx
+			if derr != nil {
+				// The row stays: it is the record now (a note the chief's CLI
+				// never read). The fallback must not write it a second time.
+				s.logger.Printf("🔴 routes: %s: could NOT remove the row of a turn the runtime refused (%v): it stays in the "+
+					"chief's session as the record, never delivered to the chief", routeID, derr)
+				rctx = context.WithValue(bctx, routeRowSurvivedKey{}, true)
 			}
 			// A page that drew the row meanwhile redraws without it (and drops
-			// its "working…"). At most once per sweep interval: a refusal
-			// never wakes the sweep.
+			// its "working…"). At most once per pass: a refusal never wakes
+			// the sweep.
 			s.broadcastTo(chief.OwnerID, EventChatReply, chief.Name)
 			s.logger.Printf("routes: %s: the chief's runtime took nothing (%s); it stays owed", routeID, why)
 			if refused != nil {
-				release(bctx) // before the fallback, so it can see the claim free
-				refused(bctx)
+				refused(rctx) // under the claim still held: released once, by the defer
 			}
 			return
 		}

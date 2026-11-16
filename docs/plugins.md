@@ -3158,9 +3158,14 @@ What differs:
   its own, under its own route id and nonce, after a line saying how many
   there are — up to 20 answers or 64 KiB in one turn (`routeAnswersPerTurn`,
   `routeAnswersTurnBytes`), the rest in the next. The turn's row is stored
-  **before** the turn and removed if the runtime refuses it, so a muster that
-  stops mid-turn (a rollout) leaves it on record and the next one does not
-  paste it again; a rollout also ends the turn and lets its claim go. The
+  **before** the turn and removed if the runtime refuses it, so a muster
+  that is hard-killed mid-turn leaves it on record and the next one does not
+  paste it again (its claim lapses after the turn's budget). A graceful
+  rollout instead cancels the turn and lets its claim go, the row staying as
+  the record. **What that promises:** each answer is on record in the chat at
+  least once and sent to the chief at most once — a muster hard-killed
+  between storing the row and sending it leaves the answer in the chat for
+  you but never delivered to the chief, and it is not sent again. The
   answer is written as a plain note — a row the chief's Claude Code session
   never reads — only as a last resort: a chief that cannot take a turn at all
   (not running, no gateway), or an answer that has not been delivered for

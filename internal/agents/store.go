@@ -313,6 +313,15 @@ type ChatMessage struct {
 	// TestOnlyTheViewDoorBindsASubject pins the writers. Not serialised: no API
 	// reader needs it.
 	AboutKey string `json:"-"`
+
+	// NoSessionTouch, on a write, leaves the row's session as it was: no
+	// updated_at bump and no title from it (AddChatMessage does both
+	// otherwise). Not stored. Its one writer is a route turn's row, stored
+	// BEFORE its turn and removed if the runtime refuses it (internal/api
+	// startRouteTurn): a refused attempt must not move the chat up the list or
+	// name it, and a delete could not undo either. A turn that ran bumps the
+	// session through its reply's rows.
+	NoSessionTouch bool `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

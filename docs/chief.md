@@ -91,7 +91,8 @@ and the chief's runtime takes whichever reaches it first once it is free. Each
 delivery waits and is delivered afterwards: a route answer or hand-back that
 cannot be delivered yet stays owed and is offered again on the next sweep
 (every 30 s; a runtime that keeps refusing is asked once per sweep, not in a
-loop), and **every answer owed to a chat when the chief is next free goes in
+loop — once every 30 s, or as often as every 2 s while other routes keep
+waking the sweep), and **every answer owed to a chat when the chief is next free goes in
 one turn**, each fenced on its own (up to 20 per turn, the rest in the next).
 It is written into the chat as a plain note — which the chief's Claude Code
 session never reads — only as a last resort: a chief that cannot take a turn

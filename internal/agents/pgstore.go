@@ -1174,8 +1174,9 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 	if err != nil {
 		return m, err
 	}
+	touch := !m.NoSessionTouch
 	m = stored
-	if m.SessionID != 0 {
+	if m.SessionID != 0 && touch {
 		// Bump updated_at so the session sorts most-recent-first; set the title from
 		// the first user message when it's still blank (COALESCE keeps any existing
 		// title, the NULLIF/'' guard only names an as-yet-untitled session).
