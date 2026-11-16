@@ -165,6 +165,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// so it asks pages to refetch (session_turns.go's "working…"). a is the
 		// asking agent, read under the ask's owner (attention_delivery.go).
 		"(*Server).runDeliveredTurn → broadcastTo(a.OwnerID)",
+		// A route turn the runtime refused: its row (stored before the turn)
+		// was removed, so pages redraw without it. chief is the route's chief,
+		// read under the route's owner (session_routes.go startRouteTurn).
+		"(*Server).startRouteTurn → broadcastTo(chief.OwnerID)",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorCreate → broadcast(r.Context())",
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",
