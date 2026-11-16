@@ -1563,6 +1563,28 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	}
 	props["handoff"] = map[string]any{"type": "object", "additionalProperties": false, "description": handoffDesc,
 		"properties": handoffProps, "required": []string{"head_sha"}}
+	// 🔴 OFFERED TO EVERY POOL, AND OPEN: HQ decides which items and outcomes
+	// take each (its refusal is a 400 naming the field, and the item stays
+	// held), and muster forwards each to HQ as sent
+	// (officers.Completion.AuthorsJSON and siblings) — a closed schema here
+	// would be a second copy that drifts from HQ's decoder.
+	desc += " When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: " +
+		"`authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, " +
+		"and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it."
+	props["authors"] = map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"},
+		"description": "Optional, outcome done or escalated only: {\"<GitHub login>\": \"the text HQ mails that author\"}. Every login must be one of " +
+			"your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. " +
+			"HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none."}
+	props["attributed_prs"] = map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "maxItems": officers.MaxLinks,
+		"description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's " +
+			"payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. " +
+			"On any other outcome it is a 400."}
+	props["attribution"] = map[string]any{"type": "string",
+		"description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400."}
+	props["tickets"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
+		"description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, " +
+			"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], " +
+			"each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400."}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
@@ -1760,6 +1782,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// officer_complete's investigation block, kept as sent: HQ's decoder
 		// is its one schema (officers.Completion.InvestigationJSON).
 		Investigation json.RawMessage `json:"investigation"`
+		// officer_complete's author texts, attributed PRs, attribution and
+		// tickets, each kept as sent and forwarded unchanged: HQ's decoder is
+		// their one schema (officers.Completion.AuthorsJSON and siblings). A
+		// key the instance did not send stays empty and reaches HQ as no key.
+		Authors       json.RawMessage `json:"authors"`
+		AttributedPRs json.RawMessage `json:"attributed_prs"`
+		Attribution   json.RawMessage `json:"attribution"`
+		Tickets       json.RawMessage `json:"tickets"`
 		// officer_complete's hand-off, checked by completeHandoff.
 		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
@@ -1921,7 +1951,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// a shepherd's writes refused in shadow, under this item; cut to
 		// HQ's bound, never the instance's own text.
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
-		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff}
+		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff,
+			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {

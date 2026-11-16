@@ -430,6 +430,18 @@ type Completion struct {
 	// it, so it is never decoded into Investigation (whose omitempty lists
 	// would reshape it). Empty or JSON null sends none.
 	InvestigationJSON json.RawMessage `json:"-"`
+	// AuthorsJSON, AttributedPRsJSON, AttributionJSON and TicketsJSON are an
+	// instance's `authors`, `attributed_prs`, `attribution` and `tickets`
+	// arguments (civ-hq docs/OFFICERS.md §5i author mail, §5b "Attributed
+	// PRs", and the release-ticket kind's links), each sent to HQ AS SENT —
+	// HQ's decoder is the one schema for them. Empty (the instance sent no
+	// such key) sends no key: an HQ that predates a field refuses it, even as
+	// null. Anything else the instance sent — null and [] included — is
+	// forwarded unchanged, for HQ to judge.
+	AuthorsJSON       json.RawMessage `json:"-"`
+	AttributedPRsJSON json.RawMessage `json:"-"`
+	AttributionJSON   json.RawMessage `json:"-"`
+	TicketsJSON       json.RawMessage `json:"-"`
 	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
@@ -562,6 +574,16 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 		body["investigation"] = done.Investigation
 	} else if raw := bytes.TrimSpace(done.InvestigationJSON); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		body["investigation"] = json.RawMessage(raw)
+	}
+	for key, raw := range map[string]json.RawMessage{
+		"authors":        done.AuthorsJSON,
+		"attributed_prs": done.AttributedPRsJSON,
+		"attribution":    done.AttributionJSON,
+		"tickets":        done.TicketsJSON,
+	} {
+		if raw = bytes.TrimSpace(raw); len(raw) > 0 {
+			body[key] = raw
+		}
 	}
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
 }

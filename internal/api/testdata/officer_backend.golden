@@ -113,10 +113,29 @@ officer_gap_task
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -159,6 +178,14 @@ officer_gap_task
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -475,10 +502,29 @@ officer_gap_task
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -517,6 +563,14 @@ officer_gap_task
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -830,10 +884,29 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -876,6 +949,14 @@ officer_obs_raw
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -1148,10 +1229,29 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -1190,6 +1290,14 @@ officer_obs_raw
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -1463,10 +1571,29 @@ officer_obs_query
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -1509,6 +1636,14 @@ officer_obs_query
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -1806,10 +1941,29 @@ officer_task_ask
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -1852,6 +2006,14 @@ officer_task_ask
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -2153,10 +2315,29 @@ officer_obs_query
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -2199,6 +2380,14 @@ officer_obs_query
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -2426,10 +2615,29 @@ officer_pr_context
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -2472,6 +2680,14 @@ officer_pr_context
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -2806,10 +3022,29 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -2848,6 +3083,14 @@ officer_obs_raw
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
@@ -3127,10 +3370,29 @@ officer_rollout_status
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. When your item's payload names the people whose work it is about (payload.authors) or HQ's charter asks for them: `authors` writes each author a mail, `attributed_prs` + `attribution` tell the authors of the PRs an escalation is attributed to, and `tickets` links support tickets to PRs. Send only what applies; muster passes each to HQ as you send it, and HQ checks it. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "attributed_prs": {
+        "description": "Optional, outcome escalated only: the PR numbers (at most 10, each at least 1) your finding is attributed to, from your item's payload.authors PRs (HQ drops any other quietly). HQ sends each kept PR's author the escalation card with a \"Your PR\" line. On any other outcome it is a 400.",
+        "items": {
+          "type": "integer"
+        },
+        "maxItems": 10,
+        "type": "array"
+      },
+      "attribution": {
+        "description": "Optional, with attributed_prs only: \"likely\" (the default) or \"confirmed\". Without attributed_prs it is a 400.",
+        "type": "string"
+      },
+      "authors": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional, outcome done or escalated only: {\"\u003cGitHub login\u003e\": \"the text HQ mails that author\"}. Every login must be one of your item's payload.authors (case-insensitive; else 400 and nothing completes); each text at most 1,500 characters. HQ mails each author only their own text; a payload author you write no text for gets no mail, and bots get none.",
+        "type": "object"
+      },
       "handoff": {
         "additionalProperties": false,
         "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
@@ -3173,6 +3435,14 @@ officer_rollout_status
       "summary": {
         "description": "What you found and did, at most 24,576 characters.",
         "type": "string"
+      },
+      "tickets": {
+        "description": "Optional, a release-ticket item only (your charter says when): the support tickets you link to a PR, [{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: at most 160 characters, your own paraphrase — never quote the ticket}], each ticket_id one of your item's payload tickets. An HQ or an item that does not take it refuses it with a 400.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
       }
     },
     "required": [
