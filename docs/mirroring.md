@@ -1020,7 +1020,7 @@ the start of the session's `$TMUX`. A session outside tmux, or in another tmux
 server, keeps its question in the terminal. A record written by an older
 `muster-mirror` names no socket and matches only the default tmux server.
 
-With [a second muster server on this machine](../INSTALL.md#a-second-muster-server-on-this-machine-optional),
+With [a second muster server on this machine](multi-tenant-hosts.md),
 each server's `muster-mirror@<tenant>` writes its own record to
 `~/.muster/mirror-hook.d/<tenant>.json`, and the hook picks the one record whose
 tmux server is the session's. If none matches, or two daemons mirror the same
@@ -1947,6 +1947,16 @@ server and its own `muster-mirror`.
   re-minting the token is what stops it. A host that disconnected first (a
   restart) is taken back at once. A muster-mirror whose old connection is
   half-open waits for the keepalive to end it, and then reconnects.
+- **Team host officers (team sharing 2b.5).** A team's `"runtime": "host"`
+  officer runs its instances on the team host its `host` names, as windows
+  in that host's `agents` session, so the host needs `-interactive
+  -agent-spawn` and the officer's `repo`, as a personal host does. Only the
+  team's host is used: a member's personal `build-01` is never spawned on,
+  even if it is the only `build-01` online. An instance's officer tools are
+  served on the team host's MCP door. No session there is offered an
+  owner-authority tool, so no step-up card is ever filed for a team. A team
+  host officer that declares `connectors` is refused
+  ([officers-builtin.md](officers-builtin.md#a-teams-host-officer-team-hosts)).
 - **Leaving.** A manager revokes the token: the connection ends at the next
   recheck and the team's sessions on that host vanish. When an operator or a
   manager leaves, drops to viewer or is disabled, the team's tokens are marked

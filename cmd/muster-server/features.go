@@ -381,7 +381,10 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	case ext.Transcriber != nil:
 		st[features.Dictation] = on("")
 	case c.STTURL != "":
-		st[features.Dictation] = off(envSTTURL + " is set but " + envSTTToken + " is not")
+		// Asked for (the URL names a service) but not usable: MISCONFIGURED,
+		// so the doctor FAILs it instead of skipping an optional feature that
+		// is simply off (#728 round 0). It still boots: config.go.
+		st[features.Dictation] = bad(envSTTURL + " is set but " + envSTTToken + " is not")
 	default:
 		st[features.Dictation] = off(envSTTToken + " is unset")
 	}

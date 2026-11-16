@@ -25,6 +25,10 @@ Static, no Docker. What it pins:
   And the compose file forwards nothing configuration.md does not document
   (a misspelt forward would otherwise be a silent no-op).
 * Every optional block of .env.example names its docs/features.md section.
+* EVERY RELATIVE LINK IN EVERY TRACKED *.md RESOLVES, anchors included: the
+  file exists, and a `#anchor` (on a .md, or the page's own) is a heading of
+  it by GitHub's slug rule (a repeated heading's -1, -2 suffixes too). Links
+  inside code fences and inline code are prose, not links.
 
 Each check runs its own negative control on a mutated copy, so a check that
 cannot fail is reported rather than passed.
@@ -32,7 +36,9 @@ cannot fail is reported rather than passed.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -196,6 +202,67 @@ def features_links(text: str) -> set[str]:
     return set(re.findall(r"docs/features\.md#([a-z0-9-]+)", text))
 
 
+# The link text may wrap over lines, as prose does; the target may not.
+MD_LINK = re.compile(r"(?<!\!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+
+def github_slugs(md: str) -> set[str]:
+    """Every anchor GitHub gives md's headings: a repeated slug gets -1, -2.
+    Plus any explicit <a name|id="..."> anchor."""
+    out, seen = set(), {}
+    for sl in headings(md):
+        n = seen.get(sl, 0)
+        out.add(sl if n == 0 else f"{sl}-{n}")
+        seen[sl] = n + 1
+    out |= set(re.findall(r"<a\s+(?:name|id)=\"([^\"]+)\"", md))
+    return out
+
+
+def strip_code(md: str) -> str:
+    """md without fenced blocks and inline code spans (their brackets are not links)."""
+    out, fenced = [], False
+    for line in md.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append("")
+            continue
+        out.append("" if fenced else re.sub(r"`[^`]*`", "", line))
+    return "\n".join(out)
+
+
+def broken_links(files: dict[str, str]) -> list[str]:
+    """Every relative link in FILES ({repo path: text}) whose target file is
+    missing, or whose #anchor is not a heading of the target .md."""
+    errs = []
+    for path, text in files.items():
+        here = Path(path).parent
+        for m in MD_LINK.finditer(strip_code(text)):
+            target = m.group(1).strip("<>")
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("//"):
+                continue  # http(s), mailto: and the like
+            file_part, _, anchor = target.partition("#")
+            if file_part:
+                rel = os.path.normpath(here / file_part)
+                body = files.get(rel)
+                if body is None:
+                    full = ROOT / rel
+                    if not full.exists():
+                        errs.append(f"{path}: {target} -> {rel} does not exist")
+                        continue
+                    body = full.read_text() if full.is_file() and rel.endswith(".md") else None
+            else:
+                rel, body = path, text
+            if anchor and body is not None and rel.endswith(".md") and anchor not in github_slugs(body):
+                errs.append(f"{path}: {target} -> #{anchor} is not a heading of {rel}")
+    return errs
+
+
+def tracked_markdown() -> dict[str, str]:
+    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--", "*.md"], capture_output=True, text=True,
+                         check=True).stdout
+    return {p: (ROOT / p).read_text() for p in out.split("\0") if p and (ROOT / p).is_file()}
+
+
 class FeaturesConfig(unittest.TestCase):
     def setUp(self) -> None:
         self.features = FEATURES.read_text()
@@ -269,6 +336,25 @@ class FeaturesConfig(unittest.TestCase):
                 current = m.group(1) if m else None
             if re.search(r"(?m)^#?[A-Z][A-Z0-9_]*=", b) and not (m or current):
                 self.fail(f"this .env.example block names no docs/features.md section:\n{b}")
+
+
+    def test_every_relative_markdown_link_and_anchor_resolves(self) -> None:
+        files = tracked_markdown()
+        self.assertGreater(len(files), 30, "positive control: git ls-files found few markdown files")
+        links = sum(len(MD_LINK.findall(strip_code(t))) for t in files.values())
+        self.assertGreater(links, 200, "positive control: the link pattern found almost nothing")
+        self.assertEqual(broken_links(files), [])
+        # Negative controls: a planted missing file, a planted missing anchor
+        # on another page and on the page itself are each reported; a heading
+        # repeated (its -1 anchor) and a link in a code span are not.
+        planted = dict(files)
+        planted["docs/planted.md"] = ("# Title\n\n## Twice\n\n## Twice\n\n[a](nope.md) [b](features.md#no-such-feature) "
+                                      "[c](#nowhere) [d](#twice-1) `[e](nope-in-code.md)`\n")
+        errs = broken_links(planted)
+        self.assertEqual(sorted(e.split(": ", 1)[1] for e in errs if e.startswith("docs/planted.md")),
+                         sorted(["nope.md -> docs/nope.md does not exist",
+                                 "features.md#no-such-feature -> #no-such-feature is not a heading of docs/features.md",
+                                 "#nowhere -> #nowhere is not a heading of docs/planted.md"]))
 
 
 if __name__ == "__main__":

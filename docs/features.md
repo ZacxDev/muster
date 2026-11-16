@@ -7,9 +7,10 @@ it, and each one names exactly what it needs.
 
 **Turning a feature on** is the same every time, on the server (the hub):
 
-1. add the lines its section gives to `~/muster/.env` (the file
-   [INSTALL.md](../INSTALL.md) made from `deploy/.env.example`, which already
-   holds every optional line, commented out, grouped as below);
+1. add the lines its section gives to `~/muster/.env`, beside
+   `docker-compose.yml` (create it if it is not there: a stack that generated
+   its secrets needs none; `deploy/.env.example` holds every optional line,
+   commented out, grouped as below);
 2. if the section names a **profile**, add it to `COMPOSE_PROFILES` in the same
    file (`COMPOSE_PROFILES=stt,s3` for two), or pass `--profile <name>`;
 3. run `docker compose up -d --wait` in `~/muster`.
@@ -46,7 +47,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
-| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
+| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
@@ -104,7 +105,7 @@ muster refuses to start without `DATABASE_URL`, which the compose file sets.
 
 Mirrored sessions: every tmux window on every machine whose `muster-mirror`
 holds a mirror token ([mirroring.md](mirroring.md)). The compose file sets
-`MUSTER_MIRROR=1`; each machine is connected in INSTALL.md Step 7.
+`MUSTER_MIRROR=1`; each machine is connected by INSTALL.md's "Install muster on this machine".
 **Check:** `mirrored sessions: ENABLED (…)`, and `muster doctor`'s
 `mirror-hosts` and `this-host`.
 
@@ -277,11 +278,12 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
 - **Needs, on each machine:** `muster-mirror` serving its local MCP endpoint,
   and Claude Code configured to use it. Nothing on the server.
-- **Steps, on each machine** (INSTALL.md Step 11 does these when you ask for it):
+- **Steps, on each machine** (INSTALL.md's "Optional features" points here when you ask for it):
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
-     `~/.config/muster-mirror/env` (INSTALL.md: `mi_save ASK_TOOLS yes`, then
-     re-run Step 7's last block) and restart `muster-mirror`. On its first start
-     it writes a secret to `~/.config/muster-mirror/mcp-secret` (mode 600).
+     `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
+     yours: install.sh keeps it every time it runs again (INSTALL.md, "Install
+     muster on this machine"). On its first start muster-mirror writes a secret
+     to `~/.config/muster-mirror/mcp-secret` (mode 600).
   2. Register it with Claude Code, for this user:
 
      ```sh
@@ -423,6 +425,10 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
   `MUSTER_ASK_LOG_CLASSIFY=1` also stores the stall classifier's scores (it
   needs [chief nudges](#chief-nudges)' classifier).
 - **Privacy:** redacted on the way in, yours only, text cleared after the TTL.
+- **Reading it:** the Asks page's **Log** tab, `GET /api/asks/log` and
+  `/api/asks/summary` (a personal token), and `muster asks log` / `muster asks
+  summary` ([reading the log](asks.md#reading-the-log)). Off, the tab says how
+  to turn it on and the routes answer the typed `feature_disabled` 404.
 - **Check:** `ask log: ON (MUSTER_ASK_LOG=1) — …`; off, the line reads
   `ask log: OFF — MUSTER_ASK_LOG is unset; …`.
 
