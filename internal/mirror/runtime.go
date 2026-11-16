@@ -82,6 +82,11 @@ type RuntimeSpec struct {
 	// AskKinds are the asks (Pending.Kind) a window of it may name, when
 	// PendingNamesAsk: a Pending naming another runtime's kind is none.
 	AskKinds []string
+	// ShownRefusal is its half of the session-pin rule (session_pin.go): the
+	// refusal of a rendered-view message naming shown (the session it was
+	// written for, "" none) to window w of it, nil when it may go. nil: its
+	// messages are never pinned.
+	ShownRefusal func(w Window, shown string) error
 }
 
 // RuntimeOpenCode: opencode v2 (docs/design/opencode.md). A host whose pane
@@ -105,6 +110,9 @@ var runtimes = []RuntimeSpec{
 		Name: RuntimeClaude, Kind: KindClaudeCode,
 		Caps:       Capabilities{View: true, Send: true, Prompts: true},
 		TurnErrors: true,
+		// Its session is Window.ClaudeSession; a message naming none (a
+		// person's Send, an older row) goes as before.
+		ShownRefusal: func(w Window, shown string) error { return claudeShownSessionCheck(shown, w.ClaudeSession) },
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
@@ -124,6 +132,9 @@ var runtimes = []RuntimeSpec{
 		},
 		PendingNamesAsk: true,
 		AskKinds:        []string{PendingPermission, PendingQuestion},
+		// Its session is Window.AgentSession; a hand-opened pane's message
+		// naming none is refused (ShownSessionCheck).
+		ShownRefusal: func(w Window, shown string) error { return ShownSessionCheck(shown, w.AgentSession, w.AgentSend) },
 	},
 }
 

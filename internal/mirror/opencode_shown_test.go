@@ -14,8 +14,8 @@ import (
 // delivered later — names the session its view showed, and the hub refuses
 // it, before anything reaches the host, when the window's list names another
 // now. A hand-opened (verified) pane's send that names none is refused; a
-// launcher-bound pane's is not (its record names the session). Claude Code
-// is untouched by the option.
+// launcher-bound pane's is not (its record names the session). Claude Code's
+// half of the same rule is claude_session_pin_test.go.
 //
 // 🔴 REGRESSION TEST. At 2afa5ab8 the hub took the session from its list at
 // delivery: a message written for X was delivered to Y.

@@ -267,9 +267,9 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 // kicked. Its callers: a queue post (sendQueueAdd), and a failed question
 // card's "Send as a message" (handleMirrorAskMessage).
 func (s *Server) enqueueSend(ctx context.Context, q sendQueueTarget, text string) (sendqueue.Item, error) {
-	// The session the page showed (a hand-opened opencode pane's): the row is
-	// delivered only while the window still shows it (mirror.ShownSession).
-	it := sendqueue.Item{Target: q.t, Body: text, AgentSession: q.agentSession}
+	// The session the message is written for: the row is delivered only while
+	// the window still holds it (mirror.ShownSession, Window.ShownSessionRefusal).
+	it := sendqueue.Item{Target: q.t, Body: text, AgentSession: queuedForSession(q)}
 	it.StepUpAt, _ = stepup.AuthTime(ctx)
 	// A paste the hub remembers (a Send just now) holds this message too, and
 	// is stored with it so that a restart does not forget it.
@@ -288,6 +288,27 @@ func (s *Server) enqueueSend(ctx context.Context, q sendQueueTarget, text string
 	s.mirrorAddressed(ctx, q.h.Host, q.e, mirror.PasteClaude, text, stored.ID)
 	s.kickSendQueue()
 	return stored, nil
+}
+
+// queuedForSession is the agent session a message queued for q is written
+// for (send_queue.agent_session), "" for none:
+//
+//   - the session the page's view showed, when the request names one (its
+//     agent_session field: a gated-send window's, opencode);
+//   - else, for a Claude Code window, the Claude session the window holds NOW
+//     as its host lists it (SessionView.ClaudeSession) — a Claude window's
+//     page names none. A Claude Code restarted (or cleared) in the same pane
+//     before delivery is then refused, not typed into (mirror's
+//     session_pin.go). "" when the host names none (a per-session host):
+//     delivered as before.
+func queuedForSession(q sendQueueTarget) string {
+	if q.agentSession != "" {
+		return q.agentSession
+	}
+	if q.e.Claude && q.e.Runtime == "" && mirror.ValidClaudeSession(q.e.ClaudeSession) && mirror.ValidAgentSession(q.e.ClaudeSession) {
+		return q.e.ClaudeSession
+	}
+	return ""
 }
 
 // sendQueueGateResult is why a queue (or a Retry) may not be queued for its

@@ -439,25 +439,29 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// Only a Rendered-view send can be one: the Terminal composer's paste
 	// (AnyPane) still meets the host's paste guard, which never types into
 	// opencode.
-	gated, since, agentSession := "", int64(0), ""
+	gated, since, agentSession, claudeSession := "", int64(0), "", ""
 	if !anyPane {
 		if err := hc.gatedSendCheck(session, windowID); err != nil {
+			return err
+		}
+		// 🔴 ONLY THE SESSION THE MESSAGE WAS WRITTEN FOR (ShownSession;
+		// session_pin.go), whatever the runtime: the send, or the queued
+		// row, names the session it was written for, and the window must
+		// hold that one NOW — an opencode pane's session the page showed, a
+		// Claude Code window's session the row was queued in. Refused in
+		// words — never superseded, so a queued row whose window moved on
+		// (a restarted or cleared Claude Code, another opencode session)
+		// fails visibly instead of waiting to land in another session.
+		if err := hc.shownSessionRefusal(session, windowID, o.Shown); err != nil {
 			return err
 		}
 		// 🔴 IDLE ONLY, and the paste carries the StatusSince it was decided
 		// on, which the host checks again at the moment it posts. A QUEUED
 		// paste (ExpectTurn) is SUPERSEDED, as on Claude Code: nothing was
 		// sent, and the row is decided on again.
-		if rt, st, s, as, launcher, ok := hc.gatedStatus(session, windowID); ok {
-			// 🔴 ONLY THE SESSION THE PAGE SHOWED (ShownSession): the send, or
-			// the queued row, names the session its view was drawing, and the
-			// window must show that one NOW; a hand-opened pane's paste that
-			// names none (an older page, an older row) goes nowhere. Refused
-			// in words — never superseded, so a queued row whose window moved
-			// on fails visibly instead of waiting to land in another session.
-			if err := ShownSessionCheck(o.Shown, as, launcher); err != nil {
-				return err
-			}
+		if rt, st, s, as, _, ok := hc.gatedStatus(session, windowID); ok {
+			// The session was checked just above (shownSessionRefusal: a
+			// hand-opened pane's paste naming none goes nowhere).
 			if st != StatusIdle || s <= 0 {
 				if o.Expect != nil {
 					return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
@@ -465,6 +469,12 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 				return &OpenCodeNotIdleError{Status: st}
 			}
 			gated, since, agentSession = rt, s, as
+		} else if hc.pastePinned(session, windowID) {
+			// A Claude Code paste carries the session it was queued for —
+			// which the check above has just required the list to name — for
+			// a current host to check against the pane at the moment it types
+			// (Msg.AgentSession). "" (a person's Send, an older row) names none.
+			claudeSession = o.Shown
 		}
 	}
 	// 🔴 THE CLAUDE PROMPT GUARD, SERVER HALF: a Claude Code window the host
@@ -497,7 +507,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 		return err
 	}
 	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, agentSession: agentSession,
-		messageID: OpenCodeMessageID(owner, o.Key), dispatch: o.Dispatch})
+		messageID: OpenCodeMessageID(owner, o.Key), dispatch: o.Dispatch, claudeSession: claudeSession})
 	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
 	// next message would be pasted after it and submitted with it as one turn,
 	// so it is recorded like a paste that may have reached the window.
@@ -663,6 +673,11 @@ type gatedPaste struct {
 	// dispatch is the paste's host dispatch (ForDispatch), stamped on the
 	// message for the host's tag check; 0 for none.
 	dispatch int64
+	// claudeSession is, on a Claude Code paste (no runtime), the Claude
+	// session the message was queued for — which the hub has just required
+	// the window list to name — sent as Msg.AgentSession for the host's own
+	// check against the pane; "" names none.
+	claudeSession string
 }
 
 // GatedNotIdleRefusal reports whether err is a host's refusal of a gated send
@@ -691,6 +706,8 @@ func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text
 	wait := pasteTimeout
 	if r, ok := LookupRuntime(g.runtime); ok && r.GatedSend {
 		m.Runtime, m.Since, m.MessageID, m.AgentSession, wait = r.Name, g.since, g.messageID, g.agentSession, r.PasteTimeout
+	} else if g.claudeSession != "" {
+		m.AgentSession = g.claudeSession
 	}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)

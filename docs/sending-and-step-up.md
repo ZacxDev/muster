@@ -245,6 +245,26 @@ dispatched agents and the chief panel have no Queue.
   a queue post is refused saying why. A message already queued for such a
   window is held with the reason shown. So is one for a host that reports the
   status without its time.
+- 🔴 **Only into the Claude session it was queued for.** Queue records the
+  Claude Code session the window holds at that moment (the session id its
+  host reports). If `claude` exits and a new one starts in the same pane —
+  or `/clear` starts a new conversation — before the message is sent, it is
+  not pasted into the new session: it fails, saying "Not sent: the window no
+  longer holds the Claude session this was queued for", and nothing is typed.
+  It never waits, because waiting does not bring the old session back.
+  muster checks the session its host last reported; a current
+  `muster-mirror` checks it again at the moment it types, so a restart
+  between the host's last report and the paste is caught too (an older one
+  does not, and muster's check is then the only one:
+  [mirroring.md](mirroring.md#rolling-upgrades)). The same applies to **Send
+  now** of a queued message and to a failed question's **Send as a
+  message**, which are queued messages too; **Retry** queues it again for the
+  same session, so it fails again — write it again in the session shown now.
+  Your own **Send**, which goes at once from the page you are looking at,
+  names no session and is unchanged. A message queued before muster recorded
+  the session, or for a host that reports none, is delivered as before. A
+  message your chief routes is pinned the same way by its route
+  ([plugins.md](plugins.md#routing-a-message-to-a-session)).
 - 🔴 **A usage limit holds the queue.** See
   [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
 - **At most 20** messages can wait per window. The list shows only what still
