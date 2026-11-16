@@ -25,6 +25,19 @@ func TestTheSweepRemovesASweptScratchDirectorysTrustEntry(t *testing.T) {
 	var logged strings.Builder
 	u.c.log = log.New(lockedWriter{mu: &mu, b: &logged}, "", 0)
 	u.c.cfg.AgentSpawn.TrustLockWait = 50 * time.Millisecond
+	// The agents directory is reached THROUGH A SYMLINK, as on macOS (/tmp is
+	// /private/tmp), and exists first, so spawnDir is its REAL path — as it is
+	// when a spawn writes the key.
+	if err := os.MkdirAll(filepath.Join(u.tmp, "real", "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(u.tmp, "real"), filepath.Join(u.tmp, "via")); err != nil {
+		t.Fatal(err)
+	}
+	u.c.cfg.AgentSpawn.Dir = filepath.Join(u.tmp, "via", "agents")
+	if d := u.c.spawnDir(); d != filepath.Join(realOrClean(u.tmp), "real", "agents") {
+		t.Fatalf("fixture: spawnDir %s is not the agents directory's real path", d)
+	}
 	root := filepath.Join(u.c.spawnDir(), scratchDirName)
 	live, gone := filepath.Join(root, "81"), filepath.Join(root, "83")
 	mkdirs := func() {
