@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -127,6 +128,21 @@ func withSecretFilesFrom(getenv func(string) string, readFile func(string) ([]by
 // .env (or one that leaves POSTGRES_PASSWORD out) gets them, and push works
 // out of the box.
 //
+// 🔴 NO PASSWORD IS GENERATED FOR A DATABASE THAT ALREADY EXISTS. With
+// -postgres-data naming Postgres's data directory (mounted read-only), a run
+// that finds no kept password but an initialised database (PG_VERSION) knows
+// the database was created by an install from before this command, with the
+// POSTGRES_PASSWORD its .env had then. That value is used when set; when it is
+// not, the run is REFUSED, asking for it back. Generating one instead would
+// keep a password the database never had, and the refusal a later run gives
+// (the variable restored, differing from the kept file) would then advise
+// keeping the wrong one — #707 round 2, F3.
+//
+// 🔴 ONE RUN AT A TIME. Two concurrent first runs on one volume (two `up`s at
+// once) would each plan and print a sign-in password, and only the last
+// rename would be kept. The run holds an exclusive flock on -dir itself from
+// the plan to the last write, so the second plans against the first's files.
+//
 // The files are mode 0400, owned by -owner (muster's uid:gid in its image);
 // postgres_password by -postgres-owner (Postgres's).
 
@@ -153,11 +169,12 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	dbTemplate := fl.String("database-url", "", "muster's DATABASE_URL, with {password} where Postgres's password goes")
 	owner := fl.String("owner", "", "uid:gid that owns muster's files (empty: this process's)")
 	pgOwner := fl.String("postgres-owner", "", "uid:gid that owns postgres_password (empty: this process's)")
+	pgData := fl.String("postgres-data", "", "Postgres's data directory, read-only (empty: not checked): an initialised one never gets a generated password")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
 	if *dir == "" || !strings.Contains(*dbTemplate, "{password}") || fl.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: muster-server compose-init -dir <dir> -database-url 'postgres://user:{password}@host/db' [-owner uid:gid] [-postgres-owner uid:gid]")
+		fmt.Fprintln(stderr, "usage: muster-server compose-init -dir <dir> -database-url 'postgres://user:{password}@host/db' [-owner uid:gid] [-postgres-owner uid:gid] [-postgres-data <dir>]")
 		return 2
 	}
 	say := func(format string, a ...any) { fmt.Fprintf(stdout, "muster-init: "+format+"\n", a...) }
@@ -175,6 +192,16 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	}
 	st := secretStore{dir: *dir, uid: uid, gid: gid}
 	pgStore := secretStore{dir: *dir, uid: pgUID, gid: pgGID}
+
+	// One run at a time (see the header): held until this function returns.
+	if err := os.MkdirAll(*dir, 0o755); err != nil {
+		return fail("%v", err)
+	}
+	unlock, err := lockDir(*dir)
+	if err != nil {
+		return fail("lock %s: %v", *dir, err)
+	}
+	defer unlock()
 
 	// THE PLAN: every file this run writes, and what each will hold. Nothing
 	// is written until every check below has passed.
@@ -202,8 +229,8 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 			"could not log in to it. Nothing was changed. Either:\n"+
 			"  - remove %s from .env: the stack keeps the password it has; or\n"+
 			"  - change the database's own password first: with the variable removed, `up`, then ALTER USER through the "+
-			"local socket (no password needed):\n"+
-			"      docker compose exec postgres psql -U muster -d muster -c \"ALTER USER muster PASSWORD '<the new one>'\"\n"+
+			"local socket (no password needed; psql's \\password asks for it and quotes it):\n"+
+			"      docker compose exec postgres psql -U muster -d muster -c '\\password muster'\n"+
 			"    and replace the kept copy: docs/quickstart-local.md#the-database-password\n"+
 			"config: %s differs from the database's password; muster-init never overwrites it\n",
 			envPostgresPassword, pgStore.path(secretPostgresPassword), envPostgresPassword, envPostgresPassword)
@@ -214,6 +241,20 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 		pg = envPG
 		plan(pgStore, secretPostgresPassword, pg)
 	default:
+		exists, err := databaseExists(*pgData)
+		if err != nil {
+			return fail("-postgres-data: %v", err)
+		}
+		if exists {
+			fmt.Fprintf(stderr, "muster-init: this stack's database already exists, but its password was never kept here: "+
+				"it was created by an install from before muster-init, with the %s its .env had then. "+
+				"A generated one could not log in to it, so nothing was changed. "+
+				"Put that line back in .env (the same value) and `up` again: it is kept from then on, "+
+				"and the line can be removed after that start (docs/quickstart-local.md#the-database-password)\n"+
+				"config: %s is not set, and the existing database needs the password it was created with\n",
+				envPostgresPassword, envPostgresPassword)
+			return 1
+		}
 		pg = randomSecret(24)
 		plan(pgStore, secretPostgresPassword, pg)
 	}
@@ -293,9 +334,6 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	}
 
 	// 5. Every check passed: write the plan.
-	if err := os.MkdirAll(*dir, 0o755); err != nil {
-		return fail("%v", err)
-	}
 	for _, w := range writes {
 		if err := w.store.write(w.name, w.value); err != nil {
 			return fail("%v", err)
@@ -311,6 +349,34 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	}
 	say("configuration OK")
 	return 0
+}
+
+// databaseExists reports whether dir is an initialised Postgres data
+// directory (it holds PG_VERSION). An empty dir argument is "not checked".
+func databaseExists(dir string) (bool, error) {
+	if dir == "" {
+		return false, nil
+	}
+	_, err := os.Stat(filepath.Join(dir, "PG_VERSION"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// lockDir takes an exclusive flock on the directory itself (no lock file, so
+// a refused run still leaves the volume exactly as it was), blocking until it
+// is free, and returns its release.
+func lockDir(dir string) (func(), error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 // runShowSecret prints one secret as muster resolves it (the environment, else

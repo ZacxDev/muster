@@ -47,6 +47,9 @@
 # Then the .env stack below, which is an install from BEFORE generated
 # secrets: it must boot exactly as it did (its .env's password, token and push
 # keys; muster-init generates nothing for it).
+# And (#707 round 2, F3) that install's first new-compose run with its
+# POSTGRES_PASSWORD left out is refused, writing nothing, and the line put
+# back is adopted.
 #
 # Asserts, after `docker compose up -d --wait` returned 0:
 #   * both containers report health "healthy";
@@ -328,6 +331,34 @@ held="$(dc exec -T postgres ls /run/muster-secrets | LC_ALL=C sort | tr '\n' ' '
   fail "the .env install's secrets volume holds '$held', want only database_url and postgres_password (nothing generated)"
 if dc logs --no-color muster-init 2>&1 | grep -q generated; then fail "muster-init generated something for an .env install"; fi
 echo "ok   .env install: muster-init generated nothing (the volume holds only Postgres's password and DATABASE_URL)"
+
+# AN OLD INSTALL'S FIRST NEW-COMPOSE RUN WITHOUT ITS POSTGRES_PASSWORD (#707
+# round 2, F3). An install from before muster-init has a database and NO kept
+# password; emptying the secrets volume makes this stack exactly that. Its
+# .env then left without POSTGRES_PASSWORD: `up --wait` must fail on
+# muster-init, naming the existing database and the line to put back, and
+# write NOTHING (before the fix it generated a password the database never
+# had). The line put back: healthy, the password kept, and it signs in.
+dc stop muster >/dev/null 2>&1 || fail "could not stop muster"
+docker run --rm --network none -v "${PROJECT}_secrets:/s" --entrypoint sh postgres:16-alpine -c 'rm -f /s/postgres_password /s/database_url' ||
+  fail "could not empty the secrets volume"
+grep -v '^POSTGRES_PASSWORD=' "$tmp/env" > "$tmp/env.nopg"
+dcn() { docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "$tmp/env.nopg" -p "$PROJECT" "$@"; }
+if dcn up -d --wait --wait-timeout 120 >/dev/null 2>&1; then
+  fail "an existing database with no kept password and no POSTGRES_PASSWORD came up (a generated password was used)"
+fi
+init_log="$(dcn logs --no-color muster-init 2>&1 | tail -n 10)"
+grep -q 'config: POSTGRES_PASSWORD is not set, and the existing database needs the password it was created with' <<<"$init_log" &&
+  grep -q 'Put that line back in .env' <<<"$init_log" ||
+  fail "muster-init's refusal does not name the existing database and the line to put back: $init_log"
+held="$(docker run --rm --network none -v "${PROJECT}_secrets:/s:ro" --entrypoint sh postgres:16-alpine -c 'ls -A /s' | tr '\n' ' ')"
+[ -z "${held// /}" ] || fail "the refused run wrote to the secrets volume: $held"
+echo "ok   .env install, first new-compose run without POSTGRES_PASSWORD: refused on muster-init, naming the line to put back; nothing written"
+dc up -d --wait --wait-timeout 180 >/dev/null 2>&1 || fail "with POSTGRES_PASSWORD put back, up --wait failed"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz")" = 200 ] || fail "/readyz is not 200 after POSTGRES_PASSWORD was put back"
+kept="$(docker run --rm --network none -v "${PROJECT}_secrets:/s:ro" --entrypoint cat postgres:16-alpine /s/postgres_password)"
+[ "$kept" = "$(sed -n 's/^POSTGRES_PASSWORD=//p' "$tmp/env")" ] || fail "the kept postgres_password is not the .env's POSTGRES_PASSWORD"
+echo "ok   .env install: POSTGRES_PASSWORD put back is adopted (kept on the volume) and muster reaches its database"
 
 base="http://127.0.0.1:$PORT"
 body="$(curl -fsS "$base/health")" || fail "/health"

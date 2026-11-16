@@ -49,9 +49,11 @@ docker compose -f deploy/docker-compose.yml exec muster /muster-server show-secr
 ```
 
 Open `http://localhost:8105` and sign in with that password. A clone runs the
-latest release: `deploy/docker-compose.yml` names it, and is bumped after each
-release (CI fails while it is behind). A release's own `docker-compose.yml`
-runs that release. Set `MUSTER_VERSION` in `.env` to run another.
+latest release: `deploy/docker-compose.yml` names it, and the release flow
+opens the pull request that bumps it right after each release (CI warns for 3
+days, then fails, while it is behind). A release's own `docker-compose.yml`
+runs that release. Set `MUSTER_VERSION` in `.env` to run another — not one
+older than the file's `x-muster-min-version`, which cannot start it.
 
 To show this machine's tmux windows, mint a token for it and run
 `muster-mirror` (from the release's `muster-mirror_<os>_<arch>.tar.gz`):
@@ -120,8 +122,9 @@ stops `up --wait` on `muster-init`, which changes nothing and says so. Either:
   still removed and the stack up:
 
   ```sh
-  # 1. the database itself, through Postgres's local socket (no password needed)
-  docker compose exec postgres psql -U muster -d muster -c "ALTER USER muster PASSWORD 'the-new-password'"
+  # 1. the database itself, through Postgres's local socket (no password needed);
+  #    psql asks for the new password twice (psql's \password runs ALTER USER for you)
+  docker compose exec postgres psql -U muster -d muster -c '\password muster'
   # 2. drop the kept copy (the volume is <project>_secrets; the project is `muster` unless you set another)
   docker run --rm -v muster_secrets:/s --entrypoint rm postgres:16-alpine /s/postgres_password
   # 3. put POSTGRES_PASSWORD=the-new-password back in .env, then
@@ -129,6 +132,21 @@ stops `up --wait` on `muster-init`, which changes nothing and says so. Either:
   ```
 
   Step 3 keeps the new password and gives muster a `DATABASE_URL` built from it.
+
+  `\password` quotes the password itself, so any character is safe. If you
+  write `ALTER USER muster PASSWORD '…'` by hand instead, a single quote in
+  the password must be doubled (`o''brien`), or the statement breaks.
+
+**An install from before generated secrets** (its `.env` set
+`POSTGRES_PASSWORD`, which created its database) keeps working unchanged: on
+its first start of this compose file `muster-init` keeps that password. If
+that `.env` no longer sets `POSTGRES_PASSWORD` by then, `up --wait` stops on
+`muster-init` with *"this stack's database already exists, but its password
+was never kept here"*, and changes nothing: no password is generated for a
+database that already exists, because it could not log in. Put the line back
+in `.env` with the value the database was created with (your old `.env`'s) and
+run `up -d --wait` again; it is kept from then on and the line can go. Lost
+it? Set a new one with step 1 above, then put that value in `.env`.
 
 ## What works on localhost, and what needs HTTPS
 

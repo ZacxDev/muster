@@ -153,6 +153,16 @@ if init.get("restart") != "no" or init.get("network_mode") != "none":
     errs.append(f"muster-init restart {init.get('restart')!r} network_mode {init.get('network_mode')!r}: a one-shot with no network")
 if (init.get("command") or [None])[0] != "compose-init":
     errs.append(f"muster-init command {init.get('command')!r} does not run compose-init")
+# It sees Postgres's data directory READ-ONLY, at the path it is told to check
+# (an existing database never gets a generated password: #707 round 2, F3).
+icmd = init.get("command") or []
+pgd = icmd[icmd.index("-postgres-data") + 1] if "-postgres-data" in icmd[:-1] else None
+pg_vol = [v for v in svcs.get("postgres", {}).get("volumes", []) if v.get("source") == "pgdata"]
+init_vol = [v for v in init.get("volumes", []) if v.get("source") == "pgdata"]
+if not (pgd and pg_vol and pg_vol[0].get("target") == pgd and len(init_vol) == 1
+        and init_vol[0].get("target") == pgd and init_vol[0].get("read_only") is True):
+    errs.append(f"muster-init -postgres-data {pgd!r} is not Postgres's data volume mounted read-only "
+                f"(postgres {pg_vol}, muster-init {init_vol})")
 ienv = dict(init.get("environment") or {})
 if ienv.pop("POSTGRES_PASSWORD", None) is None:
     errs.append("muster-init is not given POSTGRES_PASSWORD")

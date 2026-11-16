@@ -19,9 +19,10 @@
 # value written in this file: a release's copy of it is stamped with that
 # release (scripts/release-build.sh), so a downloaded docker-compose.yml runs
 # the release it came from; the repository's copy says the LATEST release
-# (bumped after each one: scripts/check-compose-default.sh, which CI runs, fails
-# while it is behind). Never a moving tag. Set MUSTER_VERSION in .env to pin
-# another.
+# (the release flow opens the bump pull request after each one;
+# scripts/check-compose-default.sh, which CI runs, warns for 3 days and then
+# fails while it is behind). Never a moving tag, and never one older than
+# x-muster-min-version below. Set MUSTER_VERSION in .env to pin another.
 #
 # Services:
 #   muster-init   the one-shot above: secrets, then the server's own boot
@@ -78,6 +79,16 @@
 # same variables, and that every variable the server reads is forwarded here
 # or listed there with the reason it is not.
 
+# 🔴 THE OLDEST MUSTER THIS FILE RUNS. It uses what that release added (the
+# muster-init one-shot `compose-init`, DATABASE_URL_FILE); an older image cannot
+# start it — measured on #707 round 2: 0.231.0 under this file stops with
+# "DATABASE_URL is not set". scripts/check-compose-default.sh fails CI when the
+# version written below (the MUSTER_VERSION default) is lower, except in the
+# one documented bootstrap state: this number is the NEXT release, not yet cut,
+# and the default is the newest release (see that script). Raise it whenever
+# this file starts using something a release added.
+x-muster-min-version: "0.233.0"
+
 name: ${COMPOSE_PROJECT_NAME:-muster}
 
 services:
@@ -111,7 +122,7 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.231.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.232.0}
     restart: unless-stopped
     depends_on:
       muster-init:
@@ -348,7 +359,7 @@ services:
   # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
   # postgres:16-alpine); no network.
   muster-init:
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.231.0}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.232.0}
     user: "0:0"
     command:
       - compose-init
@@ -360,18 +371,24 @@ services:
       - "65532:65532"
       - -postgres-owner
       - "70:70"
+      # Read-only: an existing database (an install from before muster-init)
+      # never gets a generated password, only the POSTGRES_PASSWORD it was
+      # created with (docs/quickstart-local.md#the-database-password).
+      - -postgres-data
+      - /var/lib/postgresql/data
     environment:
       <<: *muster-env
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - secrets:/run/muster-secrets
+      - pgdata:/var/lib/postgresql/data:ro
     network_mode: none
     restart: "no"
 
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.231.0}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.232.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -538,7 +555,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.231.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.232.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -555,7 +572,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.231.0}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.232.0}
     restart: unless-stopped
     depends_on:
       chief-init:

@@ -383,3 +383,109 @@ func TestComposeInitUsage(t *testing.T) {
 		t.Errorf("a bad -owner: rc %d, want 1", rc)
 	}
 }
+
+// TestComposeInitNeverGeneratesAPasswordForAnExistingDatabase (#707 round 2,
+// F3): an install from before muster-init has a database (PG_VERSION) created
+// with its .env's POSTGRES_PASSWORD and no kept password file. If its first
+// run of the new stack leaves that variable out, a generated password would be
+// kept that the database never had — and restoring the variable would then be
+// refused, its advice keeping the wrong one. Instead: refused, nothing
+// written, the way out named; the variable put back is adopted.
+func TestComposeInitNeverGeneratesAPasswordForAnExistingDatabase(t *testing.T) {
+	run := func(dir, pgData string, env map[string]string) (int, string, string) {
+		t.Helper()
+		var out, errb bytes.Buffer
+		rc := runComposeInit([]string{"-dir", dir, "-database-url", testDBTemplate, "-postgres-data", pgData}, mapEnv(env), &out, &errb)
+		return rc, out.String(), errb.String()
+	}
+	pgData := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pgData, "PG_VERSION"), []byte("16\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	// The variable left out: refused, the volume untouched, no password printed.
+	rc, out, errOut := run(dir, pgData, composeInitEnv(dir, nil))
+	if rc != 1 {
+		t.Fatalf("an existing database and no POSTGRES_PASSWORD: rc %d, want 1\n%s%s", rc, out, errOut)
+	}
+	for _, want := range []string{"database already exists", "Put that line back in .env",
+		"docs/quickstart-local.md#the-database-password", "config: POSTGRES_PASSWORD is not set"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, errOut)
+		}
+	}
+	if got := volumeState(t, dir); len(got) != 0 {
+		t.Errorf("the refused run wrote %v", got)
+	}
+	if strings.Contains(out, "sign-in password") {
+		t.Errorf("the refused run announced a password it never kept:\n%s", out)
+	}
+
+	// The variable put back: adopted (the database's own), and kept.
+	old := "the-old-env-password"
+	if rc, out, errOut := run(dir, pgData, composeInitEnv(dir, map[string]string{envPostgresPassword: old})); rc != 0 {
+		t.Fatalf("the variable put back: rc %d: %s%s", rc, out, errOut)
+	}
+	if got := readSecret(t, dir, secretPostgresPassword); got != old {
+		t.Errorf("postgres_password %q, want the variable's %q", got, old)
+	}
+	// ...and the line can then go: the kept one is used.
+	if rc, out, errOut := run(dir, pgData, composeInitEnv(dir, nil)); rc != 0 {
+		t.Fatalf("the line removed after the adopting start: rc %d: %s%s", rc, out, errOut)
+	}
+	if want := "postgres://muster:" + old + "@postgres:5432/muster?sslmode=disable"; readSecret(t, dir, secretDatabaseURL) != want {
+		t.Errorf("database_url %q, want %q", readSecret(t, dir, secretDatabaseURL), want)
+	}
+
+	// CONTROL: an EMPTY data directory (a new stack) still gets a generated one.
+	fresh := t.TempDir()
+	if rc, out, errOut := run(fresh, t.TempDir(), composeInitEnv(fresh, nil)); rc != 0 || readSecret(t, fresh, secretPostgresPassword) == "" {
+		t.Fatalf("a new stack: rc %d, postgres_password %q: %s%s", rc, readSecret(t, fresh, secretPostgresPassword), out, errOut)
+	}
+}
+
+// TestComposeInitConcurrentFirstRunsPrintTheKeptPassword (#707 round 2): two
+// `up`s at once on one new volume. Without the lock each run planned against
+// an empty volume and printed its own sign-in password, and only the last
+// rename was kept, so the password a person copied could be the lost one. With
+// it, exactly one run prints a password, and it is the one on the volume.
+func TestComposeInitConcurrentFirstRunsPrintTheKeptPassword(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		dir := t.TempDir()
+		const n = 4
+		outs := make([]string, n)
+		rcs := make([]int, n)
+		done := make(chan struct{})
+		start := make(chan struct{})
+		for j := 0; j < n; j++ {
+			go func(j int) {
+				defer func() { done <- struct{}{} }()
+				<-start
+				var out, errb bytes.Buffer
+				rcs[j] = runComposeInit([]string{"-dir", dir, "-database-url", testDBTemplate}, mapEnv(composeInitEnv(dir, nil)), &out, &errb)
+				outs[j] = out.String() + errb.String()
+			}(j)
+		}
+		close(start)
+		for j := 0; j < n; j++ {
+			<-done
+		}
+		kept := readSecret(t, dir, secretUIPassword)
+		printed := 0
+		for j := 0; j < n; j++ {
+			if rcs[j] != 0 {
+				t.Fatalf("run %d: rc %d: %s", j, rcs[j], outs[j])
+			}
+			if strings.Contains(outs[j], "generated muster's sign-in password") {
+				printed++
+				if !strings.Contains(outs[j], "    "+kept+"\n") {
+					t.Errorf("iteration %d: run %d printed a sign-in password that is not the kept one (%q):\n%s", i, j, kept, outs[j])
+				}
+			}
+		}
+		if printed != 1 {
+			t.Fatalf("iteration %d: %d of %d concurrent first runs printed a sign-in password, want exactly 1", i, printed, n)
+		}
+	}
+}

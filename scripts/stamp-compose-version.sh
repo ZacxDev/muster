@@ -6,7 +6,7 @@
 #
 # Every image muster builds is tagged ${MUSTER_VERSION:-X.Y.Z}: with no .env a
 # compose file runs the release written in it. The repository's copy holds the
-# LATEST RELEASE (scripts/check-compose-default.sh fails CI when it is behind
+# LATEST RELEASE (scripts/check-compose-default.sh warns, then fails CI, when it is behind,
 # and bumps it with --bump); a release's own copy is stamped with that release
 # (scripts/release-build.sh). MUSTER_VERSION in .env still pins another.
 #

@@ -1135,9 +1135,11 @@ jobs:
   # Local, in order:
   #   scripts/release-build.sh 0.0.0                 (make release-dry-run)
   #   tests/compose-default-test.sh && scripts/check-compose-default.sh --images
+  #   tests/install-linger-test.sh
   #   tests/compose-check.sh                          (make compose-check)
   #   tests/release-publish-test.sh && tests/stt-cohere-source-test.sh
   #   make image IMAGE=muster-local VERSION=0.0.0 && tests/compose-up.sh muster-local 0.0.0
+  #   tests/compose-default-image.sh                  (the published default, as a clone runs it)
   #   python3 images/stt-cohere/test_app.py           (needs fastapi, httpx,
   #                                                    python-multipart, numpy, ffmpeg)
   #
@@ -1166,11 +1168,14 @@ jobs:
       - name: build the release assets (placeholder version 0.0.0)
         run: scripts/release-build.sh 0.0.0
 
-      # 🔴 A CLONE RUNS THE NEWEST RELEASE, AND IT EXISTS. With no .env,
-      # deploy/docker-compose.yml runs the version written in it: that must be
-      # the newest vX.Y.Z tag below this commit (after each release, bump it
-      # with `scripts/check-compose-default.sh --bump` in a PR; this fails
-      # until then), and every image it names must be on GHCR under that tag
+      # 🔴 A CLONE RUNS THE NEWEST RELEASE, IT CAN RUN THIS FILE, AND IT EXISTS.
+      # With no .env, deploy/docker-compose.yml runs the version written in it:
+      # that must be at least the file's x-muster-min-version (except the
+      # documented bootstrap: the minimum is the next release, not yet cut),
+      # and the newest vX.Y.Z tag below this commit — the previous one only
+      # WARNS for 3 days after a release, while the bump PR the release flow
+      # (`muster-ops verify`) opens is merged; see the script's header — and
+      # every image it names must be on GHCR under that tag
       # (`docker manifest inspect`; NEGATIVE CONTROL: a version never released
       # must be reported missing by the same probe). The rule itself is tested
       # against a scratch repository first.
@@ -1208,6 +1213,7 @@ jobs:
         run: |
           tests/release-publish-test.sh
           tests/stt-cohere-source-test.sh
+          tests/install-linger-test.sh
 
       # Node and the two browsers the zero-config phase signs in with
       # (e2e/localhost: Chromium and WebKit on http://localhost).
@@ -1235,6 +1241,40 @@ jobs:
           docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent-local:0.0.0 .
           go build -o /tmp/muster-mirror ./cmd/muster-mirror
           COMPOSE_UP_MIRROR=/tmp/muster-mirror COMPOSE_UP_BROWSERS=1 tests/compose-up.sh muster-local 0.0.0
+
+      # 🔴 THE FILE AT HEAD RUNS THE RELEASE IT DEFAULTS TO, as a clone runs it:
+      # the published image, nothing overridden (#707 round 2, F1 — every
+      # other compose test runs the image this run built, so none could see
+      # that HEAD's file needed a newer muster than its default). SKIPPED only
+      # in the bootstrap (scripts/check-compose-default.sh --state). Both
+      # controls run on every run, bootstrap or not:
+      #   NEGATIVE: the newest release BELOW x-muster-min-version, under this
+      #   file, must FAIL on muster-init (it cannot start it);
+      #   POSITIVE: this run's image, tagged as that GHCR name at 0.0.0, under
+      #   a copy stamped 0.0.0, must serve (the harness can go green).
+      - name: the compose file at HEAD runs its default release (and its two controls)
+        run: |
+          set -o pipefail
+          min="$(sed -nE 's/^x-muster-min-version:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?[[:space:]]*$/\1/p' deploy/docker-compose.yml)"
+          test -n "$min"
+          below="$( { git tag --list 'v*' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//'; echo "$min"; } | sort -uV | grep -B1 -xF "$min" | head -1)"
+          if [ -n "$below" ] && [ "$below" != "$min" ]; then
+            scripts/stamp-compose-version.sh "$below" < deploy/docker-compose.yml > deploy/.compose-below-min.yml
+            if COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-below-min.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 tests/compose-default-image.sh > /tmp/below.log 2>&1; then
+              cat /tmp/below.log; echo "negative control FAILED: $below (below the minimum $min) served this file"; exit 1
+            fi
+            grep -q 'service "muster-init" didn.t complete successfully' /tmp/below.log || { cat /tmp/below.log; echo "negative control failed for another reason than muster-init"; exit 1; }
+            echo "ok   negative control: the release below the minimum ($below) cannot start this file (muster-init fails)"
+          else
+            echo "note no release below the minimum $min: no negative control"
+          fi
+          docker tag muster-local:0.0.0 ghcr.io/zacxdev/muster:0.0.0
+          scripts/stamp-compose-version.sh 0.0.0 < deploy/docker-compose.yml > deploy/.compose-this-run.yml
+          COMPOSE_DEFAULT_IMAGE_FILE=deploy/.compose-this-run.yml COMPOSE_DEFAULT_IMAGE_FORCE=1 tests/compose-default-image.sh | tee /tmp/positive.log
+          test "$(grep -c '^ok   compose-default-image: ' /tmp/positive.log)" = 1
+          echo "ok   positive control: this run's image under the same harness serves the file"
+          tests/compose-default-image.sh | tee /tmp/default-image.log
+          test "$(grep -cE '^(ok   compose-default-image: |SKIP compose-default-image: the bootstrap)' /tmp/default-image.log)" = 1
 
       # THE ONE-LINER, as a person runs it: `curl -fsSL <release>/install.sh |
       # sh`, from the 0.0.0 assets built above (served on loopback, so the

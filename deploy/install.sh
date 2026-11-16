@@ -234,17 +234,24 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # from muster until someone logs in. Already on: nothing to do. Else
 # `loginctl enable-linger` as this user (polkit often allows it for oneself),
 # else sudo — asked first, on the terminal (MUSTER_LINGER=yes/no answers
-# without asking). Never fatal: when it stays off, it says what that means.
+# without asking). MUSTER_LINGER=no changes nothing at all: not the sudo
+# step, and not the polkit one either. Never fatal: when it stays off, it says
+# what that means.
 linger() {
   u=$(id -un)
   if ! have loginctl; then
     say "no loginctl here: muster-mirror runs while you are logged in, and may not start at boot"; return 0
   fi
   [ "$(loginctl show-user "$u" -p Linger --value 2>/dev/null)" = yes ] && return 0
+  ans="${MUSTER_LINGER:-}"
+  case "$ans" in
+    n|N|no|NO)
+      say "linger left OFF for $u (MUSTER_LINGER=$ans): muster-mirror stops when you log out and does not start at boot."
+      say "Turn it on any time: loginctl enable-linger $u (or with sudo)"; return 0 ;;
+  esac
   if loginctl enable-linger "$u" >/dev/null 2>&1; then
     say "turned on linger for $u: muster-mirror keeps running after logout and starts at boot"; return 0
   fi
-  ans="${MUSTER_LINGER:-}"
   tty=/dev/null; (: </dev/tty) 2>/dev/null && tty=/dev/tty
   if [ -z "$ans" ] && [ "$tty" = /dev/tty ] && have sudo; then
     say "muster-mirror needs linger to keep running after you log out and to start at boot."
