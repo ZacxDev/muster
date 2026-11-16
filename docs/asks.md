@@ -7,9 +7,10 @@ could my agents have answered without me" is a query rather than an
 impression.
 
 It is **phase 1** of ask auto-approval
-([design](design/ask-autoapproval.md)): telemetry only. Nothing on this page
-answers anything for you, proposes an answer or evaluates a rule. Review,
-shadow rules and auto-answers are later phases, each off by default.
+([design](design/ask-autoapproval.md)): telemetry, and a reader for it
+([reading the log](#reading-the-log)). Nothing on this page answers anything
+for you, proposes an answer or evaluates a rule. Shadow rules and
+auto-answers are later phases, each off by default.
 
 Turn it on with `MUSTER_ASK_LOG=1` (see [configuration.md](configuration.md)).
 It needs a database.
@@ -73,13 +74,59 @@ the classifier's scores. The answer the stall sweep already has for that
 streak is reused; otherwise it is one call on your OpenRouter key. It is off
 by default so the volume is measured before the classifier is spent on it.
 
+## Reading the log
+
+The point of the log is to find the questions your agents could have answered
+themselves. Three readers, all of **your own** asks only:
+
+- **The Asks page's Log tab** (`/attention?tab=log`). Filters on top — kind,
+  outcome, who answered, when (the last 24 hours, 7 days, 30 days, or every
+  row kept), and behind *More filters* the runtime, host, repository and
+  session. Then the summary of the filtered asks, then the asks themselves,
+  newest first, 50 a page (*Older* / *Newest*). The tab's panel is read when
+  you open it, not with the rest of the Asks page. With `MUSTER_ASK_LOG` off
+  it says so and how to turn it on; on, with nothing recorded yet, it says
+  that; with filters that match nothing, it offers to clear them.
+- **The API**, with a personal token (`mst_…`):
+  `GET /api/asks/log` and `GET /api/asks/summary`. Query parameters: `kind`,
+  `runtime`, `outcome` (`open` for an ask not yet ended), `answered_by`
+  (`owner`, `chief`, `other`, or `none`: nobody answered), `host`, `repo`,
+  `session` (a tmux session name or a Claude Code / opencode session id),
+  `since` and `until` (an RFC 3339 time, a duration such as `36h`, or days
+  such as `7d`); the log also takes `limit` (1–200, default 50) and `before`
+  (the previous page's `next`), the summary `top` (1–50, default 10). A value
+  the reader does not know is a `400` naming it, never an empty list. The
+  shared hook token is refused (`401`): it acts as the machine user, not as
+  you. Off, both answer the typed `feature_disabled` 404.
+- **The CLI**: `muster asks log [--kind …] [--since 7d] …` and
+  `muster asks summary [--since 30d] [--top N]` ([cli.md](cli.md#reading-the-ask-log)).
+
+### The summary
+
+| field | means |
+|---|---|
+| `total` | asks matching the filters |
+| `by_kind`, `by_outcome`, `by_answered_by` | those asks counted (`open` and `none` for an ask not ended, or answered by nobody) |
+| `answered` | the asks with an answer time (`answered`, `answered_in_session`, `declined`): what the next two are computed over |
+| `median_answer_secs`, `p90_answer_secs` | the median and 90th percentile of the time from the question to its answer — **continuous** percentiles (linear between the two nearest asks, Postgres `percentile_cont`), so with answers after 10, 20 and 40 s they are 20 s and 36 s |
+| `top_questions` | the questions asked **at least twice**, by their normal form (the same normalisation the rules will match on), most often first: how many times, how many of them you answered, the median time to an answer, and the most frequent answer (trimmed, lower case) with how often it was given |
+
+A question whose text has expired has no normal form any more, so it leaves
+`top_questions` (the counts and times keep it). In the list, such a row says
+its text expired (`text_expired: true` in the API) and keeps its kind, where
+it was asked, who answered, how it ended and how long it took.
+
+The repeated questions are the place to start: one asked fifteen times and
+answered "yes" every time is one an agent could have been told to stop asking.
+
 ## Privacy
 
 - **Redacted on the way in.** Every text column — the question, its normal
   form, the options and the answer — passes through muster's one secret
   redactor before it is written, inside the store, whoever calls it.
 - **Yours only.** The table is under forced row-level security: no other user,
-  and no admin view, can read your asks.
+  and no admin view, can read your asks. Every reader above reads as you, on
+  that policy; none has an owner parameter, and none an admin path.
 - **Text expires.** A daily sweep clears question and answer text — and the
   option labels — after `MUSTER_ASK_LOG_TEXT_TTL` (30 days by default). The rest of the row — the
   kind, where, the scores, who answered, how long it took, how it ended — is

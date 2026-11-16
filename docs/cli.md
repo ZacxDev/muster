@@ -22,6 +22,7 @@ The verb set is pinned in two places:
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)), `plugins deliver-to <plugin-id> officer:<id>` / `--clear` ([bind a plugin to an officer](plugins.md#a-plugin-bound-to-an-officer)) |
 | pull requests | `pr-session <owner>/<repo>#<n>` (which of your sessions created a pull request: [below](#which-session-created-a-pull-request)) |
 | setup | `doctor` ([below](#muster-doctor)) |
+| the ask log | `asks log`, `asks summary` (what your agents asked you, how you answered, how long it took: [below](#reading-the-ask-log)) |
 | chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |
 | several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |
 
@@ -285,6 +286,33 @@ claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude
   armed).
 - **Credential:** the ordinary one — a personal token reads its owner's rows,
   the shared hook token the machine user's.
+
+## Reading the ask log
+
+`asks log` reads [`GET /api/asks/log`](asks.md#reading-the-log) — your asks,
+newest first — and `asks summary` reads `GET /api/asks/summary`: counts by
+kind, outcome and who answered, the median and 90th percentile time to an
+answer, and the questions asked at least twice with their most frequent
+answer. Both take the same filters: `--kind`, `--runtime`, `--outcome`,
+`--answered-by`, `--host`, `--repo`, `--session`, `--since`, `--until`
+(`--since 7d`, `--since 36h` or an RFC 3339 time); `asks log` also takes
+`--limit` and `--before` (the previous page's `next`), `asks summary` `--top`.
+
+```sh
+muster asks summary --since 30d
+muster asks log --kind plain_text --answered-by owner --since 7d | jq -r '.asks[] | [.answer_secs, .question] | @tsv'
+```
+
+- **stdout** is the server's JSON and nothing else (there is no `--json`
+  flag: there is no other stdout); **stderr** repeats it as lines a person
+  reads — one block per ask (a row whose text expired says so), or the summary
+  and one line per repeated question.
+- **Exit status:** 0; **12** when the ask log is off on the server (the message
+  names `MUSTER_ASK_LOG=1`); **3** for the shared hook token or any other
+  refused credential; 2 for a filter the server does not know (a 400 naming
+  it); and the usual codes otherwise.
+- **Credential:** a **personal** token (`mst_…`). The log is a person's own;
+  the hook token acts as the machine user and is refused.
 
 ## Other binaries
 

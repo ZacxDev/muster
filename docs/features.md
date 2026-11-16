@@ -46,7 +46,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
-| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
+| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
@@ -423,6 +423,10 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
   `MUSTER_ASK_LOG_CLASSIFY=1` also stores the stall classifier's scores (it
   needs [chief nudges](#chief-nudges)' classifier).
 - **Privacy:** redacted on the way in, yours only, text cleared after the TTL.
+- **Reading it:** the Asks page's **Log** tab, `GET /api/asks/log` and
+  `/api/asks/summary` (a personal token), and `muster asks log` / `muster asks
+  summary` ([reading the log](asks.md#reading-the-log)). Off, the tab says how
+  to turn it on and the routes answer the typed `feature_disabled` 404.
 - **Check:** `ask log: ON (MUSTER_ASK_LOG=1) — …`; off, the line reads
   `ask log: OFF — MUSTER_ASK_LOG is unset; …`.
 
