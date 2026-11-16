@@ -4,7 +4,8 @@ muster runs on your own machine first, at `http://localhost:8105`, with no
 account anywhere and no `.env` to fill in. Your phone comes later, in one step:
 [Add your phone](#add-your-phone).
 
-You need Docker with Compose v2 and tmux, on Linux or macOS (amd64 or arm64).
+You need Docker with Compose v2 and tmux; the full list, checked for you, is
+[INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine).
 
 ## One line
 

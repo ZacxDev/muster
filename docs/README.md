@@ -2,10 +2,44 @@
 
 Start with the [project README](../README.md) for the pitch and the two ways to install.
 [comparison.md](comparison.md) sets muster beside other ways to reach coding agents from a phone.
+Words muster uses (hub, mirrored session, Rendered view, step-up, chief, officer, …): [glossary.md](glossary.md).
+
+## Set it up: the core first, then one feature at a time
+
+**Core (no external dependencies).** Docker Compose on one machine (muster and
+its own Postgres, every secret generated) and, on each machine, tmux and
+`muster-mirror`. It runs at a `http://localhost` address with nothing to fill
+in. What each machine needs is checked by
+[INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine), the one
+place that lists it. Start with one prompt to your coding agent
+([onboarding.md](onboarding.md)) or one line by hand
+([quickstart-local.md](quickstart-local.md)).
+
+**Optional (one guide each).** Add them one at a time, in any order, once the
+core passes `muster doctor`. Each guide says what the feature adds, what it
+needs, the settings to make, how `muster doctor` confirms it, and how to turn
+it off. The full list of features, with every `.env` line, is
+[features.md](features.md).
+
+| dependency | what it adds | guide |
+|---|---|---|
+| Tailscale | your phone (the app, notifications, the microphone) and your other machines | [guides/tailscale.md](guides/tailscale.md) |
+| VAPID keys (generated) | push notifications | [guides/push.md](guides/push.md) |
+| a speech-to-text service | dictation on every message box | [guides/speech-to-text.md](guides/speech-to-text.md) |
+| an S3 store (bundled, or MinIO / S3) | file attachments | [guides/s3.md](guides/s3.md) |
+| an OpenRouter key | suggested replies, focus, the chief on OpenRouter | [guides/openrouter.md](guides/openrouter.md) |
+| an encryption key (and a connect URL) | members' own credentials; connectors for agents | [guides/connectors.md](guides/connectors.md) |
+| a GoTrue server | per-user sign-in, passkeys, invites, teams | [guides/gotrue.md](guides/gotrue.md) |
+| a GitHub App | one-repository GitHub tokens for agents | [guides/github-app.md](guides/github-app.md) |
+| the preview gateway | an agent's dev server, served to you | [guides/previews.md](guides/previews.md) |
+| Kubernetes | dispatched agents, the agent plane (the Helm chart) | [guides/kubernetes.md](guides/kubernetes.md) |
+
+## Every document
 
 **Using it**
 
 - [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
+- [glossary.md](glossary.md) — the words these documents use, each linked to its page
 
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
@@ -38,6 +72,8 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 **Running it**
 
 - [architecture.md](architecture.md) — binaries, listeners, packages, trust
+- [quickstart-local.md](quickstart-local.md) — the one-line install on one machine, by hand, and adding your phone
+- [multi-tenant-hosts.md](multi-tenant-hosts.md) — one machine's sessions in a second muster server (tenants)
 - [kubernetes.md](kubernetes.md) — the Helm chart: installing muster on Kubernetes, the values per feature, RBAC, upgrades
 - [features.md](features.md) — every optional feature: what it needs, the `.env` lines that turn it on, and how to check it is on
 - [configuration.md](configuration.md) — every environment variable, checked by a test

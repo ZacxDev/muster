@@ -42,9 +42,11 @@ window opens in the Terminal view only:
   your own tailnet (nothing exposed to the internet), muster installed to the
   phone's home screen with notifications, and each other machine's sessions.
 
-What each machine needs is checked by the guide's first step, which asks for
-anything missing up front; [features.md](features.md) lists what each optional
-feature needs.
+What each machine needs is checked by the guide's first step,
+[INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine), the one
+place that lists it; it asks for anything missing up front. Each optional
+feature has a short guide of its own:
+[the list](README.md#set-it-up-the-core-first-then-one-feature-at-a-time).
 
 ## What the agent asks you
 

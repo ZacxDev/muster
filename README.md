@@ -175,6 +175,16 @@ end to end and says how to fix what fails
 ([docs/cli.md](docs/cli.md#muster-doctor)); each section of docs/features.md
 ends with how to check that feature is on.
 
+## A guide per feature
+
+Set up the core first, then add one optional dependency at a time, each with a
+short guide (what it adds, what it needs, the settings, how `muster doctor`
+confirms it, how to turn it off): Tailscale, push, dictation, attachments,
+OpenRouter, connectors, GoTrue sign-in, the GitHub App, previews and
+Kubernetes. The list:
+[docs/README.md](docs/README.md#set-it-up-the-core-first-then-one-feature-at-a-time).
+The words muster uses: [docs/glossary.md](docs/glossary.md).
+
 ## muster vs Remote Control
 
 If you use only Claude Code on a paid Claude plan, **Remote Control is less
@@ -210,8 +220,10 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
 - **Codex and Gemini CLI get no waiting push** and no ask tool: they are
   terminal views. The message box sends to opencode only on an opted-in host
   ([docs/mirroring.md](docs/mirroring.md#sending-to-opencode)).
-- **It needs Tailscale**, plus Docker on one machine and tmux on every
-  machine. muster sees only sessions inside tmux.
+- **It needs Docker on one machine and tmux on every machine**, and Tailscale
+  for your phone and other machines; what each machine needs is checked by
+  [INSTALL.md, "Preflight (every machine)"](INSTALL.md#step-0-preflight-every-machine). muster sees
+  only sessions inside tmux.
 - **It is a PWA, not a native app.** On iOS, install it to the Home Screen
   before it can receive push.
 - **Run one replica.** Some background loops and the mirror tunnel keep their
