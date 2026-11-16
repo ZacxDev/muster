@@ -647,6 +647,16 @@ func (c *Client) serverPathBinary(ctx context.Context, name, seam string) (strin
 		if !filepath.IsAbs(b) || !hostWordRE.MatchString(b) {
 			return "", fmt.Errorf("the %s binary is not an absolute path tmux would leave alone", name)
 		}
+		// 🔴 A SET PATH IS CHECKED, NOT TRUSTED (O-B round 0): a -claude-path
+		// naming nothing used to read "found" in the readiness and fail only
+		// inside the spawned window. The same test the PATH search applies.
+		fi, err := os.Stat(b)
+		if err != nil {
+			return "", fmt.Errorf("the %s binary %s is not found", name, b)
+		}
+		if !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("the %s binary %s is not an executable file", name, b)
+		}
 		return b, nil
 	}
 	t, ok := tmuxOf(c.cfg.Backend)

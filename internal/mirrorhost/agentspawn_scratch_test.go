@@ -179,6 +179,10 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 	in := stub("claude-in", `[ "$1 $2 $3" = "auth status --json" ] && printf '{"loggedIn": true, "email": "someone@example.invalid"}' || exit 3`)
 	out := stub("claude-out", `printf '{"loggedIn": false, "authMethod": "none"}'`)
 	old := stub("claude-old", `echo "error: unknown command 'auth'" >&2; exit 1`)
+	noexec := stub("claude-noexec", `printf '{"loggedIn": true}'`)
+	if err := os.Chmod(noexec, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		name, bin, claude, login string
 		scratch                  bool
@@ -187,6 +191,10 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 		{"not logged in", out, mirror.ClaudeFound, mirror.LoginNo, false},
 		{"an older claude", old, mirror.ClaudeFound, mirror.LoginUnknown, true},
 		{"no claude (a relative -claude-path)", "claude", mirror.ClaudeMissing, mirror.LoginUnknown, true},
+		// O-B round 0: a set -claude-path is checked, not trusted.
+		{"no claude (a -claude-path naming nothing)", filepath.Join(dir, "claude-absent"), mirror.ClaudeMissing, mirror.LoginUnknown, true},
+		{"no claude (a -claude-path that is not executable)", noexec, mirror.ClaudeMissing, mirror.LoginUnknown, true},
+		{"no claude (a -claude-path that is a directory)", dir, mirror.ClaudeMissing, mirror.LoginUnknown, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := newSpawnUnit(t)
@@ -199,6 +207,9 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 			}
 			if c.claude == mirror.ClaudeMissing && !strings.Contains(r.ClaudeDetail, "-claude-path") {
 				t.Errorf("a missing claude's detail %q does not say how to point at it", r.ClaudeDetail)
+			}
+			if c.claude == mirror.ClaudeMissing && filepath.IsAbs(c.bin) && !strings.Contains(r.ClaudeDetail, c.bin) {
+				t.Errorf("a set -claude-path that is not a binary: the detail %q does not name %s", r.ClaudeDetail, c.bin)
 			}
 			if strings.Contains(r.ClaudeDetail+r.Unavailable, "example.invalid") {
 				t.Errorf("the readiness carries the login's account: %+v", r)
