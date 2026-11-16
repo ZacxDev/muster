@@ -160,7 +160,7 @@ type hostOfficerRig struct {
 	rec    *officers.Reconciler
 	store  *officerAgents
 	prov   *officerProv
-	logs   *bytes.Buffer
+	logs   *lockedBuffer
 	pod    officers.Officer
 	host   officers.Officer
 
@@ -180,6 +180,17 @@ func (r *hostOfficerRig) advance(d time.Duration) {
 	r.clockMu.Unlock()
 }
 
+// lockedBuffer is a log sink a test reads while the host fleet's background
+// spawns still write to it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
+func (l *lockedBuffer) String() string              { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+func (l *lockedBuffer) Reset()                      { l.mu.Lock(); defer l.mu.Unlock(); l.b.Reset() }
+
 // hostOfficer is officer B as a host officer on hostOffHost.
 func hostOfficer(hqURL string) officers.Officer {
 	return officers.Officer{ID: offB, HQURL: hqURL, MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: hostOffOwner,
@@ -194,7 +205,7 @@ func newHostOfficerRig(t *testing.T, withPod bool) *hostOfficerRig {
 	t.Helper()
 	hq := hqtest.New(map[string]string{offATok: offA, offBTok: offB})
 	t.Cleanup(hq.Close)
-	logs := &bytes.Buffer{}
+	logs := &lockedBuffer{}
 	r := &hostOfficerRig{m: newHostOfficerMirror(), hq: hq, spawns: officers.NewMemHostSpawnStore(), logs: logs, clock: time.Now()}
 	r.spawns.Now = r.now
 	hq.Now = r.now
