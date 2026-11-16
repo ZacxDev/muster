@@ -128,7 +128,7 @@ func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 		t.Fatalf("missing: %v %q", c, why)
 	}
 	// The start-up line a host WITHOUT opencode logs every time: pinned whole,
-	// because INSTALL.md (Step 7) quotes it as expected and a new user must not
+	// because INSTALL.md ("Install muster on this machine") quotes it as expected and a new user must not
 	// read it as a fault.
 	var logb bytes.Buffer
 	cr, why := openCodeCredentials(p)

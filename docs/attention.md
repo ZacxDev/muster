@@ -558,7 +558,7 @@ too, through its host's `muster-mirror`:
    a notification, an empty `tools/list`, muster's own "method not found" for
    anything else (Claude Code's first `server/discover` included), and a
    refused `tools/call`. On a machine with [one `muster-mirror` per muster
-   server](../INSTALL.md#a-second-muster-server-on-this-machine-optional), each
+   server](multi-tenant-hosts.md), each
    session then gets tools from its own tmux server's server only, and the
    others show as connected with no tools rather than as errors. (Measured on
    Claude Code 2.1.289: an HTTP 400 there put the error into the model's
