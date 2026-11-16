@@ -18,6 +18,10 @@
 #                                        .env it runs this release
 #   env.example                          deploy/.env.example, MUSTER_VERSION filled in
 #                                        (save it as .env — see below)
+#   muster-<version>.tgz                 the Helm chart (charts/muster), its `version`
+#                                        AND `appVersion` set to <version> — so the
+#                                        chart's default image tag is this release's
+#                                        (docs/kubernetes.md)
 #   install.sh                           deploy/install.sh, its release stamped:
 #                                        `curl -fsSL <release>/install.sh | sh`
 #   checksums.txt                        sha256 of every file above
@@ -66,6 +70,7 @@ tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (repro
 
 [ -f "$ROOT/deploy/docker-compose.yml" ] || die "deploy/docker-compose.yml is missing" 2
 [ -f "$ROOT/deploy/.env.example" ] || die "deploy/.env.example is missing" 2
+[ -f "$ROOT/charts/muster/Chart.yaml" ] || die "charts/muster/Chart.yaml is missing" 2
 [ -f "$ROOT/deploy/install.sh" ] || die "deploy/install.sh is missing" 2
 
 rm -rf "$DIST"
@@ -98,6 +103,24 @@ for os in "${OSES[@]}"; do
   done
 done
 
+# The Helm chart: charts/muster with its placeholders (version 0.0.0,
+# appVersion "0.0.0" — never hand-edited) set to this release, archived the way
+# `helm package` lays a chart out (one top-level directory named after it), but
+# with GNU tar's reproducible flags, so a re-run of the same commit builds the
+# same bytes (release-publish refuses to replace an asset with different ones).
+# The chart's ci/ value sets are test fixtures and are not shipped.
+chart_src="$ROOT/charts/muster"
+for line in '^version: 0.0.0$' '^appVersion: "0.0.0"$'; do
+  [ "$(grep -c "$line" "$chart_src/Chart.yaml")" = 1 ] ||
+    die "charts/muster/Chart.yaml must hold exactly one line matching $line (the placeholder this script fills in)"
+done
+mkdir -p "$WORK/chart"
+cp -R "$chart_src" "$WORK/chart/muster"
+rm -rf "$WORK/chart/muster/ci"
+sed -i -e "s/^version: 0.0.0\$/version: $VERSION/" -e "s/^appVersion: \"0.0.0\"\$/appVersion: \"$VERSION\"/" "$WORK/chart/muster/Chart.yaml"
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_DATE_EPOCH" \
+  -C "$WORK/chart" -cf - muster | gzip -n -9 > "$DIST/muster-$VERSION.tgz"
+
 "$ROOT/scripts/stamp-compose-version.sh" "$VERSION" < "$ROOT/deploy/docker-compose.yml" > "$DIST/docker-compose.yml" ||
   die "could not stamp $VERSION into docker-compose.yml"
 grep -q '^RELEASE="@MUSTER_RELEASE@"' "$ROOT/deploy/install.sh" || die "deploy/install.sh has no RELEASE=\"@MUSTER_RELEASE@\" line to stamp"
@@ -123,6 +146,7 @@ expected=(
   muster_linux_amd64.tar.gz         muster_linux_arm64.tar.gz
   muster_darwin_amd64.tar.gz        muster_darwin_arm64.tar.gz
   docker-compose.yml env.example install.sh checksums.txt
+  "muster-$VERSION.tgz"
 )
 
 want="$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
@@ -134,6 +158,10 @@ $(diff <(echo "$want") <(echo "$have") || true)"
 [ "$(wc -l < "$DIST/checksums.txt")" -eq $(( ${#expected[@]} - 1 )) ] ||
   die "checksums.txt does not list every asset"
 grep -q "^MUSTER_VERSION=$VERSION\$" "$DIST/env.example" || die "env.example does not pin $VERSION"
+chart_yaml="$(tar -xzOf "$DIST/muster-$VERSION.tgz" muster/Chart.yaml)" || die "the chart archive holds no muster/Chart.yaml"
+grep -qx "version: $VERSION" <<<"$chart_yaml" || die "the chart's version is not $VERSION"
+grep -qx "appVersion: \"$VERSION\"" <<<"$chart_yaml" || die "the chart's appVersion is not $VERSION"
+if tar -tzf "$DIST/muster-$VERSION.tgz" | grep -q '^muster/ci/'; then die "the chart archive ships its ci/ value sets"; fi
 grep -q "^RELEASE=\"$VERSION\"" "$DIST/install.sh" || die "install.sh does not pin $VERSION"
 [ "$("$ROOT/scripts/stamp-compose-version.sh" --current < "$DIST/docker-compose.yml")" = "$VERSION" ] ||
   die "docker-compose.yml does not default to $VERSION in every image"

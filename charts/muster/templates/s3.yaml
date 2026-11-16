@@ -1,0 +1,109 @@
+{{- /* The bundled S3-compatible store for attachments, the Compose file's `s3`
+profile (docs/uploads.md). Used when attachments are on with no endpoint. It
+makes the bucket and the 8-day lifecycle rule on `uploads/` at every start. */ -}}
+{{- if include "muster.s3Bundled" . }}
+{{- $name := printf "%s-s3" (include "muster.fullname" .) }}
+{{- $sel := include "muster.componentSelector" (dict "ctx" . "component" "s3") }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- $sel | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: s3
+          image: "{{ .Values.s3.image.repository }}:{{ .Values.s3.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: s3
+              containerPort: 9000
+          env:
+            - name: MINIO_ROOT_USER
+              value: muster
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "muster.generatedSecretName" .) .Values.attachments.existingSecret }}
+                  key: MUSTER_S3_SECRET_KEY
+            - name: MUSTER_S3_BUCKET
+              value: {{ .Values.attachments.bucket | quote }}
+            - name: MINIO_BROWSER
+              value: "off"
+            - name: HOME
+              value: /tmp
+          command:
+            - sh
+            - -c
+            - |
+              silo server /data --quiet & pid=$!
+              trap 'kill -TERM $pid' TERM INT
+              until mc alias set muster http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                kill -0 "$pid" 2>/dev/null || exit 1
+                sleep 1
+              done
+              mc mb --ignore-existing "muster/$MUSTER_S3_BUCKET" &&
+                echo '{"Rules":[{"ID":"muster-uploads","Status":"Enabled","Filter":{"Prefix":"uploads/"},"Expiration":{"Days":8}}]}' |
+                mc ilm import "muster/$MUSTER_S3_BUCKET" || exit 1
+              touch /tmp/ready
+              wait "$pid"
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/ready"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.s3.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.s3.storage.size }}
+{{- end }}

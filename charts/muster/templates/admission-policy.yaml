@@ -1,0 +1,54 @@
+{{- /*
+On by default (agents.rbac.admissionPolicy.enabled). For muster's
+ServiceAccount ONLY, it refuses:
+  * creating or deleting a namespace whose name does not start with
+    agents.namespacePrefix (the value the server is given), so the cluster-wide
+    `namespaces: create, delete` both layouts grant reaches agent namespaces
+    only;
+  * writing or deleting a RoleBinding outside such a namespace, so the
+    least-privilege layout's cluster-wide `rolebindings: create` cannot bind
+    muster into kube-system or any other namespace.
+`request.name` is the name the request carries: a create that left it to
+generateName has none, and is refused.
+What it does NOT restrict is listed in docs/kubernetes.md#the-agent-plane.
+*/ -}}
+{{- if and .Values.agents.enabled .Values.agents.rbac.admissionPolicy.enabled }}
+{{- $name := printf "%s-agent-namespaces" (include "muster.clusterScopedName" .) }}
+{{- $prefix := required "agents.namespacePrefix is required" .Values.agents.namespacePrefix }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, DELETE]
+        resources: [namespaces]
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+  matchConditions:
+    - name: is-muster
+      expression: {{ printf "request.userInfo.username == \"system:serviceaccount:%s:%s\"" .Release.Namespace (include "muster.serviceAccountName" .) | quote }}
+  validations:
+    - expression: {{ printf "request.resource.resource != \"namespaces\" || request.name.startsWith(\"%s\")" $prefix | quote }}
+      message: {{ printf "muster may only create or delete namespaces whose name starts with %s" $prefix | quote }}
+    - expression: {{ printf "request.resource.resource != \"rolebindings\" || request.namespace.startsWith(\"%s\")" $prefix | quote }}
+      message: {{ printf "muster may only write or delete RoleBindings in namespaces whose name starts with %s" $prefix | quote }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "muster.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

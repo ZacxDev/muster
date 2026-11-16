@@ -58,7 +58,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Other settings](#other-settings) | timings, host icons | nothing | defaults | 1 line each |
 | [Chief](#chief) | a fleet agent: what each session is on, routing work to sessions; home opens its chat | the `chief` profile, the connector key, a Claude subscription token or an OpenRouter key | off | `--profile chief` + 2 lines + a credential |
 | **Advanced** | | | | |
-| [Dispatch](#dispatch) | muster starts agents in their own pods | **Kubernetes**: muster deployed in a cluster, manifests you write | off | not in the Compose stack |
+| [Dispatch](#dispatch) | muster starts agents in their own pods | **Kubernetes**: muster deployed in a cluster ([the Helm chart](kubernetes.md)) | off | not in the Compose stack |
 | ↳ [Agent gateway](#agent-gateway), [Claude Code agents](#claude-code-agents) | chat with agents; the `claude-code` agent kind | dispatch, an agent image | off | not in the Compose stack |
 | [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief on Kubernetes | off | not in the Compose stack |
 | [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief on Kubernetes, an OpenRouter key | off | not in the Compose stack |
@@ -590,8 +590,8 @@ muster starts a coding agent on a task in its own pod, talks to it, stops and
 deletes it. [provisioner.md](provisioner.md).
 
 - **Needs Kubernetes.** The provisioner uses in-cluster credentials only, so
-  muster itself must be deployed inside the cluster, with RBAC and manifests you
-  write (the repository ships the image, no manifests), plus an agent image:
+  muster itself must be deployed inside the cluster, with its RBAC: the Helm
+  chart does both ([kubernetes.md](kubernetes.md)). It also needs an agent image:
   `images/claude-code-agent`, or a `gateway`-kind image you supply.
 - **Not available in the Compose stack.** `docker-compose.yml` does not forward
   `MUSTER_AGENT_PROVISIONER`, `MUSTER_AGENT_GATEWAY`, `MUSTER_AGENT_KINDS` or the

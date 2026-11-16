@@ -1,0 +1,4 @@
+# The core only: every value at its default. (image.tag is the one value an
+# install from the repository directory must give.)
+image:
+  tag: 1.2.3
