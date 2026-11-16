@@ -75,6 +75,8 @@ GET /answers
 GET /api/agents
 GET /api/agents/{name}/account-failovers
 GET /api/agents/{name}/messages
+GET /api/asks/log
+GET /api/asks/summary
 GET /api/attention/summary
 GET /api/cc-accounts/usage
 GET /api/device/config
@@ -114,6 +116,7 @@ GET /attention/asks/{id}
 GET /attention/badge
 GET /attention/drafts
 GET /attention/items
+GET /attention/log
 GET /attention/open/{key}
 GET /auth/claim
 GET /auth/reset

@@ -66,6 +66,8 @@ agent rm
 agent task comment
 agent task get
 agent task status
+asks log
+asks summary
 chief ask
 chief replace
 doctor
@@ -130,7 +132,8 @@ whoami"
 #   officer_llm_usage; a builtin officer's Claude usage is booked there).
 # 47 -> 52: `officer ls|create|pause|resume|delete` (officers declared in the
 #   database, migration 0136; no restart).
-WANT_COUNT=52
+# 52 -> 54: `asks log` and `asks summary` (reading the ask log, docs/asks.md).
+WANT_COUNT=54
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

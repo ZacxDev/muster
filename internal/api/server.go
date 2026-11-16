@@ -311,6 +311,10 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// turnRoleChecked, test-only (nil in production): called when a member's
+	// turn on a team agent has passed turnActingContext's first role read, so
+	// a test can change the membership between that read and the send.
+	turnRoleChecked func(a agents.Agent)
 	// routeAnswersCap is how many owed route answers one combined turn carries
 	// (deliverRouteAnswers); zero = routeAnswersPerTurn. A test lowers it.
 	routeAnswersCap int
@@ -830,6 +834,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAnswersRoutes(mux)
 	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
+	// Reading the ask log (ask_log_read.go): /api/asks/log, /api/asks/summary and the Asks page's Log tab.
+	s.registerAskLogReadRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.
 	s.registerMirrorMCPRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the

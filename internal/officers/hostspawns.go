@@ -282,10 +282,11 @@ const lendTargetHint = "muster:lend-target"
 
 // HostSpawnLender lends and lists host spawns for a person.
 type HostSpawnLender interface {
-	// VisibleHostSpawns is the newest limit rows the principal reads: its
-	// own, and those lent to a team it is a member of (a person's own doors
-	// only: the others carry no teams).
-	VisibleHostSpawns(ctx context.Context, limit int) ([]HostSpawn, error)
+	// VisibleHostSpawns is the newest limit rows the principal reads — its
+	// own, those lent to a team it is a member of, and its teams' own rows
+	// (team_owner_read; a person's own doors only: the others carry no
+	// teams) — narrowed by w.
+	VisibleHostSpawns(ctx context.Context, w SpawnWindow, limit int) ([]HostSpawn, error)
 	// LendHostSpawn lends row id of the principal's own to team (0: unlends
 	// it) and returns the row. ErrHostSpawnNotFound when no row of the
 	// principal's OWN has that id (a row only lent to them included);
@@ -298,12 +299,34 @@ type HostSpawnLender interface {
 
 var _ HostSpawnLender = (*PGHostSpawnStore)(nil)
 
+// SpawnWindow narrows a VisibleHostSpawns read, so that each section of a
+// page gets its own bounded window: a busy team host officer's rows never
+// push a member's own spawns (and their lends) out of the newest limit rows.
+// The zero value is every visible row.
+type SpawnWindow struct {
+	// Team, when set, is that owner's rows only (a team's own spawns).
+	Team int64
+	// NotOwnedBy leaves out the rows owned by any of these (the viewer's
+	// teams, for the personal section).
+	NotOwnedBy []int64
+}
+
 // VisibleHostSpawns implements HostSpawnLender.
-func (s *PGHostSpawnStore) VisibleHostSpawns(ctx context.Context, limit int) ([]HostSpawn, error) {
+func (s *PGHostSpawnStore) VisibleHostSpawns(ctx context.Context, w SpawnWindow, limit int) ([]HostSpawn, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns ORDER BY id DESC LIMIT $1`, limit)
+	var team any
+	if w.Team > 0 {
+		team = w.Team
+	}
+	notOwned := w.NotOwnedBy
+	if notOwned == nil {
+		notOwned = []int64{}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+hostSpawnCols+` FROM officer_host_spawns
+		WHERE ($2::bigint IS NULL OR owner_id = $2) AND NOT (owner_id = ANY ($3::bigint[]))
+		ORDER BY id DESC LIMIT $1`, limit, team, notOwned)
 	if err != nil {
 		return nil, err
 	}

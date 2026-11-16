@@ -44,6 +44,12 @@ type Store interface {
 	// as), and the person's team memberships. ErrNotFound when there is no
 	// such user.
 	Account(ctx context.Context, id int64) (Account, error)
+	// HoldTeamRole reads person's role in team and holds it — no membership
+	// change of the team commits — until release is called (PGStore's doc).
+	// THE SEND FENCE's lock (internal/api turnActingContext): every member
+	// turn on a team agent is fenced by it, so a store must implement it; a
+	// test fake that cannot lock says so in its own code.
+	HoldTeamRole(ctx context.Context, team, person int64) (role authz.TeamRole, in bool, release func(), err error)
 }
 
 // Account is what a request principal is built from (internal/api

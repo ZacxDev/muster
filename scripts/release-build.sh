@@ -24,6 +24,10 @@
 #                                        (docs/kubernetes.md)
 #   install.sh                           deploy/install.sh, its release stamped:
 #                                        `curl -fsSL <release>/install.sh | sh`
+#   INSTALL.md                           the agent install guide, its release stamped
+#                                        (MI_GUIDE_RELEASE), so the guide the one
+#                                        prompt downloads (.../latest/download/INSTALL.md)
+#                                        installs the release it came with
 #   checksums.txt                        sha256 of every file above
 #
 # ⚠ NO SERVER BINARY, BY DECISION. The server ships as the container image
@@ -72,6 +76,7 @@ tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (repro
 [ -f "$ROOT/deploy/.env.example" ] || die "deploy/.env.example is missing" 2
 [ -f "$ROOT/charts/muster/Chart.yaml" ] || die "charts/muster/Chart.yaml is missing" 2
 [ -f "$ROOT/deploy/install.sh" ] || die "deploy/install.sh is missing" 2
+[ -f "$ROOT/INSTALL.md" ] || die "INSTALL.md is missing" 2
 
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -126,6 +131,9 @@ tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_DATE_EPOCH
 grep -q '^RELEASE="@MUSTER_RELEASE@"' "$ROOT/deploy/install.sh" || die "deploy/install.sh has no RELEASE=\"@MUSTER_RELEASE@\" line to stamp"
 sed "s/^RELEASE=\"@MUSTER_RELEASE@\"/RELEASE=\"$VERSION\"/" "$ROOT/deploy/install.sh" > "$DIST/install.sh"
 chmod 755 "$DIST/install.sh"
+[ "$(grep -c '^MI_GUIDE_RELEASE="@MUSTER_RELEASE@"$' "$ROOT/INSTALL.md")" = 1 ] ||
+  die "INSTALL.md must hold exactly one MI_GUIDE_RELEASE=\"@MUSTER_RELEASE@\" line to stamp"
+sed "s/^MI_GUIDE_RELEASE=\"@MUSTER_RELEASE@\"\$/MI_GUIDE_RELEASE=\"$VERSION\"/" "$ROOT/INSTALL.md" > "$DIST/INSTALL.md"
 # The attached .env.example pins the release it came from; the repository copy
 # leaves MUSTER_VERSION empty, so the compose file's own default applies.
 grep -q '^MUSTER_VERSION=$' "$ROOT/deploy/.env.example" ||
@@ -145,7 +153,7 @@ expected=(
   muster-mirror_darwin_amd64.tar.gz muster-mirror_darwin_arm64.tar.gz
   muster_linux_amd64.tar.gz         muster_linux_arm64.tar.gz
   muster_darwin_amd64.tar.gz        muster_darwin_arm64.tar.gz
-  docker-compose.yml env.example install.sh checksums.txt
+  docker-compose.yml env.example install.sh INSTALL.md checksums.txt
   "muster-$VERSION.tgz"
 )
 
@@ -163,6 +171,7 @@ grep -qx "version: $VERSION" <<<"$chart_yaml" || die "the chart's version is not
 grep -qx "appVersion: \"$VERSION\"" <<<"$chart_yaml" || die "the chart's appVersion is not $VERSION"
 if tar -tzf "$DIST/muster-$VERSION.tgz" | grep -q '^muster/ci/'; then die "the chart archive ships its ci/ value sets"; fi
 grep -q "^RELEASE=\"$VERSION\"" "$DIST/install.sh" || die "install.sh does not pin $VERSION"
+grep -qx "MI_GUIDE_RELEASE=\"$VERSION\"" "$DIST/INSTALL.md" || die "INSTALL.md does not pin $VERSION"
 [ "$("$ROOT/scripts/stamp-compose-version.sh" --current < "$DIST/docker-compose.yml")" = "$VERSION" ] ||
   die "docker-compose.yml does not default to $VERSION in every image"
 # No asset may start with a period (GitHub would rename it; see the header).

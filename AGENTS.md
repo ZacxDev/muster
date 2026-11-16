@@ -1,19 +1,32 @@
 # AGENTS.md
 
-For coding agents working on muster.
+For any coding agent that lands in this repository. This file holds links, not
+facts: each one goes to the place that owns its subject, so it cannot go stale
+behind the code.
 
-## 🔴 CI runs on CI, not on this workstation
+## Installing or running muster
 
-`.github/workflows/ci.yml` (build, test, leakscan, nix, css, e2e, release-dry-run,
-images) is where a change is validated. Do **not** run the whole local mirror to
-"reproduce CI" — the box is shared by every agent and the operator's desktop, and a
-whole-suite run spins the disks and slows both.
+- **Install it, with a person**: [INSTALL.md](INSTALL.md), written for an
+  agent to execute. Download a release's own copy as a file (its top has the
+  one prompt) and follow it step by step.
+- **Try it on one machine**: [docs/quickstart-local.md](docs/quickstart-local.md)
+  (Docker Compose, the one-line `install.sh`).
+- **Kubernetes**: [docs/kubernetes.md](docs/kubernetes.md) (the Helm chart).
+- **Optional features** and what each needs: [docs/features.md](docs/features.md).
+  Every setting: [docs/configuration.md](docs/configuration.md).
+- **Is it working?** `muster doctor` ([docs/cli.md](docs/cli.md#muster-doctor)).
+- **Any command's flags and defaults**: its own help (`muster --help`,
+  `muster <verb> --help`, `muster-mirror -h`), which is generated from the
+  code and wins over any document that disagrees. The server is configured by
+  environment variables only: [docs/configuration.md](docs/configuration.md).
 
-Whole-suite invocations are refused by the local agent tooling.
+## Working on muster
 
-**A change-scoped subset is the local loop** — `make vet`, `go test ./internal/<pkg>/`,
-`make css-check`, `go test ./... -run <Test>`. The full suite is CI's:
-`make check` / `make test` / `make e2e` are the CI mirrors, not the iteration loop.
-`go test ./...` is deliberately allowed — that is a reason it CAN run, never a licence to
-run the whole suite casually.
-
+- [CONTRIBUTING.md](CONTRIBUTING.md) is the authority on building and testing
+  (including why a green `go test ./...` without a database means nothing);
+  [docs/development.md](docs/development.md) runs muster from source.
+- **CI is where a change is validated.** `.github/workflows/ci.yml` runs every
+  job on each pull request. Everything it runs can also run locally
+  (CONTRIBUTING.md lists it); while iterating, prefer the tests your change
+  touches (a package, a single test, a single script), and treat CI's run on
+  the pull request as the full check: read its result there.

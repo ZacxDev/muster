@@ -938,9 +938,10 @@ type config struct {
 	// MemoScopeMap is MUSTER_MEMO_SCOPE_MAP as written; validate parses it.
 	MemoScopeMap string
 	// STTURL and STTToken are the speech-to-text service behind the message
-	// box's microphone. Dictation is on iff STTToken is set; STTURL alone is a
-	// valid, inert state (the deployment names the service before its secret
-	// exists), and a token with no URL refuses to boot.
+	// box's microphone. Dictation is on iff STTToken is set; STTURL alone
+	// boots, inert (the deployment names the service before its secret
+	// exists), but the feature registry reports it MISCONFIGURED, so the
+	// doctor fails it (features.go); a token with no URL refuses to boot.
 	STTURL   string
 	STTToken string
 	// STTModel is MUSTER_STT_MODEL: the `model` field each request carries,
@@ -2092,7 +2093,7 @@ const fallbackVAPIDSubject = "mailto:muster@localhost"
 // 🔴 NEVER AN http:// URL. A push service refuses a subject that is not
 // mailto: or https (push.validSubject refuses it at boot), and copying an
 // http MUSTER_PUBLIC_URL into the subject is exactly how a local install
-// restart-looped (INSTALL.md Step 4 did it). The subject is only a contact
+// restart-looped (an earlier INSTALL.md did it). The subject is only a contact
 // for the push service's operator; a mailto: with no real mailbox behind it
 // sends push the same.
 func defaultVAPIDSubject(publicURL string) string {
