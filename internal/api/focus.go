@@ -507,7 +507,7 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 		// card shows the reason instead of nothing. And when it carries a
 		// NAME (a manual one set before any focus): the name reads it here
 		// (names.go), and view skips it.
-		if f.Has() || f.Problem() != "" || f.Name != (focus.Name{}) {
+		if f.Has() || f.Problem() != "" || f.Name != (focus.Name{}) || f.Tasks.Declared() {
 			out[f.Subject] = f
 		}
 	}

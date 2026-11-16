@@ -59,6 +59,8 @@ var teamHostTools = map[string]teamHostRule{
 	taskGetTool:       teamKept("the tasks this session created"),
 	taskCommentTool:   teamKept("the tasks this session created"),
 	taskSetStatusTool: teamKept("the tasks this session created"),
+	// The session's own declared tasks (track_task_tool.go).
+	trackTaskTool: teamKept("the session's own declared tasks, on its own focus row"),
 	// The session's own host dispatch.
 	agentReportDoneTool: teamKept("the session's own dispatch"),
 	// A team host officer instance's tools.

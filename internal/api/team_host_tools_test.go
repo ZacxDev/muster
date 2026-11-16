@@ -52,7 +52,8 @@ func TestEveryMirrorToolIsClassifiedForATeamHost(t *testing.T) {
 	want := []string{agentReportDoneTool, attentionAskTool, attentionCancelTool, attentionWaitTool,
 		officers.ToolAskPerson, officers.ToolBrief, officers.ToolClaim, officers.ToolComplete, officers.ToolContactGet,
 		officers.ToolContactNote, officers.ToolContactsList, officers.ToolHeartbeat, officers.ToolItems,
-		officers.ToolPostDraft, officers.ToolRelease, taskCommentTool, taskGetTool, taskSetStatusTool, tasksListTool}
+		officers.ToolPostDraft, officers.ToolRelease, taskCommentTool, taskGetTool, taskSetStatusTool, tasksListTool,
+		trackTaskTool}
 	slices.Sort(want)
 	// Errorf, not Fatalf: the per-decision checks below must still run, so a
 	// wrong kept tool fails with ITS reason too (mutation-checked).
