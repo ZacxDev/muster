@@ -138,11 +138,12 @@ func (f *routeFixture) sweepUntil(t *testing.T, ok func() bool) bool {
 	return ok()
 }
 
-// turnsCarrying is how many of turns carry sub, and whether any turn carries
-// more than one of subs (answers batched into one turn).
+// turnsCarrying is how many of turns carry sub.
 func turnsCarrying(turns []string, sub string) int { return countContaining(turns, sub) }
 
-func answerBody(i int) string { return "Answer number " + strconv.Itoa(i) + " from the changelog session." }
+func answerBody(i int) string {
+	return "Answer number " + strconv.Itoa(i) + " from the changelog session."
+}
 
 // TestElevenOwnerAskedRelaysInOneOwnerTurnAllPassWhileTheirAnswersArrive is
 // the owner's request to many sessions: in ONE owner-typed turn the chief
