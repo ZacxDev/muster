@@ -561,11 +561,27 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 `)
 	b.WriteString(problemNode(problem))
 	if minted != "" {
+		// 🔴 THE TOKEN IS TEXT, NOT A FORM FIELD (officers redesign O-B): a
+		// field's value is not the page's text, so a reader of the page — a
+		// person copying by hand, a script reading it — lost it, and it is
+		// shown this once. Selectable text, with a Copy button beside it.
 		b.WriteString(`<div class="flex flex-col gap-2 rounded-md bg-bg px-3 py-3 ring-1 ring-inset ring-edge" data-testid="minted-plugin-token">
 <p class="text-sm font-semibold text-fg">Copy it now — it will not be shown again. It can only post this plugin's messages.</p>
-<input id="minted-plugin-token" readonly value="` + esc(minted) + `" aria-label="New plugin token"
- class="min-h-[44px] w-full rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge" onclick="this.select()">
+<div class="flex flex-wrap items-center gap-2">
+<code id="minted-plugin-token" class="min-h-[44px] min-w-0 flex-1 select-all break-all rounded-md bg-s1 px-3 py-2 font-mono text-sm text-fg ring-1 ring-inset ring-edge">` + esc(minted) + `</code>
+<button type="button" class="` + flowsQuietButton + `" data-copy-plugin-token>Copy</button>
 </div>
+</div>
+<script>
+(function () {
+  var b = document.querySelector('[data-copy-plugin-token]');
+  var t = document.getElementById('minted-plugin-token');
+  if (!b || !t || !navigator.clipboard) { if (b) b.hidden = true; return; }
+  b.addEventListener('click', function () {
+    navigator.clipboard.writeText(t.textContent).then(function () { b.textContent = 'Copied'; });
+  });
+})();
+</script>
 `)
 	}
 	b.WriteString(`<form method="POST" action="` + pluginsPath + `" class="flex flex-col gap-2" data-testid="plugin-create">
@@ -573,8 +589,8 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-name" name="name" maxlength="40" placeholder="example-inbox" class="` + flowsInputClass + `">
 <label for="plugin-label" class="text-sm font-medium text-fg">Label <span class="text-xs text-fg2">what your chief's conversation for it is called</span></label>
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
-<label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where your chief is told to record anything durable from these messages</span></label>
-<input id="plugin-scope" name="data_scope" maxlength="64" placeholder="example-inbox" class="` + flowsInputClass + `">
+<label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">optional: where your chief is told to record anything durable from these messages (empty: the name)</span></label>
+<input id="plugin-scope" name="data_scope" maxlength="64" placeholder="the name" class="` + flowsInputClass + `">
 ` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginDeliverToFieldHTML() + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
@@ -653,6 +669,11 @@ func queuedText(n int) string {
 func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) {
 	in := plugins.NewPlugin{Name: strings.TrimSpace(r.PostFormValue("name")), Label: r.PostFormValue("label"),
 		DataScope: strings.TrimSpace(r.PostFormValue("data_scope")), DeliverTo: strings.TrimSpace(r.PostFormValue("deliver_to"))}
+	// An empty data scope is the plugin's name (docs/plugins.md, as pairing
+	// does: plugins.pairing).
+	if in.DataScope == "" {
+		in.DataScope = in.Name
+	}
 	for _, c := range r.PostForm["capability"] {
 		in.Capabilities = append(in.Capabilities, plugins.Capability(c))
 	}

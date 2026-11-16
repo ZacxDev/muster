@@ -57,6 +57,11 @@ type InstanceState struct {
 	// Error reports the instance in error (crash-looping, a failed apply). It
 	// holds its slot, so the loop logs and counts it rather than starting it.
 	Error bool
+	// Down is why the instance is not up, as the fleet sees it ("" when up,
+	// or when the fleet cannot say): "no agent yet", "its window @23 on h1
+	// is gone", "its last start was refused: …". The start line names it, so
+	// every start — and every RESTART — says why it happened.
+	Down string
 	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
 	// instance and not yet delivered. Such an instance is not re-prompted.
 	PromptPending bool
@@ -282,6 +287,9 @@ type Decision struct {
 	Reprompt []int
 	// StopReason is why Stop stops ("" = the officer was idle for its window).
 	StopReason string
+	// StartWhy is why each instance in Start was down (InstanceState.Down;
+	// "" when the fleet did not say), by instance number.
+	StartWhy map[int]string
 	// Release is live claims held by an instance that is not up.
 	Release []Item
 	// Overrun is live claims held past the pool's wall-time cap: each holder
@@ -417,12 +425,22 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if want > o.MaxInstances {
 			want = o.MaxInstances
 		}
+		downWhy := map[int]string{}
+		for _, in := range obs.Instances {
+			if !in.Up {
+				downWhy[in.N] = in.Down
+			}
+		}
 		for _, n := range downInstances(o, obs.Instances) {
 			if up+len(d.Start) >= want {
 				break
 			}
 			if !capHolder[n] {
 				d.Start = append(d.Start, n)
+				if d.StartWhy == nil {
+					d.StartWhy = map[int]string{}
+				}
+				d.StartWhy[n] = downWhy[n]
 			}
 		}
 		skip := map[string]bool{}
@@ -544,6 +562,11 @@ type officerState struct {
 	// errored is the instances last seen in error (logged on change), by
 	// instance agent name.
 	errored map[string]erroredSlot
+	// scaledDown is each instance this process scaled to zero itself, and
+	// why, by instance agent name: its next start is a WAKE, not a restart
+	// (startReason). Cleared when it starts; a restart of muster forgets it,
+	// and the fleet's own reason then speaks.
+	scaledDown map[string]string
 	// unclockedLogged: a capped pool's claim without HQ's claimed_at has been
 	// logged (once per officer per process).
 	unclockedLogged bool
@@ -611,6 +634,8 @@ type Reconciler struct {
 	judgement *JudgementLedger
 	// capHold is Config.CapHold (nil: none).
 	capHold func(o Officer, h CapHold)
+	// kickoff is Config.Kickoff (never nil: KickoffText by default).
+	kickoff func(ctx context.Context, o Officer, n int) string
 	// refresh, refreshEvery and refreshedAt are Config.Refresh: Run calls it
 	// at most every refreshEvery, before it looks for a due officer.
 	refresh      func(ctx context.Context)
@@ -650,6 +675,10 @@ type Config struct {
 	// lock, from the pass; it must not block. A restarted muster begins a
 	// new episode for a refusal still in force.
 	CapHold func(o Officer, h CapHold)
+	// Kickoff is the first message instance n of officer o starts with: nil
+	// is KickoffText. internal/api reads a builtin officer's type grants into
+	// it (KickoffTextWith), so a granted tool is listed.
+	Kickoff func(ctx context.Context, o Officer, n int) string
 	// Refresh, when set, re-reads the roster into Registry (internal/api: the
 	// DB-declared officers, migration 0136). Run calls it on its first tick
 	// and then at most every RefreshEvery (DefaultRefreshEvery when 0), so an
@@ -679,7 +708,10 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 	if cfg.RefreshEvery <= 0 {
 		cfg.RefreshEvery = DefaultRefreshEvery
 	}
-	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
+	if cfg.Kickoff == nil {
+		cfg.Kickoff = func(_ context.Context, o Officer, n int) string { return KickoffText(o, n) }
+	}
+	return &Reconciler{kickoff: cfg.Kickoff, reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
 		judgement: cfg.Judgement, capHold: cfg.CapHold, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery,
 		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
@@ -804,7 +836,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		if !confirmed {
 			note := ""
 			if refusal != "" {
-				note = fmt.Sprintf(" (HQ refusal %s seen on %d of %d consecutive passes before it counts as a configuration fault)", refusal, strikes, FaultStrikes)
+				note = fmt.Sprintf(" (%s refusal %s seen on %d of %d consecutive passes before it counts as a configuration fault)", backendWord(o), refusal, strikes, FaultStrikes)
 			}
 			r.log.Printf("officers: %s: %v; changing nothing%s, next check in %s (failure %d)", o.ID, err, note, next.Sub(now).Round(time.Second), f)
 			return PassResult{Err: err}
@@ -841,7 +873,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 		ds[i] = Decide(p, obs[i], idleSince[p.Tier], now, prompted)
 	}
 	if s.fault != "" {
-		r.log.Printf("officers: %s: HQ answers again (was a configuration fault: HQ answered %s)", o.ID, s.fault)
+		r.log.Printf("officers: %s: %s answers again (was a configuration fault: it answered %s)", o.ID, backendWord(o), s.fault)
 		s.fault = ""
 	}
 	if s.switchedOff {
@@ -1103,13 +1135,14 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 		r.log.Printf("officers: %s: released item %s: its holder %s is not running", o.label(), it.ID, it.ClaimedBy)
 	}
 	for _, n := range d.Start {
-		if err := r.fleet.Start(ctx, o, n, KickoffText(o, n)); err != nil {
+		if err := r.fleet.Start(ctx, o, n, r.kickoff(ctx, o, n)); err != nil {
 			errs = append(errs, err)
 			r.log.Printf("officers: %s: start instance %s: %v", o.label(), o.InstanceLabel(n), err)
 			continue
 		}
+		why := r.startReason(o, n, d.StartWhy[n])
 		r.prompted(o, n)
-		r.log.Printf("officers: %s: started instance %s (%d claimable, %d held)", o.label(), o.InstanceLabel(n), d.Claimable, d.Held)
+		r.log.Printf("officers: %s: started instance %s — %s (%d claimable, %d held)", o.label(), o.InstanceLabel(n), why, d.Claimable, d.Held)
 	}
 	for _, n := range d.Reprompt {
 		err := r.fleet.Reprompt(ctx, o, n, RepromptText(o, n))
@@ -1136,6 +1169,7 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 		if reason == "" {
 			reason = "idle " + o.IdleAfter.String()
 		}
+		r.scaledDownBy(o, n, reason)
 		r.log.Printf("officers: %s: scaled instance %s to zero (%s)", o.label(), o.InstanceLabel(n), reason)
 	}
 	return errs
@@ -1291,6 +1325,46 @@ func OverrunSummary(o Officer, ov Overrun) string {
 		"(tiers.judgement.max_item_minutes = %d). The work did not finish and nothing was concluded; a human should pick it up. "+
 		"The instance's transcript, if forwarded, shows where it stopped.",
 		ov.Item.ClaimedBy, ov.Held.Round(time.Minute), int(o.ItemCap()/time.Minute))
+}
+
+// backendWord names o's backend in a log line: HQ, or the built-in backend.
+func backendWord(o Officer) string {
+	if o.IsBuiltin() {
+		return "the built-in backend"
+	}
+	return "HQ"
+}
+
+// startReason is why instance n of o is being started: a WAKE after this
+// process scaled it to zero (and why it did), or — the fleet's reason it is
+// down otherwise — a first start or a RESTART after it ended on its own. The
+// scale-down record is consumed: the start it explains is this one.
+func (r *Reconciler) startReason(o Officer, n int, down string) string {
+	r.mu.Lock()
+	st := r.st(o.Key())
+	name := o.InstanceName(n)
+	stopped, wasStopped := st.scaledDown[name]
+	delete(st.scaledDown, name)
+	r.mu.Unlock()
+	switch {
+	case wasStopped:
+		return "woken for new work after muster scaled it to zero (" + stopped + ")"
+	case down != "":
+		return down
+	}
+	return "it was not running"
+}
+
+// scaledDownBy records that this process scaled instance n of o to zero, and
+// why (startReason reads it).
+func (r *Reconciler) scaledDownBy(o Officer, n int, why string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.st(o.Key())
+	if st.scaledDown == nil {
+		st.scaledDown = map[string]string{}
+	}
+	st.scaledDown[o.InstanceName(n)] = why
 }
 
 func (r *Reconciler) prompted(o Officer, n int) {

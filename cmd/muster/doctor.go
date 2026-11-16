@@ -104,7 +104,7 @@ type doctorCheck struct {
 // what --skip takes.
 var doctorChecks = []string{
 	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
-	"mirror-service", "tmux", "sign-in", "push", "dictation", "features",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features", "officers",
 	"mcp-endpoint", "mcp-registration", "ask-hook",
 }
 
@@ -187,6 +187,22 @@ type serverReport struct {
 	// Features is the server's feature registry (internal/api.FeatureView):
 	// absent from a server that predates it.
 	Features []serverFeature `json:"features"`
+	// Officers is each of the caller's officers and what is in its way
+	// (internal/api.DoctorOfficer): nil from a server that predates it.
+	Officers *[]serverOfficer `json:"officers"`
+}
+
+// serverOfficer is the part of one officer's doctor entry this client prints.
+type serverOfficer struct {
+	ID       string `json:"id"`
+	Runtime  string `json:"runtime"`
+	RunsOn   string `json:"runs_on"`
+	Host     string `json:"host"`
+	Problems []struct {
+		Problem string `json:"problem"`
+		Fix     string `json:"fix"`
+	} `json:"problems"`
+	Notes []string `json:"notes"`
 }
 
 // serverFeature is the part of one registry entry this client prints.
@@ -272,6 +288,7 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 	d.checkPush(ctx)
 	d.checkDictation(ctx)
 	d.checkFeatures()
+	d.checkOfficers()
 	d.checkMCPEndpoint()
 	d.checkMCPRegistration()
 	d.checkAskHook()
@@ -1102,6 +1119,59 @@ func (d *doctorRun) checkFeatures() {
 		return
 	}
 	d.add(name, statusPass, detail+"; listed below", "")
+}
+
+// checkOfficers is the server's officer report (GET /api/doctor's officers):
+// for each officer the caller owns, whether its runtime can start an instance
+// now — its pods' agent plane, or its host online, starting and closing
+// windows, claude found and logged in, its repository allowed — and the fix
+// for each thing in the way.
+func (d *doctorRun) checkOfficers() {
+	const name = "officers"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	if d.report.Officers == nil {
+		d.add(name, statusSkip, "this server does not report its officers (it predates the officer check)", "")
+		return
+	}
+	list := *d.report.Officers
+	if len(list) == 0 {
+		d.add(name, statusSkip, "no officer is declared for you (MUSTER_OFFICERS, or `muster officer` in the database)", "")
+		return
+	}
+	var ok, bad, fixes, notes []string
+	for _, o := range list {
+		where := o.RunsOn
+		if o.Host != "" {
+			where += " on " + o.Host
+		}
+		if where == "" {
+			where = o.Runtime
+		}
+		for _, n := range o.Notes {
+			notes = append(notes, o.ID+": "+n)
+		}
+		if len(o.Problems) == 0 {
+			ok = append(ok, o.ID+" ("+where+")")
+			continue
+		}
+		for _, p := range o.Problems {
+			bad = append(bad, o.ID+": "+p.Problem)
+			if p.Fix != "" {
+				fixes = append(fixes, o.ID+": "+p.Fix)
+			}
+		}
+	}
+	detail := "ready: " + listOrNone(ok)
+	if len(notes) > 0 {
+		detail += "; note: " + strings.Join(notes, "; ")
+	}
+	if len(bad) > 0 {
+		d.add(name, statusFail, strings.Join(bad, "; ")+"; "+detail, strings.Join(fixes, "; "))
+		return
+	}
+	d.add(name, statusPass, detail, "")
 }
 
 // --- this host's session tools ----------------------------------------------

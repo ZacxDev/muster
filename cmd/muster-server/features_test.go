@@ -675,8 +675,10 @@ func TestEveryHintWorksOnTheComposeInstall(t *testing.T) {
 
 // TestChiefDependentHintsSayTheChiefFirst: plugins, session routing and task
 // routing are forwarded by the Compose stack but act through the chief, so
-// their hint — and the doctor's fix line, which is the hint — says that first:
-// setting MUSTER_PLUGINS=1 alone leaves them misconfigured (#441 round 1).
+// their hint — and the doctor's fix line, which is the hint — says that first
+// (#441 round 1). Plugins with no gateway are ON, not misconfigured: a plugin
+// bound to an officer needs no chief (officers O-B; REGRESSION: red at
+// origin/main, which read them misconfigured — the doctor's false positive).
 func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
 	set := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, true)
 	f, _ := set.Get(features.Plugins)
@@ -685,9 +687,15 @@ func TestChiefDependentHintsSayTheChiefFirst(t *testing.T) {
 	if f.EnableHint() != want {
 		t.Fatalf("plugins hint\n got %q\nwant %q", f.EnableHint(), want)
 	}
-	if f.State != features.Misconfigured || !strings.HasPrefix(f.DisabledMessage(), "misconfigured: plugins — ") ||
-		!strings.Contains(f.DisabledMessage(), "; needs the chief") {
-		t.Fatalf("plugins on Compose: %s %q", f.State, f.DisabledMessage())
+	// 🔴 NOT MISCONFIGURED (officers O-B): with no gateway a plugin bound to
+	// an officer is still delivered (the built-in store the database gives),
+	// so the feature is on, and says what an unbound plugin needs. The
+	// no-database arm keeps its refusal (the control below).
+	if f.State != features.On || !strings.Contains(f.Reason, "bound to an officer") || !strings.Contains(f.Reason, envAgentGateway) {
+		t.Fatalf("plugins on Compose with no chief: %s %q, want on, naming the officer binding and the gateway", f.State, f.Reason)
+	}
+	if g, _ := featureSet(t, config{Plugins: true}, api.Extensions{Plugins: plugins.NewPG(nil)}, false).Get(features.Plugins); g.State != features.Misconfigured {
+		t.Fatalf("control: plugins with no gateway and no database: %s, want misconfigured", g.State)
 	}
 	for _, id := range []string{features.SessionRouting, features.TaskRouting} {
 		if g, _ := set.Get(id); !strings.HasPrefix(g.EnableHint(), features.NeedsChiefHint+"; then set ") {

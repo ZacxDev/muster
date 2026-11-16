@@ -158,6 +158,12 @@ type AgentSpawnReq struct {
 	// (SpawnBadClone) anything else; an older host ignores the field and keeps
 	// refusing a repository with several clones (no_repo), never guessing.
 	Clone string `json:"clone,omitempty"`
+	// Scratch asks for an OFFICER instance with no repository: Repo is empty,
+	// and the host starts it in a private scratch directory of its own
+	// (SpawnReadiness.Scratch, -agent-spawn-scratch) that it removes once the
+	// window is gone. A host that does not offer scratch spawns refuses it
+	// (an older one refuses the empty Repo: no_repo), never guessing a repo.
+	Scratch bool `json:"scratch,omitempty"`
 }
 
 // AgentSpawned is a successful agent-spawned's window (Msg.Spawned).

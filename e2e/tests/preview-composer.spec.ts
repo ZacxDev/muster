@@ -127,7 +127,7 @@ async function ready(page: Page, context: BrowserContext): Promise<void> {
     });
     const html = await r.text();
     expect(r.status(), html.slice(0, 400)).toBe(200);
-    token = /id="minted-plugin-token" readonly value="(mpl_[A-Za-z0-9_-]+)"/.exec(html)?.[1] ?? '';
+    token = /id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]+)</.exec(html)?.[1] ?? '';
     expect(token, 'a plugin token was minted').toBeTruthy();
   }
   await context.route('https://*.viewer.example.net/**', async (route: Route) => {

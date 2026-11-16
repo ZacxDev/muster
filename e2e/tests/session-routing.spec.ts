@@ -124,7 +124,7 @@ test('a routed message reaches the mirrored session, its answer is auto-approved
   await page.fill('#plugin-label', 'Route inbox');
   await page.fill('#plugin-scope', 'route-inbox');
   await page.getByRole('button', { name: 'Create plugin token' }).click();
-  const token = await page.locator('#minted-plugin-token').inputValue();
+  const token = (await page.locator('#minted-plugin-token').innerText()).trim();
   expect(token).toMatch(/^mpl_/);
   plugin = await pwRequest.newContext({ baseURL: origin, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
 

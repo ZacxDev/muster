@@ -99,7 +99,7 @@ func (f fixedEndpoint) Endpoint(context.Context, provision.Ref) (provision.Endpo
 	return f.ep, nil
 }
 
-var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token" readonly value="(mpl_[A-Za-z0-9_-]{43})"`)
+var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]{43})<`)
 
 // TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane is the seam test:
 // the real Postgres stores, the real routes and wrappers, the real deliverer and

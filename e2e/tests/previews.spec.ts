@@ -163,7 +163,7 @@ async function mintViewer(page: Page): Promise<string> {
   });
   const html = await r.text();
   expect(r.status(), html.slice(0, 400)).toBe(200);
-  const token = /id="minted-plugin-token" readonly value="(mpl_[A-Za-z0-9_-]+)"/.exec(html)?.[1];
+  const token = /id="minted-plugin-token"[^>]*>(mpl_[A-Za-z0-9_-]+)</.exec(html)?.[1];
   expect(token, 'a plugin token was minted').toBeTruthy();
   const self = await page.request.get(origin + '/plugin/v1/self', { headers: { Authorization: `Bearer ${token}` } });
   const body = (await self.json()) as { plugin_id: number; capabilities: string[] };

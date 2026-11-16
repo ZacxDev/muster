@@ -130,6 +130,12 @@ const (
 	envAgentSpawnRepos = "MUSTER_MIRROR_AGENT_SPAWN_REPOS"
 	envAgentSpawnRate  = "MUSTER_MIRROR_AGENT_SPAWN_RATE"
 	envAgentSpawnLog   = "MUSTER_MIRROR_AGENT_SPAWN_LOG"
+	// The officers' share of the host spawn (officers redesign O-B): their own
+	// ceiling, a scratch directory for one with no repository, and where
+	// claude is when the tmux server's PATH does not reach it.
+	envAgentSpawnOfficerRate = "MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE"
+	envAgentSpawnScratch     = "MUSTER_MIRROR_AGENT_SPAWN_SCRATCH"
+	envClaudePath            = "MUSTER_MIRROR_CLAUDE_PATH"
 	// envAgentSpawnSkipPermissions: -agent-spawn-skip-permissions, ON unless
 	// set to a false value (what strconv.ParseBool reads as false: 0, f, F,
 	// FALSE, false, False); any other non-bool value stops the daemon.
@@ -249,6 +255,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	agentSpawnDir := fs.String("agent-spawn-dir", or(getenv(envAgentSpawnDir), defaultAgentSpawnDir(getenv)), "where spawned agents' worktrees go, <dir>/<owner>__<repo>/<dispatch> ("+envAgentSpawnDir+")")
 	agentSpawnRepos := fs.String("agent-spawn-repos", getenv(envAgentSpawnRepos), "comma-separated <owner>/<repo> this host will spawn agents in. EMPTY BY DEFAULT: with none listed, -agent-spawn starts nothing ("+envAgentSpawnRepos+")")
 	agentSpawnRate := fs.String("agent-spawn-rate", or(getenv(envAgentSpawnRate), mirrorhost.DefaultAgentSpawnRate), "this host's own spawn rate limit, counted from the audit log ("+envAgentSpawnRate+")")
+	agentSpawnOfficerRate := fs.String("agent-spawn-officer-rate", or(getenv(envAgentSpawnOfficerRate), mirrorhost.DefaultAgentSpawnOfficerRate), "with -agent-spawn: this host's own ceiling on every OFFICER spawn together, counted from the audit log; -agent-spawn-rate is the chief's. muster limits each officer below it by its own poll and schedule ("+envAgentSpawnOfficerRate+")")
+	agentSpawnScratch := fs.Bool("agent-spawn-scratch", envBool(envAgentSpawnScratch), "with -agent-spawn: let muster start an OFFICER instance that has no repository (\"runtime\": \"host\" with no repo) in a private directory of its own, <agent-spawn-dir>/scratch/<n>, removed once its window is gone. OFF by default: without it every spawn needs a repository on -agent-spawn-repos ("+envAgentSpawnScratch+")")
+	claudePath := fs.String("claude-path", getenv(envClaudePath), "the claude binary a spawned agent runs, as an absolute path; empty (the default) looks `claude` up on the tmux SERVER's PATH, which an install that put claude in ~/.local/bin may not reach. The hello tells muster whether claude was found and logged in ("+envClaudePath+")")
 	agentSpawnLog := fs.String("agent-spawn-log", or(getenv(envAgentSpawnLog), defaultAgentSpawnLog(getenv)), "the append-only spawn audit log (JSON lines, 0600): every request before any work starts, and its result; a spawn whose first line cannot be written is refused ("+envAgentSpawnLog+")")
 	// Previews (preview.go): off by default; in this release -preview only
 	// validates and logs.
@@ -462,7 +471,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Built here, before mirrorhost.New, so the startup line below words the
 	// permission mode from the very config the host spawns by.
 	spawnCfg := mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
-		Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
+		Repos: spawnRepos, Rate: *agentSpawnRate, OfficerRate: *agentSpawnOfficerRate, Scratch: *agentSpawnScratch, ClaudeBin: expandHome(*claudePath),
+		Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
 		TenantServer: *agentSpawnTenantServer, KeepPermissionPrompts: !*agentSpawnSkipPermissions, Geteuid: geteuid}
 	// The attempt code is this PROCESS's: drawn once, so every reconnect of
 	// this process presents the same one, and a restart a new one.
@@ -550,8 +560,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	case *agentSpawn:
 		if why := c.AgentSpawnUnavailable(); why != "" {
 			logger.Printf("muster-mirror: -agent-spawn is set but this host starts no agent: %s", why)
-		} else if len(spawnRepos) == 0 {
-			logger.Printf("muster-mirror: -agent-spawn is ON but -agent-spawn-repos names no repository: this host starts no agent until you list one")
+		} else if len(spawnRepos) == 0 && !*agentSpawnScratch {
+			logger.Printf("muster-mirror: -agent-spawn is ON but -agent-spawn-repos names no repository: this host starts no agent until you list one (or, for officers with no repository, -agent-spawn-scratch)")
 		} else {
 			server := "the default tmux server"
 			if *agentSpawnTenantServer != "" {
@@ -559,7 +569,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 			perms := spawnPermissionsLog(spawnCfg)
 			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude (or opencode, with -opencode-send and a token) in tmux session %q on %s, in a new worktree of %s, rate %s, audit log %s, %s",
-				"agents", server, strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog), perms)
+				"agents", server, listOrNone(spawnRepos), *agentSpawnRate, expandHome(*agentSpawnLog), perms)
+			scratch := "officers need a repository on -agent-spawn-repos"
+			if *agentSpawnScratch {
+				scratch = "an officer with no repository starts in a private scratch directory (-agent-spawn-scratch)"
+			}
+			logger.Printf("muster-mirror: officer spawns: rate %s (-agent-spawn-officer-rate); %s", *agentSpawnOfficerRate, scratch)
 		}
 	}
 	if *agentSpawnTenantServer != "" && !*agentSpawn {
@@ -848,4 +863,12 @@ func removeAttemptCode(path, code string) {
 	if b, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(b)) == code {
 		_ = os.Remove(path)
 	}
+}
+
+// listOrNone is xs joined with ", ", or "no repository" when empty.
+func listOrNone(xs []string) string {
+	if len(xs) == 0 {
+		return "no repository"
+	}
+	return strings.Join(xs, ", ")
 }

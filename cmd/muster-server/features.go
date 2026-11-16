@@ -486,6 +486,14 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	switch {
 	case ext.Plugins != nil && ext.PluginGateway != nil:
 		st[features.Plugins] = on("")
+	case ext.Plugins != nil && a.pool != nil:
+		// 🔴 NOT MISCONFIGURED (officers redesign O-B): a plugin BOUND TO AN
+		// OFFICER (Deliver to officer:<id>, the built-in store a database
+		// gives) is delivered to that officer with no chief and no gateway.
+		// Only an unbound plugin's messages wait for a chief — its binding,
+		// not this switch, decides — so the feature is on, with that said.
+		st[features.Plugins] = on("a plugin bound to an officer (Deliver to officer:<id>) is delivered to it; an unbound plugin's messages reach your chief " +
+			"only through the agent gateway (" + envAgentGateway + ", docs/features.md#agent-gateway) and stay queued until then")
 	case ext.Plugins != nil:
 		st[features.Plugins] = bad("plugin messages reach your chief through the agent gateway (" + envAgentGateway + "), which " +
 			features.KubernetesHint + " — see docs/features.md#agent-gateway; until then they are stored and stay queued")

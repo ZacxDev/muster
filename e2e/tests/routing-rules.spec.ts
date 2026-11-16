@@ -158,7 +158,7 @@ for (const vp of [
       await page.fill('#plugin-label', `Digest ${vp.key}`);
       await page.fill('#plugin-scope', pluginName);
       await page.getByRole('button', { name: 'Create plugin token' }).click();
-      const token = await page.locator('#minted-plugin-token').inputValue();
+      const token = (await page.locator('#minted-plugin-token').innerText()).trim();
       expect(token).toMatch(/^mpl_[A-Za-z0-9_-]{43}$/);
       const plugin: APIRequestContext = await pwRequest.newContext({ baseURL: rig.origin, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
       const post = async (n: number) => {

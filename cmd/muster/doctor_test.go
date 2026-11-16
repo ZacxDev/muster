@@ -175,6 +175,9 @@ func healthyMuster() *fakeMuster {
 				map[string]any{"id": "attachments", "name": "File attachments", "state": "off", "reason": "none of the required variables is set",
 					"enable_hint": "set MUSTER_S3_ENDPOINT and MUSTER_S3_BUCKET in .env and restart (docs/features.md#attachments)"},
 			},
+			"officers": []any{
+				map[string]any{"id": "sentinel:sessions", "managed_by": "db", "runtime": "auto", "runs_on": "host", "host": "alpha", "problems": []any{}},
+			},
 		},
 		transcribeCode: http.StatusOK,
 		transcribeText: "testing muster dictation",
@@ -537,7 +540,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "14 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "15 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -606,6 +609,10 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 			m.transcribeCode, m.transcribeText = http.StatusBadGateway, "The transcription service refused this server's credential"
 		}, detail: "502"},
 		{check: "dictation", why: "heard nothing", breakM: func(m *fakeMuster) { m.transcribeText = "  " }, detail: "heard nothing"},
+		{check: "officers", why: "claude not logged in on its host", breakM: func(m *fakeMuster) {
+			m.report["officers"] = []any{map[string]any{"id": "sentinel:sessions", "runtime": "host", "runs_on": "host", "host": "alpha",
+				"problems": []any{map[string]any{"problem": "host alpha: Claude Code is not logged in there", "fix": "on alpha, run `claude` once"}}}}
+		}, detail: "sentinel:sessions: host alpha: Claude Code is not logged in there"},
 	}
 	for _, c := range cases {
 		t.Run(c.check+"/"+c.why, func(t *testing.T) {
@@ -899,7 +906,7 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 		t.Cleanup(func() { f.Close() })
 		return f
 	}
-	const report, doc = "14 passed, 0 failed, 0 skipped", `"checks": [`
+	const report, doc = "15 passed, 0 failed, 0 skipped", `"checks": [`
 
 	both := open("both")
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})

@@ -134,3 +134,24 @@ func (c Cron) Next(t time.Time) (time.Time, bool) {
 	}
 	return time.Time{}, false
 }
+
+// ShortestInterval is the shortest gap between two consecutive fires of c in
+// the eight days after from (0 when it fires at most once there): what a
+// host officer's spawn budget is sized from (officers.SpawnBudgetFor).
+func (c Cron) ShortestInterval(from time.Time) time.Duration {
+	const horizon, maxFires = 8 * 24 * time.Hour, 2000
+	end := from.Add(horizon)
+	prev, ok := c.Next(from)
+	var best time.Duration
+	for i := 0; ok && i < maxFires; i++ {
+		next, more := c.Next(prev)
+		if !more || next.After(end) {
+			break
+		}
+		if gap := next.Sub(prev); best == 0 || gap < best {
+			best = gap
+		}
+		prev = next
+	}
+	return best
+}

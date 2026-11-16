@@ -121,7 +121,7 @@ func refuse(status int, code, msg string, extra map[string]any) error {
 		body[k] = v
 	}
 	raw, _ := json.Marshal(body)
-	return &officers.HQError{Status: status, Body: raw}
+	return &officers.HQError{Status: status, Body: raw, Builtin: true}
 }
 
 // outage is a database failure as the contract's retryable outage.

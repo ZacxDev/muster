@@ -67,7 +67,6 @@ func TestTheHostRuntimeRefusesWhatItCannotHonour(t *testing.T) {
 		{"no host", `[{"id":"marketing:example","backend":"builtin","runtime":"host","repo":"example-org/example-site"}]`, "no host (", noEnv},
 		{"bad host", `[{"id":"marketing:example","backend":"builtin","runtime":"host","host":"Host_Alpha","repo":"example-org/example-site"}]`,
 			`host "Host_Alpha" (not a mirror host name`, noEnv},
-		{"no repo", `[{"id":"marketing:example","backend":"builtin","runtime":"host","host":"host-alpha"}]`, "no repo (", noEnv},
 		{"tiers", hostDecl(`,"tiers":{"judgement":{"model":"opus","max_instances":1},"routine":{"model":"haiku","max_instances":1}}`), "tiers (", noEnv},
 		{"model", hostDecl(`,"model":"opus"`), "model (", noEnv},
 		{"image", hostDecl(`,"image":"registry.example.test/runner@sha256:` + strings.Repeat("a", 64) + `"`), "image (", noEnv},

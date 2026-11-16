@@ -775,20 +775,38 @@ func TestTheComposeChiefOnItsSubscriptionIsRefusedByTheLLMProxy(t *testing.T) {
 	}
 }
 
-// TestTheComposeChiefRefusesOfficersBesideIt: MUSTER_OFFICERS beside the
-// Compose chief refuses to boot, naming it. An INVARIANT guard on existing
-// code (audit round 1, F2: the refusal had no test): without it a mis-set .env
-// boots and its officers silently never dispatch (composeAdmit admits the
-// chief alone).
-func TestTheComposeChiefRefusesOfficersBesideIt(t *testing.T) {
+// TestTheComposeChiefRunsHostOfficersBesideIt (officers redesign O-B, B2):
+// a Compose chief boots beside a roster of HOST officers — with a repo, and
+// with none (a scratch directory) — since their instances are windows on a
+// mirrored machine, not agents the compose driver runs. A POD officer is still
+// refused, by id and only it, with a message that says what to do instead —
+// not "officers are Kubernetes-dispatched", which a host officer is not.
+// REGRESSION: red at origin/main (any MUSTER_OFFICERS refused the boot).
+func TestTheComposeChiefRunsHostOfficersBesideIt(t *testing.T) {
+	const host = `{"id":"sentinel:sessions","backend":"builtin","runtime":"host","host":"box1"}`
+	const hostRepo = `{"id":"qa:web","backend":"builtin","runtime":"host","host":"box1","repo":"example-org/example-site"}`
+	const pod = `{"id":"release:example-web","hq_url":"https://hq.example.invalid/api/v1"}`
 	e := composeEnv("/run/muster-spec")
-	e[envOfficers] = `[{"id":"release:example-web","hq_url":"https://hq.example.invalid/api/v1"}]`
 	e["MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB"] = "fixture-officer-token-compose-1"
-	if _, err := loadEnv(t, e); err == nil || !strings.Contains(err.Error(), "but "+envOfficers+" is also set") {
-		t.Fatalf("%s beside the Compose chief: %v, want a refusal naming it", envOfficers, err)
+	e[envOfficers] = "[" + host + "," + hostRepo + "]"
+	c, err := loadEnv(t, e)
+	if err != nil {
+		t.Fatalf("a host-only roster beside the Compose chief was refused: %v", err)
 	}
-	// Control: the same environment without the officers loads, so the
-	// refusal above is the officers'.
+	if len(c.Officers) != 2 || !c.Officers[0].OnHost() || !c.Officers[1].OnHost() || !c.chiefCompose() || c.AgentProvisioner != provisionerCompose {
+		t.Fatalf("the host roster and the Compose chief did not both load: %+v (chief compose %v, provisioner %q)", c.Officers, c.chiefCompose(), c.AgentProvisioner)
+	}
+	for name, roster := range map[string]string{"pod alone": "[" + pod + "]", "pod beside a host officer": "[" + host + "," + pod + "]"} {
+		e[envOfficers] = roster
+		_, err := loadEnv(t, e)
+		if err == nil || !strings.Contains(err.Error(), "declares officers that run in pods (release:example-web)") || strings.Contains(err.Error(), "sentinel:sessions") {
+			t.Fatalf("%s beside the Compose chief: %v, want a refusal naming the pod officer alone", name, err)
+		}
+		if !strings.Contains(err.Error(), `"runtime": "host"`) {
+			t.Errorf("%s: the refusal %q does not say how to run it on a host", name, err)
+		}
+	}
+	// Control: the same environment without the officers loads.
 	delete(e, envOfficers)
 	if _, err := loadEnv(t, e); err != nil {
 		t.Fatalf("control: the Compose chief without officers was refused: %v", err)

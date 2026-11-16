@@ -159,7 +159,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await page.fill('#plugin-label', 'Example inbox');
   await page.fill('#plugin-scope', 'example-inbox');
   await page.getByRole('button', { name: 'Create plugin token' }).click();
-  const token = await page.locator('#minted-plugin-token').inputValue();
+  const token = (await page.locator('#minted-plugin-token').innerText()).trim();
   expect(token).toMatch(/^mpl_[A-Za-z0-9_-]{43}$/);
   plugin = await pwRequest.newContext({ baseURL: machineURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
 

@@ -30,9 +30,15 @@ var ErrHQUnavailable = errors.New("officers: HQ unavailable")
 type HQError struct {
 	Status int
 	Body   []byte
+	// Builtin: muster's built-in backend refused (internal/officers/builtin),
+	// not an HQ — so the text never says HQ answered.
+	Builtin bool
 }
 
 func (e *HQError) Error() string {
+	if e.Builtin {
+		return fmt.Sprintf("officers: the built-in backend answered %d: %s", e.Status, truncate(string(e.Body), 200))
+	}
 	return fmt.Sprintf("officers: HQ answered %d: %s", e.Status, truncate(string(e.Body), 200))
 }
 
