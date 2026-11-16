@@ -1155,7 +1155,7 @@ class Prose(unittest.TestCase):
         titles = set(headings(GUIDE.read_text()))
         named, numbered = [], []
         for p in [*ROOT.glob("cmd/**/*.go"), *ROOT.glob("internal/**/*.go"), ROOT / "deploy/install.sh",
-                  *ROOT.glob("docs/*.md")]:
+                  *ROOT.glob("docs/*.md"), *ROOT.glob("docs/guides/*.md")]:
             src = p.read_text()
             named += [(p.name, " ".join(t.split())) for t in re.findall(r'INSTALL\.md(?:\'s)?,?\s\\?"([^"\\]+)\\?"', src)]
             numbered += [(p.name, m) for m in re.findall(r"INSTALL\.md(?:'s)?,? [Ss]tep \d+", src)]
@@ -1168,7 +1168,7 @@ class Prose(unittest.TestCase):
     # Every file that may point into the guide (INSTALL.md itself excepted).
     def guide_referrers(self) -> list[Path]:
         return [*ROOT.glob("cmd/**/*.go"), *ROOT.glob("internal/**/*.go"), ROOT / "deploy/install.sh",
-                *ROOT.glob("docs/*.md"), ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CONTRIBUTING.md",
+                *ROOT.glob("docs/*.md"), *ROOT.glob("docs/guides/*.md"), ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CONTRIBUTING.md",
                 *ROOT.glob("plugins/**/*.md")]
 
     @staticmethod

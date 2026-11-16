@@ -328,6 +328,13 @@ jobs:
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/features_config_test.py
 
+      # docs/guides/*.md and docs/README.md's table of them agree, each guide
+      # has its five parts and spells no port or model id, and docs/features.md
+      # links every feature page and has a Contents row per section.
+      - name: the guides, their index and docs/features.md agree
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/docs_guides_test.py
+
       # The Claude Code plugin marketplace: names, source path, skill
       # frontmatter, and the setup skill pointing at INSTALL.md's URL.
       - name: the Claude Code plugin is what the README installs

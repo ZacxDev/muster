@@ -375,9 +375,11 @@ install-guide-test:
 	python3 tests/install_guide_test.py
 
 # docs/features.md's anchors, and deploy/.env.example, the compose file and the
-# server's variables agreeing (tests/features_config_test.py). Static.
+# server's variables agreeing (tests/features_config_test.py); the guides, their
+# index and docs/features.md agreeing (tests/docs_guides_test.py). Static.
 features-config-test:
 	python3 tests/features_config_test.py
+	python3 tests/docs_guides_test.py
 
 check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
 
