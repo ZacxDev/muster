@@ -76,6 +76,14 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(r.Context(), a),
 		// The Rendered | Terminal switch: the agent's chat is its rendered view.
 		RenderedHref: s.agentPageHref(r.Context(), a)}
+	// 🔴 A TEAM agent's terminal is an operator's or a manager's WITH A FRESH
+	// SIGN-IN (teamAgentTerminal): the whole attach is gated, so the page
+	// carries the confirm dialog and asks before it attaches on a stale one.
+	if memberOnTeamAgent(r.Context(), a) && !teamWatcherOf(r.Context(), a.OwnerID) {
+		v.StepUp = s.stepUpView(r)
+		v.StepUp.Why = TeamAgentTerminalWhy()
+		v.StepUpAttach = true
+	}
 	if s.ext.Provisioner == nil {
 		v.Unavailable = "this build has no agent provisioner wired, so it cannot attach a terminal"
 	} else if s.ext.ComposeChief != nil {

@@ -443,7 +443,7 @@ export const pagesShareConnectPort = port + 407;
 export const serverSwitcherStubPort = port + 404;
 // tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
 // desktop width — its own server (plugins on), no mirror host.
-export const draftCardPort = port + 405;
+export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/env-ports.test.mjs)
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;

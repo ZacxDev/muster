@@ -578,14 +578,15 @@ you typed is lost while the dialog is open. You can confirm in two ways:
 
 Both are same-origin only and throttled like sign-in.
 
-The same dialog guards the step-up gated **forms** on other pages: approving a
-reply draft on the Asks page, approving a plugin pairing request on
-`/plugins`, and a team manager's minting, revoking and replacing on
-`/teams/<id>/hosts` and `/teams/<id>/plugins`. On a stale sign-in the form asks
-"Confirm it's you" before it submits, and submits once you confirm, with what
-you typed in it kept. A form the server still refuses as stale (the page
-believed the sign-in fresh) is answered with the same page, saying so, and its
-next submit asks.
+The same dialog guards every other write that needs a fresh sign-in. **The
+rule: wherever muster would refuse a write as stale, the page you made it from
+offers "Confirm it's you" in place.** A form asks before it submits and, once
+you confirm, submits the same form, with what you typed and the button you
+tapped kept. A terminal that needs a fresh sign-in to open at all (a team
+agent's) asks before it attaches. A write the server still refuses as stale
+(the page believed the sign-in fresh) is answered with the same page, saying
+so, and the next try asks. Every such write in the server is listed in one
+ledger, and a test fails when one is added without saying how you confirm it.
 
 **A host officer's machine is stricter** ([officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions)):
 an owner-authority tool reached through that machine's MCP door is confirmed

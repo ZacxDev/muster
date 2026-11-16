@@ -7,27 +7,21 @@ import { dsn, e2eRoot, gotrueSecret, repoRoot, teamUxBrowserPort, teamUxGotruePo
 import { serverBinary, startServer, Running } from '../lib/server';
 import { landedHome } from '../lib/nav';
 
-// A TEAM'S PAGES ON THE CLICK PATHS A LIVE CHECK OF v0.232.0 FOUND BROKEN,
-// against a gotrue-mode muster and its own real GoTrue:
+// A TEAM MANAGER WITH A STALE SIGN-IN, on the click paths a live check of
+// v0.232.0 found broken, against a gotrue-mode muster and its own real
+// GoTrue: on /teams/<id>/plugins and /teams/<id>/hosts a tap on Mint (and
+// Revoke) asks "Confirm it's you" in place — the dialog the session composer
+// uses — and once the password is confirmed the SAME form submits, what was
+// typed in it kept, and nothing reached the server before. Before, the tap
+// went straight to a 403 page saying "Confirm it's you, then try again" with
+// no way to: only signing out and in got past it.
 //
-//   1. A MANAGER WITH A STALE SIGN-IN, on /teams/<id>/plugins and
-//      /teams/<id>/hosts, taps Mint (and Revoke): the page asks "Confirm it's
-//      you" in place — the dialog the session composer uses — and once the
-//      password is confirmed the SAME form submits, what was typed in it kept.
-//      Before, the tap went straight to a 403 page saying "Confirm it's you,
-//      then try again" with no way to: only signing out and in got past it.
-//   2. A team VIEWER's copy of the team's end card on the Asks page draws no
-//      End it, no Not now and no Dismiss — "their question cards are drawn
-//      unanswerable" (docs/mirroring.md) — while the manager's copy of the same
-//      card draws them (the control).
+// What only a browser shows is here: the form script holding the submit
+// (StepUpFormScript). Which pages and forms are gated is the Go seam's
+// (stepup_ledger_test.go, stepup_forms_seam_pg_test.go). Every value is
+// invented fixture data.
 //
-// ⚠ WHAT IS PLAYED: the team's end card is a fixture row (e2e/teamfix): the
-// real one is filed by the team chief's end_session_propose, which needs an
-// agent runtime this harness does not run. Everything else is the real routes.
-// Every value is invented fixture data.
-//
-// 🔴 REGRESSION TEST: red at ff1295f8 (no dialog on either team page; the
-// viewer's card drew both buttons).
+// 🔴 REGRESSION TEST: red at ff1295f8 (no dialog on either team page).
 
 const compose = path.join(e2eRoot, 'gotrue', 'compose.yml');
 const project = `muster-e2e-gotrue-${teamUxGotruePort}`;
@@ -42,8 +36,6 @@ const gotrueURL = `http://127.0.0.1:${teamUxGotruePort}`;
 const stamp = Date.now().toString(36);
 const adminEmail = `teamux-admin-${stamp}@example.com`;
 const adminPW = 'e2e-teamux-password-not-a-real-one';
-const viewerEmail = `teamux-viewer-${stamp}@example.com`;
-const viewerPW = 'e2e-teamux-viewer-password-not-a-real-one';
 const zone = 'https://*.viewer.example.net';
 
 let server: Running | undefined;
@@ -53,19 +45,7 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true
 
 const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL: browserURL, MUSTER_GOTRUE_URL: gotrueURL, MUSTER_GOTRUE_JWT_SECRET: gotrueSecret });
 
-function teamfix(...args: string[]): string {
-  return execFileSync('go', ['run', './e2e/teamfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
-}
 
-// A 60 s service_role token for GoTrue's admin API (branding.spec.ts).
-function serviceRoleJWT(): string {
-  const now = Math.floor(Date.now() / 1000);
-  const b64 = (v: string) => Buffer.from(v).toString('base64url');
-  const head = b64(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const body = b64(JSON.stringify({ role: 'service_role', aud: 'authenticated', iss: 'muster-auth', iat: now, exp: now + 60 }));
-  const sig = crypto.createHmac('sha256', gotrueSecret).update(`${head}.${body}`).digest('base64url');
-  return `${head}.${body}.${sig}`;
-}
 
 async function signInAs(browser: Browser, email: string, pw: string): Promise<{ ctx: BrowserContext; page: Page }> {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
@@ -130,19 +110,18 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   try {
-    if (teamID) teamfix('cleanup', teamID);
-  } finally {
     await server?.stop();
     execFileSync('docker', ['compose', '-f', compose, 'down', '-v'], { env: composeEnv, stdio: 'inherit' });
-    // The claim bound user 1 to this spec's GoTrue user, and the team and its
-    // viewer are users rows: the accounts reset removes all three.
+  } finally {
+    // The claim bound user 1 to this spec's GoTrue user, and the team is a
+    // users row: the accounts reset removes both.
     execFileSync('go', ['run', './e2e/seed', '--accounts-only'], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dsn } });
   }
 });
 
 test.describe.configure({ mode: 'serial' });
 
-test('the admin claims, makes a team it manages, and adds a viewer', async ({ page }) => {
+test('the admin claims and makes a team it manages', async ({ page }) => {
   test.setTimeout(120_000);
   const link = execFileSync(serverBinary(versionA), ['invite', '--claim-admin'], { env: serverEnv() }).toString().trim();
   await page.goto(link);
@@ -158,24 +137,6 @@ test('the admin claims, makes a team it manages, and adds a viewer', async ({ pa
   teamID = (await page.locator('#admin-teams [data-team-id]', { has: page.locator('[data-team-name]', { hasText: teamName }) }).getAttribute('data-team-id')) ?? '';
   expect(teamID, 'the team was made').toMatch(/^\d+$/);
 
-  // The viewer: a GoTrue user bound to a member account, added as a VIEWER
-  // through the admin page's own form.
-  const r = await fetch(gotrueURL + '/admin/users', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${serviceRoleJWT()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: viewerEmail, password: viewerPW, email_confirm: true }),
-  });
-  const created = (await r.json()) as { id?: string };
-  expect(r.status, JSON.stringify(created)).toBeLessThan(300);
-  const viewerID = execFileSync('go', ['run', './e2e/mkmember'], {
-    cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_SUB: created.id!, MUSTER_E2E_EMAIL: viewerEmail },
-  }).toString().trim();
-  await page.goto(browserURL + '/admin/teams');
-  await page.selectOption(`#add-${teamID}`, viewerID);
-  await page.selectOption(`#add-role-${teamID}`, 'viewer');
-  await Promise.all([page.waitForURL(browserURL + '/admin/teams'),
-    page.locator(`#admin-teams [data-team-id="${teamID}"]`).getByRole('button', { name: 'Add member' }).click()]);
-  await expect(page.locator(`#admin-teams [data-team-id="${teamID}"] [data-member-id="${viewerID}"][data-member-role="viewer"]`)).toHaveCount(1);
 });
 
 test('a manager with a stale sign-in mints and revokes on the team plugins page by confirming in place', async ({ browser }) => {
@@ -227,40 +188,5 @@ test('a manager with a stale sign-in mints on the team hosts page by confirming 
     expect(sent, 'nothing reached the server before the confirm, then ONE mint, accepted').toEqual([{ path: route, status: 200 }]);
   } finally {
     await ctx.close();
-  }
-});
-
-test("a team viewer's copy of the team's end card draws no End it, Not now or Dismiss; the manager's draws them", async ({ browser }) => {
-  test.setTimeout(120_000);
-  expect(teamID, 'the team from the first test').toMatch(/^\d+$/);
-  const ask = teamfix('endcard', teamID);
-  expect(ask).toMatch(/^\d+$/);
-
-  const viewer = await signInAs(browser, viewerEmail, viewerPW);
-  try {
-    await viewer.page.goto(browserURL + '/attention');
-    const card = viewer.page.locator(`#ask-${ask}`);
-    await expect(card, 'the viewer sees the team card').toBeVisible();
-    await expect(card).toContainText('End “e2e-team:1”?');
-    await expect(card.getByRole('button', { name: 'End it' }), 'no End it for a viewer').toHaveCount(0);
-    await expect(card.getByRole('button', { name: 'Not now' }), 'no Not now for a viewer').toHaveCount(0);
-    await expect(card.locator('[data-attention-dismiss]'), 'no Dismiss for a viewer').toHaveCount(0);
-    await expect(card.locator('textarea'), 'no answer box for a viewer').toHaveCount(0);
-    await expect(card.locator('[data-attention-watch-only]')).toContainText('you are a viewer of the team');
-  } finally {
-    await viewer.ctx.close();
-  }
-
-  // The control: the same card, the manager's copy.
-  const mgr = await signInAs(browser, adminEmail, adminPW);
-  try {
-    await mgr.page.goto(browserURL + '/attention');
-    const card = mgr.page.locator(`#ask-${ask}`);
-    await expect(card).toBeVisible();
-    await expect(card.getByRole('button', { name: 'End it' })).toHaveCount(1);
-    await expect(card.getByRole('button', { name: 'Not now' })).toHaveCount(1);
-    await expect(card.locator('[data-attention-watch-only]')).toHaveCount(0);
-  } finally {
-    await mgr.ctx.close();
   }
 });

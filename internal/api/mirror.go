@@ -465,10 +465,10 @@ func (s *Server) stepUpView(r *http.Request) *ui.StepUpView {
 // why — the page's own sentence about its gate, naming the window — in place
 // of the typing one) and ui.StepUpFormScript, as HTML. On a stale sign-in such
 // a form asks BEFORE it submits, and submits once confirmed — what was typed
-// into it kept. THE ONE WAY a form page offers the dialog (the Asks page's
-// reply drafts, /plugins, a team's hosts and viewer plugins): a form marked
+// into it kept. THE ONE WAY a form page offers the dialog: a form marked
 // data-step-up-form on a page without it submits straight into the server's
-// 403, with no way to confirm.
+// 403, with no way to confirm. Which gates confirm this way is
+// stepUpChannels' (stepup_ledger_test.go).
 func (s *Server) stepUpFormsHTML(r *http.Request, why string) string {
 	v := s.stepUpView(r)
 	v.Why = why

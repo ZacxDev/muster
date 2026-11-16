@@ -149,6 +149,12 @@ type AgentTerminalView struct {
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
 	// first key pressed. nil = live keys at once (an agent pod's terminal).
 	StepUp *StepUpView
+	// StepUpAttach, with StepUp, gates the WHOLE attach, not only live keys: a
+	// TEAM agent's terminal, which only an operator or a manager of its team
+	// with a fresh sign-in opens (internal/api teamAgentTerminal). On a stale
+	// sign-in the page attaches nothing and says so; Reconnect asks "Confirm
+	// it's you" and attaches once confirmed.
+	StepUpAttach bool
 	// Composer, when set, draws the message composer under the terminal: a
 	// mirrored session of an -interactive host (mirror_compose.go). It needs
 	// StepUp — a send refused as stale asks through the same dialog. nil = no
@@ -210,6 +216,9 @@ const (
 	// StatusConfirmToType is a mirrored session's attach while the sign-in is
 	// not fresh: the first key pressed asks "Confirm it's you".
 	StatusConfirmToType = "Connected · confirm it's you to type"
+	// TerminalConfirmToOpen is a StepUpAttach terminal's line on a stale
+	// sign-in: nothing is attached until it is confirmed.
+	TerminalConfirmToOpen = "Opening this terminal needs a recent sign-in: tap Reconnect, then confirm it's you."
 	// StatusNoKeys is a host that takes no keys (it did not advertise
 	// -interactive). It never says "read-only": what the composer can send is
 	// its own note.
@@ -397,6 +406,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(v.ReadOnlyOnly, g.Attr("data-keys-off", "")),
 								g.Attr("data-size-osc", strconv.Itoa(termsize.ReportOSC)),
 								stepUpAttrs(v.StepUp),
+								g.If(v.StepUp != nil && v.StepUpAttach, g.Attr("data-step-up-attach", "")),
 								g.If(v.ScrollForm != "", g.Group([]g.Node{
 									g.Attr("data-scroll", MirrorTerminalScrollPath),
 									g.Attr("data-scroll-form", v.ScrollForm),
@@ -842,6 +852,16 @@ func agentTerminalScript() g.Node {
   var confirmPath = host.getAttribute('data-step-up');
   var stepUp = confirmPath ? window.musterStepUp : null;
   var justConfirmed = false;
+  // attachGated: the WHOLE attach needs a fresh sign-in (StepUpAttach, a team
+  // agent's terminal), not only live keys. gateProbe: as rwProbe, one retry
+  // of an attach refused while the page believed itself fresh.
+  var attachGated = !!confirmPath && host.hasAttribute('data-step-up-attach');
+  var gateProbe = 0;
+  function gatedStale() { return attachGated && !(stepUp && stepUp.fresh()); }
+  function askToOpen() {
+    if (!stepUp || (stepUp.asking && stepUp.asking())) return;
+    stepUp.ask('', function () { justConfirmed = true; clearError(); mode = 'rw'; applyMode(); connect('step_up'); });
+  }
   // rwProbe: an interactive attach that never opened, while the page still
   // believed its sign-in fresh. That is a refused upgrade (the step-up gate's
   // 403, which a browser socket cannot read) OR a network that was not there
@@ -1009,6 +1029,21 @@ func agentTerminalScript() g.Node {
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, mode: mode });
       opening = null;
       if (left) return;
+      // A GATED ATTACH (a team agent's terminal) refused before it opened:
+      // stale, or a confirm the gate still refused — say so and wait for
+      // Reconnect, which asks. Believed fresh the first time: retry once.
+      if (!opened && attachGated) {
+        var was = justConfirmed;
+        justConfirmed = false;
+        if (!was && gateProbe === 0 && stepUp && stepUp.fresh()) { gateProbe = 1; }
+        else {
+          gateProbe = 0;
+          if (stepUp) stepUp.stale();
+          refusedEnd = true;
+          showError(was ? 'The terminal could not be opened.' : ` + strconv.Quote(TerminalConfirmToOpen) + `, true);
+          return;
+        }
+      }
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read: an interactive mirrored attach that never
       // opened. Just confirmed — the gate said no to a fresh sign-in, and
@@ -1112,6 +1147,7 @@ func agentTerminalScript() g.Node {
   // attach, or reconnecting by itself keeps failing.
   reconnectBtn.addEventListener('click', function () {
     retry = 0;
+    if (gatedStale()) { askToOpen(); return; }
     if (mode === 'ro' && canType()) mode = 'rw';
     connect('manual');
   });
@@ -1395,6 +1431,7 @@ func agentTerminalScript() g.Node {
   ` + restoreJoinJS(`{
     show: function (why) {
       if (unavailable) return null;
+      if (gatedStale()) { showError(` + strconv.Quote(TerminalConfirmToOpen) + `, true); return null; }
       left = false; retry = 0;
       if (mode === 'ro' && canType()) mode = 'rw';
       return new Promise(function (resolve) { restoring = resolve; connect(why || 'pageshow'); });
@@ -1407,7 +1444,10 @@ func agentTerminalScript() g.Node {
   // fresh (the server re-checks it on the attach).
   if (canType()) mode = 'rw';
   applyMode();
-  if (!unavailable) connect();
+  if (!unavailable) {
+    if (gatedStale()) showError(` + strconv.Quote(TerminalConfirmToOpen) + `, true);
+    else connect();
+  }
 })();
 `))
 }

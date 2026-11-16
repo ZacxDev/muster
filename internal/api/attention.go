@@ -308,6 +308,10 @@ type attentionItem struct {
 	// no answer box, no Dismiss — this sentence in their place. Set by
 	// withAskBoxes, for the pages that draw answer forms.
 	watchOnly string
+	// stepUpWhy, when set, says this ask's answer needs a FRESH sign-in from
+	// the reader (teamCardStepUpWhy) and is the confirm dialog's sentence: its
+	// answer form is drawn data-step-up-form. Set by withAskBoxes.
+	stepUpWhy string
 }
 
 // attentionCard is the entry an attention item belongs to: an agent's (an
@@ -938,6 +942,9 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		if items[i].ownerCard && owner > 0 {
 			if a, err := s.ext.Attention.Get(ctx, items[i].AskID); err == nil {
 				items[i].proposal = s.proposalKickoffBody(ctx, a)
+				if items[i].watchOnly == "" {
+					items[i].stepUpWhy = s.teamCardStepUpWhy(ctx, a)
+				}
 			} else {
 				// The card's ask could not be read now: it may be a
 				// proposal's, so it offers no accept (no start, no End it).
@@ -1646,9 +1653,10 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	if s.ext.Plugins != nil || s.chiefNudgesOn() {
 		b.WriteString(asksPageScript)
 	}
-	if s.ext.Plugins != nil {
-		b.WriteString(s.draftStepUpHTML(r))
-	}
+	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live
+	// refresh (a team's card), not only with the drafts tab. Its default
+	// sentence is the drafts'; a team card's form carries its own.
+	b.WriteString(s.draftStepUpHTML(r))
 	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
 }
 
@@ -1714,7 +1722,23 @@ func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(ui.AttentionBadgeHTML(len(items))))
+	_, _ = w.Write([]byte(ui.AttentionBadgeHTML(len(waitingOnReader(r.Context(), items)))))
+}
+
+// waitingOnReader is items without the asks ctx's person only WATCHES — a
+// team's ask read by a viewer of the team (teamWatcherOf, the rule that draws
+// it unanswerable): what the Asks badge and the sidebar's counts count. Such
+// an ask is still LISTED (with why it cannot be answered); it is not waiting
+// on this reader, so it is not counted as waiting on them.
+func waitingOnReader(ctx context.Context, items []attentionItem) []attentionItem {
+	out := items[:0:0]
+	for _, it := range items {
+		if it.Kind == attentionKindAsk && teamWatcherOf(ctx, it.owner) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // attentionItemsHTML is the list's <li>s.
@@ -1891,7 +1915,13 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string, behind bool) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + formAttrs + `>
+	gate := ""
+	if it.stepUpWhy != "" {
+		// A team card answered with a fresh sign-in (teamCardStepUpWhy): it
+		// confirms in place, on the page's dialog (stepUpFormsHTML).
+		gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
+	}
+	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + gate + formAttrs + `>
 ` + back)
 	collapse := behind && len(it.Options) > 0
 	if len(it.Options) > 0 {

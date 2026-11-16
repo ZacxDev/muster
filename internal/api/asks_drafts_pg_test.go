@@ -214,7 +214,9 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 		t.Fatal("the page draws no switcher dock to cut out")
 	}
 	page = page[:i] + page[i+j+len("</dialog>"):]
-	if strings.Contains(page, `role="tablist"`) || strings.Contains(page, `id="term-confirm"`) || strings.Contains(page, "Reply drafts") {
+	// (The confirm dialog is no proxy for the tab: the Asks page draws it
+	// whatever the plugins, for a team's gated cards — #717.)
+	if strings.Contains(page, `role="tablist"`) || strings.Contains(page, "Reply drafts") {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
 	}
 }

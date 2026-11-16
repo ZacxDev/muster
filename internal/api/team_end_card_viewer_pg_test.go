@@ -56,7 +56,8 @@ func asksListAs(t *testing.T, s *Server, ctx context.Context) string {
 //   - B (an OPERATOR) sees End it and Not now as buttons (the control: the
 //     card V reads is the same card, drawn answerable for an operator).
 //
-// 🔴 RED at ff1295f8: V's card drew End it, Not now, Dismiss and the box.
+// 🔴 RED at ff1295f8: V's card drew End it, Not now, Dismiss and the box;
+// and V's Asks badge and sidebar counted it as waiting on V.
 //
 // Then, by the server (INVARIANT GUARDS — the server already refused these
 // before this change; pinned so the drawing never becomes the only gate):
@@ -123,5 +124,28 @@ func TestATeamViewerDrawsTheTeamsEndCardUnanswerable(t *testing.T) {
 	x, err := plugins.NewPG(td.w.pool).ProposalByID(td.teamCtx, out.ID)
 	if err != nil || x.Decided != plugins.ProposalOpen {
 		t.Errorf("after V's Not now the team's proposal is %+v (%v); want still open", x.Decided, err)
+	}
+
+	// The counts (Round 0 of #717, F3): the card is listed to V, but it is not
+	// waiting on V, so V's Asks badge and the chief's sidebar count leave it
+	// out (waitingOnReader); B's count it (the control).
+	badge := func(ctx context.Context) string {
+		r := httptest.NewRequest("GET", "/attention/badge", nil).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		td.w.srv.handleAttentionBadge(rec, r)
+		return rec.Body.String()
+	}
+	bCtx := td.personCtx(td.w.b.uid, authz.ViaSession, true)
+	if got := badge(vCtx); !strings.Contains(got, `data-count="0"`) {
+		t.Errorf("V's (viewer) Asks badge counts the team's card it cannot answer: %s", got)
+	}
+	if got := badge(bCtx); strings.Contains(got, `data-count="0"`) {
+		t.Errorf("CONTROL: B's (operator) Asks badge does not count the team's card: %s", got)
+	}
+	if at := td.w.srv.cardAttention(vCtx).agents[td.chief.ID]; at != nil && at.Count > 0 {
+		t.Errorf("V's (viewer) sidebar counts %d waiting on the team's chief", at.Count)
+	}
+	if at := td.w.srv.cardAttention(bCtx).agents[td.chief.ID]; at == nil || at.Count == 0 {
+		t.Errorf("CONTROL: B's (operator) sidebar counts nothing waiting on the team's chief")
 	}
 }
