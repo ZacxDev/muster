@@ -130,6 +130,8 @@ esac
 PROJECT="muster-compose-test-$$-$RANDOM"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
 tmp="$(mktemp -d)"
+# sha256 of an empty file: muster-init's lock file on the secrets volume.
+EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 PASSWORD="ui-pass-fixture-$RANDOM"  # >= 12 characters, whatever $RANDOM is
 cat > "$tmp/env" <<EOF
 MUSTER_IMAGE=$IMAGE
@@ -276,7 +278,9 @@ phase_zero() {
   # The database password is never overwritten from .env (F1).
   local before after took init_log
   before="$(zvolume)"
-  grep -q 'postgres_password' <<<"$before" && [ "$(grep -c . <<<"$before")" = 6 ] ||
+  # 6 secrets + muster-init's lock file (#707 round 3), which is always empty
+  grep -q 'postgres_password' <<<"$before" && [ "$(grep -vc '  \.lock$' <<<"$before")" = 6 ] &&
+    grep -qx "$EMPTY_SHA256  .lock" <<<"$before" ||
     zfail "positive control: the secrets volume read as: $before"
   printf 'POSTGRES_PASSWORD=pg-from-an-env-%s\n' "$RANDOM$RANDOM" > "$tmp/zero.env"
   start=$(date +%s)
@@ -347,12 +351,13 @@ dcn() { docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "$tmp/env
 if dcn up -d --wait --wait-timeout 120 >/dev/null 2>&1; then
   fail "an existing database with no kept password and no POSTGRES_PASSWORD came up (a generated password was used)"
 fi
-init_log="$(dcn logs --no-color muster-init 2>&1 | tail -n 10)"
+init_log="$(dcn logs --no-color muster-init 2>&1 | tail -n 20)"
 grep -q 'config: POSTGRES_PASSWORD is not set, and the existing database needs the password it was created with' <<<"$init_log" &&
-  grep -q 'Put that line back in .env' <<<"$init_log" ||
-  fail "muster-init's refusal does not name the existing database and the line to put back: $init_log"
-held="$(docker run --rm --network none -v "${PROJECT}_secrets:/s:ro" --entrypoint sh postgres:16-alpine -c 'ls -A /s' | tr '\n' ' ')"
-[ -z "${held// /}" ] || fail "the refused run wrote to the secrets volume: $held"
+  grep -q 'Put that line back in .env' <<<"$init_log" && grep -q 'Lost it? Give the database a new one, in this order:' <<<"$init_log" ||
+  fail "muster-init's refusal does not name the existing database, the line to put back and the lost-it steps: $init_log"
+# Nothing but muster-init's lock file, empty (it predates this run: the first up made it).
+held="$(docker run --rm --network none -v "${PROJECT}_secrets:/s:ro" --entrypoint sh postgres:16-alpine -c 'cd /s && ls -A | LC_ALL=C sort | while read -r f; do sha256sum "$f"; done')"
+[ "$held" = "$EMPTY_SHA256  .lock" ] || fail "the refused run wrote to the secrets volume (want only the empty .lock): $held"
 echo "ok   .env install, first new-compose run without POSTGRES_PASSWORD: refused on muster-init, naming the line to put back; nothing written"
 dc up -d --wait --wait-timeout 180 >/dev/null 2>&1 || fail "with POSTGRES_PASSWORD put back, up --wait failed"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz")" = 200 ] || fail "/readyz is not 200 after POSTGRES_PASSWORD was put back"
