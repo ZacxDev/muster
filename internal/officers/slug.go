@@ -25,8 +25,28 @@ const MaxNamespaceLen = 63
 func MaxInstanceNameLen(namespacePrefix string) int { return MaxNamespaceLen - len(namespacePrefix) }
 
 // Slug is an officer id as an agent-name fragment: the `:` written as `-`
-// (`release:example-web` -> `release-example-web`).
+// (`release:example-web` -> `release-example-web`). It is an ENV officer's
+// agent slug; a DB-declared officer's is its server-allocated InstanceSlug
+// (Officer.AgentSlug).
 func Slug(id string) string { return strings.ReplaceAll(id, ":", "-") }
+
+// AgentSlug is the fragment o's instance agent names are built on
+// (`officer-<slug>-<n>`): its InstanceSlug when it is DB-declared (allocated
+// by the server, globally unique across owners: agents.name is UNIQUE, and
+// two owners may each declare `marketing:main`), else Slug(o.ID).
+//
+// 🔴 NAMES CANNOT COLLIDE BETWEEN TWO DISTINCT SLUGS. An instance name is
+// `officer-` + slug + `-` + digits (or `r` + digits). If two slugs S1 ≠ S2
+// built the same name, one would be the other plus `-<x>`, and the shorter's
+// number would then contain a `-` — which a number never does. So distinct
+// slugs (unique within env, unique within the DB, and a DB slug never equal to
+// an env one: SlugCandidates) are all ForAgentName needs.
+func (o Officer) AgentSlug() string {
+	if o.InstanceSlug != "" {
+		return o.InstanceSlug
+	}
+	return Slug(o.ID)
+}
 
 // InstanceName is the agent name of instance n (1-based) of officer id:
 // `officer-<slug>-<n>` — an untiered officer's instance, or a tiered one's
@@ -49,7 +69,7 @@ func parseInstance(o Officer, name string) (Officer, int, bool) {
 // ParseInstance is parseInstance, for a backend outside this package that
 // books per instance (builtin.Backend.PutUsage).
 func ParseInstance(o Officer, name string) (Officer, int, bool) {
-	rest, ok := strings.CutPrefix(name, InstanceNamePrefix+Slug(o.ID)+"-")
+	rest, ok := strings.CutPrefix(name, InstanceNamePrefix+o.AgentSlug()+"-")
 	if !ok {
 		return Officer{}, 0, false
 	}

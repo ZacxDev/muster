@@ -45,6 +45,11 @@ func TestNothingDispatchesOnTheComposeChief(t *testing.T) {
 	if got := w.s.chiefDispatchDeploymentRefusal(1); got == "" {
 		t.Fatal("agent_dispatch's deployment refusal is empty on the Compose chief")
 	}
+	// A DB-declared officer's pod instances are dispatches too: the Compose
+	// chief's provisioner offers no pod runtime (officer_declared.go).
+	if got := w.s.podRuntimeRefusal(); !strings.Contains(got, "dispatches agents") {
+		t.Fatalf("the pod runtime on the Compose chief: %q; want refused for want of a dispatching provisioner", got)
+	}
 
 	control := newChiefWorld(t, false, true)
 	if !control.s.dispatchServed() {

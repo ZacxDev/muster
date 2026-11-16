@@ -63,7 +63,9 @@ import (
 //
 // 46 → 47: `officer usage` (officer.go), GET /api/officers/defs/{officer}/usage
 // — an officer's model spend per UTC day.
-const wantVerbCount = 47
+// 47 → 52: `officer ls|create|pause|resume|delete` (officer.go) — officers
+// declared in the database (migration 0136), with no restart.
+const wantVerbCount = 52
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -143,6 +145,12 @@ var wiring = []struct {
 	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
 	// An officer's model spend per day (officer_llm_usage).
 	{"officer usage", []string{"officer", "usage", "marketing:example", "--days", "7"}, "GET /api/officers/defs/marketing:example/usage"},
+	// Officers declared in the database (0136): five more.
+	{"officer ls", []string{"officer", "ls"}, "GET /api/officers/declared"},
+	{"officer create", []string{"officer", "create", "scout:main", "--runtime", "pod"}, "POST /api/officers/declared"},
+	{"officer pause", []string{"officer", "pause", "scout:main"}, "POST /api/officers/declared/scout:main/pause"},
+	{"officer resume", []string{"officer", "resume", "scout:main"}, "POST /api/officers/declared/scout:main/resume"},
+	{"officer delete", []string{"officer", "delete", "scout:main"}, "DELETE /api/officers/declared/scout:main"},
 	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
@@ -324,6 +332,11 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
 			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
 			h.json("GET /api/officers/defs/marketing:example/usage", http.StatusOK, `{"days":[],"total_cost_usd":0}`)
+			h.json("GET /api/officers/declared", http.StatusOK, `{"officers":[]}`)
+			h.json("POST /api/officers/declared", http.StatusCreated, `{"id":"scout:main","managed_by":"db"}`)
+			h.json("POST /api/officers/declared/scout:main/pause", http.StatusOK, `{"id":"scout:main","paused":true}`)
+			h.json("POST /api/officers/declared/scout:main/resume", http.StatusOK, `{"id":"scout:main","paused":false}`)
+			h.json("DELETE /api/officers/declared/scout:main", http.StatusOK, `{"deleted":"scout:main"}`)
 			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","host":"alpha","kind":"gh-pr-create","first_seen":"2000-01-02T12:00:00Z"}]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+

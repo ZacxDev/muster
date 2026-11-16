@@ -188,7 +188,7 @@ func TestAJudgementProxyInstanceIsRoutedWithNoToken(t *testing.T) {
 		ConnectURL: "http://muster.example.test:18191", ConnectPort: 18191,
 		ClaudeCode: &agentspec.ClaudeCodeConfig{Image: "ghcr.io/example-org/claude-code-agent:0a1b2c3", Accounts: map[string]string{"alpha": subToken}}}
 	build := func(name string) (agentspec.ClaudeCodeSession, map[string]string) {
-		a := agents.Agent{ID: 77, Name: name, Kind: agents.KindClaudeCode, CCAccount: "alpha", HooksToken: "fixture-hooks-" + name,
+		a := agents.Agent{ID: 77, Name: name, OwnerID: 1, Kind: agents.KindClaudeCode, CCAccount: "alpha", HooksToken: "fixture-hooks-" + name,
 			GatewaySecret: "fixture-turn-" + name}
 		sess, ok := installed(a)
 		if !ok {

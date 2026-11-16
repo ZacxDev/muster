@@ -120,11 +120,14 @@ func (s *Server) applySpawnReply(ctx context.Context, owner int64, host string, 
 	}
 }
 
-// HostDispatchListing is the hub's listing hook (mirror.Hub.SetListingNotify).
+// HostDispatchListing is the hub's listing hook (mirror.Hub.SetListingNotify):
+// the chief's host dispatches, and the officers' recorded spawn windows
+// (officerSpawnsListing).
 func (s *Server) HostDispatchListing(owner int64, host string, windows []mirror.Window) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.reconcileListing(ctx, owner, host, windows, s.now())
+	s.officerSpawnsListing(ctx, owner, host, windows)
 }
 
 // reconcileListing is one listing of owner's host applied to its rows.

@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/sessiontags"
@@ -1434,6 +1435,14 @@ type destroyHooks struct {
 	// failed runs in the teardown's goroutine after a FAILED Destroy, with its
 	// error, on the same context. nil: nothing more (the failure is logged).
 	failed func(ctx context.Context, a agents.Agent, err error)
+	// goneOfficer is set by ONE caller, teardownGoneInstance (officerFleet.
+	// Start's teardown of an instance it created for an officer that was
+	// deleted meanwhile): that officer, as the start read it. destroyAgent
+	// then lets that officer's own instance row go although the roster still
+	// protects it — only when goneOfficerRow reads the database and finds
+	// the officer gone (a delete on another replica, which this replica's
+	// roster has not seen). nil for every other door: the protection stands.
+	goneOfficer *officers.Officer
 }
 
 // destroyAgent is THE agent teardown both doors take — the browser's DELETE
@@ -1462,7 +1471,11 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	if err != nil {
 		return agents.Agent{}, fmt.Errorf("chief check: %w", err)
 	}
-	if protected {
+	// 🔴 THE ONE EXCEPTION is an instance of an officer the DATABASE says is
+	// gone, asked for by the start that created it (destroyHooks.goneOfficer,
+	// goneOfficerRow): never the chief, never another officer's row, never on
+	// the roster's word alone.
+	if protected && !s.goneOfficerRow(ctx, a, h) {
 		return a, errDestroyChief{a: a, why: s.protectedRefusal(a)}
 	}
 	// 🔴 A HOST OFFICER INSTANCE'S ROW IS NEVER THE PROVISIONER'S

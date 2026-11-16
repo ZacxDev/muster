@@ -541,8 +541,10 @@ var agentReadCallers = map[string]string{
 	"GetByName gatewayTranscripts.Read":          "machine: an officer's door",
 	"GetByName gatewayUsage.Read":                "machine: an officer's door",
 	"GetByName officerFleet.Reprompt":            "machine: an officer's door",
-	"GetByName officerFleet.Start":               "machine: an officer's door",
+	"GetByName officerFleet.start":               "machine: an officer's door",
 	"GetByName officerFleet.Stop":                "machine: an officer's door",
+	"GetByName Server.teardownInstanceWith":      "machine: an officer's door (a deleted or moved DB-declared officer's instances, read as its owner)",
+	"GetByName Server.autoHostOfRows":            "machine: an officer's door (the host an auto officer's instances run on, read as its owner)",
 }
 
 // TestEveryAgentReadCallerIsClassified is agentReadCallers' walk: every

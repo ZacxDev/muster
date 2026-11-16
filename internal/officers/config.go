@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/github"
@@ -171,6 +172,16 @@ type Officer struct {
 	// Host is the mirror host (its token's name) a RuntimeHost officer's
 	// instances are spawned on; "" for a pod officer.
 	Host string `json:"-"`
+	// InstanceSlug is a DB-declared officer's server-allocated agent slug
+	// (officer_defs.instance_slug, migration 0136): globally unique, so two
+	// owners' `marketing:main` never build the same agent name. "" for an env
+	// officer, whose slug is Slug(ID). Read it through AgentSlug.
+	InstanceSlug string `json:"instance_slug,omitempty"`
+	// ManagedBy is where the officer is declared: ManagedByEnv
+	// (MUSTER_OFFICERS, read-only through the API) or ManagedByDB (officer_defs,
+	// created, changed and deleted through the admin API with no restart).
+	// "" reads as ManagedByEnv.
+	ManagedBy string `json:"managed_by,omitempty"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -184,6 +195,27 @@ func (o Officer) Token() string { return o.token }
 // WithToken returns o carrying token. Exported for tests and for wiring that
 // builds an Officer outside Parse.
 func (o Officer) WithToken(token string) Officer { o.token = token; return o }
+
+// Where an officer is declared (Officer.ManagedBy).
+const (
+	ManagedByEnv = "env"
+	ManagedByDB  = "db"
+)
+
+// FromDB reports whether o is DB-declared (officer_defs, migration 0136).
+func (o Officer) FromDB() bool { return o.ManagedBy == ManagedByDB }
+
+// Key is o's registry key: unique across every officer the registry holds,
+// env and DB alike. An env officer's is its ID (always `<type>:<area>`, so it
+// contains a `:`); a DB-declared officer's is its InstanceSlug (never a `:`),
+// because two owners may each declare the same ID. The wake loop's state, the
+// backend cache and Registry.Get are keyed on it.
+func (o Officer) Key() string {
+	if o.InstanceSlug != "" {
+		return o.InstanceSlug
+	}
+	return o.ID
+}
 
 // BackendKind is the officer's backend: BackendBuiltin, or BackendHQ (also
 // for an Officer built outside Parse with no Backend). THE one read of
@@ -268,6 +300,10 @@ type declared struct {
 	// parseRuntime.
 	Runtime string `json:"runtime"`
 	Host    string `json:"host"`
+	// InstanceSlug is never in MUSTER_OFFICERS: a DB-declared officer's
+	// server-allocated slug (Declaration.Officer), so the instance-name
+	// length check measures the names it will really have.
+	InstanceSlug string `json:"-"`
 }
 
 // The runtimes a declaration may name (`runtime`).
@@ -291,57 +327,110 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 	switch strings.TrimSpace(d.Runtime) {
 	case "", RuntimePod:
 		if host != "" {
-			return "", "", fmt.Errorf("host %q is only for \"runtime\": %q (a pod officer runs in the cluster)", host, RuntimeHost)
+			return "", "", fieldErr("host", fmt.Errorf("host %q is only for \"runtime\": %q (a pod officer runs in the cluster)", host, RuntimeHost))
 		}
 		return RuntimePod, "", nil
 	case RuntimeHost:
 	default:
-		return "", "", fmt.Errorf("runtime %q is not %q or %q", d.Runtime, RuntimePod, RuntimeHost)
+		return "", "", fieldErr("runtime", fmt.Errorf("runtime %q is not %q or %q", d.Runtime, RuntimePod, RuntimeHost))
 	}
 	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
-	var refused []string
+	var refused []FieldError
+	refuse := func(field, msg string) { refused = append(refused, FieldError{Field: field, Err: errors.New(msg)}) }
 	if backend != BackendBuiltin {
-		refused = append(refused, `backend "hq" (v1: an HQ officer's usage, transcript and pools ledgers read its instances' pods; use "backend": "builtin")`)
+		refuse("backend", `backend "hq" (v1: an HQ officer's usage, transcript and pools ledgers read its instances' pods; use "backend": "builtin")`)
 	}
 	switch {
 	case host == "":
-		refused = append(refused, "no host (name the mirror host its instances start on)")
+		refuse("host", "no host (name the mirror host its instances start on)")
 	case mirror.ValidHost(host) != nil:
-		refused = append(refused, fmt.Sprintf("host %q (not a mirror host name: a lowercase DNS label)", host))
+		refuse("host", fmt.Sprintf("host %q (not a mirror host name: a lowercase DNS label)", host))
 	}
 	if strings.TrimSpace(d.Repo) == "" {
-		refused = append(refused, "no repo (the host cuts each instance's worktree from its clone of that repository)")
+		refuse("repo", "no repo (the host cuts each instance's worktree from its clone of that repository)")
 	}
 	if present(d.Tiers) {
-		refused = append(refused, "tiers (each pool runs its own model, and a host spawn of Claude Code takes none)")
+		refuse("tiers", "tiers (each pool runs its own model, and a host spawn of Claude Code takes none)")
 	}
 	if strings.TrimSpace(d.Model) != "" {
-		refused = append(refused, "model (the host's Claude Code runs its own default)")
+		refuse("model", "model (the host's Claude Code runs its own default)")
 	}
 	if strings.TrimSpace(d.Image) != "" {
-		refused = append(refused, "image (a pod setting)")
+		refuse("image", "image (a pod setting)")
 	}
 	if strings.TrimSpace(d.CCAccount) != "" || d.CCFailover {
-		refused = append(refused, "cc_account/cc_failover (the host runs its own claude on its own login)")
+		refuse("cc_account", "cc_account/cc_failover (the host runs its own claude on its own login)")
 	}
 	// connectors are ALLOWED: a host instance has an agent row (migration
 	// 0125) its grants hang on, each decided by the owner per request, and
 	// they are used through MCP tools muster runs server-side
 	// (postgres_query) — no token reaches the session.
 	if len(d.ReadRepos) > 0 {
-		refused = append(refused, "read_repos (further repositories are read through the github connector's HTTP proxy, "+
+		refuse("read_repos", "read_repos (further repositories are read through the github connector's HTTP proxy, "+
 			"which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host)")
 	}
 	if present(d.LLM) {
-		refused = append(refused, "llm (the LLM proxy routes a pod's Claude Code through it, and needs tiers)")
+		refuse("llm", "llm (the LLM proxy routes a pod's Claude Code through it, and needs tiers)")
 	}
 	if present(d.Kube) {
-		refused = append(refused, "kube (kube reads are the judgement pool's, and need tiers)")
+		refuse("kube", "kube (kube reads are the judgement pool's, and need tiers)")
 	}
 	if len(refused) > 0 {
-		return "", "", fmt.Errorf(`runtime "host" refuses %s`, strings.Join(refused, "; "))
+		return "", "", &FieldErrors{Prefix: `runtime "host" refuses `, List: refused}
 	}
 	return RuntimeHost, host, nil
+}
+
+// FieldError is a declaration refused for one field (Field, the JSON name a
+// declaration spells it with): what the admin API answers per field. Its
+// Error is the refusal's own text, so an env declaration's boot refusal reads
+// exactly as it always has.
+type FieldError struct {
+	Field string
+	Err   error
+}
+
+func (e *FieldError) Error() string { return e.Err.Error() }
+func (e *FieldError) Unwrap() error { return e.Err }
+
+// fieldErr tags err with field.
+func fieldErr(field string, err error) error { return &FieldError{Field: field, Err: err} }
+
+// FieldErrors is several refusals at once (a host officer's): Error is Prefix
+// then each refusal's text, joined with "; ".
+type FieldErrors struct {
+	Prefix string
+	List   []FieldError
+}
+
+func (e *FieldErrors) Error() string {
+	parts := make([]string, 0, len(e.List))
+	for _, f := range e.List {
+		parts = append(parts, f.Err.Error())
+	}
+	return e.Prefix + strings.Join(parts, "; ")
+}
+
+// Fields is err as per-field refusals: every refusal a FieldErrors holds
+// (each prefixed with its Prefix), else the one FieldError, else err as one
+// refusal of no particular field (Field "").
+func Fields(err error) []FieldError {
+	if err == nil {
+		return nil
+	}
+	var many *FieldErrors
+	if errors.As(err, &many) {
+		out := make([]FieldError, 0, len(many.List))
+		for _, f := range many.List {
+			out = append(out, FieldError{Field: f.Field, Err: errors.New(many.Prefix + f.Err.Error())})
+		}
+		return out
+	}
+	var one *FieldError
+	if errors.As(err, &one) {
+		return []FieldError{*one}
+	}
+	return []FieldError{{Err: err}}
 }
 
 // The officer backends a declaration may name (`backend`).
@@ -674,9 +763,15 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		Repo:         strings.TrimSpace(d.Repo),
 		IdleAfter:    DefaultIdleAfter,
 		PollInterval: DefaultPollInterval,
+		// A DB-declared officer's (Declaration.Officer): set before the
+		// instance-name length check below, which measures ITS names.
+		InstanceSlug: d.InstanceSlug,
+	}
+	if d.InstanceSlug != "" {
+		o.ManagedBy = ManagedByDB
 	}
 	if !idRE.MatchString(o.ID) {
-		return Officer{}, fmt.Errorf("id %q is not <type>:<area> (lowercase letters, digits and single hyphens on each side)", d.ID)
+		return Officer{}, fieldErr("id", fmt.Errorf("id %q is not <type>:<area> (lowercase letters, digits and single hyphens on each side)", d.ID))
 	}
 	// The backend first: a builtin officer is refused (naming everything it
 	// may not declare) before any HQ-only check reads as the reason.
@@ -698,15 +793,15 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	if !o.IsBuiltin() {
 		u, err := url.Parse(o.HQURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return Officer{}, fmt.Errorf("officer %s: hq_url %q is not an http(s) URL", o.ID, d.HQURL)
+			return Officer{}, fieldErr("hq_url", fmt.Errorf("officer %s: hq_url %q is not an http(s) URL", o.ID, d.HQURL))
 		}
 		if u.User != nil {
-			return Officer{}, fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+			return Officer{}, fieldErr("hq_url", fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID)))
 		}
 	}
 	if o.Model != "" {
 		if err := podagent.ValidModel(o.Model); err != nil {
-			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+			return Officer{}, fieldErr("model", fmt.Errorf("officer %s: %w", o.ID, err))
 		}
 	}
 	hasLLM := len(d.LLM) > 0 && string(d.LLM) != "null"
@@ -752,29 +847,29 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		}
 	}
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
-		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
+		return Officer{}, fieldErr("repo", fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo))
 	}
 	grant, at, err := parseReadGrant(o, d)
 	if err != nil {
-		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		return Officer{}, fieldErr("read_repos", fmt.Errorf("officer %s: %w", o.ID, err))
 	}
 	o.ReadGrant, o.ReadAt = grant, at
 	readRepos, err := parseReadRepos(o.Repo, d.ReadRepos, grant == ReadGrantStanding)
 	if err != nil {
-		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		return Officer{}, fieldErr("read_repos", fmt.Errorf("officer %s: %w", o.ID, err))
 	}
 	o.ReadRepos = readRepos
 	seenConn := map[string]bool{}
 	for _, c := range d.Connectors {
 		c = strings.TrimSpace(c)
 		if !connectorNameRE.MatchString(c) {
-			return Officer{}, fmt.Errorf("officer %s: connector %q is not a connector name (lowercase letters, digits and '-', at most 63)", o.ID, c)
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connector %q is not a connector name (lowercase letters, digits and '-', at most 63)", o.ID, c))
 		}
 		if c == GitHubConnector {
-			return Officer{}, fmt.Errorf("officer %s: connectors lists %q, which every officer may already request; remove it", o.ID, c)
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connectors lists %q, which every officer may already request; remove it", o.ID, c))
 		}
 		if c == KubeConnector {
-			return Officer{}, fmt.Errorf("officer %s: connectors lists %q, which only a `kube` block grants (to the judgement pool); remove it", o.ID, c)
+			return Officer{}, fieldErr("connectors", fmt.Errorf("officer %s: connectors lists %q, which only a `kube` block grants (to the judgement pool); remove it", o.ID, c))
 		}
 		if !seenConn[c] {
 			seenConn[c] = true
@@ -786,35 +881,35 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		o.MaxInstances = DefaultMaxInstances
 	}
 	if o.MaxInstances < 1 || o.MaxInstances > MaxInstancesCap {
-		return Officer{}, fmt.Errorf("officer %s: max_instances %d is not 1..%d", o.ID, d.MaxInstances, MaxInstancesCap)
+		return Officer{}, fieldErr("max_instances", fmt.Errorf("officer %s: max_instances %d is not 1..%d", o.ID, d.MaxInstances, MaxInstancesCap))
 	}
 	if o.Owner == 0 {
 		o.Owner = 1
 	}
 	if o.Owner < 0 {
-		return Officer{}, fmt.Errorf("officer %s: owner %d is not a user id", o.ID, d.Owner)
+		return Officer{}, fieldErr("owner", fmt.Errorf("officer %s: owner %d is not a user id", o.ID, d.Owner))
 	}
 	if s := strings.TrimSpace(d.IdleAfter); s != "" {
 		v, err := time.ParseDuration(s)
 		if err != nil || v <= 0 {
-			return Officer{}, fmt.Errorf("officer %s: idle_scale_to_zero_after %q is not a positive duration", o.ID, s)
+			return Officer{}, fieldErr("idle_scale_to_zero_after", fmt.Errorf("officer %s: idle_scale_to_zero_after %q is not a positive duration", o.ID, s))
 		}
 		o.IdleAfter = v
 	}
 	if s := strings.TrimSpace(d.PollInterval); s != "" {
 		v, err := time.ParseDuration(s)
 		if err != nil || v <= 0 {
-			return Officer{}, fmt.Errorf("officer %s: poll_interval %q is not a positive duration", o.ID, s)
+			return Officer{}, fieldErr("poll_interval", fmt.Errorf("officer %s: poll_interval %q is not a positive duration", o.ID, s))
 		}
 		o.PollInterval = v
 	}
 	if o.PollInterval < MinPollInterval {
-		return Officer{}, fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval)
+		return Officer{}, fieldErr("poll_interval", fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval))
 	}
 	for _, p := range o.Pools() {
 		if n := p.InstanceName(p.MaxInstances); len(n) > maxName {
-			return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
-				o.ID, n, len(n), maxName, MaxNamespaceLen)
+			return Officer{}, fieldErr("id", fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
+				o.ID, n, len(n), maxName, MaxNamespaceLen))
 		}
 	}
 	if len(d.Ship) > 0 && string(d.Ship) != "null" {
@@ -885,41 +980,92 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 // ErrUnknownOfficer is a lookup of an id no declared officer has.
 var ErrUnknownOfficer = errors.New("officers: no such officer")
 
-// Registry is the declared officers, looked up by id or by instance agent
-// name. It is immutable after NewRegistry.
+// Registry is the declared officers, looked up by key or by instance agent
+// name.
+//
+// 🔴 IT IS MUTABLE, BY ONE ATOMIC SWAP (Swap): every read takes one immutable
+// snapshot, so a reader never sees half a roster, and every consumer — the
+// wake loop (re-read every tick), hostOfficersOn, the mirror door's step-up
+// gate, the tool binding (ForAgentName) — reads the roster LIVE. The env
+// officers are fixed at boot; the DB-declared ones (migration 0136) are
+// swapped in by internal/api's loader whenever they change, with no restart.
 type Registry struct {
-	list []Officer
-	byID map[string]Officer
+	cur atomic.Pointer[regSnapshot]
 }
 
-// NewRegistry indexes list. It does not re-validate: Parse did.
-func NewRegistry(list []Officer) *Registry {
-	r := &Registry{byID: map[string]Officer{}}
+// regSnapshot is one immutable roster: list sorted by key, byKey its index.
+type regSnapshot struct {
+	list  []Officer
+	byKey map[string]Officer
+}
+
+func newSnapshot(list []Officer) *regSnapshot {
+	sn := &regSnapshot{byKey: make(map[string]Officer, len(list))}
 	for _, o := range list {
-		r.list = append(r.list, o)
-		r.byID[o.ID] = o
+		sn.list = append(sn.list, o)
+		sn.byKey[o.Key()] = o
 	}
+	sort.SliceStable(sn.list, func(i, j int) bool { return sn.list[i].Key() < sn.list[j].Key() })
+	return sn
+}
+
+// NewRegistry indexes list. It does not re-validate: Parse did (and
+// Declaration.Officer, for a DB-declared one).
+func NewRegistry(list []Officer) *Registry {
+	r := &Registry{}
+	r.cur.Store(newSnapshot(list))
 	return r
 }
 
-// All returns the declared officers, sorted by id.
-func (r *Registry) All() []Officer {
+// Swap replaces the whole roster with list, atomically: a reader sees the old
+// roster or the new one, never a mix. The caller (internal/api's loader)
+// passes every officer — env and DB — each time.
+func (r *Registry) Swap(list []Officer) { r.cur.Store(newSnapshot(list)) }
+
+func (r *Registry) snap() *regSnapshot {
 	if r == nil {
 		return nil
 	}
-	return append([]Officer(nil), r.list...)
+	return r.cur.Load()
 }
 
-// Get returns the officer with id.
-func (r *Registry) Get(id string) (Officer, error) {
-	if r == nil {
+// All returns the declared officers, sorted by key (an env officer's key is
+// its id).
+func (r *Registry) All() []Officer {
+	sn := r.snap()
+	if sn == nil {
+		return nil
+	}
+	return append([]Officer(nil), sn.list...)
+}
+
+// Get returns the officer whose Key is key (an env officer's id).
+func (r *Registry) Get(key string) (Officer, error) {
+	sn := r.snap()
+	if sn == nil {
 		return Officer{}, ErrUnknownOfficer
 	}
-	o, ok := r.byID[id]
+	o, ok := sn.byKey[key]
 	if !ok {
 		return Officer{}, ErrUnknownOfficer
 	}
 	return o, nil
+}
+
+// ForOwner returns owner's officer with id: the env officer declared for that
+// owner, or that owner's DB-declared one. An id another owner declares is not
+// owner's.
+func (r *Registry) ForOwner(owner int64, id string) (Officer, bool) {
+	sn := r.snap()
+	if sn == nil {
+		return Officer{}, false
+	}
+	for _, o := range sn.list {
+		if o.Owner == owner && o.ID == id {
+			return o, true
+		}
+	}
+	return Officer{}, false
 }
 
 // ForAgentName answers which declared officer an agent named name is an
@@ -931,10 +1077,15 @@ func (r *Registry) Get(id string) (Officer, error) {
 // officer's routine instance, Tier routine with the routine model and max; for
 // an untiered officer, the officer itself, as before.
 func (r *Registry) ForAgentName(name string) (Officer, int, bool) {
-	if r == nil {
+	sn := r.snap()
+	if sn == nil {
 		return Officer{}, 0, false
 	}
-	for _, o := range r.list {
+	return forAgentName(sn.list, name)
+}
+
+func forAgentName(list []Officer, name string) (Officer, int, bool) {
+	for _, o := range list {
 		if p, n, ok := parseInstance(o, name); ok {
 			return p, n, true
 		}

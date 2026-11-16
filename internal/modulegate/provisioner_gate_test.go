@@ -52,6 +52,7 @@ var provisionerGateLedger = map[string]int{
 	// --- DISPATCH: must read dispatchServed (the Compose chief answers no) ---
 	"internal/api/agent_dispatch.go (*Server).startReserved dispatchServed()":                1, // agent_dispatch's and dispatch_approve's start
 	"internal/api/task_actions.go (*Server).chiefDispatchDeploymentRefusal dispatchServed()": 1, // agent_dispatch's refusal, the task actions' offer
+	"internal/api/officer_declared.go (*Server).podRuntimeRefusal dispatchServed()":          1, // can a DB-declared officer run in pods (its instances are dispatches)
 	"cmd/muster-server/features.go (*app).featureStatuses Provisioner!=nil":                  2, // Dispatch and Claude Code agents, each in the arm AFTER the ComposeChief one
 	"cmd/muster-server/features.go connectorsStatus Provisioner!=nil":                        1, // the key without the agent connect URL is MISCONFIGURED only where agents are dispatched (no ComposeChief clause: that arm has no connect URL, which the Compose chief always has)
 
@@ -68,6 +69,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/chief_toggle.go (*Server).chiefToggleAvailable Provisioner!=nil":           1, // Account → Chief drawn (after the Compose owner check)
 	"internal/api/compose_chief.go (*Server).reapplyComposeChief lifecycleServed()":          1, // the Compose chief's boot re-apply: its own Start, never a dispatch
 	"internal/api/agent_rm.go (*Server).handleAPIAgentRemove lifecycleServed()":              1, // `muster agent rm`: destroy an EXISTING provisioned agent (never the chief); a host officer row needs no provisioner and skips this check
+	"internal/api/officer_declared.go (*Server).teardownInstanceWith lifecycleServed()":      1, // a deleted or moved DB-declared officer's EXISTING instance agents, destroyed as `muster agent rm` does (never the chief)
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner!=nil":             2, // the switch's Start and Stop
 	"internal/api/chief_toggle.go (*Server).handleAccountChief Provisioner==nil":             1, // the switch's create
 	"internal/api/ext.go (Extensions).defects Provisioner!=nil":                              1, // the namespace-prefix wiring check

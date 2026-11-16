@@ -74,12 +74,17 @@ flow enqueue
 flow ls
 flow status
 nudge next
+officer create
 officer def delete
 officer def ls
 officer def put
+officer delete
 officer item enqueue
 officer item ls
 officer item resolve
+officer ls
+officer pause
+officer resume
 officer schedule delete
 officer schedule ls
 officer schedule put
@@ -123,7 +128,9 @@ whoami"
 #   instance's left-over row with no provisioner, docs/design/officers-on-hosts.md).
 # 46 -> 47: `officer usage` (an officer's model spend per UTC day,
 #   officer_llm_usage; a builtin officer's Claude usage is booked there).
-WANT_COUNT=47
+# 47 -> 52: `officer ls|create|pause|resume|delete` (officers declared in the
+#   database, migration 0136; no restart).
+WANT_COUNT=52
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

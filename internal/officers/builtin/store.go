@@ -199,12 +199,18 @@ const CapOutboundDrafts = "outbound_drafts"
 // The outreach guards (OutreachGuardTx) hold whether or not it is granted.
 const CapContacts = "contacts"
 
-// TypeGrants reports whether officer's TYPE (the id's part before the colon),
+// officerTypeKey is THE SQL for the type key of officer $2 of owner $1: its
+// def's type_key — a DB-declared officer's own type (migration 0136, round
+// 0's F5) — or, with no def, the id's part before the colon (0118's rule, the
+// key every env officer's def has anyway).
+const officerTypeKey = `coalesce((SELECT d.type_key FROM officer_defs d WHERE d.owner_id = $1 AND d.officer = $2), split_part($2, ':', 1))`
+
+// TypeGrants reports whether officer's TYPE (its def's type_key: officerTypeKey),
 // as owner defines it, lists capability in its policy's "capabilities". A
 // type that is missing, or whose policy has no such array, grants nothing.
 func (s *Store) TypeGrants(ctx context.Context, owner int64, officer, capability string) (bool, error) {
 	var ok bool
 	err := s.pool.QueryRow(ctx, `SELECT coalesce((SELECT jsonb_typeof(policy->'capabilities') = 'array' AND policy->'capabilities' ? $3
-		FROM officer_types WHERE owner_id = $1 AND key = split_part($2, ':', 1)), false)`, owner, officer, capability).Scan(&ok)
+		FROM officer_types WHERE owner_id = $1 AND key = `+officerTypeKey+`), false)`, owner, officer, capability).Scan(&ok)
 	return ok, err
 }

@@ -60,11 +60,29 @@ import (
 // ---------------------------------------------------------------------------
 
 // officerRuntime is the officer runtime's state on the server; nil when no
-// officer is declared.
+// officer is declared and there is no database to declare one in.
 type officerRuntime struct {
+	// reg is the LIVE roster: env officers plus the runnable DB-declared ones,
+	// swapped atomically by reloadDeclaredOfficers (officer_declared.go).
 	reg *officers.Registry
-	hq  *officers.Backends
-	rec *officers.Reconciler
+	// env is MUSTER_OFFICERS' officers, fixed at boot.
+	env []officers.Officer
+	// store is the built-in store DB-declared officers are read from; nil:
+	// none are (no database).
+	store *builtin.Store
+	// sessionInstalled: the provisioner takes the officer session settings
+	// (OfficersConfig.InstallSession was given), which a pod officer needs.
+	sessionInstalled bool
+	// reloadMu serialises roster loads; declMu guards declared and loaded:
+	// the last load's DB-declared officers by declKey, and whether a load has
+	// run. (Where a "runtime": "auto" officer is placed is the database's,
+	// DeclaredRow.AutoHost — never this process's memory: round 2.)
+	reloadMu sync.Mutex
+	declMu   sync.Mutex
+	declared map[string]declaredState
+	loaded   bool
+	hq       *officers.Backends
+	rec      *officers.Reconciler
 	// claimOwner names this process on an instance's session claim while it
 	// sends a re-prompt.
 	claimOwner string
@@ -287,6 +305,9 @@ type OfficersConfig struct {
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
 	HostSpawns officers.HostSpawnStore
+	// RefreshEvery is how often the wake loop re-reads the DB-declared
+	// officers (officers.Config.RefreshEvery); 0 is the default. For tests.
+	RefreshEvery time.Duration
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
 	// officer pool's OWN runner image (`image`) is pulled with
 	// (agentspec.ClaudeCodeSession.ImagePullSecret, which reaches the pod spec
@@ -398,7 +419,10 @@ func (s *Server) officerBackendBuilder(cfg OfficersConfig) (func(officers.Office
 // caller to Run. It needs the agents store and the provisioner (an officer is
 // nothing without instances), and the claude-code kind.
 func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error) {
-	if len(cfg.Officers) == 0 {
+	// With the built-in store an empty MUSTER_OFFICERS is a runtime for the
+	// officers declared in the database (officer_declared.go); without it,
+	// there is nothing to run.
+	if len(cfg.Officers) == 0 && cfg.Builtin == nil {
 		return nil, errors.New("officers: none declared")
 	}
 	// 🔴 WHAT EACH RUNTIME NEEDS, REFUSED AT BOOT BY RUNTIME
@@ -491,7 +515,12 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice}
+		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery}
+	if cfg.Builtin != nil {
+		// The DB-declared officers (migration 0136) reach every replica's
+		// loop on its refresh, whoever wrote them.
+		rcfg.Refresh = s.refreshDeclaredOfficers
+	}
 	switch {
 	case fwd != nil && px != nil:
 		sync := llmSync(px, reg)
@@ -513,7 +542,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
+	s.officerRT = &officerRuntime{reg: reg, env: append([]officers.Officer(nil), cfg.Officers...), store: cfg.Builtin,
+		sessionInstalled: cfg.InstallSession != nil,
+		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
 		hostSpawns:      cfg.HostSpawns,
 		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
@@ -546,7 +577,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		}
 		if o.Tiers == nil {
 			s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, repo %s",
-				o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
+				o.ID, o.InstanceName(1), o.InstanceName(o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
 			continue
 		}
 		var pools []string
@@ -558,6 +589,15 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	for _, o := range reg.All() {
 		s.logOfficerBackend(o)
+	}
+	if cfg.Builtin != nil {
+		// The officers declared in the database, at boot: a failure leaves the
+		// env roster running and the wake loop's refresh tries again.
+		ctx, cancel := context.WithTimeout(context.Background(), officerBootReadTimeout)
+		if err := s.reloadDeclaredOfficers(ctx); err != nil {
+			s.logger.Printf("officers: reading the officers declared in the database at boot: %v; the wake loop retries", err)
+		}
+		cancel()
 	}
 	return rec, nil
 }
@@ -664,11 +704,23 @@ func (s *Server) instanceOnNoClaudeAccount(a agents.Agent) bool {
 // of, and which instance. Not an officer instance → ok false. The officer is
 // the instance's pool (officers.Registry.ForAgentName): a tiered officer's
 // routine instance gets the routine Tier, Model and MaxInstances.
+//
+// 🔴 THE NAME AND THE OWNER (round 0's F2). An agent binds to the officer its
+// name parses as ONLY when the agent is that officer's owner's: a name alone
+// is not enough once officers are created and deleted at runtime, because an
+// agent row can outlive its officer (a teardown that failed, a replica that
+// started an instance after the delete) and a later officer of another owner
+// could come to parse the same name. The host door has always held this
+// (officerHostCaller); this is the same rule for every other door.
 func (s *Server) officerOf(a agents.Agent) (officers.Officer, int, bool) {
 	if s.officerRT == nil {
 		return officers.Officer{}, 0, false
 	}
-	return s.officerRT.reg.ForAgentName(a.Name)
+	o, n, ok := s.officerRT.reg.ForAgentName(a.Name)
+	if !ok || a.OwnerID != o.Owner {
+		return officers.Officer{}, 0, false
+	}
+	return o, n, true
 }
 
 // agentRepo is THE repository agent a acts on for its connectors: the one
@@ -840,7 +892,7 @@ func (f officerFleet) byName(ctx context.Context, o officers.Officer) (map[strin
 	}
 	out := map[string]agents.Agent{}
 	for _, a := range list {
-		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.ID == o.ID && bo.Tier == o.Tier {
+		if bo, _, ok := f.s.officerRT.reg.ForAgentName(a.Name); ok && bo.Key() == o.Key() && bo.Tier == o.Tier {
 			out[a.Name] = a
 		}
 	}
@@ -878,6 +930,66 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 // Start implements officers.Fleet: create instance n with kickoff as its first
 // turn, or — when its agent exists — re-arm its first turn and start it.
 func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
+	// 🔴 NOT FOR AN OFFICER THAT IS GONE. A pass reads the roster once; a
+	// DB-declared officer deleted meanwhile has had its instances torn down,
+	// and a start now would leave an agent no officer owns.
+	if !f.stillDeclared(ctx, o) {
+		return fmt.Errorf("officers: %s is no longer declared; not starting %s", o.ID, o.InstanceName(n))
+	}
+	err := f.start(ctx, o, n, kickoff)
+	// 🔴 AND ASKED AGAIN AFTER (round 0's F2). The check above and the create
+	// are not one step: a delete landing between them swaps the roster and
+	// runs its teardown before this create — which then leaves exactly the
+	// orphan the check exists to prevent. So the officer is asked about again
+	// once the start is over — whether it succeeded or not, since a host
+	// start that refused to send its spawn has already created its row — and
+	// the instance removed if the officer is gone. Every delete's teardown
+	// runs after its swap, so either the teardown sees this instance or this
+	// check sees the delete.
+	//
+	// 🔴 THE TEARDOWN HERE IS THE DATABASE'S, NOT THE ROSTER'S (round 2's
+	// first finding). A delete made on ANOTHER replica is seen here only in
+	// the database: this replica's roster still holds the officer until its
+	// next refresh, so the delete protection (isDeclaredInstanceRow, which
+	// reads the roster) refused the teardown and the orphan stayed — while
+	// the start answered "removed it". teardownGoneInstance passes the
+	// officer to destroyAgent as gone (destroyHooks.goneOfficer), which lifts
+	// the officer half of the protection for that officer's own row, and only
+	// once the database says it is gone.
+	if !f.stillDeclared(ctx, o) {
+		name := o.InstanceName(n)
+		switch f.s.teardownGoneInstance(ctx, o, n) {
+		case teardownRemoved:
+			f.s.logger.Printf("officers: %s was deleted while %s started; removed it", o.ID, name)
+			return fmt.Errorf("officers: %s was deleted while %s started; removed it", o.ID, name)
+		case teardownFailed:
+			f.s.logger.Printf("officers: %s was deleted while %s started; could NOT remove it", o.ID, name)
+			return fmt.Errorf("officers: %s was deleted while %s started; could not remove it (see the log; `muster agent rm %s` removes it)", o.ID, name, name)
+		}
+		return fmt.Errorf("officers: %s was deleted while %s started; it has no agent to remove", o.ID, name)
+	}
+	return err
+}
+
+// stillDeclared reports whether o is still the officer it was: in the live
+// roster under its key, the same owner and id — and, for a DB-declared
+// officer, still in the database with the same slug, so a delete made on
+// ANOTHER replica (whose roster this one reads up to a refresh later) is
+// seen too. An unreadable database is not "still there".
+func (f officerFleet) stillDeclared(ctx context.Context, o officers.Officer) bool {
+	cur, err := f.s.officerRT.reg.Get(o.Key())
+	if err != nil || cur.Owner != o.Owner || cur.ID != o.ID {
+		return false
+	}
+	if !o.FromDB() || f.s.officerRT.store == nil {
+		return true
+	}
+	row, err := f.s.officerRT.store.GetDeclared(f.s.officerPrincipal(ctx, o.Owner), o.Owner, o.ID)
+	return err == nil && row.Fields.InstanceSlug == o.InstanceSlug
+}
+
+// start is Start once the officer is known to be declared.
+func (f officerFleet) start(ctx context.Context, o officers.Officer, n int, kickoff string) error {
 	if o.OnHost() {
 		return f.hostStart(ctx, o, n, kickoff)
 	}

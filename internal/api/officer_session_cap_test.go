@@ -83,10 +83,10 @@ func claimsOf(r *officerRig, item string) int {
 func TestTheJudgementSessionCapRefusesTheNPlusFirstSessionOfTheDay(t *testing.T) {
 	r := newCappedOfficerRig(t)
 	ctx := context.Background()
-	j1 := agents.Agent{Name: offTJudge + "1"}
-	j2 := agents.Agent{Name: offTJudge + "2"}
-	routine := agents.Agent{Name: offTRoutine + "1"}
-	flat := agents.Agent{Name: officers.InstanceName(offA, 1)}
+	j1 := agents.Agent{Name: offTJudge + "1", OwnerID: 1}
+	j2 := agents.Agent{Name: offTJudge + "2", OwnerID: 1}
+	routine := agents.Agent{Name: offTRoutine + "1", OwnerID: 1}
+	flat := agents.Agent{Name: officers.InstanceName(offA, 1), OwnerID: 1}
 	i1 := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
 	held := r.hq.AddTieredItem(offT, "gpu.alert", "node-h", officers.TierJudgement)
 	i2 := r.hq.AddTieredItem(offT, "gpu.alert", "node-b", officers.TierJudgement)
@@ -150,7 +150,7 @@ func TestTheJudgementSessionCapRefusesTheNPlusFirstSessionOfTheDay(t *testing.T)
 func TestACappedJudgementPoolIsNotWokenForNewWork(t *testing.T) {
 	r := newCappedOfficerRig(t)
 	ctx := context.Background()
-	j1 := agents.Agent{Name: offTJudge + "1"}
+	j1 := agents.Agent{Name: offTJudge + "1", OwnerID: 1}
 	i1 := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
 	i2 := r.hq.AddTieredItem(offT, "gpu.alert", "node-b", officers.TierJudgement)
 	// Two sessions: i1 finished, i2 given back (open again, counted today).
@@ -203,7 +203,7 @@ func TestClaimNextCountsAgainstTheJudgementSessionCap(t *testing.T) {
 	r := newCappedOfficerRig(t)
 	r.hq.ClaimNext = true
 	ctx := context.Background()
-	j1 := agents.Agent{Name: offTJudge + "1"}
+	j1 := agents.Agent{Name: offTJudge + "1", OwnerID: 1}
 	next := func() string {
 		t.Helper()
 		return r.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{}`)
@@ -251,7 +251,7 @@ func TestClaimNextCountsAgainstTheJudgementSessionCap(t *testing.T) {
 func TestTheJudgementSessionCapSurvivesARestart(t *testing.T) {
 	first := newCappedOfficerRig(t)
 	ctx := context.Background()
-	j1 := agents.Agent{Name: offTJudge + "1"}
+	j1 := agents.Agent{Name: offTJudge + "1", OwnerID: 1}
 	for _, subj := range []string{"node-a", "node-b"} {
 		it := first.hq.AddTieredItem(offT, "gpu.alert", subj, officers.TierJudgement)
 		if out := first.s.dispatchAgentTool(ctx, j1, officers.ToolClaim, `{"item_id":"`+it+`"}`); isToolErr(out) {
@@ -293,7 +293,7 @@ func TestAClaimHQMayHaveTakenKeepsItsSession(t *testing.T) {
 		r := newCappedOfficerRig(t)
 		r.hq.ClaimNext = true
 		ctx := context.Background()
-		j1 := agents.Agent{Name: offTJudge + "1"}
+		j1 := agents.Agent{Name: offTJudge + "1", OwnerID: 1}
 		i1 := r.hq.AddTieredItem(offT, "gpu.alert", "node-a", officers.TierJudgement)
 		args := `{"item_id":"` + i1 + `"}`
 		if next {

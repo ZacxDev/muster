@@ -30,6 +30,12 @@ const (
 	officerSchedsRoute  = "/api/officers/defs/{officer}/schedules"
 	officerUsageRoute   = "/api/officers/defs/{officer}/usage"
 	officerSchedRoute   = "/api/officers/defs/{officer}/schedules/{name}"
+	// Officers declared in the database (migration 0136): one record each —
+	// type, def and runtime — created, paused and deleted with no restart.
+	officerDeclaredRoute  = "/api/officers/declared"
+	officerDeclaredOne    = "/api/officers/declared/{officer}"
+	officerDeclaredPause  = "/api/officers/declared/{officer}/pause"
+	officerDeclaredResume = "/api/officers/declared/{officer}/resume"
 )
 
 func newOfficerCmd(a *app) *cobra.Command {
@@ -45,6 +51,7 @@ Order: put the type first (officer type put), then the officer (officer def
 put <type>:<area>); an officer's type is the part of its id before the colon.`,
 	}
 	cmd.AddCommand(newOfficerTypeCmd(a), newOfficerDefCmd(a), newOfficerItemCmd(a), newOfficerScheduleCmd(a), newOfficerUsageCmd(a))
+	cmd.AddCommand(newOfficerDeclaredCmds(a)...)
 	return cmd
 }
 
@@ -71,6 +78,75 @@ estimated_requests counts the requests whose cost is an estimate.`,
 	}
 	cmd.Flags().IntVar(&days, "days", 0, "the last this many UTC days, today included (default 30, at most 90)")
 	return cmd
+}
+
+// newOfficerDeclaredCmds are the verbs of officers declared in the database:
+// ls, create, pause, resume, delete (docs/officers-builtin.md "Declared in the
+// database").
+func newOfficerDeclaredCmds(a *app) []*cobra.Command {
+	ls := &cobra.Command{
+		Use: "ls", Short: "GET " + officerDeclaredRoute + " — your officers: declared in the database, and env ones (read-only)", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.officerCall(cmd, http.MethodGet, officerDeclaredRoute, nil, nil, nil)
+		},
+	}
+	var name, charterFile, runtime, host, repo, idle, poll, model string
+	var connectors, readRepos []string
+	var maxInstances int
+	var paused bool
+	create := &cobra.Command{
+		Use:   "create <type>:<area>",
+		Short: "POST " + officerDeclaredRoute + " — create an officer (its type, def and runtime) that runs with no restart",
+		Long: `Create an officer declared in muster's database: its type and charter, its
+def and where it runs, in one write. It runs on the built-in backend at once —
+no MUSTER_OFFICERS entry, no restart. --runtime auto (the default) runs it in
+a pod when this muster can, else on the first of your hosts that qualifies
+(see the answer's runs_on and reason). A host officer needs --repo.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			body := map[string]any{"id": args[0], "name": name, "runtime": runtime, "host": host, "repo": repo,
+				"connectors": connectors, "read_repos": readRepos, "max_instances": maxInstances,
+				"idle_scale_to_zero_after": idle, "poll_interval": poll, "model": model, "paused": paused}
+			if charterFile != "" {
+				data, err := readBodyFile(charterFile, cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				body["charter"] = string(data)
+			}
+			return a.officerCall(cmd, http.MethodPost, officerDeclaredRoute, nil, nil, body)
+		},
+	}
+	f := create.Flags()
+	f.StringVar(&name, "name", "", "the officer type's display name (default: the id)")
+	f.StringVar(&charterFile, "charter-file", "", "read the charter from this file, or - for stdin (never from argv)")
+	f.StringVar(&runtime, "runtime", "auto", "pod, host or auto")
+	f.StringVar(&host, "host", "", "the mirror host of a --runtime host officer")
+	f.StringVar(&repo, "repo", "", "its repository, owner/name (a host officer needs one)")
+	f.StringSliceVar(&connectors, "connector", nil, "a connector its instances may request (repeatable)")
+	f.StringSliceVar(&readRepos, "read-repo", nil, "a public repository it reads with no approval (repeatable; pods only)")
+	f.IntVar(&maxInstances, "max-instances", 0, "how many instances may run at once (default 1)")
+	f.StringVar(&idle, "idle", "", "scale to zero after this long idle (default 30m)")
+	f.StringVar(&poll, "poll", "", "how often its queue is read (default 1m, at least 10s)")
+	f.StringVar(&model, "model", "", "its pods' model (default: the account's)")
+	f.BoolVar(&paused, "paused", false, "create it switched off")
+	switchCmd := func(verb, route, short string) *cobra.Command {
+		return &cobra.Command{
+			Use: verb + " <type>:<area>", Short: "POST " + route + " — " + short, Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return a.officerCall(cmd, http.MethodPost, route, map[string]string{"officer": args[0]}, nil, nil)
+			},
+		}
+	}
+	pause := switchCmd("pause", officerDeclaredPause, "switch it off: muster stops its instances and starts none")
+	resume := switchCmd("resume", officerDeclaredResume, "switch it on again")
+	del := &cobra.Command{
+		Use: "delete <type>:<area>", Short: "DELETE " + officerDeclaredOne + " — delete it, its queue and schedules, and its instances", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.officerCall(cmd, http.MethodDelete, officerDeclaredOne, map[string]string{"officer": args[0]}, nil, nil)
+		},
+	}
+	return []*cobra.Command{ls, create, pause, resume, del}
 }
 
 // officerCall sends req and emits the answer.

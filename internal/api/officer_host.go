@@ -235,6 +235,12 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 	if err != nil {
 		return fmt.Errorf("officers: record %s's spawn: %w", name, err)
 	}
+	// Asked again before the spawn leaves (officerFleet.Start's rule, round
+	// 0's F2): a window sent for an officer deleted meanwhile could not be
+	// closed by the delete's teardown, which finds no recorded window yet.
+	if !f.stillDeclared(ctx, o) {
+		return fmt.Errorf("officers: %s was deleted while %s started; not sending its spawn", o.ID, name)
+	}
 	req := mirror.AgentSpawnReq{Runtime: mirror.SpawnRuntimeClaude, Repo: o.Repo, Prompt: prompt, Name: name}
 	owner, host := o.Owner, o.Host
 	// Ends with the server's streams (shutdown): the request was written or
@@ -642,7 +648,7 @@ func (s *Server) officerSpawnIDs(ctx context.Context, host string, ids []int64) 
 func officerHostLine(o officers.Officer) string {
 	return fmt.Sprintf("officers: %s on: runtime host on %s — instances %s..%s, each a window in its agents session in a fresh worktree of %s; idle scale-to-zero after %s, poll %s. "+
 		"The host must run -interactive -agent-spawn with %s on -agent-spawn-repos, and a muster-mirror that closes windows. %s",
-		o.ID, o.Host, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.Repo, o.IdleAfter, o.PollInterval, o.Repo,
+		o.ID, o.Host, o.InstanceName(1), o.InstanceName(o.MaxInstances), o.Repo, o.IdleAfter, o.PollInterval, o.Repo,
 		strings.TrimSpace(officerHostSecurityLine))
 }
 
