@@ -937,23 +937,23 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	if !f.stillDeclared(ctx, o) {
 		return fmt.Errorf("officers: %s is no longer declared; not starting %s", o.ID, o.InstanceName(n))
 	}
-	if err := f.start(ctx, o, n, kickoff); err != nil {
-		return err
-	}
+	err := f.start(ctx, o, n, kickoff)
 	// 🔴 AND ASKED AGAIN AFTER (round 0's F2). The check above and the create
 	// are not one step: a delete landing between them swaps the roster and
 	// runs its teardown before this create — which then leaves exactly the
 	// orphan the check exists to prevent. So the officer is asked about again
-	// once the instance exists, and removed if it is gone. Every delete's
-	// teardown runs after its swap, so either the teardown sees this instance
-	// or this check sees the delete.
+	// once the start is over — whether it succeeded or not, since a host
+	// start that refused to send its spawn has already created its row — and
+	// the instance removed if the officer is gone. Every delete's teardown
+	// runs after its swap, so either the teardown sees this instance or this
+	// check sees the delete.
 	if !f.stillDeclared(ctx, o) {
-		if f.s.teardownInstance(ctx, o, n, nil) {
+		if f.s.teardownInstance(ctx, o, n) {
 			f.s.logger.Printf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
 		}
 		return fmt.Errorf("officers: %s was deleted while %s started; removed it", o.ID, o.InstanceName(n))
 	}
-	return nil
+	return err
 }
 
 // stillDeclared reports whether o is still the officer it was: in the live

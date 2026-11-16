@@ -1162,7 +1162,7 @@ func (s *Server) declaredDelete(w http.ResponseWriter, r *http.Request, owner in
 func (s *Server) teardownInstances(ctx context.Context, o officers.Officer) []string {
 	var removed []string
 	for n := 1; n <= officers.MaxInstancesCap; n++ {
-		if s.teardownInstance(ctx, o, n, nil) {
+		if s.teardownInstance(ctx, o, n) {
 			removed = append(removed, o.InstanceName(n))
 		}
 	}
@@ -1172,19 +1172,15 @@ func (s *Server) teardownInstances(ctx context.Context, o officers.Officer) []st
 // teardownMoved removes the instance agents of old's PLACEMENT — its pod
 // rows, or the rows of the host it ran on — once the roster load has moved
 // it elsewhere (round 0's F3: an auto officer whose host was gone past the
-// grace; or a replace naming another runtime or host). A row of the new
+// grace; or a replace naming another runtime or host). A row of the NEW
 // placement, which the wake loop may already have created under the same
-// name, is never touched.
-func (s *Server) teardownMoved(ctx context.Context, old officers.Officer) {
-	ofOld := func(a agents.Agent) bool {
-		if old.OnHost() {
-			return !a.Provisioned() && a.RunsOnHost == old.Host
-		}
-		return a.Provisioned()
-	}
+// name, is never removed: it is the live officer's own instance row, and the
+// delete protection (isDeclaredInstanceRow, the one rule) refuses it. It
+// answers the names it removed.
+func (s *Server) teardownMoved(ctx context.Context, old officers.Officer) []string {
 	var removed []string
 	for n := 1; n <= officers.MaxInstancesCap; n++ {
-		if s.teardownInstance(ctx, old, n, ofOld) {
+		if s.teardownInstance(ctx, old, n) {
 			removed = append(removed, old.InstanceName(n))
 		}
 	}
@@ -1195,18 +1191,19 @@ func (s *Server) teardownMoved(ctx context.Context, old officers.Officer) {
 	if len(removed) > 0 {
 		s.logger.Printf("officers: %s (owner %d) moved off %s; removed %s", old.ID, old.Owner, where, strings.Join(removed, ", "))
 	}
+	return removed
 }
 
-// teardownInstance removes instance n of o, when its agent exists (and keep,
-// when given, says it is one to remove), reporting whether it removed it.
-func (s *Server) teardownInstance(ctx context.Context, o officers.Officer, n int, keep func(agents.Agent) bool) bool {
+// teardownInstance removes instance n of o, when its agent exists and the
+// delete protection lets it go, reporting whether it removed it.
+func (s *Server) teardownInstance(ctx context.Context, o officers.Officer, n int) bool {
 	if s.ext.Agents == nil {
 		return false
 	}
 	octx := s.officerPrincipal(context.WithoutCancel(ctx), o.Owner)
 	name := o.InstanceName(n)
 	a, err := s.ext.Agents.GetByName(octx, name)
-	if err != nil || keep != nil && !keep(a) {
+	if err != nil {
 		return false
 	}
 	if o.OnHost() && a.RunsOnHost == o.Host && n <= o.MaxInstances {

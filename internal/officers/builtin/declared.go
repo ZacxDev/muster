@@ -251,10 +251,12 @@ func (s *Store) CreateDeclared(ctx context.Context, owner int64, w DeclaredWrite
 	return d, tx.Commit(ctx)
 }
 
-// ErrTypeShared is a replace whose officer's type another officer of the
-// owner's also names (a row written before round 0's F5, or a def put on the
-// slug's key by hand): its name, charter and policy are left as they are, and
-// the replace is refused, rather than changing another officer's charter.
+// ErrTypeShared is a replace of an officer whose type is not its own: a row
+// written before round 0's F5 (on the type its id's prefix names, which an
+// env officer may run on), or one whose own type another def names (a def put
+// on the slug's key by hand). Its name, charter and policy are left as they
+// are, and the replace is refused, rather than changing another officer's
+// charter.
 var ErrTypeShared = errors.New("builtin: another officer runs on this officer's type")
 
 // UpdateDeclared replaces owner's DB-declared officer's def and runtime
@@ -272,14 +274,17 @@ func (s *Store) UpdateDeclared(ctx context.Context, owner int64, officer string,
 	if err != nil {
 		return DeclaredRow{}, err
 	}
-	// 🔴 ONLY ITS OWN TYPE (F5): the row's type_key, and only while no other
-	// officer of owner's names it.
+	// 🔴 ONLY ITS OWN TYPE (F5): the type keyed by its slug, and only while
+	// no other def of owner's names it. A row on any other type (one written
+	// before F5, on the type its id's prefix names) shares that type with
+	// whatever else runs on it — an env officer, which has no def to count —
+	// so it is refused, not written through.
 	var shared bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND type_key = $2 AND officer <> $3)`,
 		owner, cur.TypeKey, officer).Scan(&shared); err != nil {
 		return DeclaredRow{}, classify(err)
 	}
-	if shared {
+	if shared || cur.TypeKey != cur.Fields.InstanceSlug {
 		return DeclaredRow{}, fmt.Errorf("%w: %s's type %s", ErrTypeShared, officer, cur.TypeKey)
 	}
 	if err := putTypeTx(ctx, tx, owner, cur.TypeKey, w); err != nil {

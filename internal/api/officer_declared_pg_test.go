@@ -97,7 +97,11 @@ func newDeclRigOn(t *testing.T, f *connFixture, o declRigOpts) *declRig {
 	})
 	r := &declRig{f: f, store: builtin.NewStore(f.pool), ag: &officerAgents{}, logs: &bytes.Buffer{}}
 	ext := Extensions{Agents: r.ag, SessionLiveness: stubLiveness{}, Users: users.NewPG(f.pool), AgentNamespacePrefix: "muster-agent-"}
-	ocfg := OfficersConfig{Builtin: r.store, HostSpawns: officers.NewMemHostSpawnStore(), Now: o.now}
+	spawns := officers.NewMemHostSpawnStore()
+	if o.now != nil {
+		spawns.Now = o.now // one clock: a spawn's age is read against the runtime's
+	}
+	ocfg := OfficersConfig{Builtin: r.store, HostSpawns: spawns, Now: o.now}
 	if o.pods {
 		r.prov = &officerProv{store: r.ag, phase: map[string]provision.Phase{}}
 		ext.Provisioner, ext.Gateway, ext.Kinds = r.prov, &repromptChat{}, stubKinds{pick: "acct-one"}

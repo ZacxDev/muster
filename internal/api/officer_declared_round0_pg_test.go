@@ -90,6 +90,68 @@ func TestAStartRacedByADeleteLeavesNoOrphan(t *testing.T) {
 	}
 }
 
+// TestAStartForAnOfficerDeletedOnAnotherReplicaIsRefused (F2): the officer
+// is deleted on ANOTHER replica — its row is gone from the database, and this
+// replica's roster still holds it until its next refresh. A start here asks
+// the database too, and refuses: no instance is created for an officer that
+// is gone.
+func TestAStartForAnOfficerDeletedOnAnotherReplicaIsRefused(t *testing.T) {
+	r := newDeclRig(t, declRigOpts{pods: true})
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", declPodBody); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	o := r.officerFor(t, 1, declID)
+	if _, err := r.store.DeleteDeclared(dbtest.AsOperator(context.Background()), 1, declID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.s.officerRT.reg.ForOwner(1, declID); !ok {
+		t.Fatal("control: this replica's roster dropped the officer without a refresh")
+	}
+	if err := (officerFleet{s: r.s}).Start(context.Background(), o, 1, "kick"); err == nil {
+		t.Fatal("a start for an officer deleted on another replica was let through")
+	}
+	if _, ok := r.agentNamed(o.InstanceName(1)); ok {
+		t.Fatalf("a start for an officer deleted on another replica created %s", o.InstanceName(1))
+	}
+}
+
+// TestAHostStartRacedByADeleteSendsNoSpawn (F2, the host half): the delete
+// lands while a host officer's start creates its instance row. The spawn is
+// never sent — the delete's teardown could not close a window it has no
+// record of — and the row is removed.
+func TestAHostStartRacedByADeleteSendsNoSpawn(t *testing.T) {
+	h := spawnableHost(hostOffHost, true)
+	h.AgentClose = true
+	r := newDeclRig(t, declRigOpts{hosts: []mirror.HostView{h}})
+	body := `{"id":"` + declID + `","charter":"c","runtime":"host","host":"` + hostOffHost + `","repo":"` + hostOffRepo + `"}`
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", body); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	o := r.officerFor(t, 1, declID)
+	var once sync.Once
+	r.ag.beforeCreate = func(a agents.Agent) {
+		if a.Name == o.InstanceName(1) {
+			once.Do(func() { r.hook(t, http.MethodDelete, "/api/officers/declared/"+declID, "") })
+		}
+	}
+	err := (officerFleet{s: r.s}).Start(context.Background(), o, 1, "kick")
+	if err == nil {
+		t.Fatal("a host start raced by a delete reported success")
+	}
+	gone := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && !gone; time.Sleep(10 * time.Millisecond) {
+		_, ok := r.agentNamed(o.InstanceName(1))
+		gone = !ok
+	}
+	if !gone {
+		t.Fatalf("the instance row %s outlived its officer's delete (start: %v)\n%s", o.InstanceName(1), err, r.logs)
+	}
+	time.Sleep(50 * time.Millisecond) // a spawn goroutine, had one been started
+	if spawns, _, _ := r.m.counts(); spawns != 0 {
+		t.Fatalf("a spawn was sent for an officer deleted while it started (%d spawns): a window its teardown could not close", spawns)
+	}
+}
+
 // TestASlugWithLeftoverAgentsIsNeverAllocated (F2): an agent named for a
 // slug's instance already exists (an orphan, here another owner's), so a
 // create passes that slug over and takes its next candidate — a new officer
@@ -191,6 +253,15 @@ func TestAnAutoOfficerSticksToItsHostThroughABlip(t *testing.T) {
 	if a, ok := r.agentNamed(o.InstanceName(1)); !ok || a.RunsOnHost != hostOffOther {
 		t.Fatalf("after the move the instance row is %+v (%v), want one on %s", a, ok, hostOffOther)
 	}
+	// The teardown of a move touches only the OLD placement's rows: asked to
+	// tear down the officer as it ran on host-bravo, it leaves the
+	// host-charlie row alone.
+	if removed := r.s.teardownMoved(ctx, o); len(removed) != 0 {
+		t.Fatalf("tearing down the host-bravo placement removed the host-charlie row: %v", removed)
+	}
+	if a, ok := r.agentNamed(o.InstanceName(1)); !ok || a.RunsOnHost != hostOffOther {
+		t.Fatalf("tearing down the host-bravo placement removed the host-charlie row: %+v (%v)", a, ok)
+	}
 	// A restart: no memory; host-bravo is back and sorts first. The rows say
 	// host-charlie, so it stays.
 	r.s.officerRT.declMu.Lock()
@@ -250,6 +321,17 @@ func TestADeclaredOfficerNeverRewritesAnotherOfficersType(t *testing.T) {
 	if own, _ := r.store.GetType(ctx, 1, slug); own.Charter != "the db officer's charter, v2" {
 		t.Fatalf("the replace did not write the officer's own type: %+v", own)
 	}
+	// A declared officer whose type another officer names (a row written
+	// before this fix, on type scout) is refused a replace: it never changes
+	// another officer's charter.
+	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO officer_defs (owner_id, officer, type_key, runtime, instance_slug) VALUES (1, 'scout:legacy', 'scout', 'pod', 'scout-legacy-x')`)
+	if rec := r.hook(t, http.MethodPut, "/api/officers/declared/scout:legacy", `{"charter":"overwritten","runtime":"pod","mode":"live","paused":false}`); rec.Code != http.StatusConflict {
+		t.Fatalf("a replace of an officer on a shared type: %d %s; want 409", rec.Code, rec.Body.String())
+	}
+	if got := envType(); got != envCharter {
+		t.Fatalf("a replace on a shared type rewrote type scout: %q", got)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM officer_defs WHERE owner_id = 1 AND officer = 'scout:legacy'`)
 	// Its delete takes its own type with it, and type scout stays.
 	if rec := r.hook(t, http.MethodDelete, "/api/officers/declared/"+declID, ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
