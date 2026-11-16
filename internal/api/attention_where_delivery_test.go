@@ -104,7 +104,7 @@ func TestTheChiefsFleetListCarriesEachWindowsWhere(t *testing.T) {
 	var got struct {
 		Sessions []map[string]any `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1))), &got); err != nil {
+	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1), "")), &got); err != nil {
 		t.Fatal(err)
 	}
 	// name is the session's stable name (internal/sessionname): with no

@@ -78,6 +78,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/consumer_usage.go (*Server).EnableConsumerUsage Provisioner==nil":          1, // consumer usage: reads existing agents' instances, never dispatches
 	"internal/api/session_routes.go (*Server).deliverToChief Provisioner!=nil":               1, // a route handed back to the chief as a turn
 	"internal/api/session_routes.go (*Server).deliverRouteAnswers Provisioner!=nil":          1, // sessions' answers delivered to the chief in one turn
+	"internal/api/route_many.go (*Server).deliverRouteBatch Provisioner!=nil":                1, // a route_many batch's digest delivered to the chief as a turn
 	"internal/api/task_complete_stop.go (*Server).stopChiefAgentOnComplete Provisioner==nil": 1, // stop the chief's own dispatched agent (no ChiefDispatch here)
 	"internal/api/terminal.go (*Server).handleAgentTerminalPage Provisioner==nil":            1, // the Terminal view (the Compose chief's says why it has none)
 }

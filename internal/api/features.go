@@ -164,7 +164,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Connectors, connectorToolDefs()...)
 		add(features.BrowserFlows, flowToolDefs()...)
 		add(features.Plugins, gatedTaskToolDef(), replyDraftToolDef(), pluginMessageSettleToolDef(), routingRuleProposeToolDef())
-		add(features.SessionRouting, routeToolDef())
+		add(features.SessionRouting, routeToolDef(), routeManyToolDef())
 		add(features.TaskRouting, taskRoutingToolDefs(true)...)
 		add(features.Officers, officerToolDefs()...)
 		add(features.Officers, officerSpawnShareToolDef())
