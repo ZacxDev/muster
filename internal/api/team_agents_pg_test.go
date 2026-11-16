@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -566,6 +567,67 @@ func TestARemovalWaitsForAMembersSendInFlight(t *testing.T) {
 	_, answered := tw.ccd.counts()
 	if len(answered) != 1 || !strings.HasSuffix(answered[0], fromB) {
 		t.Errorf("the runtime answered %q; want B's message, which reached it while B was a member", answered)
+	}
+}
+
+// TestTheSendFenceCapIsUnderTheStatementTimeout: a membership change waiting
+// on a send fence's hold waits at most agents.SendFenceHoldCap, which must
+// leave it most of db.StatementTimeout — else it fails rather than waits.
+func TestTheSendFenceCapIsUnderTheStatementTimeout(t *testing.T) {
+	if agents.SendFenceHoldCap <= 0 || 2*agents.SendFenceHoldCap > db.StatementTimeout {
+		t.Errorf("agents.SendFenceHoldCap = %s, db.StatementTimeout = %s; want 0 < cap <= half the statement timeout",
+			agents.SendFenceHoldCap, db.StatementTimeout)
+	}
+}
+
+// TestARemovalIsNotStalledByARuntimeThatSendsNo103 (#731 round 0 Q1, the
+// operator's cap): B's message is open at a runtime that sends no 103 and
+// holds its answer well past the cap. B's removal waits on the team's row —
+// then commits, WITHOUT a statement timeout, about agents.SendFenceHoldCap
+// after the request was written, while the runtime is still holding it.
+//
+// 🔴 RED with the cap removed: the removal waited for the runtime and failed
+// at db.StatementTimeout (SQLSTATE 57014).
+func TestARemovalIsNotStalledByARuntimeThatSendsNo103(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	fromB := "from B " + tw.canary
+	stall := &stallCCD{authCCD: tw.ccd, stallOn: fromB, arrived: make(chan struct{}), release: make(chan struct{})}
+	up := httptest.NewServer(stall)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client(), Secrets: agents.NewPG(w.pool)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.ext.Gateway = gw
+	defer close(stall.release) // the runtime answers only once the test is over
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-stall.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's message never reached the runtime")
+	}
+	start := time.Now()
+	err = users.NewPG(w.pool).RemoveTeamMember(authz.System(context.Background()),
+		users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("B's removal, with B's message held at a runtime that sends no 103: %v (after %s); want it to commit once the fence's cap (%s) released the hold",
+			err, took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if took > agents.SendFenceHoldCap+2*time.Second {
+		t.Errorf("B's removal took %s; want about the cap (%s), not the runtime's answer", took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if took < agents.SendFenceHoldCap/2 {
+		t.Errorf("B's removal took %s; want it to wait for the hold (about the cap, %s) — the lock was not held", took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if _, answered := tw.ccd.counts(); len(answered) != 0 {
+		t.Errorf("the runtime answered %q before the removal returned; want it still holding B's request", answered)
 	}
 }
 

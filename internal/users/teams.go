@@ -566,11 +566,13 @@ func lockTeam(ctx context.Context, tx pgx.Tx, team int64) error {
 // rolled back); call it exactly once, whatever the answer.
 //
 // 🔴 FOR THE MOMENT A MEMBER'S TURN IS SENT (internal/api turnActingContext's
-// send fence): checked here and held until the runtime's verdict, a removal
-// is ordered wholly before the check (the turn is refused) or wholly after
-// the text reached the runtime — never between them. ⚠ It holds one pool
-// connection while held: its caller holds it across a request and nothing
-// else.
+// send fence): checked here and held until the runtime accepts the text (its
+// 103) or answers — at most agents.SendFenceHoldCap after the request was
+// written — a removal is ordered wholly before the check (the turn is
+// refused) or after the runtime took the text; on a runtime with no 103, a
+// removal after the cap may still see text sent before it delivered (the
+// operator's accepted residual, #731). ⚠ It holds one pool connection while
+// held: its caller holds it across a request and nothing else.
 //
 // FOR KEY SHARE, not FOR SHARE: a plain UPDATE of the team's row (a rename)
 // takes FOR NO KEY UPDATE and does not wait; only lockTeam's FOR UPDATE and a

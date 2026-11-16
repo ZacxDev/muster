@@ -342,13 +342,19 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // text through: a check-then-act, seen as TestARemovedMembersQueuedMessageIsDropped
 // failing about 1 run in 40 under load (since #673). So the returned ctx also
 // carries an agents.SendFence: immediately before each request of the turn
-// opens, the role is read again inside users.PGStore.HoldTeamRole, which holds
-// the team's row until the runtime's verdict on that request; every
-// membership change waits for it (lockTeam). A removal is therefore ordered
-// wholly before the read (refused: ErrNoLongerTeamOperator) or wholly after
-// the text reached the runtime. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage
-// and TestARemovalWaitsForAMembersSendInFlight pin both halves. The read above
-// stays: it refuses before anything runs as the team.
+// opens, the role is read again inside users.Store.HoldTeamRole, which holds
+// the team's row until the runtime accepts the text (ccd's 103) or gives its
+// verdict — but at most agents.SendFenceHoldCap after the request was written
+// (operator decision, #731 round 0 Q1: a membership change must not stall
+// behind a runtime that sends no 103, nor hit the statement timeout). Every
+// membership change waits for the hold (lockTeam). A removal is therefore
+// ordered wholly before the read (refused: ErrNoLongerTeamOperator), or after
+// the runtime accepted the text, or — ⚠ the accepted residual — after the cap
+// on a runtime that sends no 103, when text already transmitted before the
+// removal may still be delivered. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage,
+// TestARemovalWaitsForAMembersSendInFlight and
+// TestARemovalIsNotStalledByARuntimeThatSendsNo103 pin the three. The read
+// above stays: it refuses before anything runs as the team.
 func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, error) {
 	if !memberOnTeamAgent(ctx, a) {
 		return ctx, nil
@@ -366,20 +372,20 @@ func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context
 		return ctx, fmt.Errorf("not sent: agent %q is not a team's (owner %d)", a.Name, a.OwnerID)
 	}
 	ctx = authz.WithPrincipal(ctx, tp)
-	if h, ok := s.ext.Users.(teamRoleHolder); ok {
-		team, person := a.OwnerID, p.UserID
-		ctx = agents.WithSendFence(ctx, func(fctx context.Context) (func(), error) {
-			role, in, release, err := h.HoldTeamRole(fctx, team, person)
-			if err != nil {
-				return nil, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
-			}
-			if !operatesTeam(role, in) {
-				release()
-				return nil, ErrNoLongerTeamOperator
-			}
-			return release, nil
-		})
-	}
+	// UNCONDITIONAL: HoldTeamRole is on users.Store, so every store fences (a
+	// nil store never gets here — accountOfChecked gives it no memberships).
+	store, team, person := s.ext.Users, a.OwnerID, p.UserID
+	ctx = agents.WithSendFence(ctx, func(fctx context.Context) (func(), error) {
+		role, in, release, err := store.HoldTeamRole(fctx, team, person)
+		if err != nil {
+			return nil, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
+		}
+		if !operatesTeam(role, in) {
+			release()
+			return nil, ErrNoLongerTeamOperator
+		}
+		return release, nil
+	})
 	if s.turnRoleChecked != nil {
 		s.turnRoleChecked(a)
 	}
@@ -391,16 +397,6 @@ func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context
 func operatesTeam(role authz.TeamRole, in bool) bool {
 	return in && role.AtLeast(authz.TeamOperator)
 }
-
-// teamRoleHolder is the users store's held role read (users.PGStore.HoldTeamRole),
-// the send fence's lock. A store without it (a test's fake) gets no fence.
-type teamRoleHolder interface {
-	HoldTeamRole(ctx context.Context, team, person int64) (role authz.TeamRole, in bool, release func(), err error)
-}
-
-// 🔴 THE PRODUCTION STORE HOLDS: without this, a refactor of HoldTeamRole's
-// signature would silently drop every member turn's fence.
-var _ teamRoleHolder = (*users.PGStore)(nil)
 
 // teamGatewayToolless reports whether a's turn must go out WITHOUT tools: a
 // GATEWAY-kind agent a team owns (plan §3.1: gateway kind is not a team agent

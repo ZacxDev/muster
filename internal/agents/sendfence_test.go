@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fenceRuntime answers /v1/responses: 404 when notFound, else (when asked for
@@ -17,6 +19,9 @@ import (
 type fenceRuntime struct {
 	held     *atomic.Bool
 	notFound bool
+	// stall, when set: having recorded the arrival, write NOTHING (no 103)
+	// until stall closes — a runtime with no 103 holding its status line.
+	stall chan struct{}
 
 	mu      sync.Mutex
 	arrived []bool
@@ -26,6 +31,9 @@ func (f *fenceRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.arrived = append(f.arrived, f.held.Load())
 	f.mu.Unlock()
+	if f.stall != nil {
+		<-f.stall
+	}
 	if f.notFound {
 		http.NotFound(w, r)
 		return
@@ -130,5 +138,101 @@ func TestARefusingSendFenceSendsNothing(t *testing.T) {
 	}
 	if held.Load() {
 		t.Error("the fence's hold was not released after a 404")
+	}
+}
+
+// withFenceCap sets the package's cap for one test.
+func withFenceCap(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := sendFenceHoldCap
+	sendFenceHoldCap = d
+	t.Cleanup(func() { sendFenceHoldCap = prev })
+}
+
+// countingFence is a SendFence tracking its hold and counting its releases.
+func countingFence(held *atomic.Bool, releases *atomic.Int32) SendFence {
+	return func(context.Context) (func(), error) {
+		held.Store(true)
+		return func() {
+			held.Store(false)
+			releases.Add(1)
+		}, nil
+	}
+}
+
+// TestASendFenceHoldIsCappedOnARuntimeWithNo103 (#731 round 0 Q1, operator
+// decision): a runtime that sends no 103 and holds its status line keeps the
+// hold for SendFenceHoldCap after the request was written — then it is
+// released, while the request is still open — and the request's own verdict
+// later releases nothing more (exactly one release).
+func TestASendFenceHoldIsCappedOnARuntimeWithNo103(t *testing.T) {
+	const capped = 150 * time.Millisecond
+	withFenceCap(t, capped)
+	var held atomic.Bool
+	var releases atomic.Int32
+	rt := &fenceRuntime{held: &held, stall: make(chan struct{})}
+	srv := httptest.NewServer(rt)
+	t.Cleanup(srv.Close)
+	ctx := WithSendFence(context.Background(), countingFence(&held, &releases))
+	errc := make(chan error, 1)
+	go func() {
+		_, err := streamResponses(ctx, srv.Client(), srv.URL+"/v1/responses", "", "", responsesRequest{}, nil)
+		errc <- err
+	}()
+	for len(rt.arrivals()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	arrived := time.Now()
+	deadline := arrived.Add(20 * capped)
+	for held.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if held.Load() {
+		close(rt.stall)
+		<-errc
+		t.Fatalf("the hold was still held %s after the request arrived, with the status line still pending; want it released at the cap (%s)", 20*capped, capped)
+	}
+	if waited := time.Since(arrived); waited < capped/2 {
+		t.Errorf("the hold was released %s after the request arrived; want about the cap (%s): it must hold until then", waited, capped)
+	}
+	close(rt.stall)
+	if err := <-errc; err != nil {
+		t.Fatalf("the request, once answered: %v", err)
+	}
+	time.Sleep(2 * capped) // a cap timer left running would fire again here
+	if got := releases.Load(); got != 1 {
+		t.Errorf("the hold was released %d time(s); want exactly 1", got)
+	}
+}
+
+// slowDialClient is a client whose every connection takes d to dial.
+func slowDialClient(d time.Duration) *http.Client {
+	dialer := &net.Dialer{}
+	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		time.Sleep(d)
+		return dialer.DialContext(ctx, network, addr)
+	}}}
+}
+
+// TestASendFenceCapStartsWhenTheRequestIsWritten: a connect slower than the
+// cap spends none of it — the request arrives at the runtime INSIDE the hold,
+// because the cap starts at WroteRequest, not at the request's start.
+func TestASendFenceCapStartsWhenTheRequestIsWritten(t *testing.T) {
+	const capped = 100 * time.Millisecond
+	withFenceCap(t, capped)
+	var held atomic.Bool
+	var releases atomic.Int32
+	rt := &fenceRuntime{held: &held}
+	srv := httptest.NewServer(rt)
+	t.Cleanup(srv.Close)
+	ctx := WithSendFence(context.Background(), countingFence(&held, &releases))
+	if _, err := streamResponses(ctx, slowDialClient(4*capped), srv.URL+"/v1/responses", "", "", responsesRequest{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.arrivals(); len(got) != 1 || !got[0] {
+		t.Errorf("held when the request arrived after a %s connect: %v; want [true] (the cap, %s, starts once the request is written)", 4*capped, got, capped)
+	}
+	if got := releases.Load(); got != 1 {
+		t.Errorf("the hold was released %d time(s); want exactly 1", got)
 	}
 }

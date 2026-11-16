@@ -1041,12 +1041,19 @@ rule the later phases' rows will meet.
     queued is answered "not sent", and the message never reaches the runtime.
     The authoritative read is the **send fence**: immediately before each
     request opens, the role is read again under a `FOR KEY SHARE` on the
-    team's row (`users.PGStore.HoldTeamRole`), held until the runtime's
-    verdict (ccd's 103 or the status line). Every membership change waits
-    on that row (`lockTeam`), so a removal lands wholly before the read (the
-    message is refused) or wholly after the text reached the runtime. Before
-    the fence (#673 until the fix), a removal committing between the attempt's
-    first role read and its request let the text through.
+    team's row (`users.Store.HoldTeamRole`). The lock is held until the
+    first of: ccd's 103 (the text was accepted), the status line, a
+    transport error, or `agents.SendFenceHoldCap` (5s, under the 10s
+    statement timeout) after the request was written. Every membership
+    change waits on that row (`lockTeam`), so a removal lands wholly before
+    the read (the message is refused) or after the runtime took the text.
+    The cap is an operator decision (#731): a membership change never waits
+    longer than the cap behind a member's turn. **Accepted residual:** on a
+    runtime that sends no 103 (an older ccd, the chat-completions fallback),
+    a message already transmitted before a removal may still be delivered
+    after it. Before the fence (#673 until the fix), a removal committing
+    between the attempt's first role read and its request let the text
+    through.
   - **One shared room.** A member types into the team chief's one
     conversation, behind the per-agent FIFO turn gate. The runtime is handed
     `[muster] typed by <name> (<role>) in team <team>` before the text, in

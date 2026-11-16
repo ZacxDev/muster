@@ -312,12 +312,13 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 	// accepted, in this request's lane, when it comes (turnaccepted.go).
 	req = traceTurnAccepted(req)
 	// The send fence, if the turn carries one (sendfence.go): checked and held
-	// from here to the request's verdict, with nothing else in between.
-	fenced, err := fenceRequest(ctx)
+	// from here to the request's verdict (or its cap), with nothing else in
+	// between.
+	freq, fenced, err := fenceRequest(req)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(freq)
 	if err != nil {
 		fenced(false)
 		return nil, fmt.Errorf("request: %w", err)
