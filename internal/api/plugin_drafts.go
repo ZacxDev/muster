@@ -835,7 +835,8 @@ func draftCardHTML(c plugins.DraftCard) string {
 	// THE CARD (the Asks page's design pass): who drafted it and for which
 	// plugin, its state under that; the message it answers as a QUOTE, marked
 	// untrusted; the reply in its own box; then ONE primary action (Approve
-	// and send) with the secondary one small beside it.
+	// and send) on its own row, with the secondary one (Reject, and its
+	// reason box) under it (ui.AsksDecisionClass).
 	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
 <div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg" data-draft-agent>` + esc(flows.VisibleEscape(d.AgentName)) + `</span>
@@ -909,7 +910,7 @@ func draftCardHTML(c plugins.DraftCard) string {
 			}
 			binding = outboundApproveFields(d)
 		}
-		b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0 flex-1">` + binding + `<button type="submit" class="` +
+		b.WriteString(`<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0">` + binding + `<button type="submit" class="` +
 			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
 `)
 	}

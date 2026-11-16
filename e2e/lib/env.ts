@@ -441,6 +441,9 @@ export const pagesShareConnectPort = port + 407;
 // tests/server-switcher.spec.ts: a FAKE second muster server (its own origin,
 // 127.0.0.1) whose instance document and icon the spec controls.
 export const serverSwitcherStubPort = port + 404;
+// tests/draft-card.spec.ts: the Asks page's reply-draft card at a phone and a
+// desktop width — its own server (plugins on), no mirror host.
+export const draftCardPort = port + 405;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.
