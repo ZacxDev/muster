@@ -12,9 +12,14 @@
 # Assets (OS x ARCH = linux|darwin x amd64|arm64):
 #   muster-mirror_<os>_<arch>.tar.gz     the per-machine mirror daemon
 #   muster_<os>_<arch>.tar.gz            the CLI
-#   docker-compose.yml                   deploy/docker-compose.yml, verbatim
+#   docker-compose.yml                   deploy/docker-compose.yml, its image default
+#                                        stamped with <version>
+#                                        (scripts/stamp-compose-version.sh): with no
+#                                        .env it runs this release
 #   env.example                          deploy/.env.example, MUSTER_VERSION filled in
 #                                        (save it as .env — see below)
+#   install.sh                           deploy/install.sh, its release stamped:
+#                                        `curl -fsSL <release>/install.sh | sh`
 #   checksums.txt                        sha256 of every file above
 #
 # ⚠ NO SERVER BINARY, BY DECISION. The server ships as the container image
@@ -61,6 +66,7 @@ tar --version 2>/dev/null | grep -q 'GNU tar' || die "GNU tar is required (repro
 
 [ -f "$ROOT/deploy/docker-compose.yml" ] || die "deploy/docker-compose.yml is missing" 2
 [ -f "$ROOT/deploy/.env.example" ] || die "deploy/.env.example is missing" 2
+[ -f "$ROOT/deploy/install.sh" ] || die "deploy/install.sh is missing" 2
 
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -92,9 +98,13 @@ for os in "${OSES[@]}"; do
   done
 done
 
-cp "$ROOT/deploy/docker-compose.yml" "$DIST/docker-compose.yml"
+"$ROOT/scripts/stamp-compose-version.sh" "$VERSION" < "$ROOT/deploy/docker-compose.yml" > "$DIST/docker-compose.yml" ||
+  die "could not stamp $VERSION into docker-compose.yml"
+grep -q '^RELEASE="@MUSTER_RELEASE@"' "$ROOT/deploy/install.sh" || die "deploy/install.sh has no RELEASE=\"@MUSTER_RELEASE@\" line to stamp"
+sed "s/^RELEASE=\"@MUSTER_RELEASE@\"/RELEASE=\"$VERSION\"/" "$ROOT/deploy/install.sh" > "$DIST/install.sh"
+chmod 755 "$DIST/install.sh"
 # The attached .env.example pins the release it came from; the repository copy
-# leaves MUSTER_VERSION empty so the compose file refuses to start without one.
+# leaves MUSTER_VERSION empty, so the compose file's own default applies.
 grep -q '^MUSTER_VERSION=$' "$ROOT/deploy/.env.example" ||
   die "deploy/.env.example has no empty 'MUSTER_VERSION=' line to fill in"
 sed "s/^MUSTER_VERSION=\$/MUSTER_VERSION=$VERSION/" "$ROOT/deploy/.env.example" > "$DIST/env.example"
@@ -112,7 +122,7 @@ expected=(
   muster-mirror_darwin_amd64.tar.gz muster-mirror_darwin_arm64.tar.gz
   muster_linux_amd64.tar.gz         muster_linux_arm64.tar.gz
   muster_darwin_amd64.tar.gz        muster_darwin_arm64.tar.gz
-  docker-compose.yml env.example checksums.txt
+  docker-compose.yml env.example install.sh checksums.txt
 )
 
 want="$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
@@ -124,6 +134,9 @@ $(diff <(echo "$want") <(echo "$have") || true)"
 [ "$(wc -l < "$DIST/checksums.txt")" -eq $(( ${#expected[@]} - 1 )) ] ||
   die "checksums.txt does not list every asset"
 grep -q "^MUSTER_VERSION=$VERSION\$" "$DIST/env.example" || die "env.example does not pin $VERSION"
+grep -q "^RELEASE=\"$VERSION\"" "$DIST/install.sh" || die "install.sh does not pin $VERSION"
+[ "$("$ROOT/scripts/stamp-compose-version.sh" --current < "$DIST/docker-compose.yml")" = "$VERSION" ] ||
+  die "docker-compose.yml does not default to $VERSION in every image"
 # No asset may start with a period (GitHub would rename it; see the header).
 if (cd "$DIST" && find . -maxdepth 1 -type f -name '.*' | grep -q .); then die "an asset name starts with '.'"; fi
 

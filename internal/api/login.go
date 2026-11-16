@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
 )
@@ -186,7 +187,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clearSiteCaches(w)
-	s.setPasswordSessionCookie(w)
+	s.setPasswordSessionCookie(w, r)
 	s.logger.Printf("login: a browser session was issued")
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
 }
@@ -194,7 +195,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 // setPasswordSessionCookie mints a password-mode session issued NOW — the
 // sign-in and the step-up confirm (stepup.go) are its two callers, and the
 // issue time is what the step-up gate reads.
-func (s *Server) setPasswordSessionCookie(w http.ResponseWriter) {
+func (s *Server) setPasswordSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookieName,
 		Value: auth.SignSession(s.auth.uiSessionSecret(), time.Now(), sessionTTL),
@@ -207,9 +208,56 @@ func (s *Server) setPasswordSessionCookie(w http.ResponseWriter) {
 		// land on the login page despite a valid session. Lax still withholds it
 		// from cross-site POSTs, which is the CSRF case that matters here.
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.auth.SecureCookies,
+		Secure:   s.passwordCookieSecure(r),
 		MaxAge:   int(sessionTTL / time.Second),
 	})
+}
+
+// passwordCookieSecure is the Secure attribute of a password-mode cookie set on
+// the response to r: MUSTER_SECURE_COOKIES, EXCEPT on a page this machine
+// serves itself over plain http on its loopback interface (loopbackHTTPPage).
+//
+// 🔴 WHY THE EXCEPTION, AND WHY IT IS SAFE. Chromium keeps a Secure cookie set
+// over http://localhost (a loopback origin is a secure context); WebKit drops
+// it, so a Secure session cookie there signs nobody in. MEASURED, not assumed:
+// e2e/localhost's measure test logs it on every CI run (Playwright's Chromium
+// KEPT, its WebKit DROPPED; that is Playwright's WebKit build on Linux — Safari
+// on macOS itself is not measured there). The Compose stack sets
+// MUSTER_SECURE_COOKIES=1 by default and listens on 127.0.0.1, so the first
+// thing a new install does (open http://localhost:8105) would fail in a WebKit
+// browser, and its sign-in is checked in both engines. Dropping Secure there
+// costs nothing: Secure keeps a cookie off plain-http requests, and EVERY
+// request to that origin is plain http on the loopback interface, which never
+// leaves the machine. Anywhere else — https, a LAN address, a proxy in front
+// (a Host it did not keep, a forwarded https) — the flag is exactly as set.
+func (s *Server) passwordCookieSecure(r *http.Request) bool {
+	return s.auth.SecureCookies && !loopbackHTTPPage(r)
+}
+
+// loopbackHTTPPage reports whether r is a browser request from a page this
+// server serves over plain http on the loopback interface: the request itself
+// is plain http (no TLS, no forwarded https), and its Origin — or Referer, when
+// the browser sent no Origin — is http://<loopback host> naming exactly r's
+// own Host (so r's Host is loopback too: that comparison is the Host check).
+// All of it, so a request through any proxy (a Host it rewrote to localhost
+// keeps its https Origin; one that kept the Host is not loopback) and a request
+// with neither header (curl, a script) keep the configured flag.
+func loopbackHTTPPage(r *http.Request) bool {
+	if r == nil || r.TLS != nil {
+		return false
+	}
+	if p := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); p != "" && !strings.EqualFold(p, "http") {
+		return false
+	}
+	src := strings.TrimSpace(r.Header.Get("Origin"))
+	if src == "" {
+		src = strings.TrimSpace(r.Header.Get("Referer"))
+	}
+	if !loopback.HTTPURL(src) {
+		return false
+	}
+	u, err := url.Parse(src)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
 // handleLogout clears the session cookie. It is a POST because a GET logout is
@@ -230,7 +278,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.auth.SecureCookies,
+		Secure:   s.passwordCookieSecure(r),
 		MaxAge:   -1,
 	})
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
