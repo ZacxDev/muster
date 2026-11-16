@@ -22,6 +22,7 @@ The verb set is pinned in two places:
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)), `plugins deliver-to <plugin-id> officer:<id>` / `--clear` ([bind a plugin to an officer](plugins.md#a-plugin-bound-to-an-officer)) |
 | pull requests | `pr-session <owner>/<repo>#<n>` (which of your sessions created a pull request: [below](#which-session-created-a-pull-request)) |
 | setup | `doctor` ([below](#muster-doctor)) |
+| the ask log | `asks log`, `asks summary` (what your agents asked you, how you answered, how long it took: [below](#reading-the-ask-log)) |
 | chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |
 | several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |
 
@@ -156,17 +157,23 @@ go build -o muster ./cmd/muster         # or plain Go
 ## `muster doctor`
 
 Checks a muster installation end to end from the machine it runs on, and
-prints how to fix each failure. [INSTALL.md](../INSTALL.md) ends with it.
+prints how to fix each failure. [INSTALL.md](../INSTALL.md) and `install.sh` end with it.
 
 ```sh
-muster doctor --deploy-env ~/muster/.env    # on the machine running the server
+muster doctor --deploy-env <deploy-env-file>    # on the machine running the server
 muster doctor --api-url https://<your-muster-address>   # on any other machine
 ```
 
 On a machine other than the server, the doctor needs the server's address:
 `--api-url`, or `MUSTER_API_URL` in the environment or in the env file. The API
 URL has no default, so without one the doctor stops before checking anything.
-INSTALL.md's Step 10 passes `--api-url` there.
+INSTALL.md's "Check it" passes `--api-url` there.
+
+The deploy file is the server's own `.env` when it sets the password and the hook
+token; a Compose stack that generated them (no `.env`, [quickstart-local.md](quickstart-local.md))
+prints them with `docker compose exec muster /muster-server show-secret ui-password`
+(and `hook-token`), and INSTALL.md's "Check it" writes them into a private file for
+`--deploy-env`.
 
 | check | PASS means | read from |
 |---|---|---|
@@ -179,7 +186,7 @@ INSTALL.md's Step 10 passes `--api-url` there.
 | `tmux` | tmux is installed here | `tmux -V` |
 | `sign-in` | the operator password signs in, and the session opens the board | `POST /login`, then `GET /tasks` |
 | `push` | the VAPID keys are set | `GET /api/push/vapid-public-key` (signed in), else `GET /api/doctor` |
-| `dictation` | a bundled 1.7 s spoken sample comes back as text through `POST /transcribe` | the server and its speech-to-text service |
+| `dictation` | a bundled 1.7 s spoken sample comes back as text through `POST /transcribe`. Dictation off on the server is a SKIP: it is an optional feature. Misconfigured (`MUSTER_STT_URL` without `MUSTER_STT_TOKEN`) is a FAIL | the server and its speech-to-text service |
 | `features` | no feature the server reports is **misconfigured** (asked for, with a dependency missing); a feature that is merely off is not a failure. Every feature is listed below the checks, with its state and the line that turns it on | `GET /api/doctor` |
 | `mcp-endpoint` | this machine's `muster-mirror` serves its local MCP endpoint (`MUSTER_MIRROR_MCP_LISTEN` in its settings) and has written its secret where muster-mirror keeps it (`MUSTER_MIRROR_MCP_SECRET_FILE`, else the user config directory: `$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on macOS). Unset is a SKIP: the agent ask tool is optional | this machine's muster-mirror settings |
 | `mcp-registration` | one of Claude Code's scopes for this directory registers that endpoint (any loopback spelling: `localhost`, `127.0.0.1`, `::1`; same port, path `/mcp`), so sessions here have muster's tools. A registration in only the local or project scope passes and says sessions elsewhere have none. A FAIL prints the exact `claude mcp add-json` command | `~/.claude.json` (user scope, and `projects[<this directory>]`), `./.mcp.json` |
@@ -195,7 +202,7 @@ INSTALL.md's Step 10 passes `--api-url` there.
   document, `{"url", "ok", "checks": [{"name", "status", "detail", "fix"}]}`,
   as for every other verb, wherever the two streams go. To read only the
   report (a terminal, or an agent whose shell merges the streams), send stdout
-  away: `muster doctor >/dev/null`. INSTALL.md's Step 10 does.
+  away: `muster doctor >/dev/null`. INSTALL.md's "Check it" does.
 - **Credentials:** the server-side checks need a token (the hook token, or a
   personal token; a personal token sees only its owner's hosts); without one
   they SKIP. `--deploy-env` reads the compose `.env`: its `MUSTER_PUBLIC_URL`
@@ -285,6 +292,33 @@ claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude
   armed).
 - **Credential:** the ordinary one — a personal token reads its owner's rows,
   the shared hook token the machine user's.
+
+## Reading the ask log
+
+`asks log` reads [`GET /api/asks/log`](asks.md#reading-the-log) — your asks,
+newest first — and `asks summary` reads `GET /api/asks/summary`: counts by
+kind, outcome and who answered, the median and 90th percentile time to an
+answer, and the questions asked at least twice with their most frequent
+answer. Both take the same filters: `--kind`, `--runtime`, `--outcome`,
+`--answered-by`, `--host`, `--repo`, `--session`, `--since`, `--until`
+(`--since 7d`, `--since 36h` or an RFC 3339 time); `asks log` also takes
+`--limit` and `--before` (the previous page's `next`), `asks summary` `--top`.
+
+```sh
+muster asks summary --since 30d
+muster asks log --kind plain_text --answered-by owner --since 7d | jq -r '.asks[] | [.answer_secs, .question] | @tsv'
+```
+
+- **stdout** is the server's JSON and nothing else (there is no `--json`
+  flag: there is no other stdout); **stderr** repeats it as lines a person
+  reads — one block per ask (a row whose text expired says so), or the summary
+  and one line per repeated question.
+- **Exit status:** 0; **12** when the ask log is off on the server (the message
+  names `MUSTER_ASK_LOG=1`); **3** for the shared hook token or any other
+  refused credential; 2 for a filter the server does not know (a 400 naming
+  it); and the usual codes otherwise.
+- **Credential:** a **personal** token (`mst_…`). The log is a person's own;
+  the hook token acts as the machine user and is refused.
 
 ## Other binaries
 

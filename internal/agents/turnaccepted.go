@@ -87,6 +87,9 @@ func traceTurnAccepted(req *http.Request) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
 			if code == http.StatusEarlyHints && h.Get(HeaderCCPromptAccepted) == "1" {
+				// The send fence's hold goes FIRST (sendfence.go): the callbacks
+				// below write to the database and must not wait behind it.
+				fenceAccepted(ctx)
 				MarkTurnAccepted(ctx, TurnAcceptance{Lane: lane, NewConversation: h.Get(HeaderCCNewConversationSession)})
 			}
 			return nil

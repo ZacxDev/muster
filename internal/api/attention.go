@@ -1626,23 +1626,27 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
 	askList := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
 		s.askListHTML(r.Context(), items, rd, now) + `</ul>`
-	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
-		b.WriteString(askList)
-	} else {
-		var pending, archived []plugins.DraftCard
-		if s.ext.Plugins != nil {
-			var ok bool
-			pending, archived, ok = s.readDraftViews(r.Context(), focus)
-			if !ok && problem == "" {
-				b.WriteString(problemNode("The reply drafts could not be read."))
-			}
+	// ALWAYS TABS: the Log tab (ask_log_read.go) is drawn whatever else is
+	// served — with the ask log off it says how to turn it on.
+	var pending, archived []plugins.DraftCard
+	if s.ext.Plugins != nil {
+		var ok bool
+		pending, archived, ok = s.readDraftViews(r.Context(), focus)
+		if !ok && problem == "" {
+			b.WriteString(problemNode("The reply drafts could not be read."))
 		}
-		nudges := ""
-		if s.chiefNudgesOn() {
-			nudges = s.chiefNudgesPanelHTML(r.Context(), now)
-		}
-		b.WriteString(s.asksTabsHTML(askList, s.ext.Plugins != nil, pending, archived, nudges, tab))
 	}
+	nudges := ""
+	if s.chiefNudgesOn() {
+		nudges = s.chiefNudgesPanelHTML(r.Context(), now)
+	}
+	// The log is read only when the page is opened ON its tab; otherwise the
+	// panel is a placeholder the page's script fills when the tab is opened.
+	logPanel := askLogLazyHTML(r.URL.Query())
+	if tab == asksTabLog {
+		logPanel = s.askLogPanelHTML(r.Context(), r.URL.Query())
+	}
+	b.WriteString(s.asksTabsHTML(askList, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
 	b.WriteString(`
 </section>`)
 	b.WriteString(attentionPageScript)
@@ -1650,9 +1654,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
-	if s.ext.Plugins != nil || s.chiefNudgesOn() {
-		b.WriteString(asksPageScript)
-	}
+	b.WriteString(asksPageScript)
 	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.

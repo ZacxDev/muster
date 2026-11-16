@@ -19,30 +19,36 @@ Self-hosted: start on this machine at `http://localhost`, then add your phone ov
 
 ## Quick start
 
-**On this machine, in one line** (Docker with Compose v2, and tmux; nothing
-else, no account):
+Two ways in. Both start on **this machine**, at a `http://localhost` address,
+with nothing to fill in; your phone and your other machines come after, in one
+step, over [Tailscale](https://tailscale.com).
+
+**(a) Let your agent install it.** Paste this one prompt into the coding agent
+(Claude Code, Codex, opencode, Gemini CLI, …) on the machine that should run
+muster:
+
+```text
+Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. If that download fails, stop and tell me what it printed; never work from another copy of the guide, such as the one on the main branch, or from memory. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
+```
+
+The agent downloads [INSTALL.md](INSTALL.md), a guide written for agents to
+execute, from the newest release, asks its questions once, up front, installs
+muster with the one-liner below, and finishes with `muster doctor`. If you
+want the phone and your other machines, it adds Tailscale; on each further
+machine, paste the same prompt and tell the agent muster already runs. More in
+[docs/onboarding.md](docs/onboarding.md).
+
+**(b) Install it yourself, in one line** (Docker with Compose v2, and tmux):
 
 ```sh
 curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh
 ```
 
-It starts muster at `http://localhost:8105` with every secret generated (no
-`.env` to fill in), shows this machine's tmux sessions, and runs
-`muster doctor`. Or from a clone:
-`docker compose -f deploy/docker-compose.yml up -d --wait`. Both are in
-[docs/quickstart-local.md](docs/quickstart-local.md).
-
-**Add your phone** with Tailscale: HTTPS on your own tailnet, for the phone,
-push notifications and your other machines
-([docs/quickstart-local.md#add-your-phone](docs/quickstart-local.md#add-your-phone)).
-
-**Your other machines, or the whole install over Tailscale from the start:**
-paste this one prompt into the coding agent (Claude Code, Codex, opencode,
-Gemini CLI, …) on each machine ([the full install](#install)):
-
-```text
-Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself.
-```
+It starts muster in Docker with every secret generated, shows this machine's
+tmux sessions, and runs `muster doctor`; adding your phone is one section of
+[docs/quickstart-local.md](docs/quickstart-local.md#add-your-phone).
+**On Kubernetes** (the advanced path, which also runs dispatched agents): the
+Helm chart, [docs/kubernetes.md](docs/kubernetes.md).
 
 ## What you get
 
@@ -152,37 +158,10 @@ The components and what each trusts: [docs/architecture.md](docs/architecture.md
 
 ## Install
 
-### The full install, phone and every machine
 
-You need:
-
-- a [Tailscale](https://tailscale.com) account with MagicDNS and HTTPS
-  certificates on, and Tailscale on every machine and on your phone;
-- on the machine that will run the server: Docker with Compose v2, and about
-  10 GB of free disk (20 GB with local dictation);
-- tmux on every machine. Linux, amd64 or arm64; macOS hosts are experimental
-  ([Limits](#limits)).
-
-**(a) Let your agent install it.** Paste the [one prompt](#quick-start) into the
-coding agent (Claude Code, Codex, opencode, Gemini CLI, …) on each machine you
-want in muster. The first paste sets up the server; on each further machine,
-tell the agent muster already runs, and that machine joins it.
-
-It asks its questions once, up front (other machines, how dictation should work,
-whether muster may type into each machine's terminals), then:
-
-- runs the server in Docker, behind `tailscale serve` on your tailnet;
-- connects each machine's tmux sessions with `muster-mirror`;
-- finishes with `muster doctor`, which checks every part end to end, says how
-  to fix what fails, and (with `qrencode` installed) prints a QR code of the
-  address for your phone.
-
+What each part needs, and what is optional: [Core vs optional](#core-vs-optional).
 While there is no session yet, home shows how to start an agent in tmux
-(`tmux new -A -s work claude`) and the same prompt, to connect another
-machine. More in [docs/onboarding.md](docs/onboarding.md).
-
-**(b) Install it yourself.** [INSTALL.md](INSTALL.md) is the same guide, step by
-step.
+(`tmux new -A -s work claude`) and the same prompt, to connect another machine.
 
 <details>
 <summary><b>Install from inside Claude Code, or as a skill</b></summary>
@@ -196,8 +175,8 @@ repository as a plugin marketplace and install the `muster` plugin:
 ```
 
 Then ask Claude Code to "set up muster". The plugin holds one skill,
-`muster-setup`, which follows the same [INSTALL.md](INSTALL.md) from its URL,
-so it never carries a copy of the steps.
+`muster-setup`, which downloads the same [INSTALL.md](INSTALL.md) from the
+newest release and follows it, so it never carries a copy of the steps.
 
 Other coding agents can install the same skill with the
 [skills](https://skills.sh) CLI:
@@ -229,8 +208,8 @@ this off: [docs/features.md](docs/features.md#session-state).
 ## Core vs optional
 
 The core runs with **no optional dependency**: Docker Compose with its bundled
-Postgres on one machine, `muster-mirror` and tmux on each machine, and
-Tailscale. Everything else is off until you give it what it needs, and is
+Postgres on one machine, and `muster-mirror` and tmux on each machine;
+Tailscale adds the phone and other machines. Everything else is off until you give it what it needs, and is
 turned on with a few lines in `.env` (and, for some, a Compose profile).
 
 <details>
@@ -239,9 +218,9 @@ turned on with a few lines in `.env` (and, for some, a Compose profile).
 | feature | needs | default |
 |---|---|---|
 | [Core](docs/features.md#core): mirrored sessions, chat and Terminal views, typing into sessions, sidebar and search, the Asks page, tasks, the installable app, the CLI and `muster doctor` | Compose and its Postgres; `muster-mirror` and tmux on each machine; Tailscale | on |
-| [Push](docs/features.md#push) | HTTPS, which Tailscale gives you; keys INSTALL.md generates | on in INSTALL.md |
+| [Push](docs/features.md#push) | keys the Compose stack generates; HTTPS (Tailscale) for the phone | on |
 | [One push per stop](docs/features.md#session-state) | Push (above) | on in the Compose stack, from v0.146.0 |
-| [Dictation](docs/features.md#dictation) | `--profile stt` (bundled, CPU), `--profile stt-cohere` (GPU), or your own OpenAI-compatible speech-to-text | off (INSTALL.md asks) |
+| [Dictation](docs/features.md#dictation) | `--profile stt` (bundled, CPU), `--profile stt-cohere` (GPU), or your own OpenAI-compatible speech-to-text | off (the agent install asks) |
 | [Attachments](docs/features.md#attachments) | `--profile s3`, or your own S3-compatible store | off |
 | [Suggested replies](docs/features.md#suggested-replies) and [focus](docs/features.md#focus) | an OpenRouter key | off until the key is set; suggested replies then stay off for each user until they turn them on in Account (with no database, until `MUSTER_SUGGEST=on`) |
 | [Agent ask tool](docs/features.md#agent-ask-tool) and [ask cards](docs/features.md#ask-cards) | a one-time setup on each machine | off |

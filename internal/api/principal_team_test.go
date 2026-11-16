@@ -29,6 +29,11 @@ func (u teamUsers) Account(ctx context.Context, id int64) (users.Account, error)
 	return users.Account{Role: r, Team: id == u.team}, nil
 }
 
+// HoldTeamRole: teamUsers holds no memberships, so the send fence REFUSES.
+func (teamUsers) HoldTeamRole(context.Context, int64, int64) (authz.TeamRole, bool, func(), error) {
+	return "", false, func() {}, nil
+}
+
 // doorAdmitsATeam is EVERY door a route is reached through (routeVias' keys)
 // and whether it admits a TEAM's credential. Only an agent's own token does:
 // there the team is the agent row's owner (a team-owned agent acting as its
