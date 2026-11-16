@@ -258,7 +258,7 @@ func (g *PushGate) bodyContract(sr officers.ShipRepo, body string, item int) err
 	return nil
 }
 
-// officerNamedWhy is why text (a title, a body, a comment) may not go to sr,
+// officerNamedWhy is why text (a title, a body, a comment, a branch name) may not go to sr,
 // "" when it may: sr is public and text names this officer — its id or its
 // slug, compared without case. The officer is muster's internal name, which a
 // public repository never shows (its first line, branch and item are kept
@@ -1132,12 +1132,20 @@ func (g *PushGate) closeOnHit(ctx context.Context, sr officers.ShipRepo, gh GitH
 		closed = false
 		what = fmt.Sprintf("could NOT close pull request #%d (%s) in %s after %s (%v); a human must", pr.Number, pr.HeadRef, sr.Repo, after, err)
 	}
-	if _, own, _ := g.branchItem(ctx, sr, pr.HeadRef); closed && deleteBranch && own &&
-		(pr.HeadRepo == "" || strings.EqualFold(pr.HeadRepo, sr.Repo)) {
-		if err := gh.DeleteBranch(ctx, pr.HeadRef); err != nil {
-			what += fmt.Sprintf(", and could NOT delete branch %s, which holds the refused change (%v); a human must", pr.HeadRef, err)
-		} else {
-			what += fmt.Sprintf(", and deleted branch %s, which held the refused change", pr.HeadRef)
+	if closed && deleteBranch && (pr.HeadRepo == "" || strings.EqualFold(pr.HeadRepo, sr.Repo)) {
+		// 🔴 A record that cannot be read is NOT "not the officer's": the
+		// branch still holds the refused change, so HQ is told a human must
+		// delete it (never silently kept).
+		_, own, oerr := g.branchItem(ctx, sr, pr.HeadRef)
+		switch {
+		case oerr != nil:
+			what += fmt.Sprintf(", and could NOT confirm branch %s is the officer's own (%v), so did not delete it; it holds the refused change: a human must delete it", pr.HeadRef, oerr)
+		case own:
+			if err := gh.DeleteBranch(ctx, pr.HeadRef); err != nil {
+				what += fmt.Sprintf(", and could NOT delete branch %s, which holds the refused change (%v); a human must", pr.HeadRef, err)
+			} else {
+				what += fmt.Sprintf(", and deleted branch %s, which held the refused change", pr.HeadRef)
+			}
 		}
 	}
 	summary := fmt.Sprintf("officer %s: muster %s: %s", g.OfficerID, what, why)
@@ -1207,7 +1215,10 @@ func (g *PushGate) publicBranchCheck(ctx context.Context, sr officers.ShipRepo, 
 		return
 	}
 	what := "left the branch (it is not the officer's own branch shape)"
-	if _, own, _ := g.branchItem(ctx, sr, branch); own {
+	if _, own, oerr := g.branchItem(ctx, sr, branch); oerr != nil {
+		// 🔴 Unreadable is not "not the officer's": a human must delete it.
+		what = fmt.Sprintf("could NOT confirm the branch is the officer's own (%v), so did not delete it; a human must delete it", oerr)
+	} else if own {
 		if err := gh.DeleteBranch(ctx, branch); err != nil {
 			what = fmt.Sprintf("could NOT delete the branch (%v); a human must", err)
 		} else {

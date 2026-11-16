@@ -362,10 +362,7 @@ const publicBranchSegment = "fix/"
 // maxPublicSlug bounds a public branch's slug.
 const maxPublicSlug = 40
 
-var (
-	publicSlugRE   = regexp.MustCompile(`^[a-z]+(?:-[a-z]+)*$`)
-	publicBranchRE = regexp.MustCompile(`^fix/[a-z]+(?:-[a-z]+)*-[a-z]{` + strconv.Itoa(PublicTokenLen) + `}$`)
-)
+var publicSlugRE = regexp.MustCompile(`^[a-z]+(?:-[a-z]+)*$`)
 
 // ValidPublicSlug reports whether slug may name a public branch: 1..40
 // lower-case letters in hyphen-separated words, no digit.
@@ -398,14 +395,6 @@ func NewPublicBranch(prefix, slug string) (string, error) {
 		tok[i] = letters[int(c)%26]
 	}
 	return prefix + publicBranchSegment + slug + "-" + string(tok), nil
-}
-
-// PublicBranchShape reports whether branch is a public repository's draft
-// branch shape under prefix (NewPublicBranch's). The shape alone proves
-// nothing about whose it is: that is muster's record (PublicBranchStore).
-func PublicBranchShape(prefix, branch string) bool {
-	rest, ok := strings.CutPrefix(branch, prefix)
-	return ok && ValidRefSuffix(branch) && publicBranchRE.MatchString(rest)
 }
 
 // MatchForbidden reports whether repository path p matches forbidden-path

@@ -1723,8 +1723,11 @@ name neither the officer nor its HQ item: anyone can read them.
   (offered to a draft officer with a public repository only): muster checks
   that HQ shows the instance holding the item (a `*.pr_fix` item is refused:
   it pushes to its pull request's branch), scans the name with the
-  internal-details patterns, records it and answers it. A second call for the
-  same item and repository answers the same branch.
+  internal-details patterns, refuses a name holding the officer's id or slug,
+  records it and answers it. A second call for the same item and repository
+  answers the same branch. A push to any branch of a public repository whose
+  name holds the officer's id or slug is refused (403) before ownership is
+  even asked.
 - **muster keeps the mapping**: `officer_public_branches` (migration 0136),
   one row per (owner, officer, repository, item) naming the branch, under the
   officer's owner's row-level security. 🔴 **The row is the only proof the
@@ -1733,7 +1736,10 @@ name neither the officer nor its HQ item: anyone can read them.
   read, is a refusal); the body contract, the per-item, open and per-day
   limits, the author-filter cross-check, the orphan report, and the branch
   deletion after a content hit all read the item and the ownership there,
-  never from the name. Without a database the record is in memory, and a
+  never from the name. A record that cannot be read when a content hit would
+  delete the branch is not "not the officer's": the branch is kept and HQ's
+  notice says ownership could not be confirmed and a human must delete it
+  (still a leak notice). Without a database the record is in memory, and a
   restart forgets it (the officer is then named a new branch).
 - **The body's first line** is exactly
   `Authored from untrusted inputs by an automated agent; review as such`,
@@ -1742,6 +1748,11 @@ name neither the officer nor its HQ item: anyone can read them.
   internal-details scan, which still runs on the branch name, the added lines,
   the commit messages and identities, and the title, body and comments.
 - A repository NOT marked `public` keeps the form above unchanged.
+- 🔴 **The pull request's author is the officer's GitHub App bot login**,
+  which GitHub shows on every public pull request. "Names no officer" holds
+  only if that App is not itself named after the officer: name the App of a
+  draft officer that ships a public repository neutrally (a deployment
+  choice; muster does not check it).
 
 ### The shepherd stage
 

@@ -50,6 +50,10 @@ func (m *memRecord) Mint(ctx context.Context, repo string, item int, branch stri
 	return m.st.PublicBranchMint(ctx, m.officer, repo, item, branch)
 }
 
+// dPubBranch is the public rig's recorded branch for item 17 (publicRig):
+// officers.NewPublicBranch's shape, naming neither the officer nor the item.
+const dPubBranch = "bot/fix/clean-docs-qzvrwmtkpjhd"
+
 // publicFirstLine is the public body's first line, spelled out (not read from
 // the code under test).
 const publicFirstLine = "Authored from untrusted inputs by an automated agent; review as such"
@@ -61,12 +65,14 @@ func goodPublicBody() string {
 
 func goodPublicCreate() map[string]any {
 	m := goodCreate()
+	m["head"] = dPubBranch
 	m["body"] = goodPublicBody()
 	return m
 }
 
 // mintFor names a public branch for item, making the rig's clean comparison
-// its comparison too, so a create from it is admitted.
+// and the README the docs-only gate reads at its head the minted branch's
+// too, so a create from it is admitted.
 func (r *draftRig) mintFor(t *testing.T, item int, slug string) string {
 	t.Helper()
 	br, err := r.g.MintPublicBranch(context.Background(), dInstance, dInfra, item, slug)
@@ -74,6 +80,9 @@ func (r *draftRig) mintFor(t *testing.T, item int, slug string) string {
 		t.Fatalf("minting a branch for item %d: %v", item, err)
 	}
 	r.infra.compares["trunk..."+br] = r.infra.compares["trunk..."+dBranch]
+	if c, ok := r.infra.contents["README.md@"+dBranch]; ok {
+		r.infra.contents["README.md@"+br] = c
+	}
 	return br
 }
 
@@ -95,7 +104,9 @@ func (r *draftRig) pushRef(repo, ref string) error {
 // refused the neutral one.
 func TestAPublicPullRequestBodyNamesNoOfficerOrItem(t *testing.T) {
 	r := publicRig(t)
-	if err := r.create(goodCreate()); !isGateRefusal(err) || !strings.Contains(err.Error(), publicFirstLine) {
+	priv := goodCreate()
+	priv["head"] = dPubBranch
+	if err := r.create(priv); !isGateRefusal(err) || !strings.Contains(err.Error(), publicFirstLine) {
 		t.Fatalf("public, the private first line: err = %v, want a 403 naming the neutral line", err)
 	}
 	r = publicRig(t)
@@ -123,14 +134,17 @@ func TestAPublicPullRequestBodyNamesNoOfficerOrItem(t *testing.T) {
 	}
 	r = publicRig(t)
 	r.g.Ship.Repos[1].Public = false
-	if err := r.create(goodPublicCreate()); !isGateRefusal(err) || !strings.Contains(err.Error(), "Officer: "+dOfficer+" · item 17") {
+	neutral := goodPublicCreate()
+	neutral["head"] = dBranch
+	if err := r.create(neutral); !isGateRefusal(err) || !strings.Contains(err.Error(), "Officer: "+dOfficer+" · item 17") {
 		t.Fatalf("control, private: the neutral first line: err = %v, want the private line required", err)
 	}
 }
 
 // TestAPublicBranchNotTheOfficersIsRefused: in a public repository a branch
 // is the officer's only by muster's record. Refused there: the private shape
-// for an item the record does not hold (it names the officer and the item),
+// (it names the officer — refused for that before ownership is asked —
+// and the item),
 // a neutral branch recorded for ANOTHER officer, a neutral branch muster
 // never minted, and any branch when the record cannot be read (fail closed).
 // Control: the officer's own recorded branch is admitted, and the private
@@ -142,7 +156,7 @@ func TestAPublicBranchNotTheOfficersIsRefused(t *testing.T) {
 	ctx := context.Background()
 	privShape := "refs/heads/bot/engineering-example-web/18-fix-ui"
 	r := publicRig(t)
-	if err := r.pushRef(dInfra, privShape); !isGateRefusal(err) || !strings.Contains(err.Error(), "PUBLIC repository") {
+	if err := r.pushRef(dInfra, privShape); !isGateRefusal(err) || !strings.Contains(err.Error(), "names this officer's internal id") {
 		t.Fatalf("public: the private shape for an unrecorded item: err = %v, want a 403", err)
 	}
 	other := newMemRecord("engineering:example-other")
@@ -164,21 +178,21 @@ func TestAPublicBranchNotTheOfficersIsRefused(t *testing.T) {
 		t.Fatalf("public: a pull request from another officer's branch: err = %v, want a 403", err)
 	}
 	never, _ := officers.NewPublicBranch("bot/", "raise-limit")
-	if err := r.pushRef(dInfra, "refs/heads/"+never); !isGateRefusal(err) {
+	if err := r.pushRef(dInfra, "refs/heads/"+never); !isGateRefusal(err) || !strings.Contains(err.Error(), "PUBLIC repository") {
 		t.Fatalf("public: a neutral branch muster never minted: err = %v, want a 403", err)
 	}
 	r = publicRig(t)
 	r.g.PublicBranches.(*memRecord).err = errors.New("fake: the database is down")
-	if err := r.pushRef(dInfra, "refs/heads/"+dBranch); !isGateRefusal(err) || !strings.Contains(err.Error(), "could not be read") {
+	if err := r.pushRef(dInfra, "refs/heads/"+dPubBranch); !isGateRefusal(err) || !strings.Contains(err.Error(), "could not be read") {
 		t.Fatalf("public: an unreadable record: err = %v, want a 403 (fail closed)", err)
 	}
 	r = publicRig(t)
 	r.g.PublicBranches = nil
-	if err := r.pushRef(dInfra, "refs/heads/"+dBranch); !isGateRefusal(err) {
+	if err := r.pushRef(dInfra, "refs/heads/"+dPubBranch); !isGateRefusal(err) {
 		t.Fatalf("public: no record at all: err = %v, want a 403 (fail closed)", err)
 	}
 	// Controls.
-	if err := publicRig(t).pushRef(dInfra, "refs/heads/"+dBranch); err != nil {
+	if err := publicRig(t).pushRef(dInfra, "refs/heads/"+dPubBranch); err != nil {
 		t.Fatalf("control: the officer's own recorded branch: %v", err)
 	}
 	r = publicRig(t)
@@ -246,7 +260,7 @@ func TestMintPublicBranchIsNeutralAndOpaque(t *testing.T) {
 		if !isGateRefusal(err) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want a refusal containing %q", name, err, c.want)
 		}
-		if got, _ := r.g.PublicBranches.Branches(ctx, dInfra); len(got) != 2 { // dBranch and br
+		if got, _ := r.g.PublicBranches.Branches(ctx, dInfra); len(got) != 2 { // dPubBranch and br
 			t.Errorf("%s: the record holds %v, want nothing new", name, got)
 		}
 	}
@@ -285,13 +299,13 @@ func TestAPublicBranchFlowsThroughTheGate(t *testing.T) {
 	open := func(n int, head string) PR {
 		return PR{Number: n, State: "open", Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: head, CreatedAt: yesterday, Body: goodPublicBody()}
 	}
-	r.infra.all = []PR{open(41, dBranch), open(42, br18)}
+	r.infra.all = []PR{open(41, dPubBranch), open(42, br18)}
 	m = goodPublicCreate()
 	m["head"] = br19
 	if err := r.create(m); !isGateRefusal(err) || !strings.Contains(err.Error(), "are open in "+dInfra) {
 		t.Fatalf("a third open pull request: err = %v, want the open cap", err)
 	}
-	// A body edit of #31 (from dBranch, item 17): the neutral line passes, the
+	// A body edit of #31 (from dPubBranch, item 17): the neutral line passes, the
 	// private one is refused.
 	r = publicRig(t)
 	if err := r.patch(map[string]any{"body": goodPublicBody()}); err != nil {
@@ -319,6 +333,96 @@ func TestAPrivateRepositoryKeepsTheItemForm(t *testing.T) {
 	}
 	if _, err := r.g.MintPublicBranch(context.Background(), dInstance, dInfra, 17, "raise-limit"); !isGateRefusal(err) {
 		t.Fatalf("officer_public_branch in a private repository: err = %v, want a refusal", err)
+	}
+}
+
+// TestAPublicBranchNameNamingTheOfficerIsRefused: in a public repository a
+// branch name never carries the officer's id or slug. officer_public_branch
+// refuses a slug that IS the officer's slug (and records nothing), and a push
+// to a hand-named branch holding the slug is refused even when muster's record
+// holds it (so only the name rule can be what refuses). Controls: a neutral
+// slug mints, and the recorded neutral branch is pushed.
+//
+// Red before the name rule: the mint answered (and recorded)
+// bot/fix/engineering-example-web-<token>, and the push was admitted.
+func TestAPublicBranchNameNamingTheOfficerIsRefused(t *testing.T) {
+	ctx := context.Background()
+	r := publicRig(t)
+	if _, err := r.g.MintPublicBranch(ctx, dInstance, dInfra, 18, officers.Slug(dOfficer)); !isGateRefusal(err) ||
+		!strings.Contains(err.Error(), "names this officer's internal id") {
+		t.Errorf("mint with the officer's slug: err = %v, want a refusal naming the rule", err)
+	}
+	if got, _ := r.g.PublicBranches.Branches(ctx, dInfra); len(got) != 1 { // dPubBranch only
+		t.Errorf("a refused mint recorded something: %v", got)
+	}
+	// A hand-named branch holding the slug, recorded (bypassing the mint), so
+	// ownership alone would admit it.
+	r = publicRig(t)
+	handNamed := "bot/fix/engineering-example-web-qzvrwmtkpjhd"
+	if _, err := r.g.PublicBranches.Mint(ctx, dInfra, 19, handNamed); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pushRef(dInfra, "refs/heads/"+handNamed); !isGateRefusal(err) || !strings.Contains(err.Error(), "names this officer's internal id") {
+		t.Errorf("a push to a recorded branch naming the officer: err = %v, want a 403", err)
+	}
+	// Controls.
+	if br, err := r.g.MintPublicBranch(ctx, dInstance, dInfra, 18, "raise-limit"); err != nil || strings.Contains(br, officers.Slug(dOfficer)) {
+		t.Errorf("control: a neutral slug: %q, %v", br, err)
+	}
+	if err := r.pushRef(dInfra, "refs/heads/"+dPubBranch); err != nil {
+		t.Errorf("control: the recorded neutral branch: %v", err)
+	}
+}
+
+// TestAnUnreadableRecordAfterAPublicHitLeavesTheBranchForAHuman: a content
+// hit on a push to a public repository's branch, and muster's record of the
+// officer's public branches cannot be read when the after-push check runs.
+// Ownership is unknown, so the branch is NOT deleted — and HQ's notice says
+// so (ownership could not be confirmed, a human must delete it) and still
+// calls it a leak, never "not the officer's own branch shape". Both paths:
+// no pull request from the branch (publicBranchCheck), and an open one
+// (closeOnHit: closed, branch kept). Control: a readable record deletes.
+func TestAnUnreadableRecordAfterAPublicHitLeavesTheBranchForAHuman(t *testing.T) {
+	leak := File{Path: "README.md", Status: "modified", Changes: 2, Patch: "@@ -8,2 +8,2 @@\n \n-The end.\n+Ask db.corp.example"}
+	for _, withPR := range []bool{false, true} {
+		for _, broken := range []bool{true, false} {
+			name := map[bool]string{false: "no pull request", true: "an open pull request"}[withPR]
+			r := publicRig(t)
+			r.infra.all = nil
+			if withPR {
+				r.infra.all = []PR{r.infra.prs[dPR]}
+			}
+			r.infra.listed = r.infra.all
+			r.infra.branches[dPubBranch] = oidB
+			r.content("README.md", readmeBase, strings.Replace(readmeBase, "The end.", "Ask db.corp.example", 1))
+			r.docsFiles(leak)
+			after := r.mustPush(t, dInfra, "refs/heads/"+dPubBranch)
+			if broken {
+				r.g.PublicBranches.(*memRecord).err = errors.New("fake: the database is down")
+			}
+			after(context.Background(), applied("refs/heads/"+dPubBranch))
+			if withPR && len(r.infra.closed) != 1 {
+				t.Errorf("%s, broken=%v: closed %v, want #31 closed", name, broken, r.infra.closed)
+			}
+			if len(r.notices) != 1 {
+				t.Errorf("%s, broken=%v: notices %+v, want one", name, broken, r.notices)
+				continue
+			}
+			sum := r.notices[0].Summary
+			if !broken {
+				if len(r.infra.deleted) != 1 {
+					t.Errorf("control, %s: deleted %v, want the branch deleted", name, r.infra.deleted)
+				}
+				continue
+			}
+			if len(r.infra.deleted) != 0 || !strings.Contains(sum, "could NOT confirm") || !strings.Contains(sum, "a human must delete it") ||
+				strings.Contains(sum, "not the officer's own branch shape") {
+				t.Errorf("%s, record unreadable: deleted %v, notice %q; want kept and a human told to delete it", name, r.infra.deleted, sum)
+			}
+			if !withPR && !strings.Contains(sum, "treat it as a leak") {
+				t.Errorf("%s, record unreadable: notice %q, want it still called a leak", name, sum)
+			}
+		}
 	}
 }
 

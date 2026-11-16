@@ -20,7 +20,8 @@ import (
 // officer's or not public, an item HQ does not show instance holding (or a
 // pull-request fix item, which pushes to its pull request's branch), a slug
 // that is not lower-case words, a name that matches an internal-details
-// pattern, and no record to keep it in (fail closed).
+// pattern or names this officer (its id or slug: officerNamedWhy), and no
+// record to keep it in (fail closed).
 func (g *PushGate) MintPublicBranch(ctx context.Context, instance, repo string, item int, slug string) (string, error) {
 	if !g.Ship.IsDraft() {
 		return "", refused("%s is a draft officer's tool", officers.ToolPublicBranch)
@@ -55,6 +56,9 @@ func (g *PushGate) MintPublicBranch(ctx context.Context, instance, repo string, 
 	// The slug is the instance's words: scanned like any public text before
 	// muster records (and the instance pushes) it.
 	if why := g.publicTextWhy(sr, "the branch name", name); why != "" {
+		return "", refused("%s", why)
+	}
+	if why := g.officerNamedWhy(sr, "the branch name", name); why != "" {
 		return "", refused("%s", why)
 	}
 	got, err := g.PublicBranches.Mint(ctx, sr.Repo, item, name)

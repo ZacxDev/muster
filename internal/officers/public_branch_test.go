@@ -22,7 +22,7 @@ func TestNewPublicBranchIsNeutralAndRandom(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !shape.MatchString(b) || !officers.PublicBranchShape("officer/", b) {
+		if !shape.MatchString(b) {
 			t.Fatalf("minted %q, want officer/fix/raise-limit-<12 letters>", b)
 		}
 		if seen[b] {
@@ -38,11 +38,6 @@ func TestNewPublicBranchIsNeutralAndRandom(t *testing.T) {
 	// Control: 40 letters is the bound, not over it.
 	if _, err := officers.NewPublicBranch("officer/", strings.Repeat("a", 40)); err != nil {
 		t.Errorf("control: a 40-letter slug: %v", err)
-	}
-	for _, b := range []string{"officer/example-web/17-fix", "officer/fix/raise-limit-abc", "officer/fix/raise-17-abcdefghijkl", "bot/fix/raise-limit-abcdefghijkl"} {
-		if officers.PublicBranchShape("officer/", b) {
-			t.Errorf("PublicBranchShape(%q) = true", b)
-		}
 	}
 }
 

@@ -424,6 +424,11 @@ func (g *PushGate) allowedRef(ctx context.Context, sr officers.ShipRepo, ref str
 	if why := g.publicTextWhy(sr, "the branch name", branch); why != "" {
 		return refused("a push to a branch of %s: %s", sr.Repo, why)
 	}
+	// The same for this officer's own id or slug (public repositories only):
+	// a hand-named branch must not name it even before ownership is asked.
+	if why := g.officerNamedWhy(sr, "the branch name", branch); why != "" {
+		return refused("a push to a branch of %s: %s", sr.Repo, why)
+	}
 	if g.Ship.IsDraft() {
 		if _, ok, err := g.branchItem(ctx, sr, branch); !ok {
 			return refused("a push to %s: %s", ref, g.notOwnBranch(sr, err))
