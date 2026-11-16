@@ -35,9 +35,16 @@ import (
 // empty in getenv and whose _FILE names a readable file reads as that file's
 // contents. Every other variable reads exactly as getenv has it.
 //
-// The list of twins is the literal below, spelled where it is ranged over so
-// internal/modulegate's env reader resolves each name it reads.
+// The list of twins is the literal in withSecretFilesFrom, spelled where it is
+// ranged over so internal/modulegate's env reader resolves each name it reads.
 func withSecretFiles(getenv func(string) string) (func(string) string, error) {
+	return withSecretFilesFrom(getenv, os.ReadFile)
+}
+
+// withSecretFilesFrom is withSecretFiles reading each _FILE through readFile:
+// compose-init passes one that sees the files it is ABOUT to write, so it can
+// check the configuration before it writes anything.
+func withSecretFilesFrom(getenv func(string) string, readFile func(string) ([]byte, error)) (func(string) string, error) {
 	resolved := map[string]string{}
 	for _, s := range []struct{ env, file string }{
 		{envDatabase, envDatabaseFile},
@@ -53,7 +60,7 @@ func withSecretFiles(getenv func(string) string) (func(string) string, error) {
 		if path == "" {
 			continue
 		}
-		b, err := os.ReadFile(path)
+		b, err := readFile(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -84,14 +91,34 @@ func withSecretFiles(getenv func(string) string) (func(string) string, error) {
 //  1. SECRETS. Each one the environment (the stack's .env) does not set is
 //     generated ONCE into -dir, a volume, and kept there on every later run:
 //     the UI password (printed once, the run that makes it), the hook token,
-//     and the Web Push keypair. Postgres's password is written there too —
-//     the .env's POSTGRES_PASSWORD when it sets one, else generated once — and
-//     muster's DATABASE_URL is written from it on every run.
-//  2. THE CONFIGURATION CHECK. It then reads muster's configuration exactly as
-//     the server will (the same environment, the files just written) and runs
-//     the boot validation. A refusal is printed and the one-shot exits 1, so
-//     `docker compose up --wait` fails in seconds, naming muster-init, instead
-//     of muster restart-looping until a healthcheck gives up.
+//     and the Web Push keypair. Postgres's password is kept there too — the
+//     .env's POSTGRES_PASSWORD the first time when it sets one, else generated
+//     once — and muster's DATABASE_URL is written from it on every run.
+//  2. THE CONFIGURATION CHECK. It reads muster's configuration exactly as the
+//     server will (the same environment, the files as this run leaves them)
+//     and runs the boot validation, plus the sign-in password's floor (the
+//     server boots without it but refuses every browser page). A refusal is
+//     printed and the one-shot exits 1, so `docker compose up --wait` fails in
+//     seconds, naming muster-init, instead of muster restart-looping (or
+//     sitting unhealthy) until a healthcheck gives up.
+//
+// 🔴 EVERY CHECK RUNS BEFORE ANY WRITE. The run first PLANS every file (what
+// is kept, what is new), checks the configuration against that plan, and only
+// then writes. A refused run changes nothing on the volume, so fixing the .env
+// and running `up` again starts from exactly the state before.
+//
+// 🔴 POSTGRES'S PASSWORD FILE IS NEVER OVERWRITTEN FROM THE ENVIRONMENT.
+// Postgres reads POSTGRES_PASSWORD_FILE only when it creates the database (an
+// empty data volume); after that the password lives in the database. So once
+// the file exists it is the database's password, and a POSTGRES_PASSWORD that
+// differs from it is REFUSED, naming both ways out (remove the variable, or
+// change the database's own password first: docs/quickstart-local.md). Writing
+// it over the file would hand muster a DATABASE_URL the database rejects —
+// measured on #707 round 0: a zero-config stack, then an .env from the example
+// (POSTGRES_PASSWORD=CHANGE-ME), then that .env removed again, and muster could
+// no longer log in to its own database. The variable is used only when there is
+// no file yet: a new stack, or an .env install from before this command, whose
+// database was created with exactly that variable.
 //
 // 🔴 AN .env THAT SETS POSTGRES_PASSWORD GETS NO GENERATED PUSH KEYS. Every
 // .env written before this command existed sets it (the Compose file required
@@ -146,76 +173,108 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	if err != nil {
 		return fail("-postgres-owner: %v", err)
 	}
-	if err := os.MkdirAll(*dir, 0o755); err != nil {
+	st := secretStore{dir: *dir, uid: uid, gid: gid}
+	pgStore := secretStore{dir: *dir, uid: pgUID, gid: pgGID}
+
+	// THE PLAN: every file this run writes, and what each will hold. Nothing
+	// is written until every check below has passed.
+	type pending struct {
+		store       secretStore
+		name, value string
+	}
+	var writes []pending
+	planned := map[string]string{} // cleaned path -> the file's contents after this run
+	plan := func(s secretStore, name, value string) {
+		writes = append(writes, pending{s, name, value})
+		planned[filepath.Clean(s.path(name))] = value + "\n"
+	}
+	var made []string
+
+	// 1. Postgres's password (kept once it exists), and muster's DATABASE_URL.
+	pg, err := pgStore.read(secretPostgresPassword)
+	if err != nil {
 		return fail("%v", err)
 	}
-	st := secretStore{dir: *dir, uid: uid, gid: gid}
-
-	// 1. Postgres's password, and muster's DATABASE_URL from it.
-	pg := getenv(envPostgresPassword)
-	pgStore := secretStore{dir: *dir, uid: pgUID, gid: pgGID}
-	switch {
+	switch envPG := getenv(envPostgresPassword); {
+	case pg != "" && envPG != "" && envPG != pg:
+		fmt.Fprintf(stderr, "muster-init: %s is set, but it is not the password this stack's database was created with "+
+			"(kept in %s). Postgres reads its password only when it first creates the database, so with this value muster "+
+			"could not log in to it. Nothing was changed. Either:\n"+
+			"  - remove %s from .env: the stack keeps the password it has; or\n"+
+			"  - change the database's own password first: with the variable removed, `up`, then ALTER USER through the "+
+			"local socket (no password needed):\n"+
+			"      docker compose exec postgres psql -U muster -d muster -c \"ALTER USER muster PASSWORD '<the new one>'\"\n"+
+			"    and replace the kept copy: docs/quickstart-local.md#the-database-password\n"+
+			"config: %s differs from the database's password; muster-init never overwrites it\n",
+			envPostgresPassword, pgStore.path(secretPostgresPassword), envPostgresPassword, envPostgresPassword)
+		return 1
 	case pg != "":
-		if err := pgStore.write(secretPostgresPassword, pg); err != nil {
-			return fail("%v", err)
-		}
+		// Kept: the database's password.
+	case envPG != "":
+		pg = envPG
+		plan(pgStore, secretPostgresPassword, pg)
 	default:
-		if pg, err = pgStore.keepOrMake(secretPostgresPassword, randomSecret(24)); err != nil {
-			return fail("%v", err)
-		}
+		pg = randomSecret(24)
+		plan(pgStore, secretPostgresPassword, pg)
 	}
 	userinfo := strings.TrimPrefix(url.UserPassword("", pg).String(), ":")
-	if err := st.write(secretDatabaseURL, strings.ReplaceAll(*dbTemplate, "{password}", userinfo)); err != nil {
-		return fail("%v", err)
-	}
+	plan(st, secretDatabaseURL, strings.ReplaceAll(*dbTemplate, "{password}", userinfo))
 
 	// 2. The UI password and the hook token: generated once unless .env sets them.
-	var made []string
+	var newUIPassword string
 	if getenv(envUIPassword) == "" {
-		existed := st.exists(secretUIPassword)
-		pw, err := st.keepOrMake(secretUIPassword, randomSecret(18))
+		kept, err := st.read(secretUIPassword)
 		if err != nil {
 			return fail("%v", err)
 		}
-		if !existed {
+		if kept == "" {
+			newUIPassword = randomSecret(18)
+			plan(st, secretUIPassword, newUIPassword)
 			made = append(made, "the sign-in password")
-			say("generated muster's sign-in password (shown this once):")
-			say("    %s", pw)
-			say("show it again any time: %s ui-password", showSecretHint)
 		}
 	}
 	if getenv(envHookToken) == "" {
-		existed := st.exists(secretHookToken)
-		if _, err := st.keepOrMake(secretHookToken, hex.EncodeToString(randomBytes(32))); err != nil {
+		kept, err := st.read(secretHookToken)
+		if err != nil {
 			return fail("%v", err)
 		}
-		if !existed {
+		if kept == "" {
+			plan(st, secretHookToken, hex.EncodeToString(randomBytes(32)))
 			made = append(made, "the hook token")
 		}
 	}
 
 	// 3. Web Push keys: generated once, unless .env has its own (or is an .env
 	// from before this command, which sets POSTGRES_PASSWORD; see the header).
-	if getenv(envVAPIDPublicKey) == "" && getenv(envVAPIDPrivateKey) == "" && getenv(envPostgresPassword) == "" &&
-		!(st.exists(secretVAPIDPublic) && st.exists(secretVAPIDPrivate)) {
-		priv, pub, err := push.GenerateVAPIDKeys()
+	if getenv(envVAPIDPublicKey) == "" && getenv(envVAPIDPrivateKey) == "" && getenv(envPostgresPassword) == "" {
+		pub, err := st.read(secretVAPIDPublic)
 		if err != nil {
-			return fail("vapid: %v", err)
-		}
-		if err := st.write(secretVAPIDPublic, pub); err != nil {
 			return fail("%v", err)
 		}
-		if err := st.write(secretVAPIDPrivate, priv); err != nil {
+		priv, err := st.read(secretVAPIDPrivate)
+		if err != nil {
 			return fail("%v", err)
 		}
-		made = append(made, "the Web Push keys")
-	}
-	if len(made) > 0 {
-		say("generated %s into %s (kept on every later start)", strings.Join(made, ", "), *dir)
+		if pub == "" || priv == "" {
+			priv, pub, err := push.GenerateVAPIDKeys()
+			if err != nil {
+				return fail("vapid: %v", err)
+			}
+			plan(st, secretVAPIDPublic, pub)
+			plan(st, secretVAPIDPrivate, priv)
+			made = append(made, "the Web Push keys")
+		}
 	}
 
-	// 4. The configuration check: what the server would refuse at boot.
-	resolved, err := withSecretFiles(getenv)
+	// 4. The configuration check, against the files as this run will leave
+	// them: what the server would refuse at boot, and a sign-in password the
+	// server would boot with but refuse every browser page behind.
+	resolved, err := withSecretFilesFrom(getenv, func(path string) ([]byte, error) {
+		if v, ok := planned[filepath.Clean(path)]; ok {
+			return []byte(v), nil
+		}
+		return os.ReadFile(path)
+	})
 	if err != nil {
 		return fail("config: %v", err)
 	}
@@ -223,9 +282,32 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	if err == nil {
 		err = cfg.validate()
 	}
+	if err == nil {
+		if r := cfg.browserAuthRefusal(); r != "" {
+			err = errors.New(r)
+		}
+	}
 	if err != nil {
-		fmt.Fprintf(stderr, "muster-init: muster would refuse to start, so nothing was started:\nconfig: %v\n", err)
+		fmt.Fprintf(stderr, "muster-init: muster would refuse to start, so nothing was started or changed:\nconfig: %v\n", err)
 		return 1
+	}
+
+	// 5. Every check passed: write the plan.
+	if err := os.MkdirAll(*dir, 0o755); err != nil {
+		return fail("%v", err)
+	}
+	for _, w := range writes {
+		if err := w.store.write(w.name, w.value); err != nil {
+			return fail("%v", err)
+		}
+	}
+	if newUIPassword != "" {
+		say("generated muster's sign-in password (shown this once):")
+		say("    %s", newUIPassword)
+		say("show it again any time: %s ui-password", showSecretHint)
+	}
+	if len(made) > 0 {
+		say("generated %s into %s (kept on every later start)", strings.Join(made, ", "), *dir)
 	}
 	say("configuration OK")
 	return 0
@@ -260,21 +342,22 @@ type secretStore struct {
 
 func (s secretStore) path(name string) string { return filepath.Join(s.dir, name) }
 
-func (s secretStore) exists(name string) bool {
+// read returns name's kept value (one trailing newline dropped), or "" when
+// there is none: no file, or a blank one (both mean "not made yet"). A file
+// that exists and cannot be read is an error: a broken volume, not a choice.
+func (s secretStore) read(name string) (string, error) {
 	b, err := os.ReadFile(s.path(name))
-	return err == nil && strings.TrimSpace(string(b)) != ""
-}
-
-// keepOrMake returns name's kept value, or writes fresh and returns it.
-func (s secretStore) keepOrMake(name, fresh string) (string, error) {
-	if b, err := os.ReadFile(s.path(name)); err == nil {
-		if v := strings.TrimSuffix(string(b), "\n"); strings.TrimSpace(v) != "" {
-			return v, nil
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
 		return "", err
 	}
-	return fresh, s.write(name, fresh)
+	v := strings.TrimSuffix(string(b), "\n")
+	if strings.TrimSpace(v) == "" {
+		return "", nil
+	}
+	return v, nil
 }
 
 // write replaces name with value, atomically (a temp file renamed over it).

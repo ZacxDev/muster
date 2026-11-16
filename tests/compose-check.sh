@@ -6,7 +6,8 @@
 # Static: runs `docker compose config` (no image is pulled, nothing starts) for
 # the default stack and for each profile (stt, its older name stt-whisper,
 # stt-cohere, s3, and stt+s3 together), against deploy/.env.example with its
-# CHANGE-ME values filled in. Asserts:
+# CHANGE-ME values filled in (and its three generated secrets, commented out in
+# the example, uncommented: an .env that sets its own). Asserts:
 #   * the service set per profile is exactly what docs/features.md describes;
 #   * EVERY long-running service has a healthcheck (`docker compose up --wait`
 #     needs them); the only exemption is a ONE-SHOT (restart "no") that a
@@ -30,7 +31,8 @@
 #     POSTGRES_PASSWORD; Postgres reads its password from the file it writes
 #     (POSTGRES_PASSWORD_FILE, never the variable), and muster its DATABASE_URL;
 #   * NO .env AT ALL (the zero-config contract): `config` succeeds with NO
-#     warning, runs ghcr.io/zacxdev/muster:main, and every optional variable
+#     warning, runs ghcr.io/zacxdev/muster:<the file's default release>, and
+#     every optional variable
 #     muster is given resolves to EMPTY — the conditional defaults, the UI
 #     password and the hook token included (muster-init generates those) —
 #     except the three with fixed defaults (standalone, secure cookies, and
@@ -43,7 +45,8 @@
 #     muster refuses, so the bundled credentials are never sent there;
 #   * the bundled store's start script refuses the CHANGE-ME placeholder;
 #   * THE VERSION: the shipped .env.example (MUSTER_VERSION empty) runs the
-#     file's own default (`main`), never an empty tag; the copy a release
+#     file's own default (a release X.Y.Z; scripts/check-compose-default.sh
+#     holds it to the newest), never an empty tag; the copy a release
 #     stamps (scripts/stamp-compose-version.sh, which release-build runs) runs
 #     that release in EVERY service with no .env; and NEGATIVE CONTROL, a file
 #     whose default was removed is caught by the same image check — the
@@ -60,9 +63,21 @@ EXAMPLE="$ROOT/deploy/.env.example"
 docker compose version >/dev/null 2>&1 || { echo "compose-check: docker compose is not available" >&2; exit 2; }
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# The release the repository's copy defaults to (its one spelling).
+DEFAULT_VERSION="$("$ROOT/scripts/stamp-compose-version.sh" --current < "$COMPOSE")" ||
+  { echo "compose-check: deploy/docker-compose.yml has no single X.Y.Z default" >&2; exit 1; }
+export DEFAULT_VERSION
 
-# The example, filled in the way a user would.
-sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' "$EXAMPLE" > "$tmp/env"
+# The example, filled in the way a user would — its generated secrets
+# (commented out in the example) set too, as an .env that sets its own does.
+# (#707 round 0, D2/F1: an uncommented POSTGRES_PASSWORD=CHANGE-ME, copied
+# into a zero-config stack's .env, used to overwrite its database password.)
+grep -qx '#POSTGRES_PASSWORD=' "$EXAMPLE" && grep -qx '#MUSTER_UI_PASSWORD=' "$EXAMPLE" && grep -qx '#MUSTER_HOOK_TOKEN=' "$EXAMPLE" &&
+  ! grep -Eq '^(POSTGRES_PASSWORD|MUSTER_UI_PASSWORD|MUSTER_HOOK_TOKEN)=' "$EXAMPLE" ||
+  { echo "FAIL [example]: deploy/.env.example must carry its three generated secrets commented out and EMPTY (#NAME=), and never set"; exit 1; }
+echo "ok   [example]: the three generated secrets are commented out and empty in deploy/.env.example"
+sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' \
+  -e 's/^#\(POSTGRES_PASSWORD\|MUSTER_UI_PASSWORD\|MUSTER_HOOK_TOKEN\)=$/\1=fixture-secret/' "$EXAMPLE" > "$tmp/env"
 printf 'MUSTER_STT_TOKEN=fixture-stt\nHF_TOKEN=fixture-hf\n' >> "$tmp/env"
 printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixture-vapid-priv\nMUSTER_VAPID_SUBJECT=mailto:ops@example.com\n' >> "$tmp/env"
 printf 'S3_STORE_SECRET_KEY=fixture-s3-secret\nMUSTER_UPLOAD_SIGNING_KEY=fixture-signing-key-fixture-signing-key\n' >> "$tmp/env"
@@ -283,7 +298,7 @@ done
 # NO .env AT ALL — the zero-config contract (clone, then `docker compose up`).
 # An empty env file, and an environment with nothing of the shell's in it (a
 # MUSTER_VERSION exported in the caller's shell would hide a missing default).
-# No warning, the `main` image, and every optional value muster is given is
+# No warning, the default release image, and every optional value muster is given is
 # empty — so a feature can only be on because .env says so.
 : > "$tmp/env-min"
 bare() { env -i PATH="$PATH" HOME="$HOME" docker compose "$@"; }
@@ -299,9 +314,11 @@ fixed = {"MUSTER_PORT", "MUSTER_MIRROR", "DATABASE_URL_FILE", "MUSTER_UI_PASSWOR
          "MUSTER_VAPID_PUBLIC_KEY_FILE", "MUSTER_VAPID_PRIVATE_KEY_FILE"}
 defaults = {"MUSTER_STANDALONE": "1", "MUSTER_SECURE_COOKIES": "1", "MUSTER_SESSION_STATE": "1"}
 errs = [f"{k}={env.get(k)!r}, want {v!r}" for k, v in defaults.items() if env.get(k) != v]
+import os
+want_img = "ghcr.io/zacxdev/muster:" + os.environ["DEFAULT_VERSION"]
 for svc in ("muster", "muster-init"):
-    if svcs[svc]["image"] != "ghcr.io/zacxdev/muster:main":
-        errs.append(f"with no .env, {svc} runs {svcs[svc]['image']!r}, want ghcr.io/zacxdev/muster:main")
+    if svcs[svc]["image"] != want_img:
+        errs.append(f"with no .env, {svc} runs {svcs[svc]['image']!r}, want {want_img}")
 for k in ("MUSTER_UI_PASSWORD", "MUSTER_HOOK_TOKEN"):
     if env.get(k) != "":
         errs.append(f"with no .env, {k}={env.get(k)!r}: muster-init's generated one must be read, not a default")
@@ -317,7 +334,7 @@ if len(optional) < 60:
 for e in errs:
     print(f"FAIL [no .env]: {e}")
 if not errs:
-    print(f"ok   [no .env]: no warning; the main image; all {len(optional)} optional variables muster is given are empty")
+    print(f"ok   [no .env]: no warning; the {want_img} image; all {len(optional)} optional variables muster is given are empty")
 sys.exit(1 if errs else 0)
 PY
 else
@@ -408,8 +425,8 @@ if bad:
 PY
 }
 # The shipped example leaves MUSTER_VERSION empty: the file's default applies.
-if out="$(images_at "$COMPOSE" "$EXAMPLE" main 2>&1)"; then
-  echo "ok   [version]: the shipped .env.example (MUSTER_VERSION empty) runs the file's default, main, in every service"
+if out="$(images_at "$COMPOSE" "$EXAMPLE" "$DEFAULT_VERSION" 2>&1)"; then
+  echo "ok   [version]: the shipped .env.example (MUSTER_VERSION empty) runs the file's default, $DEFAULT_VERSION, in every service"
 else echo "FAIL [version]: the shipped .env.example: $out"; fail=1; fi
 # The release's copy: stamped, it runs that release with no .env.
 "$ROOT/scripts/stamp-compose-version.sh" 1.2.3 < "$COMPOSE" > "$tmp/stamped.yml" || { echo "FAIL [version]: stamping failed"; fail=1; }
@@ -418,11 +435,12 @@ if out="$(images_at "$tmp/stamped.yml" "$tmp/env-min" 1.2.3 2>&1)"; then
 else echo "FAIL [version]: the release-stamped copy: $out"; fail=1; fi
 # NEGATIVE CONTROL: the default removed and MUSTER_VERSION set EMPTY (so compose
 # has nothing to warn about), the IMAGE check itself must catch the empty tag.
-sed 's/\${MUSTER_VERSION:-main}/${MUSTER_VERSION}/g' "$COMPOSE" > "$tmp/nodefault.yml"
+sed "s/\${MUSTER_VERSION:-$DEFAULT_VERSION}/\${MUSTER_VERSION}/g" "$COMPOSE" > "$tmp/nodefault.yml"
+grep -q 'MUSTER_VERSION:-' "$tmp/nodefault.yml" && { echo "FAIL [version, negative control]: a default survived the removal"; fail=1; }
 echo 'MUSTER_VERSION=' > "$tmp/env-emptyver"
-if out="$(images_at "$tmp/nodefault.yml" "$tmp/env-emptyver" main 2>&1)"; then
+if out="$(images_at "$tmp/nodefault.yml" "$tmp/env-emptyver" "$DEFAULT_VERSION" 2>&1)"; then
   echo "FAIL [version, negative control]: a file with no version default PASSED the image check (an unversioned image would start)"; fail=1
-elif grep -q 'not on main: muster=' <<<"$out"; then
+elif grep -q "not on $DEFAULT_VERSION: muster=" <<<"$out"; then
   echo "ok   [version, negative control]: a file with no version default is caught by the image check"
 else echo "FAIL [version, negative control]: refused, but not by the image check: $out"; fail=1; fi
 
@@ -467,7 +485,7 @@ PY
   # environment (a YAML merge of muster's anchor) resolves to muster's own.
   if env -i PATH="$PATH" HOME="$HOME" "$old" -f "$COMPOSE" --env-file "$tmp/env-min" -p compose-check config --format json \
       > "$tmp/old-min.json" 2>"$tmp/old.err" && [ ! -s "$tmp/old.err" ] &&
-     python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]; e=dict(s["muster-init"]["environment"]); e.pop("POSTGRES_PASSWORD"); sys.exit(0 if e == s["muster"]["environment"] and s["muster"]["image"].endswith(":main") else 1)' "$tmp/old-min.json"; then
+     python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["services"]; e=dict(s["muster-init"]["environment"]); e.pop("POSTGRES_PASSWORD"); sys.exit(0 if e == s["muster"]["environment"] and s["muster"]["image"].endswith(":"+sys.argv[2]) else 1)' "$tmp/old-min.json" "$DEFAULT_VERSION"; then
     echo "ok   [compose $oldv, no .env]: the file parses, and muster-init's merged environment is muster's"
   else
     echo "FAIL [compose $oldv, no .env]: $(cat "$tmp/old.err")"; fail=1

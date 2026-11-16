@@ -109,3 +109,64 @@ func TestPasswordCookieSecureOnlyOffForALoopbackHTTPPage(t *testing.T) {
 		}
 	}
 }
+
+// TestPushDeviceCookieSecureInGoTrueMode (#707 round 0, F6; mutant M11): the
+// push-device cookie, set on subscribe and cleared on unsubscribe or sign-out,
+// is ALWAYS Secure in gotrue mode — even where a password-mode cookie drops it
+// (a loopback http page, or MUSTER_SECURE_COOKIES off), because a gotrue
+// session's own cookies are Secure. The fixture requests are exactly those on
+// which passwordCookieSecure is false, so only the gotrue term can make the
+// cookie Secure; the control (password mode, the same requests) shows it is
+// then NOT Secure, and a request with no Origin in password mode with the flag
+// on shows the set and the clear do follow the password-mode policy.
+func TestPushDeviceCookieSecureInGoTrueMode(t *testing.T) {
+	page := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://localhost:8105/api/push/subscribe", nil)
+		r.Host = "localhost:8105"
+		r.Header.Set("Origin", "http://localhost:8105")
+		return r
+	}
+	curl := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://localhost:8105/api/push/subscribe", nil)
+		r.Host = "localhost:8105"
+		return r
+	}
+	cookie := func(t *testing.T, s *Server, r *http.Request, clear bool) *http.Cookie {
+		t.Helper()
+		w := httptest.NewRecorder()
+		if clear {
+			s.clearPushDeviceCookie(w, r)
+		} else {
+			s.setPushDeviceCookie(w, r, "device-hash")
+		}
+		for _, ck := range w.Result().Cookies() {
+			if ck.Name == pushDeviceCookie {
+				if clear != (ck.MaxAge < 0) {
+					t.Fatalf("clear=%v: MaxAge %d", clear, ck.MaxAge)
+				}
+				return ck
+			}
+		}
+		t.Fatalf("no %s cookie (clear=%v)", pushDeviceCookie, clear)
+		return nil
+	}
+	server := func(mode AuthMode, secureFlag bool) *Server {
+		return New(nil, AuthConfig{Mode: mode, UIPassword: testUIPassword, HookToken: testHookToken, SecureCookies: secureFlag},
+			log.New(io.Discard, "", 0))
+	}
+	for _, secureFlag := range []bool{true, false} {
+		for _, clear := range []bool{false, true} {
+			if ck := cookie(t, server(AuthModeGoTrue, secureFlag), page(), clear); !ck.Secure {
+				t.Errorf("gotrue, MUSTER_SECURE_COOKIES=%v, clear=%v, loopback http page: the push-device cookie is NOT Secure", secureFlag, clear)
+			}
+			if ck := cookie(t, server("", secureFlag), page(), clear); ck.Secure {
+				t.Errorf("control: password mode, MUSTER_SECURE_COOKIES=%v, clear=%v, loopback http page: Secure (the fixture does not isolate the gotrue term)", secureFlag, clear)
+			}
+		}
+	}
+	for _, clear := range []bool{false, true} {
+		if ck := cookie(t, server("", true), curl(), clear); !ck.Secure {
+			t.Errorf("password mode, flag on, no Origin, clear=%v: NOT Secure", clear)
+		}
+	}
+}

@@ -26,6 +26,20 @@ settings someone else wrote).
 Then start an agent in tmux, for example `tmux new -A -s work claude`, and
 open the address.
 
+**After a reboot.** The server comes back on its own (Docker restarts it).
+`muster-mirror` is a user service, and a user service runs only while you are
+logged in unless your user has *linger* on. The installer turns linger on with
+`loginctl enable-linger` (it asks for `sudo` when your system requires it, and
+says so if it could not). Without linger the mirror stops when you log out and
+does not start at boot, so this machine's sessions stay missing from muster
+until you log in again. Turn it on yourself any time:
+
+```sh
+sudo loginctl enable-linger "$USER"
+```
+
+(macOS: the installer uses a launchd agent, which starts when you log in.)
+
 ## By hand, from a clone
 
 ```sh
@@ -35,8 +49,9 @@ docker compose -f deploy/docker-compose.yml exec muster /muster-server show-secr
 ```
 
 Open `http://localhost:8105` and sign in with that password. A clone runs the
-image built from the newest commit on `main`; a release's own
-`docker-compose.yml` runs that release.
+latest release: `deploy/docker-compose.yml` names it, and is bumped after each
+release (CI fails while it is behind). A release's own `docker-compose.yml`
+runs that release. Set `MUSTER_VERSION` in `.env` to run another.
 
 To show this machine's tmux windows, mint a token for it and run
 `muster-mirror` (from the release's `muster-mirror_<os>_<arch>.tar.gz`):
@@ -51,6 +66,25 @@ Plain `http://` is accepted to this machine only (`localhost`, `127.0.0.1`,
 `[::1]`): the token never leaves it. To any other address muster-mirror wants
 `https://`.
 
+### This machine is yours alone
+
+The localhost setup assumes **you are the only person logged in to this
+machine.** Plain `http://localhost` is private only from other machines, not
+from other users of this one:
+
+- whoever holds port 8105 receives what muster-mirror sends. While muster is
+  down, another local user could start a listener on `127.0.0.1:8105` and
+  receive this machine's mirror token (its `Authorization: Bearer` header) on
+  the mirror's next connect;
+- the sign-in password is shown in `docker compose logs muster-init`, which
+  anyone in the `docker` group can read (they can also read the secrets volume
+  itself: Docker access is root on the machine).
+
+On a shared machine (a lab box, a multi-user server) put muster behind HTTPS
+with [Add your phone](#add-your-phone) and point muster-mirror at that
+`https://` address instead. `muster doctor` warns when it sees other users
+logged in.
+
 ## What muster generated
 
 The first start runs a one-shot, `muster-init`, that generates every secret
@@ -60,10 +94,41 @@ notification keys and the database password. The sign-in password is printed
 once, in `docker compose logs muster-init`; show it again any time with
 `… exec muster /muster-server show-secret ui-password` (or `hook-token`).
 
-To set any of them yourself, put the line in a `.env` beside
-`docker-compose.yml` (see `deploy/.env.example`) and run `up -d --wait` again:
-a value in `.env` always wins. `docker compose down -v` deletes the database
-**and** the generated secrets.
+⚠ That log line stays in `muster-init`'s container log until the container is
+removed (`docker compose rm muster-init`, or `down`). If you ship Docker logs
+somewhere else (a log driver, Loki, a hosted service), the sign-in password
+goes with them: change it (set your own in `.env`, below) or keep those logs
+private.
+
+To set the sign-in password or the hook token yourself, put the line in a
+`.env` beside `docker-compose.yml` (see `deploy/.env.example`) and run
+`up -d --wait` again: a value in `.env` is used instead of the generated one,
+on every start. **The database password is different**: see the next section.
+`docker compose down -v` deletes the database **and** the generated secrets.
+
+### The database password
+
+Postgres reads its password only when it first creates the database. So the
+stack keeps the first one it had (the `.env`'s `POSTGRES_PASSWORD` on that
+first start, else a generated one), and **never** changes it from `.env`
+afterwards. A `POSTGRES_PASSWORD` in `.env` that differs from the kept one
+stops `up --wait` on `muster-init`, which changes nothing and says so. Either:
+
+- **remove `POSTGRES_PASSWORD` from `.env`** (the usual fix: it came from an
+  old example) and run `up -d --wait` again; or
+- **change the database's password to it**, in this order, with the variable
+  still removed and the stack up:
+
+  ```sh
+  # 1. the database itself, through Postgres's local socket (no password needed)
+  docker compose exec postgres psql -U muster -d muster -c "ALTER USER muster PASSWORD 'the-new-password'"
+  # 2. drop the kept copy (the volume is <project>_secrets; the project is `muster` unless you set another)
+  docker run --rm -v muster_secrets:/s --entrypoint rm postgres:16-alpine /s/postgres_password
+  # 3. put POSTGRES_PASSWORD=the-new-password back in .env, then
+  docker compose up -d --wait && docker compose restart muster
+  ```
+
+  Step 3 keeps the new password and gives muster a `DATABASE_URL` built from it.
 
 ## What works on localhost, and what needs HTTPS
 

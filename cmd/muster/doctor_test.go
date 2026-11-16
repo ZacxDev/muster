@@ -46,6 +46,8 @@ type fakeSystem struct {
 	tmux      bool
 	tmuxV     string // `tmux -V`'s stdout; "" = "tmux 3.4\n"
 	qrencode  bool
+	who       string // `who`'s stdout (this user is "me")
+	whoErr    bool   // ... and whether it fails
 
 	mu   sync.Mutex
 	runs []string
@@ -62,7 +64,7 @@ var doctorCwd string
 
 func (f *fakeSystem) sys() doctorSystem {
 	return doctorSystem{
-		goos: f.goos, uid: 1000,
+		goos: f.goos, uid: 1000, user: "me",
 		getwd: func() (string, error) { return doctorCwd, nil },
 		lookPath: func(name string) (string, error) {
 			switch {
@@ -95,6 +97,11 @@ func (f *fakeSystem) sys() doctorSystem {
 				return "tmux 3.4\n", nil
 			case "/usr/bin/qrencode":
 				return "QRBLOCKS:" + args[len(args)-1] + "\n", nil
+			case "who":
+				if f.whoErr { // realRun hands back what the command printed, with the error
+					return f.who, errors.New("exit status 1")
+				}
+				return f.who, nil
 			}
 			return "", fmt.Errorf("fake system: unexpected command %s", name)
 		},
@@ -1078,6 +1085,41 @@ func TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR(t *testing.T) {
 	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{host: "example.com"})
 	if !strings.Contains(r.stderr, "QRBLOCKS:"+r.doc.URL) {
 		t.Errorf("an https URL drew no QR code:\n%s", r.stderr)
+	}
+}
+
+// TestDoctorWarnsOfOtherUsersOnALoopbackURL (#707 round 0, F2): plain http to
+// localhost is private from other machines only, so on a loopback URL the
+// server check (still a PASS) warns when `who` lists users other than this
+// one, naming each once, sorted, with the single-user doc. No warning when only
+// this user is logged in, when `who` fails, or on an https URL (the controls).
+func TestDoctorWarnsOfOtherUsersOnALoopbackURL(t *testing.T) {
+	const who = "me       pts/0        2026-11-15 10:00 (:0)\nbob      pts/3        2026-11-15 10:02 (laptop.example)\n" +
+		"alice    tty2         2026-11-15 09:00\nbob      pts/4        2026-11-15 10:05\n"
+	sys := healthySystem()
+	sys.who = who
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{plain: true, host: "localhost"})
+	c := r.check("server")
+	if c.Status != statusPass || !strings.Contains(c.Detail, "WARNING: other users are logged in to this machine (alice, bob).") ||
+		!strings.Contains(c.Detail, "#this-machine-is-yours-alone") || !strings.Contains(c.Detail, "mirror token") {
+		t.Errorf("server check %+v, want a PASS warning of alice and bob with the single-user doc", c)
+	}
+	if r.code != exitOK {
+		t.Errorf("exit %d, want 0 (a warning, not a failure)", r.code)
+	}
+	for name, s := range map[string]*fakeSystem{
+		"only this user": {goos: "linux", unitState: "active", tmux: true, who: "me pts/0 2026-11-15 10:00\nme pts/1 2026-11-15 10:01\n"},
+		"who fails":      {goos: "linux", unitState: "active", tmux: true, who: who, whoErr: true},
+	} {
+		r := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{plain: true, host: "localhost"})
+		if c := r.check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+			t.Errorf("%s: server check %+v, want a PASS with no warning", name, c)
+		}
+	}
+	https := healthySystem()
+	https.who = who
+	if c := runDoctorAgainst(t, healthyMuster(), https, doctorOpts{}).check("server"); c.Status != statusPass || strings.Contains(c.Detail, "WARNING") {
+		t.Errorf("an https URL: server check %+v, want a PASS with no warning", c)
 	}
 }
 

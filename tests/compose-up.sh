@@ -28,6 +28,14 @@
 #     MUSTER_SECURE_COOKIES=1 default);
 #   * `down` + `up` (the volume kept) keeps the password, and muster-init then
 #     prints none;
+#   * THE DATABASE PASSWORD IS NEVER OVERWRITTEN (#707 round 0, F1): with the
+#     stack up, an .env setting a DIFFERENT POSTGRES_PASSWORD makes `up --wait`
+#     fail on muster-init, quickly, naming POSTGRES_PASSWORD and ALTER USER,
+#     and EVERY file on the secrets volume is byte-identical afterwards
+#     (sha256, read straight off the volume); then `up` without that .env is
+#     healthy and the password still signs in (muster still reaches its
+#     database). Before the fix the file was overwritten and the database
+#     login broke for good;
 #   * with COMPOSE_UP_MIRROR=<muster-mirror binary> (and tmux): a mirror
 #     pointed at http://localhost:<port> with NO -allow-http connects, the
 #     server sees the host online, and a tmux session named with a fresh
@@ -48,9 +56,10 @@
 #   * the shared password signs in (POST /login sets a session cookie);
 #   * NEGATIVE CONTROL: a wrong password does not;
 #   * NEGATIVE CONTROL: a second stack whose MUSTER_UI_PASSWORD is an unedited
-#     placeholder (CHANGE-ME, under 12 characters) must FAIL `up --wait` — the
-#     web tier refuses itself while /readyz stays 200, and only the
-#     healthcheck's /login probe turns that into "unhealthy";
+#     placeholder (CHANGE-ME, under 12 characters) must FAIL `up --wait` on
+#     muster-init, naming MUSTER_UI_PASSWORD, with muster never started (the
+#     server itself would boot and refuse every browser page; its healthcheck's
+#     /login probe stays as the second line of defence);
 #   * NEGATIVE CONTROL: MUSTER_HOOK_TOKEN=CHANGE-ME (a public admin bearer)
 #     must make muster refuse to boot — muster-init refuses it, naming it;
 #   * FAIL FAST: a setting the server refuses at boot (an http push subject)
@@ -145,11 +154,18 @@ echo "compose-up: project $PROJECT, port $PORT, image $IMAGE:$TAG"
 # --- the zero-config stack: no .env at all -----------------------------------
 # dz: the compose file as a clone runs it. `env -i` so nothing of this shell
 # reaches it but the three test-harness lines (and docker's own variables);
-# --env-file /dev/null so no deploy/.env, even one a developer has, is read.
+# --env-file /dev/null so no deploy/.env, even one a developer has, is read
+# (ZENV names another, for the database-password phase).
 dz() {
   env -i PATH="$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
     MUSTER_IMAGE="$IMAGE" MUSTER_VERSION="$TAG" MUSTER_HTTP_PORT="$PORT" \
-    docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file /dev/null -p "$PROJECT-zero" "$@"
+    docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "${ZENV:-/dev/null}" -p "$PROJECT-zero" "$@"
+}
+# Every file on the zero-config stack's secrets volume with its sha256, read
+# straight off the volume (whatever state the stack's containers are in).
+zvolume() {
+  docker run --rm --network none -v "$PROJECT-zero_secrets:/s:ro" --entrypoint sh postgres:16-alpine \
+    -c 'cd /s && ls -A | LC_ALL=C sort | while read -r f; do sha256sum "$f"; done'
 }
 zfail() { echo "FAIL [zero-config]: $1"; dz ps -a || true; dz logs --no-color --tail 40 muster-init muster || true; exit 1; }
 zero_cleanup() { dz down -v --remove-orphans >/dev/null 2>&1 || true; }
@@ -253,6 +269,33 @@ phase_zero() {
   if dz logs --no-color muster-init 2>&1 | grep -q 'generated'; then zfail "muster-init generated something on the second start"; fi
   curl -fsS -o /dev/null -X POST -H "Origin: $base" --data-urlencode "password=$pw" "$base/login" || zfail "the kept password no longer signs in"
   echo "ok   [zero-config] down + up keeps the password, and muster-init generates and prints nothing"
+
+  # The database password is never overwritten from .env (F1).
+  local before after took init_log
+  before="$(zvolume)"
+  grep -q 'postgres_password' <<<"$before" && [ "$(grep -c . <<<"$before")" = 6 ] ||
+    zfail "positive control: the secrets volume read as: $before"
+  printf 'POSTGRES_PASSWORD=pg-from-an-env-%s\n' "$RANDOM$RANDOM" > "$tmp/zero.env"
+  start=$(date +%s)
+  if ZENV="$tmp/zero.env" dz up -d --wait --wait-timeout 120 >/dev/null 2>&1; then
+    zfail "up --wait SUCCEEDED with a POSTGRES_PASSWORD that is not the database's"
+  fi
+  took=$(( $(date +%s) - start ))
+  init_log="$(ZENV="$tmp/zero.env" dz logs --no-color muster-init 2>&1 | tail -n 15)"
+  grep -q 'config: POSTGRES_PASSWORD differs from the database' <<<"$init_log" && grep -q 'ALTER USER' <<<"$init_log" ||
+    zfail "muster-init's refusal does not name POSTGRES_PASSWORD and ALTER USER: $init_log"
+  after="$(zvolume)"
+  [ "$after" = "$before" ] || zfail "the refused run CHANGED the secrets volume:
+before: $before
+after:  $after"
+  [ "$took" -le 45 ] || zfail "the refusal took ${took}s, over the 45s bound"
+  echo "ok   [zero-config] a different POSTGRES_PASSWORD in .env is refused in ${took}s on muster-init, naming the way out; every secret file is byte-identical"
+  rm -f "$tmp/zero.env"
+  dz up -d --wait --wait-timeout 180 >/dev/null 2>&1 || zfail "up --wait WITHOUT that .env failed (the database login broke)"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' "$base/readyz")" = 200 ] || zfail "/readyz is not 200 after the .env was removed"
+  curl -fsS -o /dev/null -X POST -H "Origin: $base" --data-urlencode "password=$pw" "$base/login" || zfail "the password no longer signs in after the .env was removed"
+  [ "$(zvolume)" = "$before" ] || zfail "the volume changed when the stack came back up without the .env"
+  echo "ok   [zero-config] without that .env the stack is healthy again on the same database password"
   zero_cleanup
 }
 phase_zero
@@ -345,17 +388,20 @@ for v in 0 ""; do
   echo "ok   MUSTER_SESSION_STATE='$v' in .env: session state: OFF"
 done
 
-# Negative control: the placeholder password, same file, the stack brought up again.
+# Negative control: the placeholder password, same file, the stack brought up
+# again. muster-init refuses it (the server would boot and refuse every
+# browser page), so muster never starts.
 dc down -v --remove-orphans >/dev/null 2>&1
 sed -i "s/^MUSTER_UI_PASSWORD=.*/MUSTER_UI_PASSWORD=CHANGE-ME/" "$tmp/env"
 if dc up -d --wait --wait-timeout 180 >/dev/null 2>&1; then
   fail "up --wait SUCCEEDED with MUSTER_UI_PASSWORD=CHANGE-ME (the sign-in page is refused)"
 fi
-h="$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q muster)")"
-[ "$h" = unhealthy ] || fail "with the placeholder password muster is '$h', want unhealthy"
-health="$(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$(dc ps -q muster)")"
-grep -q 'MUSTER_UI_PASSWORD' <<<"$health" || fail "the health log does not name MUSTER_UI_PASSWORD"
-echo "ok   placeholder password: up --wait fails, muster unhealthy, health log names MUSTER_UI_PASSWORD"
+last="$(dc logs --no-color muster-init 2>&1 | tail -n 3)"
+grep -q 'config: MUSTER_UI_PASSWORD is shorter than 12 characters' <<<"$last" ||
+  fail "muster-init's last lines do not name MUSTER_UI_PASSWORD: $last"
+[ -z "$(dc ps -a -q muster)" ] || [ "$(docker inspect -f '{{.State.StartedAt}}' "$(dc ps -a -q muster)")" = 0001-01-01T00:00:00Z ] ||
+  fail "muster was started although muster-init refused the placeholder password"
+echo "ok   placeholder password: up --wait fails on muster-init, naming MUSTER_UI_PASSWORD; muster never started"
 
 # Negative control: the placeholder HOOK token (the admin bearer), with a good
 # UI password. muster must refuse to boot, naming the variable.

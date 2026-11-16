@@ -70,9 +70,11 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 
 ## Core
 
-Needs no optional variable and no extra service. `deploy/.env.example`'s
-required block (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`,
-`MUSTER_VERSION`) and `MUSTER_PUBLIC_URL` are all of it. You get:
+Needs no optional variable and no extra service, and no `.env` at all: the
+Compose stack generates its secrets (`POSTGRES_PASSWORD`, `MUSTER_UI_PASSWORD`,
+`MUSTER_HOOK_TOKEN`; [docs/quickstart-local.md](quickstart-local.md)) and runs
+the release its compose file names. `MUSTER_PUBLIC_URL` adds every machine
+beyond this one. You get:
 
 - every tmux window on every machine as a card, a Claude Code window as a chat
   (the Rendered view) and any window in the Terminal view (Linux hosts)

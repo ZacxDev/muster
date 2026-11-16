@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -232,6 +233,9 @@ func TestComposeInitRefusesWhatTheServerWouldRefuse(t *testing.T) {
 	for name, bad := range map[string]map[string]string{
 		"an http push subject": {envVAPIDSubject: "http://127.0.0.1:8105"},
 		"the placeholder hook": {envHookToken: "CHANGE-ME"},
+		// The server boots with it but refuses every browser page (F7): the
+		// one-shot catches it, so `up --wait` fails at once.
+		"a sign-in password under 12 characters": {envUIPassword: "CHANGE-ME"},
 	} {
 		dir := t.TempDir()
 		rc, out, errOut := runInit(t, dir, composeInitEnv(dir, bad))
@@ -248,6 +252,120 @@ func TestComposeInitRefusesWhatTheServerWouldRefuse(t *testing.T) {
 	dir := t.TempDir()
 	if rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil)); rc != 0 {
 		t.Errorf("control: a clean environment refused: %s%s", out, errOut)
+	}
+	// Control for the floor: exactly 12 characters passes.
+	dir = t.TempDir()
+	if rc, out, errOut := runInit(t, dir, composeInitEnv(dir, map[string]string{envUIPassword: "twelve-chars"})); rc != 0 {
+		t.Errorf("control: a 12-character sign-in password refused: %s%s", out, errOut)
+	}
+}
+
+// volumeState is every file in dir with its mode and contents: what a run
+// left on the secrets volume.
+func volumeState(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, e := range ents {
+		p := filepath.Join(dir, e.Name())
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(p)
+		out[e.Name()] = st.Mode().String() + " " + string(b)
+	}
+	return out
+}
+
+// TestComposeInitNeverOverwritesThePostgresPassword (#707 round 0, F1): once
+// the stack has a Postgres password file, it is the DATABASE's password
+// (Postgres reads the file only when it creates the database). A
+// POSTGRES_PASSWORD that differs from it is refused, naming both ways out, and
+// the run changes NOTHING on the volume; the same value, or no value, boots on
+// the kept password. The live failure this pins: zero-config up, then an .env
+// copied from the example (POSTGRES_PASSWORD=CHANGE-ME), then that .env
+// removed, and muster could no longer log in to its own database.
+func TestComposeInitNeverOverwritesThePostgresPassword(t *testing.T) {
+	dir := t.TempDir()
+	env := composeInitEnv(dir, nil)
+	if rc, out, errOut := runInit(t, dir, env); rc != 0 {
+		t.Fatalf("zero-config run: rc %d: %s%s", rc, out, errOut)
+	}
+	kept := readSecret(t, dir, secretPostgresPassword)
+	if kept == "" {
+		t.Fatal("no postgres_password was generated")
+	}
+	before := volumeState(t, dir)
+
+	// An .env whose POSTGRES_PASSWORD is not the database's: refused, untouched.
+	other := composeInitEnv(dir, map[string]string{envPostgresPassword: "CHANGE-ME"})
+	rc, out, errOut := runInit(t, dir, other)
+	if rc != 1 {
+		t.Fatalf("a POSTGRES_PASSWORD that differs from the kept one: rc %d, want 1\n%s%s", rc, out, errOut)
+	}
+	for _, want := range []string{"POSTGRES_PASSWORD", "not the password this stack's database was created with",
+		"remove POSTGRES_PASSWORD from .env", "ALTER USER", "Nothing was changed", "config: POSTGRES_PASSWORD"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, errOut)
+		}
+	}
+	if strings.Contains(out+errOut, kept) || strings.Contains(out+errOut, "CHANGE-ME") {
+		t.Error("the refusal printed a password")
+	}
+	if after := volumeState(t, dir); !reflect.DeepEqual(after, before) {
+		t.Errorf("a refused run changed the volume:\nbefore %v\nafter  %v", before, after)
+	}
+
+	// The same value as the kept one: boots, nothing changes.
+	if rc, out, errOut := runInit(t, dir, composeInitEnv(dir, map[string]string{envPostgresPassword: kept})); rc != 0 {
+		t.Fatalf("POSTGRES_PASSWORD equal to the kept one: rc %d: %s%s", rc, out, errOut)
+	}
+	// And the .env removed again: the kept password, and a DATABASE_URL built
+	// from it (the database's own).
+	if rc, out, errOut := runInit(t, dir, env); rc != 0 {
+		t.Fatalf("after the .env is removed: rc %d: %s%s", rc, out, errOut)
+	}
+	if got := readSecret(t, dir, secretPostgresPassword); got != kept {
+		t.Errorf("postgres_password changed: %q, want the kept %q", got, kept)
+	}
+	if want := "postgres://muster:" + kept + "@postgres:5432/muster?sslmode=disable"; readSecret(t, dir, secretDatabaseURL) != want {
+		t.Errorf("database_url %q, want %q", readSecret(t, dir, secretDatabaseURL), want)
+	}
+}
+
+// TestComposeInitWritesNothingWhenRefused: every check runs before any write.
+// A refused FIRST run leaves an empty volume (and prints no password, which
+// would never be kept); a refused LATER run leaves every file as it was.
+func TestComposeInitWritesNothingWhenRefused(t *testing.T) {
+	bad := map[string]string{envVAPIDSubject: "http://127.0.0.1:8105"}
+	dir := t.TempDir()
+	rc, out, errOut := runInit(t, dir, composeInitEnv(dir, bad))
+	if rc != 1 || !strings.Contains(errOut, "config: ") {
+		t.Fatalf("control: the bad setting was not refused: rc %d\n%s%s", rc, out, errOut)
+	}
+	if got := volumeState(t, dir); len(got) != 0 {
+		t.Errorf("a refused first run wrote %v", got)
+	}
+	if strings.Contains(out, "sign-in password") || strings.Contains(out, "generated") {
+		t.Errorf("a refused first run announced a secret it never kept:\n%s", out)
+	}
+	// A kept volume, then a refused run (a setting the operator just broke).
+	if rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil)); rc != 0 {
+		t.Fatalf("good run: rc %d: %s%s", rc, out, errOut)
+	}
+	before := volumeState(t, dir)
+	if len(before) != 6 {
+		t.Fatalf("the good run left %d files, want 6: %v", len(before), before)
+	}
+	if rc, _, _ := runInit(t, dir, composeInitEnv(dir, bad)); rc != 1 {
+		t.Fatal("the bad setting was not refused on a kept volume")
+	}
+	if after := volumeState(t, dir); !reflect.DeepEqual(after, before) {
+		t.Errorf("a refused run changed the volume:\nbefore %v\nafter  %v", before, after)
 	}
 }
 

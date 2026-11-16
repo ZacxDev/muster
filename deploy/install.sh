@@ -15,8 +15,13 @@
 #   4. installs muster-mirror and the muster CLI (checksum-verified) into
 #      ~/.local/bin, mints this machine's mirror token, and runs muster-mirror
 #      as a user service (systemd on Linux, launchd on macOS) against
-#      http://localhost:<port>;
+#      http://localhost:<port>; on Linux it turns on linger for this user
+#      (`loginctl enable-linger`, asking before it uses sudo) so the mirror
+#      survives logout and reboot, and says plainly when it could not;
 #   5. runs `muster doctor`, and exits with its verdict.
+#
+# The mirror token never goes on a command line (other users can read argv in
+# `ps`): curl reads its Authorization header from a 0600 file (`-H @file`).
 #
 # Facts it does not keep: the version is the release this file came from (a
 # release stamps it; an unstamped copy asks GitHub for the newest release),
@@ -24,7 +29,8 @@
 #
 # Settings (environment): MUSTER_DIR (default ~/muster), MUSTER_PROJECT
 # (compose project, default muster), MUSTER_BIN (default ~/.local/bin),
-# MUSTER_MIRROR_HOST (default this machine's short hostname). For testing only:
+# MUSTER_MIRROR_HOST (default this machine's short hostname), MUSTER_LINGER
+# (yes/no: answer the linger question without asking). For testing only:
 # MUSTER_RELEASE_BASE (where the assets are), MUSTER_IMAGE (a local image).
 set -eu
 
@@ -108,8 +114,13 @@ mkdir -p "$CFG" && chmod 700 "$CFG"
 host="${MUSTER_MIRROR_HOST:-$(hostname 2>/dev/null | cut -d. -f1)}"
 [ -n "$host" ] || host=this-machine
 tok="$CFG/token"
+# The token's Authorization header, in a 0600 file curl reads (`-H @file`):
+# never in curl's argv, which every user of this machine can read in `ps`.
+auth="$tmp/auth-header"
+authfile() { (umask 077; printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "$auth"); }
 # A kept token must still be live (a `down -v` starts a new database).
-if [ -s "$tok" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat "$tok")" "$URL/mirror/host")" = 401 ]; then
+[ -s "$tok" ] && authfile
+if [ -s "$tok" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' -H @"$auth" "$URL/mirror/host")" = 401 ]; then
   say "this machine's mirror token is not known to this server any more; minting a new one"
   rm -f "$tok"
 fi
@@ -119,6 +130,7 @@ if [ ! -s "$tok" ]; then
   say "minted this machine's mirror token ($host)"
 fi
 chmod 600 "$tok"
+authfile
 # The settings: the lines this script owns are rewritten, every other line kept.
 owned='^(MUSTER_MIRROR_URL|MUSTER_MIRROR_TOKEN_FILE|MUSTER_MIRROR_HOST|MUSTER_MIRROR_WRITE_HOOK_CONFIG|PATH)='
 tmux_dir=$(dirname "$(command -v tmux 2>/dev/null || echo /usr/bin/tmux)")
@@ -154,6 +166,7 @@ UNIT
   systemctl --user enable muster-mirror.service >/dev/null 2>&1
   systemctl --user restart muster-mirror.service
   service=systemd
+  linger
 elif [ "$OS" = darwin ]; then
   label=io.github.zacxdev.muster-mirror
   plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -182,7 +195,7 @@ fi
 # Wait for this machine to connect before the doctor looks.
 if [ "$service" != none ]; then
   i=0
-  until curl -fsS -H "Authorization: Bearer $(cat "$tok")" "$URL/mirror/host" 2>/dev/null | grep -q '"online": *true'; do
+  until curl -fsS -H @"$auth" "$URL/mirror/host" 2>/dev/null | grep -q '"online": *true'; do
     i=$((i + 1)); [ "$i" -le 30 ] || { say "muster-mirror has not connected after 30s; the doctor below says why"; break; }
     sleep 1
   done
@@ -214,5 +227,39 @@ exit "$rc"
 say() { printf 'muster-install: %s\n' "$*"; }
 die() { printf 'muster-install: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# linger: muster-mirror is a systemd USER service, which runs only while this
+# user is logged in unless the user has linger on: without it the mirror stops
+# at logout and does not start at boot, so this machine's sessions go missing
+# from muster until someone logs in. Already on: nothing to do. Else
+# `loginctl enable-linger` as this user (polkit often allows it for oneself),
+# else sudo — asked first, on the terminal (MUSTER_LINGER=yes/no answers
+# without asking). Never fatal: when it stays off, it says what that means.
+linger() {
+  u=$(id -un)
+  if ! have loginctl; then
+    say "no loginctl here: muster-mirror runs while you are logged in, and may not start at boot"; return 0
+  fi
+  [ "$(loginctl show-user "$u" -p Linger --value 2>/dev/null)" = yes ] && return 0
+  if loginctl enable-linger "$u" >/dev/null 2>&1; then
+    say "turned on linger for $u: muster-mirror keeps running after logout and starts at boot"; return 0
+  fi
+  ans="${MUSTER_LINGER:-}"
+  tty=/dev/null; (: </dev/tty) 2>/dev/null && tty=/dev/tty
+  if [ -z "$ans" ] && [ "$tty" = /dev/tty ] && have sudo; then
+    say "muster-mirror needs linger to keep running after you log out and to start at boot."
+    say "that takes: sudo loginctl enable-linger $u"
+    printf 'muster-install: run it now (sudo may ask for your password)? [y/N] ' >/dev/tty
+    read -r ans </dev/tty || ans=
+  fi
+  case "$ans" in
+    y|Y|yes|YES)
+      if have sudo && sudo loginctl enable-linger "$u" <"$tty"; then
+        say "turned on linger for $u: muster-mirror keeps running after logout and starts at boot"; return 0
+      fi ;;
+  esac
+  say "linger is OFF for $u: muster-mirror stops when you log out and does not start at boot, so this machine's"
+  say "sessions are missing from muster until you log in again. Turn it on any time: sudo loginctl enable-linger $u"
+}
 
 main "$@"

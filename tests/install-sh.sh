@@ -19,6 +19,10 @@
 #   * a second run exits 0 and changes nothing: the same sign-in password,
 #     the same mirror token, and a line added by hand to muster-mirror's
 #     settings is still there (only the lines it owns are rewritten);
+#   * the mirror token never appears in curl's argv (which every user can read
+#     in `ps`): the second run's curl goes through a shim that logs its
+#     arguments; POSITIVE CONTROL, the log holds the token-authenticated
+#     /mirror/host calls (so the shim saw them), and none carries the token;
 #   * REFUSALS, each changing nothing: a second install under the same compose
 #     project from another directory; a ~/muster this script did not make (a
 #     second fresh user with an INSTALL.md-style directory); and this
@@ -87,7 +91,11 @@ echo "ok   first run: exit 0, doctor passed, muster-mirror.service active and co
 
 # --- the second run: idempotent --------------------------------------------------
 as "$U" 'echo MUSTER_MIRROR_INTERACTIVE=0 >> ~/.config/muster-mirror/env'
-one_liner "$U" > /tmp/install-2.log 2>&1 || { cat /tmp/install-2.log; fail "the second run exited non-zero"; }
+# curl's argv, logged by a shim first on the install's PATH.
+shim=/tmp/install-curl-shim; argv=/tmp/install-curl-argv.log
+mkdir -p "$shim"; : > "$argv"; chmod 666 "$argv"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' "$argv" "$(command -v curl)" > "$shim/curl"; chmod 755 "$shim/curl"
+one_liner "$U" "PATH=$shim:\$PATH" > /tmp/install-2.log 2>&1 || { cat /tmp/install-2.log; fail "the second run exited non-zero"; }
 pw2="$(as "$U" 'docker compose -f ~/muster/docker-compose.yml -p muster exec -T muster /muster-server show-secret ui-password')"
 [ "$pw1" = "$pw2" ] || fail "the second run changed the sign-in password"
 [ "$(as "$U" 'cat ~/.config/muster-mirror/token')" = "$tok" ] || fail "the second run replaced the mirror token"
@@ -95,6 +103,10 @@ as "$U" 'grep -qx MUSTER_MIRROR_INTERACTIVE=0 ~/.config/muster-mirror/env' || fa
 [ "$(as "$U" 'grep -c ^MUSTER_MIRROR_URL= ~/.config/muster-mirror/env')" = 1 ] || fail "the second run duplicated a line it owns"
 if grep -q 'minted' /tmp/install-2.log; then fail "the second run minted a token"; fi
 echo "ok   second run: exit 0, same password, same token, the hand-added line kept"
+calls="$(grep -c '/mirror/host' "$argv" || true)"
+[ "$calls" -ge 2 ] || fail "positive control: the curl shim logged $calls /mirror/host call(s), want the token check and the connect wait"
+if grep -qF -- "$tok" "$argv"; then fail "the mirror token is on curl's command line: $(grep -F -- "$tok" "$argv" | head -1 | sed "s/$tok/<token>/")"; fi
+echo "ok   the mirror token is never in curl's argv ($calls token-authenticated calls logged, none carries it)"
 
 # --- refusals, each changing nothing ----------------------------------------------
 # The containers by id, name and state: a recreated or restarted one differs.

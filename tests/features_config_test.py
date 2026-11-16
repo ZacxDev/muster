@@ -96,9 +96,10 @@ NOT_FORWARDED = {
     ]},
     "MUSTER_TAG_AUTODISPATCH": "reserved: logs and counts eligible tasks, dispatches nothing",
     "DATABASE_URL": "the Compose file hands muster DATABASE_URL_FILE instead, which muster-init writes from Postgres's "
-    "password (POSTGRES_PASSWORD in .env, or one it generated)",
+    "password (kept from the stack's first start: POSTGRES_PASSWORD in .env then, or one it generated)",
     "POSTGRES_PASSWORD": "read by muster-init (muster-server compose-init) only, which writes it to Postgres's password "
-    "file and into DATABASE_URL_FILE; muster's own environment never holds it",
+    "file when the stack has none (never over one: a different value is refused) and into DATABASE_URL_FILE; muster's "
+    "own environment never holds it",
     "MUSTER_INTERNAL_HTTP_CONNECTORS": "deployment-specific: a JSON array naming the admin's own internal services, each with "
     "its own MUSTER_INTERNAL_HTTP_TOKEN_<NAME>; there is no default to forward (docs/connectors.md#internal-http-connectors)",
     **{name: "test fixture: read only by a `-tags e2eterm` build" for name in [

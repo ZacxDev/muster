@@ -104,7 +104,7 @@ grep -q '^RELEASE="@MUSTER_RELEASE@"' "$ROOT/deploy/install.sh" || die "deploy/i
 sed "s/^RELEASE=\"@MUSTER_RELEASE@\"/RELEASE=\"$VERSION\"/" "$ROOT/deploy/install.sh" > "$DIST/install.sh"
 chmod 755 "$DIST/install.sh"
 # The attached .env.example pins the release it came from; the repository copy
-# leaves MUSTER_VERSION empty so the compose file refuses to start without one.
+# leaves MUSTER_VERSION empty, so the compose file's own default applies.
 grep -q '^MUSTER_VERSION=$' "$ROOT/deploy/.env.example" ||
   die "deploy/.env.example has no empty 'MUSTER_VERSION=' line to fill in"
 sed "s/^MUSTER_VERSION=\$/MUSTER_VERSION=$VERSION/" "$ROOT/deploy/.env.example" > "$DIST/env.example"
@@ -135,8 +135,8 @@ $(diff <(echo "$want") <(echo "$have") || true)"
   die "checksums.txt does not list every asset"
 grep -q "^MUSTER_VERSION=$VERSION\$" "$DIST/env.example" || die "env.example does not pin $VERSION"
 grep -q "^RELEASE=\"$VERSION\"" "$DIST/install.sh" || die "install.sh does not pin $VERSION"
-grep -q "MUSTER_VERSION:-$VERSION}" "$DIST/docker-compose.yml" && ! grep -q 'MUSTER_VERSION:-main}' "$DIST/docker-compose.yml" ||
-  die "docker-compose.yml does not default to $VERSION"
+[ "$("$ROOT/scripts/stamp-compose-version.sh" --current < "$DIST/docker-compose.yml")" = "$VERSION" ] ||
+  die "docker-compose.yml does not default to $VERSION in every image"
 # No asset may start with a period (GitHub would rename it; see the header).
 if (cd "$DIST" && find . -maxdepth 1 -type f -name '.*' | grep -q .); then die "an asset name starts with '.'"; fi
 

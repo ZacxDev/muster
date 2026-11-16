@@ -152,7 +152,7 @@ func TestTheVAPIDSubjectDefaultsToMailtoUnlessHTTPS(t *testing.T) {
 		"":                                    "mailto:muster@localhost",
 		"http://localhost:8105":               "mailto:muster@localhost",
 		"http://127.0.0.1:8105":               "mailto:muster@localhost",
-		"http://muster.example:8105":              "mailto:muster@localhost",
+		"http://muster.example:8105":          "mailto:muster@localhost",
 		"https://muster.example.ts.net":       "https://muster.example.ts.net",
 		"https://muster.example.ts.net/x?y=1": "https://muster.example.ts.net",
 		"https://user:pw@muster.example.com":  "mailto:muster@localhost",

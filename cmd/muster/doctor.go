@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -56,6 +57,8 @@ const (
 	transcribePath = "/transcribe"
 	pushKeyRoute   = "/api/push/vapid-public-key"
 
+	// sharedMachineDoc is the local quickstart's single-user assumption.
+	sharedMachineDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#this-machine-is-yours-alone"
 	// addPhoneDoc is where a local (loopback) install learns to add the phone.
 	addPhoneDoc = "https://github.com/ZacxDev/muster/blob/main/docs/quickstart-local.md#add-your-phone"
 
@@ -108,8 +111,11 @@ var doctorChecks = []string{
 // doctorSystem is everything doctor reads from THIS machine, injected so each
 // local check is testable without the machine having (or lacking) the thing.
 type doctorSystem struct {
-	goos     string
-	uid      int
+	goos string
+	uid  int
+	// user is this user's login name ("" unknown): the others-logged-in
+	// warning leaves it out of `who`.
+	user     string
 	lookPath func(string) (string, error)
 	// run runs a command and returns its stdout; err is non-nil for a non-zero
 	// exit (an *exec.ExitError) or a command that could not start.
@@ -123,7 +129,11 @@ type doctorSystem struct {
 // tests replace it for EVERY test (doctor_test.go's TestMain): no test of this
 // binary may read the real machine's services or tmux.
 var newDoctorSystem = func() doctorSystem {
-	return doctorSystem{goos: runtime.GOOS, uid: os.Getuid(), lookPath: exec.LookPath, run: realRun}
+	name := ""
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	return doctorSystem{goos: runtime.GOOS, uid: os.Getuid(), user: name, lookPath: exec.LookPath, run: realRun}
 }
 
 func realRun(ctx context.Context, name string, args ...string) (string, error) {
@@ -443,8 +453,15 @@ func (d *doctorRun) checkServer(ctx context.Context) {
 	// it works in this machine's browser, which treats a loopback origin as
 	// secure. Only the phone needs https, so that is a note, not a failure.
 	if loopback.HTTPURL(d.base) {
-		d.add(name, statusPass, fmt.Sprintf("%s answers on this machine (muster %s). Your phone needs HTTPS to reach it: "+
-			"add it with Tailscale (%s)", d.base, h.Version, addPhoneDoc), "")
+		detail := fmt.Sprintf("%s answers on this machine (muster %s). Your phone needs HTTPS to reach it: "+
+			"add it with Tailscale (%s)", d.base, h.Version, addPhoneDoc)
+		if others := d.otherUsers(ctx); len(others) > 0 {
+			detail += fmt.Sprintf(". WARNING: other users are logged in to this machine (%s). Plain http to localhost "+
+				"is private from other machines, not from them: one could listen on this port while muster is down and "+
+				"receive this machine's mirror token. On a shared machine use HTTPS (%s)",
+				strings.Join(others, ", "), sharedMachineDoc)
+		}
+		d.add(name, statusPass, detail, "")
 		return
 	}
 	if u, _ := url.Parse(d.base); u == nil || u.Scheme != "https" {
@@ -454,6 +471,32 @@ func (d *doctorRun) checkServer(ctx context.Context) {
 		return
 	}
 	d.add(name, statusPass, fmt.Sprintf("%s answers over https (muster %s)", d.base, h.Version), "")
+}
+
+// otherUsers is the login names `who` lists that are not this user's: the
+// people (other than you) logged in to this machine, terminal or ssh. Best
+// effort, for a warning only: no `who`, a failure, or no user name of our own
+// gives none (a guess would warn everyone).
+func (d *doctorRun) otherUsers(ctx context.Context) []string {
+	if d.sys.user == "" {
+		return nil
+	}
+	out, err := d.sys.run(ctx, "who")
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var others []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] == d.sys.user || seen[f[0]] {
+			continue
+		}
+		seen[f[0]] = true
+		others = append(others, f[0])
+	}
+	slices.Sort(others)
+	return others
 }
 
 func (d *doctorRun) checkManifest(ctx context.Context) {

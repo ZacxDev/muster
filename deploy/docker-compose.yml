@@ -10,14 +10,17 @@
 # shown again by the command above), the hook token, the Web Push keys and
 # Postgres's password. A .env (from .env.example; a release attaches it as
 # env.example, no leading dot) is only for what you want to set yourself:
-# a value it sets is used instead of the generated one, and an .env written
-# before secrets were generated keeps working exactly as it did.
+# a value it sets is used instead of the generated one — except Postgres's
+# password, which is used only on the stack's first start (the database keeps
+# it; a different one later is refused) — and an .env written before secrets
+# were generated keeps working exactly as it did.
 #
 # THE VERSION. The images are tagged MUSTER_VERSION, which defaults to the
 # value written in this file: a release's copy of it is stamped with that
 # release (scripts/release-build.sh), so a downloaded docker-compose.yml runs
-# the release it came from; the repository's copy says `main`, the image CI
-# publishes from the newest commit on main. Set MUSTER_VERSION in .env to pin
+# the release it came from; the repository's copy says the LATEST release
+# (bumped after each one: scripts/check-compose-default.sh, which CI runs, fails
+# while it is behind). Never a moving tag. Set MUSTER_VERSION in .env to pin
 # another.
 #
 # Services:
@@ -87,7 +90,9 @@ services:
     environment:
       POSTGRES_USER: muster
       POSTGRES_DB: muster
-      # Written by muster-init: .env's POSTGRES_PASSWORD, or one generated once.
+      # Written once by muster-init (.env's POSTGRES_PASSWORD on the stack's
+      # first start, else generated) and never overwritten: Postgres reads it
+      # only when it creates the database.
       POSTGRES_PASSWORD_FILE: /run/muster-secrets/postgres_password
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -106,7 +111,7 @@ services:
   muster:
     # MUSTER_IMAGE exists so a locally built image can be tested with this
     # exact file; leave it unset to run the published release.
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-main}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.231.0}
     restart: unless-stopped
     depends_on:
       muster-init:
@@ -335,14 +340,15 @@ services:
   # The one-shot that makes a .env unnecessary (muster-server compose-init,
   # cmd/muster-server/secretfiles.go). Each start: every secret .env does not
   # set is generated once into the secrets volume and kept; Postgres's password
-  # (POSTGRES_PASSWORD when .env sets it) and muster's DATABASE_URL are written
-  # there; and then muster's configuration — muster's own environment, the
-  # anchor above — goes through the server's boot validation, so a refusal
-  # exits 1 at once instead of a restart loop. Root only to write the volume
+  # is kept there too (POSTGRES_PASSWORD only when there is none yet; a
+  # different one later is refused) with muster's DATABASE_URL built from it;
+  # and muster's configuration — muster's own environment, the anchor above —
+  # goes through the server's boot validation BEFORE anything is written, so a
+  # refusal exits 1 at once, changing nothing, instead of a restart loop. Root only to write the volume
   # with the owners below (uid 65532 is muster's in its image, 70 Postgres's in
   # postgres:16-alpine); no network.
   muster-init:
-    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-main}
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:-0.231.0}
     user: "0:0"
     command:
       - compose-init
@@ -365,8 +371,7 @@ services:
   # --- dictation, GPU (profile stt-cohere) ----------------------------------
   stt-cohere:
     profiles: ["stt-cohere"]
-    # ⚠ Published for releases only: on `main`, set MUSTER_VERSION to a release.
-    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-main}
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:-0.231.0}
     restart: unless-stopped
     environment:
       # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
@@ -533,7 +538,7 @@ services:
   # files/etc/claude-code.
   chief-init:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-main}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.231.0}
     user: "0:0"
     entrypoint:
       - sh
@@ -550,7 +555,7 @@ services:
 
   chief:
     profiles: ["chief"]
-    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-main}
+    image: ${CHIEF_IMAGE:-ghcr.io/zacxdev/claude-code-agent}:${MUSTER_VERSION:-0.231.0}
     restart: unless-stopped
     depends_on:
       chief-init:
