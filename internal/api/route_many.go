@@ -266,15 +266,19 @@ func firstInSweep(ctx context.Context, batchID string) bool {
 //     chief's session claim (ClaimKickoff), and the record is re-checked
 //     inside it, so racing deliveries write it once.
 //
-// 🔴 The turn path checks "owed, not in flight, not on record" before taking
-// the chief's claim AND AGAIN UNDER IT (startRouteTurn): a second
-// delivery whose first check ran before the first delivery cleared the
-// hand-backs, and whose claim was won after that delivery released it, finds
-// the batch no longer owed and delivers nothing. Without the re-check it
-// delivered again (issue #732: 2 digest turns in 99 of 200 runs of the
-// racer test); route_many_race_pg_test.go now queues the claim so every
-// racer takes it in turn, the exact interleaving. ctx acts as the routes'
-// owner.
+// The turn path checks "owed, not in flight, not on record" before taking the
+// chief's claim AND AGAIN UNDER IT (startRouteTurn's owed). Today the second
+// check is a DEFENCE for concurrent deliveries the deployment does not
+// produce: every delivery runs from the one route sweep (RunRouteTimeouts, a
+// single goroutine per process; the chart pins one replica, Recreate), so two
+// never race, and a turn the sweep started still holds the claim until it has
+// taken what it delivered (a later sweep finds it in flight, or its row on
+// record). Concurrent deliveries — a second replica, a second sweep, an
+// unrelated caller — would race: one whose first check ran before another
+// cleared the hand-backs, and whose claim was won after that one released it,
+// would deliver the digest again. The re-check under the claim stops it
+// (route_many_race_pg_test.go forces exactly that interleaving: 2+ digest
+// turns without it, issue #732). ctx acts as the routes' owner.
 //
 // 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S (deliverRouteAnswer's rule):
 // owner_asked refuses in it, so no answer routes text onward in their name.
@@ -356,9 +360,10 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 					note(ctx)
 				}
 			}
-			// Re-checked under the chief's delivery claim: a racing delivery
-			// may have delivered the digest between the checks above and
-			// this one winning the claim.
+			// Re-checked under the chief's delivery claim: a concurrent
+			// delivery (none in today's single-sweep deployment) may have
+			// delivered the digest between the checks above and this one
+			// winning the claim.
 			owed := func(ctx context.Context) bool {
 				b, err := s.ext.Routes.BatchRoutes(ctx, batchID)
 				if err != nil || !b.Owed {

@@ -1795,7 +1795,8 @@ func (s *Server) deliverToChief(ctx context.Context, r plugins.Route, text strin
 	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
 		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
 			// Re-checked under the chief's delivery claim (startRouteTurn):
-			// a racing delivery may have handed it back between the checks
+			// a concurrent delivery (none in today's single-sweep deployment) may
+			// have handed it back between the checks
 			// above (deliverRouteHandBack's HandBackOwed, textOnRecord) and this
 			// one winning the claim. A hand-back this delivery already took is
 			// its own (TakeHandBack takes it once), so only its record is read.
@@ -2125,7 +2126,8 @@ func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plu
 				fallback(ctx, turn)
 			}
 			// Re-checked under the chief's delivery claim (startRouteTurn):
-			// a racing delivery may have delivered some of these answers between
+			// a concurrent delivery (none in today's single-sweep deployment) may
+			// have delivered some of these answers between
 			// the checks above and this one winning the claim. Then the turn's
 			// text is stale: nothing is sent, those on record are taken, and the
 			// rest stay owed for the next sweep (which the finished turn woke).
@@ -2254,15 +2256,19 @@ func routeRowSurvived(ctx context.Context) bool {
 // the chief's delivery claim is won and before anything is stored or sent;
 // when it reports false the claim is released, nothing is delivered, and
 // startRouteTurn reports TRUE (there is nothing to deliver, so the caller's
-// "cannot take it now" fallback must not run either). A caller's check made
-// BEFORE the claim can be stale by the time the claim is won: a racing
-// delivery may have won it first, run its whole turn, stored the reply, taken
-// what it carried and released the claim in between, and the late one would
-// deliver a second time (issue #732: 2 digest turns from one route_many
-// batch; the same shape in deliverRouteAnswers and deliverToChief). The claim
-// serialises the deliveries; only a check made while holding it sees the
-// first one's result. TestEveryRouteTurnReChecksUnderTheClaim pins every
-// caller to passing one.
+// "cannot take it now" fallback must not run either). It is a DEFENCE for
+// concurrent deliveries the current deployment does not produce: every
+// caller runs from the one route sweep (RunRouteTimeouts, a single goroutine
+// per process, one replica), and a turn holds the claim until it has taken
+// what it delivered. But a caller's check made BEFORE the claim can be stale
+// once the claim is won if two deliveries do race (a second replica or sweep):
+// the other may have won it first, run its whole turn, stored the reply, taken
+// what it carried and released it in between, and the late one would deliver
+// a second time. The claim serialises the deliveries; only a check made while
+// holding it sees the first one's result (issue #732; the racer tests in
+// route_many_race_pg_test.go and route_turn_race_pg_test.go force that
+// interleaving). TestEveryRouteTurnReChecksUnderTheClaim pins every caller to
+// passing one.
 func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
 	owed func(context.Context) bool, done, refused func(context.Context)) bool {
 	if agents.KickoffOwed(chief) {
