@@ -68,8 +68,11 @@ const (
 	// PreviewMCPPath is the endpoint's second MCP server: the preview tools,
 	// served here and never forwarded (SetPreview).
 	PreviewMCPPath = "/preview-mcp"
-	// mcpMaxBody bounds one forwarded JSON-RPC message (muster's own bound).
-	mcpMaxBody = 64 << 10
+	// mcpMaxBody bounds one forwarded JSON-RPC message: muster's own read
+	// bound, the one rule both hops share (mirror.MaxMCPRequestBytes, which
+	// says why it fits a page's blocks). muster holds each tool to its own
+	// bound past that; this proxy forwards and lets it.
+	mcpMaxBody = mirror.MaxMCPRequestBytes
 	// MCPClientHeader names the MCP client when its headers cannot name a
 	// pane; MCPClientOpenCode is opencode's value (OpenCodeCaller).
 	MCPClientHeader   = "X-Muster-Client"
@@ -472,9 +475,8 @@ func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, name s
 	if p.outsiderLogged.CompareAndSwap(false, true) {
 		p.logf("muster-mirror: mcp: a caller outside this host's tmux server gets no tools (logged once): %v", why)
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
-	if err != nil {
-		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
+	body, ok := readMCPBody(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -519,6 +521,23 @@ func (p *MCPProxy) serverVersion() string {
 		return p.Version
 	}
 	return "dev"
+}
+
+// readMCPBody reads one MCP request under mcpMaxBody. Past it the caller is
+// refused 413 with words that name THIS side — muster-mirror, not muster — and
+// the bounds, so a mixed rollout says which hop stopped it; ok false then.
+func readMCPBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
+	if err == nil {
+		return body, true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		mcpRefuse(w, http.StatusRequestEntityTooLarge, mirror.MCPTooLarge("muster-mirror on this host"))
+		return nil, false
+	}
+	mcpRefuse(w, http.StatusBadRequest, "muster-mirror on this host could not read the request")
+	return nil, false
 }
 
 // mcpRPC writes one JSON-RPC response, HTTP 200: result, or (code != 0) an
@@ -630,9 +649,8 @@ func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, 
 // and tools/call are rebuilt as mcpinstances.go says; an opencode caller's are
 // forwarded exactly as before, to the primary.
 func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpMaxBody))
-	if err != nil {
-		mcpRefuse(w, http.StatusRequestEntityTooLarge, "the request is too large")
+	body, ok := readMCPBody(w, r)
+	if !ok {
 		return
 	}
 	// 🔴 ONLY A tools/call IS BOUND TO A SESSION. initialize, tools/list, ping

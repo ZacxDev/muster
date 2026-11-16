@@ -31,6 +31,21 @@ import (
 const (
 	// MaxVersionBytes bounds one version's blocks as JSON (0116's CHECK).
 	MaxVersionBytes = 512 << 10
+	// MaxBlocksInputBytes bounds the blocks as a REQUEST carries them, before
+	// they are parsed (Parse): twice MaxVersionBytes, because the caller's
+	// encoder is not Go's. The stored size is Go's re-encoding (Validate),
+	// which writes non-ASCII as raw UTF-8 but escapes <, > and & as \u003c (6
+	// bytes each), so JavaScript's JSON.stringify, which escapes less, is no
+	// larger than the stored form for well-formed text. An encoder that writes
+	// non-ASCII as \uXXXX (Python's json.dumps default) can be larger: at
+	// worst 3x, a 2-byte UTF-8 letter as a 6-byte escape (measured: "é" is 2
+	// bytes in Go's encoding and 6 in Python's; an emoji 4 and 12, a surrogate
+	// pair; "<" 6 in Go's and 1 in Python's and JSON.stringify's). Base64
+	// data: URIs are ASCII and the same size in every encoder, so a page of
+	// inline screenshots is ~1x. Past this the blocks are refused unread with
+	// the page's own error ("larger than 512 KiB"). Every MCP hop's body
+	// bound is derived from it (mirror.MaxMCPRequestBytes).
+	MaxBlocksInputBytes = 2 * MaxVersionBytes
 	// MaxBlocks bounds a version's block count.
 	MaxBlocks = 100
 	// MaxHTMLBytes bounds one html block.
