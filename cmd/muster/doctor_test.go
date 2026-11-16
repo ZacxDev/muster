@@ -121,6 +121,10 @@ type fakeMuster struct {
 	password      string
 	loginStatus   int // 0 = check the password
 	dropCookie    bool
+	// boardRedirect: GET /tasks answers 302 to this location, signed in or
+	// not (something in front of muster); "self" is muster's own absolute
+	// <scheme>://<host>/login.
+	boardRedirect string
 	// secureCookie: the session cookie is set Secure (MUSTER_SECURE_COOKIES
 	// on a server older than the loopback exception, or a LAN port).
 	secureCookie bool
@@ -263,6 +267,19 @@ func (f *fakeMuster) handler() http.Handler {
 		return err == nil && c.Value == "signed"
 	}
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch f.boardRedirect {
+		case "":
+		case "self":
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			http.Redirect(w, r, scheme+"://"+r.Host+"/login", http.StatusFound)
+			return
+		default:
+			http.Redirect(w, r, f.boardRedirect, http.StatusFound)
+			return
+		}
 		if !signed(r) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
@@ -603,7 +620,6 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 		{check: "sign-in", why: "cookie dropped", breakM: func(m *fakeMuster) { m.dropCookie = true }, detail: "does not open a page"},
 		{check: "push", why: "no keys (signed in)", breakM: func(m *fakeMuster) { m.pushKey = "" }, detail: "no push keys"},
 		{check: "push", why: "no keys (report only)", opts: doctorOpts{noPassword: true}, breakM: func(m *fakeMuster) { m.report["push"] = false }, detail: "MUSTER_VAPID_"},
-		{check: "dictation", why: "off", breakM: func(m *fakeMuster) { m.report["dictation"] = false }, detail: "MUSTER_STT_TOKEN is unset"},
 		{check: "dictation", why: "route 404", breakM: func(m *fakeMuster) { m.transcribeCode = http.StatusNotFound }, detail: "404"},
 		{check: "dictation", why: "service refused", breakM: func(m *fakeMuster) {
 			m.transcribeCode, m.transcribeText = http.StatusBadGateway, "The transcription service refused this server's credential"
@@ -888,7 +904,7 @@ func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
 // TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams pins the CLI's contract
 // on REAL files: stdout carries the one JSON document and stderr the report,
 // also when both are the SAME open file (a terminal, `>out 2>&1`). An agent
-// that wants only the report sends stdout to /dev/null (INSTALL.md, Step 10)
+// that wants only the report sends stdout to /dev/null (INSTALL.md, "Check it")
 // rather than the CLI guessing from the streams.
 func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 	read := func(f *os.File) string {

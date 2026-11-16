@@ -83,7 +83,7 @@ func TestTheRuntimesSpawnReadsAreTheActingOwnersOwn(t *testing.T) {
 
 	// CONTROL: the person reads the team's row (team_owner_read). Without
 	// this the assertions below would pass on RLS alone.
-	visible, err := st.VisibleHostSpawns(asPerson, 50)
+	visible, err := st.VisibleHostSpawns(asPerson, officers.SpawnWindow{}, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

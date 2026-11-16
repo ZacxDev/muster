@@ -476,8 +476,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	// 🔴 AN OWNER IS A PERSON OR A TEAM, AND IT EXISTS (team sharing phase 3,
 	// officers.CheckOwners): a team owns a TEAM OFFICER, whose runtime acts as
-	// the team; an owner naming nobody, or a team owning a host officer (team
-	// hosts are phase 2b), is refused here rather than on its first pass.
+	// the team — in pods, or on a team host (2b.5); an owner naming nobody, or
+	// a team's host officer that declares connectors (G3), is refused here
+	// rather than on its first pass.
 	if err := officers.CheckOwners(cfg.Officers, s.officerOwnerKind); err != nil {
 		return nil, err
 	}

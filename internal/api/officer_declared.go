@@ -34,8 +34,9 @@ import (
 //	GET    /api/officers/runtime-options             where the caller's officer could run, and why not
 //
 // A TEAM's officers are the store's and the loader's already (a row a team
-// owns runs, under the team rule officers.CheckOwners), but no door writes
-// them yet: the team door is O-C's, with the UI that is its first consumer
+// owns runs, under the team rule officers.CheckOwners — a team host officer
+// included since team sharing 2b.5, unless it declares connectors), but no
+// door writes them yet: the team door is O-C's, with the UI that is its first consumer
 // (round 0's D1).
 //
 // 🔴 NO RESTART. Every write swaps the registry (reloadDeclaredOfficers), and
@@ -222,8 +223,9 @@ func (s *Server) logDeclaredChanges(prev, now map[string]declaredState) {
 
 // resolveDeclared is row r as the officer that runs, or why it does not:
 // shadowed by an env declaration, no runtime available (auto resolved to
-// nothing), a team owning a host officer (officers.CheckOwners, the one
-// rule), or a slug an env officer holds.
+// nothing), the team rule (officers.CheckOwners, the one rule: an owner that
+// names nobody, or a team's host officer that declares connectors — G3), or
+// a slug an env officer holds.
 func (s *Server) resolveDeclared(ctx context.Context, r builtin.DeclaredRow, envSlugs map[string]string) (officers.Officer, string) {
 	rt := s.officerRT
 	if _, ok := rt.envOfficer(r.Owner, r.Officer); ok {
@@ -877,8 +879,12 @@ func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, 
 
 // checkDeclaredOwner is the team rule for d, through THE one check
 // (officers.CheckOwners): a declaration that names a host runs as a host
-// officer, and an owner that is a team is refused one there — so when team
-// sharing lets a team own a host officer, it changes in that one place.
+// officer, so the rule is checked as one — at the create or replace door and
+// at the roster load (resolveDeclared). A team's host officer that declares
+// connectors is refused (G3, team sharing 2b.5). No door accepts a team
+// owner yet: O-C's team door is the first to reach the team arm here, and
+// must refuse that declaration there (and an "auto" one that lands on a host
+// is refused at the load, after its runtime resolves).
 func (s *Server) checkDeclaredOwner(d officers.Declaration) error {
 	if d.Runtime != officers.RuntimeHost {
 		return nil

@@ -473,6 +473,33 @@ func TestTheFeatureRegistryLeaksNoConfiguredValue(t *testing.T) {
 	}
 }
 
+// TestDictationWithAURLAndNoTokenIsMisconfigured (#728 round 0): MUSTER_STT_URL
+// set without MUSTER_STT_TOKEN is a half-configured dictation, and reading
+// "off" made the doctor SKIP it as an optional feature nobody asked for. It
+// is MISCONFIGURED, naming the missing variable, so the doctor FAILs. The
+// controls: neither set is plainly off; both set (wired) is on.
+func TestDictationWithAURLAndNoTokenIsMisconfigured(t *testing.T) {
+	get := func(c config, ext api.Extensions) features.Feature {
+		f, _ := featureSet(t, c, ext, true).Get(features.Dictation)
+		return f
+	}
+	half := get(config{STTURL: "http://stt.example.invalid:8000"}, api.Extensions{})
+	if half.State != features.Misconfigured || !strings.Contains(half.Reason, envSTTToken) {
+		t.Errorf("URL without a token = %s (%s), want misconfigured naming %s", half.State, half.Reason, envSTTToken)
+	}
+	if f := get(config{}, api.Extensions{}); f.State != features.Off {
+		t.Errorf("control, neither set = %s (%s), want off", f.State, f.Reason)
+	}
+	c := config{STTURL: "http://stt.example.invalid:8000", STTToken: "stt-credential-fixture"}
+	tr, err := buildTranscriber(c)
+	if err != nil || tr == nil {
+		t.Fatalf("buildTranscriber: %v, %v", tr, err)
+	}
+	if f := get(c, api.Extensions{Transcriber: tr}); f.State != features.On {
+		t.Errorf("control, both set = %s (%s), want on", f.State, f.Reason)
+	}
+}
+
 // TestTheEvaluatorReadsWhatWasWired: a feature is on because its extension is
 // wired, not because its variable is set — the same config with and without
 // the wiring gives different states.

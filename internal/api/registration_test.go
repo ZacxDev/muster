@@ -509,3 +509,10 @@ func (u stubUsers) Account(ctx context.Context, id int64) (users.Account, error)
 	r, err := u.Role(ctx, id)
 	return users.Account{Role: r}, err
 }
+
+// HoldTeamRole: stubUsers seeds no team, so the send fence finds no
+// membership and REFUSES — a fake that cannot lock never lets a member turn
+// through unfenced.
+func (stubUsers) HoldTeamRole(context.Context, int64, int64) (authz.TeamRole, bool, func(), error) {
+	return "", false, func() {}, nil
+}

@@ -93,7 +93,7 @@ func asksFocus(r *http.Request) int64 {
 // asksTab is the tab a request names, asksTabAsk for none or an unknown one.
 func asksTab(r *http.Request) string {
 	switch v := r.URL.Query().Get(asksTabParam); v {
-	case asksTabDrafts, asksTabArchived, asksTabNudges:
+	case asksTabDrafts, asksTabArchived, asksTabNudges, asksTabLog:
 		return v
 	}
 	return asksTabAsk
@@ -293,10 +293,13 @@ func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 
 // asksTabsHTML is the page's tabs over askList (the Ask tab's <ul>): Reply
 // drafts when drafts (plugins are served), Chief nudges when nudges is not ""
-// (its panel: the feature is on), tab selected.
-func (s *Server) asksTabsHTML(askList string, drafts bool, pending, archived []plugins.DraftCard, nudges, tab string) string {
+// (its panel: the feature is on), and always Log (logPanel: the ask log's
+// panel, or its placeholder — ask_log_read.go), tab selected.
+func (s *Server) asksTabsHTML(askList string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
 	top := asksTabAsk
 	switch {
+	case tab == asksTabLog:
+		top = asksTabLog
 	case tab == asksTabNudges && nudges != "":
 		top = asksTabNudges
 	case (tab == asksTabDrafts || tab == asksTabArchived) && drafts:
@@ -310,6 +313,7 @@ func (s *Server) asksTabsHTML(askList string, drafts bool, pending, archived []p
 		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Chief nudges",
 			Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="nudges-panel">` + nudges + `</div>`)})
 	}
+	tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
 	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)
@@ -368,13 +372,33 @@ const asksPageScript = `<script>
     return t ? t.getAttribute('data-tab') : '';
   }
   function syncURL() {
-    var top = selected('asks-tabs'), v = top === 'ask' ? '' : (top === '` + asksTabNudges + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
+    var top = selected('asks-tabs'), v = top === 'ask' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
       if (v) u.searchParams.set('` + asksTabParam + `', v); else u.searchParams.delete('` + asksTabParam + `');
       if (u.href !== window.location.href) history.replaceState(history.state, '', u.href);
     } catch (e) {}
+    if (top === '` + asksTabLog + `') loadLog();
+  }
+  // The Log tab's panel is fetched the first time the tab is opened
+  // (ask_log_read.go): the page's own render reads nothing from the log.
+  function loadLog() {
+    var lazy = root.querySelector('[data-asklog-lazy]');
+    if (!lazy || lazy.hasAttribute('data-loading')) return;
+    lazy.setAttribute('data-loading', '');
+    fetch(lazy.getAttribute('data-src'), { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.text();
+    }).then(function (h) {
+      var t = document.createElement('template');
+      t.innerHTML = h;
+      lazy.replaceWith(t.content);
+    }).catch(function () {
+      lazy.removeAttribute('data-loading');
+      var p = lazy.querySelector('[data-asklog-loading]');
+      if (p) p.insertAdjacentText('afterbegin', 'The log could not be loaded. ');
+    });
   }
   if (window.location.pathname !== '` + attentionPath + `') syncURL();
   root.addEventListener('click', function (e) {

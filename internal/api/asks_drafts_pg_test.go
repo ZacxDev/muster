@@ -197,7 +197,8 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 }
 
 // TestAsksWithPluginsOffHasNoDraftsTab: no plugins served, no Reply drafts
-// tab (and no confirm dialog): the page is the Ask list alone, still "Asks".
+// tab: the page's tabs are Ask and Log only (the Log tab is drawn whatever is
+// served, ask_log_read.go), still "Asks".
 func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	f := newAttnFixture(t)
 	askID := f.ask(t, f.opTok, "Ship it?")
@@ -216,8 +217,11 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	page = page[:i] + page[i+j+len("</dialog>"):]
 	// (The confirm dialog is no proxy for the tab: the Asks page draws it
 	// whatever the plugins, for a team's gated cards — #717.)
-	if strings.Contains(page, `role="tablist"`) || strings.Contains(page, "Reply drafts") {
+	if strings.Contains(page, "Reply drafts") || strings.Contains(page, `id="asks-drafts-tabs"`) {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
+	}
+	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != asksTabAsk || got[1][1] != asksTabLog {
+		t.Fatalf("with plugins off the page's tabs are %v; want ask and log", got)
 	}
 }
 

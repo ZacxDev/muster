@@ -308,6 +308,38 @@ user you would let run that charter unattended. The full list is in the
 **Check:** the boot log's `officers: <id> on: runtime host on <machine> …` line,
 and the ON line's `S on hosts` count.
 
+### A team's host officer (team hosts)
+
+A [team](auth.md#teams) may own a `"runtime": "host"` officer (team sharing
+2b.5). Its `host` is a **team host**: a `muster-mirror` connected with the
+team's own mirror token ([mirroring.md](mirroring.md#team-hosts)), set up as
+above (`-interactive -agent-spawn`, and the officer's `repo`, if it names
+one, on `-agent-spawn-repos`).
+
+- **Only the team's host.** The runtime acts as the team, so it spawns,
+  closes and lists windows only on the team's host of that name. A member's
+  personal host with the same name is never used, even when it is the only
+  one online: the officer waits, as for any offline host. muster does not
+  check the host at boot, because it cannot know which hosts will connect.
+- **Its rows are the team's.** Each instance's agent row and spawn rows are
+  owned by the team. Every member, viewer and up, sees the team's spawns on
+  `/officers/spawns`, under the team's name. Nobody shares them or
+  changes them there. Its drafts wait for a manager's approval with a fresh
+  sign-in, as every team officer's do.
+- **Nothing is decided from the machine.** A team host's sessions are offered
+  no owner-authority tool, so the step-up gate never files a card for a team
+  (a team has no phone). An instance gets its officer tools and
+  `attention_ask`; its asks are the team's.
+- 🔴 **No `connectors`.** A team's host officer that declares `connectors` is
+  refused: at boot for `MUSTER_OFFICERS`, and at the roster load for a
+  database declaration (including a `"runtime": "auto"` one placed on a
+  host), which then says why it does not run. A
+  team's connector requests would have no one to decide them (decision G3 in
+  [design/team-sharing.md](design/team-sharing.md#g-operator-decided-2026-11-14)).
+  Run it in pods, or without connectors.
+- It can do whatever the team host's Unix user can, which every operator
+  there can already do.
+
 ### Letting it read public repositories (`read_grant: "standing"`)
 
 An officer that answers questions about a product needs its docs and source.
@@ -621,8 +653,10 @@ muster officer delete scout:main    # its queue, schedules and instances go too
   shadow officer is never flipped live, nor a paused one resumed, by
   omission. Every other field left out takes its default, as on a create.
 - A team's officers run from the database as a person's do (a row a team
-  owns is loaded, and a team cannot own a host officer yet), but there is no
-  door to write them yet: the team door comes with the officers UI (O-C).
+  owns is loaded; a team host officer runs on the team's host, and one that
+  declares `connectors` is refused: [A team's host officer](#a-teams-host-officer-team-hosts)),
+  but there is no door to write them yet: the team door comes with the
+  officers UI (O-C).
 
 | method | path | body / query |
 |---|---|---|
