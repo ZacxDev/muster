@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// A SESSION'S TASKS (migration 0136; docs/focus.md#a-sessions-tasks): the
+// A SESSION'S TASKS (migration 0137; docs/focus.md#a-sessions-tasks): the
 // external tasks a MIRRORED session says it works under, recorded by the
 // session itself with muster's track_task tool (internal/api
 // track_task_tool.go) — never derived from its focus, its transcript or a
@@ -19,11 +19,11 @@ import (
 // session's one per-owner record, so it has the focus's row-level security,
 // share class and retention, and fleet_list reads it in the same List.
 
-// MaxTaskKeys bounds how many tasks one session declares (0136's
+// MaxTaskKeys bounds how many tasks one session declares (0137's
 // agent_focus_task_keys_cap).
 const MaxTaskKeys = 10
 
-// MaxTaskTextRunes bounds the "none" line and the note (0136's
+// MaxTaskTextRunes bounds the "none" line and the note (0137's
 // agent_focus_task_text_cap).
 const MaxTaskTextRunes = 200
 

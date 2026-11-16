@@ -139,7 +139,7 @@ type RouteStore interface {
 	// (with the route as it is) for a stamp not bound to its conversation.
 	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
 	// BatchRoutes and FinishBatchDigest are a route_many
-	// batch's members and its ONE digest (route_batches.go, migration 0136).
+	// batch's members and its ONE digest (route_batches.go, migration 0137).
 	BatchRoutes(ctx context.Context, batchID string) (Batch, error)
 	SealBatch(ctx context.Context, batchID string, routeIDs []string) error
 	FinishBatchDigest(ctx context.Context, batchID string) error
@@ -216,7 +216,7 @@ type Route struct {
 	// (refuseRouteDraftTx, bounded by MaxRouteRedrafts).
 	Redraft bool
 	// BatchID is the route_many batch a request route belongs to (migration
-	// 0136; route_batches.go), "" for every other route. A member's answer
+	// 0137; route_batches.go), "" for every other route. A member's answer
 	// goes to its chief in the batch's one digest, never by itself.
 	BatchID string
 }
