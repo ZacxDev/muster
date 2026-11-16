@@ -19,7 +19,7 @@ import (
 // one place fails until all four agree. Changing it is a public-facing change: people
 // will have copied the old one.
 //
-// 🔴 IT HOLDS NO FACTS, ONLY REFERENCES (TestTheOnePromptHoldsNoFacts): no
+// 🔴 IT HOLDS NO FACTS, ONLY REFERENCES (tests/claude_plugin_test.py, Drift): no
 // version, port, image tag or setting, only where facts live — the guide's
 // URL, the repository, `muster doctor` and `--help`. A fact in a prompt people
 // have pasted somewhere cannot be corrected when the code changes.

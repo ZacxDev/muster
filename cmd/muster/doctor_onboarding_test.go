@@ -1,9 +1,6 @@
 package main
 
 import (
-	"os"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -53,55 +50,4 @@ func TestDoctorSignInNamesWhatAnsweredInstead(t *testing.T) {
 	if strings.Contains(got.Detail, "something in front of muster") {
 		t.Errorf("muster's own redirect to /login was blamed on something in front of it: %+v", got)
 	}
-}
-
-// TestCLIDocDoctorTableIsTheCodesCheckList: docs/cli.md's doctor table lists
-// exactly the checks the code runs, in the order it runs them — derived from
-// doctorChecks, never a count written here, so a check added to the code
-// (officer checks are coming) fails this until the table has its row.
-// INVARIANT GUARD: it holds at origin/main too (the drift it closes was
-// INSTALL.md's own copy of the table, which this change removes).
-func TestCLIDocDoctorTableIsTheCodesCheckList(t *testing.T) {
-	raw, err := os.ReadFile("../../docs/cli.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := cliDoctorTableChecks(string(raw))
-	if len(got) == 0 {
-		t.Fatal("positive control: docs/cli.md's doctor section has no `| `check` |` table")
-	}
-	if !slices.Equal(got, doctorChecks) {
-		t.Errorf("docs/cli.md's doctor table lists\n  %v\nthe code runs\n  %v", got, doctorChecks)
-	}
-	// Negative control: a table missing a row, or with one extra, differs.
-	cut := strings.Replace(string(raw), "| `push` |", "| push-renamed |", 1)
-	if slices.Equal(cliDoctorTableChecks(cut), doctorChecks) {
-		t.Error("control: a table with a row dropped still matched")
-	}
-	extra := strings.Replace(string(raw), "| `tmux` |", "| `officers` | x | y |\n| `tmux` |", 1)
-	if slices.Equal(cliDoctorTableChecks(extra), doctorChecks) {
-		t.Error("control: a table with an extra row still matched")
-	}
-}
-
-var cliCheckRow = regexp.MustCompile("^\\| `([a-z-]+)` \\|")
-
-// cliDoctorTableChecks is the first column of the table under cli.md's
-// "## `muster doctor`" heading, in order.
-func cliDoctorTableChecks(md string) []string {
-	i := strings.Index(md, "## `muster doctor`")
-	if i < 0 {
-		return nil
-	}
-	sec := md[i+1:]
-	if j := strings.Index(sec, "\n## "); j >= 0 {
-		sec = sec[:j]
-	}
-	var out []string
-	for _, line := range strings.Split(sec, "\n") {
-		if m := cliCheckRow.FindStringSubmatch(line); m != nil {
-			out = append(out, m[1])
-		}
-	}
-	return out
 }

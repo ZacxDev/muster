@@ -918,6 +918,36 @@ class Prose(unittest.TestCase):
         for fact in ("cohere-transcribe-03-2026", "faster-whisper-small", "whisper-1", "47823", "127.0.0.1:8105"):
             self.assertNotIn(fact, text, f"INSTALL.md spells {fact!r}, a fact the code owns")
 
+    def test_cli_doc_doctor_table_is_the_codes_check_list(self) -> None:
+        # docs/cli.md's doctor table lists exactly the checks doctor.go runs,
+        # in order, read from its doctorChecks list (never a count written
+        # here), so a check added to the code fails this until the table has
+        # its row. INVARIANT GUARD: it holds at origin/main too; the drift it
+        # closes was INSTALL.md's own copy of the table, which is gone. (A
+        # static check here, not a Go test: the nix build of cmd/muster
+        # carries no docs/.)
+        def code(src: str) -> list[str]:
+            m = re.search(r"(?s)var doctorChecks = \[\]string\{(.*?)\}", src)
+            return re.findall(r'"([a-z-]+)"', m.group(1)) if m else []
+
+        def table(md: str) -> list[str]:
+            i = md.find("## `muster doctor`")
+            if i < 0:
+                return []
+            sec = md[i + 1:]
+            j = sec.find("\n## ")
+            sec = sec if j < 0 else sec[:j]
+            return re.findall(r"(?m)^\| `([a-z-]+)` \|", sec)
+
+        src = (ROOT / "cmd/muster/doctor.go").read_text()
+        md = (ROOT / "docs/cli.md").read_text()
+        checks = code(src)
+        self.assertGreater(len(checks), 5, "positive control: doctorChecks was parsed")
+        self.assertEqual(table(md), checks, "docs/cli.md's doctor table is not doctor.go's check list")
+        self.assertNotEqual(table(md.replace("| `push` |", "| push-renamed |", 1)), checks, "control: a dropped row")
+        self.assertNotEqual(code(src.replace('"ask-hook",', '"ask-hook", "officers",', 1)), table(md),
+                            "control: a check added to the code")
+
     def test_the_release_publishes_the_guide(self) -> None:
         # The prompt downloads .../releases/latest/download/INSTALL.md, so a
         # release must attach it. scripts/release-build.sh's own self-check
