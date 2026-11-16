@@ -21,7 +21,7 @@ import (
 // racer that lost the race to the record still wins the claim later — the
 // delivery that arrives just after another finished, which only a re-check
 // under the claim stops (the note's in recordBatchDigest, the turn's in
-// startRouteTurnIfOwed). The turn race used to run unqueued, left to the
+// startRouteTurn). The turn race used to run unqueued, left to the
 // scheduler: the code before that re-check existed failed it in only some
 // runs (issue #732: 14 of 20; 99 of 200 measured on af368efa); queued, it
 // fails every run.
@@ -185,7 +185,7 @@ func TestABatchIsLeftAloneWhileItsDigestTurnIsInFlight(t *testing.T) {
 // batch racing make exactly ONE digest turn, recorded once — with the chief's
 // delivery claim queued (barrierAgents.queue), so every racer, already past
 // the record check, wins the claim in turn AFTER the first one's turn ended:
-// only startRouteTurnIfOwed's re-check under the claim stops the second turn.
+// only startRouteTurn's re-check under the claim stops the second turn.
 func TestRacingDeliveriesOfABatchMakeOneDigestTurn(t *testing.T) {
 	turns, chat, res := racedDigest(t, false)
 	if n := countContaining(turns, routeBatchHead(res.BatchID)+" "); n != 1 {

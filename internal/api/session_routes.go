@@ -1741,7 +1741,7 @@ func (s *Server) deliverRouteHandBack(ctx context.Context, r plugins.Route) {
 }
 
 // deliverToChief delivers text — route r's hand-back — to r's chief as a turn
-// of its own when it can take one (startRouteAnswerTurn), and takes r's
+// of its own when it can take one (startRouteTurn), and takes r's
 // hand-back once that turn is on record. A chief that cannot take it now
 // leaves it owed (unless already taken, or it has waited routeChiefWaitMax);
 // a chief that can take no turn at all gets it as a note, the last resort: a
@@ -1794,7 +1794,24 @@ func (s *Server) deliverToChief(ctx context.Context, r plugins.Route, text strin
 	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
 	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
 		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
-			if s.startRouteTurn(ctx, chief, sess, r.RouteID, text, take, refused) {
+			// Re-checked under the chief's delivery claim (startRouteTurn):
+			// a racing delivery may have handed it back between the checks
+			// above (deliverRouteHandBack's HandBackOwed, textOnRecord) and this
+			// one winning the claim. A hand-back this delivery already took is
+			// its own (TakeHandBack takes it once), so only its record is read.
+			owed := func(ctx context.Context) bool {
+				if !taken {
+					if _, ok, err := s.ext.Routes.HandBackOwed(ctx, r.RouteID); err != nil || !ok {
+						return false // handed back already, or unreadable: the next sweep
+					}
+				}
+				if s.textOnRecord(ctx, sessID, text) {
+					take(ctx) // on record, and no turn of it in flight: the claim is ours
+					return false
+				}
+				return true
+			}
+			if s.startRouteTurn(ctx, chief, sess, r.RouteID, text, owed, take, refused) {
 				return
 			}
 			if !taken && (!routeChiefWaitOver(r, time.Now()) || s.routeTurnInFlight(ctx, chief.ID)) {
@@ -2107,7 +2124,28 @@ func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plu
 				}
 				fallback(ctx, turn)
 			}
-			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, done, refused) {
+			// Re-checked under the chief's delivery claim (startRouteTurn):
+			// a racing delivery may have delivered some of these answers between
+			// the checks above and this one winning the claim. Then the turn's
+			// text is stale: nothing is sent, those on record are taken, and the
+			// rest stay owed for the next sweep (which the finished turn woke).
+			stillOwed := func(ctx context.Context) bool {
+				all := true
+				for _, a := range turn {
+					ok, err := s.ext.Routes.OwesHandBack(ctx, a.r.RouteID)
+					switch {
+					case err != nil:
+						return false // unreadable: the next sweep
+					case !ok:
+						all = false // taken already
+					case s.answerOnRecord(ctx, a.r, sessID):
+						take(ctx, a.r) // on record, and no turn of it in flight: the claim is ours
+						all = false
+					}
+				}
+				return all
+			}
+			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, stillOwed, done, refused) {
 				return
 			}
 			// The chief cannot take a turn NOW (its owner's turn is in flight,
@@ -2135,13 +2173,6 @@ const routeChiefWaitMax = 2 * time.Hour
 // routeChiefWaitMax before now. A route with no end time has not waited.
 func routeChiefWaitOver(r plugins.Route, now time.Time) bool {
 	return r.FinishedAt != nil && now.Sub(*r.FinishedAt) > routeChiefWaitMax
-}
-
-// startRouteAnswerTurn is startRouteTurn with no refusal callback: what it
-// carries simply stays owed when the runtime refuses it.
-func (s *Server) startRouteAnswerTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
-	done func(context.Context)) bool {
-	return s.startRouteTurn(ctx, chief, sess, routeID, text, done, nil)
 }
 
 // routeTurnClaimPrefix opens the session claim a route's turn holds
@@ -2218,27 +2249,21 @@ func routeRowSurvived(ctx context.Context) bool {
 // chief session, combined (deliverRouteAnswers), and a hand-back
 // (deliverToChief). routeID names the claim (the first answer's route, the
 // hand-back's).
-func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
-	done, refused func(context.Context)) bool {
-	return s.startRouteTurnIfOwed(ctx, chief, sess, routeID, text, nil, done, refused)
-}
-
-// startRouteTurnIfOwed is startRouteTurn with a re-check UNDER THE CLAIM:
-// owed (when not nil) runs once the chief's delivery claim is won and before
-// anything is stored or sent, and when it reports false the claim is released
-// and nothing is delivered — startRouteTurnIfOwed then reports TRUE (there is
-// nothing to deliver, so the caller's "cannot take it now" fallback must not
-// run either).
 //
-// 🔴 THIS IS WHAT MAKES A CALLER'S OWN "STILL OWED?" CHECK EXACTLY-ONCE. A
-// check made before the claim (deliverRouteBatch's "owed, not in flight, not
-// on record") can be stale by the time the claim is won: a racing delivery
-// may have won it first, run its whole turn, stored the reply, taken what it
-// carried and released the claim in between, and the late one would then
-// deliver a second time (issue #732: 2 digest turns from one batch). The
-// claim serialises the deliveries; only a check made while holding it sees
-// the first one's result.
-func (s *Server) startRouteTurnIfOwed(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
+// 🔴 OWED IS RE-CHECKED UNDER THE CLAIM. owed (nil only in a test) runs once
+// the chief's delivery claim is won and before anything is stored or sent;
+// when it reports false the claim is released, nothing is delivered, and
+// startRouteTurn reports TRUE (there is nothing to deliver, so the caller's
+// "cannot take it now" fallback must not run either). A caller's check made
+// BEFORE the claim can be stale by the time the claim is won: a racing
+// delivery may have won it first, run its whole turn, stored the reply, taken
+// what it carried and released the claim in between, and the late one would
+// deliver a second time (issue #732: 2 digest turns from one route_many
+// batch; the same shape in deliverRouteAnswers and deliverToChief). The claim
+// serialises the deliveries; only a check made while holding it sees the
+// first one's result. TestEveryRouteTurnReChecksUnderTheClaim pins every
+// caller to passing one.
+func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
 	owed func(context.Context) bool, done, refused func(context.Context)) bool {
 	if agents.KickoffOwed(chief) {
 		return false

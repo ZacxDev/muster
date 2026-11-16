@@ -267,7 +267,7 @@ func firstInSweep(ctx context.Context, batchID string) bool {
 //     inside it, so racing deliveries write it once.
 //
 // 🔴 The turn path checks "owed, not in flight, not on record" before taking
-// the chief's claim AND AGAIN UNDER IT (startRouteTurnIfOwed): a second
+// the chief's claim AND AGAIN UNDER IT (startRouteTurn): a second
 // delivery whose first check ran before the first delivery cleared the
 // hand-backs, and whose claim was won after that delivery released it, finds
 // the batch no longer owed and delivers nothing. Without the re-check it
@@ -370,7 +370,7 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 				}
 				return true
 			}
-			if !s.startRouteTurnIfOwed(ctx, chief, sess, batchID, text, owed, finish, fallback) {
+			if !s.startRouteTurn(ctx, chief, sess, batchID, text, owed, finish, fallback) {
 				fallback(ctx) // the chief cannot take a turn NOW: the digest stays owed
 			}
 			return

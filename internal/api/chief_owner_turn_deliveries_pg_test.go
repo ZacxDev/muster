@@ -18,7 +18,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // DELIVERIES THAT ARRIVE DURING A CHIEF'S TURN (chief_owner_release.go,
-// session_routes.go startRouteAnswerTurn, agents.Store.ClaimKickoffForDelivery),
+// session_routes.go startRouteTurn, agents.Store.ClaimKickoffForDelivery),
 // through the real server against a real Postgres:
 //
 //   - THE OWNER'S AUTHORITY IS BOUND TO THE OWNER'S MESSAGE: every owner_asked
