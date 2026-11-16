@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"time"
 
@@ -41,18 +40,14 @@ func focusToolDefs() []agents.ToolDef {
 				"(what it is working on) with how old it is — focus_set_at, and focus_age " +
 				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited) — and, for a mirrored session, active_at (its window's " +
-				"last activity) and the tasks it DECLARED it works under with track_task (tasks: task keys such as \"hq:<id>\" or " +
-				"\"#<id>\", or untracked: its one-line reason for none; task_note; task_set_at). A session with neither has declared " +
-				"nothing: never guess its task from its focus title. Filters: active_within_hours, status, undeclared. " +
+				"last activity) and the tasks it DECLARED it works under with track_task (tasks: task keys such as \"hq:<id>\", " +
+				"or untracked: its one-line reason for none; task_note; task_set_at). A session with neither has declared " +
+				"nothing: never guess its task from its focus title. active_within_hours lists only recently active sessions. " +
 				"Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{
 				"active_within_hours": intProp("Only sessions active within this many hours (1-720): a mirrored session by its "+
 					"window's last activity, a dispatched agent by the later of its start and its focus's last write. "+
 					"A session whose activity is unknown is left out.", 1, fleetListMaxHours),
-				"status": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
-					"description": "Only sessions whose status is one of these (as the rows spell it: e.g. busy, idle, waiting, unknown, running)."},
-				"undeclared": map[string]any{"type": "boolean",
-					"description": "true: only sessions that declared neither tasks nor none with track_task."},
 			})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
@@ -115,28 +110,20 @@ const fleetListMaxHours = 720
 
 // fleetListFilter is fleet_list's arguments: which rows to keep.
 type fleetListFilter struct {
-	ActiveWithinHours int      `json:"active_within_hours"`
-	Status            []string `json:"status"`
-	Undeclared        bool     `json:"undeclared"`
+	ActiveWithinHours int `json:"active_within_hours"`
 }
 
-// keep reports whether a row with status, activity at (zero: unknown) and
-// declaration l passes f at now. 🔴 ACTIVE IS INCLUSIVE: a session last
-// active exactly active_within_hours ago is kept; an unknown time never is.
-func (f fleetListFilter) keep(status string, at time.Time, l focus.TaskLink, now time.Time) bool {
-	if f.ActiveWithinHours > 0 && (at.IsZero() || now.Sub(at) > time.Duration(f.ActiveWithinHours)*time.Hour) {
-		return false
-	}
-	if len(f.Status) > 0 && !slices.Contains(f.Status, status) {
-		return false
-	}
-	return !f.Undeclared || !l.Declared()
+// keep reports whether a row last active at (zero: unknown) passes f at now.
+// 🔴 ACTIVE IS INCLUSIVE: a session last active exactly active_within_hours
+// ago is kept; an unknown time never is.
+func (f fleetListFilter) keep(at, now time.Time) bool {
+	return f.ActiveWithinHours == 0 || (!at.IsZero() && now.Sub(at) <= time.Duration(f.ActiveWithinHours)*time.Hour)
 }
 
 func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 	var f fleetListFilter
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &f); err != nil || f.ActiveWithinHours < 0 || f.ActiveWithinHours > fleetListMaxHours {
-		return toolErr("arguments are {active_within_hours?: 1-%d, status?: [...], undeclared?: true}", fleetListMaxHours)
+		return toolErr("arguments are {active_within_hours?: 1-%d}", fleetListMaxHours)
 	}
 	fi, now := s.focusIndex(ctx), s.now()
 	rows := []fleetListRow{}
@@ -156,7 +143,7 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 			if u := fi[sub].UpdatedAt; fi[sub].Has() && u.After(at) {
 				at = u
 			}
-			if !f.keep(status, at, focus.TaskLink{}, now) {
+			if !f.keep(at, now) {
 				continue
 			}
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
@@ -177,7 +164,7 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 			status = "unknown"
 		}
 		tasks := fi[sub].Tasks
-		if !f.keep(status, e.ActiveAt(), tasks, now) {
+		if !f.keep(e.ActiveAt(), now) {
 			continue
 		}
 		r := fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,

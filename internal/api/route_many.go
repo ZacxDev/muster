@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -57,6 +58,7 @@ func routeManyToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeManyToolName,
 		Description: "Send ONE request your owner typed to you in this chat to several of their mirrored Claude Code sessions " +
 			"at once (subjects: \"mirror:<claude session id>\", as fleet_list returns them; at most " + strconv.Itoa(routeManyMaxTargets) +
+			"; a dispatched agent or an opencode session is skipped, not routed, and listed in skipped" +
 			"), with text in your words and owner_asked: true — route_to_session's text route, with the same owner check, made " +
 			"once per session. A session that cannot take it now is refused in this call's result, saying why. The answers do " +
 			"NOT come back one by one: you get ONE digest in this chat, when every session has answered or at the deadline " +
@@ -119,6 +121,10 @@ func (s *Server) toolRouteMany(ctx context.Context, chief agents.Agent, argument
 	batch := plugins.NewBatchID()
 	routed := []map[string]any{}
 	refused := []routeManyRefused{}
+	// skipped: subjects that are not a mirrored CLAUDE CODE session (an agent,
+	// an opencode session) — never a route target (resolveRouteTarget), so
+	// they are left out up front rather than routed and refused one by one.
+	skipped := []routeManyRefused{}
 	seen := map[string]bool{}
 	deadline := time.Time{}
 	for _, raw := range in.Subjects {
@@ -133,6 +139,11 @@ func (s *Server) toolRouteMany(ctx context.Context, chief agents.Agent, argument
 			continue
 		}
 		seen[sub.String()] = true
+		if sub.Kind != focus.KindMirror || !mirror.ValidClaudeSession(sub.Key) {
+			skipped = append(skipped, routeManyRefused{Subject: sub.String(), Refused: RefusedUnsupported,
+				Error: "not a mirrored Claude Code session: route_many reaches those alone"})
+			continue
+		}
 		it := routedItem{req: &routedRequest{text: text, owner: msg, batchID: batch, timeout: time.Duration(minutes) * time.Minute}}
 		r, t, why := s.routeItem(ctx, chief.ID, agentOwnerID(chief), it, sub, plugins.RouteOrigin{})
 		if why != "" {
@@ -147,9 +158,9 @@ func (s *Server) toolRouteMany(ctx context.Context, chief agents.Agent, argument
 		routed = append(routed, map[string]any{"subject": sub.String(), "route_id": r.RouteID, "session": t.label})
 		deadline = r.TimeoutAt
 	}
-	out := map[string]any{"routed": routed, "refused": refused, "owner_message_id": msg.ID}
+	out := map[string]any{"routed": routed, "refused": refused, "skipped": skipped, "owner_message_id": msg.ID}
 	if len(routed) == 0 {
-		out["next"] = "Nothing was routed: every session was refused (see refused). Tell your owner why."
+		out["next"] = "Nothing was routed: every session was refused or skipped (see refused, skipped). Tell your owner why."
 		return toolJSON(out)
 	}
 	out["batch_id"] = batch
@@ -173,15 +184,35 @@ func routeBatchHead(batchID string) string { return "[muster] Batch " + batchID 
 
 // deliverRouteBatch delivers batchID's ONE digest to its chief once every
 // member has ended (none still routed, or answered and not yet relayed), AT
-// LEAST ONCE, under the batch's claim (ClaimBatchDigest — the one-digest
-// guard): the digest is ONE turn of the chief's in the chat the owner asked
-// in (startRouteAnswerTurn: the delivery claim, never during the owner's own
-// turn), and only once that turn's row is on record are the members'
-// hand-backs cleared and the claim made permanent (FinishBatchDigest). When
-// the chief cannot take a turn now, the claim is let go and the digest stays
-// owed for the next sweep — never a note its CLI cannot see — until it has
-// waited routeChiefWaitMax, when it is recorded as a note. ctx acts as the
-// routes' owner.
+// LEAST ONCE and in practice once, with #715's delivery primitives and no
+// claim of its own:
+//
+//   - the batch is OWED while any member owes its chief a hand-back; the
+//     digest's delivery clears them all (FinishBatchDigest), and an owed batch
+//     whose digest is already on record in the chief's chat
+//     (batchDigestOnRecord) is only cleared;
+//   - while a route turn of the chief's is in flight (routeTurnInFlight: its
+//     row stored, what it carries not yet taken — possibly this very digest),
+//     the batch is left alone, as deliverRouteAnswers leaves its answers: a
+//     clear now could lose a digest whose turn is then refused (its row is
+//     removed);
+//   - the digest is ONE turn of the chief's in the chat the owner asked in
+//     (startRouteTurn: the chief's delivery claim, held for the whole turn,
+//     never taken during the owner's own turn), and the hand-backs are cleared
+//     once its reply is stored. A chief that cannot take a turn now leaves the
+//     digest owed for the next sweep — never a note its CLI cannot see —
+//     until it has waited routeChiefWaitMax (a refused turn counts too);
+//   - the note (no turn possible, or the wait is over) is written under the
+//     chief's session claim (ClaimKickoff), and the record is re-checked
+//     inside it, so racing deliveries write it once.
+//
+// ⚠ The turn path checks "owed, not in flight, not on record" BEFORE taking
+// the chief's claim (startRouteTurn takes it itself): a second delivery whose
+// check ran before the first cleared the hand-backs and whose claim ran after
+// the first released it would deliver again. In one muster the route sweep is
+// a single goroutine, so its deliveries never race; 8 deliveries forced past
+// the check together made one digest in every measured run
+// (route_many_race_pg_test.go). ctx acts as the routes' owner.
 //
 // 🔴 THE TURN IS MUSTER'S, NEVER THE OWNER'S (deliverRouteAnswer's rule):
 // owner_asked refuses in it, so no answer routes text onward in their name.
@@ -202,6 +233,9 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 			last = m
 		}
 	}
+	if owed, ok := s.batchOwed(ctx, members); !ok || !owed {
+		return // delivered already, or unreadable (retried on the next sweep)
+	}
 	lead := members[0]
 	var chief agents.Agent
 	if lead.AgentID != nil && s.ext.Agents != nil {
@@ -209,21 +243,9 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 			chief = c
 		}
 	}
-	won, err := s.ext.Routes.ClaimBatchDigest(ctx, batchID, routeBatchClaimTTL)
-	if err != nil || !won {
-		if err != nil {
-			s.logger.Printf("routes: batch %s: claim its digest: %v", batchID, err)
-		}
-		return
-	}
 	finish := func(ctx context.Context) {
 		if err := s.ext.Routes.FinishBatchDigest(context.WithoutCancel(ctx), batchID); err != nil {
-			s.logger.Printf("routes: batch %s: record its digest delivered: %v (it may be delivered again)", batchID, err)
-		}
-	}
-	release := func() {
-		if err := s.ext.Routes.ReleaseBatchDigest(context.WithoutCancel(ctx), batchID); err != nil {
-			s.logger.Printf("routes: batch %s: let its digest's claim go: %v (it lapses)", batchID, err)
+			s.logger.Printf("routes: batch %s: clear its members' hand-backs: %v (it may be delivered again)", batchID, err)
 		}
 	}
 	if chief.ID == 0 {
@@ -231,10 +253,12 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 		finish(ctx)
 		return
 	}
+	if s.routeTurnInFlight(ctx, chief.ID) {
+		return
+	}
 	sessID, ok := s.routeChiefSession(ctx, lead)
 	if !ok {
 		s.logger.Printf("routes: batch %s: no chief session to deliver its digest to (retried on the next sweep)", batchID)
-		release()
 		return
 	}
 	if s.batchDigestOnRecord(ctx, batchID, sessID) {
@@ -242,37 +266,68 @@ func (s *Server) deliverRouteBatch(ctx context.Context, batchID string) {
 		return
 	}
 	text := renderBatchDigest(batchID, members)
+	note := func(ctx context.Context) { s.recordBatchDigest(ctx, chief, sessID, batchID, text, len(members), finish) }
 	if agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
 		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
-			if s.startRouteAnswerTurn(ctx, chief, sess, batchID, text, finish) {
-				return
+			// The note is the fallback for a digest that has waited
+			// routeChiefWaitMax: after a refused turn, or when the chief could
+			// not take one at all. Never while a route turn is in flight.
+			fallback := func(ctx context.Context) {
+				if routeChiefWaitOver(last, time.Now()) && !s.routeTurnInFlight(ctx, chief.ID) {
+					s.logger.Printf("routes: batch %s: the chief could not take its digest for %s", batchID, routeChiefWaitMax)
+					note(ctx)
+				}
 			}
-			// The chief cannot take a turn NOW: the digest stays owed.
-			if !routeChiefWaitOver(last, time.Now()) {
-				release()
-				return
+			if !s.startRouteTurn(ctx, chief, sess, batchID, text, finish, fallback) {
+				fallback(ctx) // the chief cannot take a turn NOW: the digest stays owed
 			}
-			s.logger.Printf("routes: batch %s: the chief could not take its digest for %s; recorded as a note in its session %d",
-				batchID, routeChiefWaitMax, sessID)
+			return
 		}
+	}
+	note(ctx)
+}
+
+// recordBatchDigest writes batchID's digest text as a note in chief session
+// sessID and then calls finish, under the chief's session claim (ClaimKickoff)
+// with the record re-checked inside it, so of racing deliveries one writes
+// it. A claim held by another is left for the next sweep.
+func (s *Server) recordBatchDigest(ctx context.Context, chief agents.Agent, sessID int64, batchID, text string, n int, finish func(context.Context)) {
+	owner := "route-batch/" + batchID
+	if won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, owner, time.Minute); err != nil || !won {
+		return // another holds the chief's session: retried on the next sweep
+	}
+	defer func() {
+		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, owner); err != nil {
+			s.logger.Printf("routes: batch %s: release the chief's claim: %v", batchID, err)
+		}
+	}()
+	if s.batchDigestOnRecord(ctx, batchID, sessID) {
+		finish(ctx)
+		return
 	}
 	if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: chief.ID,
 		SessionID: sessID, Role: "user", Content: text}); err != nil {
 		s.logger.Printf("routes: batch %s: record its digest in the chief's session %d: %v (retried on the next sweep)", batchID, sessID, err)
-		release()
 		return
 	}
-	s.logger.Printf("routes: batch %s: its digest (%d sessions) is in the chief's session %d", batchID, len(members), sessID)
+	s.logger.Printf("routes: batch %s: its digest (%d sessions) is in the chief's session %d as a note", batchID, n, sessID)
 	finish(ctx)
 }
 
-// routeBatchClaimTTL is how long one sweep holds a batch's digest claim. Short
-// on purpose: it only has to keep two sweeps from STARTING the digest's turn
-// at once. Once one has started it, the chief's own delivery claim (held for
-// the whole turn: startRouteAnswerTurn) refuses a second, which then lets go;
-// and a turn whose runtime took nothing (agentgateway.Unsent) calls nothing
-// back, so its claim must lapse soon for the next sweep to offer it again.
-const routeBatchClaimTTL = 2 * time.Minute
+// batchOwed reports whether any member of a batch still owes its chief a
+// hand-back — the digest not yet delivered — and ok false when one cannot be
+// read.
+func (s *Server) batchOwed(ctx context.Context, members []plugins.Route) (owed, ok bool) {
+	for _, m := range members {
+		o, err := s.ext.Routes.OwesHandBack(ctx, m.RouteID)
+		if err != nil {
+			s.logger.Printf("routes: batch %s: read %s's hand-back: %v (retried on the next sweep)", m.BatchID, m.RouteID, err)
+			return false, false
+		}
+		owed = owed || o
+	}
+	return owed, true
+}
 
 // batchDigestOnRecord reports whether chief session sessID already holds
 // batchID's digest (a row opening with routeBatchHead). A session that cannot

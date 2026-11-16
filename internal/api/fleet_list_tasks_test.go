@@ -42,8 +42,8 @@ func fleetTasksServer(t *testing.T) *Server {
 	fm.windows[1].Activity = fleetTasksNow.Add(-30 * time.Hour).Unix()
 	labelled := focus.MirrorSubject(whereLabelledSID)
 	s.ext.Focus = &memFocus{rows: map[focus.Subject]focus.Focus{
-		labelled: {Subject: labelled, Owner: 1, Tasks: focus.TaskLink{Keys: []string{"ex:4711", "#12"}, Note: "the importer",
-			SetAt: fleetTasksNow.Add(-90 * time.Minute), SetBy: labelled.String()}},
+		labelled: {Subject: labelled, Owner: 1, Tasks: focus.TaskLink{Keys: []string{"ex:4711", "ex:12"}, Note: "the importer",
+			SetAt: fleetTasksNow.Add(-90 * time.Minute)}},
 	}}
 	s.ext.Agents = listAgents{list: []agents.Agent{{ID: 7, OwnerID: 1, Name: "ag-wren", Status: agents.StatusRunning,
 		CreatedAt: fleetTasksNow.Add(-10 * time.Hour)}}}
@@ -84,7 +84,7 @@ func TestFleetListShowsEachSessionsDeclaredTasks(t *testing.T) {
 	s := fleetTasksServer(t)
 	rows := fleetListRows(t, s, "")
 	l := rows[focus.MirrorSubject(whereLabelledSID).String()]
-	if !slices.Equal(l.Tasks, []string{"ex:4711", "#12"}) || l.Note != "the importer" || l.SetAt != "2021-06-02T07:30:00Z" ||
+	if !slices.Equal(l.Tasks, []string{"ex:4711", "ex:12"}) || l.Note != "the importer" || l.SetAt != "2021-06-02T07:30:00Z" ||
 		l.ActiveAt != "2021-06-02T03:00:00Z" {
 		t.Fatalf("the declaring session's row: %+v", l)
 	}
@@ -98,12 +98,11 @@ func TestFleetListShowsEachSessionsDeclaredTasks(t *testing.T) {
 	}
 }
 
-// TestFleetListFiltersByActivityStatusAndDeclaration: active_within_hours at
-// each session's boundary (inclusive) and in the middle, for a mirrored
-// session (its window's activity) and an agent (its start); status; and
-// undeclared. Every case names its expected set, so a filter that keeps or
-// drops too much is red.
-func TestFleetListFiltersByActivityStatusAndDeclaration(t *testing.T) {
+// TestFleetListFiltersByActivity: active_within_hours at each session's
+// boundary (inclusive) and in the middle, for a mirrored session (its
+// window's activity) and an agent (its start). Every case names its expected
+// set, so a filter that keeps or drops too much is red.
+func TestFleetListFiltersByActivity(t *testing.T) {
 	s := fleetTasksServer(t)
 	lab, unl, ag := "mirror:"+whereLabelledSID, "mirror:"+whereUnlabelledSID, "agent:7"
 	for _, c := range []struct {
@@ -119,12 +118,6 @@ func TestFleetListFiltersByActivityStatusAndDeclaration(t *testing.T) {
 		{`{"active_within_hours":29}`, []string{ag, lab}},      // just short of the unlabelled window
 		{`{"active_within_hours":30}`, []string{ag, lab, unl}}, // its boundary
 		{`{"active_within_hours":720}`, []string{ag, lab, unl}},
-		{`{"status":["running"]}`, []string{ag}},
-		{`{"status":["unknown"]}`, []string{lab, unl}},
-		{`{"status":["busy"]}`, []string{}},
-		{`{"undeclared":true}`, []string{ag, unl}},
-		{`{"undeclared":true,"active_within_hours":6}`, []string{}},
-		{`{"undeclared":true,"status":["unknown"],"active_within_hours":30}`, []string{unl}},
 	} {
 		got := rowIDs(fleetListRows(t, s, c.args))
 		want := append([]string(nil), c.want...)
@@ -133,7 +126,7 @@ func TestFleetListFiltersByActivityStatusAndDeclaration(t *testing.T) {
 			t.Errorf("fleet_list %s = %v, want %v", c.args, got, want)
 		}
 	}
-	for _, bad := range []string{`{"active_within_hours":-1}`, `{"active_within_hours":721}`, `{"status":"idle"}`, `[`} {
+	for _, bad := range []string{`{"active_within_hours":-1}`, `{"active_within_hours":721}`, `{"active_within_hours":"6"}`, `[`} {
 		if text := s.toolFleetList(s.attentionPrincipal(context.Background(), 1), bad); !strings.Contains(text, `"error"`) {
 			t.Errorf("fleet_list %s was not refused: %s", bad, text)
 		}

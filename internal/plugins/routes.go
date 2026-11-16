@@ -138,11 +138,9 @@ type RouteStore interface {
 	// that is not that plugin's; ErrStampNoThread / ErrStampThreadMismatch
 	// (with the route as it is) for a stamp not bound to its conversation.
 	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
-	// BatchRoutes, ClaimBatchDigest and FinishBatchDigest are a route_many
+	// BatchRoutes and FinishBatchDigest are a route_many
 	// batch's members and its ONE digest (route_batches.go, migration 0136).
 	BatchRoutes(ctx context.Context, batchID string) ([]Route, error)
-	ClaimBatchDigest(ctx context.Context, batchID string, ttl time.Duration) (bool, error)
-	ReleaseBatchDigest(ctx context.Context, batchID string) error
 	FinishBatchDigest(ctx context.Context, batchID string) error
 }
 

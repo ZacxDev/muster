@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -42,60 +41,44 @@ func (f *attnFixture) declared(t *testing.T, uid int64, sid string) focus.TaskLi
 	return got.Tasks
 }
 
-// TestASessionRecordsItsOwnTasksWithTrackTask: replace, add, none and clear
-// through the door, each read back from the owner's focus row; a key muster
-// holds a task for ("#<id>") also joins that task's session thread as
-// worked (the existing link), and a plugin key in an enabled namespace with
-// no task row is recorded without one. Refused, writing nothing: a namespace
-// that is not enabled, another owner's task, keys beside none, and an
-// unknown argument (there is no subject to name another session).
+// TestASessionRecordsItsOwnTasksWithTrackTask: tasks with a note, other
+// tasks (replacing them), none, and [] (clearing) through the door, each read
+// back from the owner's focus row. Refused, writing nothing: a namespace
+// that is not enabled, a muster "#<id>" (plugin keys only), keys beside none,
+// a note with no tasks, nothing at all, and an unknown argument (there is no
+// subject to name another session; nor a mode).
 func TestASessionRecordsItsOwnTasksWithTrackTask(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	if err := notes.SetPluginTaskNamespaces([]string{"tracker"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = notes.SetPluginTaskNamespaces(nil) })
-	mine, err := f.notes.Create(asUser(1), notes.Note{Title: "track-task mine", Body: "b", Status: notes.StatusOpen})
-	if err != nil {
-		t.Fatal(err)
-	}
-	theirs, err := f.notes.Create(asUser(f.member), notes.Note{Title: "track-task theirs", Body: "b", Status: notes.StatusOpen})
-	if err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
-		sys := authz.System(context.Background())
-		_, _ = f.pool.Exec(sys, `DELETE FROM notes WHERE id IN ($1, $2)`, mine.ID, theirs.ID)
-		_, _ = f.pool.Exec(sys, `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND subject_key IN ($1, $2)`, focusSID, secondSID)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND subject_key IN ($1, $2)`, focusSID, secondSID)
 	})
-	mineKey := "#" + strconv.FormatInt(mine.ID, 10)
 
-	text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"tasks": []string{"tracker:4711", mineKey}, "note": "the importer"})
+	text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"tasks": []string{"tracker:4711", "Tracker:4713"}, "note": "the importer"})
 	if isErr || !strings.Contains(text, `"subject":"mirror:`+focusSID+`"`) {
+		t.Fatalf("set: %s", text)
+	}
+	if got := f.declared(t, 1, focusSID); !slices.Equal(got.Keys, []string{"tracker:4711", "tracker:4713"}) || got.Note != "the importer" {
+		t.Fatalf("stored after set: %+v", got)
+	}
+	if text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"tasks": []string{"tracker:4712"}}); isErr {
 		t.Fatalf("replace: %s", text)
 	}
-	if got := f.declared(t, 1, focusSID); !slices.Equal(got.Keys, []string{"tracker:4711", mineKey}) || got.Note != "the importer" ||
-		got.SetBy != "mirror:"+focusSID {
-		t.Fatalf("stored after replace: %+v", got)
-	}
-	links, err := f.notes.SessionsForTask(asUser(1), mine.ID)
-	if err != nil || !slices.ContainsFunc(links, func(l notes.SessionLink) bool { return l.SessionID == focusSID && l.Role == notes.RoleWorked }) {
-		t.Fatalf("task %d's thread after the declaration: %+v %v; want %s as worked", mine.ID, links, err, focusSID)
-	}
-
-	if text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"tasks": []string{"tracker:4712"}, "mode": "add"}); isErr {
-		t.Fatalf("add: %s", text)
-	}
-	if got := f.declared(t, 1, focusSID); !slices.Equal(got.Keys, []string{"tracker:4711", mineKey, "tracker:4712"}) || got.Note != "the importer" {
-		t.Fatalf("stored after add: %+v", got)
+	if got := f.declared(t, 1, focusSID); !slices.Equal(got.Keys, []string{"tracker:4712"}) || got.Note != "" {
+		t.Fatalf("stored after replace: %+v; want only the new key and no note", got)
 	}
 
 	before := f.declared(t, 1, focusSID)
 	for name, args := range map[string]any{
 		"a namespace not enabled": map[string]any{"tasks": []string{"elsewhere:1"}},
-		"another owner's task":    map[string]any{"tasks": []string{"#" + strconv.FormatInt(theirs.ID, 10)}},
+		"a muster task id":        map[string]any{"tasks": []string{"#12"}},
 		"keys beside none":        map[string]any{"tasks": []string{"tracker:1"}, "none": "x"},
+		"a note with no tasks":    map[string]any{"tasks": []string{}, "note": "x"},
 		"another session named":   map[string]any{"tasks": []string{"tracker:1"}, "subject": "mirror:" + secondSID},
+		"a mode":                  map[string]any{"tasks": []string{"tracker:1"}, "mode": "add"},
 		"nothing at all":          map[string]any{},
 	} {
 		if text, isErr := f.trackTaskCall(t, ws, focusSID, args); !isErr {
@@ -115,7 +98,7 @@ func TestASessionRecordsItsOwnTasksWithTrackTask(t *testing.T) {
 	if got := f.declared(t, 1, focusSID); got.Keys != nil || got.None != "a scratch experiment" {
 		t.Fatalf("stored after none: %+v", got)
 	}
-	if text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"mode": "clear"}); isErr {
+	if text, isErr := f.trackTaskCall(t, ws, focusSID, map[string]any{"tasks": []string{}}); isErr {
 		t.Fatalf("clear: %s", text)
 	}
 	if got := f.declared(t, 1, focusSID); got.Declared() {

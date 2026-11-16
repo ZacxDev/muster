@@ -378,7 +378,9 @@ Each target is `route_to_session`'s text route, made under the same
 `owner_asked` check. The check runs once for the call, and a turn you did not
 type routes nothing. A session that cannot take it now (offline, a window muster
 started for the chief, a session no window shows, a repeat) is **refused in the
-call's own result**, with the same reason codes as `route_to_session`.
+call's own result**, with the same reason codes as `route_to_session`. A
+dispatched agent or an opencode session is never a route target, so it is
+**skipped** (listed in `skipped`), not routed.
 
 The answers do **not** come back one by one. Each answer is recorded and owed,
 and no answer starts a turn of the chief's. When every session has answered, or
@@ -386,15 +388,18 @@ at the deadline (default 60 minutes, 10 to 240), whichever is first, the chief
 gets **one digest turn** in the chat you asked in. The digest has one line per
 session: its answer as it wrote it (cut at 1,500 characters, fenced as untrusted
 data like a route answer), or `no reply (<why>)`. Like every route answer, the
-digest waits while your own turn runs. A digest is claimed by one sweep at a
-time, and the claim is the only way to deliver it, so it is delivered once.
+digest waits while your own turn runs. The batch is owed while any of its
+sessions' answers is, and it is delivered under the chief's own claims, so a
+digest is delivered once. A chief that can take no turn gets it as a note in
+the chat.
 
 **Reconciling sessions with tasks.** The claude-code chief is taught one flow:
 
 1. `fleet_list {active_within_hours}`, reading each session's declared tasks
    ([focus.md](focus.md#a-sessions-tasks));
-2. one `route_many` to the `undeclared` sessions with a fixed request: record
-   your task with `track_task` and reply with the key, or `none` and one line;
+2. one `route_many` to the mirrored Claude Code sessions whose rows show no
+   tasks and no untracked line, with a fixed request: record your task with
+   `track_task` and reply with the key, or `none` and one line;
 3. compare the keys with a compact read of the open tasks.
 
 It never matches a session to a task by its focus title or a keyword search.

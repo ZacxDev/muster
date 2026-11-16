@@ -21,8 +21,8 @@ func TestTheBatchRoutingSectionIsPinnedWhole(t *testing.T) {
 		"`owner_asked: true`), never several route_to_session calls: refusals come back in its result, and every answer " +
 		"comes back in ONE digest when all have answered or at its deadline. Do not wait or poll for it. " +
 		"To reconcile sessions with tasks: call `mcp__muster__fleet_list` with `active_within_hours` and read each " +
-		"session's declared `tasks` or `untracked` — the session's own word. To the sessions that declared nothing " +
-		"(`undeclared: true` lists them), send ONE route_many with exactly this text: \"" + reconcile + "\" Then compare " +
+		"session's declared `tasks` or `untracked` — the session's own word. To the mirrored Claude Code sessions whose " +
+		"rows show no tasks and no untracked line, send ONE route_many with exactly this text: \"" + reconcile + "\" Then compare " +
 		"the keys with the open tasks from one compact read (status in progress, ids and titles only). Never match a " +
 		"session to a task by its focus title or a keyword search. A fan-out this size belongs in a side chat: if your " +
 		"owner asks for it in this chat and it is your primary one, suggest they open a side chat for it."
