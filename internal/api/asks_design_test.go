@@ -200,9 +200,10 @@ func TestTheAnswerBoxIsBehindTheOptionsOnTheAsksPage(t *testing.T) {
 // TestADraftCardKeepsItsSafetyWithOnePrimaryAction: the redesigned draft card
 // still draws exactly what is approved (flows.VisibleEscape, its length), the
 // message it answers marked untrusted and escaped, ONE primary action (Approve
-// and send, a step-up form) with Reject small beside it; an approval not yet
-// collected keeps Withdraw; a draft no longer pending offers no Approve. A
-// guard on the redesign (the safety itself is the store's, asks_drafts_pg).
+// and send, a step-up form, on its own row: ui.AsksDecisionClass) with Reject
+// under it; an approval not yet collected keeps Withdraw; a draft no longer
+// pending offers no Approve. A guard on the redesign (the safety itself is the
+// store's, asks_drafts_pg; the layout is e2e/tests/draft-card.spec.ts's).
 func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 	at := designNow
 	c := plugins.DraftCard{
@@ -212,7 +213,7 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 	}
 	got := draftCardHTML(c)
 	for _, want := range []string{`class="` + ui.AsksQuoteClass + `" data-draft-original>`, "· untrusted · message 3", "&lt;i&gt;hi&lt;/i&gt;",
-		`data-runes="3"`, `ok\u{200b}`, `/approve" data-step-up-form class="min-w-0 flex-1"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
+		`data-runes="3"`, `ok\u{200b}`, `<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/7/approve" data-step-up-form class="min-w-0"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
 		`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the pending card lacks %q:\n%s", want, got)

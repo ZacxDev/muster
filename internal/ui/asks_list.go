@@ -68,6 +68,14 @@ const (
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
 	AsksActionsClass = "flex min-w-0 items-center gap-2"
+	// AsksDecisionClass is a reply draft's decision (plugin_drafts.go):
+	// Approve and send on its own full-width row, the Reject form (its reason
+	// box, then Reject) on the row under it. 🔴 NOT AsksActionsClass: there the
+	// primary form's flex-1 is a ZERO basis, and beside a reason box's
+	// intrinsic width the Reject form took the row and left Approve and send a
+	// sliver with its label unreadable — at every width, since the Asks page is
+	// one max-w-sm column (#689, e2e/tests/draft-card.spec.ts).
+	AsksDecisionClass = "flex min-w-0 flex-col gap-2"
 	// AsksIconButtonClass is a small secondary action drawn as an icon (a 44px
 	// target): it MUST carry aria-label and title.
 	AsksIconButtonClass = "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"

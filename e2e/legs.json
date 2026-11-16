@@ -191,6 +191,7 @@
       "tests/composer-autosize.spec.ts",
       "tests/composer-switcher.spec.ts",
       "tests/devices.spec.ts",
+      "tests/draft-card.spec.ts",
       "tests/installability.spec.ts",
       "tests/invites.spec.ts",
       "tests/kickoff-wait.spec.ts",
