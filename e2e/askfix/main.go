@@ -61,15 +61,19 @@ func run(args []string) error {
 	}
 	defer pool.Close()
 	switch args[0] {
+	}
+	role := authz.RoleMember
+	if owner == authz.OperatorUserID {
+		role = authz.RoleAdmin
+	}
+	// AS the owner, never the system scope: row-level security confines both
+	// the seed and the clear to that owner's rows.
+	as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
+	switch args[0] {
 	case "clear":
-		_, err := pool.Exec(authz.System(ctx), `DELETE FROM asks WHERE owner_id = $1`, owner)
+		_, err := pool.Exec(as, `DELETE FROM asks`)
 		return err
 	case "seed":
-		role := authz.RoleMember
-		if owner == authz.OperatorUserID {
-			role = authz.RoleAdmin
-		}
-		as := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: role, Via: authz.ViaSession})
 		id, err := seed(as, asklog.NewPG(pool), time.Now())
 		if err != nil {
 			return err
