@@ -955,14 +955,18 @@ After the result, for an outbound draft filed with an `item_id`:
     one on an item a newer draft was filed for. A
     plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
     so the draft never goes unconfirmed in the first place.
-- 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,
-  counted and inserted in one transaction under one lock, so neither a plugin
-  that refuses every draft nor two refusals at the same instant can loop the
-  officer past it. Past the bound nothing is queued and the officer is **not
-  told**, but the item the draft was for is still settled, its summary saying
-  so, and you are told: a push for a plugin's refusal or your own rejection
-  (the item is finished `no_action`), or, for an expiry or a broken binding,
-  an escalation of the item to you (its Attention ask).
+- 🔴 **Bounded, never dropped:** at most 3 `draft.refused` items are
+  claimable at once per officer, counted and filed in one transaction under
+  one lock, so neither a plugin that refuses every draft nor two refusals at
+  the same instant can loop the officer past it. Past the bound the
+  `draft.refused` item is **still filed, but held**: `blocked: true`, so
+  claiming it is refused (`held: true`, saying why) and claim-next skips it.
+  The item the draft was for is finished `no_action`, its summary naming the
+  held item and saying it is delivered when one of the open ones is finished.
+  The officer sweep (every 15 seconds) delivers held items, oldest first, as
+  the officer's claimable ones are finished — a hold is a row, so it is
+  delivered exactly once, and a restart in between loses nothing. A plugin's
+  refusal push says it goes back to the officer once it is under the bound.
 - No terminal state of a draft leaves its item waiting. An item is settled
   only while it waits on that draft: one you already finished by hand, one an
   instance holds under a live lease, or one that waits on a newer draft of its

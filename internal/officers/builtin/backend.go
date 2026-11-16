@@ -206,7 +206,10 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		case tier != "" && tier != it.Tier:
 			return nil, refuse(http.StatusConflict, "wrong_tier", "wrong tier", map[string]any{"item_tier": it.Tier})
 		case it.Blocked:
-			return nil, refuse(http.StatusConflict, "blocked", "blocked", nil)
+			// The built-in store blocks an item for one reason: HELD past its
+			// kind's bound (DraftEndedTx), delivered by PromoteHeld.
+			return nil, refuse(http.StatusConflict, "blocked", "held: delivered once one of the officer's open items of its kind is finished",
+				map[string]any{"held_kind": it.Kind})
 		case it.NotBefore != nil && it.NotBefore.After(now):
 			return nil, refuse(http.StatusConflict, "not_due", "not due yet", map[string]any{"not_before": it.NotBefore})
 		case it.Status == "waiting":
