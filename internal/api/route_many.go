@@ -20,7 +20,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// route_many (docs/chief.md#route_many, migration 0136): the chief sends ONE
+// route_many (docs/chief.md#route_many, migration 0137): the chief sends ONE
 // request of its owner's to several mirrored sessions in one call, and gets
 // their answers back in ONE digest turn — not one turn per answer.
 //
