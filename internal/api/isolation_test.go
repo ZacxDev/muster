@@ -653,6 +653,7 @@ var isolationClasses = map[string]routeClass{
 	// "Start notification titles with the tmux name" (notify_prefs.go): the
 	// caller's own row (list).
 	"POST /account/notifications/codename": classList,
+	"POST /account/pages/agent-share":      classList,
 	// The chip row's reports (numbers only): the window's address in the
 	// form — B naming A's window must 404.
 	"POST /mirror/view/suggest/event": classMirror,
@@ -744,8 +745,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/spawns/{id}/unshare":   classParam,
 	"GET /pages/{id}/preview":              classParam,
 	"GET /pages/{id}/versions/{v}/content": classParam,
-	"POST /pages/{id}/links":               classParam,
 	"POST /pages/{id}/links/{link}/revoke": classParam,
+	"POST /pages/{id}/share":               classParam,
+	"POST /pages/{id}/share/rotate":        classParam,
+	"POST /pages/{id}/share/revoke":        classParam,
+	"GET /pages/{id}/card":                 classParam,
 	"POST /pages/{id}/rollback":            classParam,
 	"POST /pages/{id}/delete":              classParam,
 	"GET /s/{token}":                       classPublic,
@@ -1219,7 +1223,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a page")
 	_, _, err = pgs.AddVersion(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, aPage.ID, w.canary+" page", pgBlocks, pgSize)
 	must(err, "a page's second version")
-	aPageLink, err := pgs.CreateLink(ua, aPage.ID, pages.LinkLive, w.a.agent.Name)
+	aPageLink, err := pgs.CreateLink(ua, aPage.ID, pages.LinkLive, w.a.agent.Name, true)
 	must(err, "a page link")
 	_, err = pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
 	must(err, "a page response")

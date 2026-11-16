@@ -389,7 +389,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Attention = attention.NewPG(pool)
 		// Shareable pages (migration 0116): off unless MUSTER_PAGES=1.
 		if cfg.Pages {
-			ext.Pages = pages.NewPG(pool)
+			ps := pages.NewPG(pool)
+			// A page's one reusable link keeps its token sealed under a key
+			// derived from the connector key (internal/pages seal.go). Without
+			// that key, every link is hash-only and its address is shown once.
+			if len(cfg.ConnectorEncKey) > 0 {
+				if _, err := ps.WithLinkKey(cfg.ConnectorEncKey); err != nil {
+					a.Close()
+					return nil, fmt.Errorf("page link store: %w", err)
+				}
+			}
+			ext.Pages = ps
 		}
 		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
 		if cfg.AskLog.On {
@@ -1987,9 +1997,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		if quota <= 0 {
 			quota = pages.DefaultUploadBytesPerPage
 		}
-		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner and ask before a share link goes live; "+
+		reuse := "each page keeps one reusable link, its token sealed under " + envConnectorEncKey
+		if !ext.Pages.LinksReusable() {
+			reuse = "links are hash-only, each address shown once (" + envConnectorEncKey + " is unset)"
+		}
+		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner, and ask before a share link goes live unless the owner "+
+			"lets their agents share without asking (a per-owner Account setting); %s; "+
 			"links are served at %s<token>, sandboxed (an opaque origin, no page network); a page's files are kept under %s "+
-			"until it is deleted, %d bytes per page at most (%s)", envPages, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
+			"until it is deleted, %d bytes per page at most (%s)", envPages, reuse, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
 	case a.cfg.Pages:
 		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
 	default:

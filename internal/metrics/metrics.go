@@ -93,7 +93,9 @@ var (
 
 	// PageShareDecisions counts what happens to share links: approved and
 	// denied (the owner's card), minted and revoked (the Pages screen and
-	// page_link_revoke), requested (page_share_request).
+	// page_link_revoke, the Share button and New link), requested
+	// (page_share_request), and auto (page_share_request made a link live
+	// without asking, its owner's opt-in).
 	PageShareDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_page_share_decisions_total",
 		Help: "Shareable pages' link requests, approvals, denials, mints and revocations.",

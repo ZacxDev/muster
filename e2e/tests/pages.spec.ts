@@ -303,6 +303,10 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await page.fill('#branding-name', BRAND);
   await page.setInputFiles('#branding-logo', { name: 'logo.png', mimeType: 'image/png', buffer: PNG });
   await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+  // The ask flow is an owner who did NOT let their agents share without
+  // asking (Account → Pages): the leg's database is shared, so it is checked
+  // here, not assumed.
+  await expect(page.locator('#pages-agent-share')).toHaveAttribute('data-state', 'off');
 
   // 1. The agent publishes; the page is private.
   const created = await call('page_create', { title: 'Checkout launch ' + stamp, blocks: BLOCKS });
@@ -447,4 +451,26 @@ test('the Pages screens do not shift on load', async ({ page }) => {
     const r = await readCls(page);
     expect(r.total, `${url}: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
   }
+});
+
+// 🔴 A SERVER WITH NO LINK KEY (this spec's) MINTS ON THE TAP ONLY. There each
+// Share makes a new one-off link, so a finger going down (or a tab landing) on
+// Share must make nothing: a press that turns into a scroll, or a tab-through,
+// would otherwise leave live links nobody holds, counted against the page's
+// open-link cap. The control: the tap itself makes exactly one.
+test('with no link key, a press or a focus on Share makes no link; the tap makes one', async ({ page }) => {
+  await signIn(page, origin);
+  const created = await call('page_create', { title: 'No prefetch ' + stamp, blocks: [{ type: 'markdown', text: 'x' }] });
+  const pageID = created.body.page_id as number;
+  const links = async () => ((await call('page_get', { page_id: pageID })).body.links as unknown[]).length;
+  await page.goto(origin + '/pages');
+  const share = page.locator(`[data-page-share][data-page-id="${pageID}"]`);
+  await share.dispatchEvent('pointerdown');
+  await share.focus();
+  await page.waitForTimeout(1500);
+  expect(await links(), 'a press and a focus made a link').toBe(0);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await share.click();
+  await expect(page.locator('[data-page-toast]').first()).toBeVisible();
+  await expect.poll(links).toBe(1);
 });

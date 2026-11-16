@@ -22,6 +22,27 @@ type memNotifyPrefs struct {
 	err error
 	// first is "Start notification titles with the tmux name", owner → on.
 	first map[int64]bool
+	// pages is "Let my agents share pages without asking", owner → on.
+	pages map[int64]bool
+}
+
+func (m *memNotifyPrefs) PagesAgentShare(ctx context.Context, owner int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	return m.pages[owner], nil
+}
+
+func (m *memNotifyPrefs) SetPagesAgentShare(ctx context.Context, owner int64, on bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pages == nil {
+		m.pages = map[int64]bool{}
+	}
+	m.pages[owner] = on
+	return nil
 }
 
 func (m *memNotifyPrefs) CodenameFirst(ctx context.Context, owner int64) (bool, error) {

@@ -1157,6 +1157,19 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			if gid, ok := t.groupOf[ev.ToolID]; ok {
 				ops = append(ops, t.groupStateOps(gid)...)
 			}
+			// A page tool's result is followed by its page card (page_card.go),
+			// which ends the run. A "replace" by the card's own id, so a result
+			// the socket sends again redraws the one card (a replace of an
+			// element the page does not have is an append).
+			// The view has no database: it draws a placeholder the page fills
+			// from the server (PageCardPlaceholder) — never the result's title.
+			if ev.OK {
+				if ref, ok := ReadPageToolResult(call.ToolName, ev.Output); ok {
+					t.endRun()
+					cid := PageCardID(ev.ToolID)
+					ops = append(ops, MirrorOp{Op: "replace", ID: cid, HTML: render(PageCardPlaceholder(ref, cid))})
+				}
+			}
 		}
 	}
 	return ops

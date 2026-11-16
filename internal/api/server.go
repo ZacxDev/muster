@@ -950,7 +950,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	// only take a control away (featureOff), never draw one over nothing.
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
-		Attention: s.ext.Attention != nil,
+		Attention: s.ext.Attention != nil, Pages: s.pagesOn(),
 		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx)}
 }
 
