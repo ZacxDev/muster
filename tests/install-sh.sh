@@ -91,7 +91,7 @@ curl -fsS -H "Authorization: Bearer $tok" http://127.0.0.1:8105/mirror/host | gr
 grep -q 'PASS  this-host' /tmp/install-1.log || fail "the doctor did not PASS this-host"
 grep -q 'PASS  sign-in' /tmp/install-1.log || fail "the doctor did not PASS sign-in"
 pw1="$(as "$U" 'docker compose -f ~/muster/docker-compose.yml -p muster exec -T muster /muster-server show-secret ui-password')"
-grep -qF "$pw1" /tmp/install-1.log || fail "the first run did not print the sign-in password"
+grep -qF -- "$pw1" /tmp/install-1.log || fail "the first run did not print the sign-in password"
 echo "ok   first run: exit 0, doctor passed, muster-mirror.service active and connected, password shown"
 
 # --- the second run: idempotent --------------------------------------------------
