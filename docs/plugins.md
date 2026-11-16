@@ -3147,19 +3147,23 @@ What differs:
 - **The answer comes back to the chat you asked in.** `route_reply` records
   it (`answered`) and ends the route `relayed`, owing the chief its delivery in
   the same transaction; the route sweep delivers it **at least once** to the
-  chief session your message is in (`chief_session_id`) — **each answer as a
-  turn of its own** — with the answer fenced as data, for the chief to tell you
-  what it says. While the chief cannot take a turn (your turn is in flight,
-  another turn holds its session, or one is running or waiting in muster —
-  your own typed line goes first), the answer **stays owed** and the next sweep
-  (every 30 s, or at once after the previous answer's turn) offers it again:
-  several answers that arrive during one turn are delivered one after another,
-  never left as rows the chief's Claude Code session never sees. Only a chief
-  that cannot take a turn at all (not running, no gateway) or that has not been
-  free for 2 hours (`routeChiefWaitMax`) gets a note instead. A route's
-  timed-out or failed hand-back waits the same way while the chief's session
-  is held. The route owes the answer until it is on record in that session;
-  a row already there is not written again.
+  chief session your message is in (`chief_session_id`), fenced as data, for
+  the chief to tell you what it says. While the chief cannot take a turn (your
+  turn is in flight, another turn holds its session, or one is running or
+  waiting in muster — your own typed line goes first), the answer **stays
+  owed** and the next sweep (every 30 s, or at once after the previous turn)
+  offers it again, never leaving it as a row the chief's Claude Code session
+  never sees. **Every answer owed to a chat when the chief is next free goes in
+  ONE turn** (operator decision, PR #715): each fenced on its own, under its
+  own route id and nonce, after a line saying how many there are — up to 20
+  answers or 64 KiB in one turn (`routeAnswersPerTurn`,
+  `routeAnswersTurnBytes`), the rest in the next. A `route_many` batch's
+  answers are not combined here: they come as that batch's own digest. Only a chief that cannot take a turn at all (not running,
+  no gateway) or that has not been free for 2 hours (`routeChiefWaitMax`) gets
+  a note instead. A route's timed-out or failed hand-back goes the same way: a
+  turn of its own when the chief is free, taken only once that turn is on
+  record. The route owes the answer until it is on record in that session; a
+  row already there is not written again.
   If that session is gone, cannot be read or is not this chief's, the
   **chief's default session** gets it instead, and muster logs it. That turn
   is muster's, not yours, so `owner_asked` refuses in it. No draft is filed and

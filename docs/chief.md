@@ -85,11 +85,12 @@ a request it routed for you, a route's hand-back, your answer to one of its
 asks, a session's question, a nudge. None of them takes the chief's session
 while a turn you typed is in flight, so your turn keeps its authority
 (`owner_asked`) to the end, and none of them jumps a line you typed that is
-waiting for the session. Each waits and is delivered afterwards **as a turn of
-its own**: a route answer that cannot be delivered yet stays owed and is
-offered again on the next sweep, so answers that arrive while the chief is busy
-are relayed one after another rather than written into the chat where the
-chief's Claude Code session never reads them
+waiting for the session. Each waits and is delivered afterwards: a route
+answer or hand-back that cannot be delivered yet stays owed and is offered
+again on the next sweep, and **every answer owed to a chat when the chief is
+next free goes in one turn**, each fenced on its own (up to 20 per turn, the
+rest in the next) — never written into the chat where the chief's Claude Code
+session never reads them
 ([plugins.md](plugins.md#routing-your-own-request-to-a-session)).
 
 **The last click wins.** Each user's switch changes run one at a time, each
