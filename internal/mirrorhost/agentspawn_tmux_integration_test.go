@@ -494,4 +494,11 @@ func TestTmuxAScratchSpawnRunsInAPrivateDirectoryAndIsSweptAway(t *testing.T) {
 	if _, err := os.Stat(want); !os.IsNotExist(err) {
 		t.Fatalf("the scratch directory outlived its window: %v", err)
 	}
+	// Its trust entry went with it (O-B round 0).
+	st = nil
+	b, _ = os.ReadFile(r.c.cfg.AgentSpawn.ClaudeState)
+	_ = json.Unmarshal(b, &st)
+	if _, ok := st["projects"].(map[string]any)[want]; ok {
+		t.Fatalf("the swept scratch directory's trust entry %s is still in Claude Code's state file", want)
+	}
 }

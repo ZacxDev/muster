@@ -1690,65 +1690,94 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 			return bad("the clone does not list it as a worktree")
 		}
 	}
+	why := c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; ok {
+			return false, "an entry for this new directory already exists"
+		}
+		projects[dir] = json.RawMessage(`{"hasTrustDialogAccepted":true}`)
+		return true, ""
+	})
+	if why != "" {
+		return bad(why)
+	}
+	return nil
+}
+
+// editClaudeProjects is THE read-modify-rename of Claude Code's state file's
+// `projects` (the trust entry's write, trustSpawnedWorktree, and its removal,
+// untrustScratchDir): never through a symlink, under Claude Code's own lock,
+// decoded as raw JSON at two levels so nothing but what edit changes moves,
+// re-encoded with HTML escaping off, written to a temporary file in the file's
+// own mode and renamed, then read back and compared semantically. edit reports
+// whether it changed anything (false: nothing is written) or why it refuses.
+// It answers why the file was not edited, "" when it was (or edit changed
+// nothing). 🔴 A read-back mismatch is NEVER RESTORED (restoring could
+// revert a write Claude Code made in between). A missing or unparseable file
+// is refused, never created or repaired.
+func (c *Client) editClaudeProjects(edit func(projects map[string]json.RawMessage) (changed bool, refusal string)) string {
+	sc := c.cfg.AgentSpawn
 	path := c.claudeStateFile()
 	// 🔴 NEVER THROUGH A SYMLINK. That is muster's own choice and fails closed;
 	// Claude Code 2.1.289 itself does write through one (allowSymlink: true).
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return bad("Claude Code's state file cannot be read")
+		return "Claude Code's state file cannot be read"
 	}
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-		return bad("Claude Code's state file is a symlink or not a regular file")
+		return "Claude Code's state file is a symlink or not a regular file"
 	}
 	// 🔴 CLAUDE CODE'S OWN LOCK around the read-modify-rename (lockClaudeState):
 	// without it a write of Claude Code's landing between this read and the
-	// rename is lost. Not had within the bound: no entry, and the window
-	// simply shows the trust dialog (fail closed).
+	// rename is lost. Not had within the bound: no edit (fail closed; for the
+	// trust entry the window simply shows the trust dialog).
 	unlock, err := lockClaudeState(path, sc.trustLockWait())
 	if err != nil {
-		return bad("Claude Code's state file is locked by another writer")
+		return "Claude Code's state file is locked by another writer"
 	}
 	defer unlock()
 	orig, err := os.ReadFile(path)
 	if err != nil {
-		return bad("Claude Code's state file cannot be read")
+		return "Claude Code's state file cannot be read"
 	}
 	var top map[string]json.RawMessage
 	if json.Unmarshal(orig, &top) != nil || top == nil {
-		return bad("Claude Code's state file does not parse")
+		return "Claude Code's state file does not parse"
 	}
 	projects := map[string]json.RawMessage{}
 	if raw, ok := top["projects"]; ok {
 		if json.Unmarshal(raw, &projects) != nil || projects == nil {
-			return bad("Claude Code's projects do not parse")
+			return "Claude Code's projects do not parse"
 		}
 	}
-	if _, ok := projects[dir]; ok {
-		return bad("an entry for this new directory already exists")
+	changed, refusal := edit(projects)
+	if refusal != "" {
+		return refusal
 	}
-	projects[dir] = json.RawMessage(`{"hasTrustDialogAccepted":true}`)
+	if !changed {
+		return ""
+	}
 	pj, err := encodeJSON(projects)
 	if err != nil {
-		return bad("encode")
+		return "encode"
 	}
 	top["projects"] = json.RawMessage(pj)
 	want, err := encodeJSON(top)
 	if err != nil {
-		return bad("encode")
+		return "encode"
 	}
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid()) + "." + hex.EncodeToString(sumShort(want))
 	// The file's own mode, kept, as Claude Code keeps it (Claude Code creates
 	// the file 0600, but an existing file keeps whatever mode it has).
 	if err := os.WriteFile(tmp, want, fi.Mode().Perm()); err != nil {
-		return bad("the temporary file cannot be written")
+		return "the temporary file cannot be written"
 	}
 	if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
 		_ = os.Remove(tmp)
-		return bad("the temporary file cannot be written")
+		return "the temporary file cannot be written"
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return bad("the rename failed")
+		return "the rename failed"
 	}
 	if sc.beforeTrustRead != nil {
 		sc.beforeTrustRead(path)
@@ -1757,9 +1786,31 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 	if err != nil || !sameJSON(got, want) {
 		// 🔴 NEVER RESTORE: a mismatch most likely means Claude Code wrote the
 		// file in between, and restoring would revert that write.
-		return bad("the file read back differs (another writer?)")
+		return "the file read back differs (another writer?)"
 	}
-	return nil
+	return ""
+}
+
+// untrustScratchDir removes the trust entry trustSpawnedWorktree wrote for
+// scratch directory dir, once the sweep has removed the directory (O-B round
+// 0: entries no longer accumulated one per scratch spawn). 🔴 THE EXACT KEY
+// ONLY: projects[dir], never a prefix, a parent or a sibling, and only a dir
+// that is EXACTLY <agent-spawn-dir>/scratch/<n> (the sweep's own); under
+// Claude Code's lock, through editClaudeProjects. No entry: nothing written.
+func (c *Client) untrustScratchDir(dir string) string {
+	if filepath.Dir(dir) != filepath.Join(c.spawnDir(), scratchDirName) {
+		return "not a scratch directory under the agents directory"
+	}
+	if id, err := strconv.ParseInt(filepath.Base(dir), 10, 64); err != nil || id <= 0 {
+		return "not a scratch directory under the agents directory"
+	}
+	return c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; !ok {
+			return false, ""
+		}
+		delete(projects, dir)
+		return true, ""
+	})
 }
 
 // Claude Code's state-file lock (proper-lockfile, as Claude Code 2.1.289 uses
@@ -1930,8 +1981,14 @@ func (c *Client) SweepAgentWorktrees(ctx context.Context, live map[int64]bool) {
 		if !d.IsDir() || err != nil || id <= 0 || live[id] {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(sd, d.Name())); err != nil {
-			c.log.Printf("muster-mirror: scratch directory %s kept: %v", filepath.Join(sd, d.Name()), err)
+		dir := filepath.Join(sd, d.Name())
+		if err := os.RemoveAll(dir); err != nil {
+			c.log.Printf("muster-mirror: scratch directory %s kept: %v", dir, err)
+			continue
+		}
+		// Its trust entry goes with it (only once the directory is gone).
+		if why := c.untrustScratchDir(dir); why != "" {
+			c.log.Printf("muster-mirror: scratch directory %s removed; its Claude Code trust entry kept: %s", dir, why)
 		}
 	}
 	if sc.RuntimeDir != "" {
