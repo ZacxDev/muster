@@ -76,6 +76,9 @@ var (
 	// open (the server's key changed): it still serves, but its address cannot
 	// be shown again — make a new link (RotateShareLink).
 	ErrLinkUnreadable = errors.New("pages: this page's link can no longer be shown (the server's encryption key changed); make a new link")
+	// ErrClosing is a new link asked of a page whose delete has begun
+	// (CloseLinks ran): it gets none — press Delete again to finish it.
+	ErrClosing = errors.New("pages: this page is being deleted; it takes no new link")
 )
 
 // Creator is who made a page, and so who a tool may act on it as: a

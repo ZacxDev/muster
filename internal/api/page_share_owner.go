@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -58,6 +59,8 @@ func (s *Server) pageShareStoreFail(w http.ResponseWriter, r *http.Request, id i
 	switch {
 	case errors.Is(err, pages.ErrNotFound):
 		s.pageShareFail(w, r, id, http.StatusNotFound, "No such page.")
+	case errors.Is(err, pages.ErrClosing):
+		s.pageShareFail(w, r, id, http.StatusConflict, "This page is being deleted: it takes no new link. Press Delete again to finish.")
 	case errors.Is(err, pages.ErrTooMany):
 		s.pageShareFail(w, r, id, http.StatusConflict, strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "))
 	case errors.Is(err, pages.ErrLinkUnreadable):
@@ -185,34 +188,91 @@ func (s *Server) handlePageShareRevoke(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, pagePath(id), http.StatusSeeOther)
 }
 
+// pageCardView is the card of a page tool reference, READ FROM THE PAGE under
+// ctx's principal (row-level security): its title, whether it has a live
+// link, and — for a shared card — who made its REUSABLE link. false when the
+// page is not the caller's (or not there): no card.
+//
+// 🔴 NOTHING OF THE TOOL RESULT BUT THE REFERENCE IS USED: the title and maker
+// are the page's own, never what a transcript claims (ui/page_card.go).
+func (s *Server) pageCardView(ctx context.Context, ref ui.PageToolRef) (ui.PageCardView, bool) {
+	if !s.pagesOn() || ref.PageID <= 0 {
+		return ui.PageCardView{}, false
+	}
+	p, err := s.ext.Pages.Page(ctx, ref.PageID)
+	if err != nil {
+		return ui.PageCardView{}, false
+	}
+	v := ui.PageCardView{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Kind: ui.PageCardKind(ref.Tool, ref.Status),
+		Reusable: s.ext.Pages.LinksReusable()}
+	if ref.Version > 0 {
+		v.Version = ref.Version
+	}
+	if links, err := s.ext.Pages.Links(ctx, p.ID); err == nil {
+		for _, l := range links {
+			if l.State != pages.LinkLive {
+				continue
+			}
+			v.Live = true
+			// The maker named is the REUSABLE link's (the page's one link),
+			// not whoever made the newest live link of any kind.
+			if l.Reusable {
+				v.SharedBy = pageLinkMaker(l)
+			}
+		}
+	}
+	return v, true
+}
+
+// pageCardsFor is the stored chat's page cards (ui.AgentDetailView.PageCards):
+// each muster page tool call with a good result, as pageCardView reads its page.
+func (s *Server) pageCardsFor(ctx context.Context, lines []ui.ChatLine) map[string]ui.PageCardView {
+	if !s.pagesOn() {
+		return nil
+	}
+	calls := map[string]string{}
+	for _, l := range lines {
+		if l.Kind == "tool_call" && l.ToolID != "" {
+			calls[l.ToolID] = l.ToolName
+		}
+	}
+	var out map[string]ui.PageCardView
+	for _, l := range lines {
+		if l.Kind != "tool_result" || !l.ToolOK || l.ToolID == "" {
+			continue
+		}
+		ref, ok := ui.ReadPageToolResult(calls[l.ToolID], l.Content)
+		if !ok {
+			continue
+		}
+		if v, ok := s.pageCardView(ctx, ref); ok {
+			if out == nil {
+				out = map[string]ui.PageCardView{}
+			}
+			out[l.ToolID] = v
+		}
+	}
+	return out
+}
+
 // handlePageCard is GET /pages/{id}/card?tool=&status=&version=: one page
-// card (ui.PageCard), for the chat's live stream.
+// card (ui.PageCard), for the chat's live stream and the mirrored view's
+// placeholders. 404 for a page that is not the caller's.
 func (s *Server) handlePageCard(w http.ResponseWriter, r *http.Request) {
 	id, ok := pageIDParam(r)
-	if !s.pagesOn() || !ok {
-		http.NotFound(w, r)
-		return
-	}
-	ctx := r.Context()
-	p, err := s.ext.Pages.Page(ctx, id)
-	if err != nil {
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	q := r.URL.Query()
-	v := ui.PageCardView{ID: p.ID, Title: p.Title, Version: p.CurrentVersion, Kind: ui.PageCardKind(q.Get("tool"), q.Get("status"))}
+	ref := ui.PageToolRef{PageID: id, Tool: q.Get("tool"), Status: q.Get("status")}
 	if n, err := strconv.Atoi(q.Get("version")); err == nil && n > 0 {
-		v.Version = n
+		ref.Version = n
 	}
-	if v.Kind == ui.PageCardShared {
-		if links, err := s.ext.Pages.Links(ctx, id); err == nil {
-			for _, l := range links {
-				if l.State == pages.LinkLive {
-					v.SharedBy = pageLinkMaker(l)
-					break
-				}
-			}
-		}
+	v, ok := s.pageCardView(r.Context(), ref)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

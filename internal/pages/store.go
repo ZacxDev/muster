@@ -51,7 +51,8 @@ type Store interface {
 	// CloseLinks revokes every pending or live link of page id, under the page
 	// row's lock, and returns them (their cards are the caller's to withdraw).
 	// From its commit on, no response — no upload — is recorded through any
-	// of them (AddResponse re-reads the link's state under its own lock).
+	// of them (AddResponse re-reads the link's state under its own lock), and
+	// the page takes no NEW link (every link maker answers ErrClosing).
 	CloseLinks(ctx context.Context, id int64) ([]Link, error)
 	// UploadBytes is the size of every file page id holds now (its upload
 	// responses' files, not revoked).
@@ -369,7 +370,9 @@ func (s *PGStore) CloseLinks(ctx context.Context, id int64) ([]Link, error) {
 	var out []Link
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var pid int64
-		if err := tx.QueryRow(ctx, `SELECT id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&pid); err != nil {
+		// The page is marked closing in the same statement that locks it:
+		// lockPage refuses every new link from here to the delete.
+		if err := tx.QueryRow(ctx, `UPDATE pages SET links_closed_at = coalesce(links_closed_at, now()) WHERE id = $1 RETURNING id`, id).Scan(&pid); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -490,13 +493,23 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 
 // lockPage takes page id's row lock and returns its owner (ErrNotFound for a
 // page the caller cannot see).
+//
+// 🔴 IT IS EVERY NEW LINK'S GATE, AND IT REFUSES A PAGE BEING DELETED
+// (ErrClosing): CloseLinks, a delete's first step, marks the page
+// links_closed_at under this same lock, so no link — an opted-in agent's, the
+// owner's Share — goes live between the close and the delete, when an upload
+// through it could land after the delete swept the page's files.
 func lockPage(ctx context.Context, tx pgx.Tx, id int64) (int64, error) {
 	var owner int64
-	if err := tx.QueryRow(ctx, `SELECT owner_id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&owner); err != nil {
+	var closing bool
+	if err := tx.QueryRow(ctx, `SELECT owner_id, links_closed_at IS NOT NULL FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &closing); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrNotFound
 		}
 		return 0, err
+	}
+	if closing {
+		return 0, ErrClosing
 	}
 	return owner, nil
 }
@@ -823,7 +836,7 @@ func wrap(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable} {
+	for _, e := range []error{ErrNotFound, ErrLinkNotFound, ErrInvalid, ErrTooMany, ErrNotPending, ErrNoLinkKey, ErrLinkUnreadable, ErrClosing} {
 		if errors.Is(err, e) {
 			return err
 		}

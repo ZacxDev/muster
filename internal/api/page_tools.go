@@ -232,6 +232,8 @@ func pageToolRefusal(what string, id int64, err error) string {
 		return toolErr("%s", strings.TrimPrefix(err.Error(), pages.ErrInvalid.Error()+": "))
 	case errors.Is(err, pages.ErrTooMany):
 		return toolErr("%s", strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "))
+	case errors.Is(err, pages.ErrClosing):
+		return toolErr("page %d is being deleted: it takes no new link", id)
 	}
 	return toolErr("the page could not be %s", what)
 }
@@ -529,26 +531,47 @@ func (s *Server) pageShareAuto(ctx context.Context, creator pages.Creator, p pag
 	if created {
 		metrics.PageShareDecisions.WithLabelValues("auto").Inc()
 		s.logger.Printf("pages: link %d of page %d made live by %s without asking (its owner's opt-in)", l.ID, p.ID, creator.Label)
-		body := "Anyone with its link can open it. Tap to see the link or revoke it."
-		if reason = strings.TrimSpace(reason); reason != "" {
-			body = "Why: " + truncate(reason, 120) + " — anyone with its link can open it. Tap to revoke it."
-		}
-		s.pushTask(p.OwnerID, push.EventPageShared, RouterNotification{
-			Type:  taskNotificationType,
-			Title: "Page shared: " + truncate(p.Title, 80),
-			Body:  "By " + truncate(creator.Label, 60) + ". " + body,
-			Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-shared",
-			Data:  map[string]string{"url": pagePath(p.ID)},
-		})
+	} else {
+		s.logger.Printf("pages: link %d of page %d handed to %s without asking (its owner's opt-in; the link was there already)", l.ID, p.ID, creator.Label)
 	}
+	// 🔴 EVERY AGENT SHARE IS PUSHED, the link new or not: what the owner
+	// must hear is that an agent HANDED the page on — an existing link (the
+	// owner's own, or an earlier one) going to a new reader is that too.
+	ownersLink := !l.ByAgent
+	by := "By " + truncate(creator.Label, 60) + "."
+	if !created {
+		if ownersLink {
+			by = "By " + truncate(creator.Label, 60) + ", with the link you had already shared."
+		} else {
+			by = "By " + truncate(creator.Label, 60) + ", with the page's existing link."
+		}
+	}
+	body := "Anyone with its link can open it. Tap to see the link or revoke it."
+	if reason = strings.TrimSpace(reason); reason != "" {
+		body = "Why: " + truncate(reason, 120) + " — anyone with its link can open it. Tap to revoke it."
+	}
+	s.pushTask(p.OwnerID, push.EventPageShared, RouterNotification{
+		Type:  taskNotificationType,
+		Title: "Page shared: " + truncate(p.Title, 80),
+		Body:  by + " " + body,
+		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-shared",
+		Data:  map[string]string{"url": pagePath(p.ID)},
+	})
 	note := "The link is live now: anyone who has url can open the page. Your owner was told and can revoke it."
+	sharedBy := l.RequestedBy
+	if ownersLink {
+		sharedBy = "your owner"
+		note = "This is the link your owner already shared: anyone who has url can open the page. Your owner was told you are using it, and can revoke it."
+	} else if !created {
+		note = "This is the page's existing link: anyone who has url can open the page. Your owner was told, and can revoke it."
+	}
 	if l.Reusable {
 		note += " It is this page's one link: asking again returns the same url."
 	} else {
 		note += " Keep url: it is shown only this once (muster stores only its hash)."
 	}
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "link_id": l.ID, "status": "live", "url": s.pageLinkURL(l),
-		"reusable": l.Reusable, "shared_by": pageLinkMaker(l), "note": note,
+		"reusable": l.Reusable, "shared_by": sharedBy, "note": note,
 		"next": "Give url to whoever should open the page. Read what they send with page_responses{page_id: " + strconv.FormatInt(p.ID, 10) + ", wait_seconds}."})
 }
 

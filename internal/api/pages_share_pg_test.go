@@ -89,7 +89,7 @@ func (f *pageFixture) optedIn(uid int64) bool {
 // agents share pages without asking", their agent's page_share_request makes
 // the page's link live NOW — no attention row is filed — and returns its url,
 // which a stranger opens; a second request returns the SAME url; the owner
-// (only) is pushed once, on the page_shared toggle; the page's screen says
+// (only) is pushed for EACH share, on the page_shared toggle; the page's screen says
 // the agent made it live without asking, with Revoke beside it.
 func TestAnOptedInOwnersAgentSharesAtOnce(t *testing.T) {
 	f := newPageFixture(t).keyed(t)
@@ -117,9 +117,12 @@ func TestAnOptedInOwnersAgentSharesAtOnce(t *testing.T) {
 		t.Fatalf("the link list: %+v", ls)
 	}
 	sent, to := f.pagePushesTagged("page-" + strconv.FormatInt(id, 10) + "-shared")
-	if len(sent) != 1 || to[0] != f.owner || !strings.HasPrefix(sent[0].Title, "Page shared: Auto shared") ||
-		sent[0].Data["url"] != "/pages/"+strconv.FormatInt(id, 10) || strings.Contains(sent[0].Title+sent[0].Body, tok) {
-		t.Fatalf("the shared push: %+v to %v", sent, to)
+	// One push per share — the second hands on the page's existing link, and
+	// says so.
+	if len(sent) != 2 || to[0] != f.owner || to[1] != f.owner || !strings.HasPrefix(sent[0].Title, "Page shared: Auto shared") ||
+		sent[0].Data["url"] != "/pages/"+strconv.FormatInt(id, 10) || strings.Contains(sent[0].Title+sent[0].Body+sent[1].Body, tok) ||
+		strings.Contains(sent[0].Body, "existing link") || !strings.Contains(sent[1].Body, "with the page's existing link") {
+		t.Fatalf("the shared pushes: %+v to %v", sent, to)
 	}
 	detail := f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String()
 	if !strings.Contains(detail, "made live by "+f.agent.Name+" without asking you") || !strings.Contains(detail, "data-link-revoke") {

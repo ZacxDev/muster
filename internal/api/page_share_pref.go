@@ -32,7 +32,7 @@ const pagesAgentShareID = "pages-agent-share"
 const (
 	pagesAgentShareLabel = "Let my agents share pages without asking"
 	pagesAgentShareHelp  = "When one of your agents shares a page, its link goes live at once — anyone the agent gives it to can open the page — " +
-		"instead of waiting for you on Asks. You are told each time (a notification and the page's card in the chat), and can revoke it in one tap. " +
+		"instead of waiting for you on Asks. You are told every time an agent shares a page — a new link or one you had already shared (a notification and the page's card in the chat), and can revoke it in one tap. " +
 		"Off, you approve every link an agent asks for."
 )
 

@@ -16,6 +16,11 @@
 --       approved, or made live at once for an owner who opted in below),
 --       not by the owner. Backfilled from requested_by: the owner's own links
 --       were always recorded as 'you'.
+--   pages.links_closed_at   set by a delete's first step (internal/pages
+--       PGStore.CloseLinks), under the page row's lock: from then on no new
+--       link is made on the page (lockPage refuses it), so nothing goes live
+--       between the close and the delete. A delete that then fails leaves it
+--       set — the page takes no new link until Delete is pressed again.
 --   notify_preferences.pages_agent_share   the user's opt-in, on Account,
 --       "Let my agents share pages without asking": their agents'
 --       page_share_request makes the page's link live at once instead of
@@ -38,6 +43,7 @@
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS token_sealed;
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS reusable;
 --   ALTER TABLE public.page_links DROP COLUMN IF EXISTS made_by_agent;
+--   ALTER TABLE public.pages DROP COLUMN IF EXISTS links_closed_at;
 --   ALTER TABLE public.notify_preferences DROP COLUMN IF EXISTS pages_agent_share;
 --   DELETE FROM schema_migrations WHERE version = 135;
 
@@ -59,3 +65,5 @@ UPDATE public.page_links SET made_by_agent = true WHERE requested_by <> 'you' AN
 
 ALTER TABLE public.notify_preferences
     ADD COLUMN IF NOT EXISTS pages_agent_share BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS links_closed_at TIMESTAMPTZ;

@@ -152,6 +152,10 @@ type AgentDetailView struct {
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
+	// PageCards is each muster page tool call's page card, by its tool id,
+	// read from the page itself under the viewer's principal (internal/api
+	// pageCardsFor); a call whose page the viewer cannot see has none.
+	PageCards map[string]PageCardView
 	// OwnerCards is each STORED ask_owner card's state — its attention ask —
 	// by the call's tool id (internal/api ownerCardsFor). A call whose result
 	// names no stored ask draws from the transcript alone (a server with no
@@ -1502,11 +1506,11 @@ func chatLogInner(v AgentDetailView) g.Node {
 			}
 			items = append(items, logItem{chatToolChip(m, result), toolChipState(result)})
 			// A page tool's result is followed by its page card (page_card.go),
-			// which ends the run of rows like any card.
-			if result != nil && result.ToolOK {
-				if pc, ok := ReadPageToolResult(m.ToolName, result.Content); ok {
-					items = append(items, logItem{node: PageCard(pc, PageCardID(m.ToolID))})
-				}
+			// which ends the run of rows like any card — as the SERVER read the
+			// page (PageCards), never as the result tells it; a page the viewer
+			// cannot see has none.
+			if pc, ok := v.PageCards[m.ToolID]; ok && result != nil && result.ToolOK {
+				items = append(items, logItem{node: PageCard(pc, PageCardID(m.ToolID))})
 			}
 		case "tool_result":
 			if paired[i] {
@@ -2479,7 +2483,7 @@ func agentChatScript(name string) g.Node {
   // — after the row's group when it is in one, so a folded group cannot hide
   // it. A result it cannot read draws nothing more.
   function pageCard(row, name, ok, output) {
-    var m = /(?:^|__)(page_create|page_update|page_share_request)$/.exec(String(name || ''));
+    var m = /^(?:mcp__muster__)?(page_create|page_update|page_share_request)$/.exec(String(name || ''));
     if (!ok || !m) return;
     var r; try { r = JSON.parse(output || ''); } catch (e) { return; }
     if (!r || typeof r !== 'object' || r.error || !(r.page_id > 0)) return;

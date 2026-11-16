@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -20,9 +21,18 @@ import (
 // button, and a ⋯ menu with Revoke link, New link and the page's own screen.
 //
 // 🔴 ONE RENDERER FOR EVERY PATH. A dispatched agent's stored transcript
-// (chatLogInner), its live stream (agentChatScript fetches PageCardPath for
-// the result it just streamed) and a mirrored session's view (MirrorTranscript)
-// all draw PageCard.
+// (chatLogInner, from AgentDetailView.PageCards), its live stream
+// (agentChatScript fetches PageCardPath for the result it just streamed) and a
+// mirrored session's view (MirrorTranscript draws a placeholder pageShareJS
+// fills from PageCardPath) all draw PageCard.
+//
+// 🔴 A TRANSCRIPT IS A REFERENCE, NEVER THE CARD'S CONTENT. A tool result is
+// the agent's (or, in a mirrored session, any MCP server's) words, so only
+// muster's own page tools are read (bare, or mcp__muster__…), and only for
+// WHICH page: the card's title, its share state and that the page exists and
+// is the VIEWER's are read from the page itself, under the viewer's row-level
+// security (internal/api pageCardView). A page id that is not theirs draws no
+// card at all. TestAForgedTitleInToolOutputIsNotRendered.
 //
 // 🔴 THE CARD NEVER CARRIES A LINK'S ADDRESS. It is drawn from the tool's
 // result, which outlives the link (a revoke, a New link): an address in it
@@ -91,15 +101,24 @@ type PageCardView struct {
 	Version int
 	// Kind is PageCardPublished, …Updated, …Shared or …Asked.
 	Kind string
-	// SharedBy names who made the live link (PageCardShared).
+	// SharedBy names who made the page's reusable link (PageCardShared).
 	SharedBy string
+	// Live: the page has a live link now (its note then never says it is
+	// private).
+	Live bool
+	// Reusable: the server keeps one reusable link per page (a link key), so
+	// the Share button may fetch it before the click (pageShareJS); without
+	// one every fetch would mint a new link, so it waits for the tap.
+	Reusable bool
 }
 
-// pageToolBase is a tool name's page tool, bare (a dispatched agent's) or as
-// an MCP client names it (mcp__<server>__page_create): "" for any other tool.
+// pageToolBase is a tool name's page tool — MUSTER's own only: bare (a
+// dispatched agent's) or as an MCP client names muster's server
+// (mcp__muster__page_create, musterToolIs). Another MCP server's tool of the
+// same name is "", and draws nothing.
 func pageToolBase(name string) string {
 	for _, b := range []string{PageCreateTool, PageUpdateTool, PageShareRequestTool} {
-		if name == b || (strings.HasPrefix(name, "mcp__") && strings.HasSuffix(name, "__"+b)) {
+		if musterToolIs(name, b) {
 			return b
 		}
 	}
@@ -124,25 +143,53 @@ func PageCardKind(tool, status string) string {
 	return PageCardPublished
 }
 
-// ReadPageToolResult reads a page tool's result as its card: false for a tool
-// that is not one, a refusal ({"error"}), or a result without a page.
-func ReadPageToolResult(toolName, output string) (PageCardView, bool) {
+// PageToolRef is what a page tool's result says about WHICH page a card is
+// for — never what the card shows (see the file header).
+type PageToolRef struct {
+	PageID  int64
+	Tool    string // the base name: PageCreateTool, …
+	Status  string // page_share_request's ("live" or "pending")
+	Version int
+}
+
+// ReadPageToolResult reads a page tool's result as a reference: false for a
+// tool that is not muster's own page tool, a refusal ({"error"}), or a result
+// without a page. Its title and maker are deliberately not read.
+func ReadPageToolResult(toolName, output string) (PageToolRef, bool) {
 	base := pageToolBase(toolName)
 	if base == "" {
-		return PageCardView{}, false
+		return PageToolRef{}, false
 	}
 	var r struct {
-		PageID      int64  `json:"page_id"`
-		Title       string `json:"title"`
-		Version     int    `json:"version"`
-		Status      string `json:"status"`
-		RequestedBy string `json:"shared_by"`
-		Error       string `json:"error"`
+		PageID  int64  `json:"page_id"`
+		Version int    `json:"version"`
+		Status  string `json:"status"`
+		Error   string `json:"error"`
 	}
 	if json.Unmarshal([]byte(strings.TrimSpace(output)), &r) != nil || r.Error != "" || r.PageID <= 0 {
-		return PageCardView{}, false
+		return PageToolRef{}, false
 	}
-	return PageCardView{ID: r.PageID, Title: r.Title, Version: r.Version, Kind: PageCardKind(base, r.Status), SharedBy: r.RequestedBy}, true
+	return PageToolRef{PageID: r.PageID, Tool: base, Status: r.Status, Version: r.Version}, true
+}
+
+// CardPath is the reference's card, as PageCardPath serves it.
+func (r PageToolRef) CardPath() string {
+	q := url.Values{"tool": {r.Tool}}
+	if r.Status != "" {
+		q.Set("status", r.Status)
+	}
+	if r.Version > 0 {
+		q.Set("version", strconv.Itoa(r.Version))
+	}
+	return PageCardPath(r.PageID) + "?" + q.Encode()
+}
+
+// PageCardPlaceholder is a card the page fills from the server
+// (PageCardPath, under the viewer's own row-level security): what a view with
+// no database at hand — the mirrored view — draws for a reference. Nothing of
+// the transcript is drawn; a page that is not the viewer's leaves nothing.
+func PageCardPlaceholder(r PageToolRef, id string) g.Node {
+	return Div(ID(id), g.Attr("data-page-card-src", r.CardPath()), Class("hidden"))
 }
 
 // PageCardID is the element id of the card drawn for tool call toolID.
@@ -168,13 +215,16 @@ func pageCardTitle(raw string) string {
 // PageShareButton is THE Share button of page id: a form POST to
 // PageSharePath, which the page script turns into the native share sheet or a
 // copy (pageShareJS). shareURL, when not "", is the page's current address
-// (the owner's own screens know it); "" asks the server on the tap.
-func PageShareButton(id int64, title, shareURL string) g.Node {
+// (the owner's own screens know it); "" asks the server — before the click
+// when reusable (the server keeps one link per page, so asking makes at most
+// that one), on the tap itself when not (every ask mints a new link).
+func PageShareButton(id int64, title, shareURL string, reusable bool) g.Node {
 	t := pageCardTitle(title)
 	pid := strconv.FormatInt(id, 10)
 	return Form(Method("POST"), Action(PageSharePath(id)), Class("contents"),
 		Button(Type("submit"), g.Attr("data-page-share", ""), g.Attr("data-page-id", pid), g.Attr("data-share-title", t),
 			g.If(shareURL != "", g.Attr("data-share-url", shareURL)),
+			g.If(reusable, g.Attr("data-share-reusable", "")),
 			g.Attr("aria-label", "Share “"+t+"”"), Class(pageButtonPrimary),
 			Span(g.Attr("aria-hidden", "true"), g.Text("↗")), Span(g.Text("Share"))))
 }
@@ -200,7 +250,14 @@ func PageShareMenu(id int64, title string, withDetail bool) g.Node {
 // PageCard draws one card; id is its element id ("" for none).
 func PageCard(v PageCardView, id string) g.Node {
 	t := pageCardTitle(v.Title)
+	// noteLive is the note once the page has a live link: drawn when it has
+	// one, and put in by pageShareJS when the Share button makes one.
+	const noteLive = "New page — it has a live link: anyone with it can open it."
 	note := "New page — only you can see it until you share it."
+	if v.Live {
+		note = noteLive
+	}
+	live := ""
 	switch v.Kind {
 	case PageCardUpdated:
 		note = "Updated"
@@ -215,6 +272,8 @@ func PageCard(v PageCardView, id string) g.Node {
 		}
 	case PageCardAsked:
 		note = "Asked to share it — waiting for you on Asks. Or share it yourself."
+	default:
+		live = noteLive
 	}
 	return Div(g.If(id != "", ID(id)),
 		g.Attr("data-page-card", ""), g.Attr("data-page-id", strconv.FormatInt(v.ID, 10)), g.Attr("data-page-card-kind", v.Kind),
@@ -222,11 +281,11 @@ func PageCard(v PageCardView, id string) g.Node {
 		Div(Class("flex min-w-0 items-center gap-2"),
 			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("📄")),
 			Span(g.Attr("data-page-card-title", ""), Class("min-w-0 truncate text-sm font-semibold text-fg"), g.Text(t))),
-		P(g.Attr("data-page-card-note", ""), Class("break-words text-xs text-muted"), g.Text(note)),
+		P(g.Attr("data-page-card-note", ""), g.If(live != "", g.Attr("data-note-live", live)), Class("break-words text-xs text-muted"), g.Text(note)),
 		Div(Class("flex flex-wrap items-center gap-2"),
 			A(Href(PagePreviewPath(v.ID)), hx("hx-boost", "false"), g.Attr("data-page-open", ""), g.Attr("aria-label", "Open “"+t+"”"),
 				Class(pageButtonQuiet), g.Text("Open")),
-			PageShareButton(v.ID, v.Title, ""),
+			PageShareButton(v.ID, v.Title, "", v.Reusable),
 			PageShareMenu(v.ID, v.Title, true)),
 	)
 }
@@ -244,8 +303,9 @@ func PageCard(v PageCardView, id string) g.Node {
 // shares at once.
 //
 // 🔴 THE SHARE SHEET NEEDS THE TAP'S OWN USER ACTIVATION (iOS Safari refuses
-// navigator.share once a tap's handler has awaited a fetch), SO THE ADDRESS IS
-// FETCHED BEFORE THE CLICK: on the button's pointerdown (and keyboard focus),
+// navigator.share once a tap's handler has awaited a fetch), SO WITH A LINK KEY
+// THE ADDRESS IS FETCHED BEFORE THE CLICK: on a data-share-reusable button's
+// pointerdown (and keyboard focus),
 // ensure() asks the server for the page's link, and the click — a few hundred
 // milliseconds later — finds it on the button and calls navigator.share
 // SYNCHRONOUSLY, inside the click's own dispatch. The Pages screens draw the
@@ -254,8 +314,16 @@ func PageCard(v PageCardView, id string) g.Node {
 // click (a ClipboardItem whose content is the pending fetch — what Safari
 // allows), the sheet is tried when the fetch lands, and if the browser
 // refuses it the toast says the link is copied; the next tap shares at once.
-// A pointerdown that turns into a scroll has made (or found) the page's link
-// and given it to nobody: it is still only the owner's, until it is sent.
+// A pointerdown that turns into a scroll has made (or found) the page's ONE
+// link and given it to nobody: it is still only the owner's, until it is sent.
+//
+// 🔴 WITHOUT A LINK KEY THERE IS NO PREFETCH: every ask mints a new one-off
+// live link, so a press or a tab-through would leave links nobody holds,
+// counted against the page's open-link cap (which also refuses an agent's
+// page_share_request). There the tap alone mints, and takes the slow path.
+//
+// It also fills the mirrored view's card placeholders (PageCardPlaceholder:
+// data-page-card-src), from the server, as they are drawn.
 const pageShareJS = `
   if (!window.__musterPageShare) {
     window.__musterPageShare = true;
@@ -294,6 +362,10 @@ const pageShareJS = `
         btn._ensure = postJSON(btn.closest('form').action).then(function (j) {
           if (j.reusable) setShareURL(btn.getAttribute('data-page-id'), j.url);
           else btn.setAttribute('data-share-url', j.url);
+          // The page has a live link now: its card no longer says private.
+          document.querySelectorAll('[data-page-card][data-page-id="' + btn.getAttribute('data-page-id') + '"] [data-note-live]').forEach(function (n) {
+            n.textContent = n.getAttribute('data-note-live');
+          });
           return j.url;
         }, function (e) { btn._ensure = null; throw e; });
       }
@@ -352,8 +424,25 @@ const pageShareJS = `
     };
     var early = function (e) {
       var btn = e.target.closest && e.target.closest('[data-page-share]');
-      if (btn && !btn.getAttribute('data-share-url')) ensure(btn).catch(function () {});
+      if (btn && btn.hasAttribute('data-share-reusable') && !btn.getAttribute('data-share-url')) ensure(btn).catch(function () {});
     };
+    // The mirrored view's placeholders: each filled once from the server, or
+    // removed when it has no card for this viewer.
+    var fillCards = function () {
+      document.querySelectorAll('[data-page-card-src]:not([data-page-card-loading])').forEach(function (ph) {
+        ph.setAttribute('data-page-card-loading', '');
+        fetch(ph.getAttribute('data-page-card-src'), { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (html) {
+          if (!ph.parentNode) return;
+          var t = document.createElement('template'); t.innerHTML = html.trim();
+          var card = t.content.firstElementChild;
+          if (!card) { ph.remove(); return; }
+          card.id = ph.id;
+          ph.replaceWith(card);
+        }).catch(function () { ph.remove(); });
+      });
+    };
+    fillCards();
+    new MutationObserver(function () { fillCards(); }).observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('pointerdown', early, true);
     document.addEventListener('focusin', early, true);
     document.addEventListener('click', function (e) {

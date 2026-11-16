@@ -581,7 +581,7 @@ func (s *Server) pageShareControls(id int64, title string, l pages.Link) string 
 		url = s.pageLinkURL(l)
 	}
 	var b strings.Builder
-	_ = ui.PageShareButton(id, title, url).Render(&b)
+	_ = ui.PageShareButton(id, title, url, s.ext.Pages.LinksReusable()).Render(&b)
 	_ = ui.PageShareMenu(id, title, false).Render(&b)
 	return b.String()
 }

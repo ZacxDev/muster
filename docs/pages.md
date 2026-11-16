@@ -125,11 +125,15 @@ still works: each tap makes a new **one-off** (hash-only) live link and shares
 or copies it — its address is in that answer only — so the page's screen
 lists one link per tap; revoke the ones you no longer need there.
 
-The address is fetched **as your finger goes down** on Share (pointerdown, or
-focus from a keyboard), before the tap completes, so the tap itself can open
-the share sheet at once — iOS Safari opens it only from inside the tap. A
-press that turns into a scroll has made (or found) the page's link and given
-it to nobody. If the tap still beats the fetch, the link is copied in the same
+With the key, the address is fetched **as your finger goes down** on Share
+(pointerdown, or focus from a keyboard), before the tap completes, so the tap
+itself can open the share sheet at once — iOS Safari opens it only from inside
+the tap. A press that turns into a scroll has made (or found) the page's ONE
+link and given it to nobody; the card then says the page has a live link.
+**Without the key there is no such fetch**: each ask would mint another
+one-off live link, so a press or a tab-through would leave links nobody holds
+(and fill the page's 10-link cap, which also refuses an agent's request) —
+there the tap alone makes the link. If the tap still beats the fetch, the link is copied in the same
 tap and the sheet is tried when it arrives; if the browser refuses it, the
 toast says the link is copied, and the next tap shares at once. The Pages
 screens draw the address on the button already.
@@ -209,7 +213,10 @@ screen (`/pages/{id}`) has:
   inline as a page).
 
 - **Delete this page**: deletes the page, every version, link and response,
-  and every file sent through it. It cannot be undone.
+  and every file sent through it. It cannot be undone. From its first step
+  the page takes no new link (an agent's share or a Share is refused), so
+  nothing goes live while it is being deleted; a delete that fails leaves it
+  so, until Delete is pressed again.
 
 Both screens show live links (the Share buttons carry them), so they load no
 front-end telemetry, and the page's screen is never cached.
@@ -225,6 +232,14 @@ stored transcript and its live stream) and in a mirrored Claude Code
 session's view. The card never holds a link's address: Share asks muster for
 the page's current link on each tap, so a card from an hour ago never copies
 a revoked link.
+
+🔴 **The card is the page's, never the transcript's.** Only muster's own page
+tools draw one (`page_create`, or `mcp__muster__page_create` from a mirrored
+session — never another MCP server's tool of the same name), and only as a
+reference to WHICH page: its title, whether it has a live link and who made
+it are read from the page itself, as you — so a tool result cannot put words
+on a card, and a page that is not yours draws no card at all. (The mirrored
+view draws an empty placeholder that fills itself from muster.)
 
 ## Files
 
@@ -301,8 +316,9 @@ serves every upload: to the owner, as an attachment (images inline), under a
 - **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
   opening its preview. Not on `page_update`: an agent iterating publishes many
   versions in minutes, and the card in the chat already shows each.
-- **Page shared: <title>** when an agent makes a page's link live without
-  asking (you opted in), opening the page's screen, where Revoke is.
+- **Page shared: <title>** EVERY time an agent hands a page's link on without
+  asking (you opted in) — a new link, or the one you had already shared (the
+  push says which) — opening the page's screen, where Revoke is.
 
 They are two toggles on Account → Notifications: **An agent published a page
 for you** and **An agent shared one of your pages without asking**. 🔴 The
