@@ -149,7 +149,7 @@ these pictures do.</sub>
    that same session, so it is all there when you are back at the keyboard.
 3. Your phone opens the server as an installable web app (a PWA).
 
-muster sees only sessions inside tmux, and the one-prompt install below sets
+muster sees only sessions inside tmux, and the one-prompt install above sets
 up mirrored sessions only. How to bring a session you already have
 into tmux, and how mirrored sessions differ from the opt-in **dispatched
 agents** that muster starts in Kubernetes pods:
