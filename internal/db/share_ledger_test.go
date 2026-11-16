@@ -39,7 +39,7 @@ var shareClasses = map[string]shareClass{
 	"chat_messages": {1, 2}, "chat_sessions": {1, 2}, "chief_nudges": {1, 2},
 	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
 	"note_comments": {1, 2}, "notes": {1, 2}, "officer_items": {1, 2},
-	"officer_pr_loops": {1, 2},
+	"officer_pr_loops": {1, 2}, "officer_public_branches": {1, 2},
 	"routing_rules":    {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
 	"session_prs": {1, 2}, "session_routes": {1, 2}, "task_ref_writes": {1, 2},
 	"task_sessions": {1, 2}, "uploads": {1, 2},

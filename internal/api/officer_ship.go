@@ -152,7 +152,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		ItemClaimed: func(ctx context.Context, instance string, item int) (officers.Item, error) {
 			return itemClaimedBy(ctx, hq.c, o.ID, instance, item, cfg.Now)
 		},
-		Loops: s.prLoopsFor(cfg, o),
+		Loops:          s.prLoopsFor(cfg, o),
+		PublicBranches: s.publicBranchesFor(cfg, o),
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
@@ -436,9 +437,9 @@ func (s *Server) orphanReportLoop(ctx context.Context, o officers.Officer, rt *s
 // reportOrphans lists officer o's orphan branches at now, logs them, and
 // posts them to HQ as a notice when there is any. It never deletes one.
 func (s *Server) reportOrphans(ctx context.Context, o officers.Officer, rt *shipRuntime, now time.Time) ([]officership.Orphan, error) {
-	orphans, err := officership.OrphanBranches(ctx, o.ID, o.Repo, o.Ship, func(repo string) officership.GitHub {
+	orphans, err := officership.OrphanBranches(ctx, o.Repo, o.Ship, func(repo string) officership.GitHub {
 		return rt.gate.GHFor[strings.ToLower(repo)]
-	}, now)
+	}, rt.gate.OwnBranches, now)
 	if err != nil || len(orphans) == 0 {
 		return orphans, err
 	}
@@ -548,12 +549,22 @@ func shipToolDefs() []agents.ToolDef {
 				"and the last lines — capped in size, with lines that look like credentials withheld. Read-only. Call it whenever a required check is red, BEFORE escalating; " +
 				"its note says when there is no run yet, the run is still going, or nothing failed.",
 			Parameters: objSchema(map[string]any{"pr": intProp("The pull request number.", 1, 999999999)}, "pr")},
+		{Type: "function", Name: officers.ToolPublicBranch,
+			Description: "Name the branch for an item you hold in one of your PUBLIC repositories. A public repository shows every branch name, so muster names it — " +
+				"a neutral name with no officer id and no item number (fix/<slug>-<random token> under your branch prefix) — and records which item it is for. " +
+				"Push your fix ONLY to the branch it answers: muster refuses any other branch there. Calling it again for the same item and repository answers the same branch. " +
+				"Refused for a repository that is not public (name the branch yourself there), an item HQ does not show you holding, or a slug that is not lower-case words joined by '-'.",
+			Parameters: objSchema(map[string]any{
+				"repo":    strProp("The public repository, owner/name."),
+				"item_id": strProp("The HQ item you hold."),
+				"slug":    strProp("A few lower-case words joined by '-' describing the fix (no digits, at most 40 characters); public, so no internal names."),
+			}, "repo", "item_id", "slug")},
 	}
 }
 
 func isShipTool(name string) bool {
 	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus || name == officers.ToolMarkReady || name == officers.ToolCILogs ||
-		name == officers.ToolShepherdReady || name == officers.ToolShepherdMergeAsk
+		name == officers.ToolShepherdReady || name == officers.ToolShepherdMergeAsk || name == officers.ToolPublicBranch
 }
 
 // dispatchShipTool runs a shipping officer's tool for instance a of o.
@@ -566,6 +577,7 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 		PR     int    `json:"pr"`
 		ItemID string `json:"item_id"`
 		Repo   string `json:"repo"`
+		Slug   string `json:"slug"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err)
@@ -651,6 +663,18 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 		}
 		cur, hist := rt.watch.Status()
 		return toolJSON(map[string]any{"current": cur, "earlier": hist})
+	case officers.ToolPublicBranch:
+		item, err := strconv.Atoi(strings.TrimSpace(in.ItemID))
+		if err != nil || item <= 0 {
+			return toolErr("item_id must be the HQ item you hold (a number)")
+		}
+		branch, err := rt.gate.MintPublicBranch(ctx, a.Name, strings.TrimSpace(in.Repo), item, strings.TrimSpace(in.Slug))
+		s.logShip(o, a, name, fmt.Sprintf("%s item %d", in.Repo, item), nil, err)
+		if err != nil {
+			return shipRefusal(name, err, nil)
+		}
+		return toolJSON(map[string]any{"branch": branch,
+			"next": "create this branch off the repository's base, push your fix to it, and open the draft pull request from it"})
 	case officers.ToolCILogs:
 		if rt.ci == nil {
 			return toolErr("officer %s has no ci_logs source configured", o.ID)
@@ -747,6 +771,43 @@ func (s *Server) prLoopsFor(cfg OfficersConfig, o officers.Officer) officership.
 		st = s.officerRT.memLoops
 	}
 	return prLoops{s: s, o: o, st: st}
+}
+
+// publicBranchesFor is draft officer o's record of its public branches
+// (officership.PublicBranchRecord) over cfg.PublicBranches, acting as o's
+// owner (the database store is under row-level security); nil for any other
+// stage. With no store configured, one in this process's memory, shared by
+// every officer of this server (a restart forgets it).
+func (s *Server) publicBranchesFor(cfg OfficersConfig, o officers.Officer) officership.PublicBranchRecord {
+	if !o.Ship.IsDraft() {
+		return nil
+	}
+	st := cfg.PublicBranches
+	if st == nil {
+		s.officerRT.memPublicBranchesOnce.Do(func() { s.officerRT.memPublicBranches = officers.NewMemPublicBranchStore() })
+		st = s.officerRT.memPublicBranches
+	}
+	return publicBranches{s: s, o: o, st: st}
+}
+
+type publicBranches struct {
+	s  *Server
+	o  officers.Officer
+	st officers.PublicBranchStore
+}
+
+func (p publicBranches) as(ctx context.Context) context.Context {
+	return p.s.officerPrincipal(ctx, p.o.Owner)
+}
+
+func (p publicBranches) Item(ctx context.Context, repo, branch string) (int, bool, error) {
+	return p.st.PublicBranchItem(p.as(ctx), p.o.ID, repo, branch)
+}
+func (p publicBranches) Branches(ctx context.Context, repo string) ([]string, error) {
+	return p.st.PublicBranches(p.as(ctx), p.o.ID, repo)
+}
+func (p publicBranches) Mint(ctx context.Context, repo string, item int, branch string) (string, error) {
+	return p.st.PublicBranchMint(p.as(ctx), p.o.ID, repo, item, branch)
 }
 
 type prLoops struct {

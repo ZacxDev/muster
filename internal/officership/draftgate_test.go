@@ -540,7 +540,7 @@ func TestTheOrphanReportListsOnlyOldBranchesWithNoPullRequest(t *testing.T) {
 	r.infra.all = []PR{{Number: 4, State: "closed", HeadRef: "bot/engineering-example-web/19-haspr", HeadRepo: dInfra}}
 	r.infra.listed = nil // 🔴 not in any newest-N window: found by its branch
 	r.web.branches = map[string]string{}
-	got, err := OrphanBranches(context.Background(), dOfficer, fxRepo, r.g.Ship, r.g.ghFor, dNow)
+	got, err := OrphanBranches(context.Background(), fxRepo, r.g.Ship, r.g.ghFor, r.g.OwnBranches, dNow)
 	if err != nil {
 		t.Fatal(err)
 	}

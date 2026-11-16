@@ -86,6 +86,13 @@ type PushGate struct {
 	// pull request names its item in its branch, and the item must be one the
 	// instance claimed. nil: every new pull request is refused (fail closed).
 	ItemClaimed func(ctx context.Context, instance string, item int) (officers.Item, error)
+	// PublicBranches is a draft officer's record of its branches in the ship
+	// repositories marked public (officers.PublicBranchStore, bound to this
+	// officer): which item each is for. 🔴 It is the ONLY proof that a public
+	// branch is the officer's (the name carries no officer id and no item).
+	// nil: no public branch is the officer's — every push, pull request and
+	// body edit there is refused (fail closed).
+	PublicBranches PublicBranchRecord
 	// FixItems are the pull-request fix items (kind *.pr_fix) HQ shows
 	// instance holding under a live lease (fixpush.go). nil: no push is
 	// looked up.
@@ -340,7 +347,7 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 		return nil, refused("%v", err)
 	}
 	for _, c := range cmds {
-		if err := g.allowedRef(sr, c.ref); err != nil {
+		if err := g.allowedRef(r.Context(), sr, c.ref); err != nil {
 			return nil, err
 		}
 		// 🔴 A DRAFT OFFICER DELETES NO BRANCH: an abandoned one is listed by
@@ -396,9 +403,11 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 }
 
 // allowedRef is THE ref rule: refs/heads/<prefix><valid suffix> of ship
-// repository sr — and, for a draft officer, exactly
-// <prefix><officer slug>/<item>-<slug> (officers.BranchItem).
-func (g *PushGate) allowedRef(sr officers.ShipRepo, ref string) error {
+// repository sr — and, for a draft officer, one of its own branches
+// (branchItem): <prefix><officer slug>/<item>-<slug> in a private repository,
+// a branch muster minted for it (officers.NewPublicBranch, recorded in
+// PublicBranches) in a public one.
+func (g *PushGate) allowedRef(ctx context.Context, sr officers.ShipRepo, ref string) error {
 	branch, ok := strings.CutPrefix(ref, "refs/heads/")
 	if !ok {
 		return refused("a push to %s: only branches under refs/heads/%s may be pushed (no tags, no other refs)", ref, sr.BranchPrefix)
@@ -406,12 +415,6 @@ func (g *PushGate) allowedRef(sr officers.ShipRepo, ref string) error {
 	suffix, ok := strings.CutPrefix(branch, sr.BranchPrefix)
 	if !ok || !officers.ValidRefSuffix(suffix) || !officers.ValidRefSuffix(branch) {
 		return refused("a push to %s: only branches under refs/heads/%s may be pushed (never %s)", ref, sr.BranchPrefix, sr.Base)
-	}
-	if g.Ship.IsDraft() {
-		if _, ok := officers.BranchItem(sr.BranchPrefix, g.OfficerID, branch); !ok {
-			return refused("a push to %s: a draft officer's branches are %s%s/<item>-<slug> (the HQ item number, then a slug)", ref,
-				sr.BranchPrefix, officers.Slug(g.OfficerID))
-		}
 	}
 	// 🔴 A PUBLIC REPOSITORY'S BRANCH NAME IS PUBLIC THE MOMENT GITHUB HAS IT,
 	// and the pull request page keeps showing it after the branch is deleted,
@@ -421,7 +424,66 @@ func (g *PushGate) allowedRef(sr officers.ShipRepo, ref string) error {
 	if why := g.publicTextWhy(sr, "the branch name", branch); why != "" {
 		return refused("a push to a branch of %s: %s", sr.Repo, why)
 	}
+	// The same for this officer's own id or slug (public repositories only):
+	// a hand-named branch must not name it even before ownership is asked.
+	if why := g.officerNamedWhy(sr, "the branch name", branch); why != "" {
+		return refused("a push to a branch of %s: %s", sr.Repo, why)
+	}
+	if g.Ship.IsDraft() {
+		if _, ok, err := g.branchItem(ctx, sr, branch); !ok {
+			return refused("a push to %s: %s", ref, g.notOwnBranch(sr, err))
+		}
+	}
 	return nil
+}
+
+// branchItem is THE rule for which HQ item a draft officer's branch in sr is
+// for; ok false when the branch is not the officer's own. In a repository
+// NOT marked public, the item is in the name (officers.BranchItem); in a
+// public one the name carries neither officer nor item, and muster's own
+// record (PublicBranches) is the only answer — no record, or a record that
+// cannot be read (err set), is not the officer's (fail closed).
+func (g *PushGate) branchItem(ctx context.Context, sr officers.ShipRepo, branch string) (int, bool, error) {
+	if !sr.Public {
+		n, ok := officers.BranchItem(sr.BranchPrefix, g.OfficerID, branch)
+		return n, ok, nil
+	}
+	if g.PublicBranches == nil {
+		return 0, false, errors.New("muster keeps no record of this officer's public branches")
+	}
+	n, ok, err := g.PublicBranches.Item(ctx, sr.Repo, branch)
+	if err != nil {
+		return 0, false, fmt.Errorf("muster's record of this officer's public branches could not be read: %v", err)
+	}
+	return n, ok && n > 0, nil
+}
+
+// notOwnBranch is why a branch is not the draft officer's in sr, for a
+// refusal: the shape it must have (and, for a public repository, where the
+// name comes from), and the record's error when it could not be read.
+func (g *PushGate) notOwnBranch(sr officers.ShipRepo, err error) string {
+	if !sr.Public {
+		return fmt.Sprintf("a draft officer's branches are %s%s/<item>-<slug> (the HQ item number, then a slug)", sr.BranchPrefix, officers.Slug(g.OfficerID))
+	}
+	why := fmt.Sprintf("%s is a PUBLIC repository: a draft officer's branch there is the one muster names for the item with %s (it carries no officer id and no item number)",
+		sr.Repo, officers.ToolPublicBranch)
+	if err != nil {
+		why += ": " + err.Error()
+	}
+	return why
+}
+
+// PublicBranchRecord is a draft officer's record of its public branches
+// (officers.PublicBranchStore, bound to the officer and acting as its owner).
+type PublicBranchRecord interface {
+	// Item is the item the officer's branch in repo is for; ok false when
+	// muster holds no record of it.
+	Item(ctx context.Context, repo, branch string) (int, bool, error)
+	// Branches lists the officer's branches in repo.
+	Branches(ctx context.Context, repo string) ([]string, error)
+	// Mint records branch as the officer's for item in repo and returns it,
+	// or returns the branch already recorded for item in repo.
+	Mint(ctx context.Context, repo string, item int, branch string) (string, error)
 }
 
 // repoNames lists the ship repositories for a refusal.
@@ -535,7 +597,7 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 				}
 				head = b
 			}
-			if err := g.allowedRef(sr, "refs/heads/"+head); err != nil {
+			if err := g.allowedRef(r.Context(), sr, "refs/heads/"+head); err != nil {
 				return err
 			}
 			if base != sr.Base {
