@@ -39,7 +39,7 @@ func (h *hostSide) spawnReadiness() *mirror.SpawnReadiness {
 		return nil
 	}
 	sc := h.c.cfg.AgentSpawn
-	r := &mirror.SpawnReadiness{Unavailable: agentSpawnUnavailable(h.c.cfg), Repos: slices.Clone(sc.Repos), Scratch: sc.Enabled && sc.Scratch,
+	r := &mirror.SpawnReadiness{Unavailable: agentSpawnUnavailable(h.c.cfg), Repos: slices.Clone(sc.Repos), Scratch: sc.Enabled,
 		Claude: mirror.ClaudeMissing, Login: mirror.LoginUnknown}
 	if r.Repos == nil {
 		r.Repos = []string{}

@@ -445,14 +445,12 @@ func TestTmuxTheSweepRemovesOnlyWorktreesThatHoldNothing(t *testing.T) {
 }
 
 // TestTmuxAScratchSpawnRunsInAPrivateDirectoryAndIsSweptAway (officers O-B,
-// B6): an officer with no repository, on a host with -agent-spawn-scratch,
-// starts in <agent-spawn-dir>/scratch/<dispatch> — a directory the spawn made,
+// B6): an officer with no repository, on a plain -agent-spawn host, starts in <agent-spawn-dir>/scratch/<dispatch> — a directory the spawn made,
 // 0700 — with its prompt verbatim, Claude Code's trust entry for it, no branch
 // and no git call; once its window is gone the sweep removes the directory,
 // with whatever the instance wrote in it.
 func TestTmuxAScratchSpawnRunsInAPrivateDirectoryAndIsSweptAway(t *testing.T) {
 	r := newSpawnRig(t)
-	r.c.cfg.AgentSpawn.Scratch = true
 	r.c.cfg.AgentSpawn.Repos = nil // nothing allow-listed: a scratch spawn needs none
 	callsBefore := r.gitCalls()
 	prompt := mirror.OfficerSpawnPreface + ".\n\nYou are officer sentinel:sessions"

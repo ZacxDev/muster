@@ -99,11 +99,6 @@ type AgentSpawnConfig struct {
 	// muster sizes each officer's own limit from its poll and schedule; this
 	// is what holds whatever muster sends.
 	OfficerRate string
-	// Scratch is -agent-spawn-scratch: an OFFICER instance with no repository
-	// (AgentSpawnReq.Scratch) starts in a private directory of its own under
-	// <Dir>/scratch/<dispatch>, removed once its window is gone. OFF by
-	// default: with it off a spawn always needs an allow-listed repository.
-	Scratch bool
 	// Log is the append-only audit log (JSON lines, 0600).
 	Log string
 	// Server is the muster URL this mirror connects to, recorded on each
@@ -1165,12 +1160,11 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	officer := strings.HasPrefix(req.Prompt, mirror.OfficerSpawnPreface)
 	switch {
 	case req.Scratch:
-		// 🔴 A SCRATCH SPAWN IS AN OFFICER'S, ON A HOST THAT OFFERS IT, WITH NO
-		// REPOSITORY: nothing of the owner's is named, so nothing is cloned,
-		// fetched or cut — and only -agent-spawn-scratch admits it at all.
-		if !sc.Scratch {
-			return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "this host does not start an agent with no repository (it needs -agent-spawn-scratch)")
-		}
+		// 🔴 A SCRATCH SPAWN IS AN OFFICER'S, WITH NO REPOSITORY: nothing of
+		// the owner's is named, so nothing is cloned, fetched or cut. ON with
+		// -agent-spawn itself (O-B round 0, the operator's Q1): an officer with
+		// no repository starts in <agent-spawn-dir>/scratch/<dispatch>, under
+		// every path guard below and trustSpawnedWorktree's.
 		if !officer {
 			return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "only an officer instance starts with no repository")
 		}

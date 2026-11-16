@@ -666,12 +666,12 @@ func (s *Server) officerSpawnIDs(ctx context.Context, host string, ids []int64) 
 
 // officerHostLine is a host officer's boot line.
 func officerHostLine(o officers.Officer) string {
-	where, needs := "a fresh worktree of "+o.Repo, o.Repo+" on -agent-spawn-repos"
+	where, needs := "a fresh worktree of "+o.Repo, " with "+o.Repo+" on -agent-spawn-repos"
 	if o.Repo == "" {
-		where, needs = "a private scratch directory (it has no repository)", "-agent-spawn-scratch"
+		where, needs = "a private scratch directory (it has no repository)", ""
 	}
 	return fmt.Sprintf("officers: %s on: runtime host on %s — instances %s..%s, each a window in its agents session in %s; idle scale-to-zero after %s, poll %s. "+
-		"The host must run -interactive -agent-spawn with %s, and a muster-mirror that closes windows. %s",
+		"The host must run -interactive -agent-spawn%s, and a muster-mirror that closes windows. %s",
 		o.ID, o.Host, o.InstanceName(1), o.InstanceName(o.MaxInstances), where, o.IdleAfter, o.PollInterval, needs,
 		strings.TrimSpace(officerHostSecurityLine))
 }

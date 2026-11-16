@@ -171,9 +171,11 @@ func TestANoRepoHostOfficerAsksForAScratchSpawn(t *testing.T) {
 	if !call.req.Scratch || call.req.Repo != "" || !strings.Contains(call.req.Prompt, "private scratch directory") {
 		t.Fatalf("the spawn request %+v (prompt %.200q), want a scratch spawn with no repo", call.req, call.req.Prompt)
 	}
-	// A host that does not offer scratch spawns is refused before the spawn.
+	// A host that does not offer scratch spawns (an older muster-mirror: every
+	// current one with -agent-spawn does) is refused before the spawn, and
+	// told to upgrade — there is no flag to set (O-B round 0, Q1).
 	r.m.setHost(hostOffHost, func(v *mirror.HostView) { v.SpawnReady = readyHost(false) })
-	if err := (officerFleet{s: r.s}).hostStart(context.Background(), o, 1, "kickoff"); err == nil || !strings.Contains(err.Error(), "-agent-spawn-scratch") {
+	if err := (officerFleet{s: r.s}).hostStart(context.Background(), o, 1, "kickoff"); err == nil || !strings.Contains(err.Error(), "does not start an officer with no repository (an older build)") {
 		t.Fatalf("a scratch start on a host without scratch spawns: %v", err)
 	}
 }

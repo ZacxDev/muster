@@ -473,8 +473,8 @@ type hostOption struct {
 	// (its readiness, mirror.SpawnReadiness); absent when that cannot be told
 	// (an older muster-mirror) or no repo was asked about.
 	RepoAllowed *bool `json:"repo_allowed,omitempty"`
-	// Scratch: the host starts an officer with no repository
-	// (-agent-spawn-scratch). Claude is "found" or "missing", Login "yes",
+	// Scratch: the host starts an officer with no repository (any current
+	// muster-mirror with -agent-spawn). Claude is "found" or "missing", Login "yes",
 	// "no" or "unknown": what the host reported, absent from an older one.
 	Scratch   bool   `json:"scratch"`
 	Claude    string `json:"claude,omitempty"`

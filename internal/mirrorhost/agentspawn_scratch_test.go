@@ -27,32 +27,30 @@ func scratchReq(prompt string) mirror.AgentSpawnReq {
 	return mirror.AgentSpawnReq{Runtime: mirror.SpawnRuntimeClaude, Prompt: prompt, Name: "officer-sentinel-sessions-1", Scratch: true}
 }
 
-// TestAScratchSpawnIsRefusedUnlessTheHostOffersIt: a scratch spawn is
-// refused, before any git call or file, on a host without
-// -agent-spawn-scratch; for a CHIEF's prompt (only an officer starts with no
-// repository); and for a scratch request that names a repository, base or
-// clone, or another runtime. Each refusal is its own detail. The positive
-// control: the same officer request on a host that offers it passes every
+// TestAScratchSpawnIsAnOfficersOnAPlainAgentSpawnHost: scratch spawns are ON
+// with -agent-spawn itself (O-B round 0, the operator's Q1: there is no
+// -agent-spawn-scratch). A scratch spawn is still refused, before any git
+// call or file, for a CHIEF's prompt (only an officer starts with no
+// repository) and for a scratch request that names a repository or base. Each
+// refusal is its own detail. The positive control: an officer's scratch
+// request on a plain -agent-spawn host — no allow-list at all — passes every
 // one of these and is refused only later, at tmux (the hermetic unit has no
 // tmux server).
-func TestAScratchSpawnIsRefusedUnlessTheHostOffersIt(t *testing.T) {
+func TestAScratchSpawnIsAnOfficersOnAPlainAgentSpawnHost(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		scratch bool
-		req     mirror.AgentSpawnReq
-		code    string
-		detail  string
+		name   string
+		req    mirror.AgentSpawnReq
+		code   string
+		detail string
 	}{
-		{"the host does not offer it", false, scratchReq(officerPrompt), mirror.SpawnNoRepo, "this host does not start an agent with no repository (it needs -agent-spawn-scratch)"},
-		{"a chief's prompt", true, scratchReq(testPrompt), mirror.SpawnNoRepo, "only an officer instance starts with no repository"},
-		{"a scratch spawn naming a repo", true, func() mirror.AgentSpawnReq { r := scratchReq(officerPrompt); r.Repo = "acme/widgets"; return r }(),
+		{"a chief's prompt", scratchReq(testPrompt), mirror.SpawnNoRepo, "only an officer instance starts with no repository"},
+		{"a scratch spawn naming a repo", func() mirror.AgentSpawnReq { r := scratchReq(officerPrompt); r.Repo = "acme/widgets"; return r }(),
 			mirror.SpawnFailed, "a scratch spawn names no repository, base or clone, and runs claude (a muster bug)"},
-		{"a scratch spawn naming a base", true, func() mirror.AgentSpawnReq { r := scratchReq(officerPrompt); r.Base = "main"; return r }(),
+		{"a scratch spawn naming a base", func() mirror.AgentSpawnReq { r := scratchReq(officerPrompt); r.Base = "main"; return r }(),
 			mirror.SpawnFailed, "a scratch spawn names no repository, base or clone, and runs claude (a muster bug)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := newSpawnUnit(t)
-			u.c.cfg.AgentSpawn.Scratch = c.scratch
 			_, e := u.spawn(t, 71, c.req)
 			if e == nil || e.code != c.code || e.detail != c.detail {
 				t.Fatalf("refusal %+v; want %s %q", e, c.code, c.detail)
@@ -66,10 +64,10 @@ func TestAScratchSpawnIsRefusedUnlessTheHostOffersIt(t *testing.T) {
 		})
 	}
 	u := newSpawnUnit(t)
-	u.c.cfg.AgentSpawn.Scratch = true
+	u.c.cfg.AgentSpawn.Repos = nil
 	_, e := u.spawn(t, 72, scratchReq(officerPrompt))
 	if e == nil || e.code != mirror.SpawnUnavailable || e.detail != "no tmux server" {
-		t.Fatalf("control: an offered scratch spawn was refused %+v; want it to get as far as tmux (no tmux server)", e)
+		t.Fatalf("control: an officer's scratch spawn on a plain -agent-spawn host was refused %+v; want it to get as far as tmux (no tmux server)", e)
 	}
 	if n := u.gitCalls(); n != 0 {
 		t.Fatalf("control: a scratch spawn ran git %d times", n)
@@ -185,25 +183,24 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name, bin, claude, login string
-		scratch                  bool
 	}{
-		{"logged in", in, mirror.ClaudeFound, mirror.LoginYes, true},
-		{"not logged in", out, mirror.ClaudeFound, mirror.LoginNo, false},
-		{"an older claude", old, mirror.ClaudeFound, mirror.LoginUnknown, true},
-		{"no claude (a relative -claude-path)", "claude", mirror.ClaudeMissing, mirror.LoginUnknown, true},
+		{"logged in", in, mirror.ClaudeFound, mirror.LoginYes},
+		{"not logged in", out, mirror.ClaudeFound, mirror.LoginNo},
+		{"an older claude", old, mirror.ClaudeFound, mirror.LoginUnknown},
+		{"no claude (a relative -claude-path)", "claude", mirror.ClaudeMissing, mirror.LoginUnknown},
 		// O-B round 0: a set -claude-path is checked, not trusted.
-		{"no claude (a -claude-path naming nothing)", filepath.Join(dir, "claude-absent"), mirror.ClaudeMissing, mirror.LoginUnknown, true},
-		{"no claude (a -claude-path that is not executable)", noexec, mirror.ClaudeMissing, mirror.LoginUnknown, true},
-		{"no claude (a -claude-path that is a directory)", dir, mirror.ClaudeMissing, mirror.LoginUnknown, true},
+		{"no claude (a -claude-path naming nothing)", filepath.Join(dir, "claude-absent"), mirror.ClaudeMissing, mirror.LoginUnknown},
+		{"no claude (a -claude-path that is not executable)", noexec, mirror.ClaudeMissing, mirror.LoginUnknown},
+		{"no claude (a -claude-path that is a directory)", dir, mirror.ClaudeMissing, mirror.LoginUnknown},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			u := newSpawnUnit(t)
-			u.c.cfg.AgentSpawn.ClaudeBin, u.c.cfg.AgentSpawn.Scratch = c.bin, c.scratch
+			u.c.cfg.AgentSpawn.ClaudeBin = c.bin
 			u.c.cfg.AgentSpawn.Repos = []string{"acme/widgets", "acme/*"}
 			h := &hostSide{c: u.c, ctx: context.Background(), version: 2}
 			r := h.spawnReadiness()
-			if r == nil || r.Claude != c.claude || r.Login != c.login || r.Scratch != c.scratch || !slices.Equal(r.Repos, []string{"acme/widgets", "acme/*"}) {
-				t.Fatalf("readiness %+v; want claude %s, login %s, scratch %v, the allow-list", r, c.claude, c.login, c.scratch)
+			if r == nil || r.Claude != c.claude || r.Login != c.login || !r.Scratch || !slices.Equal(r.Repos, []string{"acme/widgets", "acme/*"}) {
+				t.Fatalf("readiness %+v; want claude %s, login %s, scratch spawns offered (every -agent-spawn host), the allow-list", r, c.claude, c.login)
 			}
 			if c.claude == mirror.ClaudeMissing && !strings.Contains(r.ClaudeDetail, "-claude-path") {
 				t.Errorf("a missing claude's detail %q does not say how to point at it", r.ClaudeDetail)
@@ -224,7 +221,7 @@ func TestTheReadinessSaysWhatTheHostCanStart(t *testing.T) {
 	}
 	// A host with -agent-spawn off says so, and offers no scratch.
 	u = newSpawnUnit(t)
-	u.c.cfg.AgentSpawn.Enabled, u.c.cfg.AgentSpawn.Scratch = false, true
+	u.c.cfg.AgentSpawn.Enabled = false
 	if r := (&hostSide{c: u.c, ctx: context.Background(), version: 2}).spawnReadiness(); r == nil || r.Unavailable != "agent spawn is off" || r.Scratch {
 		t.Fatalf("a host with spawn off advertised %+v", r)
 	}

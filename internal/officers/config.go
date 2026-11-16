@@ -347,8 +347,8 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 		refuse("host", fmt.Sprintf("host %q (not a mirror host name: a lowercase DNS label)", host))
 	}
 	// No repo is ALLOWED: such an officer's instances start in a private
-	// scratch directory on the host (mirror.AgentSpawnReq.Scratch), which the
-	// host must offer (-agent-spawn-scratch). With a repo, the host cuts each
+	// scratch directory on the host (mirror.AgentSpawnReq.Scratch), which
+	// every current host with -agent-spawn offers. With a repo, the host cuts each
 	// instance's worktree from its clone of it, as before.
 	if present(d.Tiers) {
 		refuse("tiers", "tiers (each pool runs its own model, and a host spawn of Claude Code takes none)")

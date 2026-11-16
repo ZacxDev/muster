@@ -65,7 +65,8 @@ type SpawnReadiness struct {
 	// and <owner>/* entries (SpawnRepoAllowed reads it).
 	Repos []string `json:"repos"`
 	// Scratch: the host starts an OFFICER instance that has no repository in
-	// a private scratch directory of its own (-agent-spawn-scratch).
+	// a private scratch directory of its own (any host with -agent-spawn; an
+	// older muster-mirror sends false).
 	Scratch bool `json:"scratch,omitempty"`
 	// Claude is ClaudeFound or ClaudeMissing; ClaudeDetail why it is missing.
 	Claude       string `json:"claude"`

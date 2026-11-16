@@ -42,8 +42,8 @@ func hostReadyProblem(v mirror.HostView, repo string, needLogin bool) (why, fix 
 	r := v.SpawnReady
 	if r == nil {
 		if repo == "" {
-			return "its muster-mirror predates officers with no repository (it needs a current muster-mirror with -agent-spawn-scratch)",
-				"upgrade muster-mirror on " + v.Host + " and run it with -agent-spawn-scratch (MUSTER_MIRROR_AGENT_SPAWN_SCRATCH=1)"
+			return "its muster-mirror predates officers with no repository (it needs a current muster-mirror)",
+				"upgrade muster-mirror on " + v.Host + " (any current one with -agent-spawn starts an officer with no repository)"
 		}
 		return "", ""
 	}
@@ -55,8 +55,8 @@ func hostReadyProblem(v mirror.HostView, repo string, needLogin bool) (why, fix 
 		return "claude is not found there (" + r.ClaudeDetail + ")",
 			"on " + v.Host + ", set MUSTER_MIRROR_CLAUDE_PATH (-claude-path) to claude's absolute path (`command -v claude`) in muster-mirror's environment and restart it"
 	case repo == "" && !r.Scratch:
-		return "it does not start an officer with no repository (it needs -agent-spawn-scratch)",
-			"on " + v.Host + ", set MUSTER_MIRROR_AGENT_SPAWN_SCRATCH=1 (-agent-spawn-scratch) and restart muster-mirror, or give the officer a repo"
+		return "its muster-mirror does not start an officer with no repository (an older build)",
+			"upgrade muster-mirror on " + v.Host + " (any current one with -agent-spawn starts an officer with no repository), or give the officer a repo"
 	case repo != "" && !mirror.SpawnRepoAllowed(r.Repos, repo):
 		return "repo " + repo + " is not on its -agent-spawn-repos",
 			"on " + v.Host + ", add " + repo + " to MUSTER_MIRROR_AGENT_SPAWN_REPOS (-agent-spawn-repos), clone it under -agent-spawn-roots (~/src), and restart muster-mirror"

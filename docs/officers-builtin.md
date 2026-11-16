@@ -187,9 +187,9 @@ is how an instance reaches its officer tools.
 - **No repository.** An officer with nothing to do with a repository (a
   session minder, a marketing officer) declares none: each instance then starts
   in a private scratch directory of its own on the host,
-  `<-agent-spawn-dir>/scratch/<n>`, removed once its window is gone. The host
-  must opt in with `-agent-spawn-scratch` (`MUSTER_MIRROR_AGENT_SPAWN_SCRATCH=1`);
-  without it, a spawn always needs an allow-listed repository.
+  `<-agent-spawn-dir>/scratch/<n>`, removed once its window is gone. Any host
+  with `-agent-spawn` does this; nothing more to set, and no allow-listed
+  repository is needed.
 - **Claude Code on the host.** muster-mirror runs `claude` from the tmux
   server's global PATH, which an install that put it in `~/.local/bin` may not
   reach: set `-claude-path` (`MUSTER_MIRROR_CLAUDE_PATH`) to its absolute path
@@ -599,8 +599,8 @@ muster officer delete scout:main    # its queue, schedules and instances go too
   token's host name); any other is refused on the `host` field.
 - It is validated by the same checks as a `MUSTER_OFFICERS` entry, and a
   refusal names each field (`{"error", "fields": [{field, error}]}`). A host
-  officer with no `repo` starts in a scratch directory (its host needs
-  `-agent-spawn-scratch`).
+  officer with no `repo` starts in a scratch directory (any host with
+  `-agent-spawn`).
 - Its instance names are built on a **server-allocated slug**
   (`instance_slug`): the id's slug and a short tag derived from you and the
   id (`scout-main-k3x9q2`), unique across owners, so two people may each have
