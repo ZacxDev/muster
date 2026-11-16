@@ -96,7 +96,7 @@ and with them most of the hard parts. Finding by finding:
 | **F4** coalescing and machine names | **fixed, smaller.** Machine names are gone. `muster-mirror` offers the ALPN token `muster-mirror/1`; machine routes are served only on connections that negotiated it; a Host/SNI mismatch gets 421; the Pages name has its own certificate, so no browser coalesces onto it | [listeners](#which-routes-the-tunnel-listener-serves) |
 | **F5** QR redeem race | **fixed by redesign.** The QR holds only the server's address; the **phone shows a code and the owner types it** on the screen that is already signed in. There is no secret to race for. The race cases are in the Playwright tests | [§3](#3-linking-a-device), [phase 2](#phase-2-link-device-the-first-user-visible-release) |
 | **F6** password mode on the network | **fixed** per Q2: a per-name login bucket, a route allowlist on the tunnel listener, a 16-character minimum there, a recent sign-in to link | [password mode](#password-mode-on-the-network) |
-| **F7** one DNS token writes TXT and CAA | **fixed (stated).** CAA's claim is scoped to "a bug in the challenge endpoint"; against the operator or a node compromise only after-the-fact CT detection protects users, up to 24 h; the aggregator is named | [§8](#8-threat-model) |
+| **F7** one DNS token writes TXT and CAA | **fixed (stated).** CAA's claim is scoped to "a bug in the challenge endpoint"; against the operator or a node compromise only after-the-fact CT detection protects users, up to 24 h MMD + the aggregator's ingest lag (unpublished) + the 1 h poll ([phase 0](managed-network-phase0.md#2-ct-aggregator)); the aggregator is named | [§8](#8-threat-model) |
 | **F8** PSL timing, CA rate limits | **fixed.** PSL justified on cookie isolation (still needed with one name per server); the PSL entry or a CA rate-limit increase is a **launch gate** | [names](#names), [launch gates](#launch-gates) |
 | **F9** iOS cookie jars and push | **fixed in the flow, measured in phase 0.** On iOS the phone is linked **from inside the installed app**, so the device session lands in the app's own jar whichever way the jars behave; push needs the installed app; re-linking keeps the same name | [§3](#ios), [phase 0](#phase-0-spikes-no-product-change) |
 | **F10** background-built links need a fixed name | **moot** for the UI (one fixed name per server); Pages links use the Pages name | [§9](#9-interaction-with-the-existing-pieces) |
@@ -392,6 +392,9 @@ Back on the owner's screen:
    with two addresses: the server's **own public address as the relay sees
    it** (the tunnel's source, [tunnel authentication](#how-the-relay-authenticates-a-servers-tunnel))
    and, when the owner's screen is itself a linked device, that screen's.
+   The location carries the GeoIP database's **attribution line** (every
+   candidate requires one; the relay's TLV names the source,
+   [phase 0 results](managed-network-phase0.md#3-geoip-database)).
    So it reads "from 203.0.113.0/24, the same network as this server", or
    "the same network as this screen", or "a different network from this
    server and this screen" (normal for a phone on mobile data, where the
@@ -553,7 +556,9 @@ a new stream on that server's tunnel.
 - **The client address** is sent on the stream as a PROXY protocol v2 header,
   ahead of the TLS bytes, with one extra TLV (from the application-specific
   range): the visitor's **approximate location**, country and region, which
-  the relay looks up in a GeoIP database it holds. That adds nothing the
+  the relay looks up in a GeoIP database it holds, plus a **source id** for
+  that database, so the server can show its attribution on the confirm
+  ([phase 0 results](managed-network-phase0.md#3-geoip-database)). That adds nothing the
   relay did not already see (the address), and the server uses it only for
   the link confirm ([flow (b)](#flow-b-link-a-device) step 6); a VPN or a
   carrier's gateway can make it wrong, and the confirm says "approximate".
@@ -827,7 +832,11 @@ rejected because the zone is shared: no DNS provider scopes a credential to
 one TXT name (**UNVERIFIED** across providers; true of the common ones).
 **Phase 0 refuted this** for Route 53, deSEC and Google Cloud DNS, which can
 scope a credential to one name and type; it holds for Cloudflare and Hetzner
-([phase 0 results](managed-network-phase0.md#1-dns-provider-limits)).
+([phase 0 results](managed-network-phase0.md#1-dns-provider-limits)). The
+rejection of DNS-01 delegation **still stands** on the remaining grounds: the
+zone is shared by every server, and the record writes (claim, CAA, tombstone)
+stay on the service. What the refutation changes is only that the service's
+own challenge credential can be TXT-only ([DNS](#dns)).
 
 #### Certificate renewal
 
@@ -1466,8 +1475,8 @@ device forever is affordable and the paid tier is priced on value, not cost.
 | attacker | can | cannot | mitigation |
 |---|---|---|---|
 | **The relay compromised** (alone) | see metadata ([§4](#what-the-relay-can-see-without-decrypting)); drop, delay or misroute connections | read or change content: TLS ends at the server and the relay holds no certificate for any server name; a misrouted visitor sees a certificate error | blindness by construction; the relay process holds no DNS or CA credential; tunnel replacement is logged and shown on the server |
-| **The operator, or a compromise of the node** (relay, coordination service and the DNS token together) | 🔴 **obtain a certificate for a user's name and MITM its devices.** One zone-scoped provider token writes **both** TXT and CAA, so whoever holds it can rewrite the CAA pin and pass DNS-01; with the relay, they can then route a device to themselves. Also: suspend accounts, issue grants | read past traffic (no keys); prevent detection by CT | **only after-the-fact detection protects users**: Certificate Transparency. muster-server queries **Cert Spotter's issuance API** (SSLMate) hourly and after each renewal for its names, with crt.sh as a fallback, and any certificate whose public key is not one of the keys the server has itself used for that name ([certificate renewal](#certificate-renewal)) raises a red banner, a push to the owner and a doctor FAIL; when neither CT service answers, the doctor line is a WARN, never a PASS. Detection takes **up to 24 h** (a CT log's maximum merge delay, plus the hourly poll); it does not prevent the interception in that window. Open-sourcing the service ([open question 2](#11-open-questions-for-the-operator)) makes the rest checkable |
-| **A bug in the challenge endpoint** (it writes a TXT for the wrong name or value) | ask a CA to issue for a name it should not | issue: **CAA with `accounturi`** pins issuance to the server's own ACME account, and the endpoint never writes CAA. This is the case CAA covers, and **only** this one | CAA; the endpoint writes only `_acme-challenge.<id>` from a signed server request |
+| **The operator, or a compromise of the node** (relay, coordination service and the DNS token together) | 🔴 **obtain a certificate for a user's name and MITM its devices.** One zone-scoped provider token writes **both** TXT and CAA, so whoever holds it can rewrite the CAA pin and pass DNS-01; with the relay, they can then route a device to themselves. Also: suspend accounts, issue grants | read past traffic (no keys); prevent detection by CT | **only after-the-fact detection protects users**: Certificate Transparency. muster-server queries **Cert Spotter's issuance API** (SSLMate) hourly and after each renewal for its names, with crt.sh as a fallback, and any certificate whose public key is not one of the keys the server has itself used for that name ([certificate renewal](#certificate-renewal)) raises a red banner, a push to the owner and a doctor FAIL; when neither CT service answers, the doctor line is a WARN, never a PASS. Detection takes **up to 24 h + the aggregator's ingest lag + 1 h**: a CT log's maximum merge delay (24 h for the slowest logs Chrome accepts today), plus the aggregator's own ingest lag (unpublished, **UNVERIFIED**), plus the hourly poll ([phase 0 results](managed-network-phase0.md#2-ct-aggregator)); it does not prevent the interception in that window. **Whose Cert Spotter API key each server polls with is undecided**: SSLMate's terms allow unauthenticated use only "for personal or evaluation purposes", and the options (the operator's key, each owner's own account, or asking SSLMate) are in the [phase 0 results](managed-network-phase0.md#2-ct-aggregator). Open-sourcing the service ([open question 2](#11-open-questions-for-the-operator)) makes the rest checkable |
+| **A bug in the challenge endpoint** (it writes a TXT for the wrong name or value) | ask a CA to issue for a name it should not | issue: **CAA with `accounturi`** pins issuance to the server's own ACME account, and the endpoint never writes CAA. This is the case CAA covers, and **only** this one, and only on a DNS provider that **serves our CAA RRset as written**: on Cloudflare with Universal SSL on, the provider's own permissive CAA replaces ours and the pin is not enforced ([phase 0 results](managed-network-phase0.md#1-dns-provider-limits)); phase 1's DNS test asserts the served RRset exactly | CAA; the endpoint writes only `_acme-challenge.<id>` from a signed server request |
 | **DNS hijack** (registrar or provider account) | the same as the node compromise for issuance; or point names elsewhere | — | registrar lock, hardware-key 2FA on registrar and DNS accounts, CT monitoring as above, DNSSEC on the zone |
 | **A modified user server** | serve anything on its own name; lie to its own users; over-link devices (accepted, [§4](#what-a-modified-server-can-do-plainly)) | read another server's traffic; get more names; reach the relay's network | [§6](#6-abuse); the PSL keeps it a different site from its neighbours |
 | **A stranger on the internet** (the name is in CT) | open the link page; try a mirror token on the machine routes; use up to a quarter of a name's connection budgets per address, and with many addresses the strangers' three quarters (a distributed lockout of new networks, [rate limits](#rate-limits)) | create a pending link (no nonce); get a phished code accepted ([§3](#why-the-link-is-bound-to-the-owners-screen)); see any sign-in or credential form (none is served until a recently-signed-in screen confirms the device, invites and resets included); reach hook, service-token, API-token, plugin or agent-pod routes or `/metrics`; take the reserved quarter from the owner's known prefixes | [listeners](#which-routes-the-tunnel-listener-serves); the nonce; per-address shares and reserved slots; per-name login bucket |
@@ -1639,7 +1648,11 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
     quarters (3 × 32 = 96 of 128); a fourth unknown address is then refused,
     while a known prefix still connects (the reserved quarter, the control).
   - **DNS, through public resolvers, on a staging zone:** after a claim,
-    `<id>` `A`, `AAAA` and both `CAA` resolve through two public resolvers;
+    `<id>` `A`, `AAAA` and both `CAA` resolve through two public resolvers,
+    and the served `CAA` RRset is asserted **exactly** (our two values and
+    nothing else: a provider that adds its own CAA, as Cloudflare's Universal
+    SSL does, defeats the `accounturi` pin silently,
+    [phase 0 results](managed-network-phase0.md#1-dns-provider-limits));
     during an order, `_acme-challenge.<id>` `TXT` resolves; and an unclaimed id
     is NXDOMAIN (the negative control). This is the test that would have
     caught round 0's 🔴.
@@ -1723,7 +1736,8 @@ Behind a build flag, never announced (D3). It has no user-visible flow; phase
 
 - CT monitoring on the server (Cert Spotter, banner, push, doctor FAIL, the
   list of the server's own past keys, WARN when unchecked, the privacy-page
-  note); the byte caps, the Pages name's own included; the many-networks flag; the takedown tooling; the terms, privacy
+  note; **whose API key the server polls with is decided before this phase**,
+  [phase 0 results](managed-network-phase0.md#2-ct-aggregator)); the byte caps, the Pages name's own included; the many-networks flag; the takedown tooling; the terms, privacy
   policy and abuse contact; **Pages over the network** (the Pages name, its
   own ACME account, its certificate and records, its route set, its rate limits, rotation).
 - **Tests:** a CT fixture with a foreign key raises the banner, and one with

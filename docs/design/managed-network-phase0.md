@@ -84,8 +84,11 @@ is then **about 4 writes a month**, before retries and claims.
 - **deSEC's per-domain limit is the binding one.** The whole product is one
   domain, so **300 RRset writes a day** covers about 150 orders a day, about
   4,500 names on a 30-day cycle. That is ~2,250 servers with Pages, and that
-  is before retries, claims and tombstones. 100/h also caps a burst, such as
-  re-issuing everything after a CA incident, at 50 orders an hour. Whether one
+  is before retries, claims and tombstones. A burst, such as re-issuing
+  everything after a CA incident, runs at 50 orders an hour (100/h) only for
+  the first 3 hours; then 300/day binds, so re-issuing all ~4,500 names takes
+  about **30 days**. A CA's revocation deadline after an incident is measured
+  in **days**, so on deSEC a mass re-issue would miss it. Whether one
   bulk request counts as one write is **UNVERIFIED**: the docs say only that a
   bulk request is signed once.
 - **Hetzner's 3,600/h is per project**, shared with anything else in that
@@ -136,7 +139,8 @@ is then **about 4 writes a month**, before retries and claims.
 - **The record cap resolves the [DNS](managed-network.md#dns) UNVERIFIED** for
   each provider (table above). **Hetzner (61–123 servers) and Cloudflare Free
   (24–48) are too small** to launch on. "Run our own authoritative DNS" moves
-  out to the thousands on Route 53 or Cloudflare Pro.
+  out to about 1,250–2,500 servers on Route 53's default cap (more if raised),
+  or 436–873 on Cloudflare Pro.
 - **Recommendation: Route 53.** It is the only one of the five with all of:
   a published per-zone cap in the thousands, published write limits far above
   the load, per-name and per-type credentials, and a documented
@@ -311,9 +315,12 @@ or must each operator download it?
   The relay is in the **separate** repository and is run by the operator, so
   muster-server never holds, ships or downloads a GeoIP database. If the relay
   repo is open-sourced ([open question 2](managed-network.md#11-open-questions-for-the-operator)),
-  it must **not** vendor the database. Each deployment fetches it at build or
-  start. That works under every licence above (IP2Location's included),
-  provided the image built from it is not published.
+  it must **not** vendor the database. Each deployment fetches it at
+  **start** (and refreshes it), or rebuilds its image at least monthly; it is
+  not baked in once at build time, because GeoLite2 requires old copies to be
+  **destroyed within 30 days** of a new release. Fetched that way, it works
+  under every licence above (IP2Location's included), provided no image
+  containing the database is published.
 - 🔴 **The confirm screen needs an attribution line.** Every candidate
   requires one, and the text the visitor sees is rendered by muster-server
   (public), from data the relay chose. The TLV (or the service's
