@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -10,31 +11,53 @@ import (
 )
 
 // barrierAgents is the agent store with its chat reads held at a barrier: the
-// first n ListChatMessages calls (deliverRouteBatch's "already on record?"
-// check, once per racing delivery) each wait until all n have arrived, or a
-// second has passed. So every racer has checked the record BEFORE any of them
-// writes — the race made certain, not left to the scheduler (without it the
+// first n ListChatMessages calls (the caller's "already on record?" check,
+// once per racing delivery) each make their read and then wait until all n
+// have read, or a second has passed. So every racer has checked the record
+// BEFORE any of them writes — the race made certain, not left to the scheduler (without it the
 // 8 racers ran one after another and a mutant removing the guard survived).
 //
-// queue, when set, also QUEUES the chief's session claim: a ClaimKickoff
-// waits until the previous holder released it, so a racer that lost the race
-// to the record still wins the claim later — the delivery that arrives just
-// after another finished, which only a re-check under the claim stops.
+// queue, when set, also QUEUES the chief's session claim: a ClaimKickoff or
+// ClaimKickoffForDelivery waits until the previous holder released it, so a
+// racer that lost the race to the record still wins the claim later — the
+// delivery that arrives just after another finished, which only a re-check
+// under the claim stops (the note's in recordBatchDigest, the turn's in
+// startRouteTurn). The turn race used to run unqueued, left to the
+// scheduler: the code before that re-check existed failed it in only some
+// runs (issue #732: 14 of 20; 99 of 200 measured on af368efa); queued, it
+// fails every run.
 type barrierAgents struct {
 	agents.Store
 	mu      sync.Mutex
 	n, seen int
+	arrived int // reads made by the n holders of a place (guarded by mu)
 	open    chan struct{}
 	queue   bool
 	claim   sync.Mutex
 	held    bool // the queued claim is held (guarded by claim itself)
+	// blindAfterRelease, when set, makes every chat read FAIL once the first
+	// queued claim has been released (released): the first racer's turn is
+	// over, and every later racer's "on record?" read under the claim cannot
+	// see it — a transient read error, which reads as "not yet" — so only the
+	// "still owed?" read can stop a second delivery.
+	blindAfterRelease bool
+	released          bool // guarded by mu
 }
 
 func (b *barrierAgents) ClaimKickoff(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return b.queued(func() (bool, error) { return b.Store.ClaimKickoff(ctx, id, owner, ttl) })
+}
+
+func (b *barrierAgents) ClaimKickoffForDelivery(ctx context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	return b.queued(func() (bool, error) { return b.Store.ClaimKickoffForDelivery(ctx, id, owner, ttl) })
+}
+
+// queued runs claim, in turn behind the claim's previous holder when queue is set.
+func (b *barrierAgents) queued(claim func() (bool, error)) (bool, error) {
 	if b.queue {
 		b.claim.Lock()
 	}
-	won, err := b.Store.ClaimKickoff(ctx, id, owner, ttl)
+	won, err := claim()
 	if b.queue {
 		if err != nil || !won {
 			b.claim.Unlock()
@@ -49,6 +72,9 @@ func (b *barrierAgents) ReleaseKickoffClaim(ctx context.Context, id int64, owner
 	err := b.Store.ReleaseKickoffClaim(ctx, id, owner)
 	if b.queue && b.held {
 		b.held = false
+		b.mu.Lock()
+		b.released = true
+		b.mu.Unlock()
 		b.claim.Unlock()
 	}
 	return err
@@ -60,21 +86,32 @@ func newBarrierAgents(st agents.Store, n int) *barrierAgents {
 
 func (b *barrierAgents) ListChatMessages(ctx context.Context, sessionID int64) ([]agents.ChatMessage, error) {
 	b.mu.Lock()
+	if b.blindAfterRelease && b.released {
+		b.mu.Unlock()
+		return nil, errors.New("barrierAgents: injected chat read failure")
+	}
 	wait := b.seen < b.n
 	if wait {
-		b.seen++
-		if b.seen == b.n {
-			close(b.open)
-		}
+		b.seen++ // this call holds one of the n places
 	}
 	b.mu.Unlock()
+	// The read is made FIRST and the racer then waits with what it read: a
+	// read made after the barrier opened could run after the first racer
+	// stored its row, and see it (2 of 30 runs of a mutant survived that way).
+	msgs, err := b.Store.ListChatMessages(ctx, sessionID)
 	if wait {
+		b.mu.Lock()
+		b.arrived++
+		if b.arrived == b.n {
+			close(b.open)
+		}
+		b.mu.Unlock()
 		select {
 		case <-b.open:
 		case <-time.After(time.Second):
 		}
 	}
-	return b.Store.ListChatMessages(ctx, sessionID)
+	return msgs, err
 }
 
 // racedDigest answers both members of a two-session batch and then has 8
@@ -98,7 +135,7 @@ func racedDigest(t *testing.T, noTurn bool) ([]string, []string, routeManyRes) {
 	}
 	plain := f.srv.ext.Agents
 	barrier := newBarrierAgents(plain, racers)
-	barrier.queue = noTurn
+	barrier.queue = true
 	f.srv.ext.Agents = barrier
 	octx := f.srv.routePrincipal(context.Background(), f.owner)
 	var wg sync.WaitGroup
@@ -111,7 +148,7 @@ func racedDigest(t *testing.T, noTurn bool) ([]string, []string, routeManyRes) {
 	}
 	wg.Wait()
 	barrier.mu.Lock()
-	reached := barrier.seen
+	reached := barrier.arrived
 	barrier.mu.Unlock()
 	if reached != racers {
 		t.Fatalf("instrument: %d of %d racers reached the record check; the race was not run", reached, racers)
@@ -168,7 +205,10 @@ func TestABatchIsLeftAloneWhileItsDigestTurnIsInFlight(t *testing.T) {
 }
 
 // TestRacingDeliveriesOfABatchMakeOneDigestTurn: 8 deliveries of one owed
-// batch racing make exactly ONE digest turn, recorded once.
+// batch racing make exactly ONE digest turn, recorded once — with the chief's
+// delivery claim queued (barrierAgents.queue), so every racer, already past
+// the record check, wins the claim in turn AFTER the first one's turn ended:
+// only startRouteTurn's re-check under the claim stops the second turn.
 func TestRacingDeliveriesOfABatchMakeOneDigestTurn(t *testing.T) {
 	turns, chat, res := racedDigest(t, false)
 	if n := countContaining(turns, routeBatchHead(res.BatchID)+" "); n != 1 {

@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/users"
 	"github.com/coder/websocket"
@@ -409,8 +410,9 @@ func TestAMembersTurnOnTheTeamChiefRunsAsTheTeam(t *testing.T) {
 // so the drop is about B.
 //
 // ⚠ AN ATTEMPT ALREADY PAST THE ROLE CHECK WHEN THE REMOVAL COMMITS MAY STILL
-// BE SENT — the accepted gap (docs/design/team-sharing.md, "Known windows after
-// a removal"; TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval pins it). So
+// BE SENT — the send fence's accepted residual (docs/design/team-sharing.md,
+// "Known windows after a removal"; TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval
+// pins it). So
 // the runtime stays busy until an attempt that provably started after the
 // removal returned has arrived: attempts on one agent are one at a time
 // (chatTurnWhenFree: only the oldest waiter asks), so of the arrivals after the
@@ -473,9 +475,13 @@ func TestARemovedMembersQueuedMessageIsDropped(t *testing.T) {
 // behind it, when B is removed and the removal RETURNS. Then the session frees
 // and B1 arrives.
 //
-//   - B1, already past the role check, IS sent: the window is the role read to
-//     the runtime taking the text, and it is accepted, not closed. Should that
-//     change, this assertion is the one to turn round.
+//   - B1, already past the role check, IS sent. Since the send fence (#731)
+//     B1's hold is taken before its request opens, so the removal WAITS on it;
+//     the parked fake ccd sends no 103, so the hold ends at
+//     agents.SendFenceHoldCap and the removal commits with B1 already
+//     transmitted: the fence's accepted residual (a runtime whose 103 does not
+//     arrive within the cap). Should that change, this assertion is the one to
+//     turn round.
 //   - B2's attempt starts after the removal: it re-reads the role, is dropped,
 //     and never reaches the runtime.
 func TestAnAttemptPastTheRoleCheckMaySendAfterTheRemoval(t *testing.T) {
@@ -608,6 +614,242 @@ func TestARemovedMembersChatSocketClosesWithinTheSweep(t *testing.T) {
 		_ = w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND role = 'assistant' AND content LIKE 'answer to:%'`, tw.chief.ID).Scan(&n)
 		return n == 1
 	})
+}
+
+// TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage forces the
+// interleaving TestARemovedMembersQueuedMessageIsDropped met under load: B's
+// turn passes turnActingContext's role read (B is an operator then), B is
+// removed from the team, and only THEN does the turn go on to send — to a
+// runtime that is free. B's message must not reach the runtime: the send
+// fence reads the role again, under the team's lock, immediately before the
+// request. CONTROL: A's message afterwards, through the same runtime, is
+// answered — the runtime was taking turns, so the drop is about B.
+//
+// 🔴 RED before the send fence (origin/main e1bb7d57): B's message was
+// answered — the only role read was the one before the removal.
+func TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	checked, proceed := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	w.srv.turnRoleChecked = func(agents.Agent) {
+		first.Do(func() {
+			close(checked)
+			<-proceed
+		})
+	}
+	fromB, fromA := "from B "+tw.canary, "from A "+tw.canary
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's turn never passed its first role read")
+	}
+	if err := users.NewPG(w.pool).RemoveTeamMember(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	answeredWith := func(text string) bool {
+		_, answered := tw.ccd.counts()
+		for _, a := range answered {
+			if strings.HasSuffix(a, text) {
+				return true
+			}
+		}
+		return false
+	}
+	refusedRow := func() bool {
+		var n int
+		_ = w.pool.QueryRow(w.sys, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND role = 'assistant' AND content = $2`,
+			tw.chief.ID, AgentTurnFailedPrefix+ErrNoLongerTeamOperator.Error()).Scan(&n)
+		return n == 1
+	}
+	eventuallyAPI(t, "B's turn to end (refused, or — the bug — answered)", func() bool { return refusedRow() || answeredWith(fromB) })
+	if answeredWith(fromB) {
+		t.Fatalf("the removed member's message reached the team chief: B was removed after the first role read and before the send")
+	}
+	if rec := tw.send(t, w.a.uid, fromA); rec.Code != http.StatusNoContent {
+		t.Fatalf("A (manager) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	eventuallyAPI(t, "control: A's message to be answered", func() bool { return answeredWith(fromA) })
+}
+
+// stallCCD is authCCD that, asked a turn whose input ends with stallOn, tells
+// arrived and answers only once release closes — writing NOTHING before then
+// (no 103), so the request is in flight at the runtime for as long as the test
+// wants.
+type stallCCD struct {
+	*authCCD
+	stallOn string
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (f *stallCCD) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(body, &req)
+	if strings.HasSuffix(inputText(req.Input), f.stallOn) {
+		close(f.arrived)
+		<-f.release
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	f.authCCD.ServeHTTP(w, r)
+}
+
+// TestARemovalWaitsForAMembersSendInFlight is the send fence's lock: while B's
+// message is IN FLIGHT at the runtime (its request open, no verdict yet), B's
+// removal from the team does not commit — it waits on the team's row — and
+// commits once the runtime has answered. So a removal can never land between
+// the fence's role read and the text reaching the runtime. Waiting is observed,
+// not timed: the removal's backend shows in pg_locks waiting on the team's row.
+//
+// 🔴 RED before the send fence (origin/main e1bb7d57): the removal committed
+// at once, with B's message still in flight.
+func TestARemovalWaitsForAMembersSendInFlight(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	fromB := "from B " + tw.canary
+	stall := &stallCCD{authCCD: tw.ccd, stallOn: fromB, arrived: make(chan struct{}), release: make(chan struct{})}
+	up := httptest.NewServer(stall)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client(), Secrets: agents.NewPG(w.pool)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.ext.Gateway = gw
+	released := false
+	defer func() {
+		if !released {
+			close(stall.release)
+		}
+	}()
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-stall.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's message never reached the runtime")
+	}
+	removed := make(chan error, 1)
+	go func() {
+		removed <- users.NewPG(w.pool).RemoveTeamMember(authz.System(context.Background()),
+			users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
+	}()
+	// A row-lock waiter holds the heavyweight TUPLE lock on the row it waits
+	// for (the holder of a FOR KEY SHARE holds none), and pg_locks — unlike
+	// pg_stat_activity's wait columns — is readable by the app role.
+	waiting := func() bool {
+		var n int
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM pg_locks WHERE locktype = 'tuple'
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND relation = 'users'::regclass`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !waiting() {
+		select {
+		case err := <-removed:
+			t.Fatalf("B's removal committed (err %v) while B's message was in flight at the runtime; want it to wait for the runtime's verdict", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("B's removal neither committed nor waited on a lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	released = true
+	close(stall.release)
+	select {
+	case err := <-removed:
+		if err != nil {
+			t.Fatalf("B's removal, after the runtime answered: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("B's removal never committed after the runtime answered")
+	}
+	_, answered := tw.ccd.counts()
+	if len(answered) != 1 || !strings.HasSuffix(answered[0], fromB) {
+		t.Errorf("the runtime answered %q; want B's message, which reached it while B was a member", answered)
+	}
+}
+
+// TestTheSendFenceBoundsAreUnderTheStatementTimeout: a membership change
+// waiting on a send fence's hold waits at most agents.SendFenceHoldMax (the
+// hard bound, from when the hold was taken), which must leave it clear
+// headroom under db.StatementTimeout — else it fails rather than waits — and
+// the cap (from when the request was written) is never longer than it.
+func TestTheSendFenceBoundsAreUnderTheStatementTimeout(t *testing.T) {
+	const headroom = 2 * time.Second
+	if agents.SendFenceHoldMax <= 0 || agents.SendFenceHoldMax+headroom > db.StatementTimeout {
+		t.Errorf("agents.SendFenceHoldMax = %s, db.StatementTimeout = %s; want 0 < hard bound <= statement timeout - %s",
+			agents.SendFenceHoldMax, db.StatementTimeout, headroom)
+	}
+	if agents.SendFenceHoldCap <= 0 || agents.SendFenceHoldCap > agents.SendFenceHoldMax {
+		t.Errorf("agents.SendFenceHoldCap = %s, agents.SendFenceHoldMax = %s; want 0 < cap <= hard bound",
+			agents.SendFenceHoldCap, agents.SendFenceHoldMax)
+	}
+}
+
+// TestARemovalIsNotStalledByARuntimeThatSendsNo103 (#731 round 0 Q1, the
+// operator's cap): B's message is open at a runtime that sends no 103 and
+// holds its answer well past the cap. B's removal waits on the team's row —
+// then commits, WITHOUT a statement timeout, about agents.SendFenceHoldCap
+// after the request was written, while the runtime is still holding it.
+//
+// 🔴 RED with the cap removed: the removal waited for the runtime and failed
+// at db.StatementTimeout (SQLSTATE 57014).
+func TestARemovalIsNotStalledByARuntimeThatSendsNo103(t *testing.T) {
+	tw := newTeamAgentWalk(t)
+	w := tw.w
+	fromB := "from B " + tw.canary
+	stall := &stallCCD{authCCD: tw.ccd, stallOn: fromB, arrived: make(chan struct{}), release: make(chan struct{})}
+	up := httptest.NewServer(stall)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client(), Secrets: agents.NewPG(w.pool)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.srv.ext.Gateway = gw
+	defer close(stall.release) // the runtime answers only once the test is over
+	if rec := tw.send(t, w.b.uid, fromB); rec.Code != http.StatusNoContent {
+		t.Fatalf("B (operator) sending: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	select {
+	case <-stall.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's message never reached the runtime")
+	}
+	start := time.Now()
+	err = users.NewPG(w.pool).RemoveTeamMember(authz.System(context.Background()),
+		users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, tw.team, w.b.uid)
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("B's removal, with B's message held at a runtime that sends no 103: %v (after %s); want it to commit once the fence's cap (%s) released the hold",
+			err, took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if took > agents.SendFenceHoldCap+2*time.Second {
+		t.Errorf("B's removal took %s; want about the cap (%s), not the runtime's answer", took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if took < agents.SendFenceHoldCap/2 {
+		t.Errorf("B's removal took %s; want it to wait for the hold (about the cap, %s) — the lock was not held", took.Round(time.Millisecond), agents.SendFenceHoldCap)
+	}
+	if _, answered := tw.ccd.counts(); len(answered) != 0 {
+		t.Errorf("the runtime answered %q before the removal returned; want it still holding B's request", answered)
+	}
 }
 
 // TestAMemberWritesOnlyInTheTeamRoom ("one shared room", operator decision 4):

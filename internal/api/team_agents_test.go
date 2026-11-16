@@ -54,6 +54,19 @@ func (u tsUsers) Account(_ context.Context, id int64) (users.Account, error) {
 	return users.Account{}, users.ErrNotFound
 }
 
+// HoldTeamRole is tsUsers' send fence read: the account's role in team, from
+// the fixed map. 🔴 A FAKE: it LOCKS NOTHING (there is no database), so a
+// test through tsUsers exercises the fence's read, never its lock — the lock
+// is users.PGStore's, walked by team_agents_pg_test.go.
+func (u tsUsers) HoldTeamRole(_ context.Context, team, person int64) (authz.TeamRole, bool, func(), error) {
+	a, ok := u[person]
+	if !ok {
+		return "", false, func() {}, nil
+	}
+	role, in := a.Teams.RoleIn(team)
+	return role, in, func() {}, nil
+}
+
 func newTSUsers() tsUsers {
 	return tsUsers{
 		tsTeam:     {Role: authz.RoleMember, Team: true},

@@ -60,7 +60,7 @@ const ChatQueuedForDialogNotice = "Its terminal is showing a prompt that needs a
 //
 // A route's answer or hand-back never waits here: it is offered to a chief
 // that is free and otherwise stays owed for the next sweep
-// (session_routes.go startRouteAnswerTurn), so these words are only ever a
+// (session_routes.go startRouteTurn), so these words are only ever a
 // person's message's.
 const (
 	chatBusyGaveUpFormat = "It was still busy with another turn after %s, so this message was not sent. It is kept above — send it again once the agent is free."

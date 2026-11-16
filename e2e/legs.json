@@ -182,6 +182,7 @@
     ],
     "3": [
       "tests/agent-chat-markdown.spec.ts",
+      "tests/asks-log.spec.ts",
       "tests/agent-composer.spec.ts",
       "tests/agent-long-title.spec.ts",
       "tests/agent-open-hops.spec.ts",

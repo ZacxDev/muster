@@ -1741,7 +1741,7 @@ func (s *Server) deliverRouteHandBack(ctx context.Context, r plugins.Route) {
 }
 
 // deliverToChief delivers text — route r's hand-back — to r's chief as a turn
-// of its own when it can take one (startRouteAnswerTurn), and takes r's
+// of its own when it can take one (startRouteTurn), and takes r's
 // hand-back once that turn is on record. A chief that cannot take it now
 // leaves it owed (unless already taken, or it has waited routeChiefWaitMax);
 // a chief that can take no turn at all gets it as a note, the last resort: a
@@ -1794,7 +1794,25 @@ func (s *Server) deliverToChief(ctx context.Context, r plugins.Route, text strin
 	chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
 	if err == nil && agentCanBeSent(chief.Status) && s.ext.Provisioner != nil && s.ext.Gateway != nil {
 		if sess, err := s.ext.Agents.GetSession(ctx, sessID); err == nil && sess.AgentID == chief.ID {
-			if s.startRouteTurn(ctx, chief, sess, r.RouteID, text, take, refused) {
+			// Re-checked under the chief's delivery claim (startRouteTurn):
+			// a concurrent delivery (none in today's single-sweep deployment) may
+			// have handed it back between the checks
+			// above (deliverRouteHandBack's HandBackOwed, textOnRecord) and this
+			// one winning the claim. A hand-back this delivery already took is
+			// its own (TakeHandBack takes it once), so only its record is read.
+			owed := func(ctx context.Context) bool {
+				if !taken {
+					if _, ok, err := s.ext.Routes.HandBackOwed(ctx, r.RouteID); err != nil || !ok {
+						return false // handed back already, or unreadable: the next sweep
+					}
+				}
+				if s.textOnRecord(ctx, sessID, text) {
+					take(ctx) // on record, and no turn of it in flight: the claim is ours
+					return false
+				}
+				return true
+			}
+			if s.startRouteTurn(ctx, chief, sess, r.RouteID, text, owed, take, refused) {
 				return
 			}
 			if !taken && (!routeChiefWaitOver(r, time.Now()) || s.routeTurnInFlight(ctx, chief.ID)) {
@@ -2107,7 +2125,29 @@ func (s *Server) deliverRouteAnswers(ctx context.Context, sessID int64, rs []plu
 				}
 				fallback(ctx, turn)
 			}
-			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, done, refused) {
+			// Re-checked under the chief's delivery claim (startRouteTurn):
+			// a concurrent delivery (none in today's single-sweep deployment) may
+			// have delivered some of these answers between
+			// the checks above and this one winning the claim. Then the turn's
+			// text is stale: nothing is sent, those on record are taken, and the
+			// rest stay owed for the next sweep.
+			stillOwed := func(ctx context.Context) bool {
+				all := true
+				for _, a := range turn {
+					ok, err := s.ext.Routes.OwesHandBack(ctx, a.r.RouteID)
+					switch {
+					case err != nil:
+						return false // unreadable: the next sweep
+					case !ok:
+						all = false // taken already
+					case s.answerOnRecord(ctx, a.r, sessID):
+						take(ctx, a.r) // on record, and no turn of it in flight: the claim is ours
+						all = false
+					}
+				}
+				return all
+			}
+			if s.startRouteTurn(ctx, chief, sess, turn[0].r.RouteID, text, stillOwed, done, refused) {
 				return
 			}
 			// The chief cannot take a turn NOW (its owner's turn is in flight,
@@ -2135,13 +2175,6 @@ const routeChiefWaitMax = 2 * time.Hour
 // routeChiefWaitMax before now. A route with no end time has not waited.
 func routeChiefWaitOver(r plugins.Route, now time.Time) bool {
 	return r.FinishedAt != nil && now.Sub(*r.FinishedAt) > routeChiefWaitMax
-}
-
-// startRouteAnswerTurn is startRouteTurn with no refusal callback: what it
-// carries simply stays owed when the runtime refuses it.
-func (s *Server) startRouteAnswerTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
-	done func(context.Context)) bool {
-	return s.startRouteTurn(ctx, chief, sess, routeID, text, done, nil)
 }
 
 // routeTurnClaimPrefix opens the session claim a route's turn holds
@@ -2218,8 +2251,26 @@ func routeRowSurvived(ctx context.Context) bool {
 // chief session, combined (deliverRouteAnswers), and a hand-back
 // (deliverToChief). routeID names the claim (the first answer's route, the
 // hand-back's).
+//
+// 🔴 OWED IS RE-CHECKED UNDER THE CLAIM. owed (nil only in a test) runs once
+// the chief's delivery claim is won and before anything is stored or sent;
+// when it reports false the claim is released, nothing is delivered, and
+// startRouteTurn reports TRUE (there is nothing to deliver, so the caller's
+// "cannot take it now" fallback must not run either). It is a DEFENCE for
+// concurrent deliveries the current deployment does not produce: every
+// caller runs from the one route sweep (RunRouteTimeouts, a single goroutine
+// per process, one replica), and a turn holds the claim until it has taken
+// what it delivered. But a caller's check made BEFORE the claim can be stale
+// once the claim is won if two deliveries do race (a second replica or sweep):
+// the other may have won it first, run its whole turn, stored the reply, taken
+// what it carried and released it in between, and the late one would deliver
+// a second time. The claim serialises the deliveries; only a check made while
+// holding it sees the first one's result (issue #732; the racer tests in
+// route_many_race_pg_test.go and route_turn_race_pg_test.go force that
+// interleaving). TestEveryRouteTurnReChecksUnderTheClaim pins every caller to
+// passing one.
 func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, routeID, text string,
-	done, refused func(context.Context)) bool {
+	owed func(context.Context) bool, done, refused func(context.Context)) bool {
 	if agents.KickoffOwed(chief) {
 		return false
 	}
@@ -2233,6 +2284,10 @@ func (s *Server) startRouteTurn(ctx context.Context, chief agents.Agent, sess ag
 		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, owner); err != nil {
 			s.logger.Printf("routes: %s: release the chief's claim: %v", routeID, err)
 		}
+	}
+	if owed != nil && !owed(ctx) {
+		release(ctx)
+		return true // delivered already (or unreadable: left for the next sweep)
 	}
 	if ok, _ := s.turns.enterIdle(chief.ID); !ok {
 		release(ctx)
