@@ -12,11 +12,12 @@ import (
 // agent to have it set muster up (INSTALL.md), or connect another machine to
 // one that runs.
 //
-// 🔴 IT IS STATED IN FOUR PLACES AND MUST BE BYTE-IDENTICAL IN ALL OF THEM:
+// 🔴 IT IS STATED IN FIVE PLACES AND MUST BE BYTE-IDENTICAL IN ALL OF THEM:
 // here (home's onboarding page, agentsEmptyState), the fenced block at the top of
-// INSTALL.md, the one in docs/onboarding.md, and the README's own copy in its
-// Quickstart. TestTheOnePromptIsTheSameEverywhere pins that, so a reword in
-// one place fails until all four agree. Changing it is a public-facing change: people
+// INSTALL.md, the one in docs/onboarding.md, the README's own copy in its
+// Quickstart, and e2e/tests/onboarding.spec.ts's PROMPT.
+// TestTheOnePromptIsTheSameEverywhere pins that, so a reword in one place
+// fails until all five agree. Changing it is a public-facing change: people
 // will have copied the old one.
 //
 // 🔴 IT HOLDS NO FACTS, ONLY REFERENCES (tests/claude_plugin_test.py, Drift): no
@@ -25,9 +26,17 @@ import (
 // have pasted somewhere cannot be corrected when the code changes.
 const OnboardingPrompt = "Set up muster for me. Download its install guide with " +
 	"`curl -fsSL -o muster-install.md " + InstallGuideAssetURL + "`, read that whole file and follow it step by step. " +
+	PromptDownloadFailed + " " +
 	"Ask me everything you need in one go up front, then do the rest yourself. " +
 	"Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at " +
 	"https://github.com/ZacxDev/muster over memory."
+
+// PromptDownloadFailed is the prompt's fallback: a download that fails (the
+// newest release has no INSTALL.md, the network is down) is reported to the
+// person, never worked around with main's copy of the guide, which installs
+// whatever main describes rather than the release, or with memory.
+const PromptDownloadFailed = "If that download fails, stop and tell me what it printed; never work from another copy " +
+	"of the guide, such as the one on the main branch, or from memory."
 
 // InstallGuideAssetURL is the newest release's own copy of INSTALL.md
 // (scripts/release-build.sh attaches it, stamped with that release), so the

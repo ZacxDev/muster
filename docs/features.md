@@ -280,9 +280,10 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
   and Claude Code configured to use it. Nothing on the server.
 - **Steps, on each machine** (INSTALL.md's "Optional features" points here when you ask for it):
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
-     `~/.config/muster-mirror/env` (INSTALL.md: `mi_save ASK_TOOLS yes`, then
-     re-run Step 7's last block) and restart `muster-mirror`. On its first start
-     it writes a secret to `~/.config/muster-mirror/mcp-secret` (mode 600).
+     `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
+     yours: install.sh keeps it every time it runs again (INSTALL.md, "Install
+     muster on this machine"). On its first start muster-mirror writes a secret
+     to `~/.config/muster-mirror/mcp-secret` (mode 600).
   2. Register it with Claude Code, for this user:
 
      ```sh

@@ -121,6 +121,10 @@ type fakeMuster struct {
 	password      string
 	loginStatus   int // 0 = check the password
 	dropCookie    bool
+	// boardRedirect: GET /tasks answers 302 to this location, signed in or
+	// not (something in front of muster); "self" is muster's own absolute
+	// <scheme>://<host>/login.
+	boardRedirect string
 	// secureCookie: the session cookie is set Secure (MUSTER_SECURE_COOKIES
 	// on a server older than the loopback exception, or a LAN port).
 	secureCookie bool
@@ -260,6 +264,19 @@ func (f *fakeMuster) handler() http.Handler {
 		return err == nil && c.Value == "signed"
 	}
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch f.boardRedirect {
+		case "":
+		case "self":
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			http.Redirect(w, r, scheme+"://"+r.Host+"/login", http.StatusFound)
+			return
+		default:
+			http.Redirect(w, r, f.boardRedirect, http.StatusFound)
+			return
+		}
 		if !signed(r) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return

@@ -5,7 +5,7 @@
 > starts it by pasting this one prompt into their agent:
 
 ```text
-Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
+Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. If that download fails, stop and tell me what it printed; never work from another copy of the guide, such as the one on the main branch, or from memory. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
 ```
 
 Each release attaches its own copy of this file, so the guide an agent
@@ -125,6 +125,12 @@ mi_verify() {
 }
 # mi_dc ARGS: docker compose on the hub's stack.
 mi_dc() { docker compose -f "$MUSTER_DIR/docker-compose.yml" -p "${MUSTER_PROJECT:-muster}" "$@"; }
+# mi_logs ARGS: the stack's logs (`mi_logs --tail=80 muster-init muster`)
+# WITHOUT the line muster-init prints the generated sign-in password on (it
+# carries this marker): read logs only this way, so the password never lands
+# in the agent's output.
+MI_SECRET_MARK='[muster-secret]'
+mi_logs() { mi_dc logs --no-color "$@" 2>&1 | grep -vF "$MI_SECRET_MARK"; }
 # mi_local_url / mi_local_port: the hub's own http://localhost:<port> address,
 # from the settings install.sh wrote for this machine's muster-mirror (empty
 # before Step 2, and on a joining machine).
@@ -452,6 +458,12 @@ mkdir -p "$rel" && cd "$rel" || exit 1
 curl -fsSL -o checksums.txt "$MUSTER_RELEASE_BASE/checksums.txt" &&
   curl -fsSL -o install.sh "$MUSTER_RELEASE_BASE/install.sh" &&
   mi_verify install.sh || { echo "DOWNLOAD FAILED (see If this fails)"; exit 1; }
+# The installer names what it can do on its "# capabilities:" line (an older
+# release's has none): a join or an adopt it cannot do is refused here.
+for want in $([ "${ROLE:-hub}" = join ] && echo join) ${ADOPT_MIRROR:+adopt}; do
+  grep -Eq "^# capabilities:(.* )?$want( |\$)" install.sh ||
+    { echo "OLD INSTALLER: release $MUSTER_VERSION's install.sh cannot $want (see If this fails)"; exit 1; }
+done
 if [ "${ROLE:-hub}" = join ]; then
   [ -s "$HOME/.config/muster-mirror/token" ] || { echo "NO TOKEN: get this machine's token first (Step 3, Another machine)"; exit 1; }
   export MUSTER_JOIN_URL="$MUSTER_URL"
@@ -492,11 +504,14 @@ for one) reports `SKIP`, never `FAIL`.
   `mi_set_version <it>`, and re-run this block.
 - `DOWNLOAD FAILED` or a checksum `FAILED`: re-run once (a partial download).
   A second mismatch: stop and tell the person.
+- `OLD INSTALLER`: the release this guide chose predates joining or adopting
+  muster-mirror settings. Stop and tell the person; do not install it another
+  way. A guide downloaded from a release installs that release, which has both.
 - The installer refuses, **changing nothing**, when it finds a muster or
   muster-mirror settings it did not make: its last line says which. Do not
   work around it; see Step 0's notes and ask the person.
 - `the stack did not come up`: the lines above it are the reason (a setting
-  muster refuses names its variable). `mi_dc logs --tail=80 muster-init muster`
+  muster refuses names its variable). `mi_logs --tail=80 muster-init muster`
   shows more.
 - `muster-mirror is not running: it exits as it starts`: the line under it is
   muster-mirror's own reason (a refused token, an unreachable URL, a setting it
@@ -574,7 +589,7 @@ muster. `MUSTER_URL` is an `https://<machine>.<tailnet>.ts.net` address.
 - "access denied" on Linux: the operator was not set. Run
   `sudo tailscale set --operator="$USER"` once (approved in Step 1), then
   re-run.
-- `up --wait` fails: `mi_dc logs --tail=80 muster-init muster`; muster names
+- `up --wait` fails: `mi_logs --tail=80 muster-init muster`; muster names
   the setting it refuses.
 
 ### The phone
@@ -804,7 +819,7 @@ A line they add to `~/.config/muster-mirror/env` is kept when Step 2 runs
 again.
 
 **If this fails:**
-- `up --wait` fails with the new profile: `mi_dc logs --tail=80 <service>`.
+- `up --wait` fails with the new profile: `mi_logs --tail=80 <service>`.
   Each one names the `.env` line it is missing.
 - The feature's log line, or the doctor's feature list, says `OFF` or
   `MISCONFIGURED`: it names the variable. Fix it in `.env` and run

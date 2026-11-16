@@ -96,6 +96,8 @@ case "$*" in
   "compose version"*) [ "${FAKE_NO_COMPOSE:-0}" = 1 ] && exit 1; echo "Docker Compose version v2.29.0"; exit 0 ;;
   info*) [ "${FAKE_DOCKER_INFO_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
   compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'; exit 0 ;;
+  compose*" up "*) [ "${FAKE_UP_FAIL:-0}" = 1 ] && { echo "container muster-muster-1 is unhealthy" >&2; exit 1; }; exit 0 ;;
+  compose*" logs"*) [ -n "${FAKE_COMPOSE_LOGS:-}" ] && printf '%s\n' "$FAKE_COMPOSE_LOGS"; exit 0 ;;
 esac
 case "$1 $2" in
   "ps -a")
@@ -196,20 +198,30 @@ exec "$REAL_UNAME" "$@"
 """
 
 # systemctl: logs; a user manager is there; the service's restart count and
-# sub-state are the case's (FAKE_NRESTARTS, FAKE_SUBSTATE).
+# sub-state are the case's (FAKE_NRESTARTS, FAKE_SUBSTATE), or a sequence, one
+# word per call, the last repeated (FAKE_NRESTARTS_SEQ, FAKE_SUBSTATE_SEQ).
 FAKE_SYSTEMCTL = r"""#!/bin/sh
 echo "systemctl $*" >> "$FAKE_LOG"
+nth() { # NAME: the next word of FAKE_<NAME>_SEQ, the last one repeated
+  f="$FAKE_LOG.$1"; n=$(cat "$f" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$f"
+  eval "set -- \$FAKE_$1_SEQ"; i=1; v=""
+  for w; do v=$w; [ "$i" -ge "$n" ] && break; i=$((i + 1)); done
+  echo "$v"
+}
 case "$*" in
   *show-environment*) exit 0 ;;
-  *NRestarts*) echo "${FAKE_NRESTARTS:-0}" ;;
-  *SubState*) echo "${FAKE_SUBSTATE:-running}" ;;
+  *NRestarts*) if [ -n "${FAKE_NRESTARTS_SEQ:-}" ]; then nth NRESTARTS; else echo "${FAKE_NRESTARTS:-0}"; fi ;;
+  *SubState*) if [ -n "${FAKE_SUBSTATE_SEQ:-}" ]; then nth SUBSTATE; else echo "${FAKE_SUBSTATE:-running}"; fi ;;
   *is-active*) echo "${FAKE_ACTIVE:-active}" ;;
 esac
 exit 0
 """
 
+# journalctl: FAKE_JOURNAL is this run's lines; FAKE_JOURNAL_OLD, lines from
+# before it, which `--since` leaves out as the real one does.
 FAKE_JOURNALCTL = r"""#!/bin/sh
 echo "journalctl $*" >> "$FAKE_LOG"
+case " $* " in *" --since "*) ;; *) [ -n "${FAKE_JOURNAL_OLD:-}" ] && printf '%s\n' "$FAKE_JOURNAL_OLD" ;; esac
 [ -n "${FAKE_JOURNAL:-}" ] && printf '%s\n' "$FAKE_JOURNAL"
 exit 0
 """
@@ -366,8 +378,10 @@ class Guide(unittest.TestCase):
         self.assertIn('RELEASE="@MUSTER_RELEASE@"', src, "deploy/install.sh lost its release stamp line")
         (rel / "install.sh").write_text(src.replace('RELEASE="@MUSTER_RELEASE@"', f'RELEASE="{RELEASE}"', 1))
         (rel / "docker-compose.yml").write_text("name: muster\nservices: {}\n")
-        os_, arch = host_os_arch()
-        for name, body in (("muster", FAKE_MUSTER_BIN), ("muster-mirror", FAKE_MIRROR_BIN)):
+        # Both OSes, so a macOS run (FAKE_UNAME_S=Darwin) on Linux finds its assets.
+        _, arch = host_os_arch()
+        for os_, (name, body) in [(o, nb) for o in ("linux", "darwin")
+                                  for nb in (("muster", FAKE_MUSTER_BIN), ("muster-mirror", FAKE_MIRROR_BIN))]:
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w:gz") as tf:
                 data = body.encode()
@@ -471,6 +485,171 @@ class Guide(unittest.TestCase):
         self.assertIn("    " + reason, out, f"the mirror's own reason was not printed\n{out}")
         self.assertNotIn("Scheduled restart job", out, "the journal's restart noise was printed instead of the reason")
         self.assertNotIn("has not connected after 30s", out, "it waited the whole 30s on a crash loop")
+
+    # --- Step 2: a crash loop is a loop, and its reason is this run's ---------
+
+    def nosleep(self) -> str:
+        """PATH with a `sleep` that returns at once, so the 30-poll wait ends fast."""
+        d = self.tmp / "nosleep"
+        if not d.exists():
+            d.mkdir()
+            (d / "sleep").write_text("#!/bin/sh\nexit 0\n")
+            (d / "sleep").chmod(0o755)
+        return f"{d}:{self.env['PATH']}"
+
+    def test_step2_one_restart_is_not_a_crash_loop(self) -> None:
+        # #728 round 0: ONE restart since this run's own (a mirror that lost
+        # its first connection) was called a crash loop. It takes two.
+        self.joining()
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_NRESTARTS_SEQ="0 1", PATH=self.nosleep())
+        self.assertNotIn("exits as it starts", out, f"one restart was called a crash loop\n{out}")
+        self.assertIn("has not connected after 30s", out, f"positive control: the wait ran to its end\n{out}")
+        # control: two restarts are a loop
+        self.log.write_text("")
+        for f in self.tmp.glob("calls.log.*"):
+            f.unlink()
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_NRESTARTS_SEQ="0 2", PATH=self.nosleep())
+        self.assertIn("exits as it starts", out, f"control: two restarts were not called a loop\n{out}")
+
+    def test_step2_one_auto_restart_poll_is_not_a_crash_loop(self) -> None:
+        # `auto-restart` on ONE poll is one restart; held across two polls it is a loop.
+        self.joining()
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_SUBSTATE_SEQ="auto-restart running", PATH=self.nosleep())
+        self.assertNotIn("exits as it starts", out, f"one auto-restart poll was called a crash loop\n{out}")
+        self.assertIn("has not connected after 30s", out, f"positive control: the wait ran to its end\n{out}")
+        self.log.write_text("")
+        for f in self.tmp.glob("calls.log.*"):
+            f.unlink()
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_SUBSTATE_SEQ="running auto-restart", PATH=self.nosleep())
+        self.assertIn("exits as it starts", out, f"control: auto-restart on two polls was not called a loop\n{out}")
+
+    def test_step2_macos_waits_plainly(self) -> None:
+        # #728 round 0 (D2): the launchd crash-loop reading (`launchctl print`,
+        # "last exit code") had no test and no Mac measurement; it is gone. On
+        # macOS the wait is the plain one and the doctor says why.
+        self.joining(OS="darwin")
+        out = self.step2(FAKE_UNAME_S="Darwin", FAKE_MIRROR_OFFLINE="1", PATH=self.nosleep())
+        self.assertIn("launchctl bootstrap", self.calls(), f"positive control: the launchd path ran\n{out}")
+        self.assertNotIn("launchctl print", self.calls(), "it still reads launchctl print for a crash loop")
+        self.assertIn("has not connected after 30s", out, out)
+
+    def test_step2_crash_loop_reason_is_from_this_run(self) -> None:
+        # The reason is the last "muster-mirror: " line SINCE this run started
+        # the service, not the last of the journal's 200, which may be an
+        # earlier run's.
+        self.joining()
+        old = "muster-mirror: an EARLIER run's reason"
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_SUBSTATE="auto-restart", FAKE_JOURNAL_OLD=old,
+                         FAKE_JOURNAL="2026/11/16 10:00:00 muster-mirror 9.9.9 starting")
+        self.assertIn("exits as it starts", out, f"positive control: the loop was named\n{out}")
+        self.assertNotIn(old, out, f"an earlier run's reason was printed as this one's\n{out}")
+        self.assertIn("it printed no reason", out, out)
+        journal = [l for l in self.calls().splitlines() if l.startswith("journalctl ")]
+        self.assertTrue(journal and all(" --since " in l for l in journal), journal)
+        # control: this run's own reason is still printed
+        self.log.write_text("")
+        out = self.step2(FAKE_MIRROR_OFFLINE="1", FAKE_SUBSTATE="auto-restart", FAKE_JOURNAL_OLD=old,
+                         FAKE_JOURNAL="muster-mirror: THIS run's reason")
+        self.assertIn("    muster-mirror: THIS run's reason", out, out)
+
+    # --- Step 2: owned keys in any spelling are owned -------------------------
+
+    def test_step2_takes_export_and_indented_owned_lines_as_its_own(self) -> None:
+        # #728 round 0: `export MUSTER_MIRROR_URL=…` or an indented owned line
+        # was kept as a "line it does not own", beside the new one.
+        legacy = ("export MUSTER_MIRROR_URL=https://old-hub.example-tailnet.ts.net\n"
+                  "  MUSTER_MIRROR_HOST=old-laptop\n"
+                  "\tPATH=/old/path\n"
+                  "export  MUSTER_MIRROR_TOKEN_FILE=/old/token\n"
+                  "export TMUX_TMPDIR=/run/user/1000/tmux-here\n")
+        self.joining(legacy_env=legacy, ADOPT_MIRROR="1")
+        out = self.step2()
+        lines = self.mirror_env()
+        self.assertIn(f"MUSTER_MIRROR_URL={URL}", lines, f"positive control: the settings were rewritten\n{out}")
+        for stale in ("old-hub", "old-laptop", "/old/path", "/old/token"):
+            self.assertFalse([l for l in lines if stale in l], f"an owned line ({stale}) was kept as a duplicate: {lines}")
+        key = lambda l: re.sub(r"^\s*(export\s+)?", "", l).split("=", 1)[0]
+        for k in ("MUSTER_MIRROR_URL", "MUSTER_MIRROR_HOST", "MUSTER_MIRROR_TOKEN_FILE", "PATH"):
+            self.assertEqual(sum(key(l) == k for l in lines), 1, f"{k} is not written exactly once: {lines}")
+        self.assertIn("export TMUX_TMPDIR=/run/user/1000/tmux-here", lines, "a line it does not own was dropped")
+
+    # --- Step 2: a failed start never shows the password ----------------------
+
+    def secret_marker(self) -> str:
+        m = re.search(r'secretLineMarker = "([^"]+)"', (ROOT / "cmd/muster-server/secretfiles.go").read_text())
+        self.assertIsNotNone(m, "cmd/muster-server/secretfiles.go has no secretLineMarker")
+        return m.group(1)
+
+    PW = "pw-generated-by-muster-init-0123456789"
+
+    def init_logs(self) -> str:
+        """muster-init's and muster's logs as `docker compose logs` prints them,
+        with the generated password's line exactly as muster-init prints it."""
+        return "\n".join([
+            "muster-init-1  | muster-init: generated muster's sign-in password (shown this once):",
+            f"muster-init-1  | muster-init: {self.secret_marker()}     {self.PW}",
+            "muster-init-1  | muster-init: show it again any time: docker compose exec muster /muster-server show-secret ui-password",
+            "muster-init-1  | muster-init: configuration OK",
+            "muster-1       | muster-server: MUSTER_EXAMPLE_SETTING=\"x\" is not a bool",
+        ])
+
+    def test_step2_a_failed_start_never_shows_the_password(self) -> None:
+        # #728 round 0: install.sh printed `logs --tail 15 muster-init muster`
+        # on a failed start, and muster-init's first run prints the generated
+        # password: into the agent's transcript.
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save INTERACTIVE 0")
+        out = self.step2(FAKE_UP_FAIL="1", FAKE_COMPOSE_LOGS=self.init_logs())
+        self.assertIn("the stack did not come up", out, f"positive control: the failure path ran\n{out}")
+        self.assertIn('MUSTER_EXAMPLE_SETTING="x" is not a bool', out, f"positive control: the logs were shown\n{out}")
+        self.assertNotIn(self.PW, out, f"the generated password reached the agent's output\n{out}")
+        # The command it suggests for more is the filtered one too.
+        hint = [l for l in out.splitlines() if "the stack did not come up" in l]
+        self.assertTrue(hint and self.secret_marker() in hint[0], f"the suggested logs command does not drop the password line: {hint}")
+
+    def test_mi_logs_never_shows_the_password(self) -> None:
+        # The guide's own way to read the stack's logs (Step 2's and Step 3's
+        # "If this fails"): mi_logs, never a bare `mi_dc logs`.
+        self.hub()
+        out = self.sh("mi_logs --tail=80 muster-init muster", FAKE_COMPOSE_LOGS=self.init_logs())
+        self.assertIn("configuration OK", out, f"positive control: the logs were shown\n{out}")
+        self.assertNotIn(self.PW, out, out)
+        raw = self.sh("mi_dc logs --tail=80 muster-init muster", FAKE_COMPOSE_LOGS=self.init_logs())
+        self.assertIn(self.PW, raw, "control: the unfiltered logs hold the password, so the fixture can see it")
+        unfiltered = [l for l in GUIDE.read_text().splitlines() if "mi_dc logs" in l and not l.startswith("mi_logs()")]
+        self.assertEqual(unfiltered, [], "INSTALL.md tells the agent to read the logs unfiltered")
+
+    # --- Step 2: an installer that cannot do what the guide asks --------------
+
+    def reseal(self, edit) -> None:
+        """Rewrite the fake release's install.sh with EDIT, and its checksum."""
+        rel = self.release()
+        (rel / "install.sh").write_text(edit((rel / "install.sh").read_text()))
+        lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in sorted(rel.iterdir())
+                 if f.name != "checksums.txt"]
+        (rel / "checksums.txt").write_text("\n".join(lines) + "\n")
+
+    def test_step2_refuses_join_or_adopt_with_an_installer_that_lacks_it(self) -> None:
+        # An unstamped guide installs the newest release; an installer from
+        # before join and adopt would set up a hub where a join was asked for.
+        drop = lambda s: re.sub(r"(?m)^# capabilities:.*\n", "", s)
+        self.reseal(drop)
+        self.joining()
+        out = self.step2()
+        self.assertIn("OLD INSTALLER", out, out)
+        self.assertNotIn("muster-mirror", " ".join(self.calls().splitlines()), "it ran the old installer")
+        self.assertFalse((self.homedir / ".local/bin/muster-mirror").exists())
+        # adopt alone: a hub whose mirror settings are someone else's
+        self.log.write_text("")
+        self.sh("mi_save ROLE hub\nmi_save ADOPT_MIRROR 1")
+        out = self.step2()
+        self.assertIn("OLD INSTALLER", out, out)
+        self.assertNotIn("compose", self.calls(), "it ran the old installer")
+        # control: the same old installer still installs a plain hub
+        self.log.write_text("")
+        self.sh("mi_save ADOPT_MIRROR ''")
+        out = self.step2()
+        self.assertNotIn("OLD INSTALLER", out, out)
+        self.assertIn("muster doctor --deploy-env", self.calls(), f"control: a plain hub install ran\n{out}")
 
     def test_step2_hub_installs_locally_and_records_the_local_address(self) -> None:
         self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save INTERACTIVE 0")
@@ -985,6 +1164,60 @@ class Prose(unittest.TestCase):
         for f, t in named:
             self.assertIn(t, titles, f"{f} names INSTALL.md section {t!r}, which is not a heading")
         self.assertNotIn("No such section", titles, "control")
+
+    # Every file that may point into the guide (INSTALL.md itself excepted).
+    def guide_referrers(self) -> list[Path]:
+        return [*ROOT.glob("cmd/**/*.go"), *ROOT.glob("internal/**/*.go"), ROOT / "deploy/install.sh",
+                *ROOT.glob("docs/*.md"), ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CONTRIBUTING.md",
+                *ROOT.glob("plugins/**/*.md")]
+
+    @staticmethod
+    def stale_guide_refs(name: str, src: str, helpers: set[str], keys: set[str]) -> list[str]:
+        """A paragraph that mentions INSTALL.md and also a step NUMBER (anywhere
+        in it, not only next to the name: "(INSTALL.md: …, then re-run Step
+        7's last block)"), a guide helper the guide does not define, or an
+        `mi_save KEY` the guide never reads."""
+        out = []
+        for para in re.split(r"\n[ \t]*(?://|#)?[ \t]*\n", src):
+            if "INSTALL.md" not in para:
+                continue
+            flat = " ".join(para.split())
+            out += [f"{name}: {m.group(0)!r} in {flat[:160]!r}" for m in re.finditer(r"\b[Ss]tep \d+", flat)]
+        for m in re.finditer(r"\bmi_[a-z_]+", src):
+            if m.group(0) not in helpers:
+                out.append(f"{name}: {m.group(0)} is not a helper INSTALL.md defines")
+        for m in re.finditer(r"\bmi_save ([A-Z_]+)", src):
+            if m.group(1) not in keys:
+                out.append(f"{name}: mi_save {m.group(1)}, a key the guide never reads")
+        return out
+
+    def test_no_stale_reference_into_the_guide(self) -> None:
+        # #728 round 0 (D3): docs/features.md told the reader "INSTALL.md:
+        # `mi_save ASK_TOOLS yes`, then re-run Step 7's last block" — neither
+        # exists. Step numbers move and helpers go; references outside the
+        # guide name sections by title (the test above) and helpers it has.
+        guide = GUIDE.read_text()
+        helpers = set(re.findall(r"(?m)^\s*(mi_[a-z_]+)\(\)", guide)) | set(re.findall(r"\b(MI_[A-Z_]+)=", guide))
+        keys = set(re.findall(r"\$\{?([A-Z_]+)", guide))
+        self.assertIn("mi_save", helpers, "positive control: the guide's helpers were parsed")
+        self.assertIn("ROLE", keys, "positive control: the guide's keys were parsed")
+        mt = MT_DOC.read_text()
+        bad = []
+        for p in self.guide_referrers():
+            src = p.read_text()
+            # docs/multi-tenant-hosts.md runs the guide's helpers with keys of its own.
+            k = keys | set(re.findall(r"\$\{?([A-Z_]+)", mt)) if p == MT_DOC else keys
+            bad += self.stale_guide_refs(p.name, src, helpers, k)
+        self.assertEqual(bad, [], "a reference into INSTALL.md that the guide no longer has")
+        # Controls, each kind planted into the real docs/features.md: seen.
+        feat = (ROOT / "docs/features.md").read_text()
+        for planted in ("Add the line (INSTALL.md says so;\nthen re-run Step 7's last block).",
+                        "(INSTALL.md: `mi_save ASK_TOOLS yes`)",
+                        "(INSTALL.md: `mi_no_such_helper`)"):
+            self.assertTrue(self.stale_guide_refs("features.md", feat + "\n\n" + planted + "\n", helpers, keys),
+                            f"control: {planted!r} went unseen")
+        self.assertEqual(self.stale_guide_refs("x", "See INSTALL.md, \"Check it\".\n\nStep 7 of the jobs list.\n", helpers, keys), [],
+                         "control: a step number in a paragraph that does not mention INSTALL.md is not a guide reference")
 
 
 class MultiTenantPage(unittest.TestCase):

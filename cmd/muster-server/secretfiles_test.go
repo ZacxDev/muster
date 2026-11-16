@@ -589,3 +589,42 @@ func TestComposeInitWithoutLocksWarnsAndGoesOn(t *testing.T) {
 		t.Errorf("a run that failed to lock wrote %v", got)
 	}
 }
+
+// TestComposeInitMarksTheOneLineThatHoldsThePassword (#728 round 0): the
+// generated sign-in password is printed once, for the person, on a line that
+// carries secretLineMarker — and that is the only line holding it and the only
+// marked line. Every helper that SHOWS muster-init's logs to an agent
+// (deploy/install.sh on a failed start, INSTALL.md's mi_logs) drops the
+// marked line, so the password never reaches an agent's transcript; both name
+// this same marker (the seam: tests/install_guide_test.py reads it from here
+// and runs those helpers).
+func TestComposeInitMarksTheOneLineThatHoldsThePassword(t *testing.T) {
+	dir := t.TempDir()
+	rc, out, errOut := runInit(t, dir, composeInitEnv(dir, nil))
+	pw := readSecret(t, dir, secretUIPassword)
+	if rc != 0 || len(pw) < 12 {
+		t.Fatalf("rc %d, password %q: %s%s", rc, pw, out, errOut)
+	}
+	var holding, marked []string
+	for _, l := range strings.Split(out+errOut, "\n") {
+		if strings.Contains(l, pw) {
+			holding = append(holding, l)
+		}
+		if strings.Contains(l, secretLineMarker) {
+			marked = append(marked, l)
+		}
+	}
+	if len(holding) != 1 || len(marked) != 1 || holding[0] != marked[0] {
+		t.Fatalf("lines holding the password %q, lines carrying %q %q; want the same one line:\n%s%s",
+			holding, secretLineMarker, marked, out, errOut)
+	}
+	for _, f := range []string{"../../deploy/install.sh", "../../INSTALL.md"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), secretLineMarker) {
+			t.Errorf("%s does not name %q, so it cannot drop muster-init's password line", f, secretLineMarker)
+		}
+	}
+}

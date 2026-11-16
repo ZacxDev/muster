@@ -122,7 +122,16 @@ class Skills(unittest.TestCase):
 
 # --- the prompt and the skill hold no facts, only references ------------------
 
-URL_RE = re.compile(r"https?://[^\s`>)\]]+")
+# The references a prompt or the skill may carry: the repository, a file on
+# its main branch (on GitHub or raw), and the NEWEST release's asset. Only
+# these are taken out before the fact check, and none may hold a digit, so a
+# URL-borne fact (http://localhost:<port>, a version-pinned release URL, a
+# blob at a tag) is still a fact.
+REFERENCE_URLS = re.compile(
+    r"https://github\.com/ZacxDev/muster"
+    r"(?:/blob/main/[A-Za-z_./-]+(?:#[a-z-]+)?|/releases/latest/download/[A-Za-z_.-]+)?"
+    r"|https://raw\.githubusercontent\.com/ZacxDev/muster/main/[A-Za-z_./-]+"
+    r"(?![^\s`>)\]])")
 # A fact a prompt must not carry: any digit (a version, a port, a step number,
 # a duration), a setting's value (NAME=…), or an image reference.
 FACT_RES = (
@@ -134,8 +143,9 @@ FACT_RES = (
 
 def facts(text: str) -> list[str]:
     """What TEXT states that the code owns: every match of FACT_RES once the
-    URLs (references, which are allowed) are taken out."""
-    bare = URL_RE.sub(" ", text)
+    reference URLs (REFERENCE_URLS, which are allowed) are taken out; any other
+    URL is checked like the rest of the text."""
+    bare = REFERENCE_URLS.sub(" ", text)
     return [f"{why}: {m.group(0)!r} in ...{bare[max(0, m.start() - 30):m.end() + 30]!r}..."
             for why, rx in FACT_RES for m in rx.finditer(bare)]
 
@@ -165,14 +175,23 @@ class Drift(unittest.TestCase):
         self.assertEqual(facts(frontmatter(plugin_root() / "skills/muster-setup/SKILL.md")["description"]), [])
 
     def test_the_fact_check_sees_each_kind_of_fact(self) -> None:
-        # Negative controls: each kind, planted into the real prompt, is seen;
-        # and a URL with digits in it (a reference) is not.
+        # Negative controls: each kind, planted into the real prompt, is seen,
+        # a URL-borne one included (#728 round 0: every URL used to be taken
+        # out, so a version-pinned release URL or a port passed).
         p = the_prompt()
         for planted in ("open http-less port 8105", "release v0.235.0", "set MUSTER_SECURE_COOKIES=0",
-                        "image ghcr.io/zacxdev/muster", "the guide's Step 7"):
+                        "image ghcr.io/zacxdev/muster", "the guide's Step 7",
+                        "open http://localhost:8105", "https://github.com/ZacxDev/muster/releases/download/v1.2.3/INSTALL.md",
+                        "https://github.com/ZacxDev/muster/blob/v0.235.0/INSTALL.md",
+                        "https://github.com/ZacxDev/muster/releases/latest/download/muster_linux_amd64.tar.gz",
+                        "https://raw.githubusercontent.com/ZacxDev/muster/v0.235.0/INSTALL.md"):
             self.assertTrue(facts(p + " " + planted), f"control: {planted!r} went unseen")
-        self.assertEqual(facts("see https://github.com/ZacxDev/muster/releases/download/v1.2.3/x"), [],
-                         "control: a URL is a reference, not a fact")
+        # Positive control: the references themselves are not facts.
+        for ref in ("https://github.com/ZacxDev/muster", INSTALL_URL,
+                    "https://github.com/ZacxDev/muster/blob/main/docs/configuration.md",
+                    "<https://github.com/ZacxDev/muster/blob/main/docs/features.md#agent-ask-tool>",
+                    "https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md"):
+            self.assertEqual(facts("see " + ref + " here"), [], f"control: {ref!r} is a reference, not a fact")
 
     def test_the_prompt_downloads_the_releases_guide(self) -> None:
         # The finding: "read <url>" lets a fetch tool hand the agent a summary

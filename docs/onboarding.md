@@ -4,7 +4,7 @@ Paste this into the coding agent on the machine that should run muster (Claude
 Code, Codex, opencode, Gemini CLI, or any agent that can run shell commands):
 
 ```text
-Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
+Set up muster for me. Download its install guide with `curl -fsSL -o muster-install.md https://github.com/ZacxDev/muster/releases/latest/download/INSTALL.md`, read that whole file and follow it step by step. If that download fails, stop and tell me what it printed; never work from another copy of the guide, such as the one on the main branch, or from memory. Ask me everything you need in one go up front, then do the rest yourself. Where the guide and the machine disagree, trust `muster doctor`, each command's `--help` and the code at https://github.com/ZacxDev/muster over memory.
 ```
 
 The agent downloads [INSTALL.md](../INSTALL.md), a guide written for agents to
@@ -48,10 +48,8 @@ feature needs.
 
 ## What the agent asks you
 
-Once, at the start: whether muster already runs on another of your machines,
-whether you want your phone and other machines (Tailscale), whether muster may
-type into this machine's terminals, what needs `sudo`, and which optional
-features you want now. The guide's "Ask the person, once" section is the list.
+Everything it needs, once, at the start: the list is the guide's own,
+[INSTALL.md, "Ask the person, once"](../INSTALL.md#step-1-ask-the-person-once).
 
 It never shows you a password or token in the chat; it tells you the command
 that prints the sign-in password.

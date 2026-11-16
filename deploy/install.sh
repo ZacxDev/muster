@@ -1,4 +1,5 @@
 #!/bin/sh
+# capabilities: join adopt
 # muster on this machine, in one line:
 #
 #   curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | sh
@@ -20,11 +21,12 @@
 #      survives logout and reboot, and says plainly when it could not;
 #   5. runs `muster doctor`, and exits with its verdict.
 #
-# JOINING ANOTHER MACHINE'S muster (MUSTER_JOIN_URL=https://<hub>): steps 2's
-# stack checks and 3 are skipped (no Docker needed); step 4 installs the
+# JOINING ANOTHER MACHINE'S muster (MUSTER_JOIN_URL=https://<hub>): 2's
+# stack checks and 3 above are skipped (no Docker needed); 4 installs the
 # binaries of the release the hub runs, uses the mirror token already in
-# ~/.config/muster-mirror/token (minted on the hub: INSTALL.md), and points
-# muster-mirror at the hub; step 5's doctor checks the hub from here.
+# ~/.config/muster-mirror/token (minted on the hub:
+# INSTALL.md, "Another machine"), and points muster-mirror at the hub; 5's
+# doctor checks the hub from here.
 #
 # The mirror token never goes on a command line (other users can read argv in
 # `ps`): curl reads its Authorization header from a 0600 file (`-H @file`).
@@ -44,6 +46,11 @@
 # the command that shows the sign-in password, not the password: for an agent,
 # whose output is read by its provider). For testing only: MUSTER_RELEASE_BASE
 # (where the assets are), MUSTER_IMAGE (a local image).
+#
+# The capabilities line at the top names the settings above a guide may rely
+# on (join: MUSTER_JOIN_URL; adopt: MUSTER_MIRROR_ADOPT): INSTALL.md's
+# "Install muster on this machine" reads it, without running this file, and
+# refuses an installer without them.
 set -eu
 
 # 🔴 EVERYTHING IS IN main(), CALLED ON THE LAST LINE. Under `curl … | sh` the
@@ -94,6 +101,10 @@ BASE="${MUSTER_RELEASE_BASE:-$REPO/releases/download/v$RELEASE}"
 # </dev/null: under `curl … | sh` stdin IS this script, and `docker compose
 # exec` would read (and eat) the rest of it.
 dc() { docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null; }
+# muster-init prints the generated sign-in password once, on a line carrying
+# this marker (cmd/muster-server/secretfiles.go, secretLineMarker): every log
+# this script shows drops it, so the password never reaches an agent's output.
+SECRET_MARK='[muster-secret]'
 
 # --- 2. refuse a muster this script did not make ------------------------------
 if [ -z "$JOIN" ]; then
@@ -129,8 +140,8 @@ cp "$tmp/docker-compose.yml" "$DIR/docker-compose.yml"
 printf 'installed-by: install.sh\nrelease: %s\n' "$RELEASE" > "$DIR/.muster-install"
 say "starting muster $RELEASE in $DIR (compose project $PROJECT)"
 if ! dc up -d --wait --wait-timeout 300; then
-  dc logs --no-color --tail 15 muster-init muster >&2 || true
-  die "the stack did not come up; the reason is in the lines above (\`docker compose -f $DIR/docker-compose.yml logs muster-init muster\`)"
+  { dc logs --no-color --tail 15 muster-init muster 2>&1 || true; } | grep -vF "$SECRET_MARK" >&2 || true
+  die "the stack did not come up; the reason is in the lines above (\`docker compose -f $DIR/docker-compose.yml -p $PROJECT logs muster-init muster | grep -vF '$SECRET_MARK'\`)"
 fi
 curl -fsS -m 5 -o /dev/null "$URL/readyz" || die "muster is up but $URL/readyz does not answer"
 fi
@@ -176,7 +187,9 @@ owned='MUSTER_MIRROR_URL|MUSTER_MIRROR_TOKEN_FILE|MUSTER_MIRROR_HOST|MUSTER_MIRR
 tmux_dir=$(dirname "$(command -v tmux 2>/dev/null || echo /usr/bin/tmux)")
 {
   echo "$MARK"
-  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^($owned)=" || true
+  # An owned key in any spelling a shell or systemd reads is owned: indented,
+  # or after `export`.
+  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^[[:space:]]*(export[[:space:]]+)?($owned)=" || true
   echo "MUSTER_MIRROR_URL=$URL"
   echo "MUSTER_MIRROR_TOKEN_FILE=$tok"
   echo "MUSTER_MIRROR_HOST=$host"
@@ -205,8 +218,11 @@ WantedBy=default.target
 UNIT
   systemctl --user daemon-reload
   systemctl --user enable muster-mirror.service >/dev/null 2>&1
+  # mirror_reason reads the journal from here on: an earlier run's reason is not this one's.
+  since=$(date '+%Y-%m-%d %H:%M:%S')
   systemctl --user restart muster-mirror.service
   restarts0=$(systemctl --user show muster-mirror.service -p NRestarts --value 2>/dev/null || echo 0)
+  case "$restarts0" in ''|*[!0-9]*) restarts0=0 ;; esac
   service=systemd
   linger
 elif [ "$OS" = darwin ]; then
@@ -296,31 +312,26 @@ say() { printf 'muster-install: %s\n' "$*"; }
 die() { printf 'muster-install: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# crashloop: muster-mirror's service has been restarted since this run started
-# it (systemd: NRestarts grew, or it waits in auto-restart; launchd: its last
-# exit status is non-zero). Its fatal reason is the last line it printed
-# starting "muster-mirror: " (mirror_reason); its ordinary log lines carry a
-# timestamp instead.
+# crashloop: muster-mirror's systemd service is restarting over and over since
+# this run started it: NRestarts grew by two or more, or it sat in
+# auto-restart on two polls in a row. One restart is not a loop (a mirror that
+# lost its first connection). Its fatal reason is the last line it printed
+# starting "muster-mirror: " since then (mirror_reason); its ordinary log
+# lines carry a timestamp instead. launchd (macOS) is not watched: no Mac
+# measurement backs a reading of `launchctl print`, so the wait there is the
+# plain 30 seconds and the doctor says why.
 crashloop() {
-  case "$service" in
-    systemd)
-      n=$(systemctl --user show muster-mirror.service -p NRestarts --value 2>/dev/null || echo 0)
-      sub=$(systemctl --user show muster-mirror.service -p SubState --value 2>/dev/null || echo)
-      [ "${n:-0}" -gt "${restarts0:-0}" ] 2>/dev/null || [ "$sub" = auto-restart ] ;;
-    launchd)
-      launchctl print "gui/$(id -u)/io.github.zacxdev.muster-mirror" 2>/dev/null | grep -Eq 'last exit code = [1-9]' ;;
-    *) return 1 ;;
-  esac
+  [ "$service" = systemd ] || return 1
+  n=$(systemctl --user show muster-mirror.service -p NRestarts --value 2>/dev/null || echo 0)
+  sub=$(systemctl --user show muster-mirror.service -p SubState --value 2>/dev/null || echo)
+  if [ "$sub" = auto-restart ]; then held=$((${held:-0} + 1)); else held=0; fi
+  [ "${n:-0}" -ge $((restarts0 + 2)) ] 2>/dev/null || [ "$held" -ge 2 ]
 }
 mirror_reason() {
-  if [ "$service" = systemd ]; then
-    r=$(journalctl --user -u muster-mirror.service -o cat -n 200 --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
-    # Without a per-user journal (volatile storage), the user unit's lines are
-    # in the system journal, which --user-unit reads.
-    [ -n "$r" ] || r=$(journalctl --user-unit muster-mirror.service -o cat -n 200 --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
-  else
-    r=$(tail -n 200 "$HOME/Library/Logs/muster-mirror.log" 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
-  fi
+  r=$(journalctl --user -u muster-mirror.service --since "$since" -o cat --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
+  # Without a per-user journal (volatile storage), the user unit's lines are
+  # in the system journal, which --user-unit reads.
+  [ -n "$r" ] || r=$(journalctl --user-unit muster-mirror.service --since "$since" -o cat --no-pager 2>/dev/null | grep '^muster-mirror: ' | tail -n 1)
   printf '%s\n' "${r:-(it printed no reason; journalctl --user -u muster-mirror.service -n 30)}"
 }
 

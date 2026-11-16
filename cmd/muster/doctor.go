@@ -989,6 +989,12 @@ func (d *doctorRun) checkDictation(ctx context.Context) {
 	}
 	// Dictation is an optional feature (docs/features.md#dictation): off on
 	// the server is a SKIP, never a failure, so an install without it passes.
+	// Asked for but unusable (the registry says misconfigured: a URL and no
+	// token) is a FAIL with the server's reason (#728 round 0).
+	if f, ok := d.reportFeature("dictation"); ok && f.State == "misconfigured" {
+		d.add(name, statusFail, "dictation is misconfigured on this server: "+f.Reason, f.EnableHint)
+		return
+	}
 	if d.report != nil && !d.report.Dictation {
 		d.add(name, statusSkip, "dictation is off on this server (an optional feature): no message box has a microphone",
 			"to turn it on: docs/features.md#dictation")
@@ -1418,6 +1424,18 @@ func mirrorRestartHint(goos string) string {
 		return "launchctl kickstart -k gui/$(id -u)/" + defaultMirrorLabel
 	}
 	return "systemctl --user restart " + defaultMirrorUnit
+}
+
+// reportFeature is the server's registry entry ID, when it reported one.
+func (d *doctorRun) reportFeature(id string) (serverFeature, bool) {
+	if d.report != nil {
+		for _, f := range d.report.Features {
+			if f.ID == id {
+				return f, true
+			}
+		}
+	}
+	return serverFeature{}, false
 }
 
 // printFeatures lists the server's features below the checks: each one's
