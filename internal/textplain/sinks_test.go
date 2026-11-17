@@ -157,6 +157,13 @@ var uiExempt = map[string]exemption{
 	"tabs.go TabsSelected t.Label":                       {1, whyStatic},
 	"tags.go tasksFilteredEmpty taskstatus.Label":        {1, whyStatic},
 	"terminal.go quickKeyButton k.Label":                 {1, whyStatic},
+	// The fleet digest (fleet_digest.go): a group's label is muster's own
+	// (internal/fleet GroupLabel), and a pull request's is "<owner/repo>#<n>"
+	// that muster built from session_prs — neither is author text.
+	"fleet_digest.go fleetChip gr.Label":         {1, whyStatic},
+	"fleet_digest.go fleetGroupDetails gr.Label": {1, whyStatic},
+	"fleet_digest.go fleetSheet gr.Label":        {2, whyStatic},
+	"fleet_digest.go fleetDrill p.Label":         {1, "a pull request named \"<owner/repo>#<n>\", built by internal/api from session_prs' repo and number: no author text"},
 }
 
 // apiExempt: the same, for api's hand-written HTML.

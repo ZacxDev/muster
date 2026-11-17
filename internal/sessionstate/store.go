@@ -344,6 +344,22 @@ func (p *PG) OpenFor(ctx context.Context, kind, key string) (Episode, bool, erro
 	return e, true, nil
 }
 
+// Recent is the caller's episodes of one session opened at or after since,
+// newest first, at most limit: kind and key name it as the sweep does; with
+// prefix, key is a prefix (an agent's "<id>:" — every conversation of it).
+// The fleet digest's per-session timeline (internal/api fleet_digest.go).
+func (p *PG) Recent(ctx context.Context, kind, key string, prefix bool, since time.Time, limit int) ([]Episode, error) {
+	if key == "" || limit <= 0 {
+		return nil, nil
+	}
+	match := `session_key = $2`
+	if prefix {
+		match = `starts_with(session_key, $2)`
+	}
+	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes
+		WHERE session_kind = $1 AND `+match+` AND opened_at >= $3 ORDER BY opened_at DESC, id DESC LIMIT $4`, kind, key, since, limit))
+}
+
 // OpenEpisodes implements Store.
 func (p *PG) OpenEpisodes(ctx context.Context) ([]Episode, error) {
 	return collect(p.pool.Query(ctx, `SELECT `+cols+` FROM session_episodes WHERE ended_at IS NULL ORDER BY opened_at, id`))

@@ -453,6 +453,14 @@ export const asksLogPort = port + 414;
 // and chief nudges on, so every tab is drawn) at a phone and a desktop width —
 // its own server (+421: clear of the blocks above).
 export const asksFeedPort = port + 421;
+// tests/chief-fleet-digest.spec.ts: the chief panel's fleet digest card at a
+// phone and a desktop width — its own mirror rig (session state on), its fake
+// runtime (which must hear nothing), its fake GitHub App and the App's connect
+// listener (+425 to +428: clear of the blocks above).
+export const chiefFleetPort = port + 425;
+export const chiefFleetFakePort = port + 426;
+export const chiefFleetGitHubPort = port + 427;
+export const chiefFleetConnectPort = port + 428;
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;
