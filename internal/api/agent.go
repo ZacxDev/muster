@@ -444,6 +444,16 @@ func (s *Server) agentTools() []agentTool {
 		// reasons; it reads the owner's whole fleet.
 		tools = append(tools, agentTool{def: fleetReportToolDef(), mcp: true, chiefOnly: true})
 	}
+	// Fleet proposals (fleet_actions.go), only with
+	// MUSTER_FLEET_ORCHESTRATION=propose: the chief proposes what to send
+	// its owner's sessions; only the owner's tap on the card sends it.
+	// Chief-only and on MCP, like the focus tools: they reach the owner's
+	// whole fleet.
+	if s.fleetProposeOn() {
+		for _, d := range fleetWriteToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		}
+	}
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on,
 	// with or without plugins: the chief hands a mirrored session the owner's
 	// own request, a task or (with plugins) a plugin message (chief-only, like
@@ -1059,6 +1069,9 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolEndSessionPropose(ctx, a, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
+	case sessionInstructTool, sessionWrapTool, workReassignTool, fleetActionsListTool:
+		out, _ := s.dispatchFleetTool(ctx, name, arguments)
+		return out
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
 	case routeManyToolName:

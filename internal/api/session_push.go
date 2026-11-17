@@ -241,7 +241,7 @@ func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 	if !s.chiefNudgesOn() || !s.chiefNudgeLive(owner) {
 		return false
 	}
-	if s.sessionMinderOf(octx, owner) != "" {
+	if s.stopJudgeOf(octx, owner) != judgeChief {
 		return false
 	}
 	_, err := s.chiefAgent(octx)

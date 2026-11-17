@@ -144,6 +144,9 @@ type Server struct {
 	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
 	// fleetChat): owner id → *sync.Mutex.
 	fleetChatOpen sync.Map
+	// fleetPassAt is each owner's last fleet step (fleet_actions.go
+	// fleetPass): it runs at most every fleetPassEvery.
+	fleetPassAt sync.Map
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -981,7 +984,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
+		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest, FleetPropose: s.fleetProposeOn()}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

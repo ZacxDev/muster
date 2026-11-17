@@ -58,23 +58,32 @@ const (
 // and the subjects it was built from (by fleet id); unavailable is the card's
 // sentence when there is none.
 func (s *Server) fleetDigestFor(ctx context.Context, baseline time.Time) (d fleet.Digest, unavailable string) {
+	d, unavailable, _ = s.fleetDigestRead(ctx, baseline)
+	return d, unavailable
+}
+
+// fleetDigestRead is fleetDigestFor, and the subjects it was built from by
+// fleet id (the proposal cards' Open session and Where).
+func (s *Server) fleetDigestRead(ctx context.Context, baseline time.Time) (d fleet.Digest, unavailable string, subs map[string]fleetSubject) {
 	if s.ext.Episodes == nil {
-		return fleet.Digest{}, fleetDigestNoState
+		return fleet.Digest{}, fleetDigestNoState, nil
 	}
 	fr, err := s.readFleet(ctx, fleetListFilter{})
 	if err != nil || !fr.stateOn {
 		if err != nil {
 			s.logger.Printf("fleet digest: %v", err)
 		}
-		return fleet.Digest{}, fleetDigestReadFailed
+		return fleet.Digest{}, fleetDigestReadFailed, nil
 	}
 	var sessions []fleet.Session
+	subs = map[string]fleetSubject{}
 	for _, sub := range fr.subjects {
 		// The chief is not one of the sessions it orchestrates: its own open
 		// cards are the Needs you asks.
 		if sub.chief {
 			continue
 		}
+		subs[sub.row.ID] = sub
 		sessions = append(sessions, fleetSessionOf(sub))
 	}
 	var asks []fleet.Ask
@@ -85,7 +94,7 @@ func (s *Server) fleetDigestFor(ctx context.Context, baseline time.Time) (d flee
 	} else if !errors.Is(err, ErrNoChief) {
 		s.logger.Printf("fleet digest: the chief: %v", err)
 	}
-	return fleet.Build(sessions, asks, baseline), ""
+	return fleet.Build(sessions, asks, baseline), "", subs
 }
 
 // fleetSessionOf is subject sub as the digest draws it.
@@ -117,11 +126,7 @@ func (s *Server) handleFleetDigest(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("fleet digest: the look: %v", err)
 		}
 	}
-	d, unavailable := s.fleetDigestFor(ctx, baseline)
-	v := ui.FleetDigestView{Unavailable: unavailable}
-	if unavailable == "" {
-		v = fleetDigestView(d, now)
-	}
+	v := s.fleetDigestViewFor(ctx, baseline)
 	if err := ui.RenderFleetDigest(w, v); err != nil {
 		s.logger.Printf("fleet digest: render: %v", err)
 	}

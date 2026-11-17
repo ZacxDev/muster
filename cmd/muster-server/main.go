@@ -634,6 +634,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
+		// Fleet proposals (MUSTER_FLEET_ORCHESTRATION=propose; migration
+		// 0148): the chief's fleet write tools, the digest's cards and the
+		// fleet's action log. Off by default; it needs the digest (config).
+		ext.FleetPropose = cfg.FleetPropose
+		ext.FleetActions = fleet.NewPG(a.pool)
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -2139,6 +2144,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("fleet digest: INERT — %s=1 but there is no database", envFleetDigest)
 	default:
 		l.Printf("fleet digest: OFF — %s is unset", envFleetDigest)
+	}
+	switch {
+	case ext.FleetPropose && ext.Episodes != nil:
+		l.Printf("fleet proposals: ON (%s=propose) — the chief's session_instruct, session_wrap, work_reassign and fleet_actions_list "+
+			"tools, and a finished session's handoff proposed by the session-state pass, become cards in the fleet digest; NOTHING is "+
+			"sent until the owner taps Approve; the fleet judges its owners' stops in place of the chief's nudges", envFleetOrchestration)
+	case ext.FleetPropose:
+		l.Printf("fleet proposals: ON (%s=propose) — but %s is unset, so no session has a stop to propose on", envFleetOrchestration, envSessionState)
+	case a.cfg.FleetPropose:
+		l.Printf("fleet proposals: INERT — %s=propose but there is no database", envFleetOrchestration)
+	default:
+		l.Printf("fleet proposals: OFF — %s is not propose", envFleetOrchestration)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)

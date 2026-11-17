@@ -234,9 +234,17 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		// have judged, never a copy of the rule. And the one "does a minder
 		// mind this owner" predicate (sessionMinderOf) gates the sweep, the
 		// stop's push wait and the feed, all three.
-		"stalledSessions":   "api.feedSessionMinder,api.nudgeCandidates",
-		"sessionMinderOf":   "api.episodeChiefJudges,api.feedSessionMinder,api.sweepOwnerNudges",
+		// The fleet's handoff proposals (fleet_actions.go) are its third
+		// reader: a finished session is proposed a handoff only on a stop the
+		// chief would have judged.
+		"stalledSessions":   "api.feedSessionMinder,api.fleetProposeHandoffs,api.nudgeCandidates",
+		// 🔴 ONE JUDGE PER OWNER (stop_judge.go): stopJudgeOf is the one
+		// reader of sessionMinderOf that decides who judges, and the sweep, the
+		// push wait, the minder's feed and the fleet's step all ask it.
+		"sessionMinderOf":   "api.feedSessionMinder,api.stopJudgeOf",
+		"stopJudgeOf":       "api.episodeChiefJudges,api.feedSessionMinder,api.fleetPass,api.sweepOwnerNudges",
 		"feedSessionMinder": "api.sessionStateOwner",
+		"fleetPass":         "api.sessionStateOwner",
 		// 🔴 THE STALL CLASSIFIER'S ONE DOOR (session_state.go): every call to
 		// the classifier is classifyStall's, which redacts and cuts its input,
 		// and its two callers are the nudge sweep and session state. A third

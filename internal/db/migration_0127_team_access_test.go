@@ -20,6 +20,7 @@ var ownedAfter0127 = []string{
 	"chief_session_llm_usage",        // 0144
 	"chief_session_llm_reservations", // 0144
 	"fleet_owner_marks",              // 0147
+	"fleet_actions",                  // 0148
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

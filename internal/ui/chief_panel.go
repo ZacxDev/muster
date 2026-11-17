@@ -250,7 +250,10 @@ func ChiefPanelToggle() g.Node {
 //
 // fleet draws the fleet digest card's slot (Features.FleetDigest,
 // MUSTER_FLEET_DIGEST); off, the panel is exactly as it was before the digest.
-func ChiefPanel(fleet bool) g.Node {
+// propose (Features.FleetPropose, MUSTER_FLEET_ORCHESTRATION=propose) draws
+// the card's Proposed group in its skeleton too, and the slot the step-up
+// dialog is loaded into when an approval needs a fresh sign-in.
+func ChiefPanel(fleet, propose bool) g.Node {
 	return Aside(
 		ID(chiefPanelID),
 		g.Attr(chiefPanelAttr, ""),
@@ -309,7 +312,8 @@ func ChiefPanel(fleet bool) g.Node {
 		// The fleet digest (fleet_digest.go): pinned above whichever chat the
 		// body below shows, in a slot of its own, so a thread switch swaps the
 		// chat and leaves the card.
-		g.If(fleet, fleetDigestSlot()),
+		g.If(fleet, fleetDigestSlot(propose)),
+		g.If(fleet && propose, Div(ID(fleetStepUpSlotID))),
 		// The body: an hx-swap target, fetched the first time the panel opens and
 		// on every open after that.
 		//
@@ -926,6 +930,7 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   var PANEL_PATH = '/ui/chief/panel';
   var FLEET_ID = '` + fleetDigestSlotID + `';
   var FLEET_PATH = '` + FleetDigestPath + `';
+  var FLEET_STEPUP_PATH = '` + FleetStepUpPath + `';
   var FLEET_OPEN_EVENT = '` + fleetOpenEvent + `';
   var FLEET_REQUESTED = '` + fleetRequestedAttr + `';
   // openFleet asks the digest card to load: look is true only for a real
@@ -1268,6 +1273,18 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
         return;
       }
       if (t.closest('[` + fleetSheetCloseAttr + `]')) { closeSheets(); return; }
+      // A proposal's Edit opens (or shuts) its text box.
+      var ed = t.closest('[data-fleet-edit]');
+      if (ed) {
+        var form = document.getElementById(ed.getAttribute('aria-controls') || '');
+        if (form) {
+          var show = form.hasAttribute('hidden');
+          if (show) form.removeAttribute('hidden'); else form.setAttribute('hidden', '');
+          ed.setAttribute('aria-expanded', show ? 'true' : 'false');
+          if (show) { var ta = form.querySelector('textarea'); if (ta) ta.focus(); }
+        }
+        return;
+      }
       var toggle = t.closest('[` + chiefPanelToggleAttr + `]');
       if (!toggle) return;               // not ours — observed, not swallowed
       var p = panel();
@@ -1386,6 +1403,24 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       if (te && te.type === FLEET_OPEN_EVENT && te.detail && te.detail.look) evt.detail.path = FLEET_PATH + '?look=1';
     });
 
+    // 🔴 A PROPOSAL'S APPROVAL (OR EDIT) ON A STALE SIGN-IN: the server
+    // answered 403 with X-Muster-Step-Up and sent nothing. "Confirm it's you"
+    // is asked — the page's own dialog, or, on a page with none, the one
+    // FLEET_STEPUP_PATH draws into the panel's slot — and the same tap is made
+    // again once confirmed. The server re-checks the sign-in whatever this
+    // does.
+    document.addEventListener('htmx:responseError', function (evt) {
+      var d = evt && evt.detail, x = d && d.xhr, el = d && d.elt;
+      if (!x || x.status !== 403 || !x.getResponseHeader('X-Muster-Step-Up') || !el || !el.closest || !el.closest('#' + FLEET_ID)) return;
+      var again = function () { if (el.tagName === 'FORM' && el.requestSubmit) el.requestSubmit(); else el.click(); };
+      var ask = function () { window.musterStepUp.stale(); window.musterStepUp.ask('', again); };
+      if (window.musterStepUp) { ask(); return; }
+      if (!window.htmx) return;
+      window.htmx.ajax('GET', FLEET_STEPUP_PATH, { target: '#` + fleetStepUpSlotID + `', swap: 'innerHTML' }).then(function () {
+        if (window.musterStepUp) ask();
+      });
+    });
+
     // The card's request has started: restore() asks no more (see restore).
     document.addEventListener('htmx:beforeRequest', function (evt) {
       var el = evt && evt.target;
@@ -1432,10 +1467,25 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     document.addEventListener('htmx:afterSettle', restore);
   }
 
+  // ?` + ChiefOpenParam + `=open (the fleet's "N proposals waiting" push opens
+  // it): the panel opens, and the parameter leaves the address bar so a
+  // reload does not reopen it.
+  function openFromURL() {
+    try {
+      var u = new URL(window.location.href);
+      if (u.searchParams.get('` + ChiefOpenParam + `') !== 'open') return;
+      u.searchParams.delete('` + ChiefOpenParam + `');
+      window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+      setOpen(true);
+    } catch (e) {}
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', restore);
+    document.addEventListener('DOMContentLoaded', openFromURL);
   } else {
     restore();
+    openFromURL();
   }
 })();
 `)
