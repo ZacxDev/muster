@@ -896,25 +896,33 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   `postgres_query`, `internal_http_request`, `officer_kube_read`), and an
   explicit `connector_request` that leaves the grant pending, records each
   item the instance holds a LIVE claim on in HQ, keyed by the grant's id
-  (`officer_connector_blocks`, migration 0145; in memory without a
-  database). A repeat refusal writes nothing. The link is the grant id and
-  HQ's claimed list, never an item's summary or a refusal's text.
+  (`officer_connector_blocks`, migration 0146; in memory without a
+  database). The HQ read runs in the background, never on the refused
+  request, and at most once per (agent, grant) per minute: a refused
+  instance retries in seconds. A repeat refusal writes nothing. The link is
+  the grant id and HQ's claimed list, never an item's summary or a
+  refusal's text.
 - **At the approval.** The operator's decision (`decideConnectorGrant`, the
   one every door takes; an officer's grant is never approved from a standing
-  grant) asks HQ to re-run each recorded item of THAT grant, newest first,
-  through `POST /officers/{id}/items/{item}/rerun` with the officer's token,
-  key `connector-grant:<id>`. HQ enqueues a new item of the same subject, or
-  answers the live / newer item that already carries the work, once per
-  (item, key).
+  grant) reads how each recorded item of THAT grant stands in HQ and re-runs
+  **only the ones that finished `escalated`** (operator 2026-11-17), newest
+  first, through `POST /officers/{id}/items/{item}/rerun` with the officer's
+  token, key `connector-grant:<id>`. An item that finished `done` /
+  `no_action`, or is still open, claimed or waiting, is skipped. HQ enqueues
+  a new item of the same subject, or answers the live / newer item that
+  already carries the work.
 - **Bounded.** Only items recorded within the last **7 days**
   (`officers.RerunWindow`): an operator approves within a working week, and
-  older blocked work has a newer event of its own. At most **10** per
-  approval (`officers.RerunMaxPerApproval`), the rest logged and not sent. A
-  re-run HQ answered is marked and never sent again, and a second approval
-  of the same grant re-runs nothing.
-- **Degrades.** An HQ without the route answers 404: muster logs it and goes
-  on to the next item (the block stays unmarked). A builtin officer's
-  backend re-runs nothing (no `rerun` capability); muster logs it.
+  older blocked work has a newer event of its own. At most **10** re-runs
+  per approval (`officers.RerunMaxPerApproval`), the rest logged and left
+  for a later approval. Every item HQ re-ran, and every one skipped, is
+  settled and never looked at again: a second approval of the same grant
+  re-runs nothing.
+- **Degrades.** An HQ without the route (older than civ-hq #891) answers
+  404: muster logs it and goes on to the next item, and the block stays
+  UNSETTLED, so the grant's next approval re-runs it once HQ has the route.
+  An item HQ does not list in any status stays unsettled too. A builtin
+  officer's backend re-runs nothing (no `rerun` capability); muster logs it.
 
 A different connector's grant, or another agent's, re-runs nothing: the
 record is keyed by the grant id.

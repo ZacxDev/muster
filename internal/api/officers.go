@@ -141,11 +141,15 @@ type officerRuntime struct {
 	// blocks is OfficersConfig.ConnectorBlocks: which items each officer
 	// instance held while a pending grant refused it (connectorBlocks;
 	// officer_connector_rerun.go); memBlocks the in-memory one when none is
-	// configured, made once. reruns counts approvals' re-runs in flight.
+	// configured, made once. blockWork counts the refusals' records and the
+	// approvals' re-runs in flight; blockNotes is, per "agent grant", the
+	// last refusal that read HQ (the debounce), guarded by blockNotesMu.
 	blocks        officers.ConnectorBlockStore
 	memBlocksOnce sync.Once
 	memBlocks     *officers.MemConnectorBlockStore
-	reruns        sync.WaitGroup
+	blockWork     sync.WaitGroup
+	blockNotesMu  sync.Mutex
+	blockNotes    map[string]time.Time
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.
@@ -319,7 +323,7 @@ type OfficersConfig struct {
 	PublicBranches officers.PublicBranchStore
 	// ConnectorBlocks keeps which items each officer instance held while a
 	// pending connector grant refused it, so approving that grant re-runs
-	// them (officers.PGConnectorBlockStore, migration 0145); nil keeps them
+	// them (officers.PGConnectorBlockStore, migration 0146); nil keeps them
 	// in this process's memory, which a restart forgets.
 	ConnectorBlocks officers.ConnectorBlockStore
 	LLMUpstream     string

@@ -173,6 +173,28 @@ func (r *rerunRig) refuse(connector string) {
 	if err != nil || acc.Usable || acc.Grant.Status != connectors.StatusPending {
 		r.t.Fatalf("access to %s = %+v, %v; want refused, pending", connector, acc, err)
 	}
+	r.s.WaitForConnectorBlocks() // the record is written in the background
+}
+
+// blocks is how many unsettled blocks grant has.
+func (r *rerunRig) blocks(grant int64) int {
+	r.t.Helper()
+	bs, err := r.s.officerRT.connectorBlocks().BlocksForGrant(context.Background(), rrOff, grant, time.Time{}, 100)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return len(bs)
+}
+
+// claimedReads counts the HQ reads of the claimed list (the refusal's read).
+func (r *rerunRig) claimedReads() int {
+	n := 0
+	for _, q := range r.hq.Requests() {
+		if q.Method == "GET" && strings.HasSuffix(q.Path, "/items") && strings.Contains(q.Query, "status=claimed") {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *rerunRig) approve(id int64) {
@@ -180,7 +202,7 @@ func (r *rerunRig) approve(id int64) {
 	if _, _, err := r.s.decideConnectorGrant(context.Background(), id, true, connectors.DecisionSource{}); err != nil {
 		r.t.Fatalf("approve grant %d: %v", id, err)
 	}
-	r.s.WaitForGrantReruns()
+	r.s.WaitForConnectorBlocks()
 }
 
 // TestApprovingAGrantReRunsTheItemsItBlocked: the scenario. An instance
@@ -195,8 +217,8 @@ func TestApprovingAGrantReRunsTheItemsItBlocked(t *testing.T) {
 	other := r.hq.AddItem(rrOff, rrKind, "example-org/example-infra#3616")
 	r.hq.SetClaim(other, officers.InstanceName(rrOff, 2), r.clock().Add(10*time.Minute))
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(item)
-	r.hq.Complete(other)
+	r.hq.Escalate(item)
+	r.hq.Escalate(other)
 
 	r.approve(rrGitHub)
 	got := r.hq.Reruns()
@@ -221,7 +243,7 @@ func TestAnotherConnectorsApprovalReRunsNothing(t *testing.T) {
 	r := newRerunRig(t)
 	item := r.held("example-org/example-infra#3643")
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(item)
+	r.hq.Escalate(item)
 	r.approve(rrDriver)
 	if got := r.hq.Reruns(); len(got) != 0 {
 		t.Fatalf("approving the app-driver grant re-ran %+v; want nothing (the item was blocked on the github grant)", got)
@@ -239,11 +261,11 @@ func TestABlockOlderThanTheWindowIsNotReRun(t *testing.T) {
 	r := newRerunRig(t)
 	old := r.held("example-org/example-infra#3535")
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(old)
+	r.hq.Escalate(old)
 	r.advance(officers.RerunWindow - 36*time.Hour)
 	recent := r.held("example-org/example-infra#3661")
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(recent)
+	r.hq.Escalate(recent)
 	r.advance(37 * time.Hour) // old: window + 1h ago; recent: 37h ago
 	r.approve(rrGitHub)
 	got := r.hq.Reruns()
@@ -258,7 +280,7 @@ func TestASecondApprovalDoesNotReRunTwice(t *testing.T) {
 	r := newRerunRig(t)
 	item := r.held("example-org/example-infra#3536")
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(item)
+	r.hq.Escalate(item)
 	r.approve(rrGitHub)
 	r.conn.reopen(rrGitHub)
 	r.approve(rrGitHub)
@@ -277,13 +299,13 @@ func TestReRunsArePerApprovalCapped(t *testing.T) {
 	}
 	r.refuse(officers.GitHubConnector)
 	for _, it := range r.hq.Items(rrOff) {
-		r.hq.Complete(it.ID)
+		r.hq.Escalate(it.ID)
 	}
 	r.approve(rrGitHub)
 	if got := r.hq.Reruns(); len(got) != officers.RerunMaxPerApproval {
 		t.Fatalf("%d re-run requests for %d blocked items, want the cap %d", len(got), n, officers.RerunMaxPerApproval)
 	}
-	if !strings.Contains(r.logs.String(), "re-running the newest "+strconv.Itoa(officers.RerunMaxPerApproval)) {
+	if !strings.Contains(r.logs.String(), "re-ran the newest "+strconv.Itoa(officers.RerunMaxPerApproval)) {
 		t.Fatalf("the cap was not logged:\n%s", r.logs.String())
 	}
 }
@@ -296,8 +318,8 @@ func TestAnHQWithoutTheRerunRouteIsLoggedAndPassedOver(t *testing.T) {
 	r := newRerunRig(t)
 	a, b := r.held("example-org/example-infra#701"), r.held("example-org/example-infra#702")
 	r.refuse(officers.GitHubConnector)
-	r.hq.Complete(a)
-	r.hq.Complete(b)
+	r.hq.Escalate(a)
+	r.hq.Escalate(b)
 	r.hq.RerunAbsent = true
 	r.approve(rrGitHub)
 	if n := strings.Count(r.logs.String(), "HQ answered 404 to re-running"); n != 2 {
@@ -322,7 +344,8 @@ func TestAnExplicitRequestRecordsTheBlockToo(t *testing.T) {
 	if err != nil || v.Grant != connectors.StatusPending || v.GrantID != rrDriver {
 		t.Fatalf("request = %+v, %v; want pending grant %d", v, err, rrDriver)
 	}
-	r.hq.Complete(item)
+	r.s.WaitForConnectorBlocks()
+	r.hq.Escalate(item)
 	r.approve(rrDriver)
 	if got := r.hq.Reruns(); len(got) != 1 || got[0].Item != item {
 		t.Fatalf("re-run requests %+v; want item %s", got, item)
@@ -340,19 +363,74 @@ func TestADeniedGrantRecordsNoBlock(t *testing.T) {
 	if acc, err := r.s.connectProxy.CheckAccess(context.Background(), r.s.callerOf(r.judge), officers.GitHubConnector, ""); err != nil || acc.Usable {
 		t.Fatalf("access on a denied grant = %+v, %v; want refused", acc, err)
 	}
-	blocks := func() int {
-		bs, err := r.s.officerRT.connectorBlocks().BlocksForGrant(context.Background(), rrOff, rrGitHub, time.Time{}, 100)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return len(bs)
-	}
-	if n := blocks(); n != 0 {
+	r.s.WaitForConnectorBlocks()
+	if n := r.blocks(rrGitHub); n != 0 {
 		t.Fatalf("%d blocks recorded on a denied grant, want 0", n)
 	}
 	r.conn.reopen(rrGitHub) // control: pending, the same refusal records it
 	r.refuse(officers.GitHubConnector)
-	if n := blocks(); n != 1 {
+	if n := r.blocks(rrGitHub); n != 1 {
 		t.Fatalf("control: %d blocks on the pending grant, want 1", n)
+	}
+}
+
+// TestOnlyEscalatedItemsAreReRun: the operator's rule ("only escalated ones",
+// 2026-11-17). Of three items held at one refusal, the one that finished
+// escalated is re-run; the one that finished done and the one still being
+// worked are not — and all three are settled, so a later approval of the
+// grant looks at none of them again.
+func TestOnlyEscalatedItemsAreReRun(t *testing.T) {
+	r := newRerunRig(t)
+	esc, done, live := r.held("example-org/example-infra#801"), r.held("example-org/example-infra#802"), r.held("example-org/example-infra#803")
+	r.refuse(officers.GitHubConnector)
+	r.hq.Escalate(esc)
+	r.hq.Complete(done)
+	r.approve(rrGitHub)
+	if got := r.hq.Reruns(); len(got) != 1 || got[0].Item != esc {
+		t.Fatalf("re-run requests %+v; want only the escalated item %s (not done %s, not live %s)", got, esc, done, live)
+	}
+	if n := r.blocks(rrGitHub); n != 0 {
+		t.Fatalf("%d blocks left unsettled, want 0: the done and the live item are skipped for good", n)
+	}
+	// the live one finishes escalated later: settled, so a second approval
+	// still re-runs nothing more
+	r.hq.Escalate(live)
+	r.conn.reopen(rrGitHub)
+	r.approve(rrGitHub)
+	if got := r.hq.Reruns(); len(got) != 1 {
+		t.Fatalf("after a second approval, %d re-run requests, want 1 (skips are never retried)", len(got))
+	}
+}
+
+// TestARefusalIsDebouncedPerAgentAndGrant: a refused instance retrying within
+// connectorBlockDebounce reads HQ's claimed list once; past it, the next
+// refusal reads it again and records what it holds then.
+func TestARefusalIsDebouncedPerAgentAndGrant(t *testing.T) {
+	r := newRerunRig(t)
+	r.held("example-org/example-infra#901")
+	r.refuse(officers.GitHubConnector)
+	base := r.claimedReads()
+	if base == 0 || r.blocks(rrGitHub) != 1 {
+		t.Fatalf("first refusal: %d claimed reads, %d blocks; want >0 and 1", base, r.blocks(rrGitHub))
+	}
+	r.held("example-org/example-infra#902")
+	for i := 0; i < 5; i++ {
+		r.refuse(officers.GitHubConnector)
+	}
+	if n := r.claimedReads(); n != base {
+		t.Fatalf("five retries within the debounce read the claimed list %d more time(s), want 0", n-base)
+	}
+	if n := r.blocks(rrGitHub); n != 1 {
+		t.Fatalf("%d blocks within the debounce, want 1", n)
+	}
+	r.advance(61 * time.Second)
+	r.refuse(officers.GitHubConnector)
+	if n := r.blocks(rrGitHub); n != 2 {
+		t.Fatalf("past the debounce, %d blocks, want 2 (the item held then recorded)", n)
+	}
+	// another grant of the same agent is not debounced by this one
+	r.refuse(rrDriverC)
+	if n := r.blocks(rrDriver); n != 2 {
+		t.Fatalf("the other grant: %d blocks, want 2", n)
 	}
 }

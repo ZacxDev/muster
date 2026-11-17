@@ -935,6 +935,14 @@ func (s *Server) Complete(id string) {
 	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "done", "", nil
 }
 
+// Escalate finishes item id escalated, as an instance's complete would.
+func (s *Server) Escalate(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it := s.items[id]
+	it.Status, it.Outcome, it.ClaimedBy, it.LeaseExpiresAt = "escalated", "escalated", "", nil
+}
+
 // Notice is one accepted sensitive-path notice.
 type Notice struct {
 	Officer string

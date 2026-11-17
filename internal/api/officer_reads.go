@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -68,11 +69,16 @@ func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance stri
 // heldItems is THE read of the items instance holds a LIVE claim on in HQ
 // (heldItem's, and the connector-block record's: officer_connector_rerun.go).
 func (s *Server) heldItems(ctx context.Context, c officers.Backend, instance string) ([]officers.ItemID, error) {
+	return heldItemsAt(ctx, c, instance, s.officerRT.clock())
+}
+
+// heldItemsAt is heldItems with the clock read: for background work that
+// holds its own runtime (officer_connector_rerun.go).
+func heldItemsAt(ctx context.Context, c officers.Backend, instance string, now time.Time) ([]officers.ItemID, error) {
 	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return nil, err
 	}
-	now := s.officerRT.clock()
 	var held []officers.ItemID
 	for _, it := range claimed {
 		if it.ClaimedBy == instance && it.LeaseLive(now) {

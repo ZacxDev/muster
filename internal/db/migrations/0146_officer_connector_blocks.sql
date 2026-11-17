@@ -1,4 +1,4 @@
--- muster 0145 — AN OFFICER'S ITEMS BLOCKED ON A PENDING CONNECTOR GRANT
+-- muster 0146 — AN OFFICER'S ITEMS BLOCKED ON A PENDING CONNECTOR GRANT
 -- (internal/officers connector_blocks.go; docs/officers.md "Re-running
 -- blocked items").
 --
@@ -7,14 +7,18 @@
 --       connector refused it because grant `grant_id` was still pending
 --       (the proxy, the query and internal_http tools, the kube read, or an
 --       explicit request). When that grant is approved, muster asks HQ to
---       re-run the item (POST /officers/{id}/items/{item_id}/rerun) and sets
---       rerun_at / rerun / rerun_item to HQ's answer; a row with rerun_at set
---       is never sent again. blocked_at is the first refusal's time (a repeat
---       refusal writes nothing): an approval re-runs only rows recorded within
---       its window (officers.RerunWindow).
+--       re-run the item if it finished escalated, and skips it otherwise
+--       (finished done / no_action, or still live); either way it sets
+--       settled_at, and a settled row is never looked at again. blocked_at is
+--       the first refusal's time (a repeat refusal writes nothing): an
+--       approval reads only rows recorded within its window
+--       (officers.RerunWindow). A row stays unsettled when HQ could not
+--       answer (no rerun route yet, an outage, an item it did not list), so a
+--       later approval of the grant tries it again.
 --
 -- 🔴 THE LINK IS THE GRANT ID AND THE HELD ITEM, NEVER TEXT: no summary or
--- message is ever matched to find what a grant blocked.
+-- message is ever matched to find what a grant blocked. Nothing else is kept:
+-- what happened to each row is in the log line its approval wrote.
 --
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, in officer_pr_loops' share
 -- class (0127): the row's owner is the officer's owner (a team, for a team
@@ -23,31 +27,27 @@
 -- owner_id is fixed. rollback/rls_off.sql turns it off with the rest, and
 -- --rls-on re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after its predecessor, 0144 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0145 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT (and db.officerConnectorBlocksMigrationVersion) if another
--- migration takes 0145 first.
+-- migration takes 0146 first.
 --
 -- ROLLBACK. An older image never reads the table (an approval then re-runs
 -- nothing, as before); roll the image back, then (optionally):
 --   DROP TABLE public.officer_connector_blocks;   (its policies and owner_fixed trigger go with it)
---   DELETE FROM schema_migrations WHERE version = 145;
+--   DELETE FROM schema_migrations WHERE version = 146;
 
 SET LOCAL lock_timeout = '3s';
 
 CREATE TABLE IF NOT EXISTS public.officer_connector_blocks (
-    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    owner_id       BIGINT      NOT NULL
-                   DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
-                   REFERENCES public.users (id),
-    officer        TEXT        NOT NULL CHECK (officer ~ '^[a-z0-9-]+:[a-z0-9-]+$'),
-    grant_id       BIGINT      NOT NULL CHECK (grant_id > 0),
-    item           TEXT        NOT NULL CHECK (item ~ '^[A-Za-z0-9_-]{1,64}$'),
-    agent_id       BIGINT      NOT NULL,
-    connector_name TEXT        NOT NULL CHECK (octet_length(connector_name) BETWEEN 1 AND 64),
-    blocked_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    rerun_at       TIMESTAMPTZ,
-    rerun          TEXT        NOT NULL DEFAULT '' CHECK (octet_length(rerun) <= 32),
-    rerun_item     TEXT        NOT NULL DEFAULT '' CHECK (rerun_item ~ '^[A-Za-z0-9_-]{0,64}$'),
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner_id   BIGINT      NOT NULL
+               DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
+               REFERENCES public.users (id),
+    officer    TEXT        NOT NULL CHECK (officer ~ '^[a-z0-9-]+:[a-z0-9-]+$'),
+    grant_id   BIGINT      NOT NULL CHECK (grant_id > 0),
+    item       TEXT        NOT NULL CHECK (item ~ '^[A-Za-z0-9_-]{1,64}$'),
+    blocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    settled_at TIMESTAMPTZ,
     CONSTRAINT officer_connector_blocks_one_per_item UNIQUE (owner_id, officer, grant_id, item)
 );
 
@@ -93,7 +93,7 @@ BEGIN
 END
 $rls$;
 
--- The approval's read: one officer's unsent rows of one grant, newest first.
+-- The approval's read: one officer's unsettled rows of one grant, newest first.
 CREATE INDEX IF NOT EXISTS officer_connector_blocks_grant
     ON public.officer_connector_blocks (owner_id, officer, grant_id, blocked_at DESC)
-    WHERE rerun_at IS NULL;
+    WHERE settled_at IS NULL;

@@ -14,7 +14,7 @@ import (
 )
 
 // The connector-block record (connector_blocks.go): one contract, asserted on
-// the memory store and on officer_connector_blocks (migration 0145) with a
+// the memory store and on officer_connector_blocks (migration 0146) with a
 // database — where the record also survives a new store on its own pool (a
 // restarted server, or the other replica). Ids are made up.
 
@@ -28,8 +28,7 @@ func blockContract(t *testing.T, ctx context.Context, st officers.ConnectorBlock
 	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	rec := func(st officers.ConnectorBlockStore, grant int64, item string, at time.Time) {
 		t.Helper()
-		if err := st.RecordBlock(ctx, officers.ConnectorBlock{Officer: blkOfficer, GrantID: grant, Item: officers.ItemID(item), AgentID: 61,
-			Connector: "github", BlockedAt: at}); err != nil {
+		if err := st.RecordBlock(ctx, officers.ConnectorBlock{Officer: blkOfficer, GrantID: grant, Item: officers.ItemID(item), BlockedAt: at}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -60,11 +59,11 @@ func blockContract(t *testing.T, ctx context.Context, st officers.ConnectorBlock
 	if got := items(st, blkGrant, t0, 1); len(got) != 1 || got[0] != "4156" {
 		t.Fatalf("limit 1: %v; want the newest", got)
 	}
-	if err := st.MarkRerun(ctx, blkOfficer, blkGrant, "4030", t0.Add(6*time.Hour), "created", "4501"); err != nil {
+	if err := st.SettleBlock(ctx, blkOfficer, blkGrant, "4030", t0.Add(6*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if got := items(st, blkGrant, t0, 10); len(got) != 2 || got[0] != "4156" || got[1] != "3702" {
-		t.Fatalf("after marking 4030: %v; want it gone (a re-run block is never sent again)", got)
+		t.Fatalf("after settling 4030: %v; want it gone (a settled block is never read again)", got)
 	}
 	if got := items(st, blkGrant+1, t0, 10); len(got) != 1 || got[0] != "3980" {
 		t.Fatalf("the other grant: %v", got)
