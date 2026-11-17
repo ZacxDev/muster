@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, hookToken, repoRoot, sidebarOfficersPort, versionA } from '../lib/env';
+import { dsn, hookToken, repoRoot, sidebarOfficersConnectPort, sidebarOfficersPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { signIn } from '../lib/signin';
 import { openMore } from '../lib/nav';
@@ -296,15 +296,16 @@ test.describe('desktop', () => {
 //
 // Its own server over the noop driver, so an officer declared to run in pods
 // RUNS there (it is in the roster's registry, and its instance's agent row is
-// bound to it by the server's rule). Two officers, declared through the admin
-// API: a sleeper (no instance, a daily budget, nothing spent: "$0.00 / $8") and
-// a waiter whose first instance's row is this spec's own, with an open ask.
+// bound to it by the server's rule). Two officers: a sleeper declared in
+// MUSTER_OFFICERS (a daily budget is an env declaration's field; no instance,
+// nothing spent: "$0.00 / $8"), and a waiter declared through the admin API
+// whose first instance's row is this spec's own, with an open ask.
 //
 // 🔴 RED at origin/main: no #sidebar-officers-group, no data-nav-officer row,
 // and the waiter's instance is an ordinary row with no officer row to mark.
 test.describe('the Officers group', () => {
   const origin = `http://localhost:${sidebarOfficersPort}`;
-  const SLEEPER = `e2e-sleeper-${stamp}:main`;
+  const SLEEPER = 'e2e-sleeper:main';
   const WAITER = `e2e-waiter-${stamp}:main`;
   const OFF_QUESTION = 'Which release notes template should the digest use?';
   let server: Running | undefined;
@@ -331,13 +332,15 @@ test.describe('the Officers group', () => {
       MUSTER_AGENT_PROVISIONER: 'noop',
       MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
       MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
-      MUSTER_AGENT_KINDS: 'claude-code',
+      MUSTER_AGENT_KINDS: 'gateway,claude-code',
       MUSTER_AGENT_CC_IMAGE: 'ghcr.io/example-org/claude-code-agent:e2e',
       MUSTER_AGENT_CC_ACCOUNTS: 'alpha',
       MUSTER_AGENT_CC_TOKEN_ALPHA: 'sk-ant-oat01-FAKE-e2e-sidebar-officers',
-      MUSTER_OFFICERS: '[]',
+      MUSTER_OFFICERS: JSON.stringify([{ id: SLEEPER, backend: 'builtin', daily_budget_usd: 8 }]),
+      MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x3c).toString('base64'),
+      MUSTER_CONNECT_PORT: String(sidebarOfficersConnectPort),
+      MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${sidebarOfficersConnectPort}`,
     });
-    await declare(SLEEPER, 'E2E sleeper', { daily_budget_usd: 8 });
     const w = await declare(WAITER, 'E2E waiter', {});
     expect(w.running, `the waiter runs in a pod here: ${w.reason ?? ''}`).toBe(true);
     instance = (w.instances ?? [])[0] ?? '';
@@ -348,10 +351,7 @@ test.describe('the Officers group', () => {
 
   test.afterAll(async () => {
     if (offAsk) fix('rmask', '1', offAsk);
-    if (server) {
-      await remove(SLEEPER);
-      await remove(WAITER);
-    }
+    if (server) await remove(WAITER);
     if (instance) fix('rmagent', '1', instance);
     await server?.stop();
   });
@@ -365,22 +365,24 @@ test.describe('the Officers group', () => {
     await expect(group).toBeVisible();
     await expect(page.locator('#sidebar-officers-label')).toHaveText('Officers');
     // The sleeper: asleep, its page, its budget against nothing spent.
-    const sleeper = officerRow(page, 'E2E sleeper');
+    const sleeper = officerRow(page, SLEEPER);
     await expect(sleeper).toHaveCount(1);
     await expect(sleeper).toHaveAttribute('data-nav-officer-state', 'asleep');
     await expect(sleeper).toHaveAttribute('href', `/officers/${SLEEPER}`);
     await expect(sleeper.locator('[data-nav-officer-spend]')).toHaveText('$0.00 / $8');
     await expect(sleeper.locator('[data-nav-officer-facts]')).toHaveText('asleep · 0 queued');
-    // The waiter: one row in the group, marked; its waiting instance is a
-    // session row of the list, NOT in the group, and above every row that
-    // does not wait.
+    // The waiter: one row in the group, marked, opening its running
+    // instance's chat; that instance (waiting) is ALSO a session row of the
+    // list — not in the group — above every row that does not wait.
     const waiter = officerRow(page, 'E2E waiter');
     await expect(waiter).toHaveCount(1);
     await expect(waiter.locator('[data-nav-officer-waiting]')).toHaveText('↑ waiting');
-    const inst = rowOf(page, instance);
+    const inst = page.locator(`#sidebar-agents-list a[data-nav-agent][href^="/agents/${instance}"]`);
     await expect(inst).toHaveCount(1);
     await expect(inst).toHaveAttribute('data-nav-wait', '');
-    await expect(group.locator(`a[href^="/agents/${instance}"]`)).toHaveCount(0);
+    await expect(waiter).toHaveAttribute('data-nav-officer-state', 'running');
+    await expect(waiter).toHaveAttribute('href', new RegExp(`^/agents/${instance}`));
+    await expect(group.locator('a[data-nav-agent]'), 'no session row is drawn inside the group').toHaveCount(0);
     const flags = await rows(page).evaluateAll((as) =>
       as.filter((a) => !a.closest('#sidebar-idle')).map((a) => ({ href: a.getAttribute('href') || '', chief: a.hasAttribute('data-nav-chief'), wait: a.hasAttribute('data-nav-wait') })),
     );
@@ -406,7 +408,7 @@ test.describe('the Officers group', () => {
     await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
     await expectGroup(page);
     await shot(page, 'desktop-officers-group');
-    await officerRow(page, 'E2E sleeper').click();
+    await officerRow(page, SLEEPER).click();
     await expect(page).toHaveURL(`${origin}/officers/${SLEEPER}`);
   });
 
