@@ -584,6 +584,54 @@ stops its instances and starts none, whatever its queue holds; switch it on
 again and it resumes. Removing it from `MUSTER_OFFICERS` also stops muster
 running it; its store rows stay.
 
+## The Officers page
+
+**Officers** in the side menu (under More) is the same thing as the API
+below, for a person signed in: `/officers` lists your officers, and each
+team's you belong to, with where each runs, its status (**Live**, **Shadow**,
+**Paused**, or **Not running** with the reason), its last pass and what is
+open on it. An officer `MUSTER_OFFICERS` declares is listed **read-only**.
+A panel under the list says where an officer could run on this install now,
+and why not: pods only with the Kubernetes agent plane; each of your mirrored
+machines with what is in its way (not connected, cannot close windows,
+Claude Code missing or not logged in) — the same answer as
+`GET /api/officers/runtime-options`.
+
+**New officer** is a wizard, one step at a time:
+
+1. **Start from** — a template (this version has one, *Blank officer*).
+2. **Name and instructions** — its name (its id is made from it, e.g.
+   `release-notes:main`, and can be set) and its standing instructions.
+   A manager of a team also chooses whose officer it is.
+3. **Where it runs** — *Let muster choose* (`auto`, the default: what it
+   picks right now is shown), *In a pod*, or *On one of my machines* with a
+   machine picker; each choice this install cannot take is disabled with its
+   reason. A repository is optional: without one, each instance starts in a
+   scratch directory.
+4. **When it works** — a schedule (hourly, daily, weekdays, weekly, or your
+   own five-field cron, UTC), or *only when I give it work*. One of the two
+   is required: an officer nothing wakes is refused, not created.
+5. **What it may do** — nothing extra by default: outbound drafts, contacts,
+   connectors it may ask for and public repositories it reads are each
+   opt-in, and so is who else an escalation asks (picked from the people of
+   the teams you manage, or the whole team for a team officer — never typed
+   as ids). For a machine, the line on what a host officer can reach.
+6. **Review** — the answers, and **Start in Shadow** (the default) or
+   **Live**.
+
+It is created through the same check as the API, so a refused answer is
+shown beside its field and nothing is stored; it then runs with no restart.
+An officer's page shows its queue, its instances (a host instance's window
+opens its mirrored view), its open asks, the drafts its instances filed, its
+schedules (add and delete them there), its booked usage when there is any,
+and its last pass **as this server's wake loop saw it** (another replica
+keeps its own; a restart forgets it). Its actions: **Run now** (one
+`manual.run` item; a second tap while it waits adds none), **Pause** /
+**Resume**, **Switch to Live** / **Shadow** (only the mode changes), **Edit**
+and **Delete** (type its id to confirm). A team's viewers and operators read
+a team officer's page; only a manager changes it, and Postgres refuses
+anyone else again.
+
 ## Declared in the database (no restart)
 
 An officer can be declared in muster's database instead of
@@ -655,8 +703,8 @@ muster officer delete scout:main    # its queue, schedules and instances go too
 - A team's officers run from the database as a person's do (a row a team
   owns is loaded; a team host officer runs on the team's host, and one that
   declares `connectors` is refused: [A team's host officer](#a-teams-host-officer-team-hosts)),
-  but there is no door to write them yet: the team door comes with the
-  officers UI (O-C).
+  and a team's MANAGER writes them on the [Officers page](#the-officers-page)
+  (the JSON API's tokens carry no team, so it stays the caller's own).
 
 | method | path | body / query |
 |---|---|---|

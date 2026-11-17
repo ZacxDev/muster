@@ -6,7 +6,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import {
   baseURL, clsChipPort, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
-  clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, onboardingPort, repoRoot, versionA, versionTerm,
+  clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, hookToken, onboardingPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
@@ -99,6 +99,13 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // The admin's host officer spawns and their team lend (officer_spawn_share.go):
   // a fresh admin has none, so the empty state is what it draws.
   'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
+  // The Officers pages (officers_pages.go, officers O-C): the admin's list, the
+  // New-officer wizard (its first step), and one officer's page and edit form
+  // (OFFICER: one made through the wizard's own POST for the measurement).
+  'GET /officers': { where: 'signed-in', url: '/officers', ready: '#officer-new' },
+  'GET /officers/new': { where: 'signed-in', url: '/officers/new', ready: '#officer-form fieldset[data-step="1"]' },
+  'GET /officers/{officer}': { where: 'signed-in', url: 'OFFICER', ready: '#officer-head h1' },
+  'GET /officers/{officer}/edit': { where: 'signed-in', url: 'OFFICER_EDIT', ready: '#officer-form #officer-charter' },
   // Account → Teams (account_teams.go, team sharing phase 2b.1): the admin's
   // teams and each one's notify switch, or the empty state when it has none.
   'GET /account/teams': { where: 'signed-in', url: '/account/teams', ready: ':is(#account-teams li, #account-teams-none)' },
@@ -844,6 +851,14 @@ test.describe('signed-in pages in gotrue mode', () => {
     await Promise.all([fp.waitForURL(signedURL + '/admin/teams'), fp.click('form[action="/admin/teams"] button[type=submit]')]);
     const teamID = await fp.locator('#admin-teams [data-team-id]', { has: fp.locator('[data-team-name]', { hasText: teamName }) }).getAttribute('data-team-id');
     expect(teamID, 'the team was made').toMatch(/^\d+$/);
+    // An officer of the admin's, for its page (the OFFICER url): created by the
+    // wizard's own POST, as the form submits it.
+    const made = await fp.request.post(signedURL + '/officers/new', {
+      headers: { Origin: signedURL },
+      form: { template: 'blank', name: 'CLS officer', charter: 'Measure nothing; never post.', runtime: 'auto', wake: 'manual', mode: 'shadow' },
+      maxRedirects: 0,
+    });
+    expect(made.status(), 'the officer was made').toBe(303);
     await first.close();
 
     const bad: string[] = [];
@@ -863,7 +878,8 @@ test.describe('signed-in pages in gotrue mode', () => {
           const url = p.url === 'TEAM' ? `/teams/${teamID}` : p.url === 'TEAM_OFFICERS' ? `/teams/${teamID}/officers`
             : p.url === 'TEAM_CHIEF' ? `/teams/${teamID}/chief`
             : p.url === 'TEAM_CONNECTORS' ? `/teams/${teamID}/connectors` : p.url === 'TEAM_HOSTS' ? `/teams/${teamID}/hosts`
-            : p.url === 'TEAM_PLUGINS' ? `/teams/${teamID}/plugins` : p.url;
+            : p.url === 'TEAM_PLUGINS' ? `/teams/${teamID}/plugins`
+            : p.url === 'OFFICER' ? '/officers/cls-officer:main' : p.url === 'OFFICER_EDIT' ? '/officers/cls-officer:main/edit' : p.url;
           const r = await measure(page, signedURL + url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
@@ -872,6 +888,10 @@ test.describe('signed-in pages in gotrue mode', () => {
         await ctx.close();
       }
     }
+    // The measured officer goes (it is user 1's, in the database every spec
+    // shares): through the shared server's admin API, as the operator.
+    const gone = await fetch(`${baseURL}/api/officers/declared/cls-officer:main`, { method: 'DELETE', headers: { Authorization: `Bearer ${hookToken}` } });
+    expect(gone.status, 'the measured officer was removed').toBe(200);
     expect(bad).toEqual([]);
   });
 });

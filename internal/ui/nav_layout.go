@@ -50,6 +50,8 @@ const (
 	NavAttention = "attention"
 	// NavPages is the shareable pages' screens (/pages…).
 	NavPages = "pages"
+	// NavOfficers is the Officers pages (/officers…).
+	NavOfficers = "officers"
 	NavAccount   = "account"
 	NavAdmin     = "admin"
 	// NavFeatures is More's link to the Features page.

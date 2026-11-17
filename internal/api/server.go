@@ -724,6 +724,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAccountTeams(mux)
 	s.registerOfficerSpawnPages(mux)
 	s.registerTeamOfficerPages(mux)
+	s.registerOfficerPages(mux)
 	s.registerTeamChiefPages(mux)
 	s.registerTeamConnectorPages(mux)
 	// A team's host tokens (team sharing 2b.2, team_hosts_page.go).
@@ -959,7 +960,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	// only take a control away (featureOff), never draw one over nothing.
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
-		Attention: s.ext.Attention != nil, Pages: s.pagesOn(),
+		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
 		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx)}
 }
 

@@ -981,21 +981,72 @@ func (s *Server) slugHasAgents(ctx context.Context, slug string) (bool, error) {
 	return false, nil
 }
 
-// declaredStoreErr answers a store error of the declared-officer API.
-func (s *Server) declaredStoreErr(w http.ResponseWriter, err error) {
+// --- the writes: one core each, two doors ------------------------------------
+//
+// 🔴 ONE RULE, TWO DOORS. Every write a declared officer takes — create,
+// replace, pause, resume, delete — is ONE function here (createDeclared,
+// updateDeclared, switchDeclared, deleteDeclared) that answers an error and
+// writes nothing to the response. The JSON admin API (the hook tier, below)
+// and the Officers pages (officers_pages.go, the session tier: a person's own
+// officers and the teams they manage) are each only a door: they decode their
+// own input, call the core, and say its answer in their own shape
+// (declaredErr here; officerPageRefusal there). So a check added to a write is
+// added once, and neither door can skip it.
+
+// declaredInvalid is a refusal of the declaration itself: the JSON door
+// answers it 400 {error, fields}, the page draws each field's refusal beside
+// its field.
+type declaredInvalid struct{ err error }
+
+func (e declaredInvalid) Error() string { return e.err.Error() }
+func (e declaredInvalid) Unwrap() error { return e.err }
+
+// errEnvManaged: the officer is MUSTER_OFFICERS': read-only here (409).
+var errEnvManaged = errors.New("officers: managed by MUSTER_OFFICERS")
+
+// envManagedRefusal is errEnvManaged for id, with the words both doors say.
+func envManagedRefusal(id string) error {
+	return fmt.Errorf("%w: %s declares %s: it is read-only here (change the environment and restart)", errEnvManaged, "MUSTER_OFFICERS", id)
+}
+
+// declaredStoreRefusal is a store error's status and words, when it is one of
+// the store's own refusals (ok false: an unexpected error).
+func declaredStoreRefusal(err error) (code int, msg string, ok bool) {
 	switch {
 	case errors.Is(err, builtin.ErrExists):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "you already have that officer: " + err.Error()})
+		return http.StatusConflict, "you already have that officer: " + err.Error(), true
 	case errors.Is(err, builtin.ErrNotDeclared):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "that officer is a def with no runtime declared in the database (an env officer's, or one `muster officer def put` made): it is read-only here"})
+		return http.StatusConflict, "that officer is a def with no runtime declared in the database (an env officer's, or one `muster officer def put` made): it is read-only here", true
 	case errors.Is(err, builtin.ErrNotFound):
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such officer"})
+		return http.StatusNotFound, "no such officer", true
 	case errors.Is(err, builtin.ErrNoSlug):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "every instance name for that id is taken; choose another id"})
+		return http.StatusConflict, "every instance name for that id is taken; choose another id", true
 	case errors.Is(err, builtin.ErrTypeShared):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "another of your officers runs on this officer's type, so its charter is not changed here: " + err.Error()})
+		return http.StatusConflict, "another of your officers runs on this officer's type, so its charter is not changed here: " + err.Error(), true
+	}
+	return 0, "", false
+}
+
+// declaredStoreErr answers a store error of the declared-officer API.
+func (s *Server) declaredStoreErr(w http.ResponseWriter, err error) {
+	if code, msg, ok := declaredStoreRefusal(err); ok {
+		s.writeJSON(w, code, map[string]any{"error": msg})
+		return
+	}
+	s.adminStoreErr(w, "officer", err)
+}
+
+// declaredErr is the JSON door's answer to a core's error.
+func (s *Server) declaredErr(w http.ResponseWriter, err error) {
+	var inv declaredInvalid
+	switch {
+	case errors.As(err, &inv):
+		s.writeFieldErrors(w, inv.err)
+	case errors.Is(err, errEnvManaged):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": strings.TrimPrefix(err.Error(), errEnvManaged.Error()+": "),
+			"managed_by": officers.ManagedByEnv})
 	default:
-		s.adminStoreErr(w, "officer", err)
+		s.declaredStoreErr(w, err)
 	}
 }
 
@@ -1004,8 +1055,7 @@ func (s *Server) refuseEnvManaged(w http.ResponseWriter, owner int64, id string)
 	if _, ok := s.officerRT.envOfficer(owner, id); !ok {
 		return false
 	}
-	s.writeJSON(w, http.StatusConflict, map[string]any{"error": "MUSTER_OFFICERS" + " declares " + id + ": it is read-only here (change the environment and restart)",
-		"managed_by": officers.ManagedByEnv})
+	s.declaredErr(w, envManagedRefusal(id))
 	return true
 }
 
@@ -1014,18 +1064,29 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 	if !s.decodeAdmin(w, r, &in) {
 		return
 	}
+	row, err := s.createDeclared(r.Context(), owner, team, in)
+	if err != nil {
+		s.declaredErr(w, err)
+		return
+	}
+	s.answerDeclared(w, r, http.StatusCreated, owner, row.Officer)
+}
+
+// createDeclared creates owner's officer in (team: owner is a team, whose
+// manager the principal is — the page door checked; Postgres checks again,
+// officer_defs being managed): its type, def and declaration in one
+// transaction, then the roster reload that runs it with no restart.
+func (s *Server) createDeclared(ctx context.Context, owner int64, team bool, in declaredIn) (builtin.DeclaredRow, error) {
 	id := strings.TrimSpace(in.ID)
 	if id == "" {
-		s.writeFieldErrors(w, fieldError("id", "id is required: <type>:<area>"))
-		return
+		return builtin.DeclaredRow{}, declaredInvalid{fieldError("id", "id is required: <type>:<area>")}
 	}
-	if s.refuseEnvManaged(w, owner, id) {
-		return
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return builtin.DeclaredRow{}, envManagedRefusal(id)
 	}
-	slugs, err := s.slugCandidates(r.Context(), owner, id, in.MaxInstances)
+	slugs, err := s.slugCandidates(ctx, owner, id, in.MaxInstances)
 	if err != nil {
-		s.adminStoreErr(w, "officer", err)
-		return
+		return builtin.DeclaredRow{}, err
 	}
 	first := ""
 	if len(slugs) > 0 {
@@ -1036,23 +1097,21 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 		err = fieldError("id", fmt.Sprintf("id %q leaves no room for an instance name under this deployment's namespace prefix", id))
 	}
 	if err == nil {
-		err = s.declarationRefusal(r.Context(), d)
+		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return builtin.DeclaredRow{}, declaredInvalid{err}
 	}
-	if err := s.escalationRefusal(r.Context(), owner, team, in.EscalateTo); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
+		return builtin.DeclaredRow{}, declaredInvalid{err}
 	}
-	row, err := s.officerStore.CreateDeclared(r.Context(), owner, s.declaredWriteOf(in, d), slugs)
+	row, err := s.officerStore.CreateDeclared(ctx, owner, s.declaredWriteOf(in, d), slugs)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return builtin.DeclaredRow{}, err
 	}
-	s.logger.Printf("officers: user %d created officer %s for owner %d in the database (runtime %s, slug %s)", authz.MustFrom(r.Context()).UserID, row.Officer, owner, row.Fields.Runtime, row.Fields.InstanceSlug)
-	s.answerDeclared(w, r, http.StatusCreated, owner, row.Officer)
+	s.logger.Printf("officers: user %d created officer %s for owner %d in the database (runtime %s, slug %s)", authz.MustFrom(ctx).UserID, row.Officer, owner, row.Fields.Runtime, row.Fields.InstanceSlug)
+	s.reloadAfterWrite(ctx)
+	return row, nil
 }
 
 func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.DeclaredWrite {
@@ -1070,9 +1129,9 @@ func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.
 	return w
 }
 
-// answerDeclared reloads the roster, then answers owner's officer id.
+// answerDeclared answers owner's officer id, as the last roster load sees it
+// (every core reloads after its write).
 func (s *Server) answerDeclared(w http.ResponseWriter, r *http.Request, code int, owner int64, id string) {
-	s.reloadAfterWrite(r.Context())
 	row, err := s.officerStore.GetDeclared(r.Context(), owner, id)
 	if err != nil {
 		s.declaredStoreErr(w, err)
@@ -1098,47 +1157,54 @@ func (s *Server) declaredUpdate(w http.ResponseWriter, r *http.Request, owner in
 	if !s.decodeAdmin(w, r, &in) {
 		return
 	}
-	if in.ID != "" && in.ID != id {
-		s.writeFieldErrors(w, fieldError("id", "an officer's id is its path's and never changes; create a new one instead"))
+	if err := s.updateDeclared(r.Context(), owner, team, id, in); err != nil {
+		s.declaredErr(w, err)
 		return
 	}
-	cur, err := s.officerStore.GetDeclared(r.Context(), owner, id)
+	s.answerDeclared(w, r, http.StatusOK, owner, id)
+}
+
+// updateDeclared replaces owner's officer id with in (the whole record; mode
+// and paused stated), then reloads the roster.
+func (s *Server) updateDeclared(ctx context.Context, owner int64, team bool, id string, in declaredIn) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
+	}
+	if in.ID != "" && in.ID != id {
+		return declaredInvalid{fieldError("id", "an officer's id is its path's and never changes; create a new one instead")}
+	}
+	cur, err := s.officerStore.GetDeclared(ctx, owner, id)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return err
 	}
 	if err := in.requireSwitches(); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return declaredInvalid{err}
 	}
 	d, err := in.declaration(owner, id, cur.Fields.InstanceSlug)
 	if err == nil {
-		err = s.declarationRefusal(r.Context(), d)
+		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return declaredInvalid{err}
 	}
-	if err := s.escalationRefusal(r.Context(), owner, team, in.EscalateTo); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
+		return declaredInvalid{err}
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
-	if _, err := s.officerStore.UpdateDeclared(r.Context(), owner, id, s.declaredWriteOf(in, d)); err != nil {
-		s.declaredStoreErr(w, err)
-		return
+	if _, err := s.officerStore.UpdateDeclared(ctx, owner, id, s.declaredWriteOf(in, d)); err != nil {
+		return err
 	}
-	s.logger.Printf("officers: user %d replaced officer %s of owner %d in the database", authz.MustFrom(r.Context()).UserID, id, owner)
+	s.logger.Printf("officers: user %d replaced officer %s of owner %d in the database", authz.MustFrom(ctx).UserID, id, owner)
 	// A move (another runtime or host) is the roster load's to tear down
 	// (teardownMoved): the old instances are not the new ones' — a pod row
 	// would block a host start of the same name. One that no longer runs at
 	// all has its instances torn down here.
-	s.reloadAfterWrite(r.Context())
+	s.reloadAfterWrite(ctx)
 	after, _ := s.officerRT.declaredView(owner, id)
 	if old := before.officer; old != nil && after.officer == nil {
-		s.teardownInstances(r.Context(), *old)
+		s.teardownInstances(ctx, *old)
 	}
-	s.answerDeclared(w, r, http.StatusOK, owner, id)
+	return nil
 }
 
 func (s *Server) declaredPause(w http.ResponseWriter, r *http.Request, owner int64, _ bool) {
@@ -1149,59 +1215,78 @@ func (s *Server) declaredResume(w http.ResponseWriter, r *http.Request, owner in
 	s.declaredSwitch(w, r, owner, true)
 }
 
-// declaredSwitch is pause (on false) and resume: the officer's switch, which
+func (s *Server) declaredSwitch(w http.ResponseWriter, r *http.Request, owner int64, on bool) {
+	id := r.PathValue("officer")
+	if err := s.switchDeclared(r.Context(), owner, id, on); err != nil {
+		s.declaredErr(w, err)
+		return
+	}
+	s.answerDeclared(w, r, http.StatusOK, owner, id)
+}
+
+// switchDeclared is pause (on false) and resume: the officer's switch, which
 // the wake loop reads on every pass — a paused officer's instances are
 // stopped on its next pass and none starts; a resumed one wakes for its
 // queue. Nothing else changes, so the officer stays in the roster (and a host
 // officer's machine stays gated while a window may still be open).
-func (s *Server) declaredSwitch(w http.ResponseWriter, r *http.Request, owner int64, on bool) {
-	id := r.PathValue("officer")
-	if s.refuseEnvManaged(w, owner, id) {
-		return
+func (s *Server) switchDeclared(ctx context.Context, owner int64, id string, on bool) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
 	}
-	if _, err := s.officerStore.SetDeclaredEnabled(r.Context(), owner, id, on); err != nil {
-		s.declaredStoreErr(w, err)
-		return
+	if _, err := s.officerStore.SetDeclaredEnabled(ctx, owner, id, on); err != nil {
+		return err
 	}
 	verb := "paused"
 	if on {
 		verb = "resumed"
 	}
-	s.logger.Printf("officers: user %d %s officer %s of owner %d", authz.MustFrom(r.Context()).UserID, verb, id, owner)
+	s.logger.Printf("officers: user %d %s officer %s of owner %d", authz.MustFrom(ctx).UserID, verb, id, owner)
 	if st, ok := s.officerRT.declaredView(owner, id); ok && st.officer != nil && s.officerRT.rec != nil {
 		// Act within a tick rather than at the next poll — through the wake
 		// loop itself, so no pass runs beside one of its own.
 		s.officerRT.rec.Due(st.officer.Key())
 	}
-	s.answerDeclared(w, r, http.StatusOK, owner, id)
+	s.reloadAfterWrite(ctx)
+	return nil
 }
 
 func (s *Server) declaredDelete(w http.ResponseWriter, r *http.Request, owner int64, _ bool) {
 	id := r.PathValue("officer")
-	if s.refuseEnvManaged(w, owner, id) {
+	removed, err := s.deleteDeclared(r.Context(), owner, id)
+	if err != nil {
+		s.declaredErr(w, err)
 		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "instances_removed": noneIfNil(removed)})
+}
+
+// deleteDeclared deletes owner's officer id — its schedules, items, contacts
+// and def, and its type when no other officer names it — then tears its
+// instances down, answering the names it removed.
+func (s *Server) deleteDeclared(ctx context.Context, owner int64, id string) ([]string, error) {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return nil, envManagedRefusal(id)
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
-	row, err := s.officerStore.DeleteDeclared(r.Context(), owner, id)
+	row, err := s.officerStore.DeleteDeclared(ctx, owner, id)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return nil, err
 	}
-	s.logger.Printf("officers: user %d deleted officer %s of owner %d from the database", authz.MustFrom(r.Context()).UserID, id, owner)
-	s.reloadAfterWrite(r.Context())
+	s.logger.Printf("officers: user %d deleted officer %s of owner %d from the database", authz.MustFrom(ctx).UserID, id, owner)
+	s.reloadAfterWrite(ctx)
 	// The instances: of the officer as it ran, or — one that did not run — of
 	// its declaration in either runtime's shape.
 	var removed []string
 	switch {
 	case s.officerRT == nil:
 	case before.officer != nil:
-		removed = s.teardownInstances(r.Context(), *before.officer)
+		removed = s.teardownInstances(ctx, *before.officer)
 	default:
 		if o, err := row.Fields.Officer(officers.RuntimePod, "", s.ext.AgentNamespacePrefix); err == nil {
-			removed = s.teardownInstances(r.Context(), o)
+			removed = s.teardownInstances(ctx, o)
 		}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "instances_removed": noneIfNil(removed)})
+	return removed, nil
 }
 
 // teardownInstances removes every instance agent of o (names 1..the cap, so a

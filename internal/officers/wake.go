@@ -594,6 +594,68 @@ type officerState struct {
 	// switchedOff: the last pass found the officer's backend switch off
 	// (SwitchGated): logged when it turns off and when it turns on again.
 	switchedOff bool
+	// last is the last pass this process ran for the officer (LastPass).
+	last PassInfo
+}
+
+// PassInfo is the last wake pass THIS PROCESS ran for an officer
+// (Reconciler.LastPass): what the officers UI shows as its last pass. It is
+// per replica and forgotten by a restart, so a reader must say so rather
+// than present it as the officer's history.
+type PassInfo struct {
+	// At is when the pass ran (the loop's clock).
+	At time.Time
+	// Err is the pass's failure in words: the read that made it change
+	// nothing, else its first failure acting on its decision; "" for none.
+	Err string
+	// Failures is how many passes in a row have failed to read (the backoff
+	// count); 0 after a successful one.
+	Failures int
+	// SwitchedOff: the pass found the officer switched off (paused).
+	SwitchedOff bool
+	// Claimable is the claimable items the pass saw, Started how many
+	// instances it started (both pools together).
+	Claimable, Started int
+}
+
+// LastPass is the last pass this process ran for the officer keyed key, and
+// whether it has run one since it started (or since the officer was last
+// in the roster).
+func (r *Reconciler) LastPass(key string) (PassInfo, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.state[key]
+	if !ok || s.last.At.IsZero() {
+		return PassInfo{}, false
+	}
+	return s.last, true
+}
+
+// notePass records res as the officer keyed key's last pass (LastPass). A
+// skipped pass (backoff) read nothing and is not one.
+func (r *Reconciler) notePass(key string, at time.Time, res PassResult) {
+	if res.Skipped {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.state[key]
+	if !ok {
+		return // an officer not in the roster: nothing ran
+	}
+	info := PassInfo{At: at, Failures: s.failures, SwitchedOff: s.switchedOff}
+	switch {
+	case res.Err != nil:
+		info.Err = res.Err.Error()
+	case len(res.ActErrs) > 0:
+		info.Err = res.ActErrs[0].Error()
+	}
+	info.Claimable, info.Started = res.Decision.Claimable, len(res.Decision.Start)
+	if res.Routine != nil {
+		info.Claimable += res.Routine.Claimable
+		info.Started += len(res.Routine.Start)
+	}
+	s.last = info
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -784,11 +846,23 @@ func (r *Reconciler) Due(key string) {
 // officer's id) NOW, whatever its schedule, unless it is backing off and force
 // is false.
 func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResult {
+	var now time.Time
+	res := r.check(ctx, key, force, &now)
+	if !now.IsZero() {
+		r.notePass(key, now, res)
+	}
+	return res
+}
+
+// check is Check's pass; *at is set to the clock it read (left zero when the
+// officer is not in the roster).
+func (r *Reconciler) check(ctx context.Context, key string, force bool, at *time.Time) PassResult {
 	o, err := r.reg.Get(key)
 	if err != nil {
 		return PassResult{Err: err}
 	}
 	now := r.now()
+	*at = now
 	r.mu.Lock()
 	s := r.st(key)
 	if !force && s.failures > 0 && now.Before(s.nextAt) {

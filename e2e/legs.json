@@ -201,6 +201,7 @@
       "tests/landing.spec.ts",
       "tests/mirror-duplicate-labels.spec.ts",
       "tests/mirror-windows.spec.ts",
+      "tests/officers.spec.ts",
       "tests/onboarding.spec.ts",
       "tests/opencode-send.spec.ts",
       "tests/passkeys.spec.ts",

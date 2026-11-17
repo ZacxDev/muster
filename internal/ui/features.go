@@ -47,6 +47,10 @@ type Features struct {
 	// feature not called off). It draws the sidebar's Pages link; false draws
 	// none, since /pages would only answer that the feature is off.
 	Pages bool
+	// Officers is true when the server keeps officers (the built-in officer
+	// store: a database). It draws the sidebar's Officers link; false draws
+	// none, since /officers would only answer that there are none here.
+	Officers bool
 	// SnapUser and SnapBuild are the signed-in user and the running build: the
 	// key, and the check, of the mirrored view's snapshot store
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
