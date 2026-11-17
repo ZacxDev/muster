@@ -40,6 +40,120 @@ user 1.
 The GoTrue pair also works in password mode, where it only makes that claim link
 usable. That lets you bind the operator's login before you switch modes.
 
+The link is written on `MUSTER_PUBLIC_URL`. In gotrue mode, when that is this
+machine's own `http://localhost` address on the main port (a hub without
+Tailscale), the command writes the link on the browser listener's port instead
+and says to set `MUSTER_PUBLIC_URL` there: the main port refuses a browser.
+It assumes each port is published on the same number on the host as in the
+container (the Compose stack's mapping, and the override below); with another
+mapping, set `MUSTER_PUBLIC_URL` to the address the browser opens.
+
+### A GoTrue server beside the Compose stack
+
+The Compose stack ships no GoTrue. This `docker-compose.override.yml`, beside
+`~/muster/docker-compose.yml`, adds one with its own Postgres and publishes the
+browser listener on this machine. It runs the GoTrue image the end-to-end
+tests run (`e2e/gotrue/compose.yml`), and `tests/compose-check.sh` checks it
+parses with the release's compose file and issues the tokens muster accepts.
+
+```yaml
+services:
+  muster:
+    # The browser listener (MUSTER_BROWSER_PORT), on this machine only.
+    ports:
+      - "127.0.0.1:8107:8107"
+    depends_on:
+      gotrue:
+        condition: service_healthy
+  # GoTrue's own Postgres. GoTrue keeps its tables in the `auth` schema,
+  # which must exist before its first start.
+  gotrue-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "echo 'CREATE SCHEMA IF NOT EXISTS auth;' > /docker-entrypoint-initdb.d/auth.sql && exec docker-entrypoint.sh postgres"]
+    environment:
+      POSTGRES_PASSWORD: ${GOTRUE_DB_PASSWORD:?set GOTRUE_DB_PASSWORD in .env}
+    volumes:
+      - gotrue-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  gotrue:
+    image: supabase/gotrue:v2.197.0
+    restart: unless-stopped
+    depends_on:
+      gotrue-db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: ${MUSTER_PUBLIC_URL:?set MUSTER_PUBLIC_URL in .env}
+      GOTRUE_SITE_URL: ${MUSTER_PUBLIC_URL}
+      GOTRUE_URI_ALLOW_LIST: ${MUSTER_PUBLIC_URL}/**
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://postgres:${GOTRUE_DB_PASSWORD}@gotrue-db:5432/postgres?sslmode=disable&search_path=auth
+      GOTRUE_DB_NAMESPACE: auth
+      # muster checks these three on every token.
+      GOTRUE_JWT_SECRET: ${MUSTER_GOTRUE_JWT_SECRET:?set MUSTER_GOTRUE_JWT_SECRET in .env}
+      GOTRUE_JWT_ISSUER: muster-auth
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_EXP: "900"
+      # Logins are made by muster (the admin claim, invites), never by
+      # sign-up; no mail server, so addresses are confirmed as created.
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_PASSWORD_MIN_LENGTH: "12"
+      GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+      GOTRUE_RATE_LIMIT_HEADER: X-Muster-Client-IP
+      # Passkeys, for the address the browser opens (its host is the RP id).
+      GOTRUE_PASSKEY_ENABLED: "true"
+      GOTRUE_WEBAUTHN_RP_ID: ${GOTRUE_WEBAUTHN_RP_ID:-localhost}
+      GOTRUE_WEBAUTHN_RP_DISPLAY_NAME: muster
+      GOTRUE_WEBAUTHN_RP_ORIGINS: ${MUSTER_PUBLIC_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9999/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+volumes:
+  gotrue-pgdata:
+```
+
+And in `~/muster/.env` (with INSTALL.md's helpers: `env_set`, and
+`env_secret` for the two secrets):
+
+```sh
+MUSTER_AUTH_MODE=gotrue
+MUSTER_GOTRUE_URL=http://gotrue:9999
+MUSTER_GOTRUE_JWT_SECRET=<48 random hex characters>   # env_secret MUSTER_GOTRUE_JWT_SECRET 24
+GOTRUE_DB_PASSWORD=<random>                           # env_secret GOTRUE_DB_PASSWORD 24
+MUSTER_BROWSER_PORT=8107
+MUSTER_PUBLIC_URL=http://localhost:8107
+```
+
+`MUSTER_PUBLIC_URL` is the address a browser opens: the browser listener. With
+Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
+`https://…ts.net` address and `GOTRUE_WEBAUTHN_RP_ID` to its host name. Then
+`mi_dc up -d --wait --quiet-pull` (which reads the override; a bare
+`docker compose -f docker-compose.yml` would not), and
+`mi_dc exec -T muster /muster-server invite --claim-admin`.
+
+**Turn it off:** delete `docker-compose.override.yml` **and** the `.env` lines
+above (`MUSTER_AUTH_MODE`, `MUSTER_GOTRUE_*`, `GOTRUE_*`,
+`MUSTER_BROWSER_PORT`), set `MUSTER_PUBLIC_URL` back to the main port's
+address (`http://localhost:8105`, or the `https://` one with `tailscale serve`
+pointed at 8105 again), then `mi_dc up -d --wait --remove-orphans` (which
+stops the GoTrue containers). Both halves: an override left behind without its
+`.env` lines does not parse, and `install.sh` refuses to update until it is
+gone.
+
 ## Users, roles and invites
 
 - **Roles:** there are two, `admin` and `member`.

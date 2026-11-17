@@ -820,7 +820,18 @@ instead of a message:
 `target.kind` is `post` (a new post; `ref` is `""`), `reply` (`ref` is the
 upstream reference to answer), or one of the [outreach](#outreach-drafts-dm-follow-like)
 kinds: `dm` and `follow` (`handle` is the person, `ref` is `""`) and `like`
-(`ref` is what to like). `media` is in the order the officer gave, at most 4
+(`ref` is what to like). An outreach entry also carries its `because_ref` (the
+engagement that motivates it), exactly as [its claim](#outreach-drafts-dm-follow-like)
+will; an entry that cites none has no `because_ref` key. The venue, target and
+`because_ref` of an outbound entry are always the ones its claim hands out, so
+check the draft on the fields you will act on:
+
+```json
+{"draft_id": 19, "kind": "outbound", "message_external_id": "", "body": "",
+ "created_at": "2000-01-02T03:04:05Z", "venue": "example.social",
+ "target": {"kind": "follow", "ref": "", "handle": "someone"},
+ "because_ref": "c_123", "media": []}
+``` `media` is in the order the officer gave, at most 4
 (a post or a reply only); each `ref` is `<angle>/<id>`, which the plugin
 resolves on its own machine.
 
@@ -984,7 +995,7 @@ reply to one of their recorded [engagements](#engagement-kind-engagement) — is
 |---|---|---|
 | `target` | | `{"kind": "dm", "handle"}`, `{"kind": "follow", "handle"}` or `{"kind": "like", "ref"}` |
 | `body` | post, reply, dm (required); follow, like (refused) | a follow or a like is no text |
-| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it |
+| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it. A string, or a whole JSON number kept as its exact digits (so is `target.ref`); a number with a fraction, a sign or an exponent is refused, because an id that went through a float has lost its digits |
 | `contact` | like, reply (optional) | the person's handle, when the target is not one of their recorded engagements |
 | `reason` | follow, like (required); others (optional) | the officer's one line (at most 200 characters), shown on the outreach batch |
 

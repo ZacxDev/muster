@@ -95,8 +95,16 @@ case "$*" in
   *"show-secret hook-token"*) echo "hook-fixture-0123456789"; exit 0 ;;
   "compose version"*) [ "${FAKE_NO_COMPOSE:-0}" = 1 ] && exit 1; echo "Docker Compose version v2.29.0"; exit 0 ;;
   info*) [ "${FAKE_DOCKER_INFO_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
-  compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'; exit 0 ;;
-  compose*" up "*) [ "${FAKE_UP_FAIL:-0}" = 1 ] && { echo "container muster-muster-1 is unhealthy" >&2; exit 1; }; exit 0 ;;
+  compose*"override."*" config -q"*)
+    [ -n "${FAKE_OVERRIDE_BAD:-}" ] && { echo "$FAKE_OVERRIDE_BAD" >&2; exit 1; }; exit 0 ;;
+  compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'
+                      [ -n "${FAKE_CONFIG_EXTRA:-}" ] && printf '%s\n' "$FAKE_CONFIG_EXTRA"; exit 0 ;;
+  compose*" port "*) [ -n "${FAKE_PORT:-}" ] && { echo "$FAKE_PORT"; exit 0; }; echo "no port published" >&2; exit 1 ;;
+  compose*" up "*)
+    # The .env this `up` reads (beside the first -f): its MUSTER_PUBLIC_URL line.
+    d=""; for a; do case "$a" in */docker-compose.yml) [ -n "$d" ] || d=${a%/*} ;; esac; done
+    echo "up saw .env: $(grep '^MUSTER_PUBLIC_URL=' "$d/.env" 2>/dev/null)" >> "$FAKE_LOG"
+    [ "${FAKE_UP_FAIL:-0}" = 1 ] && { echo "container muster-muster-1 is unhealthy" >&2; exit 1; }; exit 0 ;;
   compose*" logs"*) [ -n "${FAKE_COMPOSE_LOGS:-}" ] && printf '%s\n' "$FAKE_COMPOSE_LOGS"; exit 0 ;;
 esac
 case "$1 $2" in
@@ -561,6 +569,7 @@ class Guide(unittest.TestCase):
                   "  MUSTER_MIRROR_HOST=old-laptop\n"
                   "\tPATH=/old/path\n"
                   "export  MUSTER_MIRROR_TOKEN_FILE=/old/token\n"
+                  "MUSTER_MIRROR_WRITE_HOOK_CONFIG = 0\n"
                   "export TMUX_TMPDIR=/run/user/1000/tmux-here\n")
         self.joining(legacy_env=legacy, ADOPT_MIRROR="1")
         out = self.step2()
@@ -568,8 +577,9 @@ class Guide(unittest.TestCase):
         self.assertIn(f"MUSTER_MIRROR_URL={URL}", lines, f"positive control: the settings were rewritten\n{out}")
         for stale in ("old-hub", "old-laptop", "/old/path", "/old/token"):
             self.assertFalse([l for l in lines if stale in l], f"an owned line ({stale}) was kept as a duplicate: {lines}")
-        key = lambda l: re.sub(r"^\s*(export\s+)?", "", l).split("=", 1)[0]
-        for k in ("MUSTER_MIRROR_URL", "MUSTER_MIRROR_HOST", "MUSTER_MIRROR_TOKEN_FILE", "PATH"):
+        self.assertFalse([l for l in lines if "= 0" in l], f"an owned line with spaces around = was kept: {lines}")
+        key = lambda l: re.sub(r"^\s*(export\s+)?", "", l).split("=", 1)[0].strip()
+        for k in ("MUSTER_MIRROR_URL", "MUSTER_MIRROR_HOST", "MUSTER_MIRROR_TOKEN_FILE", "MUSTER_MIRROR_WRITE_HOOK_CONFIG", "PATH"):
             self.assertEqual(sum(key(l) == k for l in lines), 1, f"{k} is not written exactly once: {lines}")
         self.assertIn("export TMUX_TMPDIR=/run/user/1000/tmux-here", lines, "a line it does not own was dropped")
 
@@ -667,6 +677,164 @@ class Guide(unittest.TestCase):
         self.sh(f"mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save MUSTER_URL '{URL}'")
         self.step2()
         self.assertIn(f"MUSTER_URL='{URL}'", self.state(), "a re-run replaced the hub's https address with localhost")
+
+    # --- Step 2: muster's own address, with or without Tailscale (round 3) ----
+
+    WROTE_URL = "muster-install: wrote MUSTER_PUBLIC_URL=http://localhost:8105 to "
+
+    def ups(self) -> list[str]:
+        return [l for l in self.calls().splitlines() if l.startswith("docker compose") and " up " in l]
+
+    def test_step2_gives_a_hub_without_tailscale_its_own_address(self) -> None:
+        # Both blind installs that answered "no Tailscale" got attachments
+        # MISCONFIGURED: MUSTER_PUBLIC_URL was written only by Step 3. A fresh
+        # install.sh writes it (one rule, one place: the guide runs install.sh),
+        # BEFORE its one `up`, and says so in one line.
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save TAILSCALE no")
+        out = self.step2()
+        self.assertEqual(self.dotenv().get("MUSTER_PUBLIC_URL"), "http://localhost:8105", out)
+        self.assertEqual(stat.S_IMODE((self.muster / ".env").stat().st_mode), 0o600)
+        self.assertEqual(len(self.ups()), 1, f"want install.sh's one up, no restart:\n{self.calls()}")
+        self.assertIn("up saw .env: MUSTER_PUBLIC_URL=http://localhost:8105", self.calls(), "the up ran without it")
+        self.assertEqual(out.count(self.WROTE_URL), 1, out)
+
+    def test_step2_keeps_an_address_already_set(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        self.muster.mkdir()
+        (self.muster / ".env").write_text(f"MUSTER_PUBLIC_URL={URL}\n")
+        out = self.step2()
+        self.assertEqual(self.dotenv()["MUSTER_PUBLIC_URL"], URL, "Step 2 replaced Step 3's https address")
+        self.assertEqual(len(self.ups()), 1, f"an address already set needs no restart:\n{self.calls()}")
+        self.assertNotIn("wrote MUSTER_PUBLIC_URL", out)
+
+    def test_an_update_never_writes_an_address(self) -> None:
+        # The reverse-proxy regression: an install that runs WITHOUT
+        # MUSTER_PUBLIC_URL (relative links) got an absolute localhost one on
+        # its next update. Two updates: no .env at all, and a .env without it.
+        for dotenv in (None, "COMPOSE_PROFILES=stt\n"):
+            with self.subTest(dotenv=dotenv):
+                self.tearDown()
+                self.setUp()
+                self.hub()
+                if dotenv is not None:
+                    (self.muster / ".env").write_text(dotenv)
+                out = self.step2()
+                self.assertTrue(self.ups(), f"control: the update ran its up\n{out}")
+                self.assertNotIn("wrote MUSTER_PUBLIC_URL", out)
+                if dotenv is None:
+                    self.assertFalse((self.muster / ".env").exists(), "an update created a .env")
+                else:
+                    self.assertEqual((self.muster / ".env").read_text(), dotenv, "an update changed the .env")
+
+    def test_step2_join_writes_no_server_address(self) -> None:
+        self.joining()
+        self.step2()
+        self.assertFalse((self.muster / ".env").exists(), "a joining machine has no server to give an address")
+
+    # --- the person's docker-compose.override.yml is read (round 3) -----------
+
+    # Compose's own override names, in the order it picks one (measured with
+    # Compose 5.5.0: with compose.override.yml and docker-compose.override.yml
+    # both beside docker-compose.yml, it reads compose.override.yml).
+    OVERRIDES = ("compose.override.yml", "compose.override.yaml", "docker-compose.override.yml", "docker-compose.override.yaml")
+
+    def test_mi_dc_reads_the_override_when_there_is_one(self) -> None:
+        self.hub()
+        self.sh("mi_dc ps")
+        self.assertNotIn("override", self.calls(), "positive control: no override file, none passed")
+        for name in self.OVERRIDES:
+            with self.subTest(name=name):
+                for f in self.OVERRIDES:
+                    (self.muster / f).unlink(missing_ok=True)
+                (self.muster / name).write_text("services: {}\n")
+                self.log.write_text("")
+                self.sh("mi_dc up -d --wait")
+                want = f"-f {self.muster}/docker-compose.yml -f {self.muster}/{name} -p muster up -d --wait"
+                self.assertIn(want, self.calls())
+        # Two at once: the one Compose would pick, and only it.
+        (self.muster / "compose.override.yml").write_text("services: {}\n")
+        self.log.write_text("")
+        self.sh("mi_dc ps")
+        self.assertIn(f"-f {self.muster}/compose.override.yml -p muster ps", self.calls())
+        self.assertNotIn("docker-compose.override.yaml", self.calls())
+
+    def test_install_sh_reads_the_override_and_pulls_quietly(self) -> None:
+        for name in self.OVERRIDES:
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+                self.muster.mkdir()
+                (self.muster / name).write_text("services: {}\n")
+                out = self.step2()
+                ups = self.ups()
+                self.assertTrue(ups, out)
+                self.assertIn(f"-f {self.muster}/{name} -p muster up", ups[0], "install.sh dropped the override file")
+                self.assertIn("--quiet-pull", ups[0], "install.sh pulls with progress bars")
+
+    # --- a stale override is refused before anything changes (round 3) --------
+
+    def test_install_sh_refuses_an_override_its_env_lines_left(self) -> None:
+        # Accounts mode turned off by deleting its .env lines, the override
+        # left: the new compose file must not be copied in before `up` refuses.
+        self.hub()
+        (self.muster / "docker-compose.yml").write_text("# the old release's\n")
+        (self.muster / ".env").write_text("COMPOSE_PROFILES=\n")
+        (self.muster / "docker-compose.override.yml").write_text("services: {}\n")
+        err = "error while interpolating services.gotrue-db.environment.POSTGRES_PASSWORD: required variable GOTRUE_DB_PASSWORD is missing a value"
+        out = self.step2(FAKE_OVERRIDE_BAD=err)
+        self.assertIn(f"muster-install: {self.muster}/docker-compose.override.yml does not work with release {RELEASE} "
+                      f"and {self.muster}/.env: {err}. Nothing was changed.", out)
+        self.assertEqual((self.muster / "docker-compose.yml").read_text(), "# the old release's\n", "the new compose file went in")
+        self.assertEqual(self.ups(), [], "it started the stack anyway")
+        checks = [l for l in self.calls().splitlines() if " config -q" in l]
+        self.assertTrue(checks and f"--project-directory {self.muster} " in checks[0], f"not checked against ~/muster's .env: {checks}")
+        # Control: the same override, working, updates as before.
+        out = self.step2()
+        self.assertNotIn("does not work with release", out)
+        self.assertEqual((self.muster / "docker-compose.yml").read_text(), "name: muster\nservices: {}\n", out)
+        self.assertTrue(self.ups(), out)
+
+    # --- accounts mode: the address a browser can open (round 3) --------------
+
+    GOTRUE_CONFIG = "      MUSTER_AUTH_MODE: gotrue\n      MUSTER_BROWSER_PORT: \"8107\""
+
+    def test_install_sh_in_accounts_mode_names_the_browser_listener(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        # A host port distinct from the container's 8107 and the main 8105, so
+        # the line can only come from `docker compose port`.
+        out = self.step2(FAKE_CONFIG_EXTRA=self.GOTRUE_CONFIG, FAKE_PORT="127.0.0.1:18197")
+        self.assertIn("muster is at http://localhost:18197 (accounts mode", out)
+        self.assertNotIn("muster is at http://localhost:8105", out, "it told a browser to open the machine port")
+        self.assertIn("compose -f", [l for l in self.calls().splitlines() if " port muster 8107" in l][0])
+
+    def test_install_sh_in_accounts_mode_with_the_port_unpublished_says_so(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        out = self.step2(FAKE_CONFIG_EXTRA=self.GOTRUE_CONFIG)
+        self.assertIn("which no host port publishes", out)
+        self.assertNotIn("muster is at http://localhost:8105", out)
+
+    def test_install_sh_in_password_mode_names_the_main_port(self) -> None:
+        # The control: no accounts mode, the main port as before.
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        out = self.step2(FAKE_PORT="127.0.0.1:18197")
+        self.assertIn("muster is at http://localhost:8105", out)
+        self.assertNotIn("accounts mode", out)
+
+    # --- the password, changed (round 3) --------------------------------------
+
+    def test_the_password_change_sets_a_new_one_and_restarts(self) -> None:
+        self.hub()
+        b = self.lib + block('env_set MUSTER_UI_PASSWORD "$(mi_rand 18)"')
+        out = self.run_block(b)
+        first = self.dotenv()["MUSTER_UI_PASSWORD"]
+        self.assertRegex(first, r"^[0-9a-f]{36}$", out)
+        self.assertNotIn(first, out, "the new password reached the agent's output")
+        self.assertNotIn(first, self.awk_argv.read_text(), "the new password reached argv")
+        self.assertIn("up -d --wait", self.calls())
+        self.assertIn("PASSWORD CHANGED", out)
+        self.run_block(b)
+        self.assertNotEqual(self.dotenv()["MUSTER_UI_PASSWORD"], first, "a second change kept the old password")
 
     def test_step2_refuses_an_earlier_guides_install(self) -> None:
         self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
@@ -908,6 +1076,29 @@ class Guide(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.muster / ".env").stat().st_mode), 0o600)
         self.assertFalse((self.muster / ".env.tmp").exists())
         self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-secret-in-argv-check")
+
+    def test_env_get_and_env_set_read_every_spelling_compose_reads(self) -> None:
+        # Compose reads `export KEY=v` and `KEY = v` (value trimmed), and the
+        # LAST line of a key wins (measured with Compose 5.5.0's
+        # `docker compose config`). A user's value in either form must be
+        # what env_get sees, and env_set must leave no line that shadows it.
+        self.hub()
+        (self.muster / ".env").write_text("export MUSTER_PUBLIC_URL=https://from-export.example\n"
+                                          "KEEP=1\n"
+                                          "  MUSTER_STT_TOKEN = spaced-value  \n"
+                                          "MUSTER_PUBLIC_URL_EXTRA=not-this-key\n")
+        self.assertEqual(self.sh("env_get MUSTER_PUBLIC_URL").strip(), "https://from-export.example")
+        self.assertEqual(self.sh("env_get MUSTER_STT_TOKEN"), "spaced-value\n")
+        self.sh("env_set MUSTER_PUBLIC_URL https://new.example\nenv_set MUSTER_STT_TOKEN new-token")
+        lines = (self.muster / ".env").read_text().splitlines()
+        self.assertEqual(lines, ["MUSTER_PUBLIC_URL=https://new.example", "KEEP=1", "MUSTER_STT_TOKEN=new-token",
+                                 "MUSTER_PUBLIC_URL_EXTRA=not-this-key"])
+        self.assertEqual(self.sh("env_get MUSTER_PUBLIC_URL").strip(), "https://new.example")
+        # The last line wins, as in Compose: a later spaced line over an earlier plain one.
+        (self.muster / ".env").write_text("K=first\nexport K = last\n")
+        self.assertEqual(self.sh("env_get K").strip(), "last")
+        self.sh("env_set K only")
+        self.assertEqual((self.muster / ".env").read_text(), "K=only\n")
 
     def test_mi_profiles_replaces_only_its_own(self) -> None:
         self.hub()

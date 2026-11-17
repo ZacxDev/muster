@@ -34,19 +34,24 @@ func TestOpenCodePairSaysWhichOpencodeItNeeds(t *testing.T) {
 		version     string
 		want, never []string
 	}{
+		// Round 3: opencode.ai/install gives a 1.x, and the fix a blind
+		// install found was the v2 installer; and every case says what a
+		// pair needs first, an opencode server that has run once.
 		"opencode 1": {"1.19.5",
-			[]string{"this host has opencode 1.19.5", "muster needs opencode 2 or later", "`opencode upgrade --major`", "opencode 1 has no background service"},
+			[]string{"this host has opencode 1.19.5", "muster needs opencode 2 or later", "`opencode upgrade --major`", "opencode 1 has no background service",
+				"`curl -fsSL https://opencode.ai/v2/install | bash`", "run opencode once first (e.g. `opencode serve`"},
 			[]string{"`opencode service"}},
 		// The boundary: exactly the oldest major muster works with.
 		"opencode 2": {"opencode v2.0.32+6ec5682",
-			[]string{"opencode 2.0.32+6ec5682 is installed", "`opencode service start`"},
-			[]string{"upgrade", "muster needs"}},
+			[]string{"opencode 2.0.32+6ec5682 is installed", "`opencode service start`", "run opencode once first (e.g. `opencode serve`"},
+			[]string{"upgrade", "muster needs", "v2/install"}},
 		"opencode 3": {"opencode v3.4.1+abc1234",
-			[]string{"opencode 3.4.1+abc1234 is installed", "`opencode service start`"},
-			[]string{"upgrade", "muster needs"}},
+			[]string{"opencode 3.4.1+abc1234 is installed", "`opencode service start`", "run opencode once first (e.g. `opencode serve`"},
+			[]string{"upgrade", "muster needs", "v2/install"}},
 		"no opencode": {"",
-			[]string{"muster needs opencode 2 or later", "`opencode --version` did not run", "install opencode 2"},
-			[]string{"opencode service start", "upgrade --major"}},
+			[]string{"muster needs opencode 2 or later", "`opencode --version` did not run", "install opencode 2 with `curl -fsSL https://opencode.ai/v2/install | bash`",
+				"https://opencode.ai/install installs opencode 1", "run opencode once first (e.g. `opencode serve`"},
+			[]string{"opencode service start", "upgrade --major", "is not on this PATH"}},
 		"no version": {"opencode (dev build)",
 			[]string{"names no version", "muster needs opencode 2 or later"},
 			[]string{"upgrade --major"}},
@@ -78,6 +83,49 @@ func TestOpenCodePairSaysWhichOpencodeItNeeds(t *testing.T) {
 				t.Error("a token file was written")
 			}
 		})
+	}
+}
+
+// TestOpenCodePairFindsOpencodeOffPath: an opencode only in ~/.opencode/bin
+// (where its installer puts it), run from a shell whose PATH lacks that
+// directory (a blind install, round 3), is named with its directory, and its
+// own version decides the advice: a 2.x is told to run opencode once, not to
+// install it. The control is the same home with no opencode there.
+func TestOpenCodePairFindsOpencodeOffPath(t *testing.T) {
+	fakeOpenCodeOnPath(t, "") // nothing on PATH
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	bin := filepath.Join(home, ".opencode", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n[ \"$1\" = --version ] && echo 'opencode v2.3.0' && exit 0\nexit 9\n"
+	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"HOME": home, "XDG_STATE_HOME": filepath.Join(dir, "state")}
+	var out, errb bytes.Buffer
+	if rc := run([]string{"opencode-pair"}, func(k string) string { return env[k] }, &out, &errb); rc != 1 {
+		t.Fatalf("rc %d, want 1: %q", rc, errb.String())
+	}
+	msg := errb.String()
+	for _, w := range []string{"opencode is at " + filepath.Join(bin, "opencode") + ", which is not on this PATH (put " + bin + " on PATH",
+		"opencode 2.3.0 is installed", "run opencode once first (e.g. `opencode serve`"} {
+		if !strings.Contains(msg, w) {
+			t.Errorf("missing %q in %q", w, msg)
+		}
+	}
+	if strings.Contains(msg, "did not run") || strings.Contains(msg, "v2/install") {
+		t.Errorf("an installed opencode was called missing: %q", msg)
+	}
+	// Control: the same home without it is "not installed".
+	if err := os.Remove(filepath.Join(bin, "opencode")); err != nil {
+		t.Fatal(err)
+	}
+	errb.Reset()
+	run([]string{"opencode-pair"}, func(k string) string { return env[k] }, &out, &errb)
+	if !strings.Contains(errb.String(), "did not run") || strings.Contains(errb.String(), "is not on this PATH") {
+		t.Errorf("control: %q", errb.String())
 	}
 }
 
