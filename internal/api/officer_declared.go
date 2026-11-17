@@ -836,6 +836,18 @@ func fieldError(field, msg string) error {
 	return &officers.FieldError{Field: field, Err: errors.New(msg)}
 }
 
+// minderTeamRefusal refuses the session_minder capability on a TEAM's officer
+// (team: the owner is a team): only a person's stops are minded — a team's
+// state pass runs no chief and feeds no minder (session_minder.go) — so the
+// grant would read as working while doing nothing. Every door that writes a
+// declared officer's policy asks this (createDeclared, updateDeclared).
+func minderTeamRefusal(team bool, policy json.RawMessage) error {
+	if !team || !slices.Contains(policyCaps(policy), builtin.CapSessionMinder) {
+		return nil
+	}
+	return fieldError("policy", "a team's officer cannot mind sessions: only a person's stopped sessions are minded (the session_minder permission does nothing on a team officer)")
+}
+
 // declaration is in as owner's declaration of id with slug (the durations
 // parsed, the runtime defaulted to auto), or the field it refuses.
 func (in declaredIn) declaration(owner int64, id, slug string) (officers.Declaration, error) {
@@ -1285,6 +1297,9 @@ func (s *Server) createDeclared(ctx context.Context, owner int64, team bool, in 
 	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
 		return builtin.DeclaredRow{}, refused(err)
 	}
+	if err := minderTeamRefusal(team, in.Policy); err != nil {
+		return builtin.DeclaredRow{}, declaredInvalid{err}
+	}
 	row, err := s.officerStore.CreateDeclared(ctx, owner, s.declaredWriteOf(in, d), slugs)
 	if err != nil {
 		return builtin.DeclaredRow{}, err
@@ -1370,6 +1385,9 @@ func (s *Server) updateDeclared(ctx context.Context, owner int64, team bool, id 
 	}
 	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
 		return refused(err)
+	}
+	if err := minderTeamRefusal(team, in.Policy); err != nil {
+		return declaredInvalid{err}
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
 	if _, err := s.officerStore.UpdateDeclared(ctx, owner, id, s.declaredWriteOf(in, d)); err != nil {

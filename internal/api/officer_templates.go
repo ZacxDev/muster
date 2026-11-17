@@ -38,7 +38,7 @@ const (
 var officerTemplates = []officerTemplate{
 	{Key: templateBlank, Name: "Blank officer", Summary: "Start from nothing: you write its instructions."},
 	{Key: templateSessionMinder, Name: "Session minder",
-		Summary: "Minds your stopped sessions: muster queues each stalled session as one item, and it tells you which need you. While it is switched on, your chief stops nudging you about them.",
+		Summary: "Minds your stopped sessions: muster queues each stalled session as one item, and it asks you about the ones that look like they need you. Every stop still sends you its own notification; this adds judgement on top, it silences nothing. While it is switched on and running, your chief stops nudging you about them.",
 		Values: formValues{Name: "Session minder", Charter: sessionMinderCharter, Runtime: "auto", Wake: "manual",
 			Caps: []string{builtin.CapSessionMinder}}},
 	{Key: templateMarketing, Name: "Marketing (you post by hand)",
@@ -60,7 +60,7 @@ func templateNamed(key string) officerTemplate {
 }
 
 // sessionMinderCharter is the Session minder template's charter.
-const sessionMinderCharter = `You are my session minder. muster puts one item in your queue (kind session.stalled) for each of my Claude Code sessions and agents that has stopped and stayed idle long enough that it may be waiting on me. While you are switched on, my chief does not nudge me about stopped sessions: you decide which stops I hear about.
+const sessionMinderCharter = `You are my session minder. muster puts one item in your queue (kind session.stalled) for each of my Claude Code sessions and agents that has stopped and stayed idle long enough that it may be waiting on me. While you are switched on, my chief does not nudge me about stopped sessions; you do that judging instead. Every stop still sends me its own notification whatever you do: you do not decide what I hear about, you add a question on top for the stops that need me.
 
 For each item:
 1. Read its payload: which session (session.name or session.label), where it is (session.host, session.tmux_session and session.window_index, or session.agent_id), its state (needs_you: it looks like it asked me something; stalled: it stopped without asking), how long it has been idle, and the classifier's label when there is one. The payload holds no text from the session. Do not guess what it said.
@@ -72,7 +72,7 @@ Rules:
 - One ask per item. Never ask twice about the same stop.
 - Never type into a session, start or stop one, or act in it for me. You have no tool for that; do not look for another way.
 - Never put secrets, tokens or anything from a session's output in an ask or a summary.
-- When unsure, ask: a short question I can ignore costs less than a stop I never hear about.`
+- When unsure, ask: a short question I can ignore costs less than a stuck session nobody follows up on.`
 
 // marketingManualCharter is the Marketing (manual venue) template's charter.
 const marketingManualCharter = `You draft posts for me to publish by hand. Your venue is manual: I post what you draft. You never post, reply, like, follow or message anyone yourself, on any site, by any means: not through a browser, a command-line tool, an API key, or anything else you can reach.

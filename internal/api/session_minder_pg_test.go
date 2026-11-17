@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
@@ -27,11 +28,38 @@ type minderRig struct {
 	store *builtin.Store
 }
 
+// newMinderRig is the minder fixture. Its officer runtime can run a minder IN PODS (a provisioner, the claude-code
+// kind, the session settings taken), so a declared minder resolves and is in
+// the live roster (minderRuns). newMinderRigNowhere is the same rig with
+// nowhere to run one.
 func newMinderRig(t *testing.T, nudges bool) *minderRig {
+	t.Helper()
+	return newMinderRigWith(t, nudges, true)
+}
+
+// newMinderRigNowhere is newMinderRig whose officer runtime can run nothing:
+// no provisioner (pods refused) and no host spawn store (hosts refused).
+func newMinderRigNowhere(t *testing.T, nudges bool) *minderRig {
+	t.Helper()
+	return newMinderRigWith(t, nudges, false)
+}
+
+func newMinderRigWith(t *testing.T, nudges, pods bool) *minderRig {
 	t.Helper()
 	f := newStateFixture(t, nudges)
 	r := &minderRig{stateFixture: f, store: builtin.NewStore(f.pool)}
 	f.srv.EnableOfficerStore(r.store)
+	cfg := OfficersConfig{Builtin: r.store}
+	if pods {
+		// The fixture's chief reads as RUNNING on the provisioner (live status
+		// is the provisioner's once there is one), so the nudges still reach it.
+		f.srv.ext.Provisioner = &officerProv{store: &officerAgents{}, phase: map[string]provision.Phase{f.boss.Name: provision.PhaseRunning}}
+		f.srv.ext.Kinds = stubKinds{pick: "acct-one"}
+		cfg.InstallSession = discardSession
+	}
+	if _, err := f.srv.EnableOfficers(cfg); err != nil {
+		t.Fatal(err)
+	}
 	return r
 }
 
@@ -54,6 +82,16 @@ func declareMinder(t *testing.T, store *builtin.Store, owner int64, id string, c
 		t.Fatalf("declare %s for %d: %v", id, owner, err)
 	}
 	t.Cleanup(func() { _, _ = store.DeleteDeclared(asUser(owner), owner, id) })
+}
+
+// declare is declareMinder on the rig, then the roster load every write runs
+// (reloadDeclaredOfficers), so the live roster has it when it can run.
+func (r *minderRig) declare(t *testing.T, owner int64, id string, caps ...string) {
+	t.Helper()
+	declareMinder(t, r.store, owner, id, caps...)
+	if err := r.srv.reloadDeclaredOfficers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // minderItems is owner's officer's items, oldest first, read straight from
@@ -100,7 +138,7 @@ const minderID = "session-minder:main"
 // stop with no minder of the operator's.
 func TestASessionMinderTurnsTheChiefsNudgesOffForItsOwner(t *testing.T) {
 	r := newMinderRig(t, true)
-	declareMinder(t, r.store, authz.OperatorUserID, minderID)
+	r.declare(t, authz.OperatorUserID, minderID)
 	r.statePass(t)
 	if n := r.pass(t); n != 0 {
 		t.Fatalf("SUPPRESSION: an owner with an active Session minder was nudged: %d decision(s) %+v", n, r.decisions(t))
@@ -127,7 +165,7 @@ func TestASessionMinderTurnsTheChiefsNudgesOffForItsOwner(t *testing.T) {
 // deleted (the page's Delete: DeleteDeclared), the next sweep decides the stop.
 func TestADeletedSessionMinderGivesTheNudgesBack(t *testing.T) {
 	r := newMinderRig(t, true)
-	declareMinder(t, r.store, authz.OperatorUserID, minderID)
+	r.declare(t, authz.OperatorUserID, minderID)
 	r.statePass(t)
 	if n := r.pass(t); n != 0 {
 		t.Fatalf("SUPPRESSION: an owner with an active Session minder was nudged: %d decision(s)", n)
@@ -146,8 +184,8 @@ func TestADeletedSessionMinderGivesTheNudgesBack(t *testing.T) {
 // decided, by the chief.
 func TestAnotherOwnersSessionMinderLeavesTheNudgesAlone(t *testing.T) {
 	r := newMinderRig(t, true)
-	declareMinder(t, r.store, r.member, minderID)
-	declareMinder(t, r.store, authz.OperatorUserID, "drafter:main", builtin.CapOutboundDrafts)
+	r.declare(t, r.member, minderID)
+	r.declare(t, authz.OperatorUserID, "drafter:main", builtin.CapOutboundDrafts)
 	r.statePass(t)
 	if n := r.pass(t); n != 1 {
 		t.Fatalf("decided %d, want 1: another owner's minder (or a non-minder officer) took the operator's nudges away", n)
@@ -157,6 +195,27 @@ func TestAnotherOwnersSessionMinderLeavesTheNudgesAlone(t *testing.T) {
 	}
 	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, "drafter:main"); len(got) != 0 {
 		t.Fatalf("a non-minder officer was fed stops: %+v", got)
+	}
+}
+
+// TestASessionMinderThatCannotRunSuppressesNothing: switched on, but this
+// muster has nowhere to run it (no pods, no host) — the roster load resolves
+// it to nothing, so it would mind nothing, and the chief still decides the
+// stop. CONTROL: TestASessionMinderTurnsTheChiefsNudgesOffForItsOwner, the
+// same minder on a rig that runs it in pods, decides nothing.
+func TestASessionMinderThatCannotRunSuppressesNothing(t *testing.T) {
+	r := newMinderRigNowhere(t, true)
+	r.declare(t, authz.OperatorUserID, minderID)
+	st, ok := r.srv.officerRT.declaredView(authz.OperatorUserID, minderID)
+	if !ok || st.officer != nil || st.reason == "" {
+		t.Fatalf("fixture: the minder should be declared and resolve to nowhere; got declared=%v %+v", ok, st)
+	}
+	r.statePass(t)
+	if n := r.pass(t); n != 1 {
+		t.Fatalf("UNRUNNABLE MINDER: a Session minder with nowhere to run (%s) kept the chief's nudges off: decided %d, want 1", st.reason, n)
+	}
+	if got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID); len(got) != 0 {
+		t.Fatalf("a minder that cannot run was fed stops: %+v", got)
 	}
 }
 
@@ -188,7 +247,7 @@ func TestAMindedOwnersStopPushesWithoutWaitingOnTheChief(t *testing.T) {
 
 	r := newMinderRig(t, true)
 	r.live()
-	declareMinder(t, r.store, authz.OperatorUserID, minderID)
+	r.declare(t, authz.OperatorUserID, minderID)
 	r.statePass(t)
 	if got := r.episodePushes(); len(got) != 1 {
 		t.Fatalf("a minded live owner's stop: pushes %v; want one at once (the chief judges nothing for it)", got)
@@ -203,7 +262,7 @@ func TestAMindedOwnersStopPushesWithoutWaitingOnTheChief(t *testing.T) {
 // is session state's, not the chief's.
 func TestASessionMinderIsFedEachStopOnce(t *testing.T) {
 	r := newMinderRig(t, false)
-	declareMinder(t, r.store, authz.OperatorUserID, minderID)
+	r.declare(t, authz.OperatorUserID, minderID)
 	r.statePass(t)
 	e := r.oneEpisode(t)
 	got := minderItems(t, r.stateFixture, authz.OperatorUserID, minderID)

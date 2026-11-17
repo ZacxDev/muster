@@ -202,8 +202,9 @@ const CapContacts = "contacts"
 // CapSessionMinder is the type capability that makes a builtin officer its
 // owner's SESSION MINDER (the wizard's "Session minder" template; internal/api
 // session_minder.go): "capabilities": ["session_minder"] in its type's
-// policy. While an officer of the owner's that grants it is defined and
-// switched on, the chief's stall nudges skip that owner, and each stalled
+// policy. While an officer of the owner's that grants it is defined,
+// switched on and RUNS (internal/api minderRuns: the live roster resolved it
+// somewhere), the chief's stall nudges skip that owner, and each stalled
 // session episode the nudges would have judged becomes one of its items
 // instead. It offers no tool.
 const CapSessionMinder = "session_minder"

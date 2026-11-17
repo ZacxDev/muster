@@ -686,19 +686,26 @@ before you create it, and none adds a repository, a connector or a host.
 - **Session minder** — minds your stopped sessions in place of the chief's
   stall nudges. Its permission *Mind my stopped sessions*
   (`"capabilities": ["session_minder"]` in its type's policy) is what muster
-  acts on, in code: while an officer of yours with it is switched on, the
-  chief's nudge sweep skips you entirely (no chief call, no nudge, and a
-  stop's push no longer waits for the chief's decision), and each stop the
+  acts on, in code: while an officer of yours with it is switched on **and
+  runs** (the roster resolved it somewhere — a minder with nowhere to run
+  suppresses nothing), the chief's nudge sweep skips you entirely (no chief
+  call, no nudge, and a stop's push no longer waits for the chief's
+  decision), and each stop the
   sweep would have judged — idle past `MUSTER_CHIEF_NUDGE_IDLE`, no
   background work, no turn error, no open ask — becomes **one**
   `session.stalled` item, subject `episode:<id>`, whose payload says where
   the session is and its state, never what it wrote. A stop is fed once:
   finishing the item does not bring it back while the stop lasts. Pause or
-  delete the officer and the nudges return on the next sweep. 🔴 It needs
-  session state (`MUSTER_SESSION_STATE=1`): without episodes there is nothing
-  to feed it, so it suppresses nothing. Persons only (a team's pass runs no
-  chief). No repository: it works in a scratch directory, woken by its
-  items. It cannot type into a session; it asks you (`officer_ask_person`).
+  delete the officer and the nudges return on the next sweep. 🔴 It does
+  **not** filter your notifications: every stop's push still reaches you, as
+  it would with no chief — the minder adds judgement on top (it asks about
+  the stops that look like they need you and closes the rest), it never
+  silences a push. Only one minder is used per owner, the first by id.
+  🔴 It needs session state (`MUSTER_SESSION_STATE=1`): without episodes
+  there is nothing to feed it, so it suppresses nothing. Persons only (a
+  team's pass runs no chief): a team officer is refused the permission on
+  create and Edit. No repository: it works in a scratch directory, woken by
+  its items. It cannot type into a session; it asks you (`officer_ask_person`).
 - **Marketing (you post by hand)** — drafts posts on a weekly schedule and
   sends each draft to you as a question; the venue is manual, so you post
   it yourself. It is given no outbound-drafts permission and its

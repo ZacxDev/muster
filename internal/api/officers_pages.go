@@ -582,7 +582,7 @@ func presetCron(key string) string {
 var officerCaps = []struct{ Key, Label string }{
 	{builtin.CapOutboundDrafts, "Draft posts and replies for your approval (outbound drafts through a bound plugin)"},
 	{builtin.CapContacts, "Keep a record of the people it hears from (contacts)"},
-	{builtin.CapSessionMinder, "Mind my stopped sessions: muster queues each one as an item for it, and my chief stops nudging me while it is switched on (needs session state)"},
+	{builtin.CapSessionMinder, "Mind my stopped sessions: muster queues each one as an item for it, and my chief stops nudging me while it is switched on and running (needs session state; my stop notifications still arrive)"},
 }
 
 // fieldErrs is a form's refusals, by field.
@@ -790,6 +790,8 @@ func officerFieldErrs(err error) (fieldErrs, string) {
 		case strings.HasPrefix(field, "read_repos"):
 			field = "read_repos"
 		case field == "escalate_to":
+		case field == "policy":
+			field = "cap" // the policy is the permissions step's boxes
 		case field == "idle_scale_to_zero_after", field == "poll_interval", field == "max_instances", field == "model":
 			top = f.Err.Error()
 			continue
@@ -1111,6 +1113,9 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 			on = on || got == c.Key
 		}
 		b.WriteString(`<label class="flex items-start gap-2"><input type="checkbox" name="cap" value="` + c.Key + `"` + checkedIf(on) + ` class="mt-1"><span class="text-sm text-fg">` + esc(c.Label) + `</span></label>`)
+		if c.Key == builtin.CapSessionMinder {
+			b.WriteString(`<p class="pl-6 text-xs text-fg2" data-minder-note>Only one session minder is used per owner (the first by id), and it has no effect on a team's officers.</p>`)
+		}
 	}
 	b.WriteString(fieldErrNode(errs, "cap"))
 	b.WriteString(`<label for="officer-connectors" class="text-sm font-medium text-fg">Connectors it may ask for <span class="font-normal text-fg2">(optional; you approve each request)</span></label>

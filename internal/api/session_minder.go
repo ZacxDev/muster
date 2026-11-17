@@ -31,6 +31,9 @@ import (
 //     good: an item already done is not queued again while the stop stays
 //     open, nor when the stop resumes after a host drop (episodeRoot).
 //
+// 🔴 IT MUST BE ABLE TO RUN: an enabled minder the roster load resolved to
+// nowhere (minderRuns) suppresses nothing and is fed nothing.
+//
 // 🔴 IT NEEDS SESSION STATE (MUSTER_SESSION_STATE=1): episodes are what it is
 // fed. With session state off there is nothing to feed it, so it minds
 // nothing and suppresses nothing — the chief keeps nudging. A read that fails
@@ -48,8 +51,9 @@ const minderItemKind = "session.stalled"
 
 // sessionMinderOf is owner's active session minder's officer id
 // (builtin.Store.SessionMinder), "" when owner has none — or when session
-// state is off (nothing would feed it), there is no officer store, or the read
-// fails: a minder that cannot be confirmed never takes the chief's nudges away.
+// state is off (nothing would feed it), there is no officer store, the read
+// fails, or the minder CANNOT RUN (minderRuns): a minder that cannot be
+// confirmed to work never takes the chief's nudges away.
 func (s *Server) sessionMinderOf(octx context.Context, owner int64) string {
 	if !s.sessionStateOn() || s.officerStore == nil {
 		return ""
@@ -59,10 +63,24 @@ func (s *Server) sessionMinderOf(octx context.Context, owner int64) string {
 		s.logger.Printf("session minder: owner %d: %v", owner, err)
 		return ""
 	}
-	if !ok {
+	if !ok || !s.minderRuns(owner, officer) {
 		return ""
 	}
 	return officer
+}
+
+// minderRuns reports whether owner's officer is in the LIVE roster — what the
+// roster load resolved to somewhere it runs (resolveDeclared → resolveRuntime,
+// the one runtime rule; the officers page's "running"). 🔴 An officer that is
+// switched on but resolved to nowhere (no pods, no qualifying host, a refused
+// declaration) would mind nothing, so it must not silence the chief either:
+// the nudges stay on, as with session state off. No officer runtime: false.
+func (s *Server) minderRuns(owner int64, officer string) bool {
+	if s.officerRT == nil || s.officerRT.reg == nil {
+		return false
+	}
+	_, ok := s.officerRT.reg.ForOwner(owner, officer)
+	return ok
 }
 
 // feedSessionMinder queues, for owner's active session minder, one item per
