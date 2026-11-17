@@ -516,11 +516,13 @@ func ToolOffered(o Officer, tool string) bool {
 		// HQ also refuses a type whose flood_actuator is off.
 		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
 	case ToolRolloutPromotePropose:
-		// item_asks.go: a rollout officer's, EVERY pool (and an untiered
-		// one): HQ tiers the sweep that proposes routine. HQ also refuses a
-		// type whose rollout_actuator is off, a repository its allowlist does
-		// not name and a lost lease.
-		return o.Type() == RolloutOfficerType
+		// item_asks.go: a rollout officer's ROUTINE pool (and an untiered
+		// one), never its judgement pool: HQ tiers the sweep that proposes
+		// routine, and the charter's judgement work only escalates a failed
+		// rollout.result — it never proposes, and the charter forbids a retry.
+		// HQ also refuses a type whose rollout_actuator is off, a repository
+		// its allowlist does not name and a lost lease.
+		return o.Type() == RolloutOfficerType && o.Tier != TierJudgement
 	case ToolPRContext:
 		// pr_context.go: the JUDGEMENT pool only, as the flood tool — the
 		// pool that reads compare diffs and attributes. HQ also refuses a

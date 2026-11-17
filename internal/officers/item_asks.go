@@ -29,8 +29,9 @@ import (
 //
 // WHO MAY CALL: muster offers each tool by officer TYPE NAME (ToolOffered:
 // task-reconciler, both pools; web-performance, its JUDGEMENT pool only —
-// operator decision on muster#565; rollout, every pool — HQ tiers the
-// rollout officer's sweep, the item that proposes, routine); HQ enforces the
+// operator decision on muster#565; rollout, its ROUTINE pool (and an
+// untiered one) — HQ tiers the sweep, the item that proposes, routine, and
+// the judgement pool only escalates failed results); HQ enforces the
 // type POLICY (task_asks, flood_actuator, rollout_actuator) and the lease. muster does NOT check the lease:
 // officer_ask_person does not either, and HQ's check is the authoritative one
 // (409 lease_lost) — a flood proposal is also allowed on a WAITING item,
@@ -223,9 +224,10 @@ type RolloutPromotion struct {
 	Repo       string
 	PreviewTag string
 	// Evidence is the evidence object exactly as the instance gave it. muster
-	// does not decode it into a copy of HQ's shape: HQ's decoder refuses an
-	// unknown or ill-typed field inside it (400 invalid), and because muster
-	// forwards the object whole, nothing in it is ever silently dropped.
+	// forwards it whole, so nothing in it is ever silently dropped; HQ's
+	// decoder refuses an unknown or ill-typed field inside it (400 invalid).
+	// The tool's SCHEMA (internal/api itemAskToolDefs) mirrors HQ's §5r
+	// evidence shape and must change with it.
 	Evidence json.RawMessage
 }
 

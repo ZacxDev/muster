@@ -49,8 +49,9 @@ func TestParseFloodBlockProposalKeepsTheNumberAsGiven(t *testing.T) {
 }
 
 // TestTheRolloutToolIsOfferedToTheRolloutTypeOnly: officer_rollout_promote_propose
-// to every pool of a rollout officer (and an untiered one) — HQ tiers the
-// sweep that proposes routine — and to no other type, a look-alike prefix or
+// to a rollout officer's ROUTINE pool and an untiered one — HQ tiers the
+// sweep that proposes routine — never its judgement pool (which only
+// escalates failed results), and to no other type, a look-alike prefix or
 // suffix included.
 func TestTheRolloutToolIsOfferedToTheRolloutTypeOnly(t *testing.T) {
 	for _, c := range []struct {
@@ -60,7 +61,7 @@ func TestTheRolloutToolIsOfferedToTheRolloutTypeOnly(t *testing.T) {
 	}{
 		{"rollout:example", "", true},
 		{"rollout:example", TierRoutine, true},
-		{"rollout:example", TierJudgement, true},
+		{"rollout:example", TierJudgement, false},
 		{"rollout:other", TierRoutine, true},
 		{"web-performance:alpha-web", TierJudgement, false},
 		{"task-reconciler:hq", TierRoutine, false},

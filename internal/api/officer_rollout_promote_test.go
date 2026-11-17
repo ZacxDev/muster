@@ -14,7 +14,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE ROLLOUT PROPOSAL TOOL (officer_item_asks.go): officer_rollout_promote_propose
-// (civ-hq #887, docs/OFFICERS.md §5r), a rollout officer's — every pool. ONE
+// (civ-hq #887, docs/OFFICERS.md §5r), a rollout officer's ROUTINE pool (or an untiered one). ONE
 // POST …/items/{item}/rollout-promotions with the officer's own token, which
 // muster holds and the instance never sees; HQ re-reads the canary, asks the
 // approvers and — on an approval, never the officer — dispatches the
@@ -78,12 +78,14 @@ func (r *officerRig) heldSweep(t *testing.T, inst agents.Agent) string {
 	return item
 }
 
-// TestTheRolloutToolIsTheRolloutOfficersEveryPool: both pools of the rollout
-// officer list and pre-allow officer_rollout_promote_propose (HQ tiers the
-// sweep that proposes routine); the web-performance officer's pools do not.
-// Called anyway — by the web-performance officer, an ordinary agent or the
-// chief — it is refused at dispatch and HQ never sees it.
-func TestTheRolloutToolIsTheRolloutOfficersEveryPool(t *testing.T) {
+// TestTheRolloutToolIsTheRolloutOfficersRoutinePoolOnly: the rollout
+// officer's ROUTINE pool lists and pre-allows officer_rollout_promote_propose
+// (HQ tiers the sweep that proposes routine); its JUDGEMENT pool does not (it
+// only escalates failed results), nor do the web-performance officer's pools.
+// Called anyway — by the rollout judgement instance, the web-performance
+// officer, an ordinary agent or the chief — it is refused at dispatch and HQ
+// never sees it.
+func TestTheRolloutToolIsTheRolloutOfficersRoutinePoolOnly(t *testing.T) {
 	r := newRolloutRig(t)
 	ctx := context.Background()
 	offers := func(a agents.Agent) (listed, allowed bool) {
@@ -104,12 +106,10 @@ func TestTheRolloutToolIsTheRolloutOfficersEveryPool(t *testing.T) {
 	if o, _, ok := r.s.officerOf(roRoutine); !ok || o.Tier != officers.TierRoutine {
 		t.Fatalf("%s does not resolve to the routine pool", roRoutine.Name)
 	}
-	for _, inst := range []agents.Agent{roRoutine, roJudge} {
-		if l, a := offers(inst); !l || !a {
-			t.Errorf("%s: %s listed %v, allowed %v; want both", inst.Name, rolloutTool, l, a)
-		}
+	if l, a := offers(roRoutine); !l || !a {
+		t.Errorf("%s: %s listed %v, allowed %v; want both", roRoutine.Name, rolloutTool, l, a)
 	}
-	for _, inst := range []agents.Agent{wpRoutine, wpJudge} {
+	for _, inst := range []agents.Agent{roJudge, wpRoutine, wpJudge} {
 		if l, a := offers(inst); l || a {
 			t.Errorf("%s: %s listed %v, allowed %v; want neither", inst.Name, rolloutTool, l, a)
 		}
@@ -118,6 +118,7 @@ func TestTheRolloutToolIsTheRolloutOfficersEveryPool(t *testing.T) {
 		who string
 		a   agents.Agent
 	}{
+		{"the rollout judgement instance", roJudge},
 		{"the web-performance judgement instance", wpJudge},
 		{"an ordinary agent", r.agent(t, officerOrdinaryID)},
 		{"the chief", r.agent(t, officerChiefID)},

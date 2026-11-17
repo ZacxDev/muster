@@ -10,7 +10,7 @@ import (
 // The HQ-derived ask tools (officers/item_asks.go): officer_task_ask (a
 // task-reconciler officer's), officer_flood_block_propose (a
 // web-performance officer's JUDGEMENT pool only) and
-// officer_rollout_promote_propose (a rollout officer's, every pool). Each is ONE HQ call with the officer's own
+// officer_rollout_promote_propose (a rollout officer's ROUTINE pool, or an untiered one). Each is ONE HQ call with the officer's own
 // token, which only muster holds; the instance never sees it. HQ derives the
 // person, the question and the options, and HQ — never the officer — applies
 // the person's answer. Offered by officers.ToolOffered to the named type only,
@@ -79,6 +79,8 @@ func itemAskToolDefs() []agents.ToolDef {
 				"item_id":     item,
 				"repo":        strProp("The repository to promote, as owner/name (one your charter names)."),
 				"preview_tag": strProp("The preview tag the canary runs, exactly as you read it."),
+				// 🔴 mirrors HQ's §5r evidence shape ({summary, checks: [{name,
+				// query, result}]}, closed): change it with HQ's.
 				"evidence": map[string]any{"type": "object",
 					"description": "Your soak evidence, shown to the approver labelled as your claims: {summary, checks: [{name, query, result}]}.",
 					"properties": map[string]any{

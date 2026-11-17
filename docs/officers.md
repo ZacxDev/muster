@@ -901,7 +901,7 @@ listing and again at dispatch):
 | `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
 | `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers (both pools) only**: `POST …/items/{item}/task-asks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
 | `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
-| `officer_rollout_promote_propose` `{item_id, repo, preview_tag, evidence}` | **`rollout:*` officers (every pool) only**: `POST …/items/{item}/rollout-promotions` — a proposal to promote one soaked preview tag; HQ re-reads the canary, asks the officer's approvers and, on an approval, promotes with its own credentials. `evidence` is forwarded as given. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
+| `officer_rollout_promote_propose` `{item_id, repo, preview_tag, evidence}` | **the routine pool of `rollout:*` officers (and an untiered one) only**: `POST …/items/{item}/rollout-promotions` — a proposal to promote one soaked preview tag; HQ re-reads the canary, asks the officer's approvers and, on an approval, promotes with its own credentials. `evidence` is forwarded as given. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose-officer_rollout_promote_propose) |
 | `officer_gap_task` `{item_id, store, kind, namespace?, tier?, affected?}` | **`datastore:*` officers (both pools) only**: `POST …/items/{item}/gap-tasks` — HQ keeps ONE open task per (officer, store, gap kind), from its own template, assigned to the officer's owner, filed in shadow too (civ-hq docs/OFFICERS.md §5o). A repeat while that task is open answers `filed: false` with it; once a person closes it, the next filing files a new task. Arguments are decoded strictly (no title, text or assignee: HQ writes them). **Does not end the lease** |
 | `officer_pr_context` `{item_id, pr}` | **the judgement pool of `web-performance:*` officers only**: `GET /officers/{id}/prs/{pr}/context?item={item}` — what HQ holds about one PR of a compare range the item names (its release row, the release captain's notes, its review rounds and its why entries), as **attribution evidence only**, never a review verdict. HQ refuses a type without `pr_context_read` (403 `pr_context_read_off`) and a PR in no range of the officer's live items (404 `pr_not_visible`); a 404 with any other code is `pr_context_route_unavailable` (an HQ older than the route), never "not in range". Read-only; not a read of the item's read budget |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
@@ -1259,9 +1259,10 @@ refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks
   a task reconciler (and an untiered one). `officer_flood_block_propose` is
   offered to a web-performance officer's **judgement pool only**, never its
   routine pool or an untiered web-performance officer (operator decision).
-  `officer_rollout_promote_propose` is offered to **every pool** of a rollout
-  officer (and an untiered one): HQ's rollout policy tiers the sweep, the item
-  that proposes, routine. HQ enforces the type **policy** (`task_asks`,
+  `officer_rollout_promote_propose` is offered to a rollout officer's
+  **routine pool** (and an untiered one), never its judgement pool: HQ's
+  rollout policy tiers the sweep, the item that proposes, routine, and the
+  charter's judgement work only escalates a failed result. HQ enforces the type **policy** (`task_asks`,
   `flood_actuator`, `rollout_actuator`, with its repository allowlist);
   neither stands in for the other.
 - **The lease is HQ's to check** (409 `lease_lost`), as for
@@ -1276,9 +1277,10 @@ refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks
   know (`action`, a task id, a workflow, a token, another officer) or a wrongly
   typed one is refused before HQ is called. `action` is always
   `managed_challenge`, muster's. The rollout proposal's `evidence` must be a
-  JSON object and is forwarded **whole, as given**: muster keeps no copy of its
-  shape, and HQ's decoder refuses an unknown field inside it (400 `invalid`),
-  so nothing in it is dropped. It checks **none of HQ's limits**.
+  JSON object and is forwarded **whole, as given**, so nothing in it is
+  dropped; HQ's decoder refuses an unknown field inside it (400 `invalid`).
+  The tool's schema for it mirrors HQ's §5r evidence shape (`{summary,
+  checks: [{name, query, result}]}`, closed) and must change with it. It checks **none of HQ's limits**.
 - **Every HQ refusal reaches the model verbatim**: HQ's status and `code` in
   the error text and `refused.code`, and HQ's body under `refused.hq`. This
   includes the flood route's 503 `flood_actuator_not_configured` and the
