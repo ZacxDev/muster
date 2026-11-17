@@ -1093,12 +1093,12 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 	if len(fp.people) == 0 {
 		b.WriteString(`<p class="text-xs text-fg2" id="officer-escalate-none">Nobody else to choose: people of the teams you manage appear here.</p>`)
 	}
-	for _, p := range fp.people {
+	for _, who := range fp.people {
 		on := false
 		for _, e := range f.Escalate {
-			on = on || e == p.ID
+			on = on || e == who.ID
 		}
-		b.WriteString(`<label class="flex items-start gap-2"><input type="checkbox" name="escalate_to" value="` + strconv.FormatInt(p.ID, 10) + `"` + checkedIf(on) + ` class="mt-1"><span class="text-sm text-fg">` + esc(p.Label) + `</span></label>`)
+		b.WriteString(`<label class="flex items-start gap-2"><input type="checkbox" name="escalate_to" value="` + strconv.FormatInt(who.ID, 10) + `"` + checkedIf(on) + ` class="mt-1"><span class="text-sm text-fg">` + esc(who.Label) + `</span></label>`)
 	}
 	b.WriteString(fieldErrNode(errs, "escalate_to") + `</fieldset>`)
 	b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" id="host-risk" data-host-risk>` + esc(hostRiskLine) + `</p>`)

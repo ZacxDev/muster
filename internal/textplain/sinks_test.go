@@ -168,6 +168,13 @@ var apiExempt = map[string]exemption{
 	"admin_teams.go Server.renderAdminTeams u.DisplayName":           {1, whyPerson},
 	"teams_pages.go Server.renderTeamPage m.DisplayName":             {1, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
+	// The Officers pages (O-C): the schedule presets and capability labels are
+	// fixed UI text; an escalation choice names a person (personLabel) or the
+	// team, as the teams pages do.
+	"officers_pages.go Server.officerSchedules p.Label":    {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm c.Label":   {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm p.Label":   {1, whyStatic},
+	"officers_pages.go Server.renderOfficerForm who.Label": {1, whyPerson},
 	// A team dispatch's push names the member whose say-so it was (team
 	// sharing 4.7): cut to one line and sanitised by teamDispatchPushBody.
 	"team_dispatch.go Server.personName u.DisplayName":         {2, whyPerson},

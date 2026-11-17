@@ -525,6 +525,7 @@ var agentReadCallers = map[string]string{
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
 
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
+	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",
 	"GetByName Server.handleAgentDetail":         "visible: GET /agents/{name} (teamAgentRead)",
 	"GetByName Server.handleAgentLogsStream":     "visible: GET /agents/{name}/logs/stream (teamAgentRead)",
 	"GetByName Server.handleAgentSendAgain":      "visible: GET /agents/{name}/send, a redirect (teamAgentRead)",
