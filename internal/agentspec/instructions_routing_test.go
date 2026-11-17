@@ -41,7 +41,7 @@ func TestTheRoutingSectionIsPinnedWhole(t *testing.T) {
 func TestTheRoutingSectionShipsOnlyWithSessionRouting(t *testing.T) {
 	paras := 0
 	for _, plugins := range []bool{true, false} {
-		on, off := ChiefInstructionsClaudeCode(plugins, true), ChiefInstructionsClaudeCode(plugins, false)
+		on, off := ChiefInstructionsClaudeCode(plugins, true, "", nil), ChiefInstructionsClaudeCode(plugins, false, "", nil)
 		if on == off {
 			t.Fatalf("plugins=%v: the routing flag changes nothing", plugins)
 		}
@@ -76,7 +76,7 @@ func TestTheGatewayChiefIsNeverToldToRouteItsOwnersRequests(t *testing.T) {
 		"pastes your text into the session once it is idle, labelled as their request relayed by you",
 		"When no session is clearly on it — none matches, or several might — do not guess",
 	}
-	cc := norm(ChiefInstructionsClaudeCode(false, true))
+	cc := norm(ChiefInstructionsClaudeCode(false, true, "", nil))
 	for _, m := range markers {
 		if !strings.Contains(cc, m) {
 			t.Fatalf("positive control: the claude-code prose with routing on lacks %q, so the gateway check below measures nothing", m)

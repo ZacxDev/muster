@@ -124,6 +124,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - notify_preferences (0094, the per-user notification preferences).
 //   - chief_proposals (0100, a session continuing one the owner viewed).
 //   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
+//   - plugin_chief_instructions (0141, a plugin's one section for its owner's chief).
 //   - routing_rules, chief_turn_usage, plugin_message_handling (0107, the
 //     chief's routing rules and its token telemetry).
 //   - cc_account_usage (0108, each pooled Claude account's latest utilization).
@@ -134,7 +135,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_contacts, officer_contact_events (0132, a builtin officer's
 //     people and their engagement).
 var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_public_branches", "officer_host_spawns", "plugin_pair_requests", "agent_secrets", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "officer_pr_loops", "officer_public_branches", "officer_host_spawns", "plugin_pair_requests", "agent_secrets", "pins", "plugin_chief_instructions", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
 	"routing_rules", "chief_turn_usage", "plugin_message_handling",
 	"pages", "page_versions", "page_links", "page_responses",
@@ -312,6 +313,10 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"plugin_handoffs|plugin_handoffs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_handoffs|plugin_handoffs_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0141: a plugin's chief section is its owner's, for one of their plugins,
+	// and goes with the plugin row.
+	"plugin_chief_instructions|plugin_chief_instructions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_chief_instructions|plugin_chief_instructions_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	// 0107: a rule is its owner's, for one of their plugins; the telemetry
 	// rows name nothing but their owner (a row outlives what it counted).
 	"routing_rules|routing_rules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",

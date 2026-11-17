@@ -71,7 +71,7 @@ func TestATeamsChiefIsToldItsOwnerIsATeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := agentspec.ChiefInstructionsClaudeCode(false, false) + agentspec.TeamChiefSection("platform-crew"); got != want {
+	if want := agentspec.ChiefInstructionsClaudeCode(false, false, "", nil) + agentspec.TeamChiefSection("platform-crew"); got != want {
 		t.Errorf("the team's chief prose is not the chief prose plus the team section")
 	}
 	if !strings.Contains(got, "your owner is the team `platform-crew`") || !strings.Contains(got, "[muster] typed by <name> (<role>) in team platform-crew") {
@@ -80,8 +80,8 @@ func TestATeamsChiefIsToldItsOwnerIsATeam(t *testing.T) {
 
 	mine := ccRow(agents.ChiefNameFor(person))
 	mine.OwnerID = person
-	if got, err := prose(t, mine); err != nil || got != agentspec.ChiefInstructionsClaudeCode(false, false) {
-		t.Errorf("a person's chief: err %v, prose is the plain chief prose %v; want it, with no team section", err, got == agentspec.ChiefInstructionsClaudeCode(false, false))
+	if got, err := prose(t, mine); err != nil || got != agentspec.ChiefInstructionsClaudeCode(false, false, "", nil) {
+		t.Errorf("a person's chief: err %v, prose is the plain chief prose %v; want it, with no team section", err, got == agentspec.ChiefInstructionsClaudeCode(false, false, "", nil))
 	}
 	worker := ccRow("team-worker")
 	worker.OwnerID = team

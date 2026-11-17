@@ -32,10 +32,12 @@ const (
 	pgnViewerTok = "mpl_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
 	// pgnChecksTok is a live token with messages and draft_checks.
 	pgnChecksTok = "mpl_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
-	pgnSvc       = "plugins-test-service-token-0123456789abcd"
-	pgnRunner    = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
-	pgnAgent     = "plugins-test-agent-own-token-0123456789"
-	pgnMsg       = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
+	// pgnExtTok is a live token with chief_extension alone.
+	pgnExtTok = "mpl_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	pgnSvc    = "plugins-test-service-token-0123456789abcd"
+	pgnRunner = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	pgnAgent  = "plugins-test-agent-own-token-0123456789"
+	pgnMsg    = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
 )
 
 func (c *countingPlugins) note(ctx context.Context, m string) {
@@ -69,6 +71,9 @@ func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins
 	case pgnChecksTok:
 		return plugins.Plugin{ID: 6, OwnerID: authz.OperatorUserID, Name: "example-checker", Label: "Example checker",
 			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnExtTok:
+		return plugins.Plugin{ID: 7, OwnerID: authz.OperatorUserID, Name: "example-guide", Label: "Example guide",
+			Capabilities: []plugins.Capability{plugins.CapChiefExtension}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -256,6 +261,10 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	{"/plugin/v1/drafts/checks", "", "", http.StatusForbidden, http.MethodGet},
 	{"/plugin/v1/drafts/5/check", `{"sendable":true}`, "", http.StatusForbidden, ""},
 	{"/plugin/v1/drafts/5/media?ref=a/b", "x", "", http.StatusForbidden, ""},
+	// A plugin's chief instructions (plugin_chief_instructions.go) need
+	// chief_extension: this fixture's messages token is refused at the
+	// capability check.
+	{"/plugin/v1/chief/instructions", `{"markdown":"x"}`, "", http.StatusForbidden, http.MethodPut},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.

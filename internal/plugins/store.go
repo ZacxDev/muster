@@ -409,6 +409,11 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 		if _, err := tx.Exec(ctx, `UPDATE plugins SET revoked_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
+		// A revoked plugin's chief section is gone with it (0141): never
+		// rendered again, whatever was approved.
+		if _, err := tx.Exec(ctx, `DELETE FROM plugin_chief_instructions WHERE plugin_id = $1`, id); err != nil {
+			return err
+		}
 		return audit(ctx, tx, "plugin.revoked", Object(id), nil)
 	})
 	return found, err
@@ -421,8 +426,8 @@ const ChecksOffDetail = "the plugin's Checks replies was turned off before it ch
 // SetDraftChecks turns CapDraftChecks on or off for the principal's LIVE
 // plugin id, changing that one capability and no other (and the same token:
 // the plugin keeps its row — its rules, chief session, queued messages and
-// drafts). It is the ONE writer of plugins.capabilities after the mint.
-// Turning it on needs CapMessages (validCapabilities, the mint's rule). A
+// drafts), through setCapabilityTx, the one writer of plugins.capabilities
+// after the mint. Turning it on needs CapMessages (validCapabilities, the mint's rule). A
 // plugin that already has the asked state changes nothing (changed false, no
 // audit row). ErrNotFound for none, another owner's (row-level security) or
 // a revoked one.
@@ -438,40 +443,9 @@ const ChecksOffDetail = "the plugin's Checks replies was turned off before it ch
 // plugin.draft.check_lapsed per draft.
 func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL AND `+ownedByPrincipal+` FOR UPDATE`, id))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
+		var err error
+		if p, changed, err = setCapabilityTx(ctx, tx, id, CapDraftChecks, on); err != nil || !changed || on {
 			return err
-		}
-		p = cur
-		if cur.Has(CapDraftChecks) == on {
-			return nil
-		}
-		want := []Capability{}
-		for _, c := range cur.Capabilities {
-			if c != CapDraftChecks {
-				want = append(want, c)
-			}
-		}
-		if on {
-			want = append(want, CapDraftChecks)
-		}
-		caps, err := validCapabilities(want)
-		if err != nil {
-			return err
-		}
-		if p, err = scanPlugin(tx.QueryRow(ctx, `UPDATE plugins SET capabilities = $2 WHERE id = $1 RETURNING `+pluginCols, id, caps)); err != nil {
-			return err
-		}
-		changed = true
-		if err := audit(ctx, tx, "plugin.capability.changed", Object(id), map[string]any{
-			"capability": string(CapDraftChecks), "old": cur.Capabilities, "new": caps}); err != nil {
-			return err
-		}
-		if on {
-			return nil
 		}
 		rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'lapsed', checked_at = now()
 			WHERE id IN (SELECT d.id FROM plugin_reply_drafts d JOIN plugin_messages m ON m.id = d.message_id
@@ -517,6 +491,65 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 		return s.outboundEnded(ctx, tx, refused, OutboundChecksOff)
 	})
 	return p, changed, lapsed, err
+}
+
+// setCapabilityTx turns capability c on or off for the principal's LIVE
+// plugin id in tx, changing that one capability and no other: THE ONE WRITER
+// of plugins.capabilities after the mint (SetDraftChecks, SetChiefExtension).
+// The new set passes validCapabilities, the mint's rule. A plugin that already
+// has the asked state changes nothing (changed false, no audit row).
+// ErrNotFound for none, another owner's (row-level security and
+// ownedByPrincipal) or a revoked one. Audited plugin.capability.changed
+// {capability, old, new}.
+func setCapabilityTx(ctx context.Context, tx pgx.Tx, id int64, c Capability, on bool) (p Plugin, changed bool, err error) {
+	cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL AND `+ownedByPrincipal+` FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Plugin{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Plugin{}, false, err
+	}
+	if cur.Has(c) == on {
+		return cur, false, nil
+	}
+	want := []Capability{}
+	for _, have := range cur.Capabilities {
+		if have != c {
+			want = append(want, have)
+		}
+	}
+	if on {
+		want = append(want, c)
+	}
+	caps, err := validCapabilities(want)
+	if err != nil {
+		return Plugin{}, false, err
+	}
+	if p, err = scanPlugin(tx.QueryRow(ctx, `UPDATE plugins SET capabilities = $2 WHERE id = $1 RETURNING `+pluginCols, id, caps)); err != nil {
+		return Plugin{}, false, err
+	}
+	if err := audit(ctx, tx, "plugin.capability.changed", Object(id), map[string]any{
+		"capability": string(c), "old": cur.Capabilities, "new": caps}); err != nil {
+		return Plugin{}, false, err
+	}
+	return p, true, nil
+}
+
+// SetChiefExtension turns CapChiefExtension on or off for the principal's
+// LIVE plugin id, keeping its token and row (setCapabilityTx). 🔴 TURNING IT
+// OFF DELETES THE PLUGIN'S STORED SECTION in the same transaction (approved or
+// not): nothing stays approved behind a capability that is off, so turning it
+// on again needs new text and a new approval. ErrNotFound as setCapabilityTx.
+func (s *PGStore) SetChiefExtension(ctx context.Context, id int64, on bool) (p Plugin, changed bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if p, changed, err = setCapabilityTx(ctx, tx, id, CapChiefExtension, on); err != nil || !changed || on {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM plugin_chief_instructions WHERE plugin_id = $1`, id)
+		return err
+	})
+	return p, changed, err
 }
 
 func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error) {

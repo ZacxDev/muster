@@ -470,22 +470,22 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		},
 		{
 			name: "claude-code",
-			got:  ChiefInstructionsClaudeCode(false, false),
+			got:  ChiefInstructionsClaudeCode(false, false, "", nil),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins on",
-			got:  ChiefInstructionsClaudeCode(true, false),
+			got:  ChiefInstructionsClaudeCode(true, false, "", nil),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
 		},
 		{
 			name: "claude-code, routing on",
-			got:  ChiefInstructionsClaudeCode(false, true),
+			got:  ChiefInstructionsClaudeCode(false, true, "", nil),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefBatchRoutingSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins and routing on",
-			got:  ChiefInstructionsClaudeCode(true, true),
+			got:  ChiefInstructionsClaudeCode(true, true, "", nil),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefBatchRoutingSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
@@ -810,7 +810,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	for _, plugins := range []bool{true, false} {
-		cc := norm(ChiefInstructionsClaudeCode(plugins, false))
+		cc := norm(ChiefInstructionsClaudeCode(plugins, false, "", nil))
 		for _, must := range []string{
 			"You are NOT a task-executing worker.",
 			"In this session those tools are named `mcp__muster__<tool>`.",
@@ -862,7 +862,7 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 	}{
 		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), para("")},
 		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), para("")},
-		{"claude-code", ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), para("mcp__muster__")},
+		{"claude-code", ChiefInstructionsClaudeCode(true, false, "", nil), ChiefInstructionsClaudeCode(false, false, "", nil), para("mcp__muster__")},
 	} {
 		if !strings.Contains(norm(c.on), c.para) {
 			t.Errorf("%s: the chief prompt does not carry the feedback paragraph:\n%s", c.name, c.para)
@@ -900,7 +900,7 @@ func TestTheChiefRoutesFeedbackAndTasksFirst(t *testing.T) {
 	}{
 		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), para("")},
 		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), para("")},
-		{"claude-code", ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), para("mcp__muster__")},
+		{"claude-code", ChiefInstructionsClaudeCode(true, false, "", nil), ChiefInstructionsClaudeCode(false, false, "", nil), para("mcp__muster__")},
 	} {
 		on := norm(c.on)
 		i, j := strings.Index(on, c.para), strings.Index(on, "Some plugin messages are feedback")
@@ -932,7 +932,7 @@ func TestThePluginSectionHasNoAskFallback(t *testing.T) {
 	}{
 		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), line("`plugin_message_settle`")},
 		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), line("`plugin_message_settle`")},
-		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), line("`mcp__muster__plugin_message_settle`")},
+		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true, false, "", nil), ChiefInstructionsClaudeCode(false, false, "", nil), line("`mcp__muster__plugin_message_settle`")},
 	} {
 		got := norm(c.prompt)
 		if !strings.Contains(got, c.line) {
@@ -979,7 +979,7 @@ func TestTheClaudeCodeChiefIsToldHQRequestsGoToTheHQServer(t *testing.T) {
 			"if the reword is intended, retype the literal here and read the diff.", got, want)
 	}
 	for _, plugins := range []bool{true, false} {
-		if !strings.Contains(ChiefInstructionsClaudeCode(plugins, false), chiefHQSectionClaudeCode) {
+		if !strings.Contains(ChiefInstructionsClaudeCode(plugins, false, "", nil), chiefHQSectionClaudeCode) {
 			t.Errorf("plugins=%v: the claude-code chief prompt does not carry the HQ section", plugins)
 		}
 		for _, cairn := range []bool{true, false} {
@@ -1022,7 +1022,7 @@ func TestTheAskOwnerSectionIsInBothChiefsProse(t *testing.T) {
 	}
 	for _, plugins := range []bool{false, true} {
 		for _, routing := range []bool{false, true} {
-			p := norm(ChiefInstructionsClaudeCode(plugins, routing))
+			p := norm(ChiefInstructionsClaudeCode(plugins, routing, "", nil))
 			for _, c := range claims("mcp__muster__ask_owner") {
 				n++
 				if !strings.Contains(p, c) {

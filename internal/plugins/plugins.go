@@ -158,6 +158,13 @@ const (
 	// draft filed for one of its messages awaits that verdict (drafts.go,
 	// Draft.AwaitingCheck). A plugin without it behaves as before 0112.
 	CapDraftChecks Capability = "draft_checks"
+	// CapChiefExtension is a plugin that may store ONE instruction section
+	// for its owner's chief (migration 0141, chief_instructions.go): it opens
+	// PUT /plugin/v1/chief/instructions. The section is rendered only
+	// once the owner approves that exact text on /plugins, and grants the
+	// chief nothing. Chosen at mint, and toggled on the plugin's card, as
+	// CapDraftChecks is.
+	CapChiefExtension Capability = "chief_extension"
 )
 
 // Has reports whether p's token carries c.

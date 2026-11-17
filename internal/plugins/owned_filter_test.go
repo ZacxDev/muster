@@ -114,18 +114,22 @@ func TestEveryPersonalPluginPathKeepsThePrincipalsOwn(t *testing.T) {
 // ref lookups; internal/users' rotate marks) are not personal plugin pages:
 // TestEveryPersonalPluginPathKeepsThePrincipalsOwn pins those by behaviour.
 var pluginRowReads = map[string]string{
-	"PGStore.List":            "own",
-	"PGStore.Revoke":          "own",
-	"PGStore.SetDraftChecks":  "own",
-	"PGStore.SetDeliverTo":    "own",
-	"PGStore.MintHandoff":     "own",
-	"PGStore.Plugin":          "by id: a message's own plugin, read where the message is (delivery under System, a session's route)",
-	"PGStore.Authenticate":    "the token lookup, under System: how the owner is learned",
-	"PGStore.createPluginTx":  "an insert: owner_id is the principal's (the column's default)",
-	"PGStore.submit":          "the plugin door: the token's own plugin id, locked",
-	"PGStore.SetChiefSession": "the plugin door's chief binding of the token's own plugin",
-	"PGStore.pairMintable":    "a name's uniqueness among the pairing owner's own (owner_id = $1)",
-	"PGStore.FileOutbound":    "an officer's draft names its owner's plugin (owner_id = $1)",
+	"PGStore.List":    "own",
+	"PGStore.Revoke":  "own",
+	"setCapabilityTx": "own", // SetDraftChecks' and SetChiefExtension's one capability writer
+	// 0141: a plugin's chief instructions, stored by its own token and
+	// approved by its owner's session: both lock the principal's own plugin.
+	"PGStore.PutChiefInstructions":     "own",
+	"PGStore.ApproveChiefInstructions": "own",
+	"PGStore.SetDeliverTo":             "own",
+	"PGStore.MintHandoff":              "own",
+	"PGStore.Plugin":                   "by id: a message's own plugin, read where the message is (delivery under System, a session's route)",
+	"PGStore.Authenticate":             "the token lookup, under System: how the owner is learned",
+	"PGStore.createPluginTx":           "an insert: owner_id is the principal's (the column's default)",
+	"PGStore.submit":                   "the plugin door: the token's own plugin id, locked",
+	"PGStore.SetChiefSession":          "the plugin door's chief binding of the token's own plugin",
+	"PGStore.pairMintable":             "a name's uniqueness among the pairing owner's own (owner_id = $1)",
+	"PGStore.FileOutbound":             "an officer's draft names its owner's plugin (owner_id = $1)",
 	// O-B round 0: the feature registry's boolean, at boot under System
 	// (cmd/muster-server pluginsBoundAtBoot), deployment-wide by design: it
 	// answers EXISTS and hands on no row.
