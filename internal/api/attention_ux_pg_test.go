@@ -236,7 +236,7 @@ func TestAMessageToTheSessionAnswersItsAsks(t *testing.T) {
 		"your question and NOT consent: if it does not clearly address the question, ask again with attention_ask" {
 		t.Fatalf("the note's wording moved: %q", answeredInSessionNote)
 	}
-	if desc := attentionToolDefs()[1].Description; !strings.Contains(desc, `(status "answered_in_session": `+answeredInSessionNote+`)`) {
+	if desc := attentionToolDefs(true)[1].Description; !strings.Contains(desc, `(status "answered_in_session": `+answeredInSessionNote+`)`) {
 		t.Fatalf("attention_wait's description does not carry the note: %s", desc)
 	}
 	if st := f.askStatus(t, a.ID); st.Status != attention.AnsweredInSession || st.AnsweredBy != attention.ByOperator {

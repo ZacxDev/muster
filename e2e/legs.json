@@ -221,6 +221,7 @@
       "tests/agent-menu.spec.ts",
       "tests/agents-idle.spec.ts",
       "tests/agents-list-ux.spec.ts",
+      "tests/ask-media.spec.ts",
       "tests/ask-page.spec.ts",
       "tests/attention-delivery.spec.ts",
       "tests/bfcache-restore.spec.ts",

@@ -91,6 +91,7 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		"internal/api/jobs.go (*Server).jobSession → CreateSessionOn":                        "NOT-A-DELIVERY (a job's own session)",
 		"internal/api/jobs.go (*Server).jobSession → CreateSession":                          "NOT-A-DELIVERY (a job's own session)",
 		"internal/api/officers.go Reprompt → LatestOrCreateSession":                          "NOT-A-DELIVERY (an officer instance)",
+		"internal/api/ask_media.go (*Server).lastAssistantWords → deliverySession":          "NOT-A-DELIVERY (a read: the asking agent's last words, an ask's fallback why)",
 		// opencode's own sessions (an opencode server's API), not chat_sessions rows.
 		"cmd/muster-mirror/opencode_launch.go runOpenCodeLaunch → CreateSession":                    "NOT-A-DELIVERY (an opencode session)",
 		"internal/mirrorhost/agentspawn_opencode.go (*openCodeSpawn).createSession → CreateSession": "NOT-A-DELIVERY (an opencode session)",
