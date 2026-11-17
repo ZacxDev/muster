@@ -8,6 +8,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -431,7 +433,8 @@ func fleetDrill(v FleetDrillView) g.Node {
 	}
 	var tasks []g.Node
 	for _, t := range v.Tasks {
-		tasks = append(tasks, line(t.Title+" · "+t.Status+" · "+t.Role))
+		// A task's title is author text: the title rule (textplain.Title).
+		tasks = append(tasks, line(textplain.Title(t.Title)+" · "+t.Status+" · "+t.Role))
 	}
 	none := func(nodes []g.Node, empty string) g.Node {
 		if len(nodes) == 0 {

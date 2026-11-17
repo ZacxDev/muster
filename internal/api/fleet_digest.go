@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -408,6 +409,17 @@ func (s *Server) fleetChat(ctx context.Context, a agents.Agent) (agents.ChatSess
 		}
 		return made, nil
 	}
+	// 🔴 ONE CALLER PER OWNER IN THIS PROCESS REACHES THE ROW LOCK (CI round,
+	// statement timeouts): FleetChatOr holds a pooled connection on the locked
+	// marks row while keep and create take MORE connections. With every
+	// concurrent tap holding one connection blocked on that lock, a small pool
+	// (CI's) was exhausted and the holder could never get the connection it
+	// needed — the waiters timed out (57014) and answered 500. Waiting here, on
+	// a mutex, holds no connection; the row lock still serialises callers on
+	// other replicas, each of which waits on its own pool.
+	mu, _ := s.fleetChatOpen.LoadOrStore(requestOwner(ctx), &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
 	id, err := s.ext.Fleet.FleetChatOr(ctx, keep, create)
 	if err != nil {
 		return agents.ChatSession{}, err

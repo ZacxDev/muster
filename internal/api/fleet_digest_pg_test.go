@@ -694,6 +694,10 @@ func TestPullRequestStatesAreReadOnlyForAnOwnerTheAppAdmits(t *testing.T) {
 // one step under a row lock (fleet.Store.FleetChatOr), so no chat is made and
 // then orphaned by a later record.
 func TestTwoTapsAtOnceOpenOneFleetChat(t *testing.T) {
+	// A small pool, as CI's: fewer connections than taps. Every tap holding a
+	// connection while it waited on the marks row's lock starved the one
+	// holding the lock of the connection it needed (57014, a 500).
+	withPoolMaxConns(t, 4)
 	f := newFleetFixture(t)
 	// The owner's marks row exists already (a look), holding no chat: the
 	// race is on the READ of an existing row, which only the row lock

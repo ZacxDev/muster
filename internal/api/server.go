@@ -141,6 +141,10 @@ type Server struct {
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
 
+	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
+	// fleetChat): owner id → *sync.Mutex.
+	fleetChatOpen sync.Map
+
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 
