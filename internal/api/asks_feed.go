@@ -167,6 +167,10 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		b.WriteString(officerNoteLabelHTML(it.Context))
 		b.WriteString(`<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>` + text + `</p>
 `)
+		// A builtin officer's context (the item, the outside message it is
+		// about) is the substance of its ask: drawn with the question, never
+		// behind the expand.
+		b.WriteString(officerContextHTML(it.Context))
 	}
 	b.WriteString(asksCardContextSlot(it, now))
 	b.WriteString(asksCardMediaSlot(it))
@@ -203,7 +207,6 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		m.WriteString(`<p class="break-words text-sm text-fg2"><span data-attention-detail>` + itemDetailHTML(it) + `</span></p>`)
 	}
 	m.WriteString(proposalBodyHTML(it.proposal))
-	m.WriteString(officerContextHTML(it.Context))
 	b.WriteString(`<div id="` + esc(more) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` + m.String() + `</div></div>
 `)
 	// THE FOOTER: View in session, the task, Dismiss at its end.

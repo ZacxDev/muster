@@ -947,6 +947,9 @@ html:has([data-asks-feed]) {
 /* A sideways swipe on the feed is the page's (it switches tabs). */
 [data-asks-swipe] {
   touch-action: pan-y pinch-zoom;
+  /* A panel sliding in from the side must not widen the page meanwhile (clip,
+     not hidden: no scroll container, the document still scrolls the feed). */
+  overflow-x: clip;
 }
 /*
  * 🔴 THE DOCUMENT SCROLLS THE FEED, SO A PANEL MUST NOT BE A SCROLLER. A tab

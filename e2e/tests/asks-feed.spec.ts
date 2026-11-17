@@ -74,6 +74,10 @@ test.afterAll(async () => {
 
 const selectedTab = (page: Page) => page.locator('#asks-tabs [role="tab"][aria-selected="true"]');
 const openCount = (page: Page) => page.locator('[data-asks-open-count]');
+// The open count as a number. The suite's database is shared within a leg, so
+// an earlier spec's open asks may be on the page too: counts are asserted
+// relative to the one read here, never as absolutes.
+const openN = async (page: Page) => Number(((await openCount(page).textContent()) ?? '').replace(' open', ''));
 
 async function openFeed(page: Page, path = '/attention') {
   await signIn(page, origin);
@@ -127,12 +131,21 @@ for (const vp of [
       const area = (await page.locator('[data-asks-swipe]').boundingBox())!;
       const x0 = area.x + area.width * 0.75;
       await touchDrag(page, { x: x0, y: vp.use.viewport.height - 120 }, { x: x0 - Math.max(110, area.width * 0.25), y: 160 }, 16);
-      await expect.poll(() => page.evaluate(() => window.scrollY), { message: 'the vertical drag scrolled the page' }).toBeGreaterThan(before);
-      await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
+      await page.waitForTimeout(300);
+      await expect(selectedTab(page), 'a vertical scroll changed the tab').toHaveAttribute('data-tab', 'open');
       await expect(page).toHaveURL(`${origin}/attention`);
+      await expect.poll(() => page.evaluate(() => window.scrollY), { message: 'the vertical drag scrolled the page' }).toBeGreaterThan(before);
 
-      // A sideways swipe that starts in the answer box is the box's.
-      await page.evaluate(() => window.scrollTo(0, 0));
+      // A sideways swipe that starts in the answer box is the box's (measured
+      // once the page has settled at the top: a snap may still be moving it).
+      // (The drag above ends in a fling, which keeps scrolling for a while.)
+      await expect
+        .poll(async () => {
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+          await page.waitForTimeout(250);
+          return page.evaluate(() => window.scrollY);
+        }, { timeout: 15_000 })
+        .toBe(0);
       const box = (await page.locator(`#answer-${ids.freetext}`).boundingBox())!;
       await touchDrag(page, { x: box.x + box.width - 10, y: box.y + box.height / 2 }, { x: box.x + 10 - box.width * 0.2, y: box.y + box.height / 2 });
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
@@ -172,15 +185,19 @@ for (const vp of [
 
     test('tapping an option answers it: the card leaves and the next card takes focus', async ({ page }) => {
       await openFeed(page);
-      await expect(openCount(page)).toHaveText('5 open');
+      const n0 = await openN(page);
+      expect(n0, 'the fixture\u2019s five cards are counted').toBeGreaterThanOrEqual(5);
       const rotate = page.locator(`#ask-${ids.rotate}`);
-      // The card after it in the feed (questions, then notices: the notice).
-      const next = page.locator(`#ask-${ids.notice}`);
-      await expect(rotate.locator('xpath=following-sibling::li[1]')).toHaveAttribute('id', `ask-${ids.notice}`);
+      // The card after it in the feed (with only the fixture open: the notice,
+      // questions coming first; an older open question from another spec on
+      // the shared database would sit between them).
+      const nextId = await rotate.locator('xpath=following-sibling::li[1]').getAttribute('id');
+      expect(nextId, 'a card follows the one answered').toBeTruthy();
+      const next = page.locator(`[id="${nextId}"]`);
       await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
       await expect(rotate).toHaveCount(0);
       await expect(next).toBeFocused();
-      await expect(openCount(page)).toHaveText('4 open');
+      await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
       await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.rotate}`)).text()).toContain('Your answer: Rotate it');
       // Still gone after a reload: the server has it.
       await page.reload();
@@ -189,7 +206,8 @@ for (const vp of [
 
     test('every answerable card carries the dictation mic', async ({ page }) => {
       await openFeed(page);
-      const answerable = page.locator('#attention-items [data-asks-card][data-kind="ask"]');
+      // The fixture agent's question cards (another spec's may be open too).
+      const answerable = page.locator('#attention-items [data-asks-card][data-kind="ask"]').filter({ has: page.locator('[data-attention-title]', { hasText: agent }) });
       await expect(answerable).toHaveCount(3);
       for (const card of await answerable.all()) {
         await expect(card.locator('button[data-dictate]'), `${await card.getAttribute('id')} has its mic`).toHaveCount(1);
@@ -234,15 +252,16 @@ for (const vp of [
       await openFeed(page);
       const card = page.locator(`#ask-${ids.freetext}`);
       const askState = async () => (await page.request.get(`${origin}/attention/asks/${ids.freetext}`)).text();
+      const n0 = await openN(page);
       await card.getByRole('button', { name: 'Dismiss without answering' }).click();
       await expect(card).toBeHidden();
       const toast = page.locator('[data-asks-toast]');
       await expect(toast).toBeVisible();
       await expect(toast).toContainText('Dismissed.');
-      await expect(openCount(page)).toHaveText('4 open');
+      await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
       await toast.getByRole('button', { name: 'Undo' }).click();
       await expect(card).toBeVisible();
-      await expect(openCount(page)).toHaveText('5 open');
+      await expect(openCount(page)).toHaveText(`${n0} open`);
       // Past the moment the dismissal would have been sent: still open.
       await page.waitForTimeout(6500);
       expect(await askState(), 'Undo sent nothing').not.toContain('Dismissed');
