@@ -31,7 +31,8 @@ name: ci
 # A vX.Y.Z TAG ALSO PUBLISHES A GITHUB RELEASE (the `release` job at the end):
 # binaries, docker-compose.yml, env.example and checksums.txt, built by
 # scripts/release-build.sh — the same script the `release-dry-run` job runs on
-# every pull request, so a tag publishes nothing a PR did not already build.
+# every pull request that is ready for review (not on a draft), so a tag
+# publishes nothing a PR did not already build.
 #
 # 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
 # CHEAP. A downstream release tool that refuses a sha unless EVERY CI run for
@@ -855,10 +856,13 @@ jobs:
   # hook arriving at ccd through `ccd hook` — under ccd's supervisor, which
   # restarts it in-pod after a typed `/exit`. It is given NO credential (the smoke
   # supplies a deliberately invalid token) and sends no turn.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see "DRAFT PULL REQUESTS SKIP THE
+  # INTEGRATION JOBS" above `e2e-leg`).
   ccd-image:
     name: claude-code-agent image smoke
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -959,6 +963,27 @@ jobs:
   # them (the `ready_for_review` trigger), and every push to `main` or a tag
   # runs them as before. The `e2e` job below is the required check and is never
   # satisfied by a draft run (see there).
+  #
+  # 🔴 DRAFT PULL REQUESTS SKIP THE INTEGRATION JOBS TOO, NOT ONLY THE LEGS.
+  # On a draft run (12 sampled, 2026-11-14 → 11-17) the legs were already gone,
+  # and the run still started 22 jobs — more than the account's 20 concurrent
+  # hosted jobs on its own — for 93 job-minutes p50, with every job queueing
+  # 6m21s p50 for a slot. The jobs below that build images, clusters or the
+  # whole compose stack are skipped on a draft as the legs are:
+  # `release-dry-run` (12m33s p50, a draft run's longest job), `chart-kind`
+  # (three legs, ~11.5 job-minutes), `ccd-image`, `docshots` and `image-pr`.
+  # A draft keeps the fast feedback: build + vet, the Go suite, the leak gate,
+  # nix, the stylesheet, the real-tmux and macOS suites, and the chart's lint
+  # and ledgers. Marking the PR ready runs all of them (`ready_for_review`),
+  # and so does every push to `main` and every tag.
+  #
+  # ⚠ NONE OF THEM IS A REQUIRED CHECK (only `e2e (playwright, chromium)` is),
+  # and a SKIPPED job counts as passing for branch protection — so if one is
+  # ever made required, it needs the treatment the `e2e` job has (a draft name
+  # that never carries the required one), or a ready PR could merge on a
+  # draft run's skip. `publish-gate` runs only on a push, so it does not read
+  # these skips as refusals. The set is pinned as a ledger by
+  # TestCIDraftRunsSkipExactlyTheIntegrationJobs (internal/modulegate).
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
     needs: main-verdict
@@ -1081,8 +1106,8 @@ jobs:
   # protection counts a SKIPPED job as passing, so a job that merely skipped on
   # a draft would leave a passing `e2e (playwright, chromium)` on the head
   # commit, and the PR could merge the moment it was marked ready, before the
-  # ready run's e2e had started. So on a draft this job still RUNS (publish-gate
-  # needs it to succeed), but under another name, `e2e (draft PR, not run)`, and
+  # ready run's e2e had started. So on a draft this job still RUNS, but under
+  # another name, `e2e (draft PR, not run)`, and
   # it only asserts that the legs were skipped. The required name exists only
   # on a non-draft run, where it fails unless every leg succeeded. A ready PR
   # therefore waits for e2e that actually ran. Pinned by
@@ -1159,10 +1184,12 @@ jobs:
   # what ships. It is still part of the `ci` run, so — like every job here — a
   # red result on a main or tag run leaves that sha refused by the downstream
   # release, which takes only a sha whose CI runs are ALL success.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`).
   docshots:
     name: docshots (screenshot spec, chromium)
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -1233,10 +1260,13 @@ jobs:
   # one file, verifies checksums.txt and runs each native binary's version flag.
   # The compose stack is then brought up for real from the image this run
   # builds, and must answer /readyz, the sign-in page and a password sign-in.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`): "every pull request"
+  # above means every run of one that is ready for review.
   release-dry-run:
     name: release dry run (assets + compose + stt-cohere contract)
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
       # Full history and tags: the compose default is checked against the
@@ -1507,10 +1537,13 @@ jobs:
   # bundled GoTrue, S3 store and STT RUNNING (a sign-in, an upload into the
   # store, two clips transcribed), doctor as the notes print it, push and
   # connector keys kept across off/on, and the documented password rotation.
+  #
+  # ⚠ NOT ON A DRAFT PULL REQUEST (see above `e2e-leg`); the `chart` job
+  # (lint, kubeconform, ledgers) still runs on drafts.
   chart-kind:
     name: helm chart on kind (${{ matrix.leg }})
     needs: main-verdict
-    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1620,7 +1653,13 @@ jobs:
     # test jobs on a vouched tag, so an implicit success() would skip the images
     # and the release while this gate passed. Pinned by
     # TestCIPublishJobsCheckTheirNeedsExplicitly (internal/modulegate).
-    if: ${{ !cancelled() }}
+    #
+    # 🔴 ON A `push` ONLY (main or a vX.Y.Z tag), the only event whose jobs
+    # behind it publish anything. On a pull request it gated nothing, and a
+    # draft run skips several of its needs (see above `e2e-leg`), which
+    # tag_gate.py gate rightly refuses. A red test job still fails a pull
+    # request's run without it.
+    if: ${{ !cancelled() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1636,9 +1675,10 @@ jobs:
   # cross-compiled, and nothing else on a PR builds it — and the read-only
   # probe of both tags the push jobs would publish, so the registry path is
   # exercised before merge. Pushes nothing. No `needs`: it runs beside the suite.
+  # Not on a draft (see above `e2e-leg`): marking the PR ready runs it.
   image-pr:
     name: images (multi-arch build + GHCR probe; pull request, pushes nothing)
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
