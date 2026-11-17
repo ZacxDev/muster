@@ -69,6 +69,11 @@ type declRigOpts struct {
 	env   string
 	// now is the runtime's clock (nil: time.Now).
 	now func() time.Time
+	// pgSpawns: the host spawns are the Postgres store's (row-level security
+	// and ownRowSQL apply), not the in-memory one's, which reads as anyone.
+	pgSpawns bool
+	// hubOwner is whose hosts the mirror fake lists (0: hostOffOwner).
+	hubOwner int64
 }
 
 func newDeclRig(t *testing.T, o declRigOpts) *declRig {
@@ -102,6 +107,9 @@ func newDeclRigOn(t *testing.T, f *connFixture, o declRigOpts) *declRig {
 		spawns.Now = o.now // one clock: a spawn's age is read against the runtime's
 	}
 	ocfg := OfficersConfig{Builtin: r.store, HostSpawns: spawns, Now: o.now}
+	if o.pgSpawns {
+		ocfg.HostSpawns = officers.NewPGHostSpawnStore(f.pool)
+	}
 	if o.pods {
 		r.prov = &officerProv{store: r.ag, phase: map[string]provision.Phase{}}
 		ext.Provisioner, ext.Gateway, ext.Kinds = r.prov, &repromptChat{}, stubKinds{pick: "acct-one"}
@@ -109,6 +117,9 @@ func newDeclRigOn(t *testing.T, f *connFixture, o declRigOpts) *declRig {
 	}
 	if o.hub || o.hosts != nil {
 		r.m = newHostOfficerMirror()
+		if o.hubOwner != 0 {
+			r.m.owner = o.hubOwner
+		}
 		r.m.hosts = o.hosts
 		ext.Mirror = r.m
 	}

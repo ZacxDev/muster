@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -794,6 +795,11 @@ type declaredIn struct {
 	Mode       *string `json:"mode"`
 	EscalateTo []int64 `json:"escalate_to"`
 	Paused     *bool   `json:"paused"`
+	// keepEnabled and keepMode are the page Edit's (never decoded from a
+	// body): it writes neither the switch, which its form does not show, nor
+	// the mode when the person left it as the form read it — so an Edit does
+	// not undo a Pause or a mode switch made while the form was open.
+	keepEnabled, keepMode bool
 }
 
 // requireSwitches refuses a replace whose body leaves out mode or paused,
@@ -854,25 +860,140 @@ func (in declaredIn) declaration(owner int64, id, slug string) (officers.Declara
 	return d, nil
 }
 
-// escalationRefusal checks escalate_to as the def's own PUT does: persons
-// only (UsersExist), or — on the team door — the team itself.
+// escalationTeams is the account store's two team reads the escalation reach
+// needs (users.PGStore: MyTeams, TeamMembers — each read under System),
+// asserted so a store without them reaches only the owner.
+type escalationTeams interface {
+	MyTeams(ctx context.Context, user int64) ([]users.MyTeam, error)
+	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
+}
+
+// escalationTeamStore is the store escalationReach reads teams through: the
+// server's users store, else the GoTrue account store; nil for neither.
+func (s *Server) escalationTeamStore() escalationTeams {
+	if st, ok := s.ext.Users.(escalationTeams); ok {
+		return st
+	}
+	if s.gt != nil && s.gt.Accounts != nil {
+		if st, ok := s.gt.Accounts.(escalationTeams); ok {
+			return st
+		}
+	}
+	return nil
+}
+
+// escalationTarget is one id an officer's escalation may name, with the words
+// a picker draws for it.
+type escalationTarget struct {
+	ID    int64
+	Label string
+	// Self: the officer's owner person (always asked on a personal officer;
+	// the picker does not offer it).
+	Self bool
+	// Team: the team itself (a team officer's one ask the team owns).
+	Team bool
+}
+
+// escalationReach is EVERY id owner's officer's escalations may name (Q1,
+// operator decision): only people who can already see the officer. A team
+// officer (team): the team itself (one ask any member answers) and the
+// team's members, whatever their role. A personal officer: its owner, and the
+// people on every team the owner is in. Read now, from the memberships in the
+// database (under System: team_members is self-read), never from the
+// caller's principal — so the JSON door, whose personal token carries no team
+// access, and the session doors answer the same set for the same officer.
+//
+// 🔴 THE ONE RULE: the escalation refusal (escalationRefusal: every door —
+// the wizard, Edit, the JSON API, the team officers page, the def PUT) and
+// the picker (escalationChoices) both read this list, so the picker offers
+// exactly what the server accepts.
+func (s *Server) escalationReach(ctx context.Context, owner int64, team bool) ([]escalationTarget, error) {
+	st := s.escalationTeamStore()
+	var out []escalationTarget
+	seen := map[int64]bool{}
+	add := func(m users.TeamMember) {
+		if seen[m.UserID] {
+			return
+		}
+		seen[m.UserID] = true
+		out = append(out, escalationTarget{ID: m.UserID, Label: personLabel(m.Email, m.DisplayName, m.UserID), Self: !team && m.UserID == owner})
+	}
+	if team {
+		seen[owner] = true
+		out = append(out, escalationTarget{ID: owner, Team: true})
+		if st == nil {
+			return out, nil
+		}
+		members, err := st.TeamMembers(ctx, owner)
+		if err != nil {
+			return nil, fmt.Errorf("officers: read team %d's members: %w", owner, err)
+		}
+		for _, m := range members {
+			add(m)
+		}
+		return out, nil
+	}
+	seen[owner] = true
+	out = append(out, escalationTarget{ID: owner, Self: true})
+	if st == nil {
+		return out, nil
+	}
+	teams, err := st.MyTeams(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("officers: read user %d's teams: %w", owner, err)
+	}
+	ids := make([]int64, 0, len(teams))
+	for _, t := range teams {
+		ids = append(ids, t.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, t := range ids {
+		members, err := st.TeamMembers(ctx, t)
+		if err != nil {
+			return nil, fmt.Errorf("officers: read team %d's members: %w", t, err)
+		}
+		for _, m := range members {
+			add(m)
+		}
+	}
+	return out, nil
+}
+
+// escalationOutOfReach is the ONE refusal of an escalate_to id the officer's
+// escalations cannot reach — whether the id names nobody or someone who
+// cannot see the officer: the same words, naming no id, so the refusal
+// never tells which ids are people (no user-id enumeration).
+const escalationOutOfReach = "escalate_to may name only people who can already see this officer: for a team's officer, the team or its members; for your own, you or people on your teams"
+
+// escalationRefusal checks escalate_to for owner's officer (team: owner is a
+// team) against escalationReach: a field refusal (escalationOutOfReach) for
+// any id outside it, an internal error when the reach cannot be read.
+//
+// Stored lists are NOT rewritten: an id stored before this rule (any person
+// was accepted) stays until the officer's next replace, which refuses it —
+// so the next Edit asks the person to untick it, rather than the server
+// dropping a recipient silently (docs/officers-builtin.md).
 func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, ids []int64) error {
-	var persons []int64
 	for _, u := range ids {
 		if u <= 0 {
 			return fieldError("escalate_to", "escalate_to holds user ids (positive numbers)")
 		}
-		if team && u == owner {
-			continue
-		}
-		persons = append(persons, u)
 	}
-	missing, err := s.officerStore.UsersExist(authz.System(ctx), persons)
+	if len(ids) == 0 {
+		return nil
+	}
+	reach, err := s.escalationReach(ctx, owner, team)
 	if err != nil {
-		return err
+		return officerReadFailed{err}
 	}
-	if len(missing) > 0 {
-		return fieldError("escalate_to", fmt.Sprintf("escalate_to names users that do not exist: %v", missing))
+	in := make(map[int64]bool, len(reach))
+	for _, t := range reach {
+		in[t.ID] = true
+	}
+	for _, u := range ids {
+		if !in[u] {
+			return fieldError("escalate_to", escalationOutOfReach)
+		}
 	}
 	return nil
 }
@@ -925,7 +1046,7 @@ func (s *Server) hostRefusal(ctx context.Context, d officers.Declaration) error 
 	}
 	hosts, err := s.ext.Mirror.LiveTokenHosts(s.officerPrincipal(ctx, d.Owner))
 	if err != nil {
-		return fmt.Errorf("officers: read the owner's hosts: %w", err)
+		return officerReadFailed{fmt.Errorf("officers: read the owner's hosts: %w", err)}
 	}
 	if !slices.Contains(hosts, d.Host) {
 		return fieldError("host", fmt.Sprintf("host %q is not one of its owner's mirrored hosts: a host is named by the mirror token it connects with", d.Host))
@@ -1000,6 +1121,26 @@ type declaredInvalid struct{ err error }
 
 func (e declaredInvalid) Error() string { return e.err.Error() }
 func (e declaredInvalid) Unwrap() error { return e.err }
+
+// officerReadFailed is a check that could not be made — a store or mirror
+// read failed — as opposed to a refusal of the declaration. 🔴 Its words are
+// the database's or the hub's: both doors log it and answer generically
+// (the JSON door's adminStoreErr; the page's officerPageRefusal), never
+// drawing it on the form (round 0's 🟢).
+type officerReadFailed struct{ err error }
+
+func (e officerReadFailed) Error() string { return e.err.Error() }
+func (e officerReadFailed) Unwrap() error { return e.err }
+
+// refused is err as the cores answer it: a read failure as it is (an
+// internal error), anything else a refusal of the declaration.
+func refused(err error) error {
+	var rf officerReadFailed
+	if errors.As(err, &rf) {
+		return err
+	}
+	return declaredInvalid{err}
+}
 
 // errEnvManaged: the officer is MUSTER_OFFICERS': read-only here (409).
 var errEnvManaged = errors.New("officers: managed by MUSTER_OFFICERS")
@@ -1100,10 +1241,10 @@ func (s *Server) createDeclared(ctx context.Context, owner int64, team bool, in 
 		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		return builtin.DeclaredRow{}, declaredInvalid{err}
+		return builtin.DeclaredRow{}, refused(err)
 	}
 	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
-		return builtin.DeclaredRow{}, declaredInvalid{err}
+		return builtin.DeclaredRow{}, refused(err)
 	}
 	row, err := s.officerStore.CreateDeclared(ctx, owner, s.declaredWriteOf(in, d), slugs)
 	if err != nil {
@@ -1119,7 +1260,8 @@ func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.
 	if name == "" {
 		name = d.ID
 	}
-	w := builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: true, EscalateTo: in.EscalateTo, Fields: d}
+	w := builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: true, EscalateTo: in.EscalateTo, Fields: d,
+		KeepEnabled: in.keepEnabled, KeepMode: in.keepMode}
 	if in.Paused != nil {
 		w.Enabled = !*in.Paused
 	}
@@ -1185,10 +1327,10 @@ func (s *Server) updateDeclared(ctx context.Context, owner int64, team bool, id 
 		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		return declaredInvalid{err}
+		return refused(err)
 	}
 	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
-		return declaredInvalid{err}
+		return refused(err)
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
 	if _, err := s.officerStore.UpdateDeclared(ctx, owner, id, s.declaredWriteOf(in, d)); err != nil {
@@ -1246,6 +1388,24 @@ func (s *Server) switchDeclared(ctx context.Context, owner int64, id string, on 
 		// loop itself, so no pass runs beside one of its own.
 		s.officerRT.rec.Due(st.officer.Key())
 	}
+	s.reloadAfterWrite(ctx)
+	return nil
+}
+
+// modeDeclared is owner's officer id's Shadow/Live switch: its mode and
+// nothing else (builtin.SetDeclaredMode), so it never rewrites the record —
+// an Edit, a Pause or an escalation list made since the page was drawn stays.
+func (s *Server) modeDeclared(ctx context.Context, owner int64, id, mode string) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
+	}
+	if mode != "live" && mode != "shadow" {
+		return declaredInvalid{fieldError("mode", `mode is "live" or "shadow"`)}
+	}
+	if _, err := s.officerStore.SetDeclaredMode(ctx, owner, id, mode); err != nil {
+		return err
+	}
+	s.logger.Printf("officers: user %d set officer %s of owner %d to %s", authz.MustFrom(ctx).UserID, id, owner, mode)
 	s.reloadAfterWrite(ctx)
 	return nil
 }

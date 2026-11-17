@@ -230,21 +230,17 @@ func (s *Server) handleOfficerDefPut(w http.ResponseWriter, r *http.Request) {
 	if in.Enabled != nil {
 		on = *in.Enabled
 	}
-	for _, u := range in.EscalateTo {
-		if u <= 0 {
-			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "escalate_to holds user ids (positive numbers)"})
+	// 🔴 THE ONE ESCALATION RULE (escalationRefusal, Q1): every recipient is
+	// someone who can already see the officer — the caller, or a person on a
+	// team the caller is in. An id that names nobody and one that names a
+	// person out of reach get the SAME refusal, naming neither.
+	if err := s.escalationRefusal(r.Context(), adminOwner(r), false, in.EscalateTo); err != nil {
+		var rf officerReadFailed
+		if errors.As(err, &rf) {
+			s.adminStoreErr(w, "officer", err)
 			return
 		}
-	}
-	// Every recipient must be a user muster can ask: an id that is not one
-	// would be an escalation nobody can ever receive. Read in the system
-	// scope — users is self-read under row-level security — and answering
-	// only which of the caller's own ids are missing.
-	if missing, err := s.officerStore.UsersExist(authz.System(r.Context()), in.EscalateTo); err != nil {
-		s.adminStoreErr(w, "officer", err)
-		return
-	} else if len(missing) > 0 {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "escalate_to names users that do not exist", "missing": missing})
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	d, err := s.officerStore.PutDefReturning(r.Context(), adminOwner(r), builtin.Def{Officer: r.PathValue("officer"), Enabled: on, Mode: in.Mode, EscalateTo: in.EscalateTo})

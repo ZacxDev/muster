@@ -589,8 +589,7 @@ running it; its store rows stay.
 **Officers** in the side menu (under More) is the same thing as the API
 below, for a person signed in: `/officers` lists your officers, and each
 team's you belong to, with where each runs, its status (**Live**, **Shadow**,
-**Paused**, or **Not running** with the reason), its last pass and what is
-open on it. An officer `MUSTER_OFFICERS` declares is listed **read-only**.
+**Paused**, or **Not running** with the reason) and what is open on it. An officer `MUSTER_OFFICERS` declares is listed **read-only**.
 A panel under the list says where an officer could run on this install now,
 and why not: pods only with the Kubernetes agent plane; each of your mirrored
 machines with what is in its way (not connected, cannot close windows,
@@ -599,10 +598,13 @@ Claude Code missing or not logged in) — the same answer as
 
 **New officer** is a wizard, one step at a time:
 
-1. **Start from** — a template (this version has one, *Blank officer*).
+1. **Start from** — a template. Drawn only when there are two or more; this
+   version has one, *Blank officer*, so the wizard starts at step 2.
 2. **Name and instructions** — its name (its id is made from it, e.g.
    `release-notes:main`, and can be set) and its standing instructions.
-   A manager of a team also chooses whose officer it is.
+   A manager of a team also chooses whose officer it is: changing it redraws
+   the rest of the wizard for that owner (its machines, what *Let muster
+   choose* picks, whom its escalations can ask), keeping what was typed.
 3. **Where it runs** — *Let muster choose* (`auto`, the default: what it
    picks right now is shown), *In a pod*, or *On one of my machines* with a
    machine picker; each choice this install cannot take is disabled with its
@@ -613,9 +615,8 @@ Claude Code missing or not logged in) — the same answer as
    is required: an officer nothing wakes is refused, not created.
 5. **What it may do** — nothing extra by default: outbound drafts, contacts,
    connectors it may ask for and public repositories it reads are each
-   opt-in, and so is who else an escalation asks (picked from the people of
-   the teams you manage, or the whole team for a team officer — never typed
-   as ids). For a machine, the line on what a host officer can reach.
+   opt-in, and so is who else an escalation asks (picked, never typed as
+   ids — see **Who an escalation can ask** below). For a machine, the line on what a host officer can reach.
 6. **Review** — the answers, and **Start in Shadow** (the default) or
    **Live**.
 
@@ -623,14 +624,41 @@ It is created through the same check as the API, so a refused answer is
 shown beside its field and nothing is stored; it then runs with no restart.
 An officer's page shows its queue, its instances (a host instance's window
 opens its mirrored view), its open asks, the drafts its instances filed, its
-schedules (add and delete them there), its booked usage when there is any,
-and its last pass **as this server's wake loop saw it** (another replica
-keeps its own; a restart forgets it). Its actions: **Run now** (one
-`manual.run` item; a second tap while it waits adds none), **Pause** /
-**Resume**, **Switch to Live** / **Shadow** (only the mode changes), **Edit**
-and **Delete** (type its id to confirm). A team's viewers and operators read
-a team officer's page; only a manager changes it, and Postgres refuses
-anyone else again.
+schedules (add and delete them there) and its booked usage when there is
+any. It shows no "last pass": the wake loop's memory of one is per replica
+and forgotten by a restart, so it is not drawn until a shared record of
+passes exists. Its actions: **Run now** (one `manual.run` item; a second tap
+while it waits adds none), **Pause** / **Resume**, **Switch to Live** /
+**Shadow**, **Edit** and **Delete** (type its id to confirm). Each writes
+only what it changes: a mode switch writes the mode, a pause the switch, and
+an Edit neither (the mode only when you changed it on the form), so none
+undoes another made while a page was open. An Edit keeps a host officer on
+its machine when that machine is not connected to this server right now (it
+is drawn selected, marked offline). A team's viewers and operators read a
+team officer's page — its host instances' windows included; only a manager
+changes it, and Postgres refuses anyone else again. A manager's writes to a
+team officer (create, edit, mode, pause, Run now, schedules, delete) are in
+the team's audit.
+
+### Who an escalation can ask
+
+An escalation asks only **people who can already see the officer**, and
+the server enforces it on every door that writes `escalate_to` — the wizard,
+Edit, `POST`/`PUT /api/officers/declared`, `PUT /api/officers/defs/{officer}`
+and the team officers page:
+
+- a **team** officer: the team itself (one ask any member answers) or its
+  members — not another team, even one its manager operates, and not the
+  members of the manager's other teams;
+- **your own** officer: you (always asked) or the people on the teams you
+  are in.
+
+The picker offers exactly that set. Any other id is refused with one
+answer, the same whether it names someone or no one, so a refusal never
+tells which ids are people. An id stored before this rule (when any person
+was accepted) is not dropped: it keeps its place — and is still asked —
+until the officer's next Edit, which shows it ticked and marked and refuses the save until it is
+unticked (a mode switch or a pause still works).
 
 ## Declared in the database (no restart)
 

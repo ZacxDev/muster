@@ -117,7 +117,7 @@ func TestTheWizardCreatesAnOfficerTheNextWakeRuns(t *testing.T) {
 	}
 	detail := r.page(t, 1, http.MethodGet, "/officers/"+declID, nil)
 	db := detail.Body.String()
-	for _, want := range []string{`id="officer-actions"`, `data-schedule="pass"`, `data-item-status="open"`, "Last pass", "Switch to Live"} {
+	for _, want := range []string{`id="officer-actions"`, `data-schedule="pass"`, `data-item-status="open"`, "Switch to Live"} {
 		if !strings.Contains(db, want) {
 			t.Errorf("the officer's page lacks %q", want)
 		}

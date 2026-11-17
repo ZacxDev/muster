@@ -8,6 +8,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ import (
 //	GET  /officers                              the signed-in person's officers, and their teams'
 //	GET  /officers/new                          the New-officer wizard
 //	POST /officers/new                          create (createDeclared)
-//	GET  /officers/{officer}                    one officer: queue, instances, asks, drafts, schedules, last pass
+//	GET  /officers/{officer}                    one officer: queue, instances, asks, drafts, schedules
 //	GET  /officers/{officer}/edit               its declaration as a form
 //	POST /officers/{officer}/edit               replace (updateDeclared)
 //	POST /officers/{officer}/pause|resume       its switch (switchDeclared)
@@ -358,20 +359,6 @@ func (s *Server) openAsks(ctx context.Context) []attention.Ask {
 	return list
 }
 
-// lastPass is the wake loop's last pass for owner's officer id on THIS
-// server, when it has run one.
-func (s *Server) lastPass(owner int64, id string) (officers.PassInfo, bool) {
-	rt := s.officerRT
-	if rt == nil || rt.reg == nil || rt.rec == nil {
-		return officers.PassInfo{}, false
-	}
-	o, ok := rt.reg.ForOwner(owner, id)
-	if !ok {
-		return officers.PassInfo{}, false
-	}
-	return rt.rec.LastPass(o.Key())
-}
-
 // --- the list -------------------------------------------------------------------
 
 func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +376,9 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 	}
 	open := s.openAsks(ctx)
 	var b strings.Builder
+	if n, ok := officerListNotices[r.URL.Query().Get("notice")]; ok {
+		b.WriteString(`<p role="status" class="rounded-lg bg-s2 px-3 py-2 text-sm text-fg" id="officer-notice">` + html.EscapeString(n) + `</p>`)
+	}
 	b.WriteString(`<section class="` + adminCard + `" id="officers-mine"><div class="flex flex-wrap items-center gap-2"><h1 class="flex-1 text-base font-semibold text-fg">Officers</h1>
 <a href="` + officersPagePath + `/new" id="officer-new" class="` + adminButton + ` inline-flex items-center">New officer</a></div>`)
 	if len(mine) == 0 {
@@ -434,8 +424,13 @@ func (s *Server) handleOfficersPage(w http.ResponseWriter, r *http.Request) {
 	s.writeNavDocument(w, r, http.StatusOK, "Officers", ui.NavOfficers, false, `<div class="flex flex-col gap-4">`+b.String()+`</div>`)
 }
 
+// officerListNotices are the words the list's ?notice= shows (a closed set).
+var officerListNotices = map[string]string{
+	"deleted": "Deleted, with its queue and schedules; its instances are being stopped.",
+}
+
 // officerList is the officers in list, each one row: name, where it runs, its
-// status, its last pass, and what is open on it.
+// status, and what is open on it.
 func (s *Server) officerList(ctx context.Context, sc officerScope, list []declaredOfficerView, open []attention.Ask) string {
 	var b strings.Builder
 	b.WriteString(`<ul class="flex flex-col divide-y divide-line" data-officer-list>`)
@@ -463,16 +458,10 @@ func (s *Server) officerList(ctx context.Context, sc officerScope, list []declar
 			b.WriteString(`<span class="text-xs text-muted" data-read-only>read-only</span>`)
 		}
 		b.WriteString(`</div><span class="text-xs text-fg2">` + html.EscapeString(v.ID) + ` · runs ` + html.EscapeString(whereItRuns(v)) + `</span>`)
+		// 🔴 NO "LAST PASS" HERE (round 0's D2): the wake loop's memory of its
+		// last pass is per replica and forgotten by a restart, so it is not
+		// drawn until a shared record of passes exists.
 		var facts []string
-		if lp, ok := s.lastPass(sc.Owner, v.ID); ok {
-			f := "last pass " + fmtTime(lp.At)
-			if lp.Err != "" {
-				f += " (failed)"
-			}
-			facts = append(facts, f)
-		} else if v.Running {
-			facts = append(facts, "no pass on this server yet")
-		}
 		if v.Backend == officers.BackendBuiltin {
 			facts = append(facts, plural(openItems, "open item"))
 		}
@@ -580,6 +569,9 @@ type formValues struct {
 	ReadRepos          string
 	Escalate           []int64
 	Mode               string
+	// ModeWas is the stored mode the edit form was drawn with (its hidden
+	// mode_was field): a save that leaves the mode at it writes no mode.
+	ModeWas string
 	// Paused is the stored switch (edit only: the form never changes it).
 	Paused bool
 	// Policy is the stored type policy (edit only), kept but for its
@@ -654,7 +646,8 @@ func readForm(r *http.Request) formValues {
 	f := formValues{Template: r.FormValue("template"), Name: strings.TrimSpace(r.FormValue("name")), ID: strings.TrimSpace(r.FormValue("id")),
 		Charter: r.FormValue("charter"), Runtime: r.FormValue("runtime"), Host: r.FormValue("host"), Repo: strings.TrimSpace(r.FormValue("repo")),
 		Wake: r.FormValue("wake"), Preset: r.FormValue("schedule_preset"), Cron: strings.TrimSpace(r.FormValue("cron")),
-		Caps: r.Form["cap"], Connectors: r.FormValue("connectors"), ReadRepos: r.FormValue("read_repos"), Mode: r.FormValue("mode")}
+		Caps: r.Form["cap"], Connectors: r.FormValue("connectors"), ReadRepos: r.FormValue("read_repos"), Mode: r.FormValue("mode"),
+		ModeWas: r.FormValue(editModeWasField)}
 	for _, v := range r.Form["escalate_to"] {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			f.Escalate = append(f.Escalate, id)
@@ -858,58 +851,77 @@ type formPage struct {
 	id     string // edit: the officer's id
 	opts   runtimeOptions
 	people []escalationChoice
+	// refreshed: the wizard was redrawn for another owner (its "Whose
+	// officer" choice changed), so it opens at that step.
+	refreshed bool
 }
 
 // escalationChoice is one person (or the team) an escalation can also ask.
 type escalationChoice struct {
 	ID    int64
 	Label string
+	// Out: a chosen id outside the reach, which the save refuses.
+	Out bool
 }
 
 // escalationChoices are who an officer of sc's can also ask on an escalation
-// (F6: chosen, never typed as numbers): the team itself (a team officer:
-// one ask the team owns), then the people of every team the person MANAGES
-// (whom they already see on that team's page) — never the owner, who is
-// always asked. Ids already chosen that are none of these are kept, named by
-// number, so an edit never drops one silently.
+// (F6: chosen, never typed as numbers): EXACTLY the server's reach
+// (escalationReach, the one rule the save is checked against) — for a team
+// officer the team itself, then its members; for a personal one the people on
+// the owner's teams — less a personal officer's owner, who is always asked.
+//
+// An id already chosen that is outside the reach (stored before Q1's rule, or
+// typed into a crafted form) is drawn ticked and named only by number, marked
+// as one the save will refuse, so the person sees it and unticks it: an edit
+// never drops a recipient silently. It is drawn the same whether the id names
+// someone or no one.
 func (s *Server) escalationChoices(ctx context.Context, sc officerScope, chosen []int64) []escalationChoice {
-	p := authz.MustFrom(ctx)
-	seen := map[int64]bool{p.UserID: !sc.Team, sc.Owner: false}
-	var out []escalationChoice
-	if sc.Team {
-		out = append(out, escalationChoice{ID: sc.Owner, Label: "The whole team (" + sc.Name + "): one ask any member can answer"})
-		seen[sc.Owner] = true
+	me := authz.MustFrom(ctx).UserID
+	reach, err := s.escalationReach(ctx, sc.Owner, sc.Team)
+	if err != nil {
+		s.logger.Printf("officers: read who officer owner %d's escalations reach: %v", sc.Owner, err)
 	}
-	if s.gt != nil && s.gt.Accounts != nil {
-		var teams []int64
-		for _, m := range p.TeamScope().List() {
-			if m.Role == authz.TeamManager {
-				teams = append(teams, m.Team)
-			}
+	seen := map[int64]bool{}
+	var out []escalationChoice
+	for _, t := range reach {
+		seen[t.ID] = true
+		switch {
+		case t.Self:
+			continue // always asked
+		case t.Team:
+			out = append(out, escalationChoice{ID: t.ID, Label: "The whole team (" + sc.Name + "): one ask any member can answer"})
+			continue
 		}
-		sort.Slice(teams, func(i, j int) bool { return teams[i] < teams[j] })
-		for _, t := range teams {
-			members, err := s.gt.Accounts.TeamMembers(ctx, t)
-			if err != nil {
-				continue
-			}
-			for _, m := range members {
-				if seen[m.UserID] {
-					continue
-				}
-				seen[m.UserID] = true
-				label := personLabel(m.Email, m.DisplayName, m.UserID)
-				if m.UserID == p.UserID {
-					label += " (you)"
-				}
-				out = append(out, escalationChoice{ID: m.UserID, Label: label})
-			}
+		label := t.Label
+		if t.ID == me {
+			label += " (you)"
 		}
+		out = append(out, escalationChoice{ID: t.ID, Label: label})
 	}
 	for _, c := range chosen {
 		if !seen[c] {
 			seen[c] = true
-			out = append(out, escalationChoice{ID: c, Label: "user #" + strconv.FormatInt(c, 10)})
+			out = append(out, escalationChoice{ID: c, Label: "user #" + strconv.FormatInt(c, 10) + " — cannot be asked: not someone who can see this officer (untick to save)", Out: true})
+		}
+	}
+	return out
+}
+
+// inReach is ids less any outside sc's escalation reach (the wizard's owner
+// change: a choice made for one owner is not carried to another's officer).
+func (s *Server) inReach(ctx context.Context, sc officerScope, ids []int64) []int64 {
+	reach, err := s.escalationReach(ctx, sc.Owner, sc.Team)
+	if err != nil {
+		return nil
+	}
+	in := map[int64]bool{}
+	for _, t := range reach {
+		in[t.ID] = true
+	}
+	var out []int64
+	for _, id := range ids {
+		if in[id] {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -956,6 +968,19 @@ func stepOfField(field string) int {
 // The wizard's steps, in order (edit draws 2, 3, 5 and 6 as plain sections).
 var wizardSteps = []string{"Start from", "Name and instructions", "Where it runs", "When it works", "What it may do", "Review"}
 
+// wizardStepsShown is the numbers of the steps the form draws: edit's four;
+// the wizard's six, less "Start from" while there is only one template to
+// start from (round 0's D1 — O-D's catalogue brings the step back).
+func wizardStepsShown(edit bool) []int {
+	switch {
+	case edit:
+		return []int{2, 3, 5, 6}
+	case len(officerTemplates) < 2:
+		return []int{2, 3, 4, 5, 6}
+	}
+	return []int{1, 2, 3, 4, 5, 6}
+}
+
 func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code int, fp formPage) {
 	esc := html.EscapeString
 	f, errs := fp.f, fp.errs
@@ -972,9 +997,12 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 		}
 	}
 	if first == 7 {
-		first = 1
-		if fp.top != "" {
+		first = wizardStepsShown(fp.edit)[0]
+		switch {
+		case fp.top != "":
 			first = 6
+		case fp.refreshed:
+			first = 2 // the owner choice's own step
 		}
 	}
 	var b strings.Builder
@@ -989,23 +1017,38 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 	b.WriteString(`<form method="POST" action="` + esc(action) + `" id="officer-form" class="flex flex-col gap-4" data-wizard="` + strconv.FormatBool(!fp.edit) + `" data-first-step="` + strconv.Itoa(first) + `">`)
 	if fp.edit {
 		b.WriteString(fp.sc.ownerField())
+		if f.ModeWas != "" {
+			b.WriteString(`<input type="hidden" name="` + editModeWasField + `" value="` + esc(f.ModeWas) + `">`)
+		}
+	}
+	// The steps drawn: each step keeps its number (data-step, stepOfField's),
+	// and the person reads them numbered as they are drawn.
+	steps := wizardStepsShown(fp.edit)
+	shown := map[int]int{}
+	for i, n := range steps {
+		shown[n] = i + 1
 	}
 	if !fp.edit {
 		b.WriteString(`<ol class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-fg2" id="wizard-progress" hidden>`)
-		for i, st := range wizardSteps {
-			b.WriteString(`<li data-progress="` + strconv.Itoa(i+1) + `">` + strconv.Itoa(i+1) + `. ` + esc(st) + `</li>`)
+		for i, n := range steps {
+			b.WriteString(`<li data-progress="` + strconv.Itoa(n) + `">` + strconv.Itoa(i+1) + `. ` + esc(wizardSteps[n-1]) + `</li>`)
 		}
 		b.WriteString(`</ol>`)
 	}
 	section := func(n int, legend string) {
 		b.WriteString(`<fieldset class="flex flex-col gap-3" data-step="` + strconv.Itoa(n) + `" id="step-` + strconv.Itoa(n) + `"><legend class="mb-1 text-sm font-semibold text-fg">`)
 		if !fp.edit {
-			b.WriteString(strconv.Itoa(n) + `. `)
+			b.WriteString(strconv.Itoa(shown[n]) + `. `)
 		}
 		b.WriteString(esc(legend) + `</legend>`)
 	}
-	// 1. template
-	if !fp.edit {
+	// 1. template — 🔴 only when there is a choice (round 0's D1): with one
+	// template the step is a question with one answer, so its value rides in
+	// a hidden field and the wizard starts at the name.
+	if !fp.edit && len(officerTemplates) < 2 {
+		b.WriteString(`<input type="hidden" name="template" value="` + esc(officerTemplates[0].Key) + `">`)
+	}
+	if !fp.edit && len(officerTemplates) >= 2 {
 		section(1, wizardSteps[0])
 		for i, t := range officerTemplates {
 			on := f.Template == t.Key || f.Template == "" && i == 0
@@ -1030,7 +1073,10 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 			}
 			b.WriteString(`<option value="` + val + `"` + sel + `>` + esc(label) + `</option>`)
 		}
-		b.WriteString(`</select>`)
+		// Without the script, this redraws the form for the owner chosen (its
+		// machines, what auto picks, whom it can ask); the script submits it on
+		// a change and removes the button.
+		b.WriteString(`</select><button type="submit" name="` + wizardRefreshField + `" value="1" formnovalidate class="` + adminQuiet + ` self-start" id="officer-owner-refresh">Show choices for this owner</button>`)
 	} else if !fp.edit {
 		b.WriteString(fp.sc.ownerField())
 	}
@@ -1091,14 +1137,18 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString(`<p class="text-xs text-fg2">You are always asked.</p>`)
 	}
 	if len(fp.people) == 0 {
-		b.WriteString(`<p class="text-xs text-fg2" id="officer-escalate-none">Nobody else to choose: people of the teams you manage appear here.</p>`)
+		b.WriteString(`<p class="text-xs text-fg2" id="officer-escalate-none">Nobody else to choose: an escalation asks only people who can see the officer, and the people on your teams appear here.</p>`)
 	}
 	for _, who := range fp.people {
 		on := false
 		for _, e := range f.Escalate {
 			on = on || e == who.ID
 		}
-		b.WriteString(`<label class="flex items-start gap-2"><input type="checkbox" name="escalate_to" value="` + strconv.FormatInt(who.ID, 10) + `"` + checkedIf(on) + ` class="mt-1"><span class="text-sm text-fg">` + esc(who.Label) + `</span></label>`)
+		out := ""
+		if who.Out {
+			out = ` data-escalate-out`
+		}
+		b.WriteString(`<label class="flex items-start gap-2"` + out + `><input type="checkbox" name="escalate_to" value="` + strconv.FormatInt(who.ID, 10) + `"` + checkedIf(on) + ` class="mt-1"><span class="text-sm text-fg">` + esc(who.Label) + `</span></label>`)
 	}
 	b.WriteString(fieldErrNode(errs, "escalate_to") + `</fieldset>`)
 	b.WriteString(`<p class="rounded-lg bg-st-warning-bg px-3 py-2 text-sm text-st-warning-fg" id="host-risk" data-host-risk>` + esc(hostRiskLine) + `</p>`)
@@ -1151,9 +1201,17 @@ func (s *Server) runtimeChoices(fp formPage) string {
 	}
 	b.WriteString(`<label class="flex items-start gap-2"><input type="radio" name="runtime" value="pod"` + checkedIf(runtime == officers.RuntimePod) + podOff + ` class="mt-1" data-label="In a pod">
 <span class="flex flex-col"><span class="text-sm font-semibold text-fg">In a pod</span><span class="text-xs text-fg2" id="runtime-pod-why">` + esc(podWhy) + `</span></span></label>`)
+	// 🔴 THE CHOSEN MACHINE IS ALWAYS AN OPTION (round 0's 🟡). The hub lists
+	// only the hosts connected to THIS server now; a host officer whose machine
+	// is offline, or connected to another replica, is still on it. Its machine
+	// is drawn selected (and the host choice enabled), so a save never moves it
+	// to another machine or to auto.
+	stored := runtime == officers.RuntimeHost && f.Host != "" && !slices.ContainsFunc(opts.Hosts, func(h hostOption) bool { return h.Host == f.Host })
 	hostOff := ""
 	hostWhy := "A Claude Code window on a machine of yours that muster mirrors."
 	switch {
+	case stored:
+		hostWhy = f.Host + " is not connected to this server now; it stays on it."
 	case opts.HostReason != "":
 		hostOff, hostWhy = " disabled", "Not available here: "+opts.HostReason+"."
 	case len(opts.Hosts) == 0:
@@ -1161,8 +1219,8 @@ func (s *Server) runtimeChoices(fp formPage) string {
 	}
 	b.WriteString(`<label class="flex items-start gap-2"><input type="radio" name="runtime" value="host"` + checkedIf(runtime == officers.RuntimeHost) + hostOff + ` class="mt-1" data-label="On one of my machines">
 <span class="flex flex-col"><span class="text-sm font-semibold text-fg">On one of my machines</span><span class="text-xs text-fg2" id="runtime-host-why">` + esc(hostWhy) + `</span></span></label>`)
-	if len(opts.Hosts) > 0 && opts.HostReason == "" {
-		b.WriteString(`<div class="pl-5 flex flex-col gap-1"><label for="officer-host" class="text-xs text-fg2">Machine</label><select id="officer-host" name="host" class="` + adminInput + `"` + describedBy(fp.errs, "host") + `>`)
+	if stored || len(opts.Hosts) > 0 && opts.HostReason == "" {
+		b.WriteString(`<div class="pl-5 flex flex-col gap-1"><label for="officer-host" class="text-xs text-fg2">Machine</label><select id="officer-host" name="host" class="w-full min-w-0 ` + adminInput + `"` + describedBy(fp.errs, "host") + `>`)
 		picked := f.Host
 		if picked == "" {
 			for _, h := range opts.Hosts {
@@ -1171,6 +1229,9 @@ func (s *Server) runtimeChoices(fp formPage) string {
 					break
 				}
 			}
+		}
+		if stored {
+			b.WriteString(`<option value="` + esc(f.Host) + `" selected data-qualifies="false" data-offline>` + esc(f.Host+" — offline: not connected to this server now") + `</option>`)
 		}
 		for _, h := range opts.Hosts {
 			label := h.Host
@@ -1199,7 +1260,7 @@ const wizardScript = `<script>
   var back = form.querySelector('[data-wizard-back]'), next = form.querySelector('[data-wizard-next]');
   var submit = document.getElementById('officer-submit'), progress = document.getElementById('wizard-progress');
   var review = document.getElementById('wizard-review');
-  var at = Math.max(0, Math.min(steps.length - 1, (parseInt(form.dataset.firstStep, 10) || 1) - 1));
+  var at = Math.max(0, steps.findIndex(function(s){ return s.dataset.step === form.dataset.firstStep; }));
   function val(name){ var el = form.querySelector('[name="'+name+'"]:checked') || form.querySelector('[name="'+name+'"]'); return el ? el.value : ''; }
   function label(name){ var el = form.querySelector('[name="'+name+'"]:checked'); return el ? (el.dataset.label || el.value) : ''; }
   function hostRisk(){
@@ -1234,6 +1295,14 @@ const wizardScript = `<script>
   next.addEventListener('click', function(){ if (stepValid(at)) { show(at + 1); var f = steps[at].querySelector('input:not([type=hidden]), textarea, select'); if (f) f.focus(); } });
   back.addEventListener('click', function(){ show(at - 1); });
   form.addEventListener('change', hostRisk);
+  var owner = document.getElementById('officer-owner'), refresh = document.getElementById('officer-owner-refresh');
+  if (owner && refresh) {
+    refresh.remove();
+    owner.addEventListener('change', function(){
+      var f = document.createElement('input'); f.type = 'hidden'; f.name = '` + wizardRefreshField + `'; f.value = '1';
+      form.appendChild(f); form.submit();
+    });
+  }
   show(at);
 })();
 </script>`
@@ -1255,7 +1324,9 @@ func (s *Server) handleOfficerNewPage(w http.ResponseWriter, r *http.Request) {
 	s.renderOfficerForm(w, r, http.StatusOK, s.formPageFor(r.Context(), sc, f, nil, "", false, ""))
 }
 
-// formPageFor is the form page's data for scope sc.
+// formPageFor is the form page's data for scope sc: where an officer of the
+// scope's owner could run, and whom its escalations can ask — both the
+// OWNER's, so a change of owner redraws them (wizardRefresh).
 func (s *Server) formPageFor(ctx context.Context, sc officerScope, f formValues, errs fieldErrs, top string, edit bool, id string) formPage {
 	if errs == nil {
 		errs = fieldErrs{}
@@ -1268,6 +1339,29 @@ func (s *Server) formPageFor(ctx context.Context, sc officerScope, f formValues,
 	return fp
 }
 
+// wizardRefreshField is the wizard's "redraw for this owner" submission: the
+// form posted with it set re-renders for the owner it names — that owner's
+// machines, what auto picks for it, whom its escalations can ask — and
+// creates nothing. Its button is the no-JS path; the wizard's script submits
+// it when the owner select changes (round 0's 🟡: the rest of the form
+// followed the owner the page was drawn for).
+const wizardRefreshField = "refresh_owner"
+
+// wizardRefresh is the wizard redrawn for sc with what was typed: a host and
+// escalation choices of another owner's are dropped (they are not this
+// owner's to choose), everything else kept.
+func (s *Server) wizardRefresh(w http.ResponseWriter, r *http.Request, sc officerScope) {
+	ctx := r.Context()
+	f := readForm(r)
+	fp := s.formPageFor(ctx, sc, formValues{}, nil, "", false, "")
+	if !slices.ContainsFunc(fp.opts.Hosts, func(h hostOption) bool { return h.Host == f.Host }) {
+		f.Host = ""
+	}
+	f.Escalate = s.inReach(ctx, sc, f.Escalate)
+	fp.f, fp.people, fp.refreshed = f, s.escalationChoices(ctx, sc, f.Escalate), true
+	s.renderOfficerForm(w, r, http.StatusOK, fp)
+}
+
 func (s *Server) handleOfficerCreate(w http.ResponseWriter, r *http.Request) {
 	sc, ok := s.scopeFor(w, r)
 	if !ok {
@@ -1275,6 +1369,10 @@ func (s *Server) handleOfficerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sc.Manage {
 		s.renderNotice(w, r, http.StatusForbidden, "Only a manager adds team officers", TeamOfficerManagerOnly)
+		return
+	}
+	if r.FormValue(wizardRefreshField) != "" {
+		s.wizardRefresh(w, r, sc)
 		return
 	}
 	ctx := r.Context()
@@ -1317,6 +1415,9 @@ func (s *Server) handleOfficerCreate(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, officerHref(sc, row.Officer, "")+joinQuery(sc, "notice=schedule-failed"), http.StatusSeeOther)
 			return
 		}
+		if sc.Team {
+			s.auditTeam(ctx, actorOf(r), sc.Owner, "officer.schedule.put", "officer_def:"+row.Officer, map[string]any{"schedule": "pass", "cron": cron})
+		}
 	}
 	http.Redirect(w, r, officerHref(sc, row.Officer, "")+joinQuery(sc, "notice=created"), http.StatusSeeOther)
 }
@@ -1331,14 +1432,24 @@ func joinQuery(sc officerScope, q string) string {
 }
 
 // declaredFormOf is owner's DB-declared officer id as the edit form's values.
-func (s *Server) declaredFormOf(ctx context.Context, owner int64, row builtin.DeclaredRow) formValues {
+// 🔴 An error reading its type is answered, never drawn as an empty charter
+// and policy: a save of that form would write them as `{}` (round 0's 🟢).
+func (s *Server) declaredFormOf(ctx context.Context, owner int64, row builtin.DeclaredRow) (formValues, error) {
 	f := formValues{Name: row.TypeName, Runtime: row.Fields.Runtime, Host: row.Fields.Host, Repo: row.Fields.Repo,
 		Connectors: strings.Join(row.Fields.Connectors, ", "), ReadRepos: strings.Join(row.Fields.ReadRepos, ", "),
-		Escalate: row.EscalateTo, Mode: row.Mode, Paused: !row.Enabled, Kept: &row.Fields}
-	if t, err := s.officerStore.GetType(ctx, owner, row.TypeKey); err == nil {
-		f.Charter, f.Policy, f.Caps = t.Charter, t.Policy, policyCaps(t.Policy)
+		Escalate: row.EscalateTo, Mode: row.Mode, ModeWas: row.Mode, Paused: !row.Enabled, Kept: &row.Fields}
+	t, err := s.officerStore.GetType(ctx, owner, row.TypeKey)
+	if err != nil {
+		return formValues{}, fmt.Errorf("officers: read officer %s's type %s: %w", row.Officer, row.TypeKey, err)
 	}
-	return f
+	f.Charter, f.Policy, f.Caps = t.Charter, t.Policy, policyCaps(t.Policy)
+	return f, nil
+}
+
+// formReadFailed answers a form whose stored officer could not be read.
+func (s *Server) formReadFailed(w http.ResponseWriter, r *http.Request, err error) {
+	s.logger.Printf("officers: %v", err)
+	s.renderNotice(w, r, http.StatusInternalServerError, "Could not load the officer", "Try again in a moment.")
 }
 
 // editableRow is the DB-declared officer the request names, for a write: the
@@ -1356,6 +1467,9 @@ func (s *Server) editableRow(w http.ResponseWriter, r *http.Request) (officerSco
 	row, err := s.officerStore.GetDeclared(r.Context(), sc.Owner, id)
 	if err != nil {
 		code, msg := officerPageRefusal(err)
+		if code == http.StatusInternalServerError {
+			s.logger.Printf("officers: read officer %s of %d: %v", id, sc.Owner, err)
+		}
 		s.renderNotice(w, r, code, "No such officer", msg)
 		return sc, builtin.DeclaredRow{}, false
 	}
@@ -1371,9 +1485,17 @@ func (s *Server) handleOfficerEditPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	f := s.declaredFormOf(r.Context(), sc.Owner, row)
+	f, err := s.declaredFormOf(r.Context(), sc.Owner, row)
+	if err != nil {
+		s.formReadFailed(w, r, err)
+		return
+	}
 	s.renderOfficerForm(w, r, http.StatusOK, s.formPageFor(r.Context(), sc, f, nil, "", true, row.Officer))
 }
+
+// editModeWasField is the edit form's hidden copy of the mode it was drawn
+// with: a save whose mode is still that one leaves the stored mode alone.
+const editModeWasField = "mode_was"
 
 func (s *Server) handleOfficerEdit(w http.ResponseWriter, r *http.Request) {
 	sc, row, ok := s.editableRow(w, r)
@@ -1381,20 +1503,40 @@ func (s *Server) handleOfficerEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	stored := s.declaredFormOf(ctx, sc.Owner, row)
+	stored, err := s.declaredFormOf(ctx, sc.Owner, row)
+	if err != nil {
+		s.formReadFailed(w, r, err)
+		return
+	}
 	f := readForm(r)
 	f.ID, f.Paused, f.Policy, f.Kept = row.Officer, stored.Paused, stored.Policy, stored.Kept
+	// 🔴 NEVER MOVED BY A FORM THAT DID NOT SAY WHERE (round 0's 🟡). A form
+	// with no runtime (its choice was drawn disabled, so the browser sent
+	// none) keeps the stored runtime and host; a host officer's form with no
+	// machine keeps the stored machine — never auto, never another host.
+	if f.Runtime == "" {
+		f.Runtime, f.Host = stored.Runtime, stored.Host
+	}
+	if f.Runtime == officers.RuntimeHost && f.Host == "" && stored.Runtime == officers.RuntimeHost {
+		f.Host = stored.Host
+	}
 	in, errs := declaredInOf(f, true)
 	if len(errs) > 0 {
 		s.renderOfficerForm(w, r, http.StatusBadRequest, s.formPageFor(ctx, sc, f, errs, "", true, row.Officer))
 		return
 	}
+	// The switch is never the form's; the mode only when the person changed it.
+	in.keepEnabled = true
+	in.keepMode = f.ModeWas != "" && f.ModeWas == *in.Mode
 	if err := s.updateDeclared(ctx, sc.Owner, sc.Team, row.Officer, in); err != nil {
 		if fe, top := officerFieldErrs(err); len(fe) > 0 || top != "" {
 			s.renderOfficerForm(w, r, http.StatusBadRequest, s.formPageFor(ctx, sc, f, fe, top, true, row.Officer))
 			return
 		}
 		code, msg := officerPageRefusal(err)
+		if code == http.StatusInternalServerError {
+			s.logger.Printf("officers: save from the edit form: %v", err)
+		}
 		s.renderOfficerForm(w, r, code, s.formPageFor(ctx, sc, f, nil, msg, true, row.Officer))
 		return
 	}
@@ -1451,8 +1593,8 @@ func (s *Server) officerSwitch(w http.ResponseWriter, r *http.Request, on bool) 
 	s.officerActionDone(w, r, sc, row.Officer, notice, err)
 }
 
-// handleOfficerMode is the Shadow/Live switch: the stored record replaced
-// with only its mode changed (updateDeclared: mode and paused stated).
+// handleOfficerMode is the Shadow/Live switch: the mode and nothing else
+// (modeDeclared), so it never rewrites the record the page read.
 func (s *Server) handleOfficerMode(w http.ResponseWriter, r *http.Request) {
 	sc, row, ok := s.editableRow(w, r)
 	if !ok {
@@ -1464,10 +1606,7 @@ func (s *Server) handleOfficerMode(w http.ResponseWriter, r *http.Request) {
 		s.renderOfficerDetail(w, r, sc, row.Officer, http.StatusBadRequest, "Choose Shadow or Live.")
 		return
 	}
-	f := s.declaredFormOf(ctx, sc.Owner, row)
-	f.ID, f.Mode = row.Officer, mode
-	in, _ := declaredInOf(f, true)
-	err := s.updateDeclared(ctx, sc.Owner, sc.Team, row.Officer, in)
+	err := s.modeDeclared(ctx, sc.Owner, row.Officer, mode)
 	if err == nil && sc.Team {
 		s.auditTeam(ctx, actorOf(r), sc.Owner, "officer.mode", "officer_def:"+row.Officer, map[string]any{"mode": mode})
 	}
@@ -1491,6 +1630,9 @@ func (s *Server) handleOfficerRunNow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		s.logger.Printf("officers: user %d ran officer %s of owner %d now (item %d, created %v)", authz.MustFrom(r.Context()).UserID, row.Officer, sc.Owner, id, created)
+		if sc.Team {
+			s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.run", "officer_def:"+row.Officer, map[string]any{"item": id, "created": created})
+		}
 		if st, ok := s.officerRT.declaredView(sc.Owner, row.Officer); ok && st.officer != nil && s.officerRT.rec != nil {
 			s.officerRT.rec.Due(st.officer.Key())
 		}
@@ -1541,6 +1683,9 @@ func (s *Server) handleOfficerSchedulePage(w http.ResponseWriter, r *http.Reques
 		s.renderOfficerDetail(w, r, sc, row.Officer, http.StatusBadRequest, "That schedule is refused: "+strings.TrimPrefix(err.Error(), builtin.ErrInvalid.Error()+": "))
 		return
 	}
+	if err == nil && sc.Team {
+		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.schedule.put", "officer_def:"+row.Officer, map[string]any{"schedule": name, "cron": cron})
+	}
 	s.officerActionDone(w, r, sc, row.Officer, "schedule-saved", err)
 }
 
@@ -1549,7 +1694,11 @@ func (s *Server) handleOfficerScheduleDeletePage(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	err := s.officerStore.DeleteSchedule(r.Context(), sc.Owner, row.Officer, r.PathValue("name"))
+	name := r.PathValue("name")
+	err := s.officerStore.DeleteSchedule(r.Context(), sc.Owner, row.Officer, name)
+	if err == nil && sc.Team {
+		s.auditTeam(r.Context(), actorOf(r), sc.Owner, "officer.schedule.delete", "officer_def:"+row.Officer, map[string]any{"schedule": name})
+	}
 	s.officerActionDone(w, r, sc, row.Officer, "schedule-deleted", err)
 }
 
@@ -1653,31 +1802,6 @@ func (s *Server) renderOfficerDetail(w http.ResponseWriter, r *http.Request, sc 
 		b.WriteString(`<p class="text-sm text-fg2">` + esc(TeamOfficerManagerOnly) + `</p>`)
 	}
 	b.WriteString(`</section>`)
-
-	// The last pass (this server's wake loop).
-	b.WriteString(`<section class="` + adminCard + `" id="officer-pass"><h2 class="text-base font-semibold text-fg">Last pass</h2>`)
-	if lp, ok := s.lastPass(sc.Owner, v.ID); ok {
-		line := fmtTime(lp.At) + " · saw " + plural(lp.Claimable, "claimable item")
-		if lp.Started > 0 {
-			line += " · started " + plural(lp.Started, "instance")
-		}
-		if lp.SwitchedOff {
-			line += " · switched off"
-		}
-		b.WriteString(`<p class="text-sm text-fg">` + esc(line) + `</p>`)
-		if lp.Err != "" {
-			fail := lp.Err
-			if lp.Failures > 1 {
-				fail += " (" + strconv.Itoa(lp.Failures) + " failed passes in a row)"
-			}
-			b.WriteString(`<p class="text-sm text-st-error-fg" id="officer-pass-error">` + esc(fail) + `</p>`)
-		}
-	} else if v.Running {
-		b.WriteString(`<p class="text-sm text-fg2">No pass on this server since it started; the wake loop checks every officer within its poll interval.</p>`)
-	} else {
-		b.WriteString(`<p class="text-sm text-fg2">None: it is not running.</p>`)
-	}
-	b.WriteString(`<p class="text-xs text-muted">As this server's wake loop saw it; another replica keeps its own.</p></section>`)
 
 	// The instances.
 	b.WriteString(s.officerInstances(ctx, sc, v))
@@ -1785,7 +1909,16 @@ func (s *Server) officerInstances(ctx context.Context, sc officerScope, v declar
 	var spawns map[string]officers.HostSpawn
 	if v.RunsOn == officers.RuntimeHost {
 		if hs := s.officerHostSpawns(); hs != nil {
-			spawns, _ = hs.LatestHostSpawns(ctx, v.ID)
+			// 🔴 READ AS THE OFFICER'S OWNER (round 0's 🟡). The host spawn store
+			// reads only the acting principal's own rows (ownRowSQL), and a team
+			// officer's spawns are the TEAM's: read as the viewer, every
+			// instance of a team host officer said "not started". scopeFor has
+			// already admitted the viewer to sc (themselves, or a team they are
+			// in), so reading as sc's owner shows them nothing they may not see.
+			var err error
+			if spawns, err = hs.LatestHostSpawns(s.officerPrincipal(ctx, sc.Owner), v.ID); err != nil {
+				s.logger.Printf("officers: read %s's host spawns for its page: %v", v.ID, err)
+			}
 		}
 	}
 	b.WriteString(`<ul class="flex flex-col gap-2">`)

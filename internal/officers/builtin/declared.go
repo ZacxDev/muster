@@ -135,6 +135,11 @@ type DeclaredWrite struct {
 	Mode       string
 	EscalateTo []int64
 	Fields     officers.Declaration
+	// KeepEnabled and KeepMode (UpdateDeclared only): leave the stored switch,
+	// or mode, as it is rather than writing Enabled, or Mode — so a page's
+	// Edit, which read them a moment ago, never undoes a Pause or a mode
+	// switch made since (round 0's 🟢: the writes do not undo each other).
+	KeepEnabled, KeepMode bool
 }
 
 func (w DeclaredWrite) defaults() (mode string, esc []int64) {
@@ -303,13 +308,14 @@ func (s *Store) UpdateDeclared(ctx context.Context, owner int64, officer string,
 	}
 	mode, esc := w.defaults()
 	f := w.Fields
-	if _, err := tx.Exec(ctx, `UPDATE officer_defs SET enabled = $3, mode = $4, escalate_to = $5, runtime = $6, host = $7, repo = $8,
+	if _, err := tx.Exec(ctx, `UPDATE officer_defs SET enabled = CASE WHEN $15 THEN enabled ELSE $3 END, mode = CASE WHEN $16 THEN mode ELSE $4 END,
+			escalate_to = $5, runtime = $6, host = $7, repo = $8,
 			connectors = $9, read_repos = $10, max_instances = $11, idle_after_seconds = $12, poll_seconds = $13, model = $14, updated_at = now(),
 			auto_host = CASE WHEN $6 = 'auto' THEN auto_host ELSE '' END,
 			auto_host_at = CASE WHEN $6 = 'auto' THEN auto_host_at END
 		WHERE owner_id = $1 AND officer = $2`,
 		owner, officer, w.Enabled, mode, esc, f.Runtime, f.Host, nullStr(f.Repo), strs(f.Connectors), strs(f.ReadRepos),
-		nullInt(f.MaxInstances), nullInt(int(f.IdleAfter/time.Second)), nullInt(int(f.PollInterval/time.Second)), f.Model); err != nil {
+		nullInt(f.MaxInstances), nullInt(int(f.IdleAfter/time.Second)), nullInt(int(f.PollInterval/time.Second)), f.Model, w.KeepEnabled, w.KeepMode); err != nil {
 		return DeclaredRow{}, classify(err)
 	}
 	d, err := getDeclared(ctx, tx, owner, officer, false)
@@ -353,6 +359,31 @@ func (s *Store) SetDeclaredEnabled(ctx context.Context, owner int64, officer str
 		return DeclaredRow{}, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE officer_defs SET enabled = $3, updated_at = now() WHERE owner_id = $1 AND officer = $2`, owner, officer, on); err != nil {
+		return DeclaredRow{}, classify(err)
+	}
+	d, err := getDeclared(ctx, tx, owner, officer, false)
+	if err != nil {
+		return DeclaredRow{}, err
+	}
+	return d, tx.Commit(ctx)
+}
+
+// SetDeclaredMode is owner's DB-declared officer's mode ("live" or "shadow")
+// and nothing else: the page's Shadow/Live switch, which must not rewrite the
+// record it read (and so undo an Edit or a Pause made since).
+func (s *Store) SetDeclaredMode(ctx context.Context, owner int64, officer, mode string) (DeclaredRow, error) {
+	if mode != "live" && mode != "shadow" {
+		return DeclaredRow{}, fmt.Errorf("%w: mode %q is not live or shadow", ErrInvalid, mode)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeclaredRow{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := getDeclared(ctx, tx, owner, officer, true); err != nil {
+		return DeclaredRow{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE officer_defs SET mode = $3, updated_at = now() WHERE owner_id = $1 AND officer = $2`, owner, officer, mode); err != nil {
 		return DeclaredRow{}, classify(err)
 	}
 	d, err := getDeclared(ctx, tx, owner, officer, false)

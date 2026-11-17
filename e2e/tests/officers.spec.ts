@@ -7,11 +7,15 @@ import { baseURL, hookToken } from '../lib/env';
 // plane, so the wizard must say pods are not available and why.
 //
 // At a desktop (1280×800) and a phone (390×844) each, the person: opens
-// Officers from the nav, starts the New-officer wizard, steps through it
-// (Blank → name and instructions → where it runs → when it works → what it may
-// do → review), creates it in Shadow, finds it in the list, opens its page,
-// pauses and resumes it, and deletes it. The viewport is set here, per size,
-// never inherited from the config.
+// Officers from the nav, starts the New-officer wizard, steps through it (name
+// and instructions → where it runs → when it works → what it may do → review:
+// with one template there is no "Start from" step), creates it in Shadow,
+// finds it in the list, opens its page, pauses and resumes it, and deletes it,
+// the list then saying so. And a host officer whose machine this server does
+// not see (it has no mirror hub) keeps that machine through an Edit saved in
+// the browser — red before round 1, where the host choice was drawn disabled
+// and the save moved it to auto. The viewport is set here, per size, never
+// inherited from the config.
 
 const sizes = [
   { name: 'desktop', viewport: { width: 1280, height: 800 } },
@@ -51,13 +55,14 @@ for (const size of sizes) {
       await page.waitForURL(/\/officers\/new$/);
       const step = (n: number) => page.locator(`fieldset[data-step="${n}"]`);
       const next = page.locator('[data-wizard-next]');
-      // 1. Start from: Blank, the one template.
-      await expect(step(1)).toBeVisible();
-      await expect(step(2)).toBeHidden();
-      await expect(step(1).locator('input[name=template][value=blank]')).toBeChecked();
-      await next.click();
+      // No "Start from" step while Blank is the one template (round 0's D1):
+      // the wizard opens at the name, and the template rides in a hidden field.
+      await expect(step(1)).toHaveCount(0);
+      await expect(page.locator('#officer-form input[type=hidden][name=template]')).toHaveValue('blank');
       // 2. Name and instructions: Next refuses an empty name.
       await expect(step(2)).toBeVisible();
+      await expect(step(3)).toBeHidden();
+      await expect(page.locator('#wizard-progress li').first()).toHaveText('1. Name and instructions');
       await next.click();
       await expect(step(2)).toBeVisible();
       await page.fill('#officer-name', name);
@@ -115,7 +120,35 @@ for (const size of sizes) {
       await page.fill('#officer-delete-confirm', id);
       await page.click('#officer-delete button[type=submit]');
       await page.waitForURL((u) => u.pathname === '/officers' && u.searchParams.get('notice') === 'deleted');
+      await expect(page.locator('#officer-notice')).toBeVisible();
       await expect(page.locator(`[data-officer="${id}"]`)).toHaveCount(0);
+    });
+
+    test('an Edit keeps a host officer on a machine this server does not see', async ({ page }) => {
+      const hid = `e2e-hostkeep-${size.name}:main`;
+      await removeOfficer(hid);
+      try {
+        const made = await fetch(`${baseURL}/api/officers/declared`, {
+          method: 'POST', headers: { Authorization: `Bearer ${hookToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: hid, name: 'E2E host keeper', charter: 'Summarise the queue. Never post.', runtime: 'host', host: 'e2e-laptop', mode: 'shadow' }),
+        });
+        expect(made.status, 'the host officer is declared').toBe(201);
+        await page.goto(`/officers/${hid}/edit`);
+        const hostChoice = page.locator('input[name=runtime][value=host]');
+        await expect(hostChoice).toBeChecked();
+        await expect(hostChoice).toBeEnabled();
+        await expect(page.locator('#officer-host')).toHaveValue('e2e-laptop');
+        await noSidewaysScroll(page);
+        await page.fill('#officer-charter', 'Summarise the queue, then stop. Never post.');
+        await page.click('#officer-submit');
+        await page.waitForURL((u) => u.pathname === `/officers/${hid}` && u.searchParams.get('notice') === 'saved');
+        const got = await (await fetch(`${baseURL}/api/officers/declared/${encodeURIComponent(hid)}`, { headers: { Authorization: `Bearer ${hookToken}` } })).json();
+        expect(got.runtime, 'the saved runtime').toBe('host');
+        expect(got.host, 'the saved machine').toBe('e2e-laptop');
+        expect(got.mode, 'the mode is not changed by the save').toBe('shadow');
+      } finally {
+        await removeOfficer(hid);
+      }
     });
   });
 }

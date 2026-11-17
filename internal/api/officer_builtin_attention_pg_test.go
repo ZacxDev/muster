@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -182,8 +183,12 @@ func TestTheAdminAPIDefinesAnOfficerAndFeedsItsQueue(t *testing.T) {
 	if code, out := adminCall(t, h, "PUT", "/api/officers/defs/"+builtinOfficerID, `{}`); code != 200 || out["enabled"] != true || out["declared"] != true {
 		t.Fatalf("put def: %d %v, want enabled and declared", code, out)
 	}
-	if code, out := adminCall(t, h, "PUT", "/api/officers/defs/"+builtinOfficerID, `{"escalate_to":[987654]}`); code != http.StatusBadRequest || out["missing"] == nil {
-		t.Fatalf("escalate_to naming no user: %d %v, want 400 naming it", code, out)
+	// Q1: an id naming nobody is refused with the one out-of-reach refusal,
+	// which names no id (escalationRefusal; TestEscalationsReachOnlyPeopleWhoSeeTheOfficer
+	// pins it against an out-of-reach person on every door).
+	if code, out := adminCall(t, h, "PUT", "/api/officers/defs/"+builtinOfficerID, `{"escalate_to":[987654]}`); code != http.StatusBadRequest || out["missing"] != nil ||
+		!strings.Contains(fmt.Sprint(out["error"]), "escalate_to may name only people who can already see this officer") {
+		t.Fatalf("escalate_to naming no user: %d %v, want 400 with the out-of-reach refusal and no id list", code, out)
 	}
 	if code, _ := adminCall(t, h, "PUT", "/api/officers/defs/nosuchtype:x", `{}`); code != http.StatusNotFound {
 		t.Fatalf("an officer of an undefined type: %d, want 404", code)
