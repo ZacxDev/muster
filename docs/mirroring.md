@@ -1930,10 +1930,8 @@ server and its own `muster-mirror`.
   team sessions (they would send the team's transcript to a person's model or
   chief), and their routes answer 403. A team session has no focus title,
   and none of the viewer's own pins, tags or names. Its Preview button runs
-  on the TEAM's viewer plugin, never the viewer's own, and is drawn only
-  while the team has a live one (as for anyone, only while the window has
-  something to preview): with none, a team session has no Preview button
-  ([team previews](previews.md#team-previews-manual-step-for-the-gateways-admin)). Opening
+  on the TEAM's viewer plugin, never the viewer's own; with none, a team
+  session has no Preview button ([team previews](previews.md#team-previews-manual-step-for-the-gateways-admin)). Opening
   a team session does not settle its waiting stop: it settles when the window
   moves on.
 - **Waiting and done pushes.** A team host session that waits on a prompt,

@@ -2523,6 +2523,9 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   their OWN slice, built next — after #690 merges, before 2b.4. 2b.3
    >   merges with the preview own-only: a team session draws no Preview
    >   button, and `GET /ui/mirror/preview-button` is `mirrorTeamOwnOnly`.
+   >   *(Superseded as built in 2b.3b, below: a team session's Preview runs
+   >   on the team's viewer plugin; see
+   >   [previews.md](../previews.md#team-previews-manual-step-for-the-gateways-admin).)*
    > - **The pages.** On a team session the terminal and the Rendered view
    >   leave out everything that is the viewer's own and keyed by host name or
    >   conversation (recents, tags, pins, names, focus history, drafts, the
@@ -2722,7 +2725,10 @@ by re-checking the migration number (D). The slices ship **in order**.
    >   On a team session the pages and the button read the TEAM's viewer
    >   plugins AS THE TEAM (`teamViewerPlugins` → `teamPreviewPrincipal`,
    >   `ViaPlugin`, withPrincipalLedger), after a fresh viewer read
-   >   (`teamMemberNow`); with none the button says `TeamNoViewerPlugin`. The
+   >   (`teamMemberNow`); with no live team viewer plugin there is no button
+   >   (#753). `TeamNoViewerPlugin` is said only when the plugin goes while
+   >   the page is open, on the button's next poll, and on a hand-off minted
+   >   then. The
    >   hand-off mint takes `owner`, resolves the window over the team's hosts
    >   (`teamHostsOf`) and mints AS THE TEAM, refusing any other owner's
    >   plugin (`TestATeamSessionsPreviewRunsOnTheTeamsPlugin`).
