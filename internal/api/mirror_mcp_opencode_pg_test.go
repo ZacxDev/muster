@@ -108,6 +108,9 @@ func TestAMirroredOpenCodeSessionGetsTheAttentionAndTaskToolsOnly(t *testing.T) 
 	if !strings.Contains(init, "mirrored opencode session") || strings.Contains(init, "Claude Code") || !strings.Contains(init, "call attention_ask") {
 		t.Fatalf("opencode's initialize: %s", init)
 	}
+	if got, want := instructionsOf(t, r), "muster's tools for a mirrored opencode session. "+wantMirrorOpenCodeAttention; got != want {
+		t.Errorf("opencode's initialize instructions:\n  %q\nwant exactly\n  %q", got, want)
+	}
 	for _, n := range []string{attentionAnswerTool, agentDestroyTool, chiefAskTool, connectorRequestsListTool} {
 		_, r, body := f.mirrorRPC(t, mirrorAsOpenCode(ws, "opencode:ses_launch"), mcpToolCall(n, map[string]any{"id": 1, "answer": "x", "name": "x"}))
 		if r == nil {

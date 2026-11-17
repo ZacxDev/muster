@@ -533,7 +533,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		instructions = strings.Replace(instructions, "muster's tools for", "muster's tools, on a team host, for", 1)
 	}
 	if s.attentionToolsOn() && !remote {
-		instructions += " " + mirrorAttentionInstruction
+		instructions += " " + mirrorAttentionInstructionFor(openCode)
 	}
 	if s.trackTaskOn() && !remote {
 		instructions += " " + trackTaskInstruction()
