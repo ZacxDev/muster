@@ -1089,7 +1089,12 @@ permission or approval.
 - **`PUT /plugin/v1/chief/instructions`** `{"markdown": "<text>"}` stores the
   plugin's section, replacing any earlier one. The text is 1 to 4096 bytes of
   UTF-8 (`400` past that), not blank, with no control or invisible character
-  but a line feed and a tab. It answers `200` with `{plugin_id, markdown, sha,
+  but a line feed and a tab. It may not carry an `@` that Claude Code could
+  read as a file import: an `@` is refused unless the character right before
+  it is a letter, a digit, `.`, `_`, `-` or `+` (so `name@example.test` is
+  fine, and `@notes.md` or `see @notes.md` is not). Claude Code expands an
+  `@path` import in CLAUDE.md even inside the quote the section is rendered
+  in, which would pull a file into the chief's context. It answers `200` with `{plugin_id, markdown, sha,
   approved_sha, approved_at, updated_at, state, changed}`: `sha` is the
   text's sha256 (hex), `state` is `pending` or `approved`, and `changed` says
   whether this PUT stored new text. **New text is pending**: any approval is

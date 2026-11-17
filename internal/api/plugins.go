@@ -98,7 +98,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	s.registerPluginPairRoutes(mux)
 
 	// A plugin's chief instructions (plugin_chief_instructions.go): its PUT
-	// and GET (chief_extension), and the owner's toggle and approval.
+	// (chief_extension), and the owner's toggle and approval.
 	s.registerPluginChiefInstructionRoutes(mux)
 
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS

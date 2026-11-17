@@ -923,9 +923,16 @@ func PluginSectionWrapper(plugin string, approvedAt time.Time) string {
 // 🔴 THE PLUGIN'S TEXT CANNOT IMPERSONATE A CORE SECTION: every line of it is
 // quoted (`> `), so a `## …` heading in it reads as `> ## …`, inside its own
 // block, under the fixed core wrapper (PluginSectionWrapper) that names the
-// plugin and says it grants nothing. Nothing the text holds can end the quote:
-// a line break only starts another quoted line. It is the LAST thing in the
-// prose, so no core rule follows plugin text.
+// plugin and says it grants nothing. A line break in the text only starts
+// another quoted line, so the text cannot end the quote. It is the LAST thing
+// in the prose, so no core rule follows plugin text.
+//
+// ⚠ QUOTING IS NOT ALL OF IT: Claude Code expands an `@path` import in
+// CLAUDE.md even inside a `> ` quote, which would let the text pull a file
+// into the chief's context. That is refused when the text is STORED
+// (internal/plugins ValidChiefInstructions: no `@` at the start of the text
+// or after whitespace), not here; this function trusts its input to have
+// passed that check.
 func PluginSectionsBlock(sections []PluginSection) string {
 	if len(sections) == 0 {
 		return ""

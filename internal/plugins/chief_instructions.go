@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -70,6 +71,21 @@ func ChiefInstructionsSHA(text string) string {
 // invisible character but a line feed and a tab (fence.Unsafe). It is refused
 // rather than cleaned, so the hash the owner approves is of exactly what the
 // plugin sent.
+//
+// 🔴 NO `@` IMPORT: an `@` is refused unless the character right before it is
+// a letter, a digit, or one of `.`, `_`, `-`, `+` (importAtAllowedAfter). So `@`
+// at the start of the text, after any whitespace or after punctuation such as
+// `(` or a backtick is refused, and an address like `ops@example.test` is kept.
+// The section is written into the chief's CLAUDE.md, and Claude Code expands an
+// `@path` import there EVEN INSIDE the `> ` quote that frames plugin text
+// (measured on a live claude: a quoted `> @file` made the model read the file).
+// An import would let a plugin pull any file the chief can read into its
+// standing context, past the owner's approval of the text. It is REFUSED rather
+// than escaped: an escape is a guess about one CLI version's import parser,
+// which can change under us, and the approved sha must be of the exact bytes
+// the chief reads; a refusal leaves no such text to mis-escape. The rule is
+// wider than the parser's "start or after whitespace" on purpose, for the same
+// reason.
 func ValidChiefInstructions(text string) error {
 	switch {
 	case len(text) > MaxChiefInstructionsBytes:
@@ -78,7 +94,14 @@ func ValidChiefInstructions(text string) error {
 		return invalid("markdown is not valid UTF-8")
 	}
 	blank := true
+	prev := rune(-1) // the rune before r; -1 at the start of the text
 	for _, r := range text {
+		before := prev
+		prev = r
+		if r == '@' && !importAtAllowedAfter(before) {
+			return invalid("markdown may not carry an @ that Claude Code could read as a file import " +
+				"(an @ at the start, or after a space, line break or punctuation); an address like name@example.test is fine")
+		}
 		if r == '\n' || r == '\t' {
 			continue
 		}
@@ -93,6 +116,12 @@ func ValidChiefInstructions(text string) error {
 		return invalid("markdown is required")
 	}
 	return nil
+}
+
+// importAtAllowedAfter reports whether an `@` may follow r in a section: only
+// inside a word, as in an e-mail address (ValidChiefInstructions).
+func importAtAllowedAfter(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' || r == '+'
 }
 
 const chiefInstructionsCols = `plugin_id, text, sha, approved_sha, approved_at, updated_at`
@@ -151,7 +180,7 @@ func (s *PGStore) PutChiefInstructions(ctx context.Context, pluginID int64, text
 }
 
 // ChiefInstructionsOf reads pluginID's section as ctx's principal: the
-// plugin's own GET, and the owner's /plugins card. ok is false when it has
+// owner's /plugins card (the plugin learns its state from its PUT). ok is false when it has
 // none (or the plugin is not the principal's own).
 func (s *PGStore) ChiefInstructionsOf(ctx context.Context, pluginID int64) (c ChiefInstructions, ok bool, err error) {
 	c, err = scanChiefInstructions(s.pool.QueryRow(ctx, `SELECT `+chiefInstructionsCols+` FROM plugin_chief_instructions
