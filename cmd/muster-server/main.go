@@ -1041,6 +1041,23 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 
+	// The chief's OpenRouter sessions' spend door (chiefsessions.go,
+	// api.EnableChiefSessionsLLM): their own key, the daily and per-session
+	// caps, and the spend book in the database. Without a database the
+	// budget could not survive a restart, so that is a boot refusal.
+	if cs := cfg.ChiefSessions; cs.On {
+		if a.pool == nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=1: the chief sessions' budget is kept in the database, and this server has none",
+				envChiefSessionsOpenRouter)
+		}
+		if err := srv.EnableChiefSessionsLLM(api.ChiefSessionsLLM{Key: cs.Key, DailyUSD: cs.DailyUSD, SessionUSD: cs.SessionUSD,
+			Store: chiefusage.NewPG(a.pool)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s=1: %w", envChiefSessionsOpenRouter, err)
+		}
+	}
+
 	// 🔴 A CLAUDE-CODE AGENT ON THE LLM PROXY MARKS NO SHARED CLAUDE ACCOUNT AND
 	// IS FAILED OVER FROM NONE (api.Server.NoClaudeAccount: an officer pool's
 	// instance on the proxy, or the chief on the route above): its row still

@@ -268,8 +268,12 @@ var isolationClasses = map[string]routeClass{
 	"GET /agents":                classList,
 	"GET /api/directories":       classList,
 	"GET /api/openrouter/models": classList,
-	"GET /connectors":            classList,
-	"GET /events":                classList,
+	// The chief sessions' model search (chief_session_llm.go): names no
+	// object, reads the public catalogue; served only to the owner whose chief
+	// the spend door serves (ChiefLLMOwner), 403 to anyone else.
+	"GET /api/chief/openrouter-models": classList,
+	"GET /connectors":                  classList,
+	"GET /events":                      classList,
 	// The browser telemetry relay (faro_relay.go): names no object; it
 	// forwards the caller's own batch, rate-limited per user.
 	"POST /telemetry/faro": classList,

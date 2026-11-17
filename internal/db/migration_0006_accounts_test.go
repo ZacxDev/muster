@@ -115,6 +115,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
 //   - officer_pr_loops (0119, a draft officer's review-loop announcements).
 //   - officer_public_branches (0138, a draft officer's public branches and their items).
+//   - chief_session_llm_usage, chief_session_llm_reservations (0144, what the
+//     chief's OpenRouter sessions spend, and hold in flight).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -140,7 +142,8 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"routing_rules", "chief_turn_usage", "plugin_message_handling",
 	"pages", "page_versions", "page_links", "page_responses",
 	"officer_types", "officer_defs", "officer_items", "officer_schedules",
-	"officer_contacts", "officer_contact_events"}
+	"officer_contacts", "officer_contact_events",
+	"chief_session_llm_usage", "chief_session_llm_reservations"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -209,6 +212,8 @@ var wantForeignKeys = []string{
 	"officer_llm_usage|officer_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_pr_loops|officer_pr_loops_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_public_branches|officer_public_branches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_session_llm_usage|chief_session_llm_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0128: an agent's credentials are its own and its owner's, and go with it.

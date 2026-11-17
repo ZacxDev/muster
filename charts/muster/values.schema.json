@@ -427,6 +427,24 @@
               "type": "string"
             }
           }
+        },
+        "openrouterSessions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "dailyUSD": {
+              "type": "string"
+            },
+            "sessionUSD": {
+              "type": "string"
+            }
+          }
         }
       }
     },
