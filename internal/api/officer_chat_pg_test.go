@@ -32,6 +32,9 @@ type laneTurn struct {
 	session, pinned         string
 	ephemeral, toolless     string
 	newConversation         string
+	// mcpSession is the route's X-Muster-CC-MCP-Session: "1" asks ccd to
+	// start the lane with an MCP config naming its session.
+	mcpSession string
 }
 
 func (g *laneChat) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
@@ -40,6 +43,7 @@ func (g *laneChat) Chat(ctx context.Context, a agents.Agent, sessionKey, message
 		t.session, t.pinned = rt.Header.Get(agents.HeaderCCSession), rt.Header.Get(agents.HeaderCCPinned)
 		t.ephemeral, t.toolless = rt.Header.Get(agents.HeaderCCEphemeral), rt.Header.Get(agents.HeaderCCToolless)
 		t.newConversation = rt.Header.Get(agents.HeaderCCNewConversation)
+		t.mcpSession = rt.Header.Get("X-Muster-CC-MCP-Session")
 	}
 	g.mu.Lock()
 	g.turns = append(g.turns, t)
@@ -148,6 +152,9 @@ func TestAChatTurnIsALaneTurnAndNeverAFreshConversation(t *testing.T) {
 	}
 	if tr.pinned != "" || tr.ephemeral != "" || tr.toolless != "" || tr.newConversation != "" {
 		t.Fatalf("the chat lane's route carried pinned %q ephemeral %q toolless %q new-conversation %q; want none", tr.pinned, tr.ephemeral, tr.toolless, tr.newConversation)
+	}
+	if tr.mcpSession != "1" {
+		t.Fatalf("the chat lane's route carried X-Muster-CC-MCP-Session %q; want 1, so its MCP calls name its session", tr.mcpSession)
 	}
 	if !strings.Contains(tr.text, "Member One (@member1) wrote:\nIs the API healthy?") {
 		t.Fatalf("the lane's turn: %q", tr.text)
