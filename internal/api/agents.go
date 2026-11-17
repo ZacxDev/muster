@@ -565,6 +565,9 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
 		IsChief: isChief(a),
+		// The officer it is an instance of (officerOfRow, THE binding rule),
+		// "" for none: the sidebar draws it through its officer's row.
+		Officer: s.officerKeyOf(a),
 		// The viewer's pin (internal/pins), read once per render by the caller.
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.

@@ -77,6 +77,8 @@ func usageTriggerText(row chiefusage.TokenRow) string {
 		return "the machine message door"
 	case chiefusage.TriggerKickoff:
 		return "its first turn"
+	case chiefusage.TriggerNudgeCheck:
+		return "stall checks"
 	}
 	return "other"
 }

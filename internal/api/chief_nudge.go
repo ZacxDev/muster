@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -1255,9 +1256,25 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, 
 		return "", errNudgeChiefBusy
 	}
 	defer s.turns.leave(chief.ID)
+	// 🔴 THE CHECK IS A CHIEF CALL AND IS COUNTED (chief_usage.go; trigger
+	// nudge_check, migration 0146). It never passes chatTurn, so it records
+	// itself: the runtime's reported tokens reach the sink through Chat's
+	// request (agents.RunToollessTurn), the model is the chief's, and the
+	// session is none (the key is throwaway: beginChiefTurnUsage is given "",
+	// so no session row is looked up). A check refused before anything ran (no
+	// lane, not ready, busy, never connected: agentgateway.Unsent) cost nothing
+	// and is retried, so it writes no row. A check that ran and failed (the
+	// budget ran out, the provider failed) is recorded, outcome failed.
+	ctx, usage := s.beginChiefTurnUsage(chiefusage.WithTrigger(ctx, chiefusage.Trigger{Kind: chiefusage.TriggerNudgeCheck}), chief, "")
 	tctx, cancel := context.WithTimeout(nudgeRoute(ctx, chief, key), chiefNudgeTurnBudget)
 	defer cancel()
 	reply, err := s.ext.Gateway.Chat(tctx, chief, key, prompt, nil)
+	if usage != nil && agentgateway.Unsent(err) == "" {
+		// Synchronous: a slow database can hold the check up to finish's 5 s
+		// write timeout; a failed write is only logged and never changes the
+		// decision.
+		usage.finish(ctx, err)
+	}
 	switch {
 	case agentgateway.LanesFull(err):
 		return "", nudgeRefusal{refusalLanesFull}

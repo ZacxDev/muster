@@ -103,4 +103,5 @@ it off. The full list of features, with every `.env` line, is
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
+- [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
