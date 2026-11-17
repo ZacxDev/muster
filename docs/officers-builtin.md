@@ -457,6 +457,8 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
 - **An escalation** — `officer_complete{outcome: "escalated"}`, an expired ask,
   or the wall-time cap — writes, in the same transaction, one entry per
   recipient (the owner and each `--escalate-to` user). The sweep raises each
+  one still inside the officer's reach when it sends
+  ([Who an escalation can ask](#who-an-escalation-can-ask))
   as an Attention **ask** — the officer asking a human to act — exactly once,
   even with two replicas. **An answer flows back to the officer**: the item
   re-opens as a judgement item with the answer on its `asks[]`, the next
@@ -617,6 +619,105 @@ stops its instances and starts none, whatever its queue holds; switch it on
 again and it resumes. Removing it from `MUSTER_OFFICERS` also stops muster
 running it; its store rows stay.
 
+## The Officers page
+
+**Officers** in the side menu (under More) is the same thing as the API
+below, for a person signed in: `/officers` lists your officers, and each
+team's you belong to, with where each runs, its status (**Live**, **Shadow**,
+**Paused**, or **Not running** with the reason) and what is open on it. An officer `MUSTER_OFFICERS` declares is listed **read-only**.
+A panel under the list says where an officer could run on this install now,
+and why not: pods only with the Kubernetes agent plane; each of your mirrored
+machines with what is in its way (not connected, cannot close windows,
+Claude Code missing or not logged in) — the same answer as
+`GET /api/officers/runtime-options`.
+
+**New officer** is a wizard, one step at a time:
+
+1. **Start from** — a template. Drawn only when there are two or more; this
+   version has one, *Blank officer*, so the wizard starts at step 2.
+2. **Name and instructions** — its name (its id is made from it, e.g.
+   `release-notes:main`, and can be set) and its standing instructions.
+   A manager of a team also chooses whose officer it is: changing it redraws
+   the rest of the wizard for that owner (its machines, what *Let muster
+   choose* picks, whom its escalations can ask), keeping what was typed.
+3. **Where it runs** — *Let muster choose* (`auto`, the default: what it
+   picks right now is shown), *In a pod*, or *On one of my machines* with a
+   machine picker; each choice this install cannot take is disabled with its
+   reason. A repository is optional: without one, each instance starts in a
+   scratch directory.
+4. **When it works** — a schedule (hourly, daily, weekdays, weekly, or your
+   own five-field cron, UTC), or *only when I give it work*. One of the two
+   is required: an officer nothing wakes is refused, not created.
+5. **What it may do** — nothing extra by default: outbound drafts, contacts,
+   connectors it may ask for and public repositories it reads are each
+   opt-in, and so is who else an escalation asks (picked, never typed as
+   ids — see **Who an escalation can ask** below). For a machine, the line on what a host officer can reach.
+6. **Review** — the answers, and **Start in Shadow** (the default) or
+   **Live**.
+
+It is created through the same check as the API, so a refused answer is
+shown beside its field and nothing is stored; it then runs with no restart.
+An officer's page shows its queue, its instances (a host instance's window
+opens its mirrored view), its open asks, the drafts its instances filed, its
+schedules (add and delete them there) and its booked usage when there is
+any. It shows no "last pass": the wake loop's memory of one is per replica
+and forgotten by a restart, so it is not drawn until a shared record of
+passes exists. Its actions: **Run now** (one `manual.run` item; a second tap
+while it waits adds none), **Pause** / **Resume**, **Switch to Live** /
+**Shadow**, **Edit** and **Delete** (type its id to confirm). Each writes
+only what it changes: a mode switch writes the mode, a pause the switch, and
+an Edit neither (the mode only when you changed it on the form), so none
+undoes another made while a page was open. An Edit keeps a host officer on
+its machine when that machine is not connected to this server right now (it
+is drawn selected, marked offline). A team's viewers and operators read a
+team officer's page — its host instances' windows included; only a manager
+changes it, and Postgres refuses anyone else again. A manager's writes to a
+team officer (create, edit, mode, pause, Run now, schedules, delete) are in
+the team's audit.
+
+### Who an escalation can ask
+
+An escalation asks only **people who can already see the officer**, and
+the server enforces it on every door that writes `escalate_to` — the wizard,
+Edit, `POST`/`PUT /api/officers/declared`, `PUT /api/officers/defs/{officer}`
+and the team officers page:
+
+- a **team** officer: the team itself (one ask any member answers) or its
+  members — not another team, even one its manager operates, and not the
+  members of the manager's other teams;
+- **your own** officer: you (always asked) or the people on the teams you
+  are in.
+
+The picker offers exactly that set. Any other id is refused with one
+answer, the same whether it names someone or no one, so a refusal never
+tells which ids are people. An id stored before this rule (when any person
+was accepted) keeps its place in the stored list until the officer's next
+Edit, which shows it ticked and marked and refuses the save until it is
+unticked (a mode switch or a pause still works) — but it is **not asked**
+meanwhile.
+
+The same reach is checked again **when an escalation is sent**, read at that
+moment: the sweep raises an escalation only to a recipient inside the
+officer's reach *now*. A recipient outside it — an id stored before the rule,
+or a member who has left the team since the officer was saved — is dropped:
+their entry on the item is given up (never retried), and muster logs one
+line per dropped recipient naming the officer, the item and the user id
+(never the item's text):
+
+```
+officers: <officer>: item <n>: the escalation to user <id> is dropped: that user cannot see the officer
+```
+
+The owner (the team, for a team officer) is always in the reach, so an
+officer whose every `--escalate-to` id is out of reach still asks its owner,
+exactly as with an empty list. If the reach cannot be read (a database
+error), nothing is raised to that recipient on that sweep and the next sweep
+tries again. This holds for every built-in officer — declared in the
+database or in `MUSTER_OFFICERS`, on pods or on a host — since all of them
+escalate through the one sweep; a `MUSTER_OFFICERS` officer's `owner` is a
+person or a team like any other, so the rule reads the same. (An HQ-backed
+officer has no `escalate_to` in muster: HQ notifies its owner.)
+
 ## Declared in the database (no restart)
 
 An officer can be declared in muster's database instead of
@@ -688,8 +789,8 @@ muster officer delete scout:main    # its queue, schedules and instances go too
 - A team's officers run from the database as a person's do (a row a team
   owns is loaded; a team host officer runs on the team's host, and one that
   declares `connectors` is refused: [A team's host officer](#a-teams-host-officer-team-hosts)),
-  but there is no door to write them yet: the team door comes with the
-  officers UI (O-C).
+  and a team's MANAGER writes them on the [Officers page](#the-officers-page)
+  (the JSON API's tokens carry no team, so it stays the caller's own).
 
 | method | path | body / query |
 |---|---|---|

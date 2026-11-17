@@ -221,15 +221,13 @@ func (s *Server) handleTeamOfficerDefPut(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// 🔴 escalate_to MAY NAME A TEAM HERE, and only here: this team, or a team
-	// the manager operates (read from their own memberships). An escalation
-	// to a team is ONE ask the team owns, every member sees it and one answers
-	// it (design §4). Every other id must be a person: UsersExist, the JSON
-	// admin API's own check, which admits PERSONS only (users.PersonIDs) — so
-	// that API never admits a team (a personal API token carries no team
-	// access). Read in the system scope: users is self-read.
-	var esc, persons []int64
-	scope := authz.MustFrom(r.Context()).TeamScope()
+	// 🔴 THE ONE ESCALATION RULE (escalationRefusal, Q1): a team officer's
+	// escalations reach only people who can already see it — this team
+	// itself (ONE ask the team owns, which any member answers: design §4) or
+	// one of its members. Another team, even one the manager operates, is
+	// refused: its members cannot see this officer. An id naming nobody gets
+	// the same refusal as an out-of-reach one.
+	var esc []int64
 	for _, f := range strings.FieldsFunc(r.FormValue("escalate_to"), func(c rune) bool { return c == ',' || c == ' ' }) {
 		u, err := strconv.ParseInt(f, 10, 64)
 		if err != nil || u <= 0 {
@@ -237,12 +235,14 @@ func (s *Server) handleTeamOfficerDefPut(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		esc = append(esc, u)
-		if role, in := scope.RoleIn(u); u != team && !(in && (role == authz.TeamOperator || role == authz.TeamManager)) {
-			persons = append(persons, u)
-		}
 	}
-	if missing, err := s.officerStore.UsersExist(authz.System(r.Context()), persons); err != nil || len(missing) > 0 {
-		s.renderTeamOfficers(w, r, team, authz.TeamManager, http.StatusBadRequest, "Escalate to names someone who is not a person here, or a team you do not operate.")
+	if err := s.escalationRefusal(r.Context(), team, true, esc); err != nil {
+		var rf officerReadFailed
+		if errors.As(err, &rf) {
+			s.teamOfficerDone(w, r, team, "check team officer escalations", err)
+			return
+		}
+		s.renderTeamOfficers(w, r, team, authz.TeamManager, http.StatusBadRequest, "Escalate to may name only this team or its members: people who can see its officers.")
 		return
 	}
 	d, err := s.officerStore.PutDefReturning(r.Context(), team, builtin.Def{Officer: r.PathValue("officer"), Enabled: r.FormValue("enabled") != "",

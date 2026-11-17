@@ -52,6 +52,9 @@ var apiNavWriters = []string{
 	"renderTeamPlugins",            // /teams/{id}/plugins (a team's viewer plugins, 2b.3b)
 	"handleAgentRotateCredentials", // a rotation's outcome page (team_admin.go)
 	"renderOfficerSpawns",          // /officers/spawns (host officer spawns and their team lend)
+	"handleOfficersPage",           // /officers (the person's and their teams' officers, O-C)
+	"renderOfficerForm",            // /officers/new and /officers/{officer}/edit (the wizard, the edit form)
+	"renderOfficerDetail",          // /officers/{officer} (one officer)
 }
 
 // apiBareWriters are the functions that write through writeAuthDocument — no
@@ -397,6 +400,9 @@ var apiNavSecret = map[string]bool{
 	"renderTeamConnectors":         false, // agent names, connector names, repositories; the App's token is never shown or taken
 	"handleAgentRotateCredentials": false, // a rotation's outcome sentence; the new credentials are never shown, nothing is typed
 	"renderOfficerSpawns":          false, // spawn rows: officer, instance, host, window; no secret shown or taken
+	"handleOfficersPage":           false, // officer rows and where they can run; no secret shown or taken
+	"renderOfficerForm":            false, // a declaration (name, instructions, runtime, schedule); holds no secret: a DB officer has none
+	"renderOfficerDetail":          false, // queue, instances, asks, drafts, schedules; no secret shown or taken
 }
 
 // TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this

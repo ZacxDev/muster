@@ -741,22 +741,38 @@ var isolationClasses = map[string]routeClass{
 	"POST /teams/{id}/plugins/{plugin}/revoke": classParam,
 	// Host officer spawns and their team lend (phase 3): the list shows the
 	// caller's own (and those lent to their teams); {id} is A's spawn.
-	"GET /officers/spawns":                 classList,
-	"POST /officers/spawns/{id}/share":     classParam,
-	"POST /officers/spawns/{id}/unshare":   classParam,
-	"GET /pages/{id}/preview":              classParam,
-	"GET /pages/{id}/versions/{v}/content": classParam,
-	"POST /pages/{id}/links/{link}/revoke": classParam,
-	"POST /pages/{id}/share":               classParam,
-	"POST /pages/{id}/share/rotate":        classParam,
-	"POST /pages/{id}/share/revoke":        classParam,
-	"GET /pages/{id}/card":                 classParam,
-	"POST /pages/{id}/rollback":            classParam,
-	"POST /pages/{id}/delete":              classParam,
-	"GET /s/{token}":                       classPublic,
-	"GET /s/{token}/content":               classPublic,
-	"POST /s/{token}/submit":               classPublic,
-	"POST /s/{token}/upload":               classPublic,
+	"GET /officers/spawns":               classList,
+	"POST /officers/spawns/{id}/share":   classParam,
+	"POST /officers/spawns/{id}/unshare": classParam,
+	// The Officers pages (officers O-C): the list is the caller's own (and
+	// their teams'); every other route names A's officer {officer} (and a
+	// schedule {name} of it), or creates the caller's own (new).
+	"GET /officers":                                    classList,
+	"GET /officers/new":                                classList,
+	"POST /officers/new":                               classList,
+	"GET /officers/{officer}":                          classParam,
+	"GET /officers/{officer}/edit":                     classParam,
+	"POST /officers/{officer}/edit":                    classParam,
+	"POST /officers/{officer}/pause":                   classParam,
+	"POST /officers/{officer}/resume":                  classParam,
+	"POST /officers/{officer}/mode":                    classParam,
+	"POST /officers/{officer}/run":                     classParam,
+	"POST /officers/{officer}/delete":                  classParam,
+	"POST /officers/{officer}/schedules":               classParam,
+	"POST /officers/{officer}/schedules/{name}/delete": classParam,
+	"GET /pages/{id}/preview":                          classParam,
+	"GET /pages/{id}/versions/{v}/content":             classParam,
+	"POST /pages/{id}/links/{link}/revoke":             classParam,
+	"POST /pages/{id}/share":                           classParam,
+	"POST /pages/{id}/share/rotate":                    classParam,
+	"POST /pages/{id}/share/revoke":                    classParam,
+	"GET /pages/{id}/card":                             classParam,
+	"POST /pages/{id}/rollback":                        classParam,
+	"POST /pages/{id}/delete":                          classParam,
+	"GET /s/{token}":                                   classPublic,
+	"GET /s/{token}/content":                           classPublic,
+	"POST /s/{token}/submit":                           classPublic,
+	"POST /s/{token}/upload":                           classPublic,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -1793,6 +1809,9 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			"/declared/{officer}", "/declared/"+url.PathEscape(o.officer)).Replace(path)
 	case strings.HasPrefix(path, "/officers/spawns/{id}"):
 		id = strconv.FormatInt(o.spawn, 10)
+	case strings.HasPrefix(path, "/officers/{officer}"):
+		// The Officers pages (O-C): A's officer, and its schedule.
+		path = strings.NewReplacer("{officer}", url.PathEscape(o.officer), "{name}", "nightly").Replace(path)
 	}
 	if path == "/attention/asker" {
 		// The asks block of A's agent (the agent page's), by name.
@@ -1863,6 +1882,13 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		return method, path, `{"jsonrpc":"2.0","id":1,"method":"tools/list","title":"iso-write","body":"iso-write",` +
 			`"status":"in_progress","message":"iso-write","answer":"iso-write","reason":"iso-write","blocked":true,"tool":"Bash","command":"ls",` +
 			`"instances":["isoinst"],"waitSeconds":1,"outcome":"done"}`
+	}
+	if strings.HasPrefix(path, "/officers/") && !strings.HasPrefix(path, "/officers/spawns/") {
+		// The Officers pages' forms: a body each write accepts for its owner
+		// (a whole wizard answer, a mode, the delete's confirmation), so a
+		// refusal is about whose officer, not a missing field.
+		return method, path, url.Values{"template": {"blank"}, "name": {"iso-write"}, "charter": {"iso-write"}, "runtime": {"auto"},
+			"wake": {"manual"}, "mode": {"shadow"}, "confirm": {o.officer}, "schedule_preset": {"hourly"}}.Encode()
 	}
 	if strings.HasPrefix(path, "/officers/spawns/") {
 		// A share names a team the ACTOR operates where it has one (A

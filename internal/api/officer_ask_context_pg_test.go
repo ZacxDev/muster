@@ -11,9 +11,11 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // The owner's Attention ask about an officer item a plugin message became
@@ -233,9 +235,24 @@ func TestAnAskShowsOnlyItsOwnItemsMessage(t *testing.T) {
 // TestAnEscalateToRecipientDoesNotGetTheOwnersMessage: an escalation reaches
 // the owner AND an --escalate-to user; the owner's ask carries the source
 // message, the other user's carries the item line only — the message is the
-// owner's row, which row-level security keeps from that user.
+// owner's row, which row-level security keeps from that user. The other user
+// shares a team with the owner, so the escalation may reach them (Q1: the
+// send-time reach, escalationReachesNow).
 func TestAnEscalateToRecipientDoesNotGetTheOwnersMessage(t *testing.T) {
 	w := newOutboundWorld(t, true)
+	w.srv.ext.Users = users.NewPG(w.f.pool)
+	sys := authz.System(context.Background())
+	var team int64
+	if err := w.f.pool.QueryRow(sys, `INSERT INTO users (kind, role, display_name) VALUES ('team', 'member', 'ctx-escto-team') RETURNING id`).Scan(&team); err != nil {
+		t.Fatal(err)
+	}
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES (`+strconv.FormatInt(team, 10)+`, 1, 'manager', 1), (`+
+		strconv.FormatInt(team, 10)+`, `+strconv.FormatInt(w.other, 10)+`, 'viewer', 1)`)
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dsn, `DELETE FROM team_members WHERE team_id = `+strconv.FormatInt(team, 10))
+		dbtest.OwnerExec(t, dsn, `DELETE FROM users WHERE id = `+strconv.FormatInt(team, 10))
+	})
 	if err := w.store.PutDef(w.ctx, 1, builtin.Def{Officer: builtinOfficerID, Enabled: true, EscalateTo: []int64{w.other}}); err != nil {
 		t.Fatal(err)
 	}

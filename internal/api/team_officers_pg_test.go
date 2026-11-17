@@ -331,11 +331,14 @@ func TestAnEscalationToATeamIsOneTeamAsk(t *testing.T) {
 	}
 }
 
-// TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage: a manager names, as a
-// team officer's escalate_to, the team itself or a team they operate — and
-// not a team they are only a viewer of. The JSON admin API (A's PERSONAL API
-// token) refuses a team id as it always has: a personal token carries no team
-// access. CONTROL: the same token names a person.
+// TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage: on a team officer's
+// page a manager names, as its escalate_to, the team itself or one of its
+// members — and (Q1, operator decision: an escalation reaches only people who
+// can already see the officer) NOT another team, even one they operate, nor a
+// person outside the team. The JSON admin API (A's PERSONAL API token)
+// refuses a team id as it always has, and a person who shares no team with A;
+// an id naming nobody gets the very same answer. CONTROLS: the team and its
+// member are taken; the token names a person on a team A is in.
 func TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage(t *testing.T) {
 	w := newIsoWorld(t)
 	team := w.aTeam
@@ -343,15 +346,28 @@ func TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	operated, err := users.NewPG(w.pool).CreateTeam(w.sys, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}, "operated-"+w.suffix, w.op.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		bg := authz.System(context.Background())
 		_, _ = w.pool.Exec(bg, `DELETE FROM officer_defs WHERE owner_id = $1`, team)
 		_, _ = w.pool.Exec(bg, `DELETE FROM officer_types WHERE owner_id = $1`, team)
-		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, viewed.ID)
-		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.TeamObject(viewed.ID))
-		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, viewed.ID)
+		for _, id := range []int64{viewed.ID, operated.ID} {
+			_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, id)
+			_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.TeamObject(id))
+			_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, id)
+		}
 	})
+	var lone int64 // a person on no team with A
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "lone"+w.suffix).Scan(&lone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = w.pool.Exec(authz.System(context.Background()), `DELETE FROM users WHERE id = $1`, lone) })
 	w.setRole(t, viewed.ID, w.a.uid, authz.TeamViewer)
+	w.setRole(t, operated.ID, w.a.uid, authz.TeamOperator)
+	w.setRole(t, team, w.b.uid, authz.TeamViewer)
 	ost := builtin.NewStore(w.pool)
 	if err := ost.PutType(w.sys, team, builtin.Type{Key: "mk", Name: "Marketing", Charter: "c"}); err != nil {
 		t.Fatal(err)
@@ -364,20 +380,34 @@ func TestATeamIsAnEscalationTargetOnlyOnItsOfficersPage(t *testing.T) {
 		}
 		return url.Values{"mode": {"live"}, "enabled": {"1"}, "escalate_to": {strings.Join(parts, ",")}}.Encode()
 	}
+	for _, c := range []struct {
+		what string
+		id   int64
+	}{{"a team they only view", viewed.ID}, {"a team they operate", operated.ID}, {"a person outside the team", lone}} {
+		if rec := w.do(w.h, "POST", page, esc(c.id), cred{sessionUser: w.a.uid}); rec.Code != http.StatusBadRequest {
+			t.Errorf("the manager naming %s: %d; want 400", c.what, rec.Code)
+		}
+	}
 	if rec := w.do(w.h, "POST", page, esc(team, w.b.uid), cred{sessionUser: w.a.uid}); rec.Code != http.StatusSeeOther {
-		t.Fatalf("the manager naming the team and a person: %d %.300s", rec.Code, rec.Body.String())
+		t.Fatalf("control: the manager naming the team and its member: %d %.300s", rec.Code, rec.Body.String())
 	}
 	if d, err := ost.GetDef(w.sys, team, "mk:a"); err != nil || len(d.EscalateTo) != 2 || d.EscalateTo[0] != team {
 		t.Fatalf("the team officer's escalate_to: %+v, %v; want the team and the person", d, err)
 	}
-	if rec := w.do(w.h, "POST", page, esc(viewed.ID), cred{sessionUser: w.a.uid}); rec.Code != http.StatusBadRequest {
-		t.Errorf("the manager naming a team they only view: %d; want 400", rec.Code)
-	}
 	tok := cred{apiToken: w.apiTokens[w.a.uid]}
-	if rec := w.do(w.h, "PUT", "/api/officers/defs/"+url.PathEscape(w.objA.officer), `{"escalate_to":[`+strconv.FormatInt(team, 10)+`]}`, tok); rec.Code != http.StatusBadRequest {
-		t.Errorf("A's personal API token naming a team as escalate_to: %d; want 400 (no team access)", rec.Code)
+	put := func(id int64) (int, string) {
+		rec := w.do(w.h, "PUT", "/api/officers/defs/"+url.PathEscape(w.objA.officer), `{"escalate_to":[`+strconv.FormatInt(id, 10)+`]}`, tok)
+		return rec.Code, rec.Body.String()
 	}
-	if rec := w.do(w.h, "PUT", "/api/officers/defs/"+url.PathEscape(w.objA.officer), `{"escalate_to":[`+strconv.FormatInt(w.b.uid, 10)+`]}`, tok); rec.Code != http.StatusOK {
-		t.Errorf("control: A's personal API token naming a person: %d %.300s", rec.Code, rec.Body.String())
+	if code, _ := put(team); code != http.StatusBadRequest {
+		t.Errorf("A's personal API token naming a team as escalate_to: %d; want 400 (no team access)", code)
+	}
+	oc, ob := put(lone)
+	nc, nb := put(987654321)
+	if oc != http.StatusBadRequest || oc != nc || ob != nb {
+		t.Errorf("A's token naming a person on no team with A: %d, and an id naming nobody: %d; want the same 400, bodies equal %v", oc, nc, ob == nb)
+	}
+	if code, body := put(w.b.uid); code != http.StatusOK {
+		t.Errorf("control: A's personal API token naming a person on a team A is in: %d %.300s", code, body)
 	}
 }

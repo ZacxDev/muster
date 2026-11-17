@@ -261,22 +261,15 @@ var (
 		// an ask is settled as its owner, an escalation is raised in Attention
 		// as its recipient, and the item's own escalation bookkeeping
 		// (NoticeRaised/NoticeAbandoned/SettleEscalation, one row each) is
-		// written in the system scope, since the recipient need not own it; and an
-		// officer definition's escalate_to is checked against users, which is
-		// self-read under RLS — answering only which of the caller's own ids
-		// are not persons — on the JSON admin API and on a team's officers
-		// page (team sharing phase 3), each answering only which of the
-		// caller's own ids are missing.
+		// written in the system scope, since the recipient need not own it.
+		// (An officer's escalate_to is no longer checked here: escalationRefusal
+		// reads the reach through the users store's MyTeams/TeamMembers, whose
+		// own System is users.sys below — round 1 of O-C, Q1.)
 		"internal/api.(*Server).SweepOfficerAttention",
-		"internal/api.(*Server).handleOfficerDefPut",
-		"internal/api.(*Server).handleTeamOfficerDefPut",
-		// …the same escalate_to check on the declared-officer API's create and
-		// replace (officer_declared.go, migration 0136), answering only which
-		// of the caller's own ids are missing; and its roster loader, which
-		// reads every owner's DB-declared officer rows (the runtime fields, no
-		// charter) to run each as its owner — as the scheduler below reads
-		// every owner's due schedules.
-		"internal/api.(*Server).escalationRefusal",
+		// …the declared-officer roster loader, which reads every owner's
+		// DB-declared officer rows (the runtime fields, no charter) to run each
+		// as its owner — as the scheduler below reads every owner's due
+		// schedules.
 		"internal/api.(*Server).loadDeclaredRoster",
 		// …and its slug allocator, which asks whether an instance agent of a
 		// candidate slug exists for ANY owner (an agent name is global), so

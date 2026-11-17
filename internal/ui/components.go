@@ -1013,6 +1013,8 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 				// The shareable pages (page_card.go): a standalone screen too.
 				pagesLink(feat, activeTab == NavPages, currentTab == NavPages),
+				// The officers (internal/api officers_pages.go): a standalone page.
+				officersLink(feat, activeTab == NavOfficers, currentTab == NavOfficers),
 				// The install button (shown only where the browser offers one) and
 				// the account links. The theme toggle that once sat here is gone —
 				// the UI is dark only (theme.go).

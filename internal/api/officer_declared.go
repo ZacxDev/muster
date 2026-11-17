@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // ---------------------------------------------------------------------------
@@ -794,6 +795,11 @@ type declaredIn struct {
 	Mode       *string `json:"mode"`
 	EscalateTo []int64 `json:"escalate_to"`
 	Paused     *bool   `json:"paused"`
+	// keepEnabled and keepMode are the page Edit's (never decoded from a
+	// body): it writes neither the switch, which its form does not show, nor
+	// the mode when the person left it as the form read it — so an Edit does
+	// not undo a Pause or a mode switch made while the form was open.
+	keepEnabled, keepMode bool
 }
 
 // requireSwitches refuses a replace whose body leaves out mode or paused,
@@ -854,27 +860,181 @@ func (in declaredIn) declaration(owner int64, id, slug string) (officers.Declara
 	return d, nil
 }
 
-// escalationRefusal checks escalate_to as the def's own PUT does: persons
-// only (UsersExist), or — on the team door — the team itself.
+// escalationTeams is the account store's two team reads the escalation reach
+// needs (users.PGStore: MyTeams, TeamMembers — each read under System),
+// asserted so a store without them reaches only the owner.
+type escalationTeams interface {
+	MyTeams(ctx context.Context, user int64) ([]users.MyTeam, error)
+	TeamMembers(ctx context.Context, team int64) ([]users.TeamMember, error)
+}
+
+// escalationTeamStore is the store escalationReach reads teams through: the
+// server's users store, else the GoTrue account store; nil for neither.
+func (s *Server) escalationTeamStore() escalationTeams {
+	if st, ok := s.ext.Users.(escalationTeams); ok {
+		return st
+	}
+	if s.gt != nil && s.gt.Accounts != nil {
+		if st, ok := s.gt.Accounts.(escalationTeams); ok {
+			return st
+		}
+	}
+	return nil
+}
+
+// escalationTarget is one id an officer's escalation may name, with the words
+// a picker draws for it.
+type escalationTarget struct {
+	ID    int64
+	Label string
+	// Self: the officer's owner person (always asked on a personal officer;
+	// the picker does not offer it).
+	Self bool
+	// Team: the team itself (a team officer's one ask the team owns).
+	Team bool
+}
+
+// escalationReach is EVERY id owner's officer's escalations may name (Q1,
+// operator decision): only people who can already see the officer. A team
+// officer (team): the team itself (one ask any member answers) and the
+// team's members, whatever their role. A personal officer: its owner, and the
+// people on every team the owner is in. Read now, from the memberships in the
+// database (under System: team_members is self-read), never from the
+// caller's principal — so the JSON door, whose personal token carries no team
+// access, and the session doors answer the same set for the same officer.
+//
+// 🔴 THE ONE RULE: the escalation refusal (escalationRefusal: every door —
+// the wizard, Edit, the JSON API, the team officers page, the def PUT) and
+// the picker (escalationChoices) both read this list, so the picker offers
+// exactly what the server accepts.
+func (s *Server) escalationReach(ctx context.Context, owner int64, team bool) ([]escalationTarget, error) {
+	st := s.escalationTeamStore()
+	var out []escalationTarget
+	seen := map[int64]bool{}
+	add := func(m users.TeamMember) {
+		if seen[m.UserID] {
+			return
+		}
+		seen[m.UserID] = true
+		out = append(out, escalationTarget{ID: m.UserID, Label: personLabel(m.Email, m.DisplayName, m.UserID), Self: !team && m.UserID == owner})
+	}
+	if team {
+		seen[owner] = true
+		out = append(out, escalationTarget{ID: owner, Team: true})
+		if st == nil {
+			return out, nil
+		}
+		members, err := st.TeamMembers(ctx, owner)
+		if err != nil {
+			return nil, fmt.Errorf("officers: read team %d's members: %w", owner, err)
+		}
+		for _, m := range members {
+			add(m)
+		}
+		return out, nil
+	}
+	seen[owner] = true
+	out = append(out, escalationTarget{ID: owner, Self: true})
+	if st == nil {
+		return out, nil
+	}
+	teams, err := st.MyTeams(ctx, owner)
+	if err != nil {
+		return nil, fmt.Errorf("officers: read user %d's teams: %w", owner, err)
+	}
+	ids := make([]int64, 0, len(teams))
+	for _, t := range teams {
+		ids = append(ids, t.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, t := range ids {
+		members, err := st.TeamMembers(ctx, t)
+		if err != nil {
+			return nil, fmt.Errorf("officers: read team %d's members: %w", t, err)
+		}
+		for _, m := range members {
+			add(m)
+		}
+	}
+	return out, nil
+}
+
+// escalationOutOfReach is the ONE refusal of an escalate_to id the officer's
+// escalations cannot reach — whether the id names nobody or someone who
+// cannot see the officer: the same words, naming no id, so the refusal
+// never tells which ids are people (no user-id enumeration).
+const escalationOutOfReach = "escalate_to may name only people who can already see this officer: for a team's officer, the team or its members; for your own, you or people on your teams"
+
+// escalationRefusal checks escalate_to for owner's officer (team: owner is a
+// team) against escalationReach: a field refusal (escalationOutOfReach) for
+// any id outside it, an internal error when the reach cannot be read.
+//
+// Stored lists are NOT rewritten: an id stored before this rule (any person
+// was accepted) stays until the officer's next replace, which refuses it —
+// so the next Edit asks the person to untick it. Until then it is NOT asked:
+// the send-time half (escalationReachesNow, at raiseOfficerNotice) drops any
+// recipient outside the reach read at the moment of sending, and logs it
+// (docs/officers-builtin.md).
 func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, ids []int64) error {
-	var persons []int64
 	for _, u := range ids {
 		if u <= 0 {
 			return fieldError("escalate_to", "escalate_to holds user ids (positive numbers)")
 		}
-		if team && u == owner {
-			continue
-		}
-		persons = append(persons, u)
 	}
-	missing, err := s.officerStore.UsersExist(authz.System(ctx), persons)
+	if len(ids) == 0 {
+		return nil
+	}
+	in, err := s.escalationReachSet(ctx, owner, team)
 	if err != nil {
-		return err
+		return officerReadFailed{err}
 	}
-	if len(missing) > 0 {
-		return fieldError("escalate_to", fmt.Sprintf("escalate_to names users that do not exist: %v", missing))
+	for _, u := range ids {
+		if !in[u] {
+			return fieldError("escalate_to", escalationOutOfReach)
+		}
 	}
 	return nil
+}
+
+// escalationReachSet is escalationReach as a set of ids: what both halves of
+// the one rule test membership against — the write-time refusal
+// (escalationRefusal) and the send-time filter (escalationReachesNow).
+func (s *Server) escalationReachSet(ctx context.Context, owner int64, team bool) (map[int64]bool, error) {
+	reach, err := s.escalationReach(ctx, owner, team)
+	if err != nil {
+		return nil, err
+	}
+	in := make(map[int64]bool, len(reach))
+	for _, t := range reach {
+		in[t.ID] = true
+	}
+	return in, nil
+}
+
+// escalationReachesNow is the SEND-TIME half of the one escalation rule (Q1):
+// whether owner's officer's escalation may still be raised to recipient,
+// answered from escalationReach read NOW — so an id stored before the rule
+// existed, or a member removed from a team after the officer was saved, is
+// not asked. owner's kind (team or person) is read now too; an owner that
+// names nobody reads as a person (its reach is then itself alone). Used by
+// the escalation sweep (raiseOfficerNotice) for every builtin officer —
+// DB-declared or MUSTER_OFFICERS, pod or host runtime — since all of them
+// escalate through the one notices queue.
+func (s *Server) escalationReachesNow(ctx context.Context, owner, recipient int64) (bool, error) {
+	team := false
+	a, err := s.accountOfChecked(ctx, owner)
+	switch {
+	case errors.Is(err, users.ErrNotFound):
+	case err != nil:
+		return false, fmt.Errorf("officers: read owner %d: %w", owner, err)
+	default:
+		team = a.Team
+	}
+	in, err := s.escalationReachSet(ctx, owner, team)
+	if err != nil {
+		return false, err
+	}
+	return in[recipient], nil
 }
 
 // checkDeclaredOwner is the team rule for d, through THE one check
@@ -925,7 +1085,7 @@ func (s *Server) hostRefusal(ctx context.Context, d officers.Declaration) error 
 	}
 	hosts, err := s.ext.Mirror.LiveTokenHosts(s.officerPrincipal(ctx, d.Owner))
 	if err != nil {
-		return fmt.Errorf("officers: read the owner's hosts: %w", err)
+		return officerReadFailed{fmt.Errorf("officers: read the owner's hosts: %w", err)}
 	}
 	if !slices.Contains(hosts, d.Host) {
 		return fieldError("host", fmt.Sprintf("host %q is not one of its owner's mirrored hosts: a host is named by the mirror token it connects with", d.Host))
@@ -981,21 +1141,92 @@ func (s *Server) slugHasAgents(ctx context.Context, slug string) (bool, error) {
 	return false, nil
 }
 
-// declaredStoreErr answers a store error of the declared-officer API.
-func (s *Server) declaredStoreErr(w http.ResponseWriter, err error) {
+// --- the writes: one core each, two doors ------------------------------------
+//
+// 🔴 ONE RULE, TWO DOORS. Every write a declared officer takes — create,
+// replace, pause, resume, delete — is ONE function here (createDeclared,
+// updateDeclared, switchDeclared, deleteDeclared) that answers an error and
+// writes nothing to the response. The JSON admin API (the hook tier, below)
+// and the Officers pages (officers_pages.go, the session tier: a person's own
+// officers and the teams they manage) are each only a door: they decode their
+// own input, call the core, and say its answer in their own shape
+// (declaredErr here; officerPageRefusal there). So a check added to a write is
+// added once, and neither door can skip it.
+
+// declaredInvalid is a refusal of the declaration itself: the JSON door
+// answers it 400 {error, fields}, the page draws each field's refusal beside
+// its field.
+type declaredInvalid struct{ err error }
+
+func (e declaredInvalid) Error() string { return e.err.Error() }
+func (e declaredInvalid) Unwrap() error { return e.err }
+
+// officerReadFailed is a check that could not be made — a store or mirror
+// read failed — as opposed to a refusal of the declaration. 🔴 Its words are
+// the database's or the hub's: both doors log it and answer generically
+// (the JSON door's adminStoreErr; the page's officerPageRefusal), never
+// drawing it on the form (round 0's 🟢).
+type officerReadFailed struct{ err error }
+
+func (e officerReadFailed) Error() string { return e.err.Error() }
+func (e officerReadFailed) Unwrap() error { return e.err }
+
+// refused is err as the cores answer it: a read failure as it is (an
+// internal error), anything else a refusal of the declaration.
+func refused(err error) error {
+	var rf officerReadFailed
+	if errors.As(err, &rf) {
+		return err
+	}
+	return declaredInvalid{err}
+}
+
+// errEnvManaged: the officer is MUSTER_OFFICERS': read-only here (409).
+var errEnvManaged = errors.New("officers: managed by MUSTER_OFFICERS")
+
+// envManagedRefusal is errEnvManaged for id, with the words both doors say.
+func envManagedRefusal(id string) error {
+	return fmt.Errorf("%w: %s declares %s: it is read-only here (change the environment and restart)", errEnvManaged, "MUSTER_OFFICERS", id)
+}
+
+// declaredStoreRefusal is a store error's status and words, when it is one of
+// the store's own refusals (ok false: an unexpected error).
+func declaredStoreRefusal(err error) (code int, msg string, ok bool) {
 	switch {
 	case errors.Is(err, builtin.ErrExists):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "you already have that officer: " + err.Error()})
+		return http.StatusConflict, "you already have that officer: " + err.Error(), true
 	case errors.Is(err, builtin.ErrNotDeclared):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "that officer is a def with no runtime declared in the database (an env officer's, or one `muster officer def put` made): it is read-only here"})
+		return http.StatusConflict, "that officer is a def with no runtime declared in the database (an env officer's, or one `muster officer def put` made): it is read-only here", true
 	case errors.Is(err, builtin.ErrNotFound):
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such officer"})
+		return http.StatusNotFound, "no such officer", true
 	case errors.Is(err, builtin.ErrNoSlug):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "every instance name for that id is taken; choose another id"})
+		return http.StatusConflict, "every instance name for that id is taken; choose another id", true
 	case errors.Is(err, builtin.ErrTypeShared):
-		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "another of your officers runs on this officer's type, so its charter is not changed here: " + err.Error()})
+		return http.StatusConflict, "another of your officers runs on this officer's type, so its charter is not changed here: " + err.Error(), true
+	}
+	return 0, "", false
+}
+
+// declaredStoreErr answers a store error of the declared-officer API.
+func (s *Server) declaredStoreErr(w http.ResponseWriter, err error) {
+	if code, msg, ok := declaredStoreRefusal(err); ok {
+		s.writeJSON(w, code, map[string]any{"error": msg})
+		return
+	}
+	s.adminStoreErr(w, "officer", err)
+}
+
+// declaredErr is the JSON door's answer to a core's error.
+func (s *Server) declaredErr(w http.ResponseWriter, err error) {
+	var inv declaredInvalid
+	switch {
+	case errors.As(err, &inv):
+		s.writeFieldErrors(w, inv.err)
+	case errors.Is(err, errEnvManaged):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": strings.TrimPrefix(err.Error(), errEnvManaged.Error()+": "),
+			"managed_by": officers.ManagedByEnv})
 	default:
-		s.adminStoreErr(w, "officer", err)
+		s.declaredStoreErr(w, err)
 	}
 }
 
@@ -1004,8 +1235,7 @@ func (s *Server) refuseEnvManaged(w http.ResponseWriter, owner int64, id string)
 	if _, ok := s.officerRT.envOfficer(owner, id); !ok {
 		return false
 	}
-	s.writeJSON(w, http.StatusConflict, map[string]any{"error": "MUSTER_OFFICERS" + " declares " + id + ": it is read-only here (change the environment and restart)",
-		"managed_by": officers.ManagedByEnv})
+	s.declaredErr(w, envManagedRefusal(id))
 	return true
 }
 
@@ -1014,18 +1244,29 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 	if !s.decodeAdmin(w, r, &in) {
 		return
 	}
+	row, err := s.createDeclared(r.Context(), owner, team, in)
+	if err != nil {
+		s.declaredErr(w, err)
+		return
+	}
+	s.answerDeclared(w, r, http.StatusCreated, owner, row.Officer)
+}
+
+// createDeclared creates owner's officer in (team: owner is a team, whose
+// manager the principal is — the page door checked; Postgres checks again,
+// officer_defs being managed): its type, def and declaration in one
+// transaction, then the roster reload that runs it with no restart.
+func (s *Server) createDeclared(ctx context.Context, owner int64, team bool, in declaredIn) (builtin.DeclaredRow, error) {
 	id := strings.TrimSpace(in.ID)
 	if id == "" {
-		s.writeFieldErrors(w, fieldError("id", "id is required: <type>:<area>"))
-		return
+		return builtin.DeclaredRow{}, declaredInvalid{fieldError("id", "id is required: <type>:<area>")}
 	}
-	if s.refuseEnvManaged(w, owner, id) {
-		return
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return builtin.DeclaredRow{}, envManagedRefusal(id)
 	}
-	slugs, err := s.slugCandidates(r.Context(), owner, id, in.MaxInstances)
+	slugs, err := s.slugCandidates(ctx, owner, id, in.MaxInstances)
 	if err != nil {
-		s.adminStoreErr(w, "officer", err)
-		return
+		return builtin.DeclaredRow{}, err
 	}
 	first := ""
 	if len(slugs) > 0 {
@@ -1036,23 +1277,21 @@ func (s *Server) declaredCreate(w http.ResponseWriter, r *http.Request, owner in
 		err = fieldError("id", fmt.Sprintf("id %q leaves no room for an instance name under this deployment's namespace prefix", id))
 	}
 	if err == nil {
-		err = s.declarationRefusal(r.Context(), d)
+		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return builtin.DeclaredRow{}, refused(err)
 	}
-	if err := s.escalationRefusal(r.Context(), owner, team, in.EscalateTo); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
+		return builtin.DeclaredRow{}, refused(err)
 	}
-	row, err := s.officerStore.CreateDeclared(r.Context(), owner, s.declaredWriteOf(in, d), slugs)
+	row, err := s.officerStore.CreateDeclared(ctx, owner, s.declaredWriteOf(in, d), slugs)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return builtin.DeclaredRow{}, err
 	}
-	s.logger.Printf("officers: user %d created officer %s for owner %d in the database (runtime %s, slug %s)", authz.MustFrom(r.Context()).UserID, row.Officer, owner, row.Fields.Runtime, row.Fields.InstanceSlug)
-	s.answerDeclared(w, r, http.StatusCreated, owner, row.Officer)
+	s.logger.Printf("officers: user %d created officer %s for owner %d in the database (runtime %s, slug %s)", authz.MustFrom(ctx).UserID, row.Officer, owner, row.Fields.Runtime, row.Fields.InstanceSlug)
+	s.reloadAfterWrite(ctx)
+	return row, nil
 }
 
 func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.DeclaredWrite {
@@ -1060,7 +1299,8 @@ func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.
 	if name == "" {
 		name = d.ID
 	}
-	w := builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: true, EscalateTo: in.EscalateTo, Fields: d}
+	w := builtin.DeclaredWrite{TypeName: name, Charter: in.Charter, Policy: in.Policy, Enabled: true, EscalateTo: in.EscalateTo, Fields: d,
+		KeepEnabled: in.keepEnabled, KeepMode: in.keepMode}
 	if in.Paused != nil {
 		w.Enabled = !*in.Paused
 	}
@@ -1070,9 +1310,9 @@ func (s *Server) declaredWriteOf(in declaredIn, d officers.Declaration) builtin.
 	return w
 }
 
-// answerDeclared reloads the roster, then answers owner's officer id.
+// answerDeclared answers owner's officer id, as the last roster load sees it
+// (every core reloads after its write).
 func (s *Server) answerDeclared(w http.ResponseWriter, r *http.Request, code int, owner int64, id string) {
-	s.reloadAfterWrite(r.Context())
 	row, err := s.officerStore.GetDeclared(r.Context(), owner, id)
 	if err != nil {
 		s.declaredStoreErr(w, err)
@@ -1098,47 +1338,54 @@ func (s *Server) declaredUpdate(w http.ResponseWriter, r *http.Request, owner in
 	if !s.decodeAdmin(w, r, &in) {
 		return
 	}
-	if in.ID != "" && in.ID != id {
-		s.writeFieldErrors(w, fieldError("id", "an officer's id is its path's and never changes; create a new one instead"))
+	if err := s.updateDeclared(r.Context(), owner, team, id, in); err != nil {
+		s.declaredErr(w, err)
 		return
 	}
-	cur, err := s.officerStore.GetDeclared(r.Context(), owner, id)
+	s.answerDeclared(w, r, http.StatusOK, owner, id)
+}
+
+// updateDeclared replaces owner's officer id with in (the whole record; mode
+// and paused stated), then reloads the roster.
+func (s *Server) updateDeclared(ctx context.Context, owner int64, team bool, id string, in declaredIn) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
+	}
+	if in.ID != "" && in.ID != id {
+		return declaredInvalid{fieldError("id", "an officer's id is its path's and never changes; create a new one instead")}
+	}
+	cur, err := s.officerStore.GetDeclared(ctx, owner, id)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return err
 	}
 	if err := in.requireSwitches(); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return declaredInvalid{err}
 	}
 	d, err := in.declaration(owner, id, cur.Fields.InstanceSlug)
 	if err == nil {
-		err = s.declarationRefusal(r.Context(), d)
+		err = s.declarationRefusal(ctx, d)
 	}
 	if err != nil {
-		s.writeFieldErrors(w, err)
-		return
+		return refused(err)
 	}
-	if err := s.escalationRefusal(r.Context(), owner, team, in.EscalateTo); err != nil {
-		s.writeFieldErrors(w, err)
-		return
+	if err := s.escalationRefusal(ctx, owner, team, in.EscalateTo); err != nil {
+		return refused(err)
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
-	if _, err := s.officerStore.UpdateDeclared(r.Context(), owner, id, s.declaredWriteOf(in, d)); err != nil {
-		s.declaredStoreErr(w, err)
-		return
+	if _, err := s.officerStore.UpdateDeclared(ctx, owner, id, s.declaredWriteOf(in, d)); err != nil {
+		return err
 	}
-	s.logger.Printf("officers: user %d replaced officer %s of owner %d in the database", authz.MustFrom(r.Context()).UserID, id, owner)
+	s.logger.Printf("officers: user %d replaced officer %s of owner %d in the database", authz.MustFrom(ctx).UserID, id, owner)
 	// A move (another runtime or host) is the roster load's to tear down
 	// (teardownMoved): the old instances are not the new ones' — a pod row
 	// would block a host start of the same name. One that no longer runs at
 	// all has its instances torn down here.
-	s.reloadAfterWrite(r.Context())
+	s.reloadAfterWrite(ctx)
 	after, _ := s.officerRT.declaredView(owner, id)
 	if old := before.officer; old != nil && after.officer == nil {
-		s.teardownInstances(r.Context(), *old)
+		s.teardownInstances(ctx, *old)
 	}
-	s.answerDeclared(w, r, http.StatusOK, owner, id)
+	return nil
 }
 
 func (s *Server) declaredPause(w http.ResponseWriter, r *http.Request, owner int64, _ bool) {
@@ -1149,59 +1396,96 @@ func (s *Server) declaredResume(w http.ResponseWriter, r *http.Request, owner in
 	s.declaredSwitch(w, r, owner, true)
 }
 
-// declaredSwitch is pause (on false) and resume: the officer's switch, which
+func (s *Server) declaredSwitch(w http.ResponseWriter, r *http.Request, owner int64, on bool) {
+	id := r.PathValue("officer")
+	if err := s.switchDeclared(r.Context(), owner, id, on); err != nil {
+		s.declaredErr(w, err)
+		return
+	}
+	s.answerDeclared(w, r, http.StatusOK, owner, id)
+}
+
+// switchDeclared is pause (on false) and resume: the officer's switch, which
 // the wake loop reads on every pass — a paused officer's instances are
 // stopped on its next pass and none starts; a resumed one wakes for its
 // queue. Nothing else changes, so the officer stays in the roster (and a host
 // officer's machine stays gated while a window may still be open).
-func (s *Server) declaredSwitch(w http.ResponseWriter, r *http.Request, owner int64, on bool) {
-	id := r.PathValue("officer")
-	if s.refuseEnvManaged(w, owner, id) {
-		return
+func (s *Server) switchDeclared(ctx context.Context, owner int64, id string, on bool) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
 	}
-	if _, err := s.officerStore.SetDeclaredEnabled(r.Context(), owner, id, on); err != nil {
-		s.declaredStoreErr(w, err)
-		return
+	if _, err := s.officerStore.SetDeclaredEnabled(ctx, owner, id, on); err != nil {
+		return err
 	}
 	verb := "paused"
 	if on {
 		verb = "resumed"
 	}
-	s.logger.Printf("officers: user %d %s officer %s of owner %d", authz.MustFrom(r.Context()).UserID, verb, id, owner)
+	s.logger.Printf("officers: user %d %s officer %s of owner %d", authz.MustFrom(ctx).UserID, verb, id, owner)
 	if st, ok := s.officerRT.declaredView(owner, id); ok && st.officer != nil && s.officerRT.rec != nil {
 		// Act within a tick rather than at the next poll — through the wake
 		// loop itself, so no pass runs beside one of its own.
 		s.officerRT.rec.Due(st.officer.Key())
 	}
-	s.answerDeclared(w, r, http.StatusOK, owner, id)
+	s.reloadAfterWrite(ctx)
+	return nil
+}
+
+// modeDeclared is owner's officer id's Shadow/Live switch: its mode and
+// nothing else (builtin.SetDeclaredMode), so it never rewrites the record —
+// an Edit, a Pause or an escalation list made since the page was drawn stays.
+func (s *Server) modeDeclared(ctx context.Context, owner int64, id, mode string) error {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return envManagedRefusal(id)
+	}
+	if mode != "live" && mode != "shadow" {
+		return declaredInvalid{fieldError("mode", `mode is "live" or "shadow"`)}
+	}
+	if _, err := s.officerStore.SetDeclaredMode(ctx, owner, id, mode); err != nil {
+		return err
+	}
+	s.logger.Printf("officers: user %d set officer %s of owner %d to %s", authz.MustFrom(ctx).UserID, id, owner, mode)
+	s.reloadAfterWrite(ctx)
+	return nil
 }
 
 func (s *Server) declaredDelete(w http.ResponseWriter, r *http.Request, owner int64, _ bool) {
 	id := r.PathValue("officer")
-	if s.refuseEnvManaged(w, owner, id) {
+	removed, err := s.deleteDeclared(r.Context(), owner, id)
+	if err != nil {
+		s.declaredErr(w, err)
 		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "instances_removed": noneIfNil(removed)})
+}
+
+// deleteDeclared deletes owner's officer id — its schedules, items, contacts
+// and def, and its type when no other officer names it — then tears its
+// instances down, answering the names it removed.
+func (s *Server) deleteDeclared(ctx context.Context, owner int64, id string) ([]string, error) {
+	if _, ok := s.officerRT.envOfficer(owner, id); ok {
+		return nil, envManagedRefusal(id)
 	}
 	before, _ := s.officerRT.declaredView(owner, id)
-	row, err := s.officerStore.DeleteDeclared(r.Context(), owner, id)
+	row, err := s.officerStore.DeleteDeclared(ctx, owner, id)
 	if err != nil {
-		s.declaredStoreErr(w, err)
-		return
+		return nil, err
 	}
-	s.logger.Printf("officers: user %d deleted officer %s of owner %d from the database", authz.MustFrom(r.Context()).UserID, id, owner)
-	s.reloadAfterWrite(r.Context())
+	s.logger.Printf("officers: user %d deleted officer %s of owner %d from the database", authz.MustFrom(ctx).UserID, id, owner)
+	s.reloadAfterWrite(ctx)
 	// The instances: of the officer as it ran, or — one that did not run — of
 	// its declaration in either runtime's shape.
 	var removed []string
 	switch {
 	case s.officerRT == nil:
 	case before.officer != nil:
-		removed = s.teardownInstances(r.Context(), *before.officer)
+		removed = s.teardownInstances(ctx, *before.officer)
 	default:
 		if o, err := row.Fields.Officer(officers.RuntimePod, "", s.ext.AgentNamespacePrefix); err == nil {
-			removed = s.teardownInstances(r.Context(), o)
+			removed = s.teardownInstances(ctx, o)
 		}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "instances_removed": noneIfNil(removed)})
+	return removed, nil
 }
 
 // teardownInstances removes every instance agent of o (names 1..the cap, so a

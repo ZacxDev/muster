@@ -55,6 +55,12 @@ type hostOfficerMirror struct {
 	spawnErr error
 	// spawned is signalled after every SpawnAgent returns.
 	spawned chan struct{}
+	// tokenHosts, when non-nil, is LiveTokenHosts' answer (the owner's hosts by
+	// mirror token, connected to this server or not) in place of the listed
+	// hosts: a host offline here is still the owner's. tokenErr, when set, is
+	// its error.
+	tokenHosts []string
+	tokenErr   error
 }
 
 func newHostOfficerMirror() *hostOfficerMirror { return newHostOfficerMirrorFor(hostOffOwner) }
@@ -89,6 +95,12 @@ func (m *hostOfficerMirror) LiveTokenHosts(ctx context.Context) ([]string, error
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.tokenErr != nil {
+		return nil, m.tokenErr
+	}
+	if m.tokenHosts != nil {
+		return append([]string(nil), m.tokenHosts...), nil
+	}
 	var out []string
 	for _, h := range m.hosts {
 		out = append(out, h.Host)
