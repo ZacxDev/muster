@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/clientaddr"
 )
 
 // syncBuf is a log sink the server's goroutines may write concurrently.
@@ -112,4 +114,14 @@ func TestClientAddressSettings(t *testing.T) {
 			t.Errorf("%s listener: the strict policy did not log a forwarding header from an untrusted peer:\n%s", name, offLog)
 		}
 	}
+}
+
+func mustClientAddr(t *testing.T, trusted, header string) *clientaddr.Policy {
+	t.Helper()
+	p, err := clientaddr.New(clientaddr.Config{TrustedProxies: trusted, Header: header,
+		TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

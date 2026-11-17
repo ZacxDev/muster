@@ -72,6 +72,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/consumerusage"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -2144,7 +2145,11 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("plugin origins: OFF — %s is unset, so no Host is refused as a plugin's", envPluginOrigins)
 	}
-	l.Printf("%s", a.cfg.ClientAddr.Describe())
+	addrPolicy := a.cfg.ClientAddr
+	if addrPolicy == nil { // a config not from loadConfig: the strict default, named
+		addrPolicy, _ = clientaddr.New(clientaddr.Config{TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader})
+	}
+	l.Printf("%s", addrPolicy.Describe())
 
 	// The agent door to browser flows. The deployment's own names are
 	// configuration, and their ABSENCE is a state an operator must be told

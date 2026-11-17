@@ -78,6 +78,8 @@ var featureLedgerExempt = map[string]string{
 	envLiveHeartbeat:          "a transport tuning interval of every live page; no feature is on or off with it",
 	envHostIcons:              "cosmetic: a mirrored host's icon",
 	envLegacyProvenancePrefix: "a compatibility spelling for older installed clients' headers",
+	envTrustedProxies:         "a hardening posture over every per-address limit, not a feature: nothing turns on or off with it, and it is announced on its own banner line",
+	envClientIPHeader:         "the header MUSTER_TRUSTED_PROXIES's proxies are believed in; announced on the same banner line",
 	envDialDenyPrivate:        "a hardening posture over existing features (postgres connectors), not a feature: nothing turns on or off with it, and it is announced on its own banner line",
 }
 

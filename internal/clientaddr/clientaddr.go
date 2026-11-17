@@ -197,13 +197,13 @@ func (p *Policy) Trusted() []string {
 // Describe is the boot log's line for the active mode.
 func (p *Policy) Describe() string {
 	if p == nil || p.header == "" {
-		tv := "the trusted-proxy setting"
+		unset := "no trusted proxy is configured"
 		if p != nil && p.trustedVar != "" {
-			tv = p.trustedVar
+			unset = p.trustedVar + " and " + p.headerVar + " are unset"
 		}
 		return fmt.Sprintf("client address: STRICT — the TCP peer on every listener; %s, %s and %s are ignored "+
-			"(%s is unset). Behind a reverse proxy every client then shares the proxy's address",
-			HeaderCFConnectingIP, HeaderXForwardedFor, HeaderXRealIP, tv)
+			"(%s). Behind a reverse proxy every client then shares the proxy's address",
+			HeaderCFConnectingIP, HeaderXForwardedFor, HeaderXRealIP, unset)
 	}
 	how := "its value"
 	if p.header == HeaderXForwardedFor {

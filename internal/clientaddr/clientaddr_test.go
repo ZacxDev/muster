@@ -25,8 +25,8 @@ const (
 	typedCF    = "203.0.113.6"
 	typedXFF   = "203.0.113.7"
 	// attackerPeer reaches muster directly, past every proxy.
-	attackerPeer = "203.0.113.66:5000"
-	attackerAddr = "203.0.113.66"
+	attackerPeer = "203.0.113.99:5000"
+	attackerAddr = "203.0.113.99"
 )
 
 var measured = []struct {
@@ -211,7 +211,7 @@ func TestNewRefusesASettingThatWouldNotDoWhatItSays(t *testing.T) {
 
 func TestDescribeNamesTheMode(t *testing.T) {
 	strict := mustNew(t, "", "").Describe()
-	if !strings.HasPrefix(strict, "client address: STRICT") || !strings.Contains(strict, "T is unset") {
+	if !strings.HasPrefix(strict, "client address: STRICT") || !strings.Contains(strict, "T and H are unset") {
 		t.Errorf("strict Describe = %q", strict)
 	}
 	if got := (*Policy)(nil).Describe(); !strings.HasPrefix(got, "client address: STRICT") {
