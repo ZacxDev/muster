@@ -506,7 +506,7 @@ words on a lock screen. An ask about any other item is unchanged.
    ([§ 5c](#5c-people-and-outreach)).
 4. The officer files `officer_post_draft{plugin, venue, target, body, media?,
    item_id?}`. The plugin checks the draft and uploads each medium's bytes;
-   the owner sees the exact text, images and videos on the Reply drafts tab,
+   the owner sees the exact text, images and videos on the Drafts tab,
    and approval binds the body and every medium's SHA-256. The plugin claims
    it, re-hashes its files, posts, reads the post back and reports the result.
 5. With `item_id`, the item **waits on the draft** (no holder; the instance

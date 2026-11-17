@@ -47,16 +47,16 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 	if len(got) != 1 || got[0].Key != key || got[0].Kind != attentionKindQuestion || got[0].Text != "1. Which database?\n2. Migrate now?" || got[0].Link != view {
 		t.Fatalf("held + waiting: %+v", got)
 	}
-	// The list draws it ONCE, and its card is one link to the session's view
-	// (where the question card is answered).
+	// The list draws it ONCE, and its card's one link is View in session, to
+	// the session's view (where the question card is answered).
 	body := f.page(t, "/attention/items")
 	if strings.Count(body, `id="`+key+`"`) != 1 {
 		t.Fatalf("the view: %s", body)
 	}
 	li := body[strings.Index(body, `<li id="`+key+`"`):]
 	li = li[:strings.Index(li, "</li>")]
-	if !strings.Contains(li, `<a href="`+html.EscapeString(view)+`" class="`+ui.AsksRowClass+`" data-attention-open>`) || strings.Count(li, "<a ") != 1 {
-		t.Fatalf("the held question's card is not one link to its session's view: %s", li)
+	if !strings.Contains(li, `<a href="`+html.EscapeString(view)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>View in session</a>`) || strings.Count(li, "<a ") != 1 {
+		t.Fatalf("the held question's card's one link is not View in session to its session's view: %s", li)
 	}
 	// Held while the host still says idle: the question is still listed, once.
 	f.setWindows(mirror.StatusIdle)
@@ -115,13 +115,11 @@ func TestAHeldQuestionsCardSaysAnswerInSession(t *testing.T) {
 	body := f.page(t, "/attention/items")
 
 	held := attnItemLI(t, body, attentionKindQuestion)
-	link := held[strings.Index(held, "<a "):]
-	link = link[:strings.Index(link, "</a>")+len("</a>")]
-	if strings.Count(held, "<a ") != 1 || strings.Count(link, cue) != 1 || strings.Count(held, cue) != 1 {
-		t.Fatalf("the held question's card does not say %q once inside its one link: %s", cue, held)
+	if strings.Count(held, "<a ") != 1 || strings.Count(held, cue) != 1 || !strings.Contains(held, `data-asks-view-session>View in session</a>`) {
+		t.Fatalf("the held question's card does not say %q once beside its one link, View in session: %s", cue, held)
 	}
-	if !strings.Contains(link, `<span class="`+ui.AsksMutedTextClass+`" data-attention-held-cue>`+cue+`</span>`) {
-		t.Fatalf("the cue is not one muted line: %s", link)
+	if !strings.Contains(held, `<span class="`+ui.AsksMutedTextClass+`" data-attention-held-cue>`+cue+`</span>`) {
+		t.Fatalf("the cue is not one muted line: %s", held)
 	}
 
 	if plain := attnItemLI(t, body, attentionKindAsk); strings.Contains(plain, cue) {

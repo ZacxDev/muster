@@ -837,3 +837,142 @@ body:not(:has(#agent-status:is([data-agent-status="running"], [data-agent-status
 #asker-asks[data-asks-folded] > :not(:first-child) {
   display: none;
 }
+
+/*
+ * THE ASKS CARD FEED (internal/ui/asks_card.go, docs/attention.md "The card
+ * feed"). Outside every @layer, so a card's own utilities (p-3, flex) cannot
+ * outrank the states below.
+ *
+ * - The document scrolls the feed; scroll-snap is PROXIMITY, never mandatory,
+ *   so a card taller than the screen still scrolls through.
+ * - data-expanded="true" opens a card: its more region grows from zero rows
+ *   (grid-template-rows 0fr -> 1fr) and turns visible, the question and the
+ *   context line unclamp, the chevron turns. Collapsed, the more region is
+ *   visibility:hidden, so its links are out of the tab order and the
+ *   accessibility tree.
+ * - .asks-leave collapses a card out (the feed's script set its height first),
+ *   .asks-enter brings one in, [data-asks-slide] slides a tab's panel in from
+ *   the side it came from.
+ * - ALL OF IT is off under prefers-reduced-motion: reduce (the last block).
+ */
+html:has([data-asks-feed]) {
+  scroll-snap-type: y proximity;
+  /* Clear of the shell's sticky header, so a snapped card is not under it. */
+  scroll-padding-top: 4.5rem;
+}
+/*
+ * The page's top is a snap point too: near it, the feed settles on the
+ * heading and the tabs rather than pulling the first card under the header.
+ */
+[data-testid="attention-page"] {
+  scroll-snap-align: start;
+  scroll-margin-top: 4.5rem;
+}
+.asks-card {
+  scroll-snap-align: start;
+  transition: box-shadow 150ms ease, background-color 150ms ease;
+}
+.asks-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.asks-clamp-1 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+}
+.asks-card[data-expanded="true"] .asks-clamp,
+.asks-card[data-expanded="true"] .asks-clamp-1 {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.asks-more {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.asks-more > * {
+  visibility: hidden;
+  transition: visibility 0s linear 220ms;
+}
+.asks-card[data-expanded="true"] .asks-more {
+  grid-template-rows: 1fr;
+}
+.asks-card[data-expanded="true"] .asks-more > * {
+  visibility: visible;
+  transition-delay: 0s;
+}
+.asks-chevron {
+  transition: transform 200ms ease;
+}
+.asks-card[data-expanded="true"] .asks-chevron {
+  transform: rotate(180deg);
+}
+.asks-leave {
+  height: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-bottom: -0.75rem !important;
+  opacity: 0;
+  overflow: hidden;
+  transform: scale(0.98);
+  pointer-events: none;
+  transition: height 240ms ease, padding 240ms ease, margin 240ms ease, opacity 180ms ease, transform 240ms ease !important;
+}
+.asks-enter {
+  animation: card-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.asks-instant,
+.asks-instant * {
+  transition: none !important;
+}
+[data-asks-slide="left"] {
+  animation: asks-slide-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+[data-asks-slide="right"] {
+  animation: asks-slide-right 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes asks-slide-left {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes asks-slide-right {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: none; }
+}
+/* A sideways swipe on the feed is the page's (it switches tabs). */
+[data-asks-swipe] {
+  touch-action: pan-y pinch-zoom;
+}
+/*
+ * 🔴 THE DOCUMENT SCROLLS THE FEED, SO A PANEL MUST NOT BE A SCROLLER. A tab
+ * panel (ui.TabsSelected) is overflow-y:auto + overscroll-behavior:contain;
+ * on this page it never overflows (it grows with the document), and Chromium
+ * still treated it as a scroll container whose overscroll is contained: a
+ * vertical touch drag that began on a card scrolled NOTHING — measured on
+ * origin/main too, with CDP touch at 390x844 (e2e/tests/asks-feed.spec.ts).
+ */
+[data-asks-swipe] > [role="tabpanel"] {
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+.asks-toast:not([hidden]) {
+  animation: card-in 180ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .asks-card,
+  .asks-card *,
+  .asks-more,
+  .asks-more > *,
+  .asks-leave,
+  .asks-enter,
+  .asks-toast,
+  [data-asks-slide] {
+    transition: none !important;
+    animation: none !important;
+  }
+}

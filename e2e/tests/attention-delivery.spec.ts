@@ -67,8 +67,8 @@ test.beforeAll(async () => {
   await new Promise<void>((r) => runtime!.listen(attentionDeliveryFakePort, '127.0.0.1', () => r()));
   server = await startServer(versionTerm, attentionDeliveryPort, {
     MUSTER_FOCUS_INTERVAL: '0',
-    // Plugins on, so the page is the TABBED Asks page: the Answered section
-    // must be on its Ask tab (asks_drafts.go). No plugin is ever created.
+    // Plugins on, so the page has its Drafts tab beside the Answered tab
+    // (asks_drafts.go). No plugin is ever created.
     MUSTER_PLUGINS: '1',
     MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x4e).toString('base64'),
     MUSTER_CONNECT_PORT: String(attentionDeliveryConnectPort),
@@ -131,21 +131,23 @@ test('the operator answers the chief on /attention and the chief\'s session rece
 
   await page.goto(origin + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
-  await expect(page.getByRole('tab', { name: 'Ask', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tab', { name: 'Reply drafts', exact: true })).toHaveAttribute('aria-selected', 'false');
+  await expect(page.getByRole('tab', { name: 'Open', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Drafts', exact: true })).toHaveAttribute('aria-selected', 'false');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 42?');
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'dispatch a new agent' }).click()]);
   await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
 
-  // Where the answer went, live on the page (after the waiter's grace).
+  // Where the answer went, live on the Answered tab (after the waiter's grace).
+  await page.getByRole('tab', { name: 'Answered', exact: true }).click();
+  await expect(page).toHaveURL(origin + '/attention?tab=answered');
   const answered = page.locator(`#answered-${id}`);
   await expect(answered.locator('[data-attention-answer-text]')).toHaveText('Your answer: dispatch a new agent');
   await expect(answered).toHaveAttribute('data-delivery', 'delivered', { timeout: 30_000 });
   await expect(answered.locator('[data-attention-delivery]')).toHaveText('Delivered to chief as a new message in its session.');
-  // The Answered section is the Ask tab's: visible there, and hidden with it.
-  await expect(page.locator('#asks-tabs-panel-ask').locator(`#answered-${id}`)).toBeVisible();
-  await page.getByRole('tab', { name: 'Reply drafts', exact: true }).click();
+  // The Answered card is the Answered tab's: visible there, and hidden with it.
+  await expect(page.locator('#asks-tabs-panel-answered').locator(`#answered-${id}`)).toBeVisible();
+  await page.getByRole('tab', { name: 'Drafts', exact: true }).click();
   await expect(answered).toBeHidden();
   await expect(page.locator('#asks-drafts-pending [data-drafts-empty]')).toBeVisible();
   await expect(page).toHaveURL(origin + '/attention?tab=drafts');

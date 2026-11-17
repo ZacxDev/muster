@@ -447,6 +447,10 @@ export const draftCardPort = port + 413; // was +405, pagesSharePort's too (e2e/
 // tests/asks-log.spec.ts: the Asks page's Log tab (the ask log on), at a phone
 // and a desktop width — its own server (+414: clear of the blocks above).
 export const asksLogPort = port + 414;
+// tests/asks-feed.spec.ts: the Asks page's card feed (plugins, task routing
+// and chief nudges on, so every tab is drawn) at a phone and a desktop width —
+// its own server (+421: clear of the blocks above).
+export const asksFeedPort = port + 421;
 // tests/team-ux.spec.ts: a team's manager pages and a viewer's Asks, signed
 // in through its own real GoTrue (+410 to +412: clear of the blocks above).
 export const teamUxMainPort = port + 410;

@@ -188,13 +188,13 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
 
   // The queue is called "Asks" (operator decision "Rename to Asks"), at the
   // same /attention, so every existing /attention#<key> link still lands.
-  // This server serves no plugins, so there is no Reply drafts tab: its tabs
-  // are Ask and Log (the Log tab is drawn whatever is served).
+  // This server serves no plugins, so there is no Drafts tab: its tabs are
+  // Open, Answered and Log (the Log tab is drawn whatever is served).
   await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
   await expect(page).toHaveTitle('Asks · muster');
-  await expect(page.getByRole('tab'), 'no plugins: Ask and Log only').toHaveText(['Ask', 'Log']);
+  await expect(page.getByRole('tab'), 'no plugins: Open, Answered and Log only').toHaveText(['Open', 'Answered', 'Log']);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
@@ -209,33 +209,28 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Newest first: the ask (just now) above the window (waiting since 30 s ago).
   await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
   await expect(page.locator('[data-attention-item]').nth(1)).toHaveAttribute('data-kind', 'session');
-  // The waiting window is ONE link (the card itself, no "Open the session"
-  // words) to its rendered view; its one line is what it waits on.
-  const open = session.locator('a[data-attention-open]');
+  // The waiting window's card (the card feed): its one line is what it waits
+  // on, and its footer's View in session is the way to its rendered view.
+  const open = session.locator('a[data-asks-view-session]');
   await expect(open).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
-  await expect(open).toContainText('Bash: npm publish --tag next');
+  await expect(open).toHaveText('View in session');
   await expect(session.getByText('Open the session')).toHaveCount(0);
-  // The flat page: no intro, no "Back to muster"; each group labelled with
-  // its count.
+  // The flat page: no intro, no "Back to muster"; each card its kind badge,
+  // the heading the open count.
   await expect(page.getByText('Everything waiting on you')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Back to muster' })).toHaveCount(0);
-  await expect(page.locator('[data-asks-group="questions"] [data-asks-group-count]')).toHaveText('1');
-  await expect(page.locator('[data-asks-group="waiting"] [data-asks-group-count]')).toHaveText('1');
-  // The answer box is behind the options: shut until "Type an answer" opens
-  // it in place; opening it sends nothing.
+  await expect(askItem.locator('[data-asks-badge]')).toHaveText('Question');
+  await expect(session.locator('[data-asks-badge]')).toHaveText('Waiting');
+  await expect(page.locator('[data-asks-open-count]')).toHaveText('2 open');
+  // The answer box is on the card, under its options, a 44px target.
   const box = askItem.locator('textarea');
-  await expect(box).toBeHidden();
-  const typeIt = askItem.getByText('Type an answer', { exact: true });
-  expect((await typeIt.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-  await typeIt.click();
   await expect(box).toBeVisible();
-  await expect(box).toBeFocused();
-  await box.blur();
+  expect((await box.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
   // Dismiss is a small icon button, named for a screen reader, in the card's
-  // footer — never beside the head link's chevron (Round 0 of #620).
+  // footer — never in its head, beside the expand chevron (Round 0 of #620).
   const dismissBtn = askItem.getByRole('button', { name: 'Dismiss without answering' });
   await expect(dismissBtn).toHaveAttribute('title', 'Dismiss without answering');
-  await clearOf(askItem.locator('[data-attention-session] svg'), dismissBtn, 16);
+  await clearOf(askItem.locator('[data-asks-toggle] svg.asks-chevron'), dismissBtn, 16);
 
   // The operator taps an option chip: that is the answer.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
@@ -255,12 +250,15 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   expect(JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text)).toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
   const id3 = await ask('Ignore me?', []);
   await page.reload();
-  await Promise.all([page.waitForURL(origin + '/attention'), page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click()]);
-  expect(JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text)).toMatchObject({ status: 'cancelled' });
+  await page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click();
+  // Dismiss is sent once its Undo has lapsed (the card feed: five seconds).
+  await expect
+    .poll(async () => JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text).status, { timeout: 15_000 })
+    .toBe('cancelled');
   await expect(page.locator('[data-attention-item][data-kind="ask"]')).toHaveCount(0);
 
-  // Tapping the waiting window's card opens its session.
-  await Promise.all([page.waitForURL(/\/mirror\/view\?host=e2e-attn-/), page.locator('[data-attention-item][data-kind="session"] a[data-attention-open]').tap()]);
+  // The waiting window's View in session opens its session.
+  await Promise.all([page.waitForURL(/\/mirror\/view\?host=e2e-attn-/), page.locator('[data-attention-item][data-kind="session"] a[data-asks-view-session]').tap()]);
 
   // The badge is back to the waiting window alone.
   await page.goto(origin + '/tasks');

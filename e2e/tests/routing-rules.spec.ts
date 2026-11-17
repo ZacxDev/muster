@@ -257,7 +257,10 @@ for (const vp of [
       expect(requests, 'the board card cost no chief turn').toBe(before);
       // Routed by muster: not left on the queue as a task to route.
       await page.reload();
-      await expect(page.locator('li[data-attention-item][data-kind="task"]').filter({ hasText: `Task #${taskID}:` })).toHaveCount(0);
+      // (A task card is titled by its number: askFeedCardHTML.)
+      await expect(
+        page.locator('li[data-attention-item][data-kind="task"]').filter({ has: page.locator('[data-attention-title]', { hasText: new RegExp(`^Task #${taskID}$`) }) }),
+      ).toHaveCount(0);
       await page.goto(rig.origin + '/usage');
       await expect(page.locator(`[data-usage-source="${pluginName}"]`)).toContainText('1 by muster');
       await plugin.dispose();

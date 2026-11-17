@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,7 +47,8 @@ import (
 // offers to show the latest. Same set (an expiry moving): re-drawn in place.
 
 const (
-	asksTabParam    = "tab"
+	asksTabParam = "tab"
+	// asksTabAsk is the Open tab's OLD name: ?tab=ask still opens it (asksTab).
 	asksTabAsk      = "ask"
 	asksTabDrafts   = "drafts"
 	asksTabArchived = "archived"
@@ -90,13 +90,15 @@ func asksFocus(r *http.Request) int64 {
 	return id
 }
 
-// asksTab is the tab a request names, asksTabAsk for none or an unknown one.
+// asksTab is the tab a request names (asks_feed.go's mapping): drafts,
+// archived, answered, nudges and log as named; asksTabOpen for none, for
+// "ask" (the Open tab's old name), for "open" and for anything unknown.
 func asksTab(r *http.Request) string {
 	switch v := r.URL.Query().Get(asksTabParam); v {
-	case asksTabDrafts, asksTabArchived, asksTabNudges, asksTabLog:
+	case asksTabDrafts, asksTabArchived, asksTabAnswered, asksTabNudges, asksTabLog:
 		return v
 	}
-	return asksTabAsk
+	return asksTabOpen
 }
 
 // askTabItems is items without the reply drafts (the Reply drafts tab's).
@@ -110,11 +112,12 @@ func askTabItems(items []attentionItem) []attentionItem {
 	return out
 }
 
-// askGroups is the Ask tab's groups, in the order the page draws them: each
-// its key (data-asks-group, its label's id), its label, and the item kinds it
-// holds. A reply draft (attentionKindPlugin) is in none: it is the Reply
-// drafts tab's (askTabItems strips it first). TestEveryAttentionKindHasAHome
-// pins that every other kind the queue can hold is in one.
+// askGroups is the Open feed's ORDER (askFeedHTML): each group's key, its
+// label (the old group header; a card's badge now says it, askFeedBadge), and
+// the item kinds it holds. A reply draft (attentionKindPlugin) is in none: it
+// is the Drafts tab's (askTabItems strips it first).
+// TestEveryAttentionKindHasAHome pins that every other kind the queue can hold
+// is in one.
 var askGroups = []struct {
 	key, label string
 	kinds      []string
@@ -123,47 +126,6 @@ var askGroups = []struct {
 	{"notices", "Notices", []string{attentionKindNotice}},
 	{"waiting", "Waiting", []string{attentionKindSession}},
 	{"tasks", "Tasks to route", []string{attentionKindTask}},
-}
-
-// askGroupsHTML is the Ask tab's list (its <ul>'s <li>s): one group per kind
-// that has something in it — its label with its count (ui.AsksGroupLabel),
-// then its cards, newest first within it — the session-state rows
-// (episodes, n of them: episodeRowsHTML's list) in the Waiting group after
-// its windows, and then the Answered group (answered, answeredAsksHTML's).
-// The items are the queue without its reply drafts (askTabItems: those are
-// the Reply drafts tab's). Nothing waiting and no rows: the empty line.
-func askGroupsHTML(items []attentionItem, episodes string, n int, answered string, now time.Time) string {
-	items = askTabItems(items)
-	var b strings.Builder
-	for _, g := range askGroups {
-		var in []attentionItem
-		for _, it := range items {
-			if slices.Contains(g.kinds, it.Kind) {
-				in = append(in, it)
-			}
-		}
-		rows, count := "", len(in)
-		if g.key == "waiting" {
-			rows, count = episodes, count+n
-		}
-		if count == 0 && rows == "" {
-			continue
-		}
-		b.WriteString(askGroupOpen(g.key, g.label, count))
-		if len(in) > 0 {
-			b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-` + g.key + `">` + attentionItemsHTML(in, now) + `</ul>`)
-		}
-		b.WriteString(rows + "</li>\n")
-	}
-	if b.Len() == 0 {
-		b.WriteString(attentionEmptyHTML)
-	}
-	return b.String() + answered
-}
-
-// askGroupOpen opens one group's <li>: its label, with its count.
-func askGroupOpen(key, label string, n int) string {
-	return `<li class="` + ui.AsksGroupClass + `" data-asks-group="` + key + `">` + ui.AsksGroupLabel("asks-group-"+key, label, n) + "\n"
 }
 
 // splitDraftCards is cards as the two views: awaiting a decision (pending and
@@ -216,13 +178,13 @@ const (
 	draftsArchivedEmpty = "No decided drafts yet."
 )
 
-// draftsTabLabel is the Reply drafts tab's label: its pending count when there
-// is one (the page's script keeps it current).
+// draftsTabLabel is the Drafts tab's label: its pending count when there is
+// one (the page's script keeps it current).
 func draftsTabLabel(n int) string {
 	if n <= 0 {
-		return "Reply drafts"
+		return "Drafts"
 	}
-	return "Reply drafts (" + strconv.Itoa(n) + ")"
+	return "Drafts (" + strconv.Itoa(n) + ")"
 }
 
 // readDraftViews is ctx's principal's drafts as the two views; ok false when
@@ -291,33 +253,40 @@ func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 	return g.Group{g.Raw(`<div class="flex overflow-x-auto border-b border-line pt-2">`), t.List, g.Raw(`</div>`), t.Panels}
 }
 
-// asksTabsHTML is the page's tabs over askList (the Ask tab's <ul>): Reply
-// drafts when drafts (plugins are served), Chief nudges when nudges is not ""
-// (its panel: the feature is on), and always Log (logPanel: the ask log's
-// panel, or its placeholder — ask_log_read.go), tab selected.
-func (s *Server) asksTabsHTML(askList string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
-	top := asksTabAsk
+// asksTabsHTML is the page's tabs (asks_feed.go): Open (askList, its feed's
+// <ul>), Answered (answered, its feed's <ul>), Drafts when drafts (plugins are
+// served), Nudges when nudges is not "" (its panel: the feature is on), and
+// always Log (logPanel: the ask log's panel, or its placeholder —
+// ask_log_read.go), the tab the request named selected (asksTab) — Open when
+// that tab is not drawn. The panels sit in the swipe area (data-asks-swipe):
+// a sideways swipe there moves one tab (ui/asks_card.go).
+func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
+	top := asksTabOpen
 	switch {
-	case tab == asksTabLog:
-		top = asksTabLog
+	case tab == asksTabLog, tab == asksTabAnswered:
+		top = tab
 	case tab == asksTabNudges && nudges != "":
 		top = asksTabNudges
 	case (tab == asksTabDrafts || tab == asksTabArchived) && drafts:
 		top = asksTabDrafts
 	}
-	tabs := []ui.Tab{{ID: asksTabAsk, Label: "Ask", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3">` + askList + `</div>`)}}
+	panel := func(inner string) g.Node { return g.Raw(`<div class="flex flex-col gap-2 pt-3">` + inner + `</div>`) }
+	tabs := []ui.Tab{
+		{ID: asksTabOpen, Label: "Open", Panel: panel(askList)},
+		{ID: asksTabAnswered, Label: "Answered", Panel: panel(answered)},
+	}
 	if drafts {
 		tabs = append(tabs, ui.Tab{ID: asksTabDrafts, Label: draftsTabLabel(len(pending)), Panel: draftsPanel(pending, archived, tab)})
 	}
 	if nudges != "" {
-		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Chief nudges",
+		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Nudges",
 			Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="nudges-panel">` + nudges + `</div>`)})
 	}
 	tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
 	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)
-	nodes := g.Group{t.List, g.Raw(`</div>`), t.Panels, g.Raw(`</div>`), ui.TabsScript()}
+	nodes := g.Group{t.List, g.Raw(`</div><div class="` + ui.AsksSwipeAreaClass + `" data-asks-swipe>`), t.Panels, g.Raw(`</div></div>`), ui.TabsScript()}
 	if err := nodes.Render(&b); err != nil {
 		s.logger.Printf("asks: render the tabs: %v", err)
 	}
@@ -345,7 +314,8 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// asksPageScript is the page's own behaviour around the tabs:
+// asksPageScript is the page's own behaviour around the tabs (the cards' —
+// expand, answer, Undo, keys, swipe — is ui/asks_card.go's):
 //
 //   - the tab is kept in the URL (?tab=), replaced not pushed, so a reload or
 //     a shared link opens the same tab. The PATH is always /attention: a
@@ -372,7 +342,7 @@ const asksPageScript = `<script>
     return t ? t.getAttribute('data-tab') : '';
   }
   function syncURL() {
-    var top = selected('asks-tabs'), v = top === 'ask' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
+    var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabAnswered + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
@@ -419,6 +389,13 @@ const asksPageScript = `<script>
   }
   reveal();
   window.addEventListener('hashchange', reveal);
+  // The Answered feed follows the queue's event too (it has no field to keep).
+  var answered = document.getElementById('attention-answered');
+  if (answered) document.addEventListener('asks:changed', function () {
+    fetch('` + attentionPath + `/items?part=answered', { credentials: 'same-origin' }).then(function (r) {
+      return r.ok ? r.text() : null;
+    }).then(function (h) { if (h !== null) answered.innerHTML = h; }).catch(function () {});
+  });
   var pendingList = document.getElementById('asks-drafts-pending');
   var archivedList = document.getElementById('asks-drafts-archived');
   var changed = document.getElementById('asks-drafts-changed');

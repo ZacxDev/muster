@@ -13,7 +13,8 @@ import (
 // Asks queue's and a session page's block, one form for both — draws the
 // compact form (THE COMPACT ANSWER FORM, internal/ui/attention.go): options as
 // wide as their words, a one-line box that grows (ui.AskFormFitClass), and
-// Answer in its own row, Dismiss a small icon button in the card's head. And the
+// Answer in its own row (the Asks page's card: ending the box's row), Dismiss a
+// small icon button in the card's footer. And the
 // two posts are what they were: Answer
 // submits the answer form to /answer; Dismiss is a button IN that row that
 // belongs, by form=, to a SEPARATE form posting to /cancel (no formaction on
@@ -34,14 +35,24 @@ func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
 			t.Fatalf("return %q: no answer form:\n%s", returnTo, out)
 		}
 		// Answer carries its own id: the mic's ↑ clicks it, by id (ui/dictate.go).
+		// A session page's block: Answer in its own row with Dismiss, inside
+		// the answer form. The Asks page's card (the card feed): Answer ends
+		// the box's row, and Dismiss is in the card's footer, outside the form.
 		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" id="answer-9-submit" class="[^"]*">Answer</button>(<button [^>]*form="ask-9-dismiss"[^>]*>.*?</button>)?</div>`)
+		if returnTo == "" {
+			row = regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormBoxRowClass) + `" data-asks-answer-row><textarea id="answer-9"[\s\S]*?<button type="submit" id="answer-9-submit" class="[^"]*">Answer</button></div>`)
+		}
 		if !row.MatchString(answer) {
 			t.Errorf("return %q: Answer is not in its row inside the answer form:\n%s", returnTo, answer)
 		}
-		// Dismiss is a small icon button ending the answer form's last row
-		// (the card's footer), joined by form= to the separate /cancel form.
-		if !strings.Contains(answer, `form="ask-9-dismiss"`) {
+		// Dismiss is a small icon button joined by form= to the separate
+		// /cancel form: in the answer form's last row on a block, in the card's
+		// footer on the Asks page.
+		if returnTo != "" && !strings.Contains(answer, `form="ask-9-dismiss"`) {
 			t.Errorf("return %q: Dismiss is not in the answer form's footer:\n%s", returnTo, answer)
+		}
+		if returnTo == "" && (strings.Contains(answer, `form="ask-9-dismiss"`) || !strings.Contains(out, `data-asks-footer>`)) {
+			t.Errorf("return %q: Dismiss is not in the card's footer:\n%s", returnTo, out)
 		}
 		if !regexp.MustCompile(`<button type="submit" form="ask-9-dismiss" aria-label="Dismiss without answering" title="Dismiss without answering"[^>]*>` +
 			regexp.QuoteMeta(ui.AsksDismissIcon) + `</button>`).MatchString(out) {

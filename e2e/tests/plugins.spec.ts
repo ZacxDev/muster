@@ -216,18 +216,18 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   expect((await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 0 } })).status()).toBe(204);
 
   // 6. REPLY DRAFTS LIVE ON THE ASKS PAGE, not /plugins. /plugins points
-  //    there; the Ask tab does not list the draft (it points at the Reply
+  //    there; the Open tab does not list the draft (it points at the Reply
   //    drafts tab); the tab, tapped, puts itself in the URL.
   await page.goto(browserURL + '/plugins');
   await expect(page.locator('[id^="draft-"]'), '/plugins draws no drafts').toHaveCount(0);
   await expect(page.getByTestId('plugins-drafts-moved')).toBeVisible();
   await page.goto(browserURL + '/attention');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
-  await expect(page.getByRole('tab', { name: 'Ask', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('#attention-items #draft-' + draftID), 'the Ask tab does not list the draft').toHaveCount(0);
-  await expect(page.locator('#attention-items [data-testid="attention-drafts-pointer"]'), 'no drafts line on the Ask tab').toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Open', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#attention-items #draft-' + draftID), 'the Open tab does not list the draft').toHaveCount(0);
+  await expect(page.locator('#attention-items [data-testid="attention-drafts-pointer"]'), 'no drafts line on the Open tab').toHaveCount(0);
   await expect(card(page, draftID)).toBeHidden();
-  await page.getByRole('tab', { name: 'Reply drafts (1)' }).tap();
+  await page.getByRole('tab', { name: 'Drafts (1)' }).tap();
   await expect(page).toHaveURL(browserURL + '/attention?tab=drafts');
   const c = page.locator('#asks-drafts-pending').locator(`#draft-${draftID}`);
   await expect(c).toBeVisible();
@@ -246,7 +246,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   //    ...and the page asks before it submits: the passkey confirms, then the
   //    approval goes through.
   await page.reload();
-  await expect(card(page, draftID), 'the reload stays on Reply drafts').toBeVisible();
+  await expect(card(page, draftID), 'the reload stays on Drafts').toBeVisible();
   const options = page.waitForResponse((r) => r.url().endsWith('/auth/confirm/passkey/options'), { timeout: 20_000 });
   await card(page, draftID).locator('[data-draft-approve]').tap();
   await expect(page.locator('#term-confirm')).toBeVisible();
@@ -265,7 +265,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await expect(archived(draftID).locator('[data-draft-state]')).toContainText('waiting for the plugin to collect it');
   await expect(archived(draftID).locator('[data-draft-withdraw]')).toBeVisible();
   await expect(page.locator('#asks-drafts-pending').locator(`#draft-${draftID}`)).toHaveCount(0);
-  await expect(page.getByRole('tab', { name: 'Reply drafts', exact: true }), 'no draft is pending now').toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Drafts', exact: true }), 'no draft is pending now').toBeVisible();
 
   // 8. The plugin claims it ONCE, sends it, reports.
   const claim = await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 5 } });
@@ -345,7 +345,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     expect(rj.isError, rj.text).toBe(false);
     const rejectID = (JSON.parse(rj.text) as { draft_id: number }).draft_id;
     await dp.goto(browserURL + '/attention');
-    await dp.getByRole('tab', { name: 'Reply drafts (1)' }).click();
+    await dp.getByRole('tab', { name: 'Drafts (1)' }).click();
     const pend = dp.locator('#asks-drafts-pending').locator(`#draft-${rejectID}`);
     await expect(pend).toBeVisible();
     await Promise.all([
