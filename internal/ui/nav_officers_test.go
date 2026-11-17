@@ -76,6 +76,16 @@ func navOfficerRows(root *html.Node) ([]string, map[string]*html.Node) {
 	return keys, by
 }
 
+// navOfficerRowOf is officer k's row, failing the test when it has none.
+func navOfficerRowOf(t *testing.T, by map[string]*html.Node, k string) *html.Node {
+	t.Helper()
+	a := by[k]
+	if a == nil {
+		t.Fatalf("no Officers row for %s", k)
+	}
+	return a
+}
+
 // navInGroup reports whether n is inside the Officers group.
 func navInGroup(n *html.Node, id string) bool {
 	for p := n.Parent; p != nil; p = p.Parent {
@@ -155,10 +165,10 @@ func TestAnOfficersInstanceIsNeverInIdleOrTheList(t *testing.T) {
 		t.Errorf("Idle holds %d rows, want the one own idle agent", idleRows)
 	}
 	_, by := navOfficerRows(root)
-	if h, _ := ccAttr(by[navOffDocs], "href"); h != AgentListHref("officer-scout-k1-1", 610) {
+	if h, _ := ccAttr(navOfficerRowOf(t, by, navOffDocs), "href"); h != AgentListHref("officer-scout-k1-1", 610) {
 		t.Errorf("the running docs scout opens %q, want its instance's chat", h)
 	}
-	if s, _ := ccAttr(by[navOffDocs], "data-nav-officer-state"); s != "running" {
+	if s, _ := ccAttr(navOfficerRowOf(t, by, navOffDocs), "data-nav-officer-state"); s != "running" {
 		t.Errorf("the docs scout reads %q, want running", s)
 	}
 }
@@ -170,10 +180,7 @@ func TestAnAsleepOfficerOpensItsPage(t *testing.T) {
 	root, _ := navOfficersRender(t, list, offs, "")
 	_, by := navOfficerRows(root)
 	for k, want := range map[string]string{navOffWeb: "/officers/triage:web", navOffOps: "/officers/ops:watch?owner=900"} {
-		a := by[k]
-		if a == nil {
-			t.Fatalf("no row for %s", k)
-		}
+		a := navOfficerRowOf(t, by, k)
 		if h, _ := ccAttr(a, "href"); h != want {
 			t.Errorf("%s opens %q, want %q", k, h, want)
 		}
@@ -208,7 +215,7 @@ func TestAWaitingOfficerInstanceIsLiftedAndItsRowMarked(t *testing.T) {
 			t.Errorf("%s waiting mark = %v", k, marked)
 		}
 	}
-	if w := ccWithAttr(by[navOffAudit], "data-nav-officer-waiting", ""); len(w) == 1 && ccText(w[0]) != "↑ waiting" {
+	if w := ccWithAttr(navOfficerRowOf(t, by, navOffAudit), "data-nav-officer-waiting", ""); len(w) == 1 && ccText(w[0]) != "↑ waiting" {
 		t.Errorf("the mark reads %q", ccText(w[0]))
 	}
 }
@@ -222,20 +229,20 @@ func TestAnOfficerRowShowsItsTeamQueueSpendAndHold(t *testing.T) {
 	root, _ := navOfficersRender(t, list, offs, "")
 	_, by := navOfficerRows(root)
 	facts := func(k string) string {
-		f := ccWithAttr(by[k], "data-nav-officer-facts", "")
+		f := ccWithAttr(navOfficerRowOf(t, by, k), "data-nav-officer-facts", "")
 		if len(f) != 1 {
 			return ""
 		}
 		return ccText(f[0])
 	}
 	spend := func(k string) (string, bool) {
-		s := ccWithAttr(by[k], "data-nav-officer-spend", "")
+		s := ccWithAttr(navOfficerRowOf(t, by, k), "data-nav-officer-spend", "")
 		if len(s) != 1 {
 			return "", false
 		}
 		return ccText(s[0]), true
 	}
-	held := func(k string) bool { return len(ccWithAttr(by[k], "data-nav-officer-held", "")) == 1 }
+	held := func(k string) bool { return len(ccWithAttr(navOfficerRowOf(t, by, k), "data-nav-officer-held", "")) == 1 }
 
 	cases := []struct {
 		key, facts, spend string
@@ -258,10 +265,10 @@ func TestAnOfficerRowShowsItsTeamQueueSpendAndHold(t *testing.T) {
 			t.Errorf("%s held = %v, want %v", c.key, held(c.key), c.held)
 		}
 	}
-	if v, _ := ccAttr(by[navOffOps], "data-nav-officer-team"); v != "900" {
+	if v, _ := ccAttr(navOfficerRowOf(t, by, navOffOps), "data-nav-officer-team"); v != "900" {
 		t.Errorf("the team's officer names team %q", v)
 	}
-	if _, ok := ccAttr(by[navOffDocs], "data-nav-officer-team"); ok {
+	if _, ok := ccAttr(navOfficerRowOf(t, by, navOffDocs), "data-nav-officer-team"); ok {
 		t.Error("an own officer names a team")
 	}
 }
@@ -314,10 +321,10 @@ func TestTheOfficersRowIsCurrentOnItsInstancesPage(t *testing.T) {
 	list, offs := navOfficerFixture()
 	root, _ := navOfficersRender(t, list, offs, "http://x/agents/officer-scout-k1-1?session=610")
 	_, by := navOfficerRows(root)
-	if v, _ := ccAttr(by[navOffDocs], "aria-current"); v != "true" {
+	if v, _ := ccAttr(navOfficerRowOf(t, by, navOffDocs), "aria-current"); v != "true" {
 		t.Errorf("the docs scout's row aria-current = %q, want true", v)
 	}
-	if v, ok := ccAttr(by[navOffWeb], "aria-current"); ok {
+	if v, ok := ccAttr(navOfficerRowOf(t, by, navOffWeb), "aria-current"); ok {
 		t.Errorf("the web triage's row aria-current = %q", v)
 	}
 }
