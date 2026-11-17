@@ -207,7 +207,14 @@ type laneMode struct {
 var laneModelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`)
 
 // defaultMaxLanes is CCD_MAX_SESSIONS's default (see the memory note above).
+// An officer's chat sessions default to it (internal/officers
+// DefaultChatSessions; TestTheChatSessionDefaultIsCcdsLaneDefault).
 const defaultMaxLanes = 3
+
+// envMaxLanes is the lane cap's variable. A WIRE CONTRACT with muster's
+// agentspec.EnvCCDMaxSessions, which sets it on an officer pod that declares
+// chat_sessions (TestTheChatSessionDefaultIsCcdsLaneDefault).
+const envMaxLanes = "CCD_MAX_SESSIONS"
 
 // laneStartTimeout bounds how long a lane's first turn waits for its new CLI's
 // SessionStart. The CLI is starting because of THIS turn, so a not_ready on the

@@ -191,6 +191,9 @@ var capabilityInterface = map[string]func(Backend) bool{
 	CapObsRaw:      func(b Backend) bool { _, ok := b.(ObsRawBackend); return ok },
 	CapCaptain:     func(b Backend) bool { _, ok := b.(CaptainBackend); return ok },
 	CapShip:        func(b Backend) bool { _, ok := b.(ShipBackend); return ok },
+	// CapChats (chat.go): the chat runner's routes, served to no tool — no
+	// instance calls them; muster-server does, for the chat lanes.
+	CapChats: func(b Backend) bool { _, ok := b.(ChatsBackend); return ok },
 }
 
 // AllCapabilities is every capability this muster knows, sorted.
@@ -377,4 +380,5 @@ var (
 	_ ObsRawBackend            = (*Client)(nil)
 	_ CaptainBackend           = (*Client)(nil)
 	_ ShipBackend              = (*Client)(nil)
+	_ ChatsBackend             = (*Client)(nil)
 )

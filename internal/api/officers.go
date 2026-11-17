@@ -149,6 +149,9 @@ type officerRuntime struct {
 	// unclaimedAfter is OfficersConfig.UnclaimedAfter (0: the default).
 	unclaimedAfter time.Duration
 	host           officerHostState
+	// chats runs the officers' chat turns (officer_chat.go, internal/officers
+	// chat.go); nil when the agents store cannot keep a chat's session.
+	chats *officers.ChatRunner
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -322,6 +325,11 @@ type OfficersConfig struct {
 	// RefreshEvery is how often the wake loop re-reads the DB-declared
 	// officers (officers.Config.RefreshEvery); 0 is the default. For tests.
 	RefreshEvery time.Duration
+	// ChatHeartbeatEvery and ChatReplyRetries replace the chat runner's
+	// heartbeat cadence and reply retry waits (tests); zero/nil are the
+	// defaults.
+	ChatHeartbeatEvery time.Duration
+	ChatReplyRetries   []time.Duration
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
 	// officer pool's OWN runner image (`image`) is pulled with
 	// (agentspec.ClaudeCodeSession.ImagePullSecret, which reaches the pod spec
@@ -529,8 +537,18 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
+	// The chat turns (officer_chat.go): run when the agents store can keep a
+	// chat's session (the database); a turn ends with the server's streams.
+	var chats *officers.ChatRunner
+	if _, ok := s.ext.Agents.(agents.OfficerChatStore); ok {
+		chats, err = officers.NewChatRunner(officers.ChatRunnerConfig{Lanes: officerChatLanes{s: s}, Backend: hq.Backend, Logger: s.logger,
+			Context: s.streams.context(), HeartbeatEvery: cfg.ChatHeartbeatEvery, ReplyRetries: cfg.ChatReplyRetries})
+		if err != nil {
+			return nil, err
+		}
+	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff}
+		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff, Chats: chats}
 	if cfg.Builtin != nil {
 		// routine_kinds: the store defers a routine item to its officer's next
 		// routine_wake_at, reading the LIVE roster (officers.Registry.ForOwner).
@@ -562,7 +580,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, env: append([]officers.Officer(nil), cfg.Officers...), store: cfg.Builtin,
 		sessionInstalled: cfg.InstallSession != nil,
-		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
+		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube, chats: chats,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
 		hostSpawns:      cfg.HostSpawns,
 		unclaimedAfter:  cfg.UnclaimedAfter,
@@ -1299,6 +1317,11 @@ func (s *Server) OfficerPoolsReporter() *officers.PoolsReporter {
 func (s *Server) WaitForOfficerReprompts() {
 	if s.officerRT != nil {
 		s.officerRT.wg.Wait()
+		if s.officerRT.chats != nil {
+			// The chat turns too: each ends with the streams, and releases
+			// (or completes) its item on the way out.
+			s.officerRT.chats.Wait()
+		}
 	}
 }
 
@@ -1372,6 +1395,12 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// (ccImagePullSecret), so a pool on the deployment's image never gets it.
 	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image,
 		ImagePullSecret: s.officerRT.imagePullSecret}
+	// MaxSessions: the officer's declared chat_sessions (the pod's ccd lanes,
+	// CCD_MAX_SESSIONS), for the pool that runs its chats; 0 — none declared —
+	// leaves the pod's spec, and ccd's own default, as they were.
+	if o.ChatsPool() {
+		sess.MaxSessions = o.DeclaredChatSessions()
+	}
 	if _, _, proxied := officers.ProxyAgent(o, a.Name); proxied {
 		sess.LLMRoute = true
 		return sess, true
@@ -2249,6 +2278,13 @@ func (s *Server) officerClaimNext(ctx context.Context, c officers.Backend, insta
 	if res.Item == nil {
 		return nothingToClaim(), "", nil
 	}
+	// 🔴 A CHAT ITEM IS NEVER THE PRIMARY'S (officer_chat.go): HQ's queue order
+	// may hand one to claim-next; it is released at once and the instance told
+	// to claim by id instead — nothing was claimed.
+	if item, chat := s.claimedChatItem(c.Officer(), body); chat {
+		s.releaseChatClaim(ctx, c, c.Officer(), instance, item)
+		return []byte((&chatItemRefusal{item: item}).result()), "", nil
+	}
 	return body, res.Item.ID, nil
 }
 
@@ -2316,7 +2352,8 @@ func nothingToClaim() []byte {
 func claimOutcomeKnown(err error) bool {
 	var hqErr *officers.HQError
 	var blocked *claimBlockedError
-	return err == nil || errors.As(err, &hqErr) || errors.As(err, &blocked) || errors.Is(err, errNoClaimNext)
+	var chat *chatItemRefusal
+	return err == nil || errors.As(err, &hqErr) || errors.As(err, &blocked) || errors.As(err, &chat) || errors.Is(err, errNoClaimNext)
 }
 
 // sessionCapRefusal is a claim the judgement session ledger did not admit:
@@ -2352,6 +2389,20 @@ const alreadyYoursNote = "already yours — lease renewed (you held this item un
 // every claim — the retry too — so HQ takes only an item of that tier (409
 // wrong_tier, passed back unchanged); "" (an untiered officer) sends none.
 func (s *Server) officerClaim(ctx context.Context, c officers.Backend, item officers.ItemID, instance string, lease int, tier string) ([]byte, error) {
+	body, err := s.officerClaimOnce(ctx, c, item, instance, lease, tier)
+	// 🔴 A CHAT ITEM IS NEVER THE PRIMARY'S (officer_chat.go): claimed by id
+	// (HQ's answer names its kind), it is released at once and refused.
+	if err == nil {
+		if chat, ok := s.claimedChatItem(c.Officer(), body); ok {
+			s.releaseChatClaim(ctx, c, c.Officer(), instance, chat)
+			return nil, &chatItemRefusal{item: chat}
+		}
+	}
+	return body, err
+}
+
+// officerClaimOnce is officerClaim's claim, with its already-yours handling.
+func (s *Server) officerClaimOnce(ctx context.Context, c officers.Backend, item officers.ItemID, instance string, lease int, tier string) ([]byte, error) {
 	body, err := c.Claim(ctx, item, instance, lease, tier)
 	var hqErr *officers.HQError
 	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
@@ -2511,6 +2562,7 @@ func officerToolResultFor(o officers.Officer, name string, body []byte, err erro
 func toolResultFrom(src, name string, body []byte, err error) string {
 	var hqErr *officers.HQError
 	var blocked *claimBlockedError
+	var chatRefused *chatItemRefusal
 	var retry *officers.RetryableError
 	switch {
 	case errors.As(err, &retry):
@@ -2523,6 +2575,8 @@ func toolResultFrom(src, name string, body []byte, err error) string {
 			"retryable": again})
 	case errors.As(err, &blocked):
 		return blocked.result()
+	case errors.As(err, &chatRefused):
+		return chatRefused.result()
 	case err == nil:
 		if !json.Valid(body) {
 			return toolErr("%s answered %s with something that is not JSON", src, name)

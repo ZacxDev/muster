@@ -884,6 +884,98 @@ An instance in `error` counts as up, so its claim is not released early; it
 lapses with its lease. If the release itself fails (HQ down), the lease lapse
 is the fallback.
 
+## Chat sessions
+
+A team member can chat with an officer through the HQ server: HQ stores each
+chat and its messages, and every member turn enqueues (or re-opens) **one**
+item of kind `chat` for the officer — subject `chat:<chat_id>`, payload
+`{chat_id, seq}`, priority `high`. muster picks those items up on the wake
+loop's poll, as it picks up every item; HQ never calls muster. v1 is for HQ
+officers only: the built-in backend serves no chat routes, and on it an item
+of kind `chat` is queue work as before.
+
+**A chat item is not queue work.** It is never delivered to an instance's
+primary CLI:
+
+- the wake loop leaves it out of every queue count (`officers.Decide`): it is
+  not claimable, held, capped or budgeted for the queue, and no instance is
+  re-prompted for it. It still keeps its pool **busy** — a pending chat, or
+  one being answered, stops the idle scale-down — and the instance it needs is
+  started when it is down (an instance started for a chat gets its usual first
+  message too: its primary finds no queue work and ends its turn; the chat
+  runs on the next pass, once the instance is up);
+- `officer_claim` refuses one. HQ's claim-next may hand the primary a chat
+  item (it is high priority); muster releases it at once and answers
+  `{claimed: false, chat: true, note}`, which tells the instance to claim
+  another item by id. A claim of one by id is released and refused the same
+  way;
+- the transcript forwarder and the LLM proxy's claim sync are never told of a
+  chat claim.
+
+**Each chat runs in a Claude Code session of its own** on one instance — a
+`ccd` lane, exactly as a chief's side chat or a job's session runs: a
+`chat_sessions` row on the instance's agent, on the `claude-code` runtime,
+keyed `officer-chat:<chat_id>`, whose turns carry `X-Muster-CC-Session`. So
+the chat and the instance's queue work run at the same time; a chat never
+waits on the primary's turn (no `409 busy`), and the primary never waits on a
+chat. The lane is the officer's own CLI in the officer's own pod: it has the
+officer's tools, its connectors and grants, and its permissions — **full
+powers**, by operator decision — and loads its charter with `officer_brief` on
+its first turn. A chat shows as an ordinary session on the instance's agent
+page (its title `Chat <chat_id>`): every turn muster sent and every reply.
+
+**One turn**, run by muster-server (`officers.ChatRunner`):
+
+1. **claim** the chat's item, as `<instance agent name>/chat` — never as the
+   instance's own name, so the primary's heartbeats, releases and completes
+   can never touch the chat's claim, and the wake loop never reads it as the
+   primary's;
+2. **read** the chat's messages after the last seq the lane has seen
+   (`GET /officers/{id}/chats/{chat}/messages?after=<seq>`);
+3. **send** them to the lane as one user turn: the line "A team member is
+   chatting with you in session <name>; reply in plain text; this is not a
+   queue item.", then each message under who typed it (`Display Name
+   (@login) wrote:`). The claim is heartbeated every minute while the turn
+   runs (a 5-minute lease);
+4. **reply** with the lane's final assistant text
+   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`, cut at 64
+   KiB; a turn that ended with no text replies "(The officer's turn ended
+   without a text reply.)"). HQ completes the item.
+
+**Never re-sent, never skipped.** The lane's row keeps two marks (migration
+0147): the highest chat seq the lane has seen, and the last one HQ took a
+reply for. A message is marked seen *before* it is sent, and the mark is put
+back when `ccd` refuses the turn before typing anything. So a muster that
+restarts mid-turn, or a reply HQ never took, leaves seen past answered: the
+next claim sends the lane no message again and asks it to reply to the last one
+again. A lane `ccd` evicted is resumed from its transcript on its next turn, as
+every lane is. The reply is idempotent on `in_reply_to` (HQ answers the reply
+it already holds), so a post retried after an outage, or an item HQ re-offers
+for a turn already answered, posts once.
+
+**Capacity.** Each instance runs at most `chat_sessions` chats at once
+(MUSTER_OFFICERS, 1–5, default 3; [configuration.md](configuration.md)), one
+lane each. Declared, it is set as the pod's `CCD_MAX_SESSIONS`; left out, the
+pod's spec is unchanged and `ccd`'s own default (3) applies. A chat is placed
+on the instance its lane already lives on (its conversation is on that
+instance's volume); a new chat goes to the up instance running the fewest
+chats. When that instance has no free lane, the item is **left unclaimed** for
+a later pass; when `ccd` refuses the turn anyway (`503 capacity`, `503
+not_ready`, `409 busy` — nothing typed), the item is released and retried on a
+later pass. Neither ever fails or drops a chat. The least recently used idle
+lane is stopped when another needs its slot, and resumed from its transcript
+on its next turn. With `tiers`, chats run in the **judgement** pool only.
+
+**`fresh_session_per_item` applies to the primary only.** A chat lane is one
+conversation for the chat's whole life: its turns never carry
+`X-Muster-CC-New-Conversation`.
+
+**What it does not do (v1).** No streaming, attachments, edits or deletes;
+no muster UI of its own; no built-in backend. A muster running more than one
+replica counts each instance's busy lanes per process: HQ's claim decides
+which replica runs a chat, and `ccd`'s own cap (a `503 capacity`, above) is
+the backstop.
+
 ## The tools
 
 An officer's instances are offered these MCP tools on muster's MCP server, and no
@@ -3059,6 +3151,9 @@ An officer may split its instances into two **pools**, one per HQ item tier
     size is HQ's). The CLI's system prompt and tool definitions are sent on
     every request either way. In exchange, no request carries earlier items'
     history.
+  - Not to a [chat session](#chat-sessions): a chat runs in a `ccd` lane of
+    its own, one conversation for the chat's life, and its turns never ask
+    for a new one.
   - Not offered to an untiered officer: an officer without `tiers` is
     exactly what it was.
   - It needs a `claude-code-agent` image from this version: an older ccd
@@ -3571,7 +3666,13 @@ uses `POST /officers/{id}/items/{item}/transcript`
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
 `officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
 officer may use `GET /officers/{id}/obs/queries` and `POST
-/officers/{id}/obs/query` ([Observability queries](#observability-queries)). Where the contract leaves a shape open, muster accepts:
+/officers/{id}/obs/query` ([Observability queries](#observability-queries)). An HQ
+officer's [chat sessions](#chat-sessions) use `GET
+/officers/{id}/chats/{chat}/messages?after=<seq>` (muster reads `{messages:
+[{seq, role, author_login, author_name, text}], chat?: {name}}`, a bare array
+of messages too, and `author_display_name` where `author_name` is absent) and
+`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}` (answered
+`{seq}`). Where the contract leaves a shape open, muster accepts:
 
 - the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
   loop follows `next` for up to 5 pages of 100;

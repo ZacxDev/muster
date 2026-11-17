@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -279,6 +280,14 @@ type Observation struct {
 	// SpendUnreadable: the officer has a daily budget and its spend could not
 	// be read this pass (then OverBudget, fail closed).
 	SpendUnreadable bool
+	// Chats: the officer's backend serves chats and muster runs them
+	// (ChatRunner.On). Only then is a chat item set apart from queue work; a
+	// muster that runs no chats sees every item as before.
+	Chats bool
+	// ChatWant is the instance numbers the pool's pending chats need up
+	// (ChatRunner.Want): each chat's home instance, or instance 1 for a chat
+	// with no home while nothing is up. Empty for a pool that runs no chats.
+	ChatWant []int
 }
 
 // Overrun is a live claim past its pool's wall-time cap (Officer.ItemCap).
@@ -325,6 +334,12 @@ type Decision struct {
 	BudgetWaiting int
 	// Held is how many live claims its instances hold.
 	Held int
+	// ChatPending is how many chat items wait for a chat turn, and ChatHeld
+	// how many a chat turn holds now (chat.go). Counted for a pool that runs
+	// chats (Officer.ChatsPool) only; never in Claimable or Held — a chat is
+	// not queue work.
+	ChatPending int
+	ChatHeld    int
 }
 
 // Decide is the loop's whole policy, as a pure function, for ONE POOL of
@@ -388,7 +403,14 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// An item not yet due (not_before ahead: a batched routine item) is not
 	// work at all: its claim is refused 409 not_due, so waking an instance
 	// for it would claim nothing.
-	workable := func(it Item) bool { return !it.Blocked && o.worksItem(it) && it.Due(now) }
+	// 🔴 A CHAT ITEM IS NEVER QUEUE WORK (chat.go): it is not claimable,
+	// held, waiting or capped for the queue — no instance is re-prompted for
+	// it, and its claim (held as ChatHolder) is never released, capped or
+	// counted as an instance's. The chat pool counts it apart (ChatPending,
+	// ChatHeld): it keeps the pool busy, and obs.ChatWant names the instances
+	// it needs up.
+	chatItem := func(it Item) bool { return obs.Chats && it.IsChat() }
+	workable := func(it Item) bool { return !chatItem(it) && !it.Blocked && o.worksItem(it) && it.Due(now) }
 	// Over its daily budget, the officer may claim only what bypasses it
 	// (its owner's own, non-routine items): the claim refuses any other.
 	inBudget := func(it Item) bool { return !obs.OverBudget || o.BypassesBudget(it) }
@@ -409,12 +431,21 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	for _, it := range obs.Open {
 		count(it)
 	}
+	if obs.Chats && o.ChatsPool() {
+		d.ChatPending = len(PendingChats(obs, now))
+	}
 	heldByUp := map[string]bool{}
 	overrun := map[string]bool{}
 	// capHolder: the instance numbers holding a capped claim. Never started.
 	capHolder := map[int]bool{}
 	limit := o.ItemCap()
 	for _, it := range obs.Claimed {
+		if chatItem(it) {
+			if o.ChatsPool() && it.LeaseLive(now) {
+				d.ChatHeld++
+			}
+			continue
+		}
 		if !it.LeaseLive(now) {
 			count(it)
 			continue
@@ -445,7 +476,8 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 			up++
 		}
 	}
-	if d.Claimable > 0 || d.Held > 0 {
+	chatWork := d.ChatPending > 0 || d.ChatHeld > 0
+	if d.Claimable > 0 || d.Held > 0 || chatWork {
 		want := len(heldByUp) + d.Claimable
 		if want > o.MaxInstances {
 			want = o.MaxInstances
@@ -467,6 +499,22 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 				}
 				d.StartWhy[n] = downWhy[n]
 			}
+		}
+		// The instances the pending chats need (a chat's lane lives on one
+		// instance): started when down, beside any queue work wants.
+		if d.ChatPending > 0 {
+			for _, n := range obs.ChatWant {
+				_, down := downWhy[n]
+				if !down || capHolder[n] || n < 1 || n > o.MaxInstances || slices.Contains(d.Start, n) {
+					continue
+				}
+				d.Start = append(d.Start, n)
+				if d.StartWhy == nil {
+					d.StartWhy = map[int]string{}
+				}
+				d.StartWhy[n] = downWhy[n]
+			}
+			sort.Ints(d.Start)
 		}
 		skip := map[string]bool{}
 		for n := range heldByUp {
@@ -669,6 +717,8 @@ type Reconciler struct {
 	capHold func(o Officer, h CapHold)
 	// budgetAlert is Config.BudgetAlert (nil: none).
 	budgetAlert func(o Officer, a BudgetAlert)
+	// chats is Config.Chats (nil: no chat turns are run).
+	chats *ChatRunner
 	// kickoff is Config.Kickoff (never nil: KickoffText by default).
 	kickoff func(ctx context.Context, o Officer, n int) string
 	// refresh, refreshEvery and refreshedAt are Config.Refresh: Run calls it
@@ -727,6 +777,9 @@ type Config struct {
 	// Run's goroutine.
 	Refresh      func(ctx context.Context)
 	RefreshEvery time.Duration
+	// Chats runs the officers' chat turns (chat.go): nil runs none, and a
+	// chat item then only keeps its pool busy.
+	Chats *ChatRunner
 }
 
 // DefaultRefreshEvery is how often Run re-reads the roster (Config.Refresh)
@@ -752,7 +805,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Kickoff = func(_ context.Context, o Officer, n int) string { return KickoffText(o, n) }
 	}
 	return &Reconciler{kickoff: cfg.Kickoff, reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery,
+		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery, chats: cfg.Chats,
 		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
@@ -899,7 +952,14 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	}
 	r.noteErrors(o, pools, obs)
 	if r.observed != nil {
-		r.observed(o, obs[0].Claimed, now)
+		// Chat claims are the chat runner's (ChatHolder), never an
+		// instance's primary session's: the transcript forwarder and the LLM
+		// proxy's claim sync are not told of them.
+		claimed := obs[0].Claimed
+		if obs[0].Chats {
+			claimed = NonChat(claimed)
+		}
+		r.observed(o, claimed, now)
 	}
 	r.mu.Lock()
 	ds := make([]Decision, len(pools))
@@ -1015,7 +1075,13 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	for _, c := range ended {
 		r.endCapHold(c)
 	}
-	return r.actAll(ctx, pools, ds, nil)
+	res := r.actAll(ctx, pools, ds, nil)
+	// The chat turns, last: each runs on its own goroutine, on an instance
+	// this pass already saw up (one started now gets its chats next pass).
+	for i, p := range pools {
+		r.chats.Dispatch(ctx, p, obs[i], now)
+	}
+	return res
 }
 
 // actAll acts on each pool's decision, in Pools order, and gathers them into
@@ -1211,6 +1277,8 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 		}
 		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
 			OverBudget: over, BudgetRead: read, Spent: spent, SpendUnreadable: unreadable}
+		out[i].Chats = r.chats.On(p)
+		out[i].ChatWant = r.chats.Want(ctx, p, out[i], r.now())
 	}
 	return out, nil
 }
