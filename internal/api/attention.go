@@ -283,7 +283,7 @@ type attentionItem struct {
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
 	Context *attention.ItemContext `json:"context,omitempty"`
-	// Why is why an agent's ask is here (attention.Ask's, migration 0143):
+	// Why is why an agent's ask is here (attention.Ask's, migration 0145):
 	// its own context, or muster's fallback (focus, last); nil for none.
 	// Attachments are the files it carries. Both are the asker's: drawn
 	// escaped under the question (ask_media.go), and in attention_list.

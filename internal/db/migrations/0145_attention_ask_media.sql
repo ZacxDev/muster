@@ -1,4 +1,4 @@
--- muster 0143 — WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION
+-- muster 0145 — WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION
 -- (internal/attention Attachment, AskWhy; internal/api ask_media.go;
 -- docs/attention.md "Attachments and context").
 --
@@ -28,9 +28,9 @@
 -- team policies, so an attachment is readable by exactly who can read its ask.
 -- Every statement is idempotent.
 --
--- Must apply after 0142 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT at merge if main moved: 0141 and 0142 were held by open pull
--- requests when this was written.
+-- Must apply after 0144_chief_session_llm_usage (the contiguity test refuses a
+-- gap). Numbered 0145 at merge: 0141–0144 are other pull requests'.
+-- 🔴 RENUMBER IT at merge if main moved again.
 --
 -- ROLLBACK. An older image never reads the columns (its asks show the question
 -- alone, as before). To remove them (optionally):
@@ -38,7 +38,7 @@
 --   ALTER TABLE public.attention_asks DROP CONSTRAINT IF EXISTS attention_asks_why_shape;
 --   ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS attachments;
 --   ALTER TABLE public.attention_asks DROP COLUMN IF EXISTS why;
---   DELETE FROM schema_migrations WHERE version = 143;
+--   DELETE FROM schema_migrations WHERE version = 145;
 
 SET LOCAL lock_timeout = '3s';
 

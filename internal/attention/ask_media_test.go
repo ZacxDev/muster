@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// WHAT AN ASK CARRIES BESIDE ITS QUESTION (ask_media.go, migration 0143): the
+// WHAT AN ASK CARRIES BESIDE ITS QUESTION (ask_media.go, migration 0145): the
 // shape rules Clean holds, and the round trip through Postgres.
 
 const (

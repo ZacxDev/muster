@@ -22,7 +22,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION (migration 0143;
+// WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION (migration 0145;
 // docs/attention.md "Attachments and context"): files, and why it is here.
 //
 //	POST /mirror/ask-attachments   a mirror host sends a session's file (mirror token)

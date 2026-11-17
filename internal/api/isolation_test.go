@@ -1253,7 +1253,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
 	// A's open ask (0025), asked by A's agent, its question carrying the canary.
-	// It carries A's upload as an attachment (0143), which its attachment
+	// It carries A's upload as an attachment (0145), which its attachment
 	// route names.
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
 		Question: w.canary + " asks", Options: []string{"yes", "no"},

@@ -301,9 +301,9 @@ type Ask struct {
 	// 0129), nil for none.
 	Context *ItemContext `json:"-"`
 	// Attachments are the files the asker attached (New.Attachments,
-	// migration 0143), nil for none.
+	// migration 0145), nil for none.
 	Attachments []Attachment `json:"-"`
-	// Why is why the ask is here (New.Why, migration 0143), nil for none.
+	// Why is why the ask is here (New.Why, migration 0145), nil for none.
 	Why *AskWhy `json:"-"`
 }
 
@@ -384,11 +384,11 @@ type New struct {
 	// and bounds it (item_context.go).
 	Context *ItemContext
 	// Attachments are files of the asker's owner's upload store the ask
-	// carries (migration 0143; ask_media.go), nil for none. Set ONLY by
+	// carries (migration 0145; ask_media.go), nil for none. Set ONLY by
 	// internal/api's attention_ask, from upload rows it read under the
 	// owner's principal; Clean checks their shape and count.
 	Attachments []Attachment
-	// Why is why the ask is here (migration 0143): the agent's own context, or
+	// Why is why the ask is here (migration 0145): the agent's own context, or
 	// muster's fallback (ask_media.go). Clean sanitises and bounds it.
 	Why *AskWhy
 	// With is an audit row written in Create's OWN transaction, as the

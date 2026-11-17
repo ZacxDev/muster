@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION (migration 0143)
+// WHAT AN AGENT'S ASK CARRIES BESIDE ITS QUESTION (migration 0145)
 //
 //   - Attachments: files the agent attached (attention_ask's attachments /
 //     attachment_ids), each an upload in muster's upload store (migration
@@ -32,7 +32,7 @@ import (
 
 // The bounds of an ask's attachments and why.
 const (
-	// MaxAttachments is how many files one ask may carry (0143's CHECK holds 4).
+	// MaxAttachments is how many files one ask may carry (0145's CHECK holds 4).
 	MaxAttachments = askattach.MaxCount
 	// MaxAttachmentNameRunes bounds an attachment's shown name.
 	MaxAttachmentNameRunes = 120

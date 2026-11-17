@@ -41,7 +41,7 @@ import (
 
 const (
 	// MaxCount is how many files one ask may carry (attention.MaxAttachments
-	// is this; migration 0143's CHECK holds it).
+	// is this; migration 0145's CHECK holds it).
 	MaxCount = 4
 	// MaxBytes caps one attached file. muster's upload store may allow more
 	// (MUSTER_UPLOAD_MAX_BYTES); an ask's file is held to the smaller.
