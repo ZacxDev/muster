@@ -37,7 +37,7 @@ import (
 // existing re-run backs that. A block HQ could not answer (no route yet, an
 // outage) stays unsettled, so the grant's next approval tries it again.
 //
-// Kept in muster's database (PGConnectorBlockStore, migration 0146) when it has
+// Kept in muster's database (PGConnectorBlockStore, migration 0147) when it has
 // one, so an approval days later, after a restart or on the other replica,
 // still finds the block; else in this process's memory (MemConnectorBlockStore).
 // ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ func (m *MemConnectorBlockStore) SettleBlock(_ context.Context, officer string, 
 }
 
 // PGConnectorBlockStore is ConnectorBlockStore on officer_connector_blocks
-// (migration 0146), under row-level security: ctx must act as the officer's
+// (migration 0147), under row-level security: ctx must act as the officer's
 // owner.
 type PGConnectorBlockStore struct{ pool *pgxpool.Pool }
 

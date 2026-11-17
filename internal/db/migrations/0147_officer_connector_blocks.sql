@@ -1,4 +1,4 @@
--- muster 0146 — AN OFFICER'S ITEMS BLOCKED ON A PENDING CONNECTOR GRANT
+-- muster 0147 — AN OFFICER'S ITEMS BLOCKED ON A PENDING CONNECTOR GRANT
 -- (internal/officers connector_blocks.go; docs/officers.md "Re-running
 -- blocked items").
 --
@@ -27,14 +27,14 @@
 -- owner_id is fixed. rollback/rls_off.sql turns it off with the rest, and
 -- --rls-on re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after its predecessor, 0145 (the contiguity test refuses a gap).
+-- Must apply after its predecessor, 0146 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT (and db.officerConnectorBlocksMigrationVersion) if another
--- migration takes 0146 first.
+-- migration takes 0147 first.
 --
 -- ROLLBACK. An older image never reads the table (an approval then re-runs
 -- nothing, as before); roll the image back, then (optionally):
 --   DROP TABLE public.officer_connector_blocks;   (its policies and owner_fixed trigger go with it)
---   DELETE FROM schema_migrations WHERE version = 146;
+--   DELETE FROM schema_migrations WHERE version = 147;
 
 SET LOCAL lock_timeout = '3s';
 

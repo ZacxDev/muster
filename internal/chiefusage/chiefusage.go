@@ -44,7 +44,12 @@ const (
 	TriggerMachine = "machine"
 	// TriggerKickoff: the chief's first turn, handed over by the kickoff deliverer.
 	TriggerKickoff = "kickoff"
-	TriggerOther   = "other" // anything else (a nudge, a relay, a door this package does not know)
+	// TriggerNudgeCheck: one stall check of the chief-nudge sweep — the fresh,
+	// tool-less, throwaway call asking the chief about one stalled session
+	// (internal/api chief_nudge.go askChiefForNudge; migration 0146). It never
+	// passes chatTurn, so it records itself.
+	TriggerNudgeCheck = "nudge_check"
+	TriggerOther      = "other" // anything else (a nudge, a relay, a door this package does not know)
 )
 
 // Trigger is what started a chief turn: its kind and, for a plugin message or

@@ -361,13 +361,13 @@ const pluginChiefInstructionsMigrationVersion = 141
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const chiefSessionLLMUsageMigrationVersion = 144
 
-// officerConnectorBlocksMigrationVersion is 0146: officer_connector_blocks (an
+// officerConnectorBlocksMigrationVersion is 0147: officer_connector_blocks (an
 // officer's items blocked on a pending connector grant, internal/officers
 // connector_blocks.go), owned and under row-level security in
 // officer_pr_loops' share class; same treatment again. Its body is
 // idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerConnectorBlocksMigrationVersion = 146
+const officerConnectorBlocksMigrationVersion = 147
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

@@ -323,7 +323,7 @@ type OfficersConfig struct {
 	PublicBranches officers.PublicBranchStore
 	// ConnectorBlocks keeps which items each officer instance held while a
 	// pending connector grant refused it, so approving that grant re-runs
-	// them (officers.PGConnectorBlockStore, migration 0146); nil keeps them
+	// them (officers.PGConnectorBlockStore, migration 0147); nil keeps them
 	// in this process's memory, which a restart forgets.
 	ConnectorBlocks officers.ConnectorBlockStore
 	LLMUpstream     string

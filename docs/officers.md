@@ -896,7 +896,7 @@ that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
   `postgres_query`, `internal_http_request`, `officer_kube_read`), and an
   explicit `connector_request` that leaves the grant pending, records each
   item the instance holds a LIVE claim on in HQ, keyed by the grant's id
-  (`officer_connector_blocks`, migration 0146; in memory without a
+  (`officer_connector_blocks`, migration 0147; in memory without a
   database). The HQ read runs in the background, never on the refused
   request, and at most once per (agent, grant) per minute: a refused
   instance retries in seconds. A repeat refusal writes nothing. The link is

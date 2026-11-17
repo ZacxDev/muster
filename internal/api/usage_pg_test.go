@@ -87,3 +87,44 @@ func TestTheUsagePageRendersTheWindowsTotals(t *testing.T) {
 		t.Error("an unknown window is not the 7-day default")
 	}
 }
+
+// TestTheUsagePageGroupsStallChecks: the chief's stall checks (trigger
+// nudge_check, migration 0146) are their own group under "Chief tokens by
+// source", named as stall checks with their turns and tokens summed — not
+// folded into "other". Two checks and one owner-chat turn, token counts
+// pairwise distinct, so the group's sums can only be the two checks'.
+func TestTheUsagePageGroupsStallChecks(t *testing.T) {
+	f := newRulesFixture(t)
+	sys := authz.System(context.Background())
+	now := time.Now().UTC()
+	turn := func(trigger string, in, out, read, create int64) {
+		t.Helper()
+		if _, err := f.pool.Exec(sys, `INSERT INTO chief_turn_usage (owner_id, chief_agent, created_at, trigger, outcome,
+			input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, usage_known) VALUES ($1, $2, $3, $4, 'other',
+			$5, $6, $7, $8, true)`, f.owner, f.chief.ID, now.Add(-time.Hour), trigger, in, out, read, create); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn("nudge_check", 3, 40, 5000, 600)
+	turn("nudge_check", 7, 20, 1000, 300)
+	turn("owner_chat", 11, 13, 17, 19)
+	w := f.call(t, "GET", usagePath, nil, f.operator())
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d", usagePath, w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`data-usage-trigger="nudge_check" data-usage-plugin="">
+<span class="break-words text-sm font-semibold text-fg">stall checks · 2 turns</span>
+<span class="text-xs text-fg2">6,970 tokens (in 10 · out 60 · cache read 6,000 · cache write 900)</span>`,
+		`data-usage-trigger="owner_chat" data-usage-plugin="">
+<span class="break-words text-sm font-semibold text-fg">your chat lines · 1 turns</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Logf("page:\n%s", body)
+	}
+}
