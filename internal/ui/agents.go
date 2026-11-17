@@ -125,6 +125,15 @@ type AgentCardView struct {
 	// primaryChief decides it, for both; it is never re-derived here. At most
 	// one entry of a list carries it; IsChief may be true on more than one.
 	PrimaryChief bool
+	// TeamOwner is the TEAM that owns the agent when it is not the viewer's
+	// own (team sharing 4.4: a list read under row-level security holds the
+	// viewer's teams' agents), 0 for the viewer's own; Team is that team's
+	// name. Decided in internal/api's withAgentTeams (memberOnTeamAgent), never
+	// here. The sidebar draws the row in that team's group — the one the team's
+	// hosts' sessions are drawn in (MirrorCardView.Owner, listEntry.team) — and
+	// the switcher and the palette label it with its team.
+	TeamOwner int64
+	Team      string
 	// Pinned: the viewing user pinned this agent (internal/pins). The switcher
 	// orders a pinned entry first (orderList) and its pin toggle reads it
 	// (switcher_pin.go); a pinned entry is never in the Idle section. Composed in

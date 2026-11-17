@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -256,6 +258,34 @@ func TeamAgentTerminalWhy() string {
 func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && !p.Team && a.OwnerID > 0 && p.UserID != a.OwnerID
+}
+
+// withAgentTeams marks each TEAM agent's card (cards[i] is list[i]'s) with
+// its team: TeamOwner, the team's id, and Team, its display name — the
+// sidebar draws the row in that team's group, the one its hosts' sessions are
+// drawn in (ui's listEntry.team), and the switcher and the palette label it
+// with its team. A team agent is one memberOnTeamAgent holds for, the one
+// rule; a person's own agent is left unmarked.
+func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards []ui.AgentCardView) {
+	var teams []int64
+	for i, a := range list {
+		if !memberOnTeamAgent(ctx, a) {
+			continue
+		}
+		cards[i].TeamOwner = a.OwnerID
+		if !slices.Contains(teams, a.OwnerID) {
+			teams = append(teams, a.OwnerID)
+		}
+	}
+	if len(teams) == 0 {
+		return
+	}
+	names := s.teamNames(ctx, teams)
+	for i := range cards {
+		if o := cards[i].TeamOwner; o != 0 {
+			cards[i].Team = names[o]
+		}
+	}
 }
 
 // ErrNotTheTeamRoom answers a member's message to a team agent that names a

@@ -262,6 +262,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 		v.DeleteProtected = protected(a)
 		cards = append(cards, v)
 	}
+	// Each TEAM agent's team (withAgentTeams): its sidebar group, and the
+	// switcher's and palette's label.
+	s.withAgentTeams(ctx, list, cards)
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
 	// in-memory hub, scoped to this request's principal. ui's orderList
 	// interleaves them with the agents by activity.
