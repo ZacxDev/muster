@@ -291,19 +291,24 @@ func TestAPublicBranchFlowsThroughTheGate(t *testing.T) {
 	if err := r.create(m); !isGateRefusal(err) || !strings.Contains(err.Error(), "item 18 already has 1") {
 		t.Fatalf("a second pull request for item 18: err = %v, want the per-item refusal", err)
 	}
-	// The open cap: two of the officer's public pull requests open (items 17
-	// and 18, by the record) refuse a third.
+	// The open cap: four of the officer's public pull requests open (items 17,
+	// 18, 20 and 21, by the record) refuse a fifth; three admit a fourth.
 	r = publicRig(t)
-	r.claims[19] = dInstance
+	r.claims[19], r.claims[20], r.claims[21] = dInstance, dInstance, dInstance
 	br18, br19 := r.mintFor(t, 18, "raise-limit"), r.mintFor(t, 19, "fix-probe")
+	br20, br21 := r.mintFor(t, 20, "trim-docs"), r.mintFor(t, 21, "fix-typo")
 	open := func(n int, head string) PR {
 		return PR{Number: n, State: "open", Author: BotLogin(r.infra.slug), AuthorType: "Bot", HeadRef: head, CreatedAt: yesterday, Body: goodPublicBody()}
 	}
-	r.infra.all = []PR{open(41, dPubBranch), open(42, br18)}
 	m = goodPublicCreate()
 	m["head"] = br19
+	r.infra.all = []PR{open(41, dPubBranch), open(42, br18), open(43, br20)}
+	if err := r.create(m); err != nil {
+		t.Fatalf("a fourth open pull request: %v, want it admitted", err)
+	}
+	r.infra.all = []PR{open(41, dPubBranch), open(42, br18), open(43, br20), open(44, br21)}
 	if err := r.create(m); !isGateRefusal(err) || !strings.Contains(err.Error(), "are open in "+dInfra) {
-		t.Fatalf("a third open pull request: err = %v, want the open cap", err)
+		t.Fatalf("a fifth open pull request: err = %v, want the open cap", err)
 	}
 	// A body edit of #31 (from dPubBranch, item 17): the neutral line passes, the
 	// private one is refused.

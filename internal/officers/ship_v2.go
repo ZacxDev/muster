@@ -52,7 +52,7 @@ const (
 	MaxShipRepos = 3
 	// MaxOpenPRsPerRepo is how many of the officer's own pull requests may be
 	// open in one repository at once.
-	MaxOpenPRsPerRepo = 2
+	MaxOpenPRsPerRepo = 4
 	// MaxNewPRsPerDay is how many pull requests the officer may open per UTC
 	// day, across its repositories.
 	MaxNewPRsPerDay = 3
