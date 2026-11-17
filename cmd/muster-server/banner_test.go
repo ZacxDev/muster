@@ -447,6 +447,11 @@ var bannerLedger = []string{
 	// every one of the owner's sessions and fleet_list reads their stops and
 	// pull requests (the GitHub App) — so the log must say which state this is.
 	envFleetDigest,
+	// FLEET PROPOSALS ARE LEDGERED: ON, the chief proposes texts into the
+	// owner's sessions (sent on the owner's tap) and the fleet judges the
+	// owner's stops in place of the chief's nudges — so the log must say which
+	// state this is.
+	envFleetOrchestration,
 	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
 	// databases; OFF, they reach whatever address they name — so the log must
 	// say which.
@@ -939,6 +944,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionState: true,
 		// The fleet digest: the banner branches on ext.FleetDigest (below).
 		FleetDigest: true,
+		// Fleet proposals: the banner branches on ext.FleetPropose (below).
+		FleetPropose: true,
 		// The dial guard: the banner branches on ext.DialGuard (below).
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
@@ -1001,6 +1008,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
 		FleetDigest:     true,
+		FleetPropose:    true,
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 		Pages:           pages.NewPG(nil),
 		CCUsageInterval: 5 * time.Minute,
