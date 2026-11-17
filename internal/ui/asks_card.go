@@ -337,6 +337,9 @@ var asksFeedJS = `(function () {
       var w = left.waits; left.waits = [];
       w.forEach(function (f) { f(); });
     };
+    // The count drops as the card starts to leave (allCards skips a leaving
+    // card), not once its collapse has played.
+    count();
     if (reduced()) { card.style.display = 'none'; count(); finish(); return; }
     // 🔴 A LIVE REFRESH WAITS FOR THE COLLAPSE (AttentionLiveScript holds
     // while the feed has a card carrying this attribute): it replaces the
