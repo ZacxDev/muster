@@ -123,8 +123,16 @@ mi_verify() {
   if command -v sha256sum >/dev/null 2>&1; then printf '%s\n' "$line" | sha256sum -c -
   else printf '%s\n' "$line" | shasum -a 256 -c -; fi
 }
-# mi_dc ARGS: docker compose on the hub's stack.
-mi_dc() { docker compose -f "$MUSTER_DIR/docker-compose.yml" -p "${MUSTER_PROJECT:-muster}" "$@"; }
+# mi_dc ARGS: docker compose on the hub's stack, with the person's
+# docker-compose.override.yml when there is one (an explicit -f turns
+# Compose's automatic override off; install.sh includes it the same way).
+mi_dc() {
+  if [ -e "$MUSTER_DIR/docker-compose.override.yml" ]; then
+    docker compose -f "$MUSTER_DIR/docker-compose.yml" -f "$MUSTER_DIR/docker-compose.override.yml" -p "${MUSTER_PROJECT:-muster}" "$@"
+  else
+    docker compose -f "$MUSTER_DIR/docker-compose.yml" -p "${MUSTER_PROJECT:-muster}" "$@"
+  fi
+}
 # mi_logs ARGS: the stack's logs (`mi_logs --tail=80 muster-init muster`)
 # WITHOUT the line muster-init prints the generated sign-in password on (it
 # carries this marker): read logs only this way, so the password never lands
@@ -448,7 +456,10 @@ from "Another machine" in Step 3 first.
 
 `muster-mirror`'s settings (`~/.config/muster-mirror/env`) are merged, never
 overwritten: the installer rewrites only the lines it manages and keeps every
-other line.
+other line. On the hub the block then writes muster's own address,
+`MUSTER_PUBLIC_URL=http://localhost:<port>`, into `~/muster/.env` when nothing
+set one yet (attachments and pages write every link on it; Step 3 replaces it
+with the HTTPS address), and restarts muster with it.
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
@@ -482,6 +493,13 @@ if [ "${ROLE:-hub}" != join ] && [ -n "$(mi_local_url)" ]; then
   # refuses to delete it from then on.
   curl -fsS -o /dev/null "$(mi_local_url)/health" && mi_save GUIDE_IN_USE 1
   case "${MUSTER_URL:-}" in https://*) ;; *) mi_save MUSTER_URL "$(mi_local_url)" ;; esac
+  # muster's own address, which every link it writes is on (attachments,
+  # pages): this machine's, until Step 3 sets the https one. Without it those
+  # features come up MISCONFIGURED on a hub with no Tailscale.
+  if [ "$rc" = 0 ] && [ -z "$(env_get MUSTER_PUBLIC_URL)" ]; then
+    env_set MUSTER_PUBLIC_URL "$(mi_local_url)"
+    mi_dc up -d --wait --quiet-pull || echo "MUSTER_PUBLIC_URL: muster did not come back up with it (see If this fails)"
+  fi
 fi
 echo "install.sh exited $rc; muster: ${MUSTER_URL:-unknown}"
 # Does a NEW login shell find the CLI? (This shell's PATH may predate
@@ -489,6 +507,11 @@ echo "install.sh exited $rc; muster: ${MUSTER_URL:-unknown}"
 # `env -i`: the login shell builds PATH from the profile alone, not from ours.
 [ "$(env -i HOME="$HOME" USER="$USER" "${SHELL:-sh}" -lc 'command -v muster' 2>/dev/null)" = "$MUSTER_BIN/muster" ] ||
   echo "NOTE: a new login shell does not find $MUSTER_BIN/muster: add $MUSTER_BIN to PATH in the shell profile"
+# A command run over ssh without a terminal (`ssh host 'muster …'`) is not a
+# login shell: it reads no profile, so only the system's own directories are
+# on its PATH.
+case ":/usr/local/bin:/usr/bin:/bin:" in *":$MUSTER_BIN:"*) ;; *)
+  echo "NOTE: \`ssh <this machine> 'muster …'\` (no login shell) does not find muster: use $MUSTER_BIN/muster there" ;; esac
 ```
 
 The installer prints one line per doctor check (`PASS`, `FAIL` or `SKIP`, with
@@ -524,6 +547,14 @@ for one) reports `SKIP`, never `FAIL`.
   `export PATH="$HOME/.local/bin:$PATH"` to the person's shell profile (ask
   first), or use the full path. No `NOTE` means a new terminal finds `muster`
   already; change nothing.
+- `NOTE: … (no login shell) does not find muster`: not a failure. A command
+  sent as `ssh <machine> '…'` runs without a login shell, so it reads no
+  profile; write `~/.local/bin/muster` (and `~/.local/bin/muster-mirror`) in
+  full there.
+- `MUSTER_PUBLIC_URL: muster did not come back up with it`: the block set
+  muster's own address (`MUSTER_PUBLIC_URL`, the base of every link it writes)
+  in `~/muster/.env` and restarted it. `mi_logs --tail=80 muster` says why it
+  did not start; then re-run this block.
 - `linger is OFF`: the person declined, or `sudo` needs a password the
   agent cannot type: give them `sudo loginctl enable-linger "$USER"` to run.
 - It runs but no sessions appear: the person's tmux uses a different socket
@@ -698,6 +729,17 @@ tmux new -A -s gem gemini       # Gemini CLI
 Another agent in the same session: `tmux new-window -t work claude`. Detach
 with `Ctrl-b d`; the agent keeps running and stays in muster.
 
+**opencode: version 2 or later.** muster needs opencode 2+, and
+`curl -fsSL https://opencode.ai/install | bash` installs opencode **1**
+(`opencode --version` says which). Install 2 with
+`curl -fsSL https://opencode.ai/v2/install | bash` (it goes in
+`~/.opencode/bin`, which its installer adds to PATH in `~/.bashrc`), or upgrade a 1.x with
+`opencode upgrade --major`. Then start opencode once (the TUI above, or
+`opencode serve`), so it writes the file `muster-mirror opencode-pair` reads,
+and pair this machine: `muster-mirror opencode-pair`
+([docs/mirroring.md](docs/mirroring.md), "opencode's token"). The pair
+command says which of these is missing.
+
 **No chief, on purpose.** muster's *chief* is an optional agent that reports
 on the rest of the fleet. It is off by default and this guide does not turn it
 on ([docs/features.md](docs/features.md#chief)).
@@ -750,6 +792,12 @@ open muster and see a session, and, with Tailscale added, the person confirms
 on the phone that they can see a session and that the test notification
 arrived.
 
+**A hub with no browser of its own** (a server reached only by ssh): muster
+listens on 127.0.0.1, so open it from the person's own computer through an ssh
+tunnel, `ssh -L <port>:127.0.0.1:<port> <user>@<hub>` with the hub's port
+(`mi_local_port`, 8105 by default), then `http://localhost:<port>` in that
+computer's browser. Tailscale (Step 3) is the way that needs no tunnel.
+
 Then tell the person, briefly:
 
 - the address, and the command that shows the password (Step 3, the phone);
@@ -780,7 +828,8 @@ page for the facts; this guide does not repeat them.
 Turning a feature on is the same every time, on the hub: its lines go into
 `~/muster/.env` (beside `docker-compose.yml`; `env_set` creates it, mode 600),
 its compose profile (if it has one) into `COMPOSE_PROFILES` there, and then
-`mi_dc up -d --wait` brings the server up with them. Use the helpers so no
+`mi_dc up -d --wait --quiet-pull` brings the server up with them (`--quiet-pull`
+keeps a new image's download progress out of your output). Use the helpers so no
 secret reaches a command line or your reply:
 
 - a random secret the section asks for: `env_secret <NAME> <bytes>` (kept on a
@@ -802,7 +851,7 @@ env_secret S3_STORE_SECRET_KEY 24        # the store's root password, and muster
 env_secret MUSTER_UPLOAD_SIGNING_KEY 48  # signs the links agents are given
 env_set COMPOSE_PROFILES "$(mi_profiles s3)"
 echo "profiles: $(env_get COMPOSE_PROFILES)"
-mi_dc up -d --wait
+mi_dc up -d --wait --quiet-pull
 ```
 
 Check each feature with Step 5's doctor (its feature list says on, off or
@@ -832,6 +881,17 @@ again.
 - **Update**: download the newer guide (the prompt's `curl`), then on the hub
   run its Step 0 and Step 2, and on every other machine the same (Step 2 there
   installs the release the hub runs). Step 5 checks it.
+- **Change the sign-in password** (if it leaked, or to choose a new one): a
+  `MUSTER_UI_PASSWORD` in the hub's `.env` wins over the generated one, so
+  this sets a new random one and restarts muster with it. The person reads the
+  new one with the `show-secret ui-password` command (Step 3, the phone), which
+  shows it from then on; you never print it:
+
+  ```sh
+  . "$HOME/.config/muster-install/lib.sh"
+  env_set MUSTER_UI_PASSWORD "$(mi_rand 18)" && mi_dc up -d --wait --quiet-pull && echo "PASSWORD CHANGED"
+  ```
+
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`mi_dc exec -T muster /muster-server mirror

@@ -22,6 +22,8 @@
 #     speaches installs that muster never asks for fails every recording;
 #   * stt-whisper's healthcheck (executed here) still refuses an empty model,
 #     naming the variable;
+#   * muster waits for a healthy s3 store (its bucket made) when the profile
+#     is on, and does not require it when it is off (`required: false`);
 #   * s3: muster's endpoint, bucket and key pair are the store's own (the
 #     store's root credentials ARE muster's key pair), and the store is not
 #     published on the host;
@@ -180,6 +182,13 @@ if m.get("image") != "ghcr.io/zacxdev/muster:1.2.3":
     errs.append(f"muster image {m.get('image')!r}, want ghcr.io/zacxdev/muster:1.2.3")
 if m.get("depends_on", {}).get("postgres", {}).get("condition") != "service_healthy":
     errs.append("muster does not wait for a healthy postgres")
+# The bundled store: muster probes its bucket once at boot, so it must start
+# after the store is healthy (the bucket exists) — and, the store being
+# optional, never REQUIRE it (the default stack has no s3 service).
+s3dep = m.get("depends_on", {}).get("s3")
+if s3dep is None or s3dep.get("condition") != "service_healthy" or s3dep.get("required") is not False:
+    errs.append(f"muster's depends_on s3 is {s3dep!r}: want condition service_healthy, required false "
+                "(else muster probes the bucket before the store has made it)")
 for pinned in ("stt-whisper", "s3"):
     if pinned in svcs and "@sha256:" not in svcs[pinned]["image"]:
         errs.append(f"{pinned} image is not pinned by digest")
@@ -453,6 +462,77 @@ if out="$(images_at "$tmp/nodefault.yml" "$tmp/env-emptyver" "$DEFAULT_VERSION" 
 elif grep -q "not on $DEFAULT_VERSION: muster=" <<<"$out"; then
   echo "ok   [version, negative control]: a file with no version default is caught by the image check"
 else echo "FAIL [version, negative control]: refused, but not by the image check: $out"; fail=1; fi
+
+# docs/auth.md's GoTrue override (onboarding round 3: a blind install had to
+# guess every value). It parses with this compose file; the GoTrue it adds
+# issues what muster checks (issuer and audience read from config.go, the
+# secret muster's own), runs the image the e2e GoTrue tests run, is awaited
+# healthy by muster, and is the address the doc's .env gives muster; the
+# browser port it publishes is the doc's MUSTER_BROWSER_PORT, on 127.0.0.1.
+if python3 - "$ROOT" "$COMPOSE" "$tmp" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+root, compose, tmp = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+doc = (root / "docs/auth.md").read_text()
+sec = doc.split("### A GoTrue server beside the Compose stack", 1)
+if len(sec) != 2:
+    sys.exit("docs/auth.md has no 'A GoTrue server beside the Compose stack' section")
+body = re.split(r"\n#{2,3} ", sec[1], 1)[0]
+yml = re.search(r"```yaml\n(.*?)```", body, re.S)
+dotenv = re.search(r"```sh\n(.*?)```", body, re.S)
+if not yml or not dotenv:
+    sys.exit("the section lost its yaml override or its .env block")
+want_env = {}
+for line in dotenv.group(1).splitlines():
+    m = re.match(r"^([A-Z_]+)=(\S+)", line)
+    if m:
+        want_env[m.group(1)] = m.group(2)
+(tmp / "gotrue-override.yml").write_text(yml.group(1))
+env = {**want_env, "MUSTER_GOTRUE_JWT_SECRET": "fixture-gotrue-jwt-secret-0123456789abcdef",
+       "GOTRUE_DB_PASSWORD": "fixture-gotrue-db"}
+(tmp / "env-gotrue").write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+r = subprocess.run(["docker", "compose", "-f", compose, "-f", str(tmp / "gotrue-override.yml"), "--env-file",
+                    str(tmp / "env-gotrue"), "-p", "compose-check", "config", "--format", "json"],
+                   capture_output=True, text=True)
+if r.returncode:
+    sys.exit(f"docker compose config refused the override: {r.stderr.strip()}")
+svcs = json.loads(r.stdout)["services"]
+errs = []
+gt, m = svcs.get("gotrue"), svcs.get("muster", {})
+if not gt or "gotrue-db" not in svcs:
+    sys.exit(f"services {sorted(svcs)}: no gotrue / gotrue-db")
+src = (root / "cmd/muster-server/config.go").read_text()
+iss = re.search(r'gotrueIssuer\s*=\s*"([^"]+)"', src).group(1)
+aud = re.search(r'gotrueAudience\s*=\s*"([^"]+)"', src).group(1)
+ge = gt["environment"]
+for k, v in {"GOTRUE_JWT_ISSUER": iss, "GOTRUE_JWT_AUD": aud,
+             "GOTRUE_JWT_SECRET": env["MUSTER_GOTRUE_JWT_SECRET"]}.items():
+    if ge.get(k) != v:
+        errs.append(f"gotrue {k}={ge.get(k)!r}, muster checks {v!r}")
+e2e = re.search(r"(?m)^    image: (supabase/gotrue:\S+)$", (root / "e2e/gotrue/compose.yml").read_text()).group(1)
+if gt["image"] != e2e:
+    errs.append(f"gotrue image {gt['image']!r} is not the one the e2e tests run ({e2e!r})")
+gurl = re.match(r"^http://([a-z0-9-]+):(\d+)$", want_env.get("MUSTER_GOTRUE_URL", ""))
+if not gurl or gurl.group(1) != "gotrue" or gurl.group(2) != ge.get("GOTRUE_API_PORT"):
+    errs.append(f"the doc's MUSTER_GOTRUE_URL {want_env.get('MUSTER_GOTRUE_URL')!r} is not the gotrue service's port {ge.get('GOTRUE_API_PORT')!r}")
+if m.get("environment", {}).get("MUSTER_GOTRUE_URL") != want_env.get("MUSTER_GOTRUE_URL"):
+    errs.append("muster is not given the doc's MUSTER_GOTRUE_URL")
+bp = want_env.get("MUSTER_BROWSER_PORT")
+if not any(str(p.get("target")) == bp and str(p.get("published")) == bp and p.get("host_ip") == "127.0.0.1"
+           for p in m.get("ports", [])):
+    errs.append(f"muster ports {m.get('ports')} do not publish the doc's MUSTER_BROWSER_PORT={bp} on 127.0.0.1")
+if want_env.get("MUSTER_PUBLIC_URL") != f"http://localhost:{bp}":
+    errs.append(f"the doc's MUSTER_PUBLIC_URL {want_env.get('MUSTER_PUBLIC_URL')!r} is not the browser listener")
+if m.get("depends_on", {}).get("gotrue", {}).get("condition") != "service_healthy":
+    errs.append("muster does not wait for a healthy gotrue")
+for n in ("gotrue", "gotrue-db"):
+    if not (svcs[n].get("healthcheck") or {}).get("test"):
+        errs.append(f"{n} has no healthcheck")
+if errs:
+    sys.exit("; ".join(errs))
+PY
+then echo "ok   [gotrue override]: docs/auth.md's override parses, issues what muster checks, and publishes the browser port"
+else echo "FAIL [gotrue override]: see the line above"; fail=1; fi
 
 # --- the oldest Compose this file must parse on ------------------------------
 # Compose validates the WHOLE file against its own schema before it applies any

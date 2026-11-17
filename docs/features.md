@@ -204,7 +204,10 @@ a short-lived link signed by muster, on muster's own address.
 [uploads.md](uploads.md).
 
 - **Needs:** an S3-compatible store and `MUSTER_PUBLIC_URL` (every link is
-  written on it; INSTALL.md sets it). The `s3` profile bundles one:
+  written on it). INSTALL.md sets it: to this machine's
+  `http://localhost:<port>` in "Install muster on this machine", to the HTTPS
+  address with Tailscale. After the one-line `install.sh` alone, add
+  `MUSTER_PUBLIC_URL=http://localhost:8105` to `.env` yourself. The `s3` profile bundles one:
   [Silo](https://github.com/pgsty/silo), pgsty's maintained fork of MinIO
   (upstream MinIO is archived and no longer publishes images), pinned by
   digest, not published on the host. It creates the bucket and a lifecycle
@@ -287,8 +290,14 @@ A Claude Code session asks you a question (`attention_ask`) and waits for your
 answer (`attention_wait`) instead of stopping; the question shows on the Asks
 page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
-- **Needs, on each machine:** `muster-mirror` serving its local MCP endpoint,
-  and Claude Code configured to use it. Nothing on the server.
+- **Needs, on each machine:** Claude Code installed (`claude` on PATH:
+  `curl -fsSL https://claude.ai/install.sh | bash`, which needs no Node.js, or
+  `npm install -g @anthropic-ai/claude-code`, which needs Node.js and npm; a
+  fresh server has neither), `muster-mirror` serving its local MCP endpoint,
+  and Claude Code configured to use it. Nothing on the server. A session that
+  asks must be signed in to Claude (its owner's login); the setup below needs
+  none. `muster doctor`'s `mcp-registration` check tells "not installed" from
+  "not registered".
 - **Steps, on each machine** (INSTALL.md's "Optional features" points here when you ask for it):
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
      `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
@@ -324,16 +333,22 @@ your phone. [mirroring.md](mirroring.md#answering-claudes-questions).
 - **Needs, on each machine:** a Claude Code `PreToolUse` hook. INSTALL.md's
   `muster-mirror` service already runs with `MUSTER_MIRROR_WRITE_HOOK_CONFIG=1`,
   which the hook relies on.
-- **Steps:** add this entry to `~/.claude/settings.json` under `hooks`,
-  keeping any hooks already there (append it to an existing `PreToolUse`
-  list):
+- **Steps:** with no `~/.claude/settings.json` yet, this is the whole file:
 
   ```json
-  "PreToolUse": [
-    {"matcher": "AskUserQuestion",
-     "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}
-  ]
+  {
+    "hooks": {
+      "PreToolUse": [
+        {"matcher": "AskUserQuestion",
+         "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}
+      ]
+    }
+  }
   ```
+
+  With one already, merge it in, keeping everything there: add the
+  `PreToolUse` entry inside its `hooks` object (create `hooks` if it has
+  none), appended to a `PreToolUse` list it already has.
 
   `muster-mirror` must be on the `PATH` Claude Code runs hooks with (INSTALL.md
   puts it in `~/.local/bin`).
@@ -541,9 +556,14 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
   ```
 
 - **Publish the browser port** with a `docker-compose.override.yml` beside
-  `docker-compose.yml` (Compose reads it automatically), and point
-  `tailscale serve` at 8107 instead of 8105 (not 8106: with the chief on, that
-  is the Compose stack's connect port):
+  `docker-compose.yml`, and point `tailscale serve` at 8107 instead of 8105
+  (not 8106: with the chief on, that is the Compose stack's connect port).
+  INSTALL.md's `mi_dc` and `install.sh` add the override whenever it exists; a
+  `docker compose` you type yourself reads it only when you name no file (in
+  `~/muster`), so with `-f docker-compose.yml` add
+  `-f docker-compose.override.yml` too, or that `up` drops the port. The
+  smallest override only publishes the port; docs/auth.md has
+  [one that also runs a GoTrue](auth.md#a-gotrue-server-beside-the-compose-stack):
 
   ```yaml
   services:
@@ -552,6 +572,11 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
         - "127.0.0.1:8107:8107"
   ```
 
+- **`MUSTER_PUBLIC_URL` is the browser listener's address:** with Tailscale,
+  the `https://` one `tailscale serve` now forwards to 8107; on this machine
+  only, `http://localhost:8107`. The main port (8105) refuses a browser in
+  this mode; `muster doctor` and `install.sh` name the browser listener's
+  address instead.
 - **Then:** `docker compose exec muster /muster-server invite --claim-admin`
   prints the link that binds your GoTrue login to the admin.
 - **Check:** `human web tier: GOTRUE (MUSTER_AUTH_MODE=gotrue) — …` and

@@ -500,10 +500,11 @@ phase_s3() {
   echo "ok   [s3] file attachments: ON, on http://s3:9000 bucket muster-uploads"
   # muster reads the bucket's lifecycle once at boot. On MinIO the
   # incomplete-upload warning always appears (docs/uploads.md); the EXPIRY one
-  # must not: the store's start script installed that rule. Only a boot that
-  # lost the race with the store (it says so) cannot tell.
+  # must not: the store's start script installed that rule. muster starts
+  # only once the store is healthy (depends_on s3, service_healthy), so a boot
+  # that lost the race with the store is a failure, not a note.
   if grep -q 'the bucket could not be reached at boot' <<<"$logs"; then
-    echo "note [s3] muster booted before the store answered; the lifecycle was not read at boot"
+    fail "[s3] muster booted before the store had made its bucket: $(grep 'could not be reached at boot' <<<"$logs" | head -2)"
   elif grep -q 'NO lifecycle rule expiring uploads/' <<<"$logs"; then
     fail "[s3] the bundled store's bucket has no expiry rule for uploads/"
   else

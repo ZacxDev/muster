@@ -95,7 +95,9 @@ case "$*" in
   *"show-secret hook-token"*) echo "hook-fixture-0123456789"; exit 0 ;;
   "compose version"*) [ "${FAKE_NO_COMPOSE:-0}" = 1 ] && exit 1; echo "Docker Compose version v2.29.0"; exit 0 ;;
   info*) [ "${FAKE_DOCKER_INFO_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
-  compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'; exit 0 ;;
+  compose*" config"*) echo "name: muster"; echo "services:"; echo '        published: "8105"'
+                      [ -n "${FAKE_CONFIG_EXTRA:-}" ] && printf '%s\n' "$FAKE_CONFIG_EXTRA"; exit 0 ;;
+  compose*" port "*) [ -n "${FAKE_PORT:-}" ] && { echo "$FAKE_PORT"; exit 0; }; echo "no port published" >&2; exit 1 ;;
   compose*" up "*) [ "${FAKE_UP_FAIL:-0}" = 1 ] && { echo "container muster-muster-1 is unhealthy" >&2; exit 1; }; exit 0 ;;
   compose*" logs"*) [ -n "${FAKE_COMPOSE_LOGS:-}" ] && printf '%s\n' "$FAKE_COMPOSE_LOGS"; exit 0 ;;
 esac
@@ -668,6 +670,96 @@ class Guide(unittest.TestCase):
         self.step2()
         self.assertIn(f"MUSTER_URL='{URL}'", self.state(), "a re-run replaced the hub's https address with localhost")
 
+    # --- Step 2: muster's own address, with or without Tailscale (round 3) ----
+
+    def test_step2_gives_a_hub_without_tailscale_its_own_address(self) -> None:
+        # Both blind installs that answered "no Tailscale" got attachments
+        # MISCONFIGURED: MUSTER_PUBLIC_URL was written only by Step 3.
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox\nmi_save TAILSCALE no")
+        out = self.step2()
+        self.assertEqual(self.dotenv().get("MUSTER_PUBLIC_URL"), "http://localhost:8105", out)
+        self.assertEqual(stat.S_IMODE((self.muster / ".env").stat().st_mode), 0o600)
+        ups = [l for l in self.calls().splitlines() if l.startswith("docker compose") and " up " in l]
+        # install.sh's own start, then the restart that applies the address.
+        self.assertEqual(len(ups), 2, f"want install.sh's up and the restart:\n{self.calls()}")
+
+    def test_step2_keeps_an_address_already_set(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        self.muster.mkdir()
+        (self.muster / ".env").write_text(f"MUSTER_PUBLIC_URL={URL}\n")
+        self.step2()
+        self.assertEqual(self.dotenv()["MUSTER_PUBLIC_URL"], URL, "Step 2 replaced Step 3's https address")
+        ups = [l for l in self.calls().splitlines() if l.startswith("docker compose") and " up " in l]
+        self.assertEqual(len(ups), 1, f"an address already set needs no restart:\n{self.calls()}")
+
+    def test_step2_join_writes_no_server_address(self) -> None:
+        self.joining()
+        self.step2()
+        self.assertFalse((self.muster / ".env").exists(), "a joining machine has no server to give an address")
+
+    # --- the person's docker-compose.override.yml is read (round 3) -----------
+
+    def test_mi_dc_reads_the_override_when_there_is_one(self) -> None:
+        self.hub()
+        self.sh("mi_dc ps")
+        self.assertNotIn("override", self.calls(), "positive control: no override file, none passed")
+        (self.muster / "docker-compose.override.yml").write_text("services: {}\n")
+        self.log.write_text("")
+        self.sh("mi_dc up -d --wait")
+        want = f"-f {self.muster}/docker-compose.yml -f {self.muster}/docker-compose.override.yml -p muster up -d --wait"
+        self.assertIn(want, self.calls())
+
+    def test_install_sh_reads_the_override_and_pulls_quietly(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        self.muster.mkdir()
+        (self.muster / "docker-compose.override.yml").write_text("services: {}\n")
+        out = self.step2()
+        ups = [l for l in self.calls().splitlines() if l.startswith("docker compose") and " up " in l]
+        self.assertTrue(ups, out)
+        self.assertIn(f"-f {self.muster}/docker-compose.override.yml", ups[0], "install.sh dropped the override file")
+        self.assertIn("--quiet-pull", ups[0], "install.sh pulls with progress bars")
+
+    # --- accounts mode: the address a browser can open (round 3) --------------
+
+    GOTRUE_CONFIG = "      MUSTER_AUTH_MODE: gotrue\n      MUSTER_BROWSER_PORT: \"8107\""
+
+    def test_install_sh_in_accounts_mode_names_the_browser_listener(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        # A host port distinct from the container's 8107 and the main 8105, so
+        # the line can only come from `docker compose port`.
+        out = self.step2(FAKE_CONFIG_EXTRA=self.GOTRUE_CONFIG, FAKE_PORT="127.0.0.1:18197")
+        self.assertIn("muster is at http://localhost:18197 (accounts mode", out)
+        self.assertNotIn("muster is at http://localhost:8105", out, "it told a browser to open the machine port")
+        self.assertIn("compose -f", [l for l in self.calls().splitlines() if " port muster 8107" in l][0])
+
+    def test_install_sh_in_accounts_mode_with_the_port_unpublished_says_so(self) -> None:
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        out = self.step2(FAKE_CONFIG_EXTRA=self.GOTRUE_CONFIG)
+        self.assertIn("which no host port publishes", out)
+        self.assertNotIn("muster is at http://localhost:8105", out)
+
+    def test_install_sh_in_password_mode_names_the_main_port(self) -> None:
+        # The control: no accounts mode, the main port as before.
+        self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
+        out = self.step2(FAKE_PORT="127.0.0.1:18197")
+        self.assertIn("muster is at http://localhost:8105", out)
+        self.assertNotIn("accounts mode", out)
+
+    # --- the password, changed (round 3) --------------------------------------
+
+    def test_the_password_change_sets_a_new_one_and_restarts(self) -> None:
+        self.hub()
+        b = self.lib + block('env_set MUSTER_UI_PASSWORD "$(mi_rand 18)"')
+        out = self.run_block(b)
+        first = self.dotenv()["MUSTER_UI_PASSWORD"]
+        self.assertRegex(first, r"^[0-9a-f]{36}$", out)
+        self.assertNotIn(first, out, "the new password reached the agent's output")
+        self.assertNotIn(first, self.awk_argv.read_text(), "the new password reached argv")
+        self.assertIn("up -d --wait", self.calls())
+        self.assertIn("PASSWORD CHANGED", out)
+        self.run_block(b)
+        self.assertNotEqual(self.dotenv()["MUSTER_UI_PASSWORD"], first, "a second change kept the old password")
+
     def test_step2_refuses_an_earlier_guides_install(self) -> None:
         self.sh("mi_save OS linux\nmi_save ROLE hub\nmi_save MIRROR_HOST hubbox")
         self.muster.mkdir()
@@ -733,6 +825,22 @@ class Guide(unittest.TestCase):
         # line) would not. Only `env -i` keeps the check from inheriting it.
         out = self.step2(PATH=f"{self.homedir}/.local/bin:{self.env['PATH']}")
         self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out)
+
+    def test_step2_names_the_full_path_for_ssh_commands(self) -> None:
+        # A blind install's `ssh host 'muster --help'` found no muster: a
+        # non-login shell reads no profile (round 3). Said even when a login
+        # shell finds it.
+        self.joining()
+        (self.homedir / ".profile-path").write_text(f"{self.homedir}/.local/bin\n")
+        out = self.step2()
+        self.assertNotIn("NOTE: a new login shell", out, "positive control: a login shell finds it")
+        self.assertIn(f"(no login shell) does not find muster: use {self.homedir}/.local/bin/muster there", out)
+        # A system directory is on every PATH: the same lines say nothing.
+        b = block("MUSTER_MIRROR_INTERACTIVE")
+        case = b[b.index('case ":/usr/local/bin:/usr/bin:/bin:"'):]
+        case = case[:case.index("esac") + 4]
+        self.assertIn("(no login shell)", self.run_block(f"MUSTER_BIN=/opt/x\n{case}"), "control")
+        self.assertEqual(self.run_block(f"MUSTER_BIN=/usr/bin\n{case}"), "")
 
     # --- the version: a failed lookup is never saved; a release pins its own --
 

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ type fakeSystem struct {
 	tmux      bool
 	tmuxV     string // `tmux -V`'s stdout; "" = "tmux 3.4\n"
 	qrencode  bool
+	claude    bool   // a `claude` on PATH
 	who       string // `who`'s stdout (this user is "me")
 	whoErr    bool   // ... and whether it fails
 
@@ -54,7 +56,7 @@ type fakeSystem struct {
 }
 
 func healthySystem() *fakeSystem {
-	return &fakeSystem{goos: "linux", unitState: "active", tmux: true}
+	return &fakeSystem{goos: "linux", unitState: "active", tmux: true, claude: true}
 }
 
 // doctorCwd is the directory the doctor's fake system reports it runs in
@@ -72,6 +74,8 @@ func (f *fakeSystem) sys() doctorSystem {
 				return "/usr/bin/tmux", nil
 			case name == "qrencode" && f.qrencode:
 				return "/usr/bin/qrencode", nil
+			case name == "claude" && f.claude:
+				return "/usr/bin/claude", nil
 			}
 			return "", errors.New("not found")
 		},
@@ -1083,6 +1087,139 @@ func TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine(t *testing.T) {
 // and no phone QR code is drawn — a phone scanning a loopback URL opens its
 // own localhost. The control, in TestDoctorEachCheckGoesRedWhenBroken: the
 // same over plain http to a LAN name or address FAILs, as before.
+// TestDoctorInAccountsModeNamesTheBrowserListener: in gotrue mode the port the
+// doctor checked is the machine-token one, which refuses a browser; a blind
+// install was told to open it (onboarding round 3). The note names the port
+// the server reports for its browser listener (a value distinct from the test
+// server's own port and from 8105/8107), and never tells a browser to open the
+// checked one. A server that reports no port is told apart; password mode is
+// the control.
+func TestDoctorInAccountsModeNamesTheBrowserListener(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		mode       string
+		port       any // the report's browser_port; nil = absent
+		want, nope string
+	}{
+		{"gotrue with the port", "gotrue", 18327, ":18327 on this machine only", "serves machine tokens"},
+		{"gotrue from an older server", "gotrue", nil, "signs in only on the browser listener (MUSTER_BROWSER_PORT, at the host port", ""},
+		{"password mode", "password", 18327, "on this machine only (open it in this machine's browser).\n", "browser listener"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := healthyMuster()
+			m.report["auth_mode"] = c.mode
+			if c.port != nil {
+				m.report["browser_port"] = c.port
+			}
+			r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{plain: true})
+			if !strings.Contains(r.stderr, c.want) {
+				t.Fatalf("want %q in:\n%s", c.want, r.stderr)
+			}
+			switch c.mode {
+			case "gotrue":
+				if strings.Contains(r.stderr, "muster is at "+r.doc.URL+" ") {
+					t.Fatalf("it told a browser to open the machine port %s:\n%s", r.doc.URL, r.stderr)
+				}
+				if !strings.Contains(r.stderr, r.doc.URL+" serves machine tokens and refuses a browser") {
+					t.Fatalf("the checked port is not named as the machine one:\n%s", r.stderr)
+				}
+			default:
+				if strings.Contains(r.stderr, c.nope) || !strings.Contains(r.stderr, "muster is at "+r.doc.URL+" ") {
+					t.Fatalf("password mode changed:\n%s", r.stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestDoctorTellsClaudeCodeMissingFromNotRegistered: the agent ask tool's
+// registration check says "install Claude Code first" when there is no
+// `claude` at all (a blind install had to work that out, round 3), and keeps
+// the plain registration fix when there is one, on PATH or only where its
+// installer puts it (~/.local/bin, which the doctor's shell may lack).
+func TestDoctorTellsClaudeCodeMissingFromNotRegistered(t *testing.T) {
+	sys := healthySystem()
+	sys.claude = false
+	r := runDoctorAgainst(t, healthyMuster(), sys, doctorOpts{noMCPRegistration: true})
+	got := r.check("mcp-registration")
+	if got.Status != statusFail || !strings.Contains(got.Detail, "Claude Code is not installed") ||
+		!strings.Contains(got.Fix, "install Claude Code first (`curl -fsSL https://claude.ai/install.sh | bash`") ||
+		!strings.Contains(got.Fix, "claude mcp add-json --scope user muster") {
+		t.Fatalf("no claude: %+v", got)
+	}
+	// Control: on PATH, the registration fix alone.
+	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{noMCPRegistration: true})
+	if got := r.check("mcp-registration"); got.Status != statusFail || strings.Contains(got.Detail, "not installed") ||
+		strings.Contains(got.Fix, "install Claude Code") || !strings.Contains(got.Detail, "registers an MCP server at it") {
+		t.Fatalf("claude on PATH: %+v", got)
+	}
+}
+
+// TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt: a `claude` only in
+// ~/.local/bin (the native installer's place) counts as installed, so the
+// doctor does not send a person to install what they have.
+func TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt(t *testing.T) {
+	sys := healthySystem()
+	sys.claude = false
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".local", "bin", "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := &doctorRun{a: &app{homeDir: home}, sys: sys.sys()}
+	if !d.claudeInstalled() {
+		t.Fatal("a claude in ~/.local/bin was not found")
+	}
+	if (&doctorRun{a: &app{homeDir: t.TempDir()}, sys: sys.sys()}).claudeInstalled() {
+		t.Fatal("control: an empty home reads as installed")
+	}
+}
+
+// TestTheAskCardsSettingsFileInTheDocsPassesTheDoctor: docs/features.md shows
+// the WHOLE ~/.claude/settings.json for ask cards (a blind install had only a
+// fragment to wrap, round 3). The seam: that exact file, copied as written,
+// is valid JSON that the doctor's ask-hook check reads as set up. The
+// control is the same file with the hook's command changed, which it does not.
+func TestTheAskCardsSettingsFileInTheDocsPassesTheDoctor(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "features.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sec, ok := strings.Cut(string(raw), "\n### Ask cards\n")
+	if !ok {
+		t.Fatal("docs/features.md has no Ask cards section")
+	}
+	sec, _, _ = strings.Cut(sec, "\n### ")
+	m := regexp.MustCompile("(?s)```json\n(.*?)```").FindStringSubmatch(sec)
+	if m == nil {
+		t.Fatal("the Ask cards section shows no settings.json")
+	}
+	file := m[1]
+	if !json.Valid([]byte(file)) {
+		t.Fatalf("the settings.json the docs show is not a whole JSON document:\n%s", file)
+	}
+	check := func(body string) doctorCheck {
+		home := t.TempDir()
+		_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+		if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := filepath.Join(home, "mirror.env")
+		_ = os.WriteFile(env, []byte("MUSTER_MIRROR_URL=http://localhost:8105\n"), 0o600)
+		d := &doctorRun{a: &app{homeDir: home, getenv: func(string) string { return "" }}, mirrorEnv: env}
+		d.checkAskHook()
+		return d.checks[len(d.checks)-1]
+	}
+	if c := check(file); c.Status != statusPass {
+		t.Fatalf("the docs' settings.json: ask-hook %+v, want PASS", c)
+	}
+	if c := check(strings.Replace(file, "muster-mirror ask", "muster-mirror nope", 1)); c.Status == statusPass {
+		t.Fatalf("control: a file with another command passed: %+v", c)
+	}
+}
+
 func TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR(t *testing.T) {
 	for _, host := range []string{"", "localhost", "[::1]"} {
 		sys := healthySystem()

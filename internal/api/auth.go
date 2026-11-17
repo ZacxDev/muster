@@ -82,6 +82,11 @@ type AuthConfig struct {
 	// named in the refusal the machine-token listener gives a browser in
 	// gotrue mode, and it is the base of the admin claim link.
 	PublicURL string
+	// BrowserPort is MUSTER_BROWSER_PORT, the browser listener's port (0:
+	// none). Informational here: GET /api/doctor reports it in gotrue mode,
+	// so `muster doctor` names the port a browser can open instead of the
+	// machine-token one it was given.
+	BrowserPort int
 }
 
 // goTrueMode reports whether the human tier is GoTrue's.

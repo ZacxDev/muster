@@ -100,7 +100,16 @@ esac
 BASE="${MUSTER_RELEASE_BASE:-$REPO/releases/download/v$RELEASE}"
 # </dev/null: under `curl … | sh` stdin IS this script, and `docker compose
 # exec` would read (and eat) the rest of it.
-dc() { docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null; }
+# The person's docker-compose.override.yml beside it, when there is one: an
+# explicit -f turns Compose's automatic override off, and a re-run that
+# dropped it would drop what it adds (accounts mode's browser port).
+dc() {
+  if [ -e "$DIR/docker-compose.override.yml" ]; then
+    docker compose -f "$DIR/docker-compose.yml" -f "$DIR/docker-compose.override.yml" -p "$PROJECT" "$@" </dev/null
+  else
+    docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null
+  fi
+}
 # muster-init prints the generated sign-in password once, on a line carrying
 # this marker (cmd/muster-server/secretfiles.go, secretLineMarker): every log
 # this script shows drops it, so the password never reaches an agent's output.
@@ -139,7 +148,9 @@ mkdir -p "$DIR"
 cp "$tmp/docker-compose.yml" "$DIR/docker-compose.yml"
 printf 'installed-by: install.sh\nrelease: %s\n' "$RELEASE" > "$DIR/.muster-install"
 say "starting muster $RELEASE in $DIR (compose project $PROJECT)"
-if ! dc up -d --wait --wait-timeout 300; then
+# --quiet-pull: the image downloads' progress bars are hundreds of KB that
+# bury this script's report (onboarding round 3); a failed pull still says why.
+if ! dc up -d --wait --quiet-pull --wait-timeout 300; then
   { dc logs --no-color --tail 15 muster-init muster 2>&1 || true; } | grep -vF "$SECRET_MARK" >&2 || true
   die "the stack did not come up; the reason is in the lines above (\`docker compose -f $DIR/docker-compose.yml -p $PROJECT logs muster-init muster | grep -vF '$SECRET_MARK'\`)"
 fi
@@ -294,6 +305,23 @@ rm -f "$deploy"
 
 echo
 show="docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server show-secret ui-password"
+# Accounts mode (MUSTER_AUTH_MODE=gotrue): $URL is the machine-token port,
+# which refuses a browser; a person signs in on the browser listener, at the
+# host port that publishes it (docs/guides/gotrue.md).
+browser_port=$(dc config 2>/dev/null | sed -n 's/^ *MUSTER_BROWSER_PORT: *"\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' | head -n 1)
+if dc config 2>/dev/null | grep -Eq '^ *MUSTER_AUTH_MODE: *"?gotrue"?$'; then
+  hp=""
+  [ -z "$browser_port" ] || hp=$(dc port muster "$browser_port" 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)
+  if [ -n "$hp" ]; then
+    say "muster is at http://localhost:$hp (accounts mode: browsers sign in on the browser listener; $URL serves machine tokens only and refuses a browser)"
+  else
+    say "accounts mode: browsers sign in only on the browser listener (MUSTER_BROWSER_PORT${browser_port:+=$browser_port}), which no host port publishes:"
+    say "    add it to $DIR/docker-compose.override.yml (docs/guides/gotrue.md) and run this again. $URL serves machine tokens only"
+  fi
+  say "sign in with your own account (\`docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server invite --claim-admin\` makes the first)"
+  [ "$rc" = 0 ] || say "the doctor found a problem (above); fix it and run this again — it is safe to"
+  exit "$rc"
+fi
 case "${MUSTER_PRINT_PASSWORD:-yes}" in
   no|0)
     say "muster is at $URL — open it in this machine's browser. The sign-in password is not printed here; show it with:"

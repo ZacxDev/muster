@@ -15,12 +15,16 @@ security. [Teams](../features.md#teams) build on it. [auth.md](../auth.md).
 - **A [GoTrue](https://github.com/supabase/auth) server you run yourself**
   (Supabase's auth server), reachable from the muster container and issuing
   tokens as [auth.md](../auth.md#gotrue) describes. The Compose stack does not
-  include one.
+  include one; [auth.md](../auth.md#a-gotrue-server-beside-the-compose-stack)
+  has a `docker-compose.override.yml` that adds one beside it, with its `.env`
+  lines.
 - **A second listener for browsers.** In this mode only `MUSTER_BROWSER_PORT`
   serves browser sessions; the main port serves machine tokens only. Pick a
   port nothing else on the hub uses (the chief's connect port included).
-- `MUSTER_PUBLIC_URL` for invite links and passkeys: the
-  [Tailscale guide](tailscale.md).
+- `MUSTER_PUBLIC_URL` for invite links and passkeys, set to the **browser
+  listener's** address: `http://localhost` on that port on this machine only,
+  or the `https://` address of the [Tailscale guide](tailscale.md) forwarded to
+  it. The main port refuses a browser in this mode.
 
 ## Turn it on
 
@@ -32,7 +36,9 @@ security. [Teams](../features.md#teams) build on it. [auth.md](../auth.md).
 2. Publish the browser port with a `docker-compose.override.yml` beside
    `docker-compose.yml`, and point `tailscale serve` at that port instead of the
    main one ([features.md](../features.md#accounts) shows the file).
-3. `docker compose up -d --wait`.
+3. `mi_dc up -d --wait --quiet-pull` (INSTALL.md's helper, which reads the
+   override; a `docker compose -f docker-compose.yml` without it drops the
+   browser port).
 4. Bind your GoTrue login to the admin:
    `docker compose exec muster /muster-server invite --claim-admin` prints a
    single-use link ([auth.md](../auth.md#setting-up-the-first-admin)). The
