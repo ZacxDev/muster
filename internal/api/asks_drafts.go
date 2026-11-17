@@ -231,8 +231,12 @@ func draftIDs(cards []plugins.DraftCard) string {
 	return strings.Join(ids, ",")
 }
 
-// draftsPanel is the Reply drafts tab's panel: its own two tabs, Awaiting
-// decision and Archived, the one sub selected.
+// draftsPanel is the Drafts tab's panel: ONE list — the drafts awaiting a
+// decision — and under it a "Show archived" toggle over the decided ones
+// (round 0 of #768: no second tab strip inside the swipe area). sub
+// asksTabArchived (?tab=archived, where a decision lands: draftDecidedLink)
+// draws it with the archived list shown; the page's script keeps ?tab= in
+// step with the toggle and opens it for a #draft-<id> inside it.
 func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 	// No intro prose (the design pass): each pending card's reply box says
 	// what approving sends, and an approved card's Withdraw is its own offer.
@@ -241,17 +245,24 @@ func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 <button type="button" class="` + ui.AsksSecondaryButtonClass + `" data-drafts-show-latest>Show the latest</button></p>
 <ul id="asks-drafts-pending" class="flex flex-col gap-2" data-testid="drafts-pending" data-draft-ids="` + draftIDs(pending) + `">` +
 		draftListHTML(pending, draftsPendingEmpty) + `</ul>`
-	archivedList := `<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul>`
-	subSel := asksTabDrafts
-	if sub == asksTabArchived {
-		subSel = asksTabArchived
+	open := sub == asksTabArchived
+	expanded, hidden, label := "false", " hidden", draftsShowArchived
+	if open {
+		expanded, hidden, label = "true", "", draftsHideArchived
 	}
-	t := ui.TabsSelected("asks-drafts-tabs", "", "Reply drafts", subSel,
-		ui.Tab{ID: asksTabDrafts, Label: "Awaiting decision", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3">` + pendingList + `</div>`)},
-		ui.Tab{ID: asksTabArchived, Label: "Archived", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3">` + archivedList + `</div>`)},
-	)
-	return g.Group{g.Raw(`<div class="flex overflow-x-auto border-b border-line pt-2">`), t.List, g.Raw(`</div>`), t.Panels}
+	toggle := `<button type="button" id="asks-drafts-archived-toggle" class="` + ui.AsksSecondaryButtonClass + ` self-start" aria-expanded="` + expanded +
+		`" aria-controls="asks-drafts-archived-section" data-drafts-show-archived>` + label + `</button>`
+	archivedSection := `<section id="asks-drafts-archived-section" class="flex flex-col gap-2" aria-labelledby="asks-drafts-archived-label" data-drafts-archived-section` + hidden + `>` +
+		ui.AsksGroupLabel("asks-drafts-archived-label", "Archived", len(archived)) +
+		`<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul></section>`
+	return g.Raw(`<div class="flex flex-col gap-2 pt-3">` + pendingList + toggle + archivedSection + `</div>`)
 }
+
+// The Drafts tab's archived toggle, shut and open.
+const (
+	draftsShowArchived = "Show archived"
+	draftsHideArchived = "Hide archived"
+)
 
 // asksTabsHTML is the page's tabs (asks_feed.go): Open (askList, its feed's
 // <ul>), Answered (answered, its feed's <ul>), Drafts when drafts (plugins are
@@ -342,7 +353,8 @@ const asksPageScript = `<script>
     return t ? t.getAttribute('data-tab') : '';
   }
   function syncURL() {
-    var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabAnswered + `' ? top : (selected('asks-drafts-tabs') || 'drafts'));
+    var arch = document.getElementById('asks-drafts-archived-section');
+    var top = selected('asks-tabs'), v = top === '` + asksTabOpen + `' ? '' : (top === '` + asksTabNudges + `' || top === '` + asksTabLog + `' || top === '` + asksTabAnswered + `' ? top : (arch && !arch.hidden ? '` + asksTabArchived + `' : '` + asksTabDrafts + `'));
     try {
       var u = new URL(window.location.href);
       u.pathname = '` + attentionPath + `';
@@ -375,10 +387,26 @@ const asksPageScript = `<script>
     if (e.target && e.target.closest && e.target.closest('[role="tab"]')) setTimeout(syncURL, 0);
   });
   root.addEventListener('keydown', function () { setTimeout(syncURL, 0); });
+  // The Drafts tab's "Show archived" (draftsPanel): shows or hides the
+  // decided drafts, and the address says which (?tab=archived / drafts).
+  function showArchived(on) {
+    var sec = document.getElementById('asks-drafts-archived-section'), b = document.getElementById('asks-drafts-archived-toggle');
+    if (!sec || !b) return;
+    sec.hidden = !on;
+    b.setAttribute('aria-expanded', on ? 'true' : 'false');
+    b.textContent = on ? '` + draftsHideArchived + `' : '` + draftsShowArchived + `';
+  }
+  root.addEventListener('click', function (e) {
+    if (!e.target || !e.target.closest || !e.target.closest('[data-drafts-show-archived]')) return;
+    var sec = document.getElementById('asks-drafts-archived-section');
+    showArchived(!!(sec && sec.hidden));
+    setTimeout(syncURL, 0);
+  });
   function reveal() {
     var id = decodeURIComponent((window.location.hash || '').slice(1));
     var el = id && document.getElementById(id);
     if (!el || !root.contains(el) || !window.muTabs) return;
+    if (el.closest('[data-drafts-archived-section]')) showArchived(true);
     for (var p = el.parentElement; p; p = p.parentElement) {
       if (p.getAttribute && p.getAttribute('role') === 'tabpanel' && p.hidden) {
         var tab = document.getElementById(p.getAttribute('aria-labelledby'));

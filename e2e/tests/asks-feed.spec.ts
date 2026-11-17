@@ -23,14 +23,15 @@ import { touchDrag } from '../lib/touch';
 //   - the keyboard: j/k move focus between cards (visibly), Enter expands, a
 //     focuses the answer box, d starts the mic, Esc leaves the box, then
 //     collapses;
-//   - Dismiss is undoable for a moment, and sent when the moment passes;
+//   - Dismiss is sent at once (an htmx post answered 204), the next card
+//     takes focus; a live refresh while a card leaves never brings it back;
 //   - prefers-reduced-motion: reduce turns every card transition off.
 //
 // The queue is fixture rows (e2e/asksfeedfix) written through the real store
 // and re-seeded before every test.
 //
 // 🔴 REGRESSION: on origin/main the page is grouped lists with no swipe, no
-// expand, no Answered tab, no keys and no Undo — every test here is red there.
+// expand, no Answered tab and no keys — every test here is red there.
 
 const origin = `http://localhost:${asksFeedPort}`;
 const stamp = Date.now().toString(36);
@@ -134,6 +135,22 @@ for (const vp of [
       await expect(selectedTab(page), 'a vertical scroll changed the tab').toHaveAttribute('data-tab', 'open');
       await expect(page).toHaveURL(`${origin}/attention`);
       await expect.poll(() => page.evaluate(() => window.scrollY), { message: 'the vertical drag scrolled the page' }).toBeGreaterThan(before);
+
+      // The same, DOWNWARDS at the page's top, where there is nothing to scroll:
+      // the browser never takes the gesture (no touchcancel), so only the axis
+      // lock keeps this mostly-vertical drag from switching the tab.
+      await expect
+        .poll(async () => {
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+          await page.waitForTimeout(250);
+          return page.evaluate(() => window.scrollY);
+        }, { timeout: 15_000 })
+        .toBe(0);
+      const top = (await page.locator('[data-asks-swipe]').boundingBox())!;
+      const tx = top.x + top.width * 0.75;
+      await touchDrag(page, { x: tx, y: top.y + 20 }, { x: tx - Math.max(110, top.width * 0.25), y: top.y + 520 }, 16);
+      await page.waitForTimeout(300);
+      await expect(selectedTab(page), 'a downward drag at the top changed the tab').toHaveAttribute('data-tab', 'open');
 
       // A sideways swipe that starts in the answer box is the box's (measured
       // once the page has settled at the top: a snap may still be moving it).
@@ -247,27 +264,54 @@ for (const vp of [
       await expect(mic).not.toHaveAttribute('data-state', 'idle');
     });
 
-    test('Dismiss can be undone, and is sent once the moment passes', async ({ page }) => {
+    test('Dismiss is sent at once: the card leaves and the next takes focus', async ({ page }) => {
       await openFeed(page);
       const card = page.locator(`#ask-${ids.freetext}`);
-      const askState = async () => (await page.request.get(`${origin}/attention/asks/${ids.freetext}`)).text();
+      const nextId = await card.locator('xpath=following-sibling::li[1]').getAttribute('id');
       const n0 = await openN(page);
+      const sent = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.freetext}/cancel` && r.request().method() === 'POST');
       await card.getByRole('button', { name: 'Dismiss without answering' }).click();
-      await expect(card).toBeHidden();
-      const toast = page.locator('[data-asks-toast]');
-      await expect(toast).toBeVisible();
-      await expect(toast).toContainText('Dismissed.');
+      expect((await sent).status(), 'the card post is answered 204').toBe(204);
+      await expect(card).toHaveCount(0);
+      await expect(page.locator(`[id="${nextId}"]`)).toBeFocused();
       await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
-      await toast.getByRole('button', { name: 'Undo' }).click();
-      await expect(card).toBeVisible();
-      await expect(openCount(page)).toHaveText(`${n0} open`);
-      // Past the moment the dismissal would have been sent: still open.
-      await page.waitForTimeout(6500);
-      expect(await askState(), 'Undo sent nothing').not.toContain('Dismissed');
-      // Again, and let it lapse: now it is sent.
-      await card.getByRole('button', { name: 'Dismiss without answering' }).click();
-      await expect(card).toBeHidden();
-      await expect.poll(askState, { timeout: 12_000 }).toContain('Dismissed');
+      await expect(page.locator('[data-asks-toast]'), 'no Undo toast').toHaveCount(0);
+      expect((await page.request.get(`${origin}/attention/asks/${ids.freetext}`)).ok()).toBe(true);
+      await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.freetext}`)).text()).toContain('Dismissed');
+    });
+
+    // 🔴 A LEAVING CARD IS NOT RESURRECTED. The answer's POST is held in the
+    // network while the queue changes elsewhere: the page hears the event and
+    // re-draws the feed from the server, where the ask is still open. The card
+    // must stay gone (it is leaving), and settle once the POST lands.
+    test('an attention event while a card leaves does not bring it back', async ({ page }) => {
+      await openFeed(page);
+      const rotate = page.locator(`#ask-${ids.rotate}`);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      await page.route(`**/attention/asks/${ids.rotate}/answer`, async (route) => {
+        await gate;
+        await route.continue();
+      });
+      await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
+      await expect(rotate).toBeHidden();
+      // Positive control: the refresh really runs, and really lists the card.
+      // (The Open feed's refresh: /attention/items with no query — the
+      // Answered feed's is ?part=answered.)
+      const refreshed = page.waitForResponse((r) => {
+        const u = new URL(r.url());
+        return u.pathname === '/attention/items' && u.search === '' && r.status() === 200;
+      });
+      const dismissed = await page.request.post(`${origin}/attention/asks/${ids.notice}/cancel`, { headers: { Origin: origin }, form: { x: '' } });
+      expect(dismissed.status(), await dismissed.text()).toBeLessThan(400);
+      const body = await (await refreshed).text();
+      expect(body, 'the refresh still lists the leaving card (its answer has not landed)').toContain(`id="ask-${ids.rotate}"`);
+      await expect(page.locator(`#ask-${ids.notice}`), 'the refresh was applied').toHaveCount(0);
+      await page.waitForTimeout(300);
+      await expect(rotate, 'the leaving card came back').toBeHidden();
+      release();
+      await expect(rotate).toHaveCount(0);
+      await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${ids.rotate}`)).text()).toContain('Your answer: Rotate it');
     });
 
     test('reduced motion turns the card transitions off', async ({ page }) => {
@@ -303,8 +347,22 @@ for (const vp of [
         await page.goto(`${origin}/attention${q}`);
         await expect(selectedTab(page), q || '(none)').toHaveAttribute('data-tab', tab);
       }
+      // archived: the Drafts tab with its archived list shown (no second tab
+      // strip); the toggle shuts it and the address follows, and back.
       await page.goto(`${origin}/attention?tab=archived`);
-      await expect(page.locator('#asks-drafts-tabs [role="tab"][aria-selected="true"]')).toHaveAttribute('data-tab', 'archived');
+      await expect(page.locator('#asks-drafts-tabs')).toHaveCount(0);
+      const toggle = page.locator('[data-drafts-show-archived]');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('#asks-drafts-archived-section')).toBeVisible();
+      await toggle.click();
+      await expect(page.locator('#asks-drafts-archived-section')).toBeHidden();
+      await expect(toggle).toHaveText('Show archived');
+      await expect(page).toHaveURL(`${origin}/attention?tab=drafts`);
+      await toggle.click();
+      await expect(page).toHaveURL(`${origin}/attention?tab=archived`);
+      await page.goto(`${origin}/attention?tab=drafts`);
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('#asks-drafts-archived-section')).toBeHidden();
       // The push deep link of a pending draft: the Drafts tab, on its card.
       await page.goto(`${origin}/attention?tab=drafts#draft-${ids.draft}`);
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'drafts');

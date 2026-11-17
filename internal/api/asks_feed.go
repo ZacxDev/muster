@@ -2,6 +2,7 @@ package api
 
 import (
 	"html"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -209,6 +210,10 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	m.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(`<div id="` + esc(more) + `" class="` + ui.AsksCardMoreClass + `" data-asks-card-more><div class="` + ui.AsksCardMoreInnerClass + `">` + m.String() + `</div></div>
 `)
+	// The error slot, above the footer: a refused answer or dismissal's
+	// fragment (ui.AsksCardErrorHTML), put here by the feed's script.
+	b.WriteString(`<div data-asks-card-error></div>
+`)
 	// THE FOOTER: View in session, the task, Dismiss at its end.
 	var links []string
 	if href := askFeedSessionHref(it); href != "" {
@@ -226,11 +231,45 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 `)
 	}
 	if dismiss != "" {
-		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden></form>
+		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + asksCardFormAttrs(it.Key, attentionPath+`/asks/`+id+`/cancel`) + `></form>
 `)
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// asksCardFormAttrs are a card form's htmx attributes: posted by htmx to its
+// own route (action) with nothing swapped (the feed's script settles the card
+// on the 204, or puts the refusal's fragment in its error slot: asksCardFailed),
+// tagged with its card's key.
+func asksCardFormAttrs(key, action string) string {
+	return ` hx-post="` + html.EscapeString(action) + `" hx-swap="none" hx-headers='{"` + asksCardHeader + `": "1"}' data-asks-card-form="` + html.EscapeString(key) + `"`
+}
+
+// asksCardHeader marks a card form's htmx post (asksCardFormAttrs). HX-Request
+// alone cannot: htmx sets it on every request it makes, a boosted plain form
+// included, and every other caller of these routes wants its redirect.
+const asksCardHeader = "X-Muster-Asks-Card"
+
+// asksCardRequest reports whether r is a card form's htmx post from the Asks
+// page (asksCardFormAttrs): HX-Request AND its asksCardHeader, not a boosted
+// navigation, not a session page's form (its `return`). Only such a request is
+// answered with the 204 / fragment; every other keeps its redirect and page.
+func asksCardRequest(r *http.Request) bool {
+	if r.Header.Get("HX-Request") != "true" || r.Header.Get(asksCardHeader) != "1" || r.Header.Get("HX-Boosted") == "true" {
+		return false
+	}
+	_, page := attentionReturnPage(r)
+	return !page
+}
+
+// asksCardFailed answers a card's refused post (asksCardRequest): the error's
+// own status and the one sentence the queue page would say, as a fragment.
+func asksCardFailed(w http.ResponseWriter, err error, cur attention.Ask) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(attentionErrCode(err))
+	_, _ = w.Write([]byte(ui.AsksCardErrorHTML(attentionErrText(err, cur))))
 }
 
 // askFeedSessionHref is where a card's "View in session" goes, "" for none:
@@ -254,11 +293,14 @@ func askFeedSessionHref(it attentionItem) string {
 func askFeedAnswerFormHTML(it attentionItem, id string) string {
 	esc := html.EscapeString
 	var b strings.Builder
-	gate := ""
+	action := attentionPath + `/asks/` + id + `/answer`
+	// A team card answered with a fresh sign-in is its confirm dialog's:
+	// a plain (boosted) POST, no hx-post.
+	gate := asksCardFormAttrs(it.Key, action)
 	if it.stepUpWhy != "" {
 		gate = ` data-step-up-form data-step-up-why="` + esc(it.stepUpWhy) + `"`
 	}
-	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + gate + `>
+	b.WriteString(`<form method="POST" action="` + action + `" class="flex min-w-0 flex-col gap-2" data-attention-answer data-asks-controls` + gate + `>
 `)
 	if len(it.Options) > 0 {
 		b.WriteString(`<div class="` + ui.AsksOptionsClass + `" role="group" aria-label="The asker's options">`)

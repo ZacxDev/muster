@@ -1660,7 +1660,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(`
 </section>
 <template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
-` + ui.AsksToastHTML)
+`)
 	b.WriteString(attentionPageScript)
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
@@ -2221,6 +2221,12 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		s.attentionFormFailed(w, r, err, a)
 		return
 	}
+	if asksCardRequest(r) {
+		// The Asks page's card (asks_feed.go): nothing to draw; its script
+		// settles the card.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
@@ -2237,6 +2243,10 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	a, err := s.cancelAsk(r.Context(), id)
 	if err != nil {
 		s.attentionFormFailed(w, r, err, a)
+		return
+	}
+	if asksCardRequest(r) {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)

@@ -403,7 +403,9 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     await expect(dp.getByRole('alert')).toContainText('no longer awaiting this decision (it is superseded)');
     // The refusal page leaves no POST-only address behind: it is /attention.
     await expect(dp).toHaveURL(browserURL + '/attention?tab=archived');
-    await dp.getByRole('tab', { name: 'Awaiting decision' }).click();
+    // The archived list is shown (?tab=archived); "Hide archived" puts the
+    // address back on the Drafts tab.
+    await dp.locator('[data-drafts-show-archived]').click();
     await expect(dp).toHaveURL(browserURL + '/attention?tab=drafts');
     const reloaded = await dp.reload();
     expect(reloaded!.status(), 'a reload of the refusal page is a GET of /attention').toBe(200);
@@ -425,7 +427,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     await dp.goto(browserURL + '/plugins#draft-' + rejectID);
     await dp.waitForURL((u) => u.pathname === '/attention' && u.hash === `#draft-${rejectID}`);
     await expect(darch(rejectID)).toBeVisible();
-    await expect(dp.getByRole('tab', { name: 'Archived' })).toHaveAttribute('aria-selected', 'true');
+    await expect(dp.locator('[data-drafts-show-archived]')).toHaveAttribute('aria-expanded', 'true');
   } finally {
     await desk.close();
   }

@@ -72,8 +72,9 @@ const (
 	AsksCardSendQuietClass = "press min-h-[44px] shrink-0 rounded-lg px-4 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
 	// AsksCountClass is the page header's "N open".
 	AsksCountClass = "inline-flex items-center rounded-full bg-s2 px-2 py-0.5 text-xs font-semibold tabular-nums text-fg2"
-	// AsksToastClass is the Undo toast, pinned above the bottom edge.
-	AsksToastClass = "asks-toast fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-sm items-center gap-3 rounded-xl bg-s3 px-4 py-2 text-sm text-fg shadow-lg ring-1 ring-inset ring-edge"
+	// AsksCardErrorClass is a card's refusal line (AsksCardErrorHTML), in its
+	// error slot.
+	AsksCardErrorClass = "rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"
 )
 
 // AsksKindBadge is a card's kind badge: the old group header, now a small
@@ -111,11 +112,13 @@ const AsksAllClearHTML = `<li class="flex flex-col items-center gap-2 rounded-2x
 	`<svg class="h-8 w-8 text-st-complete-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>` +
 	`<p class="text-base font-semibold text-fg">All clear</p><p class="text-sm text-fg2">Nothing is waiting on you.</p></li>`
 
-// AsksToastHTML is the page's one toast: Dismiss's Undo (the feed's script
-// fills and shows it).
-const AsksToastHTML = `<div id="asks-toast" class="` + AsksToastClass + `" role="status" aria-live="polite" hidden data-asks-toast>` +
-	`<span class="min-w-0 flex-1" data-asks-toast-text></span>` +
-	`<button type="button" class="press min-h-[44px] shrink-0 rounded-lg px-3 text-sm font-semibold text-accent hover:bg-s2" data-asks-undo>Undo</button></div>`
+// AsksCardErrorHTML is the small fragment a refused card answer or dismissal
+// answers with (internal/api asksCardFailed), put in the card's error slot
+// ([data-asks-card-error]) by the feed's script. role=alert: a screen reader
+// says it.
+func AsksCardErrorHTML(text string) string {
+	return `<p role="alert" class="` + AsksCardErrorClass + `" data-asks-card-refusal>` + html.EscapeString(text) + `</p>`
+}
 
 // asksFeedScriptSrc is the feed's behaviour, a static file (static_script.go).
 var asksFeedScriptSrc = staticJS("asks-feed", asksFeedJS)
@@ -137,8 +140,6 @@ const (
 	// AsksSwipeEdgePx is the sidebar's open-swipe edge (components.go
 	// SB_EDGE): a gesture starting inside it is the sidebar's, never a tab's.
 	AsksSwipeEdgePx = 28
-	// AsksUndoMs is how long a Dismiss can be undone before it is sent.
-	AsksUndoMs = 5000
 )
 
 // asksFeedJS: delegated on document, bound once per window, so it works on a
@@ -147,13 +148,17 @@ const (
 //   - EXPAND: a click on a card's head, or anywhere on the card outside its
 //     controls (and not ending a text selection), toggles data-expanded. Which
 //     cards are open outlives the live refresh (by id).
-//   - ANSWER: an answer form in the Open feed is posted by fetch (the same
-//     route, the same fields a plain submit sends); the card collapses out,
-//     the next card takes focus. A refusal puts the card back and says why. A
-//     step-up form (data-step-up-form) is left to its confirm dialog.
-//   - DISMISS: the card collapses out at once and the Undo toast shows; the
-//     /cancel POST is sent when the toast lapses (AsksUndoMs), or at once when
-//     the page is left (keepalive). No new route: Undo simply never sends it.
+//   - ANSWER AND DISMISS go by htmx (the card's forms carry hx-post to the
+//     queue's own routes, hx-swap none; internal/api asksCardRequest answers
+//     them 204 on success, or their status with a small error fragment,
+//     ui.AsksCardErrorHTML). The card starts collapsing at once; on success it
+//     is removed and the next card takes focus; on a refusal it comes back with
+//     the fragment in its error slot. An empty answer is not sent. A step-up
+//     form (data-step-up-form) has no hx-post: it is its confirm dialog's.
+//   - 🔴 A CARD THAT IS LEAVING OR WAS JUST SETTLED IS NOT REDRAWN by the live
+//     refresh (which replaces the feed's innerHTML from the server, where the
+//     ask may still be open until the POST lands): the reveal handler drops it
+//     again in the same task, before a paint (leaving / settled, by id).
 //   - KEYBOARD (desktop): j/k or ↓/↑ (↓/↑ only from a card) move focus between
 //     cards, Enter expands, a focuses the answer box, d dictates, Esc
 //     collapses (or leaves the answer box for its card).
@@ -168,7 +173,7 @@ var asksFeedJS = `(function () {
   window.__asksFeedInit = true;
   var CARD = '[data-asks-card]';
   var CONTROLS = 'a,button,input,textarea,select,label,summary,[contenteditable],[data-asks-media],[data-asks-controls]';
-  var expanded = {}, pending = null, lastTab = -1;
+  var expanded = {}, lastTab = -1;
   function reduced() { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } }
   function feed() { return document.getElementById('attention-items'); }
   function cardsOf(list) {
@@ -200,117 +205,77 @@ var asksFeedJS = `(function () {
     try { c.focus({ preventScroll: true }); } catch (e) { c.focus(); }
     try { c.scrollIntoView({ block: 'nearest', behavior: reduced() ? 'auto' : 'smooth' }); } catch (e) {}
   }
-  // leave: the card collapses out (height, then gone), the next one moves up.
-  function leave(card, done) {
-    var list = card.parentElement, cards = cardsOf(list), i = cards.indexOf(card);
+  // leaving: cards whose answer or dismissal is in flight; settled: cards the
+  // server has answered or dismissed (kept a minute: a refresh fetched just
+  // before the POST landed still lists them). Both by id.
+  var leaving = {}, settled = {};
+  // leave: the card collapses out (height, then hidden), the next one moves up.
+  function leave(card) {
+    var cards = cardsOf(card.parentElement), i = cards.indexOf(card);
     var next = cards[i + 1] || cards[i - 1] || null;
+    var focused = card.contains(document.activeElement);
     card.setAttribute('data-asks-leaving', '');
-    var hadFocus = card.contains(document.activeElement);
-    var finish = function () {
-      // Put back meanwhile (a refusal, Undo): nothing to finish.
-      if (!card.hasAttribute('data-asks-leaving')) return;
-      if (done) done(); else card.remove();
-      count();
-      // By id: a live refresh may have re-drawn the feed meanwhile, and the
-      // node next named is then no longer on the page.
-      var to = next && (next.isConnected ? next : (next.id && document.getElementById(next.id)));
-      if (hadFocus || !document.activeElement || document.activeElement === document.body) focusCard(to);
-    };
-    if (reduced()) { card.style.display = 'none'; finish(); return next; }
+    if (card.id) leaving[card.id] = { next: next && next.id, focus: focused };
+    if (reduced()) { card.style.display = 'none'; count(); return; }
     card.style.height = card.offsetHeight + 'px';
     void card.offsetHeight;
     card.classList.add('asks-leave');
-    var ended = false, end = function () { if (ended) return; ended = true; finish(); };
+    var done = false, end = function () {
+      if (done || !card.hasAttribute('data-asks-leaving')) return;
+      done = true; card.style.display = 'none'; count();
+    };
     card.addEventListener('transitionend', function (e) { if (e.target === card && e.propertyName === 'height') end(); });
     setTimeout(end, 400);
-    return next;
   }
-  function restore(card, list, before) {
-    card.removeAttribute('data-asks-leaving');
-    card.classList.remove('asks-leave');
-    card.style.height = ''; card.style.display = '';
-    var empty = list.querySelector('[data-asks-empty]');
-    if (empty) empty.remove();
-    if (before && before.parentElement === list) list.insertBefore(card, before); else if (!card.parentElement) list.appendChild(card);
-    if (!reduced()) { card.classList.add('asks-enter'); setTimeout(function () { card.classList.remove('asks-enter'); }, 400); }
+  // settle: the server took it — gone for good, focus to the next card.
+  function settle(id) {
+    var l = leaving[id]; delete leaving[id];
+    settled[id] = Date.now();
+    var c = document.getElementById(id);
+    if (c) c.remove();
     count();
-    focusCard(card);
+    var a = document.activeElement;
+    if (l && l.next && (l.focus || !a || a === document.body)) focusCard(document.getElementById(l.next));
   }
-  function toast(text, undo) {
-    var t = document.getElementById('asks-toast');
-    if (!t) return;
-    t.querySelector('[data-asks-toast-text]').textContent = text;
-    var b = t.querySelector('[data-asks-undo]');
-    b.hidden = !undo;
-    b.onclick = undo || null;
-    t.hidden = false;
-    clearTimeout(t._h);
-    t._h = setTimeout(function () { t.hidden = true; }, undo ? ` + strconv.Itoa(AsksUndoMs) + ` : 4000);
+  // refused: the card comes back (the node on the page NOW: a refresh may have
+  // replaced it), with the server's fragment in its error slot.
+  function refused(id, fragment) {
+    delete leaving[id];
+    var c = document.getElementById(id);
+    if (!c) return;
+    c.removeAttribute('data-asks-leaving');
+    c.classList.remove('asks-leave');
+    c.style.height = ''; c.style.display = '';
+    var slot = c.querySelector('[data-asks-card-error]');
+    if (slot) slot.innerHTML = fragment || '';
+    count();
+    focusCard(c);
   }
-  function post(form, body, keep) {
-    // redirect: 'manual' — a recorded answer or dismissal answers 303 to the
-    // queue, which need not be fetched; a refusal answers 4xx/5xx with its page.
-    return fetch(form.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin', keepalive: !!keep, redirect: 'manual',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }).then(function (r) {
-      return { ok: r.type === 'opaqueredirect' || (r.status >= 200 && r.status < 400), r: r };
-    });
+  function feedCard(form) {
+    var list = feed();
+    return form && form.hasAttribute && form.hasAttribute('data-asks-card-form') && list && list.contains(form) ? form.closest(CARD) : null;
   }
-  // A refusal page's sentence (problemNode's role=alert).
-  function refusal(r) {
-    return r.text().then(function (h) {
-      var d = new DOMParser().parseFromString(h, 'text/html'), a = d.querySelector('[role="alert"]');
-      return (a && a.textContent.trim()) || 'That could not be recorded.';
-    }).catch(function () { return 'That could not be recorded.'; });
-  }
-  function flush(keep) {
-    if (!pending) return;
-    var p = pending; pending = null;
-    clearTimeout(p.timer);
-    var t = document.getElementById('asks-toast'); if (t) t.hidden = true;
-    post(p.form, new URLSearchParams(new FormData(p.form)), keep).then(function (res) {
-      if (!res.ok) return refusal(res.r).then(function (why) { restore(p.card, p.list, p.before); toast(why, null); });
-      p.card.remove();
-    }).catch(function () { restore(p.card, p.list, p.before); toast('Dismiss could not be sent.', null); });
-  }
-  window.addEventListener('pagehide', function () { flush(true); });
-  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flush(true); });
-  document.addEventListener('htmx:beforeRequest', function () { flush(true); });
-
-  document.addEventListener('submit', function (e) {
-    var form = e.target, list = feed();
-    if (!form || !list || !list.contains(form) || form.hasAttribute('data-step-up-form')) return;
-    var card = form.closest(CARD);
+  document.addEventListener('htmx:beforeRequest', function (e) {
+    var form = e.detail && e.detail.elt, card = feedCard(form);
     if (!card) return;
-    var action = form.getAttribute('action') || '';
-    if (/\/cancel$/.test(action)) {
-      e.preventDefault(); e.stopPropagation();
-      flush(false);
-      var before = card.nextElementSibling;
-      leave(card, function () { card.style.display = 'none'; });
-      pending = { form: form, card: card, list: list, before: before };
-      pending.timer = setTimeout(function () { flush(false); }, ` + strconv.Itoa(AsksUndoMs) + `);
-      var mine = pending;
-      toast('Dismissed.', function () {
-        if (pending !== mine) return;
-        clearTimeout(mine.timer); pending = null;
-        document.getElementById('asks-toast').hidden = true;
-        restore(card, list, before);
-      });
-      return;
+    if (form.hasAttribute('data-attention-answer')) {
+      var box = form.querySelector('textarea'), params = e.detail.requestConfig && e.detail.requestConfig.parameters;
+      var opt = params && (params.get ? params.get('option') : params.option);
+      if (!(opt && String(opt).trim()) && !(box && box.value.trim())) { e.preventDefault(); if (box) box.focus(); return; }
     }
-    if (!/\/answer$/.test(action)) return;
-    var fd = new FormData(form, e.submitter || undefined);
-    var opt = (fd.get('option') || '').toString().trim(), txt = (fd.get('answer') || '').toString().trim();
-    e.preventDefault(); e.stopPropagation();
-    if (!opt && !txt) { var box = form.querySelector('textarea'); if (box) box.focus(); return; }
-    if (opt) fd.delete('answer'); else fd.delete('option');
-    var before = card.nextElementSibling;
-    leave(card, function () { card.style.display = 'none'; });
-    post(form, new URLSearchParams(fd), false).then(function (res) {
-      if (!res.ok) return refusal(res.r).then(function (why) { restore(card, list, before); toast(why, null); });
-      card.remove(); count();
-    }).catch(function () { restore(card, list, before); toast('That answer could not be sent.', null); });
-  }, true);
+    var slot = card.querySelector('[data-asks-card-error]');
+    if (slot) slot.innerHTML = '';
+    leave(card);
+  });
+  document.addEventListener('htmx:afterRequest', function (e) {
+    var form = e.detail && e.detail.elt;
+    if (!form || !form.hasAttribute || !form.hasAttribute('data-asks-card-form')) return;
+    var id = form.getAttribute('data-asks-card-form');
+    if (!leaving[id]) return;
+    var x = e.detail.xhr;
+    if (x && x.status >= 200 && x.status < 300) settle(id);
+    else refused(id, x && x.status ? x.responseText : '');
+  });
 
   document.addEventListener('click', function (e) {
     var t = e.target;
@@ -363,20 +328,25 @@ var asksFeedJS = `(function () {
 
   // THE LIVE REFRESH (AttentionLiveScript) re-draws the Open feed and then
   // dispatches the reveal event on it: keep what the owner had (open cards,
-  // the focused card, a pending dismiss), and let new cards enter.
+  // the focused card, no card that is leaving or settled), and let new cards enter.
   var known = null;
   function ids(list) { var o = {}; Array.prototype.forEach.call(list.querySelectorAll(CARD), function (c) { if (c.id) o[c.id] = true; }); return o; }
   document.addEventListener('` + DictateRevealEvent + `', function (e) {
     var list = feed();
     if (!list || e.target !== list) return;
     var focusId = list.getAttribute('data-asks-focus') || '';
+    var now = Date.now();
+    Object.keys(settled).forEach(function (k) { if (now - settled[k] > 60000) delete settled[k]; });
     Array.prototype.forEach.call(list.querySelectorAll(CARD), function (c) {
-      if (pending && c.id && c.id === pending.card.id) { c.remove(); return; }
+      if (c.id && (leaving[c.id] || settled[c.id])) { c.remove(); return; }
       if (expanded[c.id]) { c.classList.add('asks-instant'); setExpanded(c, true); }
       if (known && !known[c.id] && !reduced()) { c.classList.add('asks-enter'); setTimeout(function () { c.classList.remove('asks-enter'); }, 400); }
     });
     requestAnimationFrame(function () { Array.prototype.forEach.call(list.querySelectorAll('.asks-instant'), function (c) { c.classList.remove('asks-instant'); }); });
     known = ids(list);
+    // The refresh is innerHTML, not an htmx swap: the new cards' hx-post forms
+    // are processed here.
+    if (window.htmx) try { window.htmx.process(list); } catch (err) {}
     if (focusId) { var f = document.getElementById(focusId); if (f && list.contains(f)) focusCard(f); }
     count();
   });

@@ -215,7 +215,7 @@ func TestDismissIsASmallIconButtonWithAnAccessibleName(t *testing.T) {
 		if !strings.Contains(li, want) {
 			t.Errorf("%s: no icon Dismiss named %q:\n%s", key, name, li)
 		}
-		if !strings.Contains(li, `<form id="ask-`+id+`-dismiss" method="POST" action="/attention/asks/`+id+`/cancel" hidden></form>`) {
+		if !strings.Contains(li, `<form id="ask-`+id+`-dismiss" method="POST" action="/attention/asks/`+id+`/cancel" hidden hx-post="/attention/asks/`+id+`/cancel"`) {
 			t.Errorf("%s: its Dismiss has no /cancel form:\n%s", key, li)
 		}
 	}
@@ -308,7 +308,7 @@ func TestCardTextIsEscapedEverywhere(t *testing.T) {
 func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	sel := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)" [^>]*aria-selected="true"|aria-selected="true"[^>]* id="asks-tabs-tab-([a-z]+)"`)
-	sub := regexp.MustCompile(`<button[^>]*id="asks-drafts-tabs-tab-([a-z]+)"[^>]*>`)
+	arch := regexp.MustCompile(`<section id="asks-drafts-archived-section"[^>]*>`)
 	draw := func(query string, drafts bool, nudges string) (top, view string) {
 		r := httptest.NewRequest("GET", "/attention"+query, nil)
 		out := s.asksTabsHTML("<ul></ul>", "<ul></ul>", drafts, nil, nil, nudges, "log", asksTab(r))
@@ -319,9 +319,17 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 			if m := sel.FindStringSubmatch(b); m != nil {
 				top = m[1] + m[2]
 			}
-			if m := sub.FindStringSubmatch(b); m != nil {
-				view = m[1]
+		}
+		// The Drafts tab's view: its archived list shown ("archived") or not
+		// ("drafts"); "" when the tab is not drawn. No second tab strip.
+		if sec := arch.FindString(out); sec != "" {
+			view = "drafts"
+			if !strings.Contains(sec, " hidden") {
+				view = "archived"
 			}
+		}
+		if strings.Contains(out, `id="asks-drafts-tabs"`) {
+			t.Errorf("%q: the Drafts tab draws a second tab strip", query)
 		}
 		return top, view
 	}

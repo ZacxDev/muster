@@ -14,7 +14,7 @@ import (
 
 // TestTheAsksPageIsACardFeedWithItsCountAndScript: the page draws its heading
 // with the open count, then the tabs — Open first, its feed of cards — the
-// All clear template, the Undo toast and the feed's script; nothing around
+// All clear template and the feed's script; nothing around
 // them (no page card, no intro, no "Back to muster"). RED at origin/main: no
 // count, no feed, no script, no toast.
 func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
@@ -27,14 +27,13 @@ func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 		`<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">`,
 		`<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>`,
 		`<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>`,
-		ui.AsksToastHTML,
 		`data-asks-badge="question">Question</span>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70", "data-asks-group"} {
+	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70", `data-asks-group="`} {
 		if strings.Contains(page, bad) {
 			t.Errorf("the page still draws %q", bad)
 		}

@@ -251,7 +251,7 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   const id3 = await ask('Ignore me?', []);
   await page.reload();
   await page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click();
-  // Dismiss is sent once its Undo has lapsed (the card feed: five seconds).
+  // Dismiss is sent at once (the card's htmx post).
   await expect
     .poll(async () => JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text).status, { timeout: 15_000 })
     .toBe('cancelled');

@@ -963,9 +963,6 @@ html:has([data-asks-feed]) {
   overflow: visible;
   overscroll-behavior: auto;
 }
-.asks-toast:not([hidden]) {
-  animation: card-in 180ms ease-out both;
-}
 @media (prefers-reduced-motion: reduce) {
   .asks-card,
   .asks-card *,
@@ -973,7 +970,6 @@ html:has([data-asks-feed]) {
   .asks-more > *,
   .asks-leave,
   .asks-enter,
-  .asks-toast,
   [data-asks-slide] {
     transition: none !important;
     animation: none !important;
