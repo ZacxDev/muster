@@ -1928,8 +1928,10 @@ server and its own `muster-mirror`.
 - **Not on a team session in this version.** The chief panel, proposals,
   succession and suggested replies are **off** on
   team sessions (they would send the team's transcript to a person's model or
-  chief), and their routes answer 403. A team session has no focus title, no
-  Preview button, and none of the viewer's own pins, tags or names. Opening
+  chief), and their routes answer 403. A team session has no focus title,
+  and none of the viewer's own pins, tags or names. Its Preview button runs
+  on the TEAM's viewer plugin, never the viewer's own; with none, a team
+  session has no Preview button ([team previews](previews.md#team-previews-manual-step-for-the-gateways-admin)). Opening
   a team session does not settle its waiting stop: it settles when the window
   moves on.
 - **Waiting and done pushes.** A team host session that waits on a prompt,

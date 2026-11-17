@@ -165,8 +165,13 @@ the gateway's admin does it by hand, once per team.
 3. The admin mints each team host's host token as `team:<id>` (step 4
    above) and installs it on that machine for the Unix user the team shares.
 4. A member's Preview on a team session then opens on the team's plugin. With
-   no live team viewer plugin, the session says "This team has no viewer
-   plugin set up" and nothing falls back to the member's own.
+   no live team viewer plugin, a team session has no Preview button, on
+   either session view, and nothing falls back to the member's own
+   (`teamViewerPlugins`, in the team branches of `internal/api/mirror_view.go`
+   and `internal/api/mirror.go`).
+   If the team's plugin goes while a member has the session open, the
+   button's next poll replaces it with "This team has no viewer plugin set
+   up …", and a hand-off minted then is refused with the same sentence.
 
 A team's plugin token is served `POST /plugin/v1/handoffs/redeem` and
 `GET /plugin/v1/self` only, and refused at every other plugin route whatever
