@@ -34,6 +34,9 @@ type continueGateway struct {
 	cmu     sync.Mutex
 	replies map[string]string
 	fails   map[string]error
+	// failOthers fails every turn in a session with no reply set: the NEW
+	// chat, whose key the test learns only from the route's answer.
+	failOthers error
 	lane    string
 	n       int
 	hold    chan struct{}
@@ -51,6 +54,9 @@ func (g *continueGateway) ChatWithTools(ctx context.Context, _ agents.Agent, key
 	g.n++
 	first := g.n == 1
 	reply, err, during, hold := g.replies[key], g.fails[key], g.during, g.hold
+	if _, own := g.replies[key]; !own && err == nil {
+		err = g.failOthers // a turn in a chat no reply was set for (the new chat)
+	}
 	g.cmu.Unlock()
 	agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{Lane: lane})
 	if during != nil {
@@ -328,6 +334,40 @@ func TestAFailedHandoverIsVisibleAndArchivesNothing(t *testing.T) {
 	}
 }
 
+// TestANewChatWhoseFirstTurnFailsArchivesNothing: the old chat WROTE its
+// handover, but the new chat's first turn — the one carrying it — failed (ccd
+// refused it before pasting, say). The handover never reached a conversation,
+// so the old chat, the only one holding the context, is NOT archived; the
+// failure is stored in the new chat.
+func TestANewChatWhoseFirstTurnFailsArchivesNothing(t *testing.T) {
+	f := newContinueFixture(t)
+	side := f.sideOn(t, "haiku", "recon: the queue backlog")
+	f.cg.replies[side.SessionKey] = `{"summary": "the backlog is 40 jobs on pool-b"}`
+	f.cg.failOthers = errors.New("ccd answered 503 capacity")
+	before := f.sessions(t)
+	if w := f.continueTo(t, f.chief.ID, side.ID, agents.SessionRuntimeClaudeCode, "sonnet"); w.Code != http.StatusOK {
+		t.Fatalf("continue: %d %s", w.Code, w.Body)
+	}
+	var next agents.ChatSession
+	for id, s := range f.sessions(t) {
+		if _, ok := before[id]; !ok {
+			next = s
+		}
+	}
+	eventuallyAPI(t, "the two turns", func() bool { k, _, _ := f.gw.turns(); return len(k) == 2 })
+	eventuallyAPI(t, "the guard released", func() bool { _, busy := f.srv.continuing.Load(side.ID); return !busy })
+	keys, _, _ := f.gw.turns()
+	if keys[0] != side.SessionKey || keys[1] != next.SessionKey {
+		t.Fatalf("control: turns in %v, want the old chat then the new one", keys)
+	}
+	if s := f.sessions(t)[side.ID]; s.ArchivedAt != nil {
+		t.Error("the old chat was archived though the new chat's first turn — the one carrying the handover — failed")
+	}
+	if rows := strings.Join(f.rowsIn(t, next.ID), "\n"); !strings.Contains(rows, "ccd answered 503 capacity") {
+		t.Errorf("the new chat does not show its failed first turn: %q", rows)
+	}
+}
+
 // TestContinueIsRefusedOffASideChatOfYourOwnChief: the refusals, each writing
 // nothing and running no turn — the primary (409), a model the New session
 // picker would refuse (400), a runtime not offered (400), another owner's
@@ -363,6 +403,23 @@ func TestContinueIsRefusedOffASideChatOfYourOwnChief(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// One of YOUR OWN agents that is not the chief, with a side-chat-shaped
+	// session (claude-code, not its default, not archived): only the
+	// same-agent check tells it apart from a side chat of the chief's.
+	worker, err := agents.NewPG(f.pool).Create(ctx, agents.Agent{Name: "ownworker-" + stamp, Namespace: "devpod-ownworker-" + stamp,
+		Status: agents.StatusRunning, HooksToken: "own-worker-token-" + stamp, Kind: agents.KindClaudeCode, CCAccount: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = f.pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, worker.ID) })
+	workerChat, err := agents.NewPG(f.pool).CreateSessionOn(ctx, worker.ID, worker.Name, agents.SessionRuntimeClaudeCode, "haiku")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerChat.IsDefault || workerChat.ArchivedAt != nil {
+		t.Fatalf("control: the worker's chat %+v would be refused as a primary or an archived chat", workerChat)
+	}
+
 	before := len(f.sessions(t))
 	for _, c := range []struct {
 		what           string
@@ -376,6 +433,7 @@ func TestContinueIsRefusedOffASideChatOfYourOwnChief(t *testing.T) {
 		{"a runtime not offered", f.chief.ID, side.ID, "gateway", "opus", http.StatusBadRequest, errRuntimeNotOffered.Error()},
 		{"another owner's chief", theirs.ID, theirSide.ID, agents.SessionRuntimeClaudeCode, "opus", http.StatusNotFound, ""},
 		{"another owner's chat under your chief", f.chief.ID, theirSide.ID, agents.SessionRuntimeClaudeCode, "opus", http.StatusNotFound, ""},
+		{"your own non-chief agent's chat under your chief", f.chief.ID, workerChat.ID, agents.SessionRuntimeClaudeCode, "opus", http.StatusNotFound, ""},
 	} {
 		w := f.continueTo(t, c.id, c.sid, c.runtime, c.model)
 		if w.Code != c.code || !strings.Contains(w.Body.String(), c.says) {
@@ -393,6 +451,9 @@ func TestContinueIsRefusedOffASideChatOfYourOwnChief(t *testing.T) {
 	_ = f.pool.QueryRow(sys, `SELECT count(*) FROM chat_sessions WHERE agent_id = $1`, theirs.ID).Scan(&theirN)
 	if theirN != 2 {
 		t.Errorf("the other owner's chief has %d chats, want its 2", theirN)
+	}
+	if s, err := agents.NewPG(f.pool).GetSession(sys, workerChat.ID); err != nil || s.ArchivedAt != nil {
+		t.Errorf("the worker's chat after the refusal: %+v (%v), want it untouched", s, err)
 	}
 	if _, busy := f.srv.continuing.Load(side.ID); busy {
 		t.Error("a refused continue left its source held")

@@ -214,7 +214,8 @@ func (s *Server) handleChiefContinue(w http.ResponseWriter, r *http.Request) {
 // page open on it shows "working…" while the OLD chat writes the handover, not
 // an empty chat that looks dead. A failed handover is visible in both chats: the
 // old one stores its failed turn, the new one's first turn says it got none
-// (continueNoHandover), and the old one is NOT archived.
+// (continueNoHandover), and the old one is NOT archived — nor is it when the
+// new chat's first turn, the one carrying the handover, fails.
 func (s *Server) continueSession(ctx context.Context, a agents.Agent, old, next agents.ChatSession, done func()) {
 	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*agentTurnBudget(a.Kind))
 	endPending := s.countSessionTurn(a, next.SessionKey)
@@ -246,7 +247,11 @@ func (s *Server) continueSession(ctx context.Context, a agents.Agent, old, next 
 			first = turnFailedParts(err)
 		}
 		s.persistTurn(hctx, a, next, first)
-		if raw == "" {
+		// 🔴 ARCHIVE ONLY A HANDOVER THAT ARRIVED: with none written (raw ""), or
+		// the new chat's first turn failed (err — ccd's capacity 503 refuses
+		// before pasting anything), the old chat is still the only conversation
+		// holding the context, so it stays where the owner can use it.
+		if raw == "" || err != nil {
 			return
 		}
 		if cs, ok := s.chiefChatStore(); ok {

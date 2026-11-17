@@ -1209,7 +1209,10 @@ to it are untouched, and the new chat is a side chat like any other. One
 continue per chat runs at a time, handover included; a second request meanwhile
 is answered 409. An archived chat cannot be continued (409). If the old chat
 writes no handover (its turn failed or answered no text), the new chat's first
-turn says so and why, and the old chat is left unarchived.
+turn says so and why, and the old chat is left unarchived. So it is when the
+new chat's first turn — the one carrying the handover — fails (for example,
+the pod refused it at capacity): the failure is shown in the new chat, and the
+old chat stays where it was.
 
 The first turn of the new chat is muster's, not one you typed, so no
 `owner_asked` release can pass on it (an `owner_asked` release needs a line you
