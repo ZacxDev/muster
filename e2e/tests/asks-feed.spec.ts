@@ -312,6 +312,47 @@ for (const vp of [
       expect(await page.locator('#action-toasts [data-toast-tone="info"]').count(), 'a dismissal shows no "Sent to" toast').toBe(0);
     });
 
+    // "SENT TO" NAMES THE SESSION IT WENT TO (audit of #787, 🟡3): the
+    // error toasts coalesce by a digit-blind 40-character key, so two answers
+    // to sessions whose names differ only in a digit read "Sent to … fern:1
+    // (×2)". An info toast is never merged with a different message. RED
+    // before: one toast, the first name, ×2.
+    test('two "Sent to" toasts for names that differ in a digit are both shown, each exact', async ({ page }) => {
+      await openFeed(page);
+      await page.evaluate(() => {
+        const t = (window as unknown as { toast: (m: string, o: object) => void }).toast;
+        t('Sent to Rate-limit the public API fern:1', { tone: 'info' });
+        t('Sent to Rate-limit the public API fern:2', { tone: 'info' });
+      });
+      const info = page.locator('#action-toasts [data-toast-tone="info"]');
+      await expect(info).toHaveText(['Sent to Rate-limit the public API fern:1', 'Sent to Rate-limit the public API fern:2']);
+    });
+
+    // THE COUNT'S EMPTY STATE IS THE FEED'S OWN (🟢): count() looked for the
+    // first [data-asks-empty] anywhere in the feed, so a nested empty line (the
+    // stalled rows' "could not be read") was taken for All clear and deleted
+    // when a card left. RED before.
+    test('answering a card keeps a nested "could not be read" line', async ({ page }) => {
+      await openFeed(page);
+      await page.evaluate(() => {
+        const list = document.getElementById('attention-items')!;
+        const li = document.createElement('li');
+        li.setAttribute('data-asks-episodes', '');
+        li.innerHTML = '<ul><li data-asks-empty="episodes-error" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li></ul>';
+        list.appendChild(li);
+      });
+      // The answer's POST is held, so no live refresh redraws the feed: what
+      // is on the page is what count() left (it runs as the card leaves).
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      await page.route(`**/attention/asks/${ids.rotate}/answer`, async (route) => { await gate; await route.continue(); });
+      await page.locator(`#ask-${ids.rotate}`).getByRole('button', { name: 'Rotate it', exact: true }).click();
+      await expect(page.locator(`#ask-${ids.rotate}`)).toBeHidden();
+      await page.waitForTimeout(500);
+      expect(await page.locator('[data-attention-episodes-error]').count(), 'the nested line was taken for the empty state and removed').toBe(1);
+      release();
+    });
+
     // ONE OPEN COUNT, AS THE PAGE KEEPS IT (asks_count.go; the Go test
     // TestEverySurfaceShowsTheSameOpenCount pins the server's): the header's
     // "N open", the sidebar's More badge and the ☰ badge agree on load and

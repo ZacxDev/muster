@@ -60,6 +60,8 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 		return "waiting", "Waiting"
 	case attentionKindTask:
 		return "task", "Task to route"
+	case attentionKindPlugin:
+		return "pairing", "Pairing request"
 	}
 	return "other", "Item"
 }
@@ -254,6 +256,8 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		links = append(links, `<a href="`+esc(href)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>`+askViewInSession+`</a>`)
 	}
 	switch {
+	case it.Kind == attentionKindPlugin && it.Link != "":
+		links = append(links, `<a href="`+esc(it.Link)+`" class="`+ui.AsksCardLinkClass+`" data-asks-pairing>Review on Plugins</a>`)
 	case it.Kind == attentionKindTask && it.Link != "":
 		links = append(links, `<a href="`+esc(it.Link)+`" class="`+ui.AsksCardLinkClass+`" data-asks-task>Open task</a>`)
 	case it.taskID > 0:
@@ -382,6 +386,7 @@ func askFeedAnswerFormHTML(it attentionItem, id string) string {
 // (ui.AsksDraftsMarkerHTML), so the feed's script counts the same total as
 // the server (asksPendingOf) after every live refresh.
 func askFeedHTML(items []attentionItem, episodes string, n int, now time.Time) (string, int) {
+	// The drafts the Drafts tab LISTS (draftsTabItem), never every plugin item.
 	drafts := len(items) - len(askTabItems(items))
 	items = askTabItems(items)
 	var b strings.Builder

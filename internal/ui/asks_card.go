@@ -131,10 +131,11 @@ func AsksDraftsWaitHTML(n int) string {
 
 // AsksDraftsWaitWords is the drafts empty state's sentence for n drafts.
 func AsksDraftsWaitWords(n int) string {
+	// "drafts", not "reply drafts": an officer's outbound post is one too.
 	if n == 1 {
-		return `<span data-asks-drafts-n>1</span> reply draft waits for your decision.`
+		return `<span data-asks-drafts-n>1</span> draft waits for your decision.`
 	}
-	return `<span data-asks-drafts-n>` + strconv.Itoa(n) + `</span> reply drafts wait for your decision.`
+	return `<span data-asks-drafts-n>` + strconv.Itoa(n) + `</span> drafts wait for your decision.`
 }
 
 // AsksDraftsMarkerHTML is the Open feed's hidden note of how many reply drafts
@@ -287,7 +288,9 @@ var asksFeedJS = `(function () {
     var m = list.querySelector('[data-asks-drafts]'), d = m ? (parseInt(m.getAttribute('data-asks-drafts'), 10) || 0) : 0;
     var el = document.querySelector('[data-asks-open-count]');
     if (el) el.textContent = (n + d) + ' open';
-    var empty = list.querySelector('[data-asks-empty]');
+    // The FEED's own empty state, a direct child: a nested empty line (the
+    // stalled rows' "could not be read") is not it.
+    var empty = list.querySelector(':scope > [data-asks-empty]');
     // The empty state only when the Open feed truly holds nothing (a card on
     // its way out still counts as there until its post lands): All clear with
     // nothing pending at all, the drafts' state while drafts wait.
@@ -428,6 +431,10 @@ var asksFeedJS = `(function () {
     // Back on the page: its collapse is over and nothing waits on it.
     c.__asksLeft = null;
     c.removeAttribute('` + AsksCollapsingAttr + `');
+    // Its collapse ends here, not at its transition (refused() cut it short,
+    // and the transition's own end now stands down): release a live refresh
+    // the collapse held (AttentionLiveScript waits for this event).
+    try { list.dispatchEvent(new Event('` + AsksCollapsedEvent + `', { bubbles: true })); } catch (e) {}
     c.removeAttribute('data-asks-leaving');
     c.classList.remove('asks-leave');
     c.style.height = ''; c.style.display = '';

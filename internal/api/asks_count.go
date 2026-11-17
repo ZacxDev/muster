@@ -2,6 +2,11 @@ package api
 
 import (
 	"context"
+	"strconv"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE ONE OPEN COUNT. Four surfaces say how much waits on the reader — the ☰
@@ -31,7 +36,57 @@ func (s *Server) asksPendingCount(ctx context.Context) (int, error) {
 	rd := s.readAsks(ctx)
 	items, err := s.attentionItemsWith(ctx, rd.hosts, rd.waiting)
 	_, n := s.episodeRowsHTML(ctx, rd, s.now())
-	return asksPendingOf(ctx, s.pageAttentionItems(items, rd.hosts), n), err
+	return asksPendingOf(ctx, s.asksPageItems(ctx, items, rd.hosts), n), err
+}
+
+// asksPageItems is the Asks page's items — what the Open feed and the drafts
+// draw and THE ONE OPEN COUNT counts: pageAttentionItems, and an agent of the
+// reader's blocked on a permission prompt (approvalItems). One function for
+// the feed (askFeedNow) and the count (asksPendingCount), so they cannot
+// disagree about what is open.
+func (s *Server) asksPageItems(ctx context.Context, items []attentionItem, hs []mirror.HostView) []attentionItem {
+	page := s.pageAttentionItems(items, hs)
+	return append(page, s.approvalItems(ctx, items)...)
+}
+
+// approvalKey is an approval-blocked agent's item key (approvalItems).
+func approvalKey(agentID int64) string { return "approval-" + strconv.FormatInt(agentID, 10) }
+
+// approvalItems is every provisioned agent of ctx's principal blocked at a
+// permission prompt (AwaitingApproval: the "awaiting approval" badge, the
+// sidebar's waiting mark) with no ask of its own already in items, as a
+// waiting item (attentionKindSession) whose View in session is the agent's
+// page. 🔴 IT IS NOT A QUEUE ITEM: it is not pushed and not in attention_list
+// (the agent's own prompt is its push) — it is drawn and counted on the Asks
+// page, so the one open count keeps every session the sidebar marks waiting
+// (the audit of #787: the ☰ used to count it, then lost it).
+func (s *Server) approvalItems(ctx context.Context, items []attentionItem) []attentionItem {
+	if s.ext.Agents == nil {
+		return nil
+	}
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("asks: approval-blocked agents: %v", err)
+		return nil
+	}
+	asked := map[int64]bool{}
+	for _, it := range items {
+		if it.Kind == attentionKindAsk && it.card.agentID > 0 {
+			asked[it.card.agentID] = true
+		}
+	}
+	var out []attentionItem
+	for _, a := range agents.ProvisionedOnly(list) {
+		if asked[a.ID] || !s.AwaitingApproval(a.ID) {
+			continue
+		}
+		it := attentionItem{Key: approvalKey(a.ID), Kind: attentionKindSession, Source: firstNonBlank(a.DisplayName, a.Name),
+			Text: sessionWaitingText, Link: s.agentPageHref(ctx, a), subject: focus.AgentSubject(a.ID)}
+		it.card.agentID = a.ID
+		out = append(out, it)
+	}
+	s.withNames(ctx, out)
+	return out
 }
 
 // menuCount is the ☰ badge's count where the Asks queue is served — THE ONE

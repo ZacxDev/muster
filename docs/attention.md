@@ -11,10 +11,13 @@ Answered · Drafts · Nudges · Log** (Drafts with plugins on, Nudges with nudge
 on, Log with the ask log on). Its heading carries **N open**.
 
 **One open count.** The heading's *N open*, the count on the sidebar's
-**More** (beside the Asks link), the badge on the ☰ menu button and the Log
-tab's *Open* pill are the same number: everything the Open tab lists that
-waits on you (a team's question you only watch is listed, not counted), its
-stalled rows, and your pending reply drafts. The **Open** tab lists
+**More** (beside the Asks link) and the badge on the ☰ menu button are the
+same number: everything the Open tab lists that waits on you (a team's
+question you only watch is listed, not counted), its stalled rows, an agent
+of yours blocked on a permission prompt (listed as a waiting card that opens
+the agent), and your pending drafts. A plugin's pairing request is its own
+card on the Open tab (*Review on Plugins*), never counted as a draft. The
+**Open** tab lists
 everything waiting on you in one vertically scrolling feed: **questions**
 (questions and session questions) first, then **notices**, then **waiting**
 sessions (and the [stalled / waiting](#stalled--waiting-session-state) rows),
@@ -126,9 +129,10 @@ With the [ask log](asks.md) on (`MUSTER_ASK_LOG=1`), the page has a **Log**
 tab (`/attention?tab=log`): the [ask log](asks.md#reading-the-log) read back —
 what your agents asked you, how you answered and how long it took, with a
 summary on top and the questions asked most often. Its panel is read when you
-open the tab. Its *Open* pill is the [one open count](#what-is-in-it), not the
-log's own rows that never recorded an end. With the ask log off there is no
-Log tab.
+open the tab. Its *By outcome* pills are the log's own breakdown and add up
+to its total: *Open* there is the log's asks with no outcome recorded yet,
+which can differ from the [open count](#what-is-in-it). With the ask log off
+there is no Log tab.
 
 ### Notices
 

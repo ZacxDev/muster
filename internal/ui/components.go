@@ -1983,7 +1983,11 @@ var appScriptSrc = staticJS("app", `
     // firing an (often near-identical) error toast. Collapse same-FAMILY messages
     // (by normalized key) into ONE toast with a ×N counter so a burst can never
     // flood the screen.
-    var key = (info ? 'info:' : '') + toastKey(msg);
+    // 🔴 AN INFO TOAST IS KEYED ON ITS EXACT WORDS: toastKey is digit-blind
+    // and cut at 40 characters (an error burst's family), and a merged toast
+    // keeps its FIRST message — so "Sent to … fern:1" then "… fern:2" read
+    // "Sent to … fern:1 (×2)" (audit of #787). Only the same words merge.
+    var key = info ? 'info:' + msg : toastKey(msg);
     var nodes = host.querySelectorAll('[data-toast-key]');
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i].getAttribute('data-toast-key') === key) {

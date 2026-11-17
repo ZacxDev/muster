@@ -885,7 +885,7 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, rd asks
 // out — the number every other surface shows.
 func (s *Server) askFeedNow(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) (string, int) {
 	rows, n := s.episodeRowsHTML(ctx, rd, now)
-	page := s.pageAttentionItems(items, rd.hosts)
+	page := s.asksPageItems(ctx, items, rd.hosts)
 	out, _ := askFeedHTML(page, rows, n, now)
 	return out, asksPendingOf(ctx, page, n)
 }
