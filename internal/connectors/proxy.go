@@ -316,6 +316,13 @@ type Proxy struct {
 	// source changed is not offered: that change asks the owner again (0033),
 	// and their approval is then shared as any other.
 	AutoApprove func(context.Context, Grant) (Grant, bool)
+	// OnPendingRefusal is called (synchronously) when CheckAccess answers a
+	// caller whose grant is PENDING — every door (the proxy, the query and
+	// internal_http tools, the kube read) refuses on that answer — so the api
+	// package can record which officer item the refusal blocked and re-run it
+	// once THAT grant is approved (officer_connector_rerun.go). A denied or
+	// revoked grant is not reported: no approval of it will follow.
+	OnPendingRefusal func(context.Context, Caller, Grant)
 	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
 	// proxied GET EVENT STREAM in flight ends, and one that starts later ends at
 	// once (endsAtShutdown says which exchanges, and why only GET).
@@ -407,7 +414,9 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 			}
 		}
 		// approved -> usable; pending, denied, revoked -> refused as they stand.
-		return Access{Grant: g, Usable: g.Usable()}, nil
+		acc := Access{Grant: g, Usable: g.Usable()}
+		p.pendingRefusal(ctx, caller, acc)
+		return acc, nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return Access{}, err
 	}
@@ -420,7 +429,17 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 		p.recordGrantEvent(ctx, ng, "requested")
 		ng = p.pending(ctx, ng)
 	}
-	return Access{Grant: ng, Usable: ng.Usable(), Filed: created}, nil
+	acc := Access{Grant: ng, Usable: ng.Usable(), Filed: created}
+	p.pendingRefusal(ctx, caller, acc)
+	return acc, nil
+}
+
+// pendingRefusal tells OnPendingRefusal about an access check refused for a
+// PENDING grant (the one rule both of CheckAccess's answers pass through).
+func (p *Proxy) pendingRefusal(ctx context.Context, caller Caller, acc Access) {
+	if !acc.Usable && acc.Grant.Status == StatusPending && p.OnPendingRefusal != nil {
+		p.OnPendingRefusal(ctx, caller, acc.Grant)
+	}
 }
 
 // pending handles a request this check filed: approved by a standing grant

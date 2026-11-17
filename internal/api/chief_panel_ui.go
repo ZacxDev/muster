@@ -76,6 +76,13 @@ func (s *Server) writeChiefPanelBody(ctx context.Context, w http.ResponseWriter,
 // panel body, and that function is now its chief-resolving front door rather than a
 // second copy.
 func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWriter, a agents.Agent, sessionParam string) {
+	s.writeChiefPanelBodyWith(ctx, w, a, sessionParam, "")
+}
+
+// writeChiefPanelBodyWith is writeChiefPanelBodyFor with a draft for the chat
+// box (ui.ChiefPanelView.Prefill; "" for none): the fleet digest's Fleet chat
+// (fleet_digest.go). The ONE renderer still: every panel body goes through here.
+func (s *Server) writeChiefPanelBodyWith(ctx context.Context, w http.ResponseWriter, a agents.Agent, sessionParam, prefill string) {
 	// Set again rather than assumed: this is reachable directly from the new-thread
 	// POST, which has written no headers of its own.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -146,5 +153,6 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 		SessionRuntimes: s.pickerRuntimes(ctx, a),
 		ClaudeModels:    agents.ClaudeCodeModels,
 		Chat:            chat,
+		Prefill:         prefill,
 	})
 }

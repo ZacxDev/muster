@@ -156,6 +156,10 @@ var pgBackedPackages = []string{
 	// security — its isolation and seal-binding tests need the real database.
 	"internal/credentials",
 	"internal/db",
+	// Added by the fleet digest (migration 0147). "The log is append-only for
+	// the app role" and "one owner's actions and marks are invisible to
+	// another" are a trigger's and row-level security's claims.
+	"internal/fleet",
 	// Added by the mirrored-sessions plugin. "Only the token's hash is stored",
 	// "another user's principal cannot find, list or revoke a token" and "a
 	// revoked token stops authenticating" are claims about SQL and row-level

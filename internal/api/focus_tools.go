@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -33,7 +35,13 @@ const (
 	focusSearchToolName = "focus_search"
 )
 
-func focusToolDefs() []agents.ToolDef {
+// fleet is MUSTER_FLEET_DIGEST: on, fleet_list's description names the fleet
+// fields it then carries; off, both are as they were before the digest.
+func focusToolDefs(fleet bool) []agents.ToolDef {
+	fleetFields := ""
+	if fleet {
+		fleetFields = fleetListFleetFieldsDoc
+	}
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored agent windows (Claude Code, opencode) — compactly: " +
@@ -50,6 +58,7 @@ func focusToolDefs() []agents.ToolDef {
 				"status, role (worked or created)}, the " + strconv.Itoa(fleetLinkedTasksMax) + " most recently touched at most. " +
 				"It is not a claim: a link does not say the session still holds the task (task_get shows claims). [] means no such " +
 				"link; an opencode session's is always [] today, because muster links only Claude Code sessions from claimants. " +
+				fleetFields +
 				"active_within_hours lists only recently active sessions. " +
 				"Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{
@@ -77,6 +86,15 @@ func focusToolDefs() []agents.ToolDef {
 			}, "query")},
 	}
 }
+
+// fleetListFleetFieldsDoc is fleet_list's description of the fleet fields,
+// with the digest on (MUSTER_FLEET_DIGEST).
+const fleetListFleetFieldsDoc = "Each row also carries the fleet's view of it: state (working, stalled, needs_you, or waiting — a prompt on screen; absent, " +
+	"with state_unavailable, when muster's session-state pass is off), episode {id, since, jev_label} for an open stop, " +
+	"prs [{repo, number, state: open|merged|closed|unknown, head_sha12}] for a mirrored session's pull requests muster recorded " +
+	"it creating, newest first (GitHub's state, at most 2 minutes old; checks are not read), and for a " +
+	"stopped session last_owner_message_at (your owner's newest own message in it) and chief_texts_since_owner (how many of " +
+	"muster's and your texts — nudges, routed messages — it received since). "
 
 // fleetListRow is one fleet_list row: nothing a decision does not need.
 type fleetListRow struct {
@@ -116,6 +134,22 @@ type fleetListRow struct {
 	// touched first, at most fleetLinkedTasksMax; an empty list when it has
 	// none. nil (absent) for a dispatched agent, and when the read failed.
 	LinkedTasks *[]fleetLinkedTask `json:"linked_tasks,omitempty"`
+
+	// The fleet reader's fields (fleet_read.go). State is the session's fleet
+	// state (fleet.StateOf: working, stalled, needs_you, waiting), absent when
+	// no state is known (the answer then says state_unavailable). Episode is
+	// its open stop. PRs is a mirrored session's pull requests, newest first
+	// ([] for none; absent for an agent, or when they were not read).
+	State   string            `json:"state,omitempty"`
+	Episode *fleetListEpisode `json:"episode,omitempty"`
+	PRs     *[]fleet.PR       `json:"prs,omitempty"`
+	// LastOwnerMessageAt and ChiefTextsSinceOwner are a STOPPED session's
+	// owner facts (ownerFactsOf): the owner's newest own message read in it,
+	// and how many of muster's own texts (nudges, routed and relayed
+	// messages) came after it. Absent for a working session, and when the
+	// read was not made (owner_facts_unread counts those).
+	LastOwnerMessageAt   string `json:"last_owner_message_at,omitempty"`
+	ChiefTextsSinceOwner *int   `json:"chief_texts_since_owner,omitempty"`
 }
 
 // fleetLinkedTask is one of a fleet_list row's linked_tasks.
@@ -161,69 +195,66 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &f); err != nil || f.ActiveWithinHours < 0 || f.ActiveWithinHours > fleetListMaxHours {
 		return toolErr("arguments are {active_within_hours?: 1-%d}", fleetListMaxHours)
 	}
-	fi, now := s.focusIndex(ctx), s.now()
-	rows := []fleetListRow{}
-	if s.ext.Agents != nil {
-		list, err := s.ext.Agents.List(ctx)
-		if err != nil {
-			return toolErr("could not list agents")
-		}
-		// A host officer instance's row is never provisioned and is seen as its
-		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
-		list = agents.ProvisionedOnly(list)
-		idx := s.instanceIndex(ctx)
-		for _, a := range list {
-			sub := focus.AgentSubject(a.ID)
-			status := liveStatusIndexed(a, idx)
-			at := a.CreatedAt
-			if u := fi[sub].UpdatedAt; fi[sub].Has() && u.After(at) {
-				at = u
-			}
-			if !f.keep(at, now) {
-				continue
-			}
-			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: fi.agentName(a).Text, Code: a.Name, Status: status, Focus: fi[sub].Title,
-				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
-		}
+	fr, err := s.readFleet(ctx, f)
+	if err != nil {
+		return toolErr("could not list agents")
 	}
-	seen := map[string]bool{}
+	rows := make([]fleetListRow, 0, len(fr.subjects))
 	var mirrorKeys []string
 	mirrorRows := map[string]int{} // session key -> its row's index
-	for _, e := range s.mirrorFocusEntries(ctx) {
-		if seen[e.SessionKey()] {
-			continue
+	budget := fleetOwnerReadsPerCall
+	unread := 0
+	for _, sub := range fr.subjects {
+		r := sub.row
+		if fr.stateOn {
+			r.State = sub.state
 		}
-		seen[e.SessionKey()] = true
-		sub := focus.MirrorSubject(e.SessionKey())
-		st := s.ext.Mirror.AgentState(ctx, e.Host, e.Session, e.Window)
-		status := st.Status
-		if status == "" {
-			status = "unknown"
+		if ep := sub.episode; ep != nil {
+			r.Episode = &fleetListEpisode{ID: ep.ID, Since: ep.OpenedAt.UTC().Format(time.RFC3339), JevLabel: ep.Jev.Label}
+			if facts, ok := s.ownerFactsOf(ctx, sub, &budget); ok {
+				if !facts.lastOwner.IsZero() {
+					r.LastOwnerMessageAt = facts.lastOwner.UTC().Format(time.RFC3339)
+				}
+				n := facts.sinceOwner
+				r.ChiefTextsSinceOwner = &n
+			} else {
+				unread++
+			}
 		}
-		tasks := fi[sub].Tasks
-		if !f.keep(e.ActiveAt(), now) {
-			continue
+		if sub.prsRead {
+			prs := sub.prs
+			r.PRs = &prs
 		}
-		r := fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
-			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem(),
-			TaskLink: focus.TaskLink{Keys: tasks.Keys, None: tasks.None, Note: tasks.Note}}
-		if at := e.ActiveAt(); !at.IsZero() {
-			r.ActiveAt = at.UTC().Format(time.RFC3339)
+		if sub.kind == chiefnudge.KindMirror {
+			mirrorKeys = append(mirrorKeys, sub.key)
+			mirrorRows[sub.key] = len(rows)
 		}
-		if !tasks.SetAt.IsZero() {
-			r.TaskSetAt = tasks.SetAt.UTC().Format(time.RFC3339)
-		}
-		mirrorKeys = append(mirrorKeys, e.SessionKey())
-		mirrorRows[e.SessionKey()] = len(rows)
 		rows = append(rows, r)
 	}
 	out := map[string]any{"untrusted": fleetListUntrustedNote, "sessions": rows}
 	if !s.attachLinkedTasks(ctx, rows, mirrorKeys, mirrorRows) {
 		out["linked_tasks_unavailable"] = "could not read the sessions' linked tasks"
 	}
+	if s.ext.FleetDigest && !fr.stateOn {
+		out["state_unavailable"] = fleetStateUnavailable
+	}
+	if unread > 0 {
+		out["owner_facts_unread"] = unread
+	}
 	return toolJSON(out)
 }
+
+// fleetListEpisode is a fleet_list row's open stop.
+type fleetListEpisode struct {
+	ID       int64  `json:"id"`
+	Since    string `json:"since"`
+	JevLabel string `json:"jev_label"`
+}
+
+// fleetStateUnavailable is fleet_list's note when no state is known: session
+// state is off on this server (MUSTER_SESSION_STATE), or its read failed.
+const fleetStateUnavailable = "no session states: muster's session-state pass is off on this server (MUSTER_SESSION_STATE), " +
+	"or its read failed just now; state and episode are left out"
 
 // attachLinkedTasks sets each mirrored row's LinkedTasks from ONE batched read
 // of the links (notes.Store.TasksForSessions) as ctx's principal: row-level

@@ -77,6 +77,29 @@ func TestPullRequestStateMintsARepoScopedPullRequestsReadToken(t *testing.T) {
 	}
 }
 
+// The fleet digest's read (internal/api fleet_read.go): the head commit and
+// when a closed pull request was closed, as GitHub names them. A head that is
+// not a full hex commit id is left out, and an open pull request carries no
+// closed time even when the body names one. Invented values, pairwise distinct.
+func TestPullRequestStateCarriesTheHeadAndTheClosedTime(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	f.setPull("example-org/widget", 21, pull{body: `{"number":21,"state":"closed","merged":true,"head":{"sha":"` + head + `"},"closed_at":"2000-01-02T03:04:05Z"}`})
+	f.setPull("example-org/widget", 22, pull{body: `{"number":22,"state":"open","merged":false,"head":{"sha":"not-a-sha"},"closed_at":"2000-01-03T03:04:05Z"}`})
+	for _, tc := range []struct {
+		n    int64
+		want PRState
+	}{
+		{21, PRState{State: "closed", Merged: true, HeadSHA: head, ClosedAt: time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC)}},
+		{22, PRState{State: "open"}},
+	} {
+		got, err := app.PullRequestState(context.Background(), "example-org/widget", tc.n)
+		if err != nil || got != tc.want {
+			t.Fatalf("#%d: %+v, %v; want %+v", tc.n, got, err, tc.want)
+		}
+	}
+}
+
 func TestPullRequestStateFailuresAreErrors(t *testing.T) {
 	app, f, _ := newTestApp(t)
 	f.setPull("example-org/widget", 21, pull{status: http.StatusBadGateway, body: `{"message":"Server Error"}`})

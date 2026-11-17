@@ -119,6 +119,14 @@ type Server struct {
 	// ocAnswered is the opencode asks lately answered from a card
 	// (mirror_opencode_ask.go: openCodeAnswers).
 	ocAnswered openCodeAnswers
+	// fleetPRs is the fleet reader's cache of GitHub's pull-request answers
+	// (fleet_read.go): its own, two minutes long, beside the closed-review
+	// settle's (pr_closed.go).
+	fleetPRs prStateCache
+	// fleetOwners is fleet_list's cache of each stopped session's owner facts
+	// (last_owner_message_at, chief_texts_since_owner), per episode and streak
+	// (fleet_read.go).
+	fleetOwners fleetOwnerCache
 	// ledgers is the rendered views' tool-context ledger checkpoints, which a
 	// resuming socket starts from (mirror_ledger.go).
 	ledgers ledgerCheckpoints
@@ -132,6 +140,10 @@ type Server struct {
 	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
+
+	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
+	// fleetChat): owner id → *sync.Mutex.
+	fleetChatOpen sync.Map
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
@@ -981,7 +993,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx)}
+		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

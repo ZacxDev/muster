@@ -267,6 +267,7 @@ const (
 	// are sent (live).
 	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
 	envSessionState         = "MUSTER_SESSION_STATE"
+	envFleetDigest          = "MUSTER_FLEET_DIGEST"
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
@@ -908,7 +909,10 @@ type config struct {
 	ChiefNudgeChiefChatQuotesLiveOwners map[int64]bool
 	// SessionState runs session state's pass (MUSTER_SESSION_STATE=1; off by
 	// default): every session's state and its episodes (internal/sessionstate).
-	SessionState           bool
+	SessionState bool
+	// FleetDigest turns on the chief panel's fleet digest card and
+	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
+	FleetDigest            bool
 	ChiefNudgeAskThreshold float64
 
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
@@ -1978,6 +1982,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
+	c.FleetDigest = envFlag(getenv, envFleetDigest)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)

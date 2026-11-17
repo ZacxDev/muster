@@ -26,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/jobs"
@@ -147,11 +148,14 @@ func fullyWiredServer(t *testing.T) *Server {
 		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch: stubChiefDispatch{},
 		// NON-ZERO on purpose: an empty sender list is the feature off.
-		PRMail:      &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
-		PRSessions:  stubPRSessions{},
-		ClosedPRs:   &ClosedPRs{},
-		ChiefUsage:  struct{ chiefusage.Store }{},
-		AskAttempts: &askattempt.Mem{},
+		PRMail:        &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		PRSessions:    stubPRSessions{},
+		ClosedPRs:     &ClosedPRs{},
+		Fleet:         struct{ fleet.Store }{},
+		FleetPRStates: stubFleetPRStates{},
+		FleetDigest:   true,
+		ChiefUsage:    struct{ chiefusage.Store }{},
+		AskAttempts:   &askattempt.Mem{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
 			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.
@@ -217,6 +221,9 @@ type stubSummarizer struct{ focus.Summarizer }
 type stubRoutes struct{ plugins.RouteStore }
 type stubChiefDispatch struct{ plugins.DispatchStore }
 type stubPRSessions struct{ plugins.PRSessionStore }
+
+// stubFleetPRStates is a GitHub pull-request read that is never called.
+type stubFleetPRStates struct{ PRStateReader }
 type stubMusterReplier struct{ plugins.MusterReplier }
 type stubMailResumes struct{ plugins.MailResumeStore }
 type stubAttention struct{ attention.Store }

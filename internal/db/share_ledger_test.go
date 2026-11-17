@@ -34,13 +34,13 @@ var shareClasses = map[string]shareClass{
 	// agents: 0131 (team sharing phase 4, slice 4.4), once its credentials
 	// moved to agent_secrets (0128) and a team owner's row keeps none (0131's
 	// agents_team_no_secret).
-	"agents": {1, 2},
+	"agents":       {1, 2},
 	"ask_attempts": {1, 2}, "asks": {1, 2}, "attention_asks": {1, 2},
 	"chat_messages": {1, 2}, "chat_sessions": {1, 2}, "chief_nudges": {1, 2},
 	"chief_proposals": {1, 2}, "note_attachments": {1, 2},
 	"note_comments": {1, 2}, "notes": {1, 2}, "officer_items": {1, 2},
-	"officer_pr_loops": {1, 2}, "officer_public_branches": {1, 2},
-	"routing_rules":    {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
+	"officer_pr_loops": {1, 2}, "officer_public_branches": {1, 2}, "officer_connector_blocks": {1, 2},
+	"routing_rules": {1, 2}, "send_queue": {1, 2}, "session_episodes": {1, 2},
 	"session_prs": {1, 2}, "session_routes": {1, 2}, "task_ref_writes": {1, 2},
 	"task_sessions": {1, 2}, "uploads": {1, 2},
 	// managed: write manager
@@ -75,6 +75,9 @@ var personalOwned = []string{
 	"suggest_usage", "user_credentials",
 	// 0144: a chief's OpenRouter sessions' spend; the chief is personal.
 	"chief_session_llm_usage", "chief_session_llm_reservations",
+	// 0147: the fleet digest's marks; a team's sessions are not in an
+	// owner's fleet.
+	"fleet_owner_marks",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its
