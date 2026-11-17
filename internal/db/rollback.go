@@ -355,7 +355,7 @@ const pluginChiefInstructionsMigrationVersion = 141
 // chiefSessionLLMUsageMigrationVersion is 0141: chief_session_llm_usage (what
 // the chief's OpenRouter sessions spend, internal/chiefusage sessionllm.go),
 // owned and under the same row-level security; same treatment again. Its body
-// is idempotent (chief_turn_usage.cost_usd is added IF NOT EXISTS).
+// is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const chiefSessionLLMUsageMigrationVersion = 141
 

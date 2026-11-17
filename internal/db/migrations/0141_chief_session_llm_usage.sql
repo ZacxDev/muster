@@ -9,9 +9,6 @@
 --       estimated_requests). The daily cap is checked against sum(cost_usd)
 --       for the owner and day, the optional per-session cap against
 --       sum(cost_usd) for the session, so a restart resets neither.
---   chief_turn_usage.cost_usd   a chief turn's USD, NULL when muster booked none
---       for it (every turn not on OpenRouter, and every turn before the turn
---       path fills it).
 --
 -- 🔴 NUMBERS ONLY. No column can hold a prompt, a response, a header or the
 -- provider key. model is the session's stored model id (the pin).
@@ -35,9 +32,8 @@
 -- migration takes 0141 first.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
--- table or the column):
+-- table):
 --   DROP TABLE public.chief_session_llm_usage;
---   ALTER TABLE public.chief_turn_usage DROP COLUMN cost_usd;
 --   DELETE FROM schema_migrations WHERE version = 141;
 
 SET LOCAL lock_timeout = '3s';
@@ -87,6 +83,3 @@ CREATE POLICY owner_isolation ON public.chief_session_llm_usage
 
 GRANT SELECT, INSERT, UPDATE ON public.chief_session_llm_usage TO muster_app;
 GRANT USAGE, SELECT ON SEQUENCE public.chief_session_llm_usage_id_seq TO muster_app;
-
-ALTER TABLE public.chief_turn_usage ADD COLUMN IF NOT EXISTS cost_usd NUMERIC(14, 6)
-    CHECK (cost_usd IS NULL OR cost_usd >= 0);

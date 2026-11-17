@@ -393,8 +393,8 @@ type ChiefSessionModel struct {
 	// Input is the value as given (trimmed); Model is what the session is
 	// stored with, "openrouter/<catalogue id>", "" when refused.
 	Input, Model string
-	// Resolved: Model is not Input as given (a bare id prefixed, a name or a
-	// fuzzy match resolved to its id).
+	// Resolved: Model is not Input as given (a bare id prefixed, or a case or
+	// name variant resolved to its id).
 	Resolved bool
 	// Refusal is "" when it passed; Suggestions the closest models' stored
 	// forms, Ambiguous when the refusal is that several matched.
@@ -404,12 +404,15 @@ type ChiefSessionModel struct {
 }
 
 // ResolveChiefSessionModel is THE model check for a chief session on
-// OpenRouter: raw is accepted as an exact catalogue id (bare, or as
-// "openrouter/<id>"), a case or name variant of exactly one model
-// (matchCatalog, the agent model check's rule), or a UNIQUE fuzzy match
-// (chiefSessionFuzzy); several matches are refused with them as
-// suggestions, none with the closest ids. The catalogue rule is
-// chiefSessionCatalog's.
+// OpenRouter: raw is accepted only as an exact catalogue id (bare, or as
+// "openrouter/<id>"), or a case or name variant of exactly one model
+// (matchCatalog, the agent model check's rule). Anything else is refused:
+// several matches with them as suggestions, none with the closest ids.
+//
+// 🔴 NO FUZZY RESOLUTION HERE: a stored model is spent on, so a typed value
+// that only resembles a model is refused, never guessed. Fuzzy ranking is the
+// picker's search alone (handleChiefSessionModels, rankCatalog). The
+// catalogue rule is chiefSessionCatalog's.
 func (s *Server) ResolveChiefSessionModel(ctx context.Context, raw string) ChiefSessionModel {
 	in := strings.TrimSpace(raw)
 	out := ChiefSessionModel{Input: in}
@@ -431,36 +434,15 @@ func (s *Server) ResolveChiefSessionModel(ctx context.Context, raw string) Chief
 func resolveChiefSessionModel(in string, cat []CatalogModel) ChiefSessionModel {
 	out := ChiefSessionModel{Input: in}
 	r := matchCatalog(in, cat)
-	if r.Refusal == "" {
-		out.Model = r.Model
-		if !agents.SessionOnOpenRouter(out.Model) {
-			out.Model = agents.OpenRouterModelPrefix + out.Model
-		}
-		out.Resolved = out.Model != in
+	if r.Refusal != "" {
+		out.Refusal, out.Suggestions, out.Ambiguous = r.Refusal, r.Suggestions, r.Ambiguous
 		return out
 	}
-	if r.Ambiguous {
-		out.Refusal, out.Suggestions, out.Ambiguous = r.Refusal, r.Suggestions, true
-		return out
+	out.Model = r.Model
+	if !agents.SessionOnOpenRouter(out.Model) {
+		out.Model = agents.OpenRouterModelPrefix + out.Model
 	}
-	hits := chiefSessionFuzzy(in, cat)
-	switch {
-	case len(hits) == 1:
-		out.Model, out.Resolved = catalogSlug(hits[0].ID), true
-		return out
-	case len(hits) > 1:
-		out.Ambiguous = true
-		for i, h := range hits {
-			if i == modelSuggestionsMax {
-				break
-			}
-			out.Suggestions = append(out.Suggestions, catalogSlug(h.ID))
-		}
-		out.Refusal = fmt.Sprintf("model %q matches more than one OpenRouter model (%s): pick one", in,
-			strings.Join(out.Suggestions, ", "))
-		return out
-	}
-	out.Refusal, out.Suggestions = r.Refusal, r.Suggestions
+	out.Resolved = out.Model != in
 	return out
 }
 
@@ -473,20 +455,9 @@ func catalogSlug(id string) string {
 	return agents.OpenRouterModelPrefix + id
 }
 
-// chiefSessionFuzzyTier is the loosest searchrank tier a fuzzy match may be
-// (2: the query anywhere in the id or name). Tier 3, letters in order, is
-// the picker's, and too loose to resolve a model alone.
-const chiefSessionFuzzyTier = 2
-
-// chiefSessionFuzzy is every catalogue model whose id (with or without the
-// route prefix) or name matches q at searchrank tier chiefSessionFuzzyTier or
-// better, best first (then by id).
-func chiefSessionFuzzy(q string, cat []CatalogModel) []CatalogModel {
-	return rankCatalog(strings.TrimPrefix(q, agents.OpenRouterModelPrefix), cat, chiefSessionFuzzyTier)
-}
-
-// rankCatalog is the models matching q at tier maxTier or better, best tier
-// first, ties in the catalogue's (id) order.
+// rankCatalog is the models matching q at searchrank tier maxTier or better,
+// best tier first, ties in the catalogue's (id) order: the picker search's
+// ranking (handleChiefSessionModels), never a model check.
 func rankCatalog(q string, cat []CatalogModel, maxTier int) []CatalogModel {
 	type hit struct {
 		m    CatalogModel

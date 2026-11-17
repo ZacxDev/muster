@@ -185,13 +185,6 @@ type Turn struct {
 	// (agents.TurnUsage.Context) — what the chief chat's chip shows; valid when
 	// Known.
 	ContextTokens int64
-	// CostUSD is the turn's cost as muster's LLM proxy booked it
-	// (chief_turn_usage.cost_usd, migration 0141), nil when muster booked
-	// none: every turn whose model calls do not go through the proxy. For a
-	// chief session on OpenRouter it is the session's booked spend after the
-	// turn minus before it (SessionLLMStore.SessionSpent), the proxy's own
-	// count — never the runtime's word for it.
-	CostUSD *float64
 }
 
 // SessionContext is a chat session's context fill as its LATEST recorded turn

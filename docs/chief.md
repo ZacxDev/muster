@@ -931,10 +931,11 @@ runtime sends to it yet, so it does nothing until one does. It is off unless
   sends nothing.
 - **Choosing a model.** `GET /api/chief/openrouter-models?q=` (the admin only,
   signed in) returns up to 10 catalogue models matching `q`, each with its id,
-  name, context length and list price. A new session's model is accepted as an
-  exact catalogue id or a unique fuzzy match, and stored as `openrouter/<id>`.
-  An ambiguous match is refused with the candidates; no match is refused with
-  the closest ids. If the catalogue (OpenRouter's public list, cached hourly)
+  name, context length and list price; this search ranks fuzzily. A new
+  session's model is accepted only as an exact catalogue id, or a case or name
+  variant of exactly one model, and stored as `openrouter/<id>`. A value that
+  only resembles a model is refused with the closest ids, and one naming
+  several models with those candidates: pick one from the search. If the catalogue (OpenRouter's public list, cached hourly)
   cannot be read, a new model is **refused**, unless muster has a copy younger
   than 24 hours, which is then used. There is no fallback that passes a model
   on the shape of its id.

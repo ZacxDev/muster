@@ -3,7 +3,6 @@ package chiefusage
 import (
 	"context"
 	"errors"
-	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -71,21 +70,12 @@ func (s *PGStore) RecordTurn(ctx context.Context, t Turn) error {
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO chief_turn_usage (owner_id, chief_agent, trigger, plugin_name, sender, plugin_message_id,
 		outcome, rule_proposed, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, usage_known, duration_ms,
-		session_id, model, context_tokens, cost_usd)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		session_id, model, context_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		o, t.Chief, kind, cut(t.Trigger.Plugin, 40), cut(t.Trigger.Sender, 320), nullID(t.Trigger.MessageID), outcome, t.RuleProposed,
 		max(t.Tokens.Input, 0), max(t.Tokens.Output, 0), max(t.Tokens.CacheRead, 0), max(t.Tokens.CacheCreation, 0), t.Known, ms,
-		nullID(t.SessionID), cut(t.Model, 200), contextArg(t), costArg(t.CostUSD))
+		nullID(t.SessionID), cut(t.Model, 200), contextArg(t))
 	return err
-}
-
-// costArg is a turn's cost as stored: NULL when none was booked, never a
-// negative (a clock or rounding artefact of a difference reads as 0).
-func costArg(usd *float64) any {
-	if usd == nil || math.IsNaN(*usd) || math.IsInf(*usd, 0) {
-		return nil
-	}
-	return max(*usd, 0)
 }
 
 // contextArg is t's last-request fill as stored: NULL when no usage was reported.

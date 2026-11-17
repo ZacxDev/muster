@@ -238,9 +238,10 @@ var sessionCatalog = []CatalogModel{
 	{ID: "openrouter/auto", Name: "Auto Router"},
 }
 
-// TestTheChiefSessionModelCheck: an exact id (bare and in the stored form), a
-// unique fuzzy match, an ambiguous one (refused with both as suggestions) and
-// none (refused).
+// TestTheChiefSessionModelCheck: an exact id (bare and in the stored form) and
+// a case or name variant of one model pass; a value that only RESEMBLES a model
+// — even one matching a single model fuzzily — is refused with the closest ids,
+// and one naming several models is refused as ambiguous with them.
 func TestTheChiefSessionModelCheck(t *testing.T) {
 	cases := []struct {
 		in, model string
@@ -250,8 +251,12 @@ func TestTheChiefSessionModelCheck(t *testing.T) {
 		{in: "vendor-a/alpha-7b", model: "openrouter/vendor-a/alpha-7b"},
 		{in: "openrouter/vendor-b/beta-13b", model: "openrouter/vendor-b/beta-13b"},
 		{in: "openrouter/auto", model: "openrouter/auto"},
-		{in: "gamma turbo", model: "openrouter/vendor-d/gamma-turbo-preview"},
-		{in: "beta", ambiguous: true, suggest: []string{"openrouter/vendor-b/beta-13b", "openrouter/vendor-c/beta-70b-instruct"}},
+		{in: "VENDOR-A/Alpha-7B", model: "openrouter/vendor-a/alpha-7b"},
+		{in: "Vendor B: Beta 13B", model: "openrouter/vendor-b/beta-13b"},
+		// A unique fuzzy match is NOT accepted: the picker's search finds it,
+		// the stored-model check refuses it.
+		{in: "gamma turbo"},
+		{in: "beta"},
 		{in: "zzqx-nothing-like-it"},
 	}
 	for _, c := range cases {
@@ -268,6 +273,21 @@ func TestTheChiefSessionModelCheck(t *testing.T) {
 		if c.suggest != nil && strings.Join(got.Suggestions, ",") != strings.Join(c.suggest, ",") {
 			t.Errorf("%q: suggestions %v, want %v", c.in, got.Suggestions, c.suggest)
 		}
+		if c.model == "" && len(got.Suggestions) == 0 {
+			t.Errorf("%q: refused with no closest candidates", c.in)
+		}
+	}
+	// Ambiguous: a name variant of two models (the same display name twice).
+	twin := append([]CatalogModel{}, sessionCatalog...)
+	twin = append(twin, CatalogModel{ID: "vendor-e/alpha-7b-mirror", Name: "Vendor A: Alpha 7B"})
+	got := resolveChiefSessionModel("Vendor A: Alpha 7B", twin)
+	if got.Model != "" || !got.Ambiguous ||
+		strings.Join(got.Suggestions, ",") != "openrouter/vendor-a/alpha-7b,openrouter/vendor-e/alpha-7b-mirror" {
+		t.Errorf("ambiguous name: %+v, want refused with both", got)
+	}
+	// The picker's search still finds what the check refuses.
+	if hits := rankCatalog("gamma turbo", sessionCatalog, 3); len(hits) != 1 || hits[0].ID != "vendor-d/gamma-turbo-preview" {
+		t.Errorf("search for \"gamma turbo\" = %+v, want the one model", hits)
 	}
 }
 
