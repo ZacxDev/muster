@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { Page, Response } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { baseURL, dsn, hookToken, repoRoot } from '../lib/env';
+import { authState, baseURL, dsn, hookToken, repoRoot } from '../lib/env';
 
 // THE WHOLE OFFICER FLOW (officers redesign O-F), on the shared server — a
 // database, so the built-in officer store is on; no Kubernetes agent plane and
@@ -202,18 +202,18 @@ for (const size of sizes) {
       const q1 = (await items(id)).filter((it) => it.kind === 'manual.run');
       expect(q1.length, 'one Run now queues exactly one manual.run item').toBe(1);
       expect(q1[0].status, 'the item waits').toBe('open');
-      expect(notice(page)).toBe('queued');
+      await expect.poll(() => notice(page)).toBe('queued');
       await expect(page.locator('#officer-queue [data-item]')).toHaveCount(1);
       await submitTo(page, '#officer-actions', '/run');
       const q2 = (await items(id)).filter((it) => it.kind === 'manual.run');
       expect(q2.map((it) => it.id), 'a second Run now while the first waits adds no item').toEqual([q1[0].id]);
-      expect(notice(page)).toBe('already-queued');
+      await expect.poll(() => notice(page)).toBe('already-queued');
       await expect(page.locator('#officer-queue [data-item]')).toHaveCount(1);
 
       // 5. Live; then pause (still Live) and resume.
       await submitTo(page, '#officer-actions', '/mode');
       expect((await declared(id)).mode, 'Switch to Live makes it live on the server').toBe('live');
-      expect(notice(page)).toBe('mode-live');
+      await expect.poll(() => notice(page)).toBe('mode-live');
       await expect(page.locator('#officer-actions form[action$="/mode"] input[name=mode]')).toHaveValue('shadow');
       await submitTo(page, '#officer-actions', '/pause');
       const paused = await declared(id);
@@ -255,7 +255,7 @@ for (const size of sizes) {
       await page.selectOption('#schedule-preset', 'hourly');
       await page.fill('#schedule-name', 'pass');
       await submitTo(page, '#officer-schedules', '/schedules');
-      expect(notice(page)).toBe('schedule-saved');
+      await expect.poll(() => notice(page)).toBe('schedule-saved');
       const s1 = await schedules(id);
       expect(s1.map((s) => [s.name, s.cron, s.enabled]), 'the schedule is replaced, not added').toEqual([['pass', '0 * * * *', true]]);
       await expect(page.locator('#officer-schedules [data-schedule]')).toHaveCount(1);
@@ -271,8 +271,8 @@ for (const size of sizes) {
       await submitTo(page, '#officer-delete', '/delete');
       expect(await declared(id), 'Delete removes it from the server').toBeNull();
       expect((await apiJSON('/api/officers/defs')).defs.map((d: any) => d.officer), 'Delete removes its def').not.toContain(id);
-      expect(new URL(page.url()).pathname).toBe('/officers');
-      expect(notice(page)).toBe('deleted');
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/officers');
+      await expect.poll(() => notice(page)).toBe('deleted');
       await expect(page.locator(`[data-officer="${id}"]`)).toHaveCount(0);
       await expect(page.locator('#officers-mine [data-officer]')).toHaveCount(before.size);
       await noSidewaysScroll(page);
@@ -322,8 +322,25 @@ for (const size of sizes) {
       team = mkteam('create', `E2E officer team ${size.name}`);
       expect(team, 'the team was made').toMatch(/^\d+$/);
     });
-    test.afterAll(async () => {
-      if (team) mkteam('remove', team);
+    // 🔴 A red run must not leave the team owning officer rows: officer_defs and
+    // officer_types reference users(id) with no cascade, so a leftover would
+    // fail `mkteam remove` here AND every later `seed --accounts-only` in the
+    // leg, turning one red into several. Delete what it still owns the way a
+    // user would (the page's Delete), then remove the team.
+    test.afterAll(async ({ browser }) => {
+      if (!team) return;
+      if (mkteam('officers', team) !== '0 0') {
+        const ctx = await browser.newContext({ storageState: authState, baseURL });
+        try {
+          const page = await ctx.newPage();
+          await page.goto(`/officers/${enc(`e2e-team-minder-${size.name}:main`)}?owner=${team}`);
+          await page.fill('#officer-delete-confirm', `e2e-team-minder-${size.name}:main`);
+          await submitTo(page, '#officer-delete', '/delete');
+        } finally {
+          await ctx.close();
+        }
+      }
+      mkteam('remove', team);
     });
 
     test('refuses the session_minder permission with the error on its step, and writes nothing', async ({ page }) => {
