@@ -388,7 +388,8 @@ check: vet test leakscan css-check verb-ledger install-guide-test features-confi
 
 # The release pipeline, without a tag: the exact asset set the `release` job in
 # .github/workflows/ci.yml publishes, built and self-verified into dist/
-# (scripts/release-build.sh). CI's `release-dry-run` job runs it on every PR.
+# (scripts/release-build.sh). CI's `release-dry-run` job runs it on every PR
+# ready for review (not on a draft) and on every push to main.
 RELEASE_VERSION ?= 0.0.0
 release-dry-run:
 	scripts/release-build.sh $(RELEASE_VERSION)
