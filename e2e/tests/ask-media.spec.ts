@@ -12,11 +12,12 @@ import { startServer, Running } from '../lib/server';
 //
 //   the agent's pod sends a PNG to POST /agent/ask-attachments on the connect
 //   door with its own token (what `ccd ask-attach` does) → attention_ask over
-//   /mcp with attachment_ids and a context → on /attention the ask's card
-//   shows the thumbnail (loaded, through the authorised route) and the why;
-//   on /attention/asks/<id> too; tapping the thumbnail opens the full-size
-//   image in a new tab, served image/png to the signed-in session — and the
-//   same URL without a session is refused.
+//   /mcp with attachment_ids and a context → on /attention the ask's feed
+//   card shows the thumbnail (loaded, through the authorised route) and the
+//   why, at 390×844 and 1280×800; tapping the thumbnail opens the full-size
+//   image in a new tab, served image/png to the signed-in session, without
+//   toggling the card; /attention/asks/<id> (the same card, expanded) shows
+//   them too — and the same URL without a session is refused.
 //
 // 🔴 RED AT origin/main: there attention_ask has no attachment_ids (the call
 // answers a tool error for the unknown argument) and no ask draws media.
@@ -94,7 +95,7 @@ let agentMade = false;
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
-test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 412, height: 915 } });
+test.use({ storageState: { cookies: [], origins: [] } });
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
@@ -140,9 +141,9 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<str
   return j.result!.content[0].text;
 }
 
-test('an ask with an image shows its thumbnail on Asks and on its own page, and the thumbnail opens the full-size image', async ({ page, context }) => {
-  test.setTimeout(90_000);
-  // The pod's upload (what `ccd ask-attach` sends), on the connect door.
+// fileAsk is a new ask by the agent carrying one PNG (sent as the pod's
+// `ccd ask-attach` would) and a context: its id, the file's route, the why.
+async function fileAsk(tag: string): Promise<{ id: number; fileURL: string; why: string }> {
   const up = await fetch(connectURL + '/agent/ask-attachments?filename=screen.png', {
     method: 'POST',
     headers: { 'X-Muster-Token': agentToken, 'Content-Type': 'application/octet-stream' },
@@ -151,42 +152,63 @@ test('an ask with an image shows its thumbnail on Asks and on its own page, and 
   expect(up.status, await up.clone().text()).toBe(201);
   const rec = (await up.json()) as { id: string; type: string };
   expect(rec.type).toBe('image/png');
-  const why = 'Checking the new header on a phone before I ship it';
-  const text = await mcpCall('attention_ask', { question: 'Does the header look right?', options: ['ship it', 'fix it'], attachment_ids: [rec.id], context: why });
+  const why = `Checking the new header (${tag}) before I ship it`;
+  const text = await mcpCall('attention_ask', { question: `Does the header look right? (${tag})`, options: ['ship it', 'fix it'], attachment_ids: [rec.id], context: why });
   const id = (JSON.parse(text) as { id: number }).id;
-  const fileURL = `/attention/asks/${id}/attachments/${rec.id}`;
+  return { id, fileURL: `/attention/asks/${id}/attachments/${rec.id}`, why };
+}
 
-  await signIn(page, origin);
-  // The Asks page: the ask's card carries the thumbnail (loaded) and the why.
-  await page.goto(origin + '/attention');
-  const card = page.locator(`#ask-${id}`);
-  const thumb = card.locator('[data-ask-media-image] img');
-  await expect(thumb).toHaveAttribute('src', fileURL);
-  await expect.poll(() => thumb.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth), { timeout: 10_000 }).toBe(2);
-  await expect(card.locator('[data-ask-why="agent"]')).toContainText(why);
+// THE CARD FEED (#768): the ask's Open card carries the thumbnail and the why
+// in its slots, at a phone and a desktop width; tapping the thumbnail opens the
+// full-size image and does NOT toggle the card (the card's script ignores a
+// tap on media); the ask's own page — the same card, expanded — carries them
+// too.
+for (const vp of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 } } },
+]) {
+  test.describe(vp.name, () => {
+    test.use(vp.use);
+    test('an ask with an image shows its thumbnail on its feed card and its page; a tap opens it full size and leaves the card as it was', async ({ page, context }) => {
+      test.setTimeout(90_000);
+      const { id, fileURL, why } = await fileAsk(vp.name);
+      await signIn(page, origin);
+      await page.goto(origin + '/attention');
+      const card = page.locator(`#ask-${id}`);
+      const thumb = card.locator('[data-ask-media-image] img');
+      await expect(thumb).toBeVisible();
+      await expect(thumb).toHaveAttribute('src', fileURL);
+      await expect.poll(() => thumb.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth), { timeout: 10_000 }).toBe(2);
+      await expect(card.locator('[data-ask-why="agent"]')).toContainText(why);
+      await expect(card.locator('[data-ask-media-image]')).toHaveCount(1);
 
-  // The ask's own page: the same.
-  await page.goto(origin + `/attention/asks/${id}`);
-  const pageThumb = page.locator('#ask-page [data-ask-media-image] img');
-  await expect(pageThumb).toHaveAttribute('src', fileURL);
-  await expect.poll(() => pageThumb.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth), { timeout: 10_000 }).toBe(2);
-  await expect(page.locator('#ask-page [data-ask-why="agent"]')).toContainText(why);
+      // A tap on the thumbnail opens the full-size image in a new tab, and
+      // the card is not toggled by it.
+      const before = await card.getAttribute('data-expanded');
+      const [full] = await Promise.all([context.waitForEvent('page'), card.locator('[data-ask-media-image]').click()]);
+      await full.waitForLoadState();
+      expect(new URL(full.url()).pathname).toBe(fileURL);
+      const served = await full.request.get(origin + fileURL);
+      expect(served.status()).toBe(200);
+      expect(served.headers()['content-type']).toBe('image/png');
+      expect(Buffer.compare(await served.body(), PNG)).toBe(0);
+      await full.close();
+      await page.waitForTimeout(300);
+      expect(await card.getAttribute('data-expanded'), 'a tap on the thumbnail toggled the card').toBe(before);
 
-  // Tapping the thumbnail opens the full-size image in a new tab.
-  const [full] = await Promise.all([
-    context.waitForEvent('page'),
-    page.locator('#ask-page [data-ask-media-image]').click(),
-  ]);
-  await full.waitForLoadState();
-  expect(new URL(full.url()).pathname).toBe(fileURL);
-  const served = await full.request.get(origin + fileURL);
-  expect(served.status()).toBe(200);
-  expect(served.headers()['content-type']).toBe('image/png');
-  expect(Buffer.compare(await served.body(), PNG)).toBe(0);
-  await full.close();
+      // The ask's own page: the same card, expanded, with the same media.
+      await page.goto(origin + `/attention/asks/${id}`);
+      const pageThumb = page.locator('#ask-page [data-ask-media-image] img');
+      await expect(pageThumb).toBeVisible();
+      await expect(pageThumb).toHaveAttribute('src', fileURL);
+      await expect.poll(() => pageThumb.evaluate((e: HTMLImageElement) => e.complete && e.naturalWidth), { timeout: 10_000 }).toBe(2);
+      await expect(page.locator('#ask-page [data-ask-why="agent"]')).toContainText(why);
+      await expect(page.locator('#ask-page [data-ask-media-image]')).toHaveCount(1);
 
-  // The same URL with no session is not the file.
-  const anon = await fetch(origin + fileURL, { redirect: 'manual' });
-  expect(anon.status, 'no session, no file').not.toBe(200);
-  expect(Buffer.from(await anon.arrayBuffer()).includes(PNG.subarray(0, 8))).toBe(false);
-});
+      // The same URL with no session is not the file.
+      const anon = await fetch(origin + fileURL, { redirect: 'manual' });
+      expect(anon.status, 'no session, no file').not.toBe(200);
+      expect(Buffer.from(await anon.arrayBuffer()).includes(PNG.subarray(0, 8))).toBe(false);
+    });
+  });
+}

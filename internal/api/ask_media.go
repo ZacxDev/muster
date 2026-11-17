@@ -446,9 +446,3 @@ func heldWhy(it attentionItem) ui.AskWhy {
 	}
 	return askWhyView(w)
 }
-
-// askMediaHTML is an ask's why line and media strip, "" for neither: what the
-// Asks card and the ask page draw under the question.
-func askMediaHTML(askID int64, why *attention.AskWhy, files []attention.Attachment) string {
-	return ui.AskContextLine(askWhyView(why)) + ui.AskMediaStrip(askMediaView(askID, files))
-}

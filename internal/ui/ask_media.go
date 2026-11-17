@@ -47,13 +47,14 @@ const askFileIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="non
 
 // AskMediaStrip is an ask's attachments: each image a thumbnail linking to
 // itself full-size (a new tab), each other file a chip with its name and size
-// that downloads it. "" for none.
+// that downloads it. "" for none. data-asks-media keeps the Asks card's script
+// from taking a tap or a swipe that starts on it (ui/asks_card.go).
 func AskMediaStrip(files []AskFile) string {
 	if len(files) == 0 {
 		return ""
 	}
 	esc := html.EscapeString
-	out := `<div class="` + AskMediaClass + `" data-ask-media role="list" aria-label="Attachments">`
+	out := `<div class="` + AskMediaClass + `" data-ask-media data-asks-media role="list" aria-label="Attachments">`
 	for _, f := range files {
 		label := f.Name + " (" + f.Size + ")"
 		if f.Image {

@@ -1837,7 +1837,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		// A HELD QUESTION is answered in its session, never here: the row
 		// says so in one muted line under the question (an operator
 		// decision), inside the row link, so the card stays one link.
-		return row(attentionWaitLineHTML(it) + ui.AskContextInline(heldWhy(it)) + attentionHeldCueHTML)
+		return row(attentionWaitLineHTML(it) + attentionHeldCueHTML)
 	case it.Kind == attentionKindTask:
 		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
 	}
@@ -1884,10 +1884,6 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	if it.Detail != "" {
 		b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
 `)
-	}
-	// An agent's ask: why it is here and the files it carries (ask_media.go).
-	if it.Kind == attentionKindAsk {
-		b.WriteString(askMediaHTML(it.AskID, it.Why, it.Attachments))
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(officerContextHTML(it.Context))
