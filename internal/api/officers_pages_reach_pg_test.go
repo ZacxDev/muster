@@ -391,25 +391,68 @@ func TestAStoredOutOfReachEscalationIsRefusedOnTheNextEdit(t *testing.T) {
 	}
 }
 
-// TestTheWizardHasNoOneChoiceStep (D1) and draws no per-process pass (D2):
-// with only "Blank officer" there is no "Start from" step (its value rides in
-// a hidden field, and the wizard opens at the name), and neither the list nor
-// an officer's page draws a "last pass" this server's wake loop remembers.
-// CONTROL: the wizard still creates (the hidden template is submitted).
-func TestTheWizardHasNoOneChoiceStep(t *testing.T) {
+// TestTheWizardStartsFromATemplate (officers O-D; round 0's D1 brought back):
+// with the catalogue's four templates the wizard opens at "Start from", Blank
+// chosen. Choosing the Session minder (the form posted with pick_template, as
+// the script and the no-JS button do) redraws it at the next step with the
+// template's starting values, which the browser then submits as drawn: the
+// create lands an officer whose type grants session_minder. The QA template
+// by its link prefills a schedule. And (D2) neither the list nor an officer's
+// page draws a "last pass" this server's wake loop remembers.
+func TestTheWizardStartsFromATemplate(t *testing.T) {
 	r := newPageRig(t, declRigOpts{pods: true})
 	body := r.page(t, 1, http.MethodGet, "/officers/new", nil).Body.String()
-	if strings.Contains(body, `data-step="1"`) || strings.Contains(body, "Start from") || !strings.Contains(body, `data-first-step="2"`) {
-		t.Errorf("the wizard with one template: a step 1 %v, its words %v, opens at step 2 %v", strings.Contains(body, `data-step="1"`),
-			strings.Contains(body, "Start from"), strings.Contains(body, `data-first-step="2"`))
+	if !strings.Contains(body, `data-step="1"`) || !strings.Contains(body, "Start from") || !strings.Contains(body, `data-first-step="1"`) {
+		t.Fatalf("the wizard with four templates: a step 1 %v, its words %v, opens at step 1 %v", strings.Contains(body, `data-step="1"`),
+			strings.Contains(body, "Start from"), strings.Contains(body, `data-first-step="1"`))
+	}
+	for _, k := range []string{"blank", "session-minder", "marketing", "qa"} {
+		if !strings.Contains(body, `name="template" value="`+k+`"`) {
+			t.Errorf("no %q choice on the first step", k)
+		}
 	}
 	sub := browserForm(t, body, "officer-form")
-	if sub.Get("template") != "blank" {
-		t.Errorf("the wizard submits template %q; want blank", sub.Get("template"))
+	if sub.Get("template") != "blank" || sub.Get("name") != "" || sub.Get("charter") != "" {
+		t.Fatalf("the first draw submits template %q name %q charter %q; want blank and nothing filled", sub.Get("template"), sub.Get("name"), sub.Get("charter"))
 	}
+
+	sub.Set("template", "session-minder")
+	sub.Set(wizardTemplateField, "1")
+	rec := r.page(t, 1, http.MethodPost, "/officers/new", sub)
+	picked := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(picked, `data-first-step="2"`) || !strings.Contains(picked, `data-template="session-minder"`) {
+		t.Fatalf("choosing the Session minder: %d, opens at step 2 %v", rec.Code, strings.Contains(picked, `data-first-step="2"`))
+	}
+	if _, ok := r.s.officerRT.reg.ForOwner(1, "session-minder:main"); ok {
+		t.Fatal("choosing a template created an officer")
+	}
+	form := browserForm(t, picked, "officer-form")
+	if form.Get("template") != "session-minder" || form.Get("name") != "Session minder" || form.Get("wake") != "manual" ||
+		form.Get("runtime") != "auto" || form.Get("mode") != "shadow" || form.Get("repo") != "" ||
+		strings.Join(form["cap"], ",") != "session_minder" || !strings.Contains(form.Get("charter"), "session.stalled") {
+		t.Fatalf("the Session minder's drawn values: %v", form)
+	}
+	if rec := r.page(t, 1, http.MethodPost, "/officers/new", form); rec.Code != http.StatusSeeOther ||
+		rec.Header().Get("Location") != "/officers/session-minder:main?notice=created" {
+		t.Fatalf("the create as drawn: %d %q %.400s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	if ok, err := r.store.TypeGrants(authz.System(context.Background()), 1, "session-minder:main", "session_minder"); err != nil || !ok {
+		t.Fatalf("the created Session minder's type grants session_minder: %v, %v", ok, err)
+	}
+	if got, ok, err := r.store.SessionMinder(asUser(1), 1); err != nil || !ok || got != "session-minder:main" {
+		t.Fatalf("the owner's session minder: %q %v %v", got, ok, err)
+	}
+
+	qa := browserForm(t, r.page(t, 1, http.MethodGet, "/officers/new?template=qa", nil).Body.String(), "officer-form")
+	if qa.Get("template") != "qa" || qa.Get("name") != "QA" || qa.Get("wake") != "schedule" || qa.Get("schedule_preset") != "weekdays" ||
+		len(qa["cap"]) != 0 || !strings.Contains(qa.Get("charter"), "You test; you never fix.") {
+		t.Fatalf("the QA template's drawn values: %v", qa)
+	}
+
 	for k, v := range wizardForm() {
 		sub[k] = v
 	}
+	sub.Del(wizardTemplateField)
 	if rec := r.page(t, 1, http.MethodPost, "/officers/new", sub); rec.Code != http.StatusSeeOther {
 		t.Fatalf("control: the create: %d %.400s", rec.Code, rec.Body.String())
 	}

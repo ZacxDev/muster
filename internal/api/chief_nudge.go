@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -334,14 +335,21 @@ type nudgeCandidate struct {
 	// anchor where it was).
 	ownerLast bool
 	// episodeID: with session state on, the session's open episode, which the
-	// decision is taken in (nudgeEpisodeFor); 0 with it off.
+	// decision is taken in (stalledSessions); 0 with it off. episode is that
+	// episode as read then (zero with it off, and in the stall facts).
 	episodeID int64
+	episode   sessionstate.Episode
 }
 
 // sweepOwnerNudges decides octx's owner's candidates, while the pass has
 // budget. An owner with no chief (or its chief off) has nothing decided: the
-// nudges are the chief's.
+// nudges are the chief's. 🔴 Nor does an owner whose stops a SESSION MINDER
+// minds (sessionMinderOf, session_minder.go): its candidates are that
+// officer's items, so the owner is never nudged twice for one stop.
 func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFlight map[string]bool, p *nudgePass) {
+	if s.sessionMinderOf(octx, o.ID) != "" {
+		return
+	}
 	chief, err := s.chiefAgent(octx)
 	if err != nil {
 		return
@@ -377,22 +385,14 @@ func (s *Server) sweepOwnerNudges(octx context.Context, o chiefnudge.Owner, inFl
 // inFlight names the sessions with a live decision still in flight (an open
 // notice, a queued nudge).
 func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool) []nudgeCandidate {
-	idle := s.chiefNudgeIdle()
 	var out []nudgeCandidate
-	for _, c := range s.stallInputs(octx, inFlight) {
-		if chiefnudge.Exclude(c.Session, idle) != "" {
-			continue
-		}
+	for _, c := range s.stalledSessions(octx, s.stallInputs(octx, inFlight)) {
 		decided, err := s.ext.ChiefNudges.Decided(octx, c.Kind, c.Key, c.StreakKey)
 		if err != nil || decided {
 			continue
 		}
-		if s.sessionStateOn() {
-			id, ok := s.nudgeEpisodeFor(octx, c.Session)
-			if !ok {
-				continue
-			}
-			c.episodeID = id
+		if c.episodeID != 0 && s.nudgeEpisodeJudged(octx, c.episodeID) {
+			continue
 		}
 		c.Title, c.TitleAge = s.nudgeTitle(octx, c.Session)
 		out = append(out, c)
@@ -400,10 +400,38 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 	return out
 }
 
-// nudgeEpisodeFor is, with session state on, the open episode c's decision
-// would be taken in: ok false when there is none (the state pass opens it
-// within its interval; the next sweep judges it), when it cannot be read, or
-// when the chief has already judged it.
+// 🔴 THE STALL NUDGES' CANDIDATE RULE, ONE PLACE. stalledSessions is the
+// sessions of facts (stallInputs/stallFacts, in their order) that the chief's
+// sweep would put to the chief, before its own record of what it already
+// decided: chiefnudge.Exclude at the configured idle (ChiefNudges.Idle) and,
+// with session state on, an open episode for each (c.episodeID, c.episode) —
+// one with none, or whose episode cannot be read, is left out (the state pass
+// opens it within its interval). Its readers: the chief's sweep
+// (nudgeCandidates, which adds "not decided yet") and the Session minder's
+// feed (session_minder.go, which adds "not fed yet") — so a minder is fed
+// exactly the stops the chief would have judged, never a copy of the rule.
+func (s *Server) stalledSessions(octx context.Context, facts []nudgeCandidate) []nudgeCandidate {
+	idle := s.chiefNudgeIdle()
+	var out []nudgeCandidate
+	for _, c := range facts {
+		if chiefnudge.Exclude(c.Session, idle) != "" {
+			continue
+		}
+		if s.sessionStateOn() {
+			ep, ok, err := s.ext.Episodes.OpenFor(octx, c.Kind, c.Key)
+			if err != nil || !ok {
+				continue
+			}
+			c.episodeID, c.episode = ep.ID, ep
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// nudgeEpisodeJudged reports whether the chief has already judged open
+// episode id (a candidate's, stalledSessions), or whether that cannot be read:
+// either way the sweep leaves the stop alone this pass.
 //
 // 🔴 PER IDLE EPISODE, AT MOST ONCE (docs/design/session-state.md, "The Chief:
 // nudge, leave or notify"). An episode is one stop, which can hold several
@@ -413,15 +441,9 @@ func (s *Server) nudgeCandidates(octx context.Context, inFlight map[string]bool)
 // episodeVerdict pushes past episodeChiefWait), never judged again. The
 // partial unique index chief_nudges_one_per_episode (0078) holds the same line
 // across passes and replicas.
-func (s *Server) nudgeEpisodeFor(octx context.Context, c chiefnudge.Session) (int64, bool) {
-	ep, ok, err := s.ext.Episodes.OpenFor(octx, c.Kind, c.Key)
-	if err != nil || !ok {
-		return 0, false
-	}
-	if _, decided, err := s.ext.ChiefNudges.ForEpisode(octx, ep.ID); err != nil || decided {
-		return 0, false
-	}
-	return ep.ID, true
+func (s *Server) nudgeEpisodeJudged(octx context.Context, id int64) bool {
+	_, decided, err := s.ext.ChiefNudges.ForEpisode(octx, id)
+	return err != nil || decided
 }
 
 // 🔴 THE STALL FACTS, ONE PLACE. stallInputs is octx's owner's sessions with

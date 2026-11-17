@@ -491,3 +491,62 @@ func TestAnEditKeepsWhatTheFormDoesNotShow(t *testing.T) {
 	}
 	want("Switch to Shadow")
 }
+
+// TestATeamOfficerIsRefusedTheSessionMinderPermission (officers O-D round 1's
+// G4): only a person's stops are minded, so the wizard's create AND Edit of a
+// TEAM officer with "Mind my stopped sessions" ticked are refused on the
+// permissions step with the team words, and nothing is stored with the grant.
+// The form notes that one minder is used per owner and none on a team.
+// CONTROL: the same form without the box creates the team officer, and the
+// same box on the manager's PERSONAL officer is taken.
+func TestATeamOfficerIsRefusedTheSessionMinderPermission(t *testing.T) {
+	r := newPageRig(t, declRigOpts{pods: true})
+	dsn := dbtest.DSN(t)
+	dbtest.OwnerExec(t, dsn, `INSERT INTO team_members (team_id, user_id, role, added_by) VALUES (987302, 1, 'manager', 1) ON CONFLICT DO NOTHING`)
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE team_id = 987302`)
+		dbtest.OwnerExec(t, dsn, `DELETE FROM team_members WHERE team_id = 987302`)
+	})
+	const words = "a team&#39;s officer cannot mind sessions"
+	sys := authz.System(context.Background())
+	team := strconv.FormatInt(declTeam, 10)
+
+	if body := r.page(t, 1, http.MethodGet, "/officers/new", nil).Body.String(); !strings.Contains(body,
+		"Only one session minder is used per owner (the first by id), and it has no effect on a team's officers.") {
+		t.Errorf("the permissions step does not note one minder per owner and none on a team")
+	}
+
+	minder := wizardForm()
+	minder.Set("owner", team)
+	minder["cap"] = []string{builtin.CapSessionMinder}
+	if rec := r.page(t, 1, http.MethodPost, "/officers/new", minder); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), words) {
+		t.Fatalf("a team officer created with session_minder: %d; want 400 with %q\n%.800s", rec.Code, words, rec.Body.String())
+	}
+	if _, err := r.store.GetDeclared(sys, declTeam, declID); !errors.Is(err, builtin.ErrNotFound) {
+		t.Fatalf("a refused team create stored the officer: %v", err)
+	}
+
+	plain := wizardForm()
+	plain.Set("owner", team)
+	if rec := r.page(t, 1, http.MethodPost, "/officers/new", plain); rec.Code != http.StatusSeeOther {
+		t.Fatalf("control: the team create without the box: %d %.600s", rec.Code, rec.Body.String())
+	}
+	edit := wizardForm()
+	edit.Set("owner", team)
+	edit["cap"] = []string{builtin.CapSessionMinder}
+	if rec := r.page(t, 1, http.MethodPost, "/officers/"+declID+"/edit", edit); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), words) {
+		t.Fatalf("a team officer edited to session_minder: %d; want 400 with %q\n%.800s", rec.Code, words, rec.Body.String())
+	}
+	if ok, err := r.store.TypeGrants(sys, declTeam, declID, builtin.CapSessionMinder); err != nil || ok {
+		t.Fatalf("a refused team edit stored the grant: %v, %v", ok, err)
+	}
+
+	mine := wizardForm()
+	mine["cap"] = []string{builtin.CapSessionMinder}
+	if rec := r.page(t, 1, http.MethodPost, "/officers/new", mine); rec.Code != http.StatusSeeOther {
+		t.Fatalf("control: a personal officer with session_minder: %d %.600s", rec.Code, rec.Body.String())
+	}
+	if ok, err := r.store.TypeGrants(sys, 1, declID, builtin.CapSessionMinder); err != nil || !ok {
+		t.Fatalf("control: the personal officer's grant: %v, %v", ok, err)
+	}
+}

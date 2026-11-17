@@ -226,6 +226,67 @@ const CapOutboundDrafts = "outbound_drafts"
 // The outreach guards (OutreachGuardTx) hold whether or not it is granted.
 const CapContacts = "contacts"
 
+// CapSessionMinder is the type capability that makes a builtin officer its
+// owner's SESSION MINDER (the wizard's "Session minder" template; internal/api
+// session_minder.go): "capabilities": ["session_minder"] in its type's
+// policy. While an officer of the owner's that grants it is defined,
+// switched on and RUNS (internal/api minderRuns: the live roster resolved it
+// somewhere), the chief's stall nudges skip that owner, and each stalled
+// session episode the nudges would have judged becomes one of its items
+// instead. It offers no tool.
+const CapSessionMinder = "session_minder"
+
+// SessionMinder is owner's ACTIVE session minder: the lowest-id officer of
+// owner's that is switched on (not paused; a deleted officer has no row) and
+// whose type grants CapSessionMinder. ok false when owner has none.
+func (s *Store) SessionMinder(ctx context.Context, owner int64) (officer string, ok bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT d.officer FROM officer_defs d
+		JOIN officer_types t ON t.owner_id = d.owner_id AND t.key = d.type_key
+		WHERE d.owner_id = $1 AND d.enabled
+			AND jsonb_typeof(t.policy->'capabilities') = 'array' AND t.policy->'capabilities' ? $2
+		ORDER BY d.officer LIMIT 1`, owner, CapSessionMinder).Scan(&officer)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return officer, true, nil
+}
+
+// EnqueueOnce adds an open item unless owner's officer has EVER had an item
+// of that kind and subject — live or finished — so a subject is worked at
+// most once (a session minder's episode: one item per stop, however long the
+// stop stays open after the item is done). created false, id 0, when one
+// existed or the officer is not defined. Two concurrent callers still land
+// one row: the live-subject index refuses the second.
+func (s *Store) EnqueueOnce(ctx context.Context, owner int64, n NewItem, now time.Time) (id int64, created bool, err error) {
+	payload := n.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	tier, prio := n.Tier, n.Priority
+	if tier == "" {
+		tier = "judgement"
+	}
+	if prio == "" {
+		prio = "normal"
+	}
+	err = s.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $9
+		WHERE EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND officer = $2)
+			AND NOT EXISTS (SELECT 1 FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4)
+		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
+		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
 // officerTypeKey is THE SQL for the type key of officer $2 of owner $1: its
 // def's type_key — a DB-declared officer's own type (migration 0136, round
 // 0's F5) — or, with no def, the id's part before the colon (0118's rule, the

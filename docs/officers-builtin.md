@@ -684,8 +684,9 @@ Claude Code missing or not logged in) — the same answer as
 
 **New officer** is a wizard, one step at a time:
 
-1. **Start from** — a template. Drawn only when there are two or more; this
-   version has one, *Blank officer*, so the wizard starts at step 2.
+1. **Start from** — a template ([below](#templates)), *Blank officer* by
+   default. Next with another one chosen redraws the wizard with its
+   starting values (without the script: **Use this starting point**).
 2. **Name and instructions** — its name (its id is made from it, e.g.
    `release-notes:main`, and can be set) and its standing instructions.
    A manager of a team also chooses whose officer it is: changing it redraws
@@ -725,6 +726,45 @@ team officer's page — its host instances' windows included; only a manager
 changes it, and Postgres refuses anyone else again. A manager's writes to a
 team officer (create, edit, mode, pause, Run now, schedules, delete) are in
 the team's audit.
+
+### Templates
+
+A template only fills in the wizard: every value it sets — name,
+instructions, schedule, permissions, where it runs — is yours to change
+before you create it, and none adds a repository, a connector or a host.
+
+- **Blank officer** — nothing filled in.
+- **Session minder** — minds your stopped sessions in place of the chief's
+  stall nudges. Its permission *Mind my stopped sessions*
+  (`"capabilities": ["session_minder"]` in its type's policy) is what muster
+  acts on, in code: while an officer of yours with it is switched on **and
+  runs** (the roster resolved it somewhere — a minder with nowhere to run
+  suppresses nothing), the chief's nudge sweep skips you entirely (no chief
+  call, no nudge, and a stop's push no longer waits for the chief's
+  decision), and each stop the
+  sweep would have judged — idle past `MUSTER_CHIEF_NUDGE_IDLE`, no
+  background work, no turn error, no open ask — becomes **one**
+  `session.stalled` item, subject `episode:<id>`, whose payload says where
+  the session is and its state, never what it wrote. A stop is fed once:
+  finishing the item does not bring it back while the stop lasts. Pause or
+  delete the officer and the nudges return on the next sweep. 🔴 It does
+  **not** filter your notifications: every stop's push still reaches you, as
+  it would with no chief — the minder adds judgement on top (it asks about
+  the stops that look like they need you and closes the rest), it never
+  silences a push. Only one minder is used per owner, the first by id.
+  🔴 It needs session state (`MUSTER_SESSION_STATE=1`): without episodes
+  there is nothing to feed it, so it suppresses nothing. Persons only (a
+  team's pass runs no chief): a team officer is refused the permission on
+  create and Edit. No repository: it works in a scratch directory, woken by
+  its items. It cannot type into a session; it asks you (`officer_ask_person`).
+- **Marketing (you post by hand)** — drafts posts on a weekly schedule and
+  sends each draft to you as a question; the venue is manual, so you post
+  it yourself. It is given no outbound-drafts permission and its
+  instructions forbid posting by any other means (on a host they are what
+  keeps it from posting — see the warning at the top).
+- **QA** — tests one recent change per weekday pass in the repository you
+  give it, reports with steps to reproduce, and escalates a defect; it
+  never pushes or merges.
 
 ### Who an escalation can ask
 

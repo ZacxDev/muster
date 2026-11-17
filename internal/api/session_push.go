@@ -233,9 +233,15 @@ type streakDecisionReader interface {
 }
 
 // episodeChiefJudges reports whether octx's owner's chief judges idle stops
-// live: the feature on, the owner live, a chief.
+// live: the feature on, the owner live, a chief — and no Session minder
+// minding the owner's stops (sessionMinderOf): the chief's sweep skips such an
+// owner, so a stop's push must not wait episodeChiefWait for a decision that
+// never comes. It pushes as with no chief judging.
 func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 	if !s.chiefNudgesOn() || !s.chiefNudgeLive(owner) {
+		return false
+	}
+	if s.sessionMinderOf(octx, owner) != "" {
 		return false
 	}
 	_, err := s.chiefAgent(octx)
