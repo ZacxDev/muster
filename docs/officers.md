@@ -888,7 +888,7 @@ listing and again at dispatch):
 
 | tool | HQ call |
 |---|---|
-| `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes |
+| `officer_brief` | `GET /officers/{id}/brief` — the charter, open items, recent outcomes, memory scopes. For a builtin officer, muster also records the `charter_version` it answered, and refuses the instance's claims and completes (`409 charter_changed`) once its type's charter is newer — see [Charter changes reach running instances](officers-builtin.md#charter-changes-reach-running-instances) |
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
@@ -1281,6 +1281,9 @@ unit_ids, action: "managed_challenge", ttl_hours}`.
 ```
 You are officer <id>, instance <n> of <max> (<agent name>). …
 1. Call officer_brief. It returns your charter …
+   (builtin officers also: when officer_claim or officer_complete answers
+   charter_changed, call officer_brief again, follow the charter it returns,
+   and retry; an item you hold stays yours)
 2. Work the queue one item at a time: officer_claim{} with no item_id to take
    the next item (officer_claim{item_id} only when the charter says so),
    officer_heartbeat{item_id} …, officer_complete{item_id, outcome, summary} …
