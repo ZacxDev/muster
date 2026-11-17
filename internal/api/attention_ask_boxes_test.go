@@ -212,7 +212,8 @@ func TestEveryAskCardCarriesItsOwnMicAndItsSessionLink(t *testing.T) {
 	links := regexp.MustCompile(`<li id="ask-(\d+)"[\s\S]*?(?:</li>)`).FindAllStringSubmatch(page, -1)
 	got := map[string]string{}
 	for _, l := range links {
-		if h := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>`).FindStringSubmatch(l[0]); h != nil {
+		// The card feed's View in session (askFeedCardHTML's footer).
+		if h := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-asks-view-session>`).FindStringSubmatch(l[0]); h != nil {
 			got[l[1]] = h[1]
 		}
 	}
@@ -256,9 +257,13 @@ func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
 		}
 		for _, m := range tags {
 			mic, input := m[1], m[2]
-			submit, shape := input+"-submit", "flex-1 rounded-md"
+			// The ask page's composer and the Asks list's cards draw the round
+			// ↑ (ui.DictateSendPill); a session page's block the wide one.
+			submit, shape := input+"-submit", "rounded-full px-5"
 			if mic == "ask-dictate" {
-				submit, shape = "ask-send", "rounded-full px-5"
+				submit = "ask-send"
+			} else if name == "a block" {
+				shape = "flex-1 rounded-md"
 			}
 			tag := regexp.MustCompile(`<button id="` + mic + `" type="button"[^>]*>`).FindString(page)
 			for _, want := range []string{`data-dictate-wave="` + mic + `-wave"`, `data-dictate-arrow="` + mic + `-send"`} {
@@ -315,7 +320,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 			t.Errorf("%s draws dictation with no service:\n%s", name, html)
 		}
 	}
-	if !strings.Contains(attentionItemsHTML(items, time.Now()), `data-attention-session>`) {
+	if !strings.Contains(attentionItemsHTML(items, time.Now()), `data-asks-view-session>`) {
 		t.Fatal("control: the links went with the mic")
 	}
 }

@@ -6,32 +6,39 @@ to ask you something and wait for the answer instead of stopping.
 ## What is in it
 
 `/attention` — the **Asks** page (the **Asks** link in the menu, with a live
-count of everything below, pending reply drafts included) — lists on its
-**Ask** tab, as a flat list in **groups** — **Questions** (questions and
-session questions), **Notices**, **Waiting** (waiting sessions, then the
-[stalled / waiting](#stalled--waiting-session-state) rows), **Tasks to route**,
-then **Answered** — each under one label with its count, and **newest first**
-within a group, by when each item started waiting (an ask's or a draft's
-creation, a session's own status time, a held question's creation), ties broken
-by the item's key. A group with nothing in it is not drawn.
+count of everything below, pending reply drafts included) — is a **feed of
+cards** ([below](#the-card-feed)) in five tabs: **Open · Answered · Drafts ·
+Nudges · Log**. Its heading carries **N open**. The **Open** tab lists
+everything waiting on you in one vertically scrolling feed: **questions**
+(questions and session questions) first, then **notices**, then **waiting**
+sessions (and the [stalled / waiting](#stalled--waiting-session-state) rows),
+then **tasks to route** — **newest first** within a kind, by when each item
+started waiting (an ask's or a draft's creation, a session's own status time, a
+held question's creation), ties broken by the item's key. Each card carries its
+kind as a small badge (*Question*, *Notice*, *Waiting*, *Task to route*).
+Nothing waiting: a calm **All clear**. The **Answered** tab holds the recent
+answers (the last day's, at most 20), each with where it went.
 
 **Every card names its session the same way:** the session's name as its title
 (its human name, else the window's label or tmux address, else the asking
 agent), and muted under it how long it has waited and its exact tmux target
-([`<where>`](#how-a-window-is-named)). Where muster can open the session, the
-card's head is the link to it, with a chevron; a card with nothing to answer
-here (a waiting session, a session question, a task, a stalled row) is one link
-as a whole. Dismiss is a small ✕ button (named *Dismiss* or *Dismiss without
-answering* for a screen reader).
+([`<where>`](#how-a-window-is-named)). A task to route is titled by its number.
+Under the title: the question (or what the session waits on), a **why it's
+here** line (the session's focus title and its age, else a waiting session's
+last words, else why a task is in the queue), any attached media, and the
+card's actions. Its footer holds **View in session** (where muster can open the
+session), the task link (where the ask is about a task) and, at its end,
+Dismiss — a small ✕ button (named *Dismiss* or *Dismiss without answering* for
+a screen reader), never in the head.
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
-| Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown titled by its window's name, with its tmux target ([`<where>`](#how-a-window-is-named), resolved when drawn) on the card head's second line, then its focus title and the chief's short message. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | Tap the card to go to the session, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
-| Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options (full-width, first), or **Type an answer**, which opens the answer box and its mic in place (with no options the box is open); **Answer** sends it, and nothing is sent before. **Dismiss without answering** withdraws it. |
-| Session waiting | A mirrored Claude Code or **opencode** window whose session reports `waiting` (a permission prompt, a question; for opencode a **permission request**). Shown with **what it waits on** (below) as its one line, its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | Tap the card: it opens the session (the rendered view). An opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
-| Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once — or an **opencode** window's question-tool form, read by the host from opencode's server. | The open question (`internal/askq`), live; an opencode question from the hub's live window list. It leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. It survives a muster restart: muster reads it open again in its waiting session's transcript ([mirroring.md](mirroring.md#a-question-survives-a-muster-restart-and-a-host-reconnect)). Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered (an opencode form: its first question and how many more) — never also "Session waiting". | Tap the card (its question's first line; a Claude Code question's card adds a muted **Answer in session** under it): it opens the rendered view, where the question card is. An opencode question of ONE single-select question (at most 4 options) offers its options on the card when its host is `-interactive`; any other is answered in the terminal, and the card says so. |
-| Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | Tap the card: it opens the task. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
-| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
+| Notice | A pointer at one of your sessions that looks like it is waiting on you, raised by a live [chief nudge](chief-nudges.md#live-mode) ([below](#notices)). Shown titled by its window's name, with its tmux target ([`<where>`](#how-a-window-is-named), resolved when drawn) on the card head's second line, then its focus title and the chief's short message. | `attention_asks` rows of kind `notice` (migration 0071), joined to the chief's decision for the session. | **View in session** goes to it, or **Dismiss**. It has **no answer box**: there is nothing to answer. It leaves the list when the session moves on. |
+| Question | An agent called `attention_ask`, or muster raised one itself, shown as asked by `muster`: a plugin's mention of an in-progress task when you have no chief ([task routing](plugins.md#routing-a-task-to-the-chief)), or an agent-mail or ClankMail message your chief did not act on ([plugins](plugins.md#a-message-the-chief-does-not-act-on)); nothing waits on its answer. | `attention_asks` (migration 0025; muster's own asker, 0028; the message link, 0051) | Tap one of the agent's options (full-width, first); or tap a **suggested reply** (where [suggestions](#suggested-replies-to-an-ask) are on) to put it in the answer box, or type or dictate into the box (every question card has it, with its mic); **Answer** sends it, and nothing is sent before. **Dismiss without answering** withdraws it. |
+| Session waiting | A mirrored Claude Code or **opencode** window whose session reports `waiting` (a permission prompt, a question; for opencode a **permission request**). Shown with **what it waits on** (below) as its one line, its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **View in session** opens it (the rendered view). An opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
+| Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once — or an **opencode** window's question-tool form, read by the host from opencode's server. | The open question (`internal/askq`), live; an opencode question from the hub's live window list. It leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. It survives a muster restart: muster reads it open again in its waiting session's transcript ([mirroring.md](mirroring.md#a-question-survives-a-muster-restart-and-a-host-reconnect)). Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered (an opencode form: its first question and how many more) — never also "Session waiting". | **View in session** opens the rendered view, where the question card is (a Claude Code question's card says **Answer in session**). An opencode question of ONE single-select question (at most 4 options) offers its options on the card when its host is `-interactive`; any other is answered in the terminal, and the card says so. |
+| Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open task** opens it. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
+| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Open tab: with [plugins](plugins.md) on, the page has a **Drafts** tab ([below](#the-reply-drafts-tab)), whose label carries the count ("Drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
 
 A **Session waiting** item for a Claude Code permission prompt should be rare:
 muster assumes sessions run without permission prompts, and the agents a host
@@ -40,13 +47,66 @@ starts for your chief are started that way by default
 does wait, you answer it in the session's Terminal view; muster never types
 into it ([sending-and-step-up.md](sending-and-step-up.md)).
 
-### The Chief nudges tab
+### The card feed
+
+Every tab is a feed of cards, one per item, scrolling vertically. The feed
+**snaps** to a card's top as it settles (proximity, never mandatory, so a card
+taller than the screen still scrolls through).
+
+- **Tap a card** (anywhere outside its buttons, box and links) to **expand** it
+  in place: the question and the why-it's-here line unclamp, and the card shows
+  more — when it started waiting, a second line, a proposal's body, an
+  officer's context. Tap it again (or its head) to collapse it. **View in
+  session** stays at the card's bottom either way.
+- **Swipe sideways** on the feed to move one tab, in the swipe's direction;
+  the address follows. A swipe locks to one axis after a few pixels, so a
+  vertical scroll never changes the tab, and a swipe that starts in the answer
+  box, on attached media, on anything that scrolls sideways, at the left edge
+  (the menu's swipe) or with text selected is left alone. Pinch-zoomed in, a
+  sideways drag pans the zoomed page and never changes the tab.
+- **Answer** or **Dismiss** a card and it collapses out, the next card moves
+  up and takes focus, and the open count drops. The card's form posts (htmx)
+  to the queue's own answer and dismiss routes with an
+  `X-Muster-Asks-Card: 1` header, and only such a post is answered `204` (or,
+  refused — the question closed meanwhile, an answer the asker cannot take —
+  its error status and one line saying why, which the card shows when it comes
+  back); every other post to those routes keeps its redirect. A card that is
+  leaving is never brought back by a live refresh that arrives before its post
+  lands. When what comes back is not that line (a network failure, a refusal
+  from outside the queue), the card says so in a plain sentence; when the card
+  is no longer on the page by then (its ask closed elsewhere), a line above
+  the tabs says the answer was not recorded, and why. A failed delivery's
+  **Retry** (on the Answered tab) lands back on the Answered tab.
+- **On a keyboard**: <kbd>j</kbd>/<kbd>k</kbd> (or <kbd>↓</kbd>/<kbd>↑</kbd>
+  from a card) move between cards, <kbd>Enter</kbd> expands, <kbd>a</kbd>
+  focuses the answer box, <kbd>d</kbd> starts its mic, <kbd>Esc</kbd> leaves
+  the box and then collapses the card.
+- **Live**: the Open feed and the Answered feed follow the queue as it changes,
+  without a reload; an answer you are typing (or dictating) is never replaced,
+  and an expanded card stays expanded.
+- **Motion** (cards entering and leaving, expanding, the tab sliding in from
+  the swipe's side, a button's press) is all off under the system's
+  *reduce motion* setting.
+
+**Old links still land.** The tab is in the query: `?tab=answered`,
+`?tab=drafts`, `?tab=nudges` and `?tab=log` open those tabs; `?tab=ask` (the
+Open tab's old name), no `tab` and anything unknown open **Open**;
+`?tab=archived` opens **Drafts** with its archived list shown, where a
+decided draft lands. A tab that is not drawn (Drafts with plugins off, Nudges with
+nudges off) falls back to Open. A fragment (`#draft-12`, `#ask-12`) opens the
+tab holding that card and scrolls to it.
+
+An ask's own page, `/attention/asks/<id>` (where its notification lands), is
+the same card, always expanded, with the answer box pinned to the bottom of the
+screen.
+
+### The Nudges tab
 
 With [stall nudges](chief-nudges.md) on (`MUSTER_CHIEF_NUDGES=1`), the page
-has a **Chief nudges** tab (`/attention?tab=nudges`, with or without plugins):
+has a **Nudges** tab (`/attention?tab=nudges`, with or without plugins):
 every decision your chief took about one of your stalled sessions, newest
 first. A live decision to point you at a stalled session is a
-[notice](#notices) on the **Ask** tab ([how](chief-nudges.md#live-mode)).
+[notice](#notices) on the **Open** tab ([how](chief-nudges.md#live-mode)).
 
 ### The Log tab
 
@@ -206,8 +266,10 @@ Off, everything on this page is as above.
 
 ### The Reply drafts tab
 
-With plugins on, the page has two tabs, **Ask** (the table above and the
-**Answered** section) and **Reply drafts**, which has two views of its own:
+With plugins on, the page has a **Drafts** tab (`/attention?tab=drafts`): one
+list of the drafts awaiting a decision, and under it **Show archived**, which
+shows the decided ones (`/attention?tab=archived`; **Hide archived** shuts it
+again, and the address follows):
 
 - **Awaiting decision** — each pending draft's card: who drafted it, for which
   plugin and its state; the message it answers as a quote (untrusted, escaped)
@@ -367,9 +429,9 @@ question, the session the nudge is about — and a link to the task;
 **Dismiss without answering**; and the answer box pinned to the bottom, above
 the keyboard and inside the safe-area insets, with the
 [dictation](dictation.md) mic beside **Answer** (it fills the box; only
-**Answer** sends). Each question on the Asks list carries the same mic (behind
-**Type an answer** when it offers options), and its card's head links the same
-session. The page
+**Answer** sends). It is the feed's card, always expanded
+([the card feed](#the-card-feed)); each question on the Asks list carries the
+same mic, and its card's **View in session** links the same session. The page
 posts to the same answer and dismiss routes as `/attention` and comes back to
 itself, showing the answer and where it went. It follows the queue live: chips
 that arrive after it opened appear, and a question answered elsewhere shows as

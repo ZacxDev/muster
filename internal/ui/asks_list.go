@@ -53,18 +53,10 @@ const (
 	// AsksQuietCardClass dims a row that is held (a quiet episode).
 	AsksQuietCardClass = "opacity-60"
 
-	// THE ANSWER FORM, Asks-page variant: the options as full-width chips
-	// first; the free-text box behind "Type an answer" (a <details>, so it
-	// opens with no script and is a real disclosure for a screen reader);
-	// Dismiss a small icon button.
+	// THE ANSWER FORM's options, the card feed's (internal/api
+	// askFeedAnswerFormHTML): full-width buttons; a tap answers.
 	AsksOptionsClass = "flex flex-col gap-1.5"
 	AsksOptionClass  = "press min-h-[44px] w-full rounded-lg bg-bg px-3 py-2 text-left text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
-	// AsksTypeClass is the <details> holding the box; it reserves its shut
-	// height itself, so a parse that yields between it and its <summary>
-	// cannot draw the browser's default summary first (nav_agents.go navMore).
-	AsksTypeClass        = "group/type min-h-[44px] min-w-0"
-	AsksTypeSummaryClass = "press flex min-h-[44px] cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg group-open/type:hidden [&::-webkit-details-marker]:hidden"
-	AsksTypeBodyClass    = "flex flex-col gap-1.5"
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
 	AsksActionsClass = "flex min-w-0 items-center gap-2"
@@ -110,6 +102,3 @@ const AsksChevron = `<svg class="h-4 w-4 shrink-0 text-muted" viewBox="0 0 24 24
 
 // AsksDismissIcon is Dismiss's glyph (the app's close mark).
 const AsksDismissIcon = `<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>`
-
-// AsksTypeIcon is "Type an answer"'s glyph (a keyboard).
-const AsksTypeIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>`

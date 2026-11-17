@@ -103,13 +103,21 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	if notice {
 		verb, heading, dismiss = "notice", source+noticePushTitleSuffix, "Dismiss"
 	}
+	// THE SAME CARD AS THE FEED'S, EXPANDED (asks_feed.go, ui/asks_card.go):
+	// its badge and who, the question, the context and media slots, the
+	// controls, and its footer — View in session, the task, Dismiss — at its
+	// bottom. data-asks-fixed: it is always open, so a tap toggles nothing.
+	slot := []attentionItem{it}
+	s.withFocus(r.Context(), slot)
+	kind, label := askFeedBadge(slot[0])
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
 <style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
-<p class="text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
-		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
+<article class="` + ui.AsksFeedCardClass + ` gap-4 p-4" data-asks-card data-asks-fixed data-asks-page-card data-expanded="true" data-kind="` + esc(it.Kind) + `">
+<div class="flex min-w-0 items-center gap-2">` + ui.AsksKindBadge(kind, label) + `<p class="min-w-0 flex-1 truncate text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> ` + verb + ` · <time datetime="` +
+		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p></div>
 ` + officerNoteLabelHTML(a.Context) + `<p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
-`)
+` + asksCardContextSlot(slot[0], now) + asksCardMediaSlot(slot[0]))
 	// The proposal body, which the ask's question never holds.
 	b.WriteString(proposalBodyHTML(it.proposal))
 	// What a builtin officer's ask is about, apart from its note.
@@ -121,18 +129,20 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		b.WriteString(`<p role="status" class="rounded-2xl bg-s1 px-4 py-3 text-sm text-fg ring-1 ring-line" data-ask-notice>` + esc(note) + `</p>
 `)
 	}
+	b.WriteString(`<div id="ask-live" class="flex min-w-0 flex-col gap-4" aria-live="polite">` + live + `</div>
+`)
+	// The footer: the way to the session and the task, then Dismiss.
 	if links := s.askContextLinks(r.Context(), a, it); links != "" {
 		b.WriteString(links)
 	}
-	b.WriteString(`<div id="ask-live" class="flex min-w-0 flex-col gap-4" aria-live="polite">` + live + `</div>
-`)
 	if a.Status == attention.Open {
-		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" class="pt-2" data-ask-dismiss-form>
+		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" data-ask-dismiss-form>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
 <button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>` + dismiss + `</button></form>
 `)
 	}
-	b.WriteString(`</section>
+	b.WriteString(`</article>
+</section>
 `)
 	b.WriteString(ui.AttentionLiveScript("ask-live", askPagePath(a.ID)+"?part=live", EventAttentionChanged))
 	b.WriteString(askPageScript)
@@ -149,7 +159,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 // task it is about; "" for none.
 func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attentionItem) string {
 	esc := html.EscapeString
-	const cls = `inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-accent underline`
+	cls := ui.AsksCardLinkClass
 	var links []string
 	if p := s.attentionSessionPath(ctx, a.Owner, it); p != "" {
 		// "View in session" for a mirrored session and an agent alike (the
@@ -162,7 +172,7 @@ func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attent
 	if len(links) == 0 {
 		return ""
 	}
-	return `<div class="flex flex-wrap gap-x-4">` + strings.Join(links, "") + "</div>\n"
+	return `<div class="` + ui.AsksCardFooterClass + ` gap-x-4 border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n"
 }
 
 // askLiveHTML is the ask page's live region: an open ask's options and
@@ -196,7 +206,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 		b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
 `)
 		for _, o := range opts {
-			b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="press min-h-[48px] w-full break-words rounded-2xl bg-s2 px-4 py-3 text-left text-base font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2/80" data-ask-option>` + esc(o) + `</button>
+			b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="` + ui.AsksOptionClass + ` break-words text-base" data-ask-option>` + esc(o) + `</button>
 `)
 		}
 		b.WriteString("</div>\n")
@@ -208,7 +218,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		for _, t := range it.suggestions {
 			b.WriteString(`<button type="button" data-ask-suggestion data-text="` + esc(t) + `" aria-label="AI-suggested reply: ` + esc(t) +
-				`" class="press min-h-[44px] max-w-full break-words rounded-2xl bg-bg px-4 py-2 text-left text-sm text-fg ring-1 ring-inset ring-accent/40 transition hover:bg-s2">` + esc(t) + `</button>
+				`" class="` + ui.AsksCardChipClass + `">` + esc(t) + `</button>
 `)
 		}
 		b.WriteString("</div></div>\n")

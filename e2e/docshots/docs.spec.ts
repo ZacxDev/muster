@@ -798,8 +798,8 @@ test('ask-flow.gif frames — two machines, a question, an answer, the agent con
   await askFlow.frame(page, 2.6);
 
   // 3. Answer it in the session: tap an option, submit.
-  // The held question's card is one link to its question card.
-  const open = item.locator('a[data-attention-open]');
+  // The held question's card: View in session opens its question card.
+  const open = item.locator('a[data-asks-view-session]');
   await tapDot(page, open, 0.5, askFlow);
   await Promise.all([page.waitForURL(/session=release/), open.click()]);
   const card = page.locator('#mv-asks [data-ask-live][data-ask-tool="toolu_docs_release"]');

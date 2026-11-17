@@ -34,7 +34,8 @@ func attentionCardLink(page string, id int64) string {
 	if j := strings.Index(li, "</li>"); j >= 0 {
 		li = li[:j]
 	}
-	m := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>`).FindStringSubmatch(li)
+	// The card feed's View in session (askFeedCardHTML's footer).
+	m := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-asks-view-session>`).FindStringSubmatch(li)
 	if m == nil {
 		return ""
 	}
