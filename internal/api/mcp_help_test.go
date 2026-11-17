@@ -181,7 +181,7 @@ func TestTheDoorsServeTheirToolsAndInstructionsUnchanged(t *testing.T) {
 			}
 			return r
 		}
-		checkServedUnchanged(t, rpc, f.srv.mirrorTools(), "muster's tools for a mirrored Claude Code session. "+mirrorAttentionInstruction)
+		checkServedUnchanged(t, rpc, f.srv.mirrorTools(), "muster's tools for a mirrored Claude Code session. "+wantMirrorClaudeCodeAttention)
 	})
 }
 

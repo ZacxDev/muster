@@ -78,7 +78,7 @@ func TestAClaudeCodeChiefGetsTheChiefProseAsItsManagedClaudeMD(t *testing.T) {
 						store, plugins, filePaths(spec))
 				}
 				got := string(spec.Files[0].Content)
-				if got != agentspec.ChiefInstructionsClaudeCode(plugins, routing) {
+				if got != agentspec.ChiefInstructionsClaudeCode(plugins, routing, "", nil) {
 					t.Errorf("store=%v plugins=%v routing=%v: the CLAUDE.md is not the claude-code chief prose for this state", store, plugins, routing)
 				}
 				// Independent of the constant: the request-routing section rides on
@@ -204,7 +204,7 @@ func TestTheComposeChiefsProseNamesOnlyTheToolsItsSpecAllows(t *testing.T) {
 				}
 			}
 			if !compose {
-				if allow != "" || prose != agentspec.ChiefInstructionsClaudeCode(combo.plugins, combo.routing) {
+				if allow != "" || prose != agentspec.ChiefInstructionsClaudeCode(combo.plugins, combo.routing, "", nil) {
 					t.Errorf("control %+v: the Kubernetes chief's allow list = %q, or its prose changed", combo, allow)
 				}
 				continue

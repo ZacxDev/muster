@@ -30,6 +30,7 @@ var pluginRouteCapabilities = map[string]string{
 	"GET /plugin/v1/drafts/checks":                 "draft_checks",
 	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
 	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
+	"PUT /plugin/v1/chief/instructions":            "chief_extension",
 	// Pairing (plugin_pairing.go): NO plugin token at all — the request
 	// carries none, the poll carries its poll secret.
 	"POST /plugin/v1/pair":             "none",
@@ -124,6 +125,16 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			}
 			if refused, code := capabilityRefused(h, method, path, pgnChecksTok); refused {
 				t.Errorf("CONTROL %s with a draft_checks token: refused (%d); want it past the capability check", route, code)
+			}
+		case "chief_extension":
+			if !messagesRefused || !viewerRefused {
+				t.Errorf("%s: messages-only %d, viewer-only %d; want both 403, the route needs chief_extension", route, messagesCode, viewerCode)
+			}
+			if refused, code := capabilityRefused(h, method, path, pgnChecksTok); !refused {
+				t.Errorf("%s with a draft_checks token: %d; want 403, the route needs chief_extension", route, code)
+			}
+			if refused, code := capabilityRefused(h, method, path, pgnExtTok); refused {
+				t.Errorf("CONTROL %s with a chief_extension token: refused (%d); want it past the capability check", route, code)
 			}
 		default:
 			t.Fatalf("ledger %s: unknown capability %q", route, want)

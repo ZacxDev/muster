@@ -70,7 +70,7 @@ var personalOwned = []string{
 	"connector_audit", "connector_grants", "connector_standing_grants", "connectors", "device_challenges",
 	"device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"host_dispatches", "jobs", "mail_resumes", "notify_preferences", "page_links",
-	"page_responses", "page_versions", "pages", "pins", "plugin_pair_requests",
+	"page_responses", "page_versions", "pages", "pins", "plugin_chief_instructions", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
 }

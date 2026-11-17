@@ -15,7 +15,8 @@ import "testing"
 var ownedAfter0127 = []string{
 	"agent_secrets",                                // 0128
 	"officer_contacts", "officer_contact_events", // 0132
-	"officer_public_branches", // 0138
+	"officer_public_branches",   // 0138
+	"plugin_chief_instructions", // 0141
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

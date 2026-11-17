@@ -113,7 +113,7 @@ func TestTheComposeChiefIsToldExactlyItsTools(t *testing.T) {
 			}
 		}
 	}
-	k8s := ChiefInstructionsClaudeCode(true, true)
+	k8s := ChiefInstructionsClaudeCode(true, true, "", nil)
 	if !slices.Contains(named(k8s), "task_create_gated") || !strings.Contains(k8s, "mcp__hq__task_create") {
 		t.Error("control: the Kubernetes chief's prose no longer names task_create_gated and the HQ tools")
 	}

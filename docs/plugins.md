@@ -56,18 +56,20 @@ A plugin token opens only the routes its **capabilities** allow:
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
+| `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
-token is minted, with one exception: `draft_checks`, which you can turn on or
-off for an existing plugin (below).
+token is minted, with two exceptions: `draft_checks` and `chief_extension`,
+which you can turn on or off for an existing plugin (below).
 
 On `/plugins`, the `messages`/`viewer` choice is drawn only while
 `MUSTER_PLUGIN_ORIGINS` is set
 ([configuration.md](configuration.md#muster-server-optional-features)); without
 it every new token gets `messages`. The **Checks replies** box adds
-`draft_checks`, whatever that variable says.
+`draft_checks`, and the **Chief instructions** box adds `chief_extension`,
+whatever that variable says.
 
 An existing plugin can gain or lose `draft_checks` with no new token. Each live
 plugin with `messages` has a **Turn on Checks replies** (or **Turn off**) button
@@ -1075,6 +1077,76 @@ From the owner's mirrored sessions:
 |---|---|---|
 | `plugin_outbound_batch_get` | `{batch_id?}` | the open batches (or one): entries `{draft_id, plugin, venue, action, person, target_ref, because_ref, engagement, reason, created_at, blocked?}`, `waiting`, `batch_sha256`. Read-only |
 | `plugin_outbound_batch_decide` | `{batch_id, batch_sha256, approve_ids}` | the same decision as the card (`approve_ids: []` rejects them all); on a machine that runs a host officer it is a step-up [confirmation card](officers-builtin.md#-before-you-declare-one-on-a-real-deployment) |
+
+### Chief instructions
+
+A plugin with `chief_extension` may give your chief ONE section of standing
+guidance about the plugin's own system: where its requests go, which of its
+tools to use. muster never reads it as a rule. It reaches the chief only once
+you have approved its exact text, and it grants the chief no muster tool,
+permission or approval.
+
+- **`PUT /plugin/v1/chief/instructions`** `{"markdown": "<text>"}` stores the
+  plugin's section, replacing any earlier one. The text is 1 to 4096 bytes of
+  UTF-8 (`400` past that), not blank, with no control or invisible character
+  but a line feed and a tab. It may not carry an `@` that Claude Code could
+  read as a file import: an `@` is refused unless the character right before
+  it is a letter, a digit, `.`, `_`, `-` or `+` (so `name@example.test` is
+  fine, and `@notes.md` or `see @notes.md` is not). Claude Code expands an
+  `@path` import in CLAUDE.md even inside the quote the section is rendered
+  in, which would pull a file into the chief's context. It answers `200` with `{plugin_id, markdown, sha,
+  approved_sha, approved_at, updated_at, state, changed}`: `sha` is the
+  text's sha256 (hex), `state` is `pending` or `approved`, and `changed` says
+  whether this PUT stored new text. **New text is pending**: any approval is
+  cleared in the same write, so a changed section never reaches the chief
+  until you approve it again. Text A, then B, then A again is pending too.
+  The same text again changes nothing and keeps its approval, so a plugin may
+  PUT on every start. That is also how a plugin learns whether its section
+  is approved: there is no GET.
+
+The route needs `chief_extension` (`403` naming it otherwise). It acts as the
+token's owner, on the token's own plugin only.
+
+**Known limit: a team's chief gets no plugin sections today.** A team's plugin
+tokens are viewer tokens, and the team door serves them the hand-off redeem
+and `/self` alone, so a team's plugins cannot propose a section. The rendering
+already scopes a team's chief to the team's OWN plugins, never a member's
+personal one. Letting team tokens propose sections, a `chief_extension`
+option at mint on `/teams/{id}/plugins` and a manager's approval there are a
+later follow-up.
+
+**Approving it.** On `/plugins`, a plugin with `chief_extension` shows its
+section on its card **as text** (escaped, never rendered as markdown or HTML),
+its state and the first 12 characters of its sha. A pending one has
+**Approve these instructions** (`POST /plugins/{id}/approve-chief-instructions`,
+`sha=<the sha the card showed>`). It needs a signed-in, same-origin session
+and a **fresh sign-in** (the confirm dialog asks for one), as approving a
+pairing request does, because the text becomes standing guidance to your
+chief. 🔴 It approves only the text you were shown: if the plugin changed it
+after the page was drawn, the sha no longer matches and the approval is
+refused (`409`, "The plugin changed its chief instructions after this page was
+drawn"); read the new text and approve that. Each stored text and each
+approval write a `plugin.chief_instructions.stored` or
+`plugin.chief_instructions.approved` audit row.
+
+**Turning it on or off.** Each live plugin's card has **Turn on Chief
+instructions** (or **Turn off**), `POST /plugins/{id}/chief-extension`, `on=1`
+or `0`, gated like **Checks replies**: a signed-in session and a same-origin
+form, with no fresh sign-in, because turning it on only lets the plugin
+propose text. Turning it **off** deletes the plugin's section, approved or
+not. A plugin whose only capability is `chief_extension` has no Turn off;
+revoke it instead. **Revoking** a plugin deletes its section too.
+
+**Where it appears, and when.** See
+[chief.md](chief.md#instructions-from-your-plugins). In short: after every
+rule of muster's own, quoted line by line under a fixed line naming the plugin
+and the day you approved it. It takes effect at the chief's **next provision
+or restart**, as a connector does: approving, changing or revoking a section
+does not touch a running chief. **If the sections cannot be read when the
+chief starts, that start is refused and retried**, rather than starting the
+chief without guidance you approved. Only the claude-code chief on Kubernetes
+reads plugin sections. The Docker Compose chief, the gateway chief and every worker
+read none.
 
 ### Pairing a plugin without handling its token
 

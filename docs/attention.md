@@ -575,8 +575,18 @@ carry this paragraph (`attentionInstruction`):
 > it, you MAY instead block on it with attention_wait{id} (repeat it while it
 > answers "pending"); an answer you read there is not delivered a second time.
 
-A mirrored session's (`mirrorAttentionInstruction`) still says to call
-`attention_wait` until it returns the answer: its answer is never pushed.
+A mirrored session's paragraph (`mirrorAttentionInstructionFor`) differs by
+runtime only in the question tool it names — `AskUserQuestion` for Claude Code,
+`question` for opencode; both already reach the Attention view. Its text is
+`mirrorAttentionInstruction` in `internal/api/attention_tools.go`. In short: keep
+going on work you are authorized to do, ask an owner's decision with the built-in
+question tool (or `attention_ask` and `attention_wait` without one), and never
+end a turn on an offer, a menu of next steps or a question typed into the chat.
+
+It still says to call `attention_wait` until it returns the answer: a mirrored
+session's answer is never pushed. A turn that ends on an offer or a question
+typed into the chat reaches muster only as a **Session waiting** item, which
+does not say what is being asked.
 
 An [officer](officers.md) instance gets `officerAttentionInstruction` in its
 place (`attentionInstructionFor`): follow its charter, and by default finish

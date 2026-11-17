@@ -121,12 +121,35 @@ func (s *Server) attentionInstructionFor(a agents.Agent) string {
 	return attentionInstruction
 }
 
-// mirrorAttentionInstruction is a MIRRORED Claude Code session's paragraph
-// (mirror_mcp.go). muster never types into a mirrored window unasked, so its
-// answer is NOT pushed: the session must wait for it.
-const mirrorAttentionInstruction = "If you need your owner's input — a decision, a missing fact, an approval — do NOT stop and wait for a reply in the chat: " +
-	"call attention_ask{question, options?} and then attention_wait{id} (repeat it while it answers \"pending\") until it returns the answer, then continue. " +
-	"Your owner sees the question in muster's Attention view and on their phone."
+// mirrorAttentionInstruction is a MIRRORED session's paragraph, per runtime
+// (mirrorAttentionInstructionFor): muster never types into a mirrored window
+// unasked, so an attention_ask answer is NOT pushed and the session must wait
+// for it. Both runtimes' built-in question tools (Claude Code's
+// AskUserQuestion, opencode's question) already reach the owner's Attention
+// view, so the paragraph sends an owner's decision there first. A turn that
+// ends on an offer or a question typed into the chat reaches muster only as
+// "Session waiting", which says nothing about what is asked.
+func mirrorAttentionInstruction(questionTool string) string {
+	return "If work remains that you are authorized to do, keep going. If a decision is your owner's — a choice, an approval, a missing fact — " +
+		"ask it with your " + questionTool + " tool: it reaches your owner in muster's Attention view and on their phone. " +
+		"If you do not have that tool, call attention_ask{question, options?} and then attention_wait{id} (repeat it while it answers \"pending\") " +
+		"until it returns the answer, then continue. Never end your turn on an offer, a menu of next steps, or a question typed into the chat."
+}
+
+// The built-in question tool each mirrored runtime has, by its own name.
+const (
+	claudeCodeQuestionTool = "AskUserQuestion"
+	openCodeQuestionTool   = "question"
+)
+
+// mirrorAttentionInstructionFor is the paragraph a mirrored session of the
+// given runtime reads: opencode's names its question tool, Claude Code's its.
+func mirrorAttentionInstructionFor(openCode bool) string {
+	if openCode {
+		return mirrorAttentionInstruction(openCodeQuestionTool)
+	}
+	return mirrorAttentionInstruction(claudeCodeQuestionTool)
+}
 
 // answeredInSessionNote is what attention_wait says of an answered_in_session
 // ask — in its description and in the result itself: the answer is only the

@@ -426,6 +426,9 @@ type Adapter struct {
 	// teamOwner names a TEAM owner (UseTeamOwner): a team's chief is told its
 	// owner is a team (agentspec.TeamChiefSection). nil = no team ever.
 	teamOwner func(ctx context.Context, owner int64) (name string, team bool, err error)
+	// pluginSections reads an owner's approved plugin instruction sections
+	// (UseChiefPluginSections). nil = none for anyone.
+	pluginSections func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error)
 	// lifecycle serialises Start, Stop, Destroy and Rebind per agent in this
 	// process (lockAgent), so an account failover cannot race a Stop or a
 	// Destroy into bringing a stopped agent back or re-creating a deleted one.
@@ -477,6 +480,14 @@ func (a *Adapter) UseBeforeStop(f func(ctx context.Context, ag agents.Agent)) {
 // it before the adapter serves.
 func (a *Adapter) UseTeamOwner(f func(ctx context.Context, owner int64) (name string, team bool, err error)) {
 	a.teamOwner = f
+}
+
+// UseChiefPluginSections installs f, which reads an owner's APPROVED plugin
+// instruction sections (internal/plugins ApprovedChiefSections): a claude-code
+// chief's CLAUDE.md renders them after every core rule
+// (agentspec.PluginSectionsBlock). Call it before the adapter serves.
+func (a *Adapter) UseChiefPluginSections(f func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error)) {
+	a.pluginSections = f
 }
 
 // UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
@@ -1382,7 +1393,11 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 		if err != nil {
 			return provision.Spec{}, err
 		}
-		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route, team)
+		sections, err := a.chiefPluginSections(ctx, ag, cfg)
+		if err != nil {
+			return provision.Spec{}, err
+		}
+		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg), route, team, sections)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1423,8 +1438,10 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 // listed for bypass (agentspec.JobBypassListed), so it is unused there.
 //
 // team is the owning team's name when the chief's owner is a team ("" for a
-// person): its prose then carries agentspec.TeamChiefSection.
-func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool, team string) (provision.Spec, error) {
+// person): its prose then carries agentspec.TeamChiefSection. sections are the
+// owner's approved plugin sections (chiefPluginSections), rendered last; the
+// Compose chief gets none.
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string, route bool, team string, sections []agentspec.PluginSection) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
 		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
 		if a.ccSession != nil {
@@ -1453,16 +1470,41 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	// unanswered prompt falls back to a terminal nobody watches and hangs the
 	// chief mid-turn; the token-exfiltration risk is accepted. Not the Compose
 	// chief, which keeps its nine tools and deny-if-unanswered.
-	instructions := agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting)
+	// The owner's approved plugin sections (internal/plugins
+	// ApprovedChiefSections) render after every core rule, the team section
+	// included. 🔴 THE COMPOSE CHIEF GETS NONE: every tool its prose names
+	// must be pre-allowed there, and its prose is fixed.
+	var instructions string
 	if cfg.ComposeContainer {
 		instructions = agentspec.ChiefInstructionsCompose(cfg.Plugins, cfg.SessionRouting)
-	}
-	if team != "" {
-		instructions += agentspec.TeamChiefSection(team)
+		if team != "" {
+			instructions += agentspec.TeamChiefSection(team)
+		}
+	} else {
+		instructions = agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting, team, sections)
 	}
 	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: instructions,
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, ChiefBypass: !cfg.ComposeContainer,
 			LLMRoute: route}})
+}
+
+// chiefPluginSections is the approved plugin instruction sections chief ag
+// renders (UseChiefPluginSections): its OWNER's — for a team's chief the
+// team's own plugins, never a member's personal one, because the owner IS the
+// team. None for any agent but a claude-code chief, for the Compose chief, or
+// with no lookup wired. They take effect at this provision: a section approved
+// later reaches the chief at its next provision or restart. 🔴 A LOOKUP THAT
+// FAILS REFUSES THE SPEC, as chiefTeam's does: the chief would otherwise start
+// silently without guidance its owner approved; the start is retried.
+func (a *Adapter) chiefPluginSections(ctx context.Context, ag agents.Agent, cfg agentspec.Config) ([]agentspec.PluginSection, error) {
+	if a.pluginSections == nil || !agents.IsChiefName(ag.Name) || ag.OwnerID <= 0 || cfg.ComposeContainer {
+		return nil, nil
+	}
+	secs, err := a.pluginSections(ctx, ag.OwnerID)
+	if err != nil {
+		return nil, fmt.Errorf("agentprovision: chief %q: could not read its owner's approved plugin sections: %w", ag.Name, err)
+	}
+	return secs, nil
 }
 
 // chiefTeam is the name of the TEAM that owns chief ag, or "" when ag is not a

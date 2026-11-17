@@ -495,6 +495,11 @@ var isolationClasses = map[string]routeClass{
 	// must get the ghost's 404 (row-level security).
 	"POST /plugins/{id}/draft-checks": classParam,
 	"POST /plugins/{id}/deliver-to":   classParam,
+	// A plugin's chief instructions (0141): the toggle and the approval name
+	// A's plugin by id; B's session must get the ghost's 404 (row-level
+	// security and the store's owner filter).
+	"POST /plugins/{id}/chief-extension":            classParam,
+	"POST /plugins/{id}/approve-chief-instructions": classParam,
 	// A pairing request's decisions name it by id; another owner's is the
 	// ghost's 404 (row-level security).
 	"POST /plugins/pair/{id}/approve": classParam,
@@ -581,6 +586,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /plugin/v1/drafts/checks":      classPlugin,
 	"POST /plugin/v1/drafts/{id}/check": classPlugin,
 	"POST /plugin/v1/drafts/{id}/media": classPlugin,
+	// A plugin's chief instructions (0141): it names nothing — the token's
+	// own plugin's one section (TestAnotherOwnersChiefSectionNeverRenders).
+	"PUT /plugin/v1/chief/instructions": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
