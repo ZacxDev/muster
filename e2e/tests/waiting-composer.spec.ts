@@ -108,11 +108,15 @@ async function ask(question: string): Promise<number> {
 }
 
 // answer answers it the operator's way: the Asks page, its option tapped — in a
-// page of its own, so the page under test sees the change arrive.
+// page of its own, so the page under test sees the change arrive. The card
+// posts by htmx (asks_feed.go): its answer is recorded when the post is
+// answered 204, and the card leaves the feed; no navigation.
 async function answer(page: Page, id: number) {
   const other = await page.context().newPage();
   await other.goto(origin + '/attention');
-  await Promise.all([other.waitForURL(origin + '/attention'), other.locator(`#ask-${id}`).getByRole('button', { name: 'no' }).click()]);
+  const recorded = other.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${id}/answer` && r.request().method() === 'POST');
+  await other.locator(`#ask-${id}`).getByRole('button', { name: 'no', exact: true }).click();
+  expect((await recorded).status(), 'the answer is recorded').toBe(204);
   await expect(other.locator(`#ask-${id}`)).toHaveCount(0);
   await other.close();
 }

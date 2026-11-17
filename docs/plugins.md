@@ -19,7 +19,7 @@ The whole loop:
 3. The chief may file a gated task (`task_create_gated`), draft a reply
    (`reply_draft`), [route it to a session](#routing-a-message-to-a-session)
    (`route_to_session`, when routing is on), or do nothing.
-4. You approve or reject each draft on the **Asks** page's **Reply drafts** tab
+4. You approve or reject each draft on the **Asks** page's **Drafts** tab
    (`/attention?tab=drafts`; see [attention.md](attention.md#the-reply-drafts-tab)).
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
    it, and reports the result (`POST /plugin/v1/drafts/{id}/result`). A plugin
@@ -31,7 +31,7 @@ The whole loop:
 
 | door | who | routes |
 |---|---|---|
-| The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
+| The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Drafts tab): approve or reject reply drafts, and see what became of each under Archived |
 | The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/drafts/{id}/renew`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
 | A plugin **pairing** | none (then a poll secret) | `POST /plugin/v1/pair`, `GET /plugin/v1/pair/{request_id}`: [pairing a plugin](#pairing-a-plugin-without-handling-its-token) |
 
@@ -880,7 +880,7 @@ post whose media you cannot see. A `sendable: false` verdict needs no media.
 
 #### What you approve
 
-The outbound draft's card on the Reply drafts tab shows the venue and target
+The outbound draft's card on the Drafts tab shows the venue and target
 (for a reply target, the human reply muster received with that `thread`,
 escaped and labelled untrusted; or a line saying none arrived), the exact body
 spelled out as for every draft, and every uploaded image rendered and every
@@ -1051,7 +1051,7 @@ transaction, so the guards see it at once.
 #### The outreach batch
 
 An officer's follows and likes of one UTC day are **one batch**, id
-`<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Reply drafts tab, one Attention item
+`<owner>:<officer>@<YYYY-MM-DD>` (the officer's owner — you, or a team — so a person's and a team's officer of one id are two batches): one card on the Drafts tab, one Attention item
 and one notification (each new entry replaces the batch's last notification),
 never one each. Each entry shows the person, the venue, the action, the
 engagement of theirs that motivated it (untrusted, escaped) and the officer's
@@ -2165,7 +2165,7 @@ chief, on the agent gateway and over `/mcp`, and only while plugins are on.
 {"message_id": 42, "body": "Thanks, noon works."}
 ```
 
-- **Nothing is sent.** The tool files a draft. You read it on the Asks page's Reply drafts tab (`/attention?tab=drafts`) and
+- **Nothing is sent.** The tool files a draft. You read it on the Asks page's Drafts tab (`/attention?tab=drafts`) and
   approve or reject it.
 - `message_id` must be a plugin message delivered, or being delivered, to this
   chief (so the chief can draft on the turn that delivers it), and not marked
@@ -2186,7 +2186,7 @@ card.
 
 ### The card
 
-Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts`; decided ones under Archived):
+Each draft is a card on the Asks page's Drafts tab (`/attention?tab=drafts`; decided ones under Archived):
 
 - The message it answers, from the outside sender, is shown escaped as a
   quote, labelled untrusted.

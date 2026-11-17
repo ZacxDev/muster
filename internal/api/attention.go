@@ -312,6 +312,9 @@ type attentionItem struct {
 	// the reader (teamCardStepUpWhy) and is the confirm dialog's sentence: its
 	// answer form is drawn data-step-up-form. Set by withAskBoxes.
 	stepUpWhy string
+	// taskID is the task an ask is about (attention.Ask.TaskID), 0 for none:
+	// its card's footer links to it (askFeedCardHTML). Set by askItem.
+	taskID int64
 }
 
 // attentionCard is the entry an attention item belongs to: an agent's (an
@@ -450,7 +453,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
-		ownerCard: a.OwnerCard, owner: a.Owner}
+		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID}
 	if a.Asker.System {
 		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
@@ -927,6 +930,12 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		}
 		if items[i].Kind != attentionKindAsk {
 			continue
+		}
+		// Its suggested replies are drawn (as the card's chips) only while the
+		// switches that make them allow it — the ask page's own rule
+		// (askShowsSuggestions).
+		if len(items[i].suggestions) > 0 && (s.ext.Suggest == nil || s.ext.Suggest.Enabled(ctx, items[i].owner) != "") {
+			items[i].suggestions = nil
 		}
 		// 🔴 A TEAM'S ASK, READ BY A VIEWER OF THE TEAM (team sharing 2b.3,
 		// 2b.4): drawn unanswerable, as the session view draws a team host's
@@ -1616,16 +1625,19 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		}
 	}
 	var b strings.Builder
-	// A FLAT PAGE (operator decision 2026-11-12): no card around it, no intro
-	// and no "Back to muster" — the heading, then the groups.
+	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
+	feed, open := s.askFeedNow(r.Context(), items, rd, now)
+	// THE CARD FEED (asks_feed.go): the heading and the open count, then the
+	// tabs, each a feed of cards.
 	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
-<h1 class="text-balance px-1 text-base font-semibold text-fg">Asks</h1>
+<div class="flex items-center gap-2 px-1"><h1 class="text-balance text-base font-semibold text-fg">Asks</h1>` + ui.AsksOpenCountHTML(open) + `</div>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
-	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
-	askList := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
-		s.askListHTML(r.Context(), items, rd, now) + `</ul>`
+	// The feed's notice: a card post refused after the card left the page.
+	b.WriteString(ui.AsksFeedNoticeHTML)
+	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
+	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + s.answeredAsksNow(r.Context(), now) + `</ul>`
 	// ALWAYS TABS: the Log tab (ask_log_read.go) is drawn whatever else is
 	// served — with the ask log off it says how to turn it on.
 	var pending, archived []plugins.DraftCard
@@ -1646,15 +1658,17 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	if tab == asksTabLog {
 		logPanel = s.askLogPanelHTML(r.Context(), r.URL.Query())
 	}
-	b.WriteString(s.asksTabsHTML(askList, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
+	b.WriteString(s.asksTabsHTML(askList, answered, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
 	b.WriteString(`
-</section>`)
+</section>
+<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
+`)
 	b.WriteString(attentionPageScript)
-	b.WriteString(asksTypeScript)
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
 	b.WriteString(asksPageScript)
+	b.WriteString(ui.AsksFeedScriptHTML())
 	// The confirm dialog, ALWAYS: a gated form can arrive with the list's live
 	// refresh (a team's card), not only with the drafts tab. Its default
 	// sentence is the drafts'; a team card's form carries its own.
@@ -1662,42 +1676,16 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
 }
 
-// asksTypeScript is "Type an answer"'s behaviour on the Asks list
-// (attentionAnswerFormHTML): opening it focuses its box, and which ones are
-// open (by their card's id) outlives the list's live refresh, which re-draws
-// the list (ui.AttentionLiveScript, followed by ui.DictateRevealEvent). The
-// <details> itself opens and shuts with no script. A refresh never runs
-// while a box has focus or text (ui's askBusyFunc), so what is typed is never
-// re-drawn away; this only keeps an empty open box open.
-const asksTypeScript = `<script>
-(function () {
-  var list = document.getElementById('attention-items');
-  if (!list) return;
-  var open = {};
-  list.addEventListener('toggle', function (e) {
-    var d = e.target;
-    if (!d || !d.matches || !d.matches('details[data-ask-type]')) return;
-    var li = d.closest('[data-attention-item]');
-    if (li && li.id) { if (d.open) open[li.id] = true; else delete open[li.id]; }
-    // A box re-opened by a refresh is not focused: focus is the owner's.
-    if (d.hasAttribute('data-restored')) { d.removeAttribute('data-restored'); return; }
-    if (d.open) { var t = d.querySelector('textarea'); if (t) try { t.focus(); } catch (err) {} }
-  }, true);
-  list.addEventListener(` + "'" + ui.DictateRevealEvent + "'" + `, function () {
-    Object.keys(open).forEach(function (id) {
-      var li = document.getElementById(id), d = li && li.querySelector('details[data-ask-type]');
-      if (d && !d.open) { d.setAttribute('data-restored', ''); d.open = true; } else if (!d) delete open[id];
-    });
-  });
-})();
-</script>`
-
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
 var attentionPageScript = ui.AttentionLiveScript("attention-items", "/attention/items", EventAttentionChanged)
 
 func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Attention == nil && s.ext.Plugins == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Query().Get("part") == "answered" {
+		s.handleAttentionAnswered(w, r)
 		return
 	}
 	rd := s.readAsks(r.Context()) // the refresh's one hub read (asksRead)
@@ -1711,6 +1699,14 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	now := s.now() // as renderAsksPage
 	_, _ = w.Write([]byte(s.askListHTML(r.Context(), items, rd, now)))
+}
+
+// handleAttentionAnswered is GET /attention/items?part=answered: the Answered
+// tab's feed, for the page's live refresh (asksPageScript).
+func (s *Server) handleAttentionAnswered(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(s.answeredAsksNow(r.Context(), s.now())))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -1780,6 +1776,10 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 // (attentionHeldCueHTML, an operator decision): it says WHERE the
 // answer goes, not how to get there.
 func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string {
+	if returnTo == "" {
+		// The Asks page: the card feed's card (asks_feed.go).
+		return askFeedCardHTML(it, now)
+	}
 	esc := html.EscapeString
 	open := `<li id="` + esc(it.Key) + `" class="`
 	attrs := `" data-attention-item data-kind="` + esc(it.Kind) + `">
@@ -1886,7 +1886,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		b.WriteString(`<p class="` + ui.AsksMutedTextClass + `" data-attention-watch-only>` + esc(it.watchOnly) + `</p>
 `)
 	case it.Kind == attentionKindAsk:
-		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss, returnTo == ""))
+		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss))
 		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 	default:
@@ -1908,13 +1908,8 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 // (ui.AskFormInputClass, capped), and Answer sends it — nothing typed or
 // dictated is sent before Answer.
 //
-// ON THE ASKS PAGE (behind true) THE BOX IS BEHIND THE OPTIONS: an ask that
-// offers options draws them as full-width chips first and its box, mic and
-// Answer behind "Type an answer" (a <details>: it opens in place with no
-// script, and the page's script focuses the box and keeps it open across a
-// live refresh). An ask with no options has nothing to hide the box behind:
-// it is drawn open. A session page's block keeps its box open.
-func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string, behind bool) string {
+// (The Asks page's card draws its own form: askFeedAnswerFormHTML.)
+func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	gate := ""
@@ -1925,15 +1920,10 @@ func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss stri
 	}
 	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + gate + formAttrs + `>
 ` + back)
-	collapse := behind && len(it.Options) > 0
 	if len(it.Options) > 0 {
-		optsClass, optClass := ui.AskFormOptionsClass, ui.AskFormOptionClass
-		if behind {
-			optsClass, optClass = ui.AsksOptionsClass, ui.AsksOptionClass
-		}
-		b.WriteString(`<div class="` + optsClass + `">`)
+		b.WriteString(`<div class="` + ui.AskFormOptionsClass + `">`)
 		for _, o := range it.Options {
-			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + optClass + `" data-attention-option>` + esc(o) + `</button>`)
+			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AskFormOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
 		}
 		b.WriteString("</div>\n")
 	}
@@ -1954,17 +1944,10 @@ func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss stri
 ` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
 	answer := ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendWide) +
 		`<button type="submit" id="` + submit + `" class="` + ui.AskFormAnswerClass + `">Answer</button>`
-	// Dismiss ends the form's LAST row: beside "Type an answer" while the box
-	// is behind the options, else beside Answer (attentionItemHTML's footer
-	// rule). It belongs, by form=, to the /cancel form outside this one.
-	if collapse {
-		b.WriteString(`<div class="flex min-w-0 items-start gap-2"><details class="` + ui.AsksTypeClass + ` flex-1" data-ask-type><summary class="` + ui.AsksTypeSummaryClass + `" data-ask-type-toggle>` + ui.AsksTypeIcon + `Type an answer</summary>
-<div class="` + ui.AsksTypeBodyClass + `">` + box + `<div class="` + ui.AskFormActionsClass + `">` + answer + `</div></div></details>` + dismiss + `</div>
+	// Dismiss ends the form's LAST row, beside Answer (attentionItemHTML's
+	// footer rule). It belongs, by form=, to the /cancel form outside this one.
+	b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
 `)
-	} else {
-		b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
-`)
-	}
 	b.WriteString("</form>\n")
 	return b.String()
 }
@@ -2240,6 +2223,12 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		s.attentionFormFailed(w, r, err, a)
 		return
 	}
+	if asksCardRequest(r) {
+		// The Asks page's card (asks_feed.go): nothing to draw; its script
+		// settles the card.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
@@ -2258,8 +2247,16 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 		s.attentionFormFailed(w, r, err, a)
 		return
 	}
+	if asksCardRequest(r) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
+
+// attentionAnsweredPath is the Asks page on its Answered tab: where a Retry
+// lands, and where its refusal is drawn.
+const attentionAnsweredPath = attentionPath + "?" + asksTabParam + "=" + asksTabAnswered
 
 // handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to
 // queued (the caller's own ask only — row-level security), then delivered now.
@@ -2277,18 +2274,19 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrNotRetryable):
-		s.renderAttentionPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.")
+		s.renderAsksPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.", asksTabAnswered, 0)
 		return
 	default:
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: retry the delivery of %d: %v", id, err)
 		}
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.renderAsksPage(w, r, attentionErrCode(err), attentionErrText(err, a), asksTabAnswered, 0)
 		return
 	}
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	s.startAnswerDelivery(a.Owner, a.ID, 0)
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	// Back to the Answered tab, where the Retry was (and its card's new state).
+	http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
 }
 
 // attentionAnsweredWindow / attentionAnsweredShown bound the "Answered" list:
@@ -2358,53 +2356,16 @@ func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
 			proposals[a.ID] = true
 		}
 	}
-	return answeredAsksHTML(asks, hosts, now, proposals)
+	return answeredFeedHTML(asks, hosts, now, proposals)
 }
 
-// answeredAsksHTML is the "Answered" part of the list: each recent answer and
-// where it went, with Retry on a failed delivery.
-// answerLabel names who gave an answer on the Answered list: the owner, or —
+// answerLabel names who gave an answer on the Answered tab: the owner, or —
 // for a session's question to the chief (chief_ask_tool.go) — the chief.
 func answerLabel(a attention.Ask) string {
 	if a.AnsweredBy == attention.ByChief {
 		return "Your chief's answer: "
 	}
 	return "Your answer: "
-}
-
-func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Time, proposals map[int64]bool) string {
-	if len(asks) == 0 {
-		return ""
-	}
-	esc := html.EscapeString
-	var b strings.Builder
-	// The Answered group (askGroupsHTML's last): its label and count, then
-	// one muted card per answer — who asked and when, the question on one
-	// line, the answer, where it went, and Retry on a failed delivery.
-	b.WriteString(askGroupOpen("answered", "Answered", len(asks)) + `<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-answered" data-attention-answered-list>
-`)
-	for _, a := range asks {
-		id := strconv.FormatInt(a.ID, 10)
-		who := textplain.TitleKeeping(askSourceParts(a, hosts))
-		text, retry := answerDeliveryText(a, who, proposals[a.ID])
-		age := ""
-		if !a.ResolvedAt.IsZero() {
-			age = `<span class="` + ui.AsksSubClass + `"><time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time></span>`
-		}
-		b.WriteString(`<li id="answered-` + id + `" class="` + ui.AsksCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<span class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-attention-source>` + esc(who) + `</span>` + age + `</span>
-<p class="` + ui.AsksMutedTextClass + `" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
-<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
-` + answeredViaHTML(a) + `<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>
-`)
-		if retry {
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver"><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
-`)
-		}
-		b.WriteString("</li>\n")
-	}
-	b.WriteString("</ul></li>\n")
-	return b.String()
 }
 
 // answeredViaHTML is an Answered item's provenance line: "" for an answer given

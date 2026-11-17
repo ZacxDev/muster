@@ -119,8 +119,8 @@ func TestTheKickoffIsInNoReaderOfTheAsk(t *testing.T) {
 	if n := f.chatRowsHolding(t, "Run rank 3."); n != 0 {
 		t.Errorf("%d of the chief's chat rows hold the kickoff", n)
 	}
-	// G1: the Answered list says muster recorded it, not that the chief read it.
-	page := f.ownerGet(t, f.srv.handleAttentionItems, "/attention/items", 0)
+	// G1: the Answered feed says muster recorded it, not that the chief read it.
+	page := f.ownerGet(t, f.srv.handleAttentionItems, "/attention/items?part=answered", 0)
 	if !strings.Contains(page, html.EscapeString(proposalAnsweredText)) || strings.Contains(page, "read it while waiting") {
 		t.Errorf("the Answered item of a proposal card:\n%s", page)
 	}

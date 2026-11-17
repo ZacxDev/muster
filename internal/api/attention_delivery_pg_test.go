@@ -259,11 +259,20 @@ func TestARestartMidDeliveryDeliversOnce(t *testing.T) {
 		t.Fatalf("the failed item offers no Retry:\n%s", item)
 	}
 	rd, hdr := form(url.Values{})
-	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/redeliver", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
-		t.Fatalf("retry: %d %s", w.Code, w.Body)
+	w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/redeliver", rd, merge(f.operator(), hdr))
+	// Retry is on an Answered card: it lands back on the Answered tab.
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/attention?tab=answered" {
+		t.Fatalf("retry: %d -> %q, want 303 to /attention?tab=answered: %s", w.Code, w.Header().Get("Location"), w.Body)
 	}
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryDelivered {
 		t.Fatalf("after Retry: %q %q", a.Delivery, a.DeliveryDetail)
+	}
+	// Retried again, delivered now: refused, drawn on the Answered tab too.
+	rd, hdr = form(url.Values{})
+	w = f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/redeliver", rd, merge(f.operator(), hdr))
+	if w.Code != http.StatusConflict || selectedTab(t, w.Body.String(), "asks-tabs-tab-answered") != "true" ||
+		!strings.Contains(w.Body.String(), "nothing to retry") {
+		t.Fatalf("a refused retry: %d, not drawn on the Answered tab with its reason", w.Code)
 	}
 	if n := len(f.turnsInto(f.def)); n != 1 {
 		t.Fatalf("Retry pushed %d turns; want 1", n)

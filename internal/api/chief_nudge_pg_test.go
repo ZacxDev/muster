@@ -885,7 +885,7 @@ func TestChiefNudgesTabListsDecisions(t *testing.T) {
 	if got := selectedTab(t, body, "asks-tabs-tab-"+asksTabNudges); got != "true" {
 		t.Fatalf("the nudges tab is not selected: %q", got)
 	}
-	for _, want := range []string{`>Chief nudges</button>`, `data-nudges-mode="shadow"`, `data-outcome="would_send"`,
+	for _, want := range []string{`>Nudges</button>`, `data-nudges-mode="shadow"`, `data-outcome="would_send"`,
 		`data-nudge-mode>Shadow</span>`, "Would send: [Chief nudge]", `Quote [` + nudgeOwnerID + ` · `, `]: "keep going until merged"`,
 		"Would have been sent (shadow mode)"} {
 		if !strings.Contains(body, want) {

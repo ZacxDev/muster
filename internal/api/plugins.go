@@ -659,7 +659,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		routingRulesPath + `" class="text-accent underline">Routing rules</a>. What your chief costs: <a href="` + usagePath + `" class="text-accent underline">Usage</a>.</p>
 `)
 	b.WriteString(`<p class="text-sm text-fg2" data-testid="plugins-drafts-moved">Reply drafts are decided on the <a href="` + attentionPath + `?` +
-		asksTabParam + `=` + asksTabDrafts + `" class="text-accent underline">Asks page</a>, under Reply drafts.</p>
+		asksTabParam + `=` + asksTabDrafts + `" class="text-accent underline">Asks page</a>, under Drafts.</p>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
 <script>

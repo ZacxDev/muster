@@ -150,10 +150,14 @@ for (const vp of [
       const options = page.locator('[data-ask-option]');
       await expect(options).toHaveCount(2);
       const vw = page.viewportSize()!;
+      // The page is the feed's card, expanded (asks_feed.go): an option spans
+      // the card's content box (the card's own 16px padding either side).
+      const cardBox = (await page.locator('[data-asks-page-card]').boundingBox())!;
+      expect(cardBox.width, 'the card spans the column').toBeGreaterThan(vw.width - 48);
       for (const o of await options.all()) {
         const b = (await o.boundingBox())!;
         expect(b.height, 'an option is at least a 44px target').toBeGreaterThanOrEqual(44);
-        expect(b.width, 'an option spans the column').toBeGreaterThan(vw.width - 48);
+        expect(b.width, 'an option spans the card').toBeGreaterThan(cardBox.width - 40);
       }
 
       // The chips: already there, or — the model held — arriving LIVE.

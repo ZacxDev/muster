@@ -54,13 +54,14 @@ var whereDeliveries = map[int64][2]string{
 
 var answeredCard = regexp.MustCompile(`(?s)<li id="answered-(\d+)".*?data-attention-source>([^<]*)</span>.*?data-attention-delivery>([^<]*)</p>`)
 
-// TestAnAnswersDeliveryLineNamesTheExactTmuxTarget: the Answered list on the
-// queue (GET /attention/items), each card's source and delivery line whole.
+// TestAnAnswersDeliveryLineNamesTheExactTmuxTarget: the Answered tab's feed
+// (GET /attention/items?part=answered, its live refresh), each card's source
+// and delivery line whole.
 func TestAnAnswersDeliveryLineNamesTheExactTmuxTarget(t *testing.T) {
 	s := whereServer(t)
 	s.ext.Attention = whereAnswered{answered: whereAnsweredAsks()}
 	rec := httptest.NewRecorder()
-	s.handleAttentionItems(rec, httptest.NewRequest("GET", "/attention/items", nil).WithContext(s.attentionPrincipal(context.Background(), 1)))
+	s.handleAttentionItems(rec, httptest.NewRequest("GET", "/attention/items?part=answered", nil).WithContext(s.attentionPrincipal(context.Background(), 1)))
 	cards := answeredCard.FindAllStringSubmatch(rec.Body.String(), -1)
 	if len(cards) != len(whereDeliveries) {
 		t.Fatalf("%d answered cards, want %d:\n%s", len(cards), len(whereDeliveries), rec.Body.String())

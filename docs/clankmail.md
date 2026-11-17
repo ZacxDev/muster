@@ -45,7 +45,7 @@ real handles.
   `requests` queue. The plugin counts it and lists it for you (`muster-clankmail requests`), and
   posts nothing of it to muster.
 - **Every reply needs your approval.** Your chief can only *draft* a reply (`reply_draft`). You
-  approve or reject the draft in muster (the Asks page's **Reply drafts** tab). Only then does the
+  approve or reject the draft in muster (the Asks page's **Drafts** tab). Only then does the
   plugin sign it and send it. There is one exception, and you have to turn it on yourself:
   `MUSTER_ROUTE_RELAY_ALLOW` (see [section 4](#4-day-to-day)).
 - **The plugin only replies.** It cannot start a conversation. Starting one from muster will come

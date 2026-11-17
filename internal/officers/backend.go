@@ -81,6 +81,10 @@ type (
 	FloodBlocksBackend interface {
 		ProposeFloodBlock(ctx context.Context, instance string, p FloodBlockProposal) ([]byte, error)
 	}
+	// RolloutPromotionsBackend files a rollout officer's promotion proposal.
+	RolloutPromotionsBackend interface {
+		ProposeRolloutPromotion(ctx context.Context, instance string, p RolloutPromotion) ([]byte, error)
+	}
 	// GapTasksBackend files a datastore officer's gap task.
 	GapTasksBackend interface {
 		FileGapTask(ctx context.Context, instance string, a GapTaskArgs) ([]byte, error)
@@ -156,6 +160,7 @@ const (
 	CapAsks          = "asks"
 	CapTaskAsks      = "task-asks"
 	CapFloodBlocks   = "flood-blocks"
+	CapRollout       = "rollout-promotions"
 	CapGapTasks      = "gap-tasks"
 	CapTasksRead     = "tasks-read"
 	CapPRContext     = "pr-context"
@@ -179,6 +184,7 @@ var capabilityInterface = map[string]func(Backend) bool{
 	CapAsks:        func(b Backend) bool { _, ok := b.(AsksBackend); return ok },
 	CapTaskAsks:    func(b Backend) bool { _, ok := b.(TaskAsksBackend); return ok },
 	CapFloodBlocks: func(b Backend) bool { _, ok := b.(FloodBlocksBackend); return ok },
+	CapRollout:     func(b Backend) bool { _, ok := b.(RolloutPromotionsBackend); return ok },
 	CapGapTasks:    func(b Backend) bool { _, ok := b.(GapTasksBackend); return ok },
 	CapTasksRead:   func(b Backend) bool { _, ok := b.(TasksBackend); return ok },
 	CapPRContext:   func(b Backend) bool { _, ok := b.(PRContextBackend); return ok },
@@ -281,6 +287,8 @@ func ToolCapability(tool string) (capability string, known bool) {
 		return CapTaskAsks, true
 	case ToolFloodBlockPropose:
 		return CapFloodBlocks, true
+	case ToolRolloutPromotePropose:
+		return CapRollout, true
 	case ToolGapTask:
 		return CapGapTasks, true
 	case ToolPRContext:
@@ -356,19 +364,20 @@ func CompleteDroppingCost(ctx context.Context, b Backend, item ItemID, instance 
 
 // *Client is the HQ implementation of the contract and every optional verb.
 var (
-	_ Backend            = (*Client)(nil)
-	_ TranscriptBackend  = (*Client)(nil)
-	_ UsageBackend       = (*Client)(nil)
-	_ PoolsBackend       = (*Client)(nil)
-	_ AsksBackend        = (*Client)(nil)
-	_ TaskAsksBackend    = (*Client)(nil)
-	_ FloodBlocksBackend = (*Client)(nil)
-	_ GapTasksBackend    = (*Client)(nil)
-	_ TasksBackend       = (*Client)(nil)
-	_ PRContextBackend   = (*Client)(nil)
-	_ ObsBackend         = (*Client)(nil)
-	_ ObsRawBackend      = (*Client)(nil)
-	_ CaptainBackend     = (*Client)(nil)
-	_ ShipBackend        = (*Client)(nil)
-	_ RerunBackend       = (*Client)(nil)
+	_ Backend                  = (*Client)(nil)
+	_ TranscriptBackend        = (*Client)(nil)
+	_ UsageBackend             = (*Client)(nil)
+	_ PoolsBackend             = (*Client)(nil)
+	_ AsksBackend              = (*Client)(nil)
+	_ TaskAsksBackend          = (*Client)(nil)
+	_ FloodBlocksBackend       = (*Client)(nil)
+	_ RolloutPromotionsBackend = (*Client)(nil)
+	_ GapTasksBackend          = (*Client)(nil)
+	_ TasksBackend             = (*Client)(nil)
+	_ PRContextBackend         = (*Client)(nil)
+	_ ObsBackend               = (*Client)(nil)
+	_ ObsRawBackend            = (*Client)(nil)
+	_ CaptainBackend           = (*Client)(nil)
+	_ ShipBackend              = (*Client)(nil)
+	_ RerunBackend             = (*Client)(nil)
 )
