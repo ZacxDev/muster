@@ -94,29 +94,12 @@ func (s *Server) noteConnectorBlocked(ctx context.Context, a agents.Agent, grant
 }
 
 // goRerunBlocked re-runs approved grant g's blocked items in the background
-// (the decision is answered first); WaitForGrantReruns waits for it.
+// (the decision is answered first); WaitForGrantReruns waits for it. The
+// grant's agent and officer are resolved here, on the deciding request, and
+// the background work uses this runtime only: it never reads s.officerRT.
 func (s *Server) goRerunBlocked(ctx context.Context, g connectors.Grant) {
-	if s.officerRT == nil {
-		return
-	}
-	s.officerRT.reruns.Add(1)
-	go func() {
-		defer s.officerRT.reruns.Done()
-		s.rerunBlocked(context.WithoutCancel(ctx), g)
-	}()
-}
-
-// WaitForGrantReruns waits for every approval's re-runs in flight (tests).
-func (s *Server) WaitForGrantReruns() {
-	if s.officerRT != nil {
-		s.officerRT.reruns.Wait()
-	}
-}
-
-// rerunBlocked asks HQ to re-run each item recorded as blocked on approved
-// grant g (its agent an officer instance), newest first, within the bounds.
-func (s *Server) rerunBlocked(ctx context.Context, g connectors.Grant) {
-	if s.ext.Agents == nil {
+	rt := s.officerRT
+	if rt == nil || s.ext.Agents == nil {
 		return
 	}
 	a, err := s.ext.Agents.Get(ctx, g.AgentID)
@@ -128,9 +111,27 @@ func (s *Server) rerunBlocked(ctx context.Context, g connectors.Grant) {
 	if !ok {
 		return
 	}
+	rt.reruns.Add(1)
+	ctx = context.WithoutCancel(ctx)
+	safeGo(s.logger, "officer grant re-runs", func() {
+		defer rt.reruns.Done()
+		s.rerunBlocked(ctx, rt, o, g)
+	})
+}
+
+// WaitForGrantReruns waits for every approval's re-runs in flight (tests).
+func (s *Server) WaitForGrantReruns() {
+	if s.officerRT != nil {
+		s.officerRT.reruns.Wait()
+	}
+}
+
+// rerunBlocked asks HQ to re-run each item recorded as blocked on approved
+// grant g of officer o's instance, newest first, within the bounds.
+func (s *Server) rerunBlocked(ctx context.Context, rt *officerRuntime, o officers.Officer, g connectors.Grant) {
 	octx := s.officerPrincipal(ctx, o.Owner)
-	st := s.officerRT.connectorBlocks()
-	since := s.officerRT.clock().Add(-officers.RerunWindow)
+	st := rt.connectorBlocks()
+	since := rt.clock().Add(-officers.RerunWindow)
 	blocks, err := st.BlocksForGrant(octx, o.ID, g.ID, since, officers.RerunMaxPerApproval+1)
 	if err != nil {
 		s.logger.Printf("officers: grant %d approved: %s's blocked items could not be read: %v", g.ID, o.ID, err)
@@ -144,7 +145,7 @@ func (s *Server) rerunBlocked(ctx context.Context, g connectors.Grant) {
 			g.ID, o.ID, officers.RerunMaxPerApproval, officers.RerunWindow, officers.RerunMaxPerApproval)
 		blocks = blocks[:officers.RerunMaxPerApproval]
 	}
-	rb, err := officers.Serves[officers.RerunBackend](s.officerRT.hq.Backend(o), officers.CapRerun)
+	rb, err := officers.Serves[officers.RerunBackend](rt.hq.Backend(o), officers.CapRerun)
 	if err != nil {
 		s.logger.Printf("officers: grant %d approved: %s's backend re-runs no item (%v); %d blocked item(s) stay as they are", g.ID, o.ID, err, len(blocks))
 		return
@@ -169,7 +170,7 @@ func (s *Server) rerunBlocked(ctx context.Context, g connectors.Grant) {
 			continue
 		}
 		s.logger.Printf("officers: grant %d approved: %s item %s re-run: %s (item %s)", g.ID, o.ID, b.Item, ans.Rerun, ans.Item)
-		if err := st.MarkRerun(octx, o.ID, g.ID, b.Item, s.officerRT.clock(), ans.Rerun, ans.Item); err != nil {
+		if err := st.MarkRerun(octx, o.ID, g.ID, b.Item, rt.clock(), ans.Rerun, ans.Item); err != nil {
 			s.logger.Printf("officers: grant %d: %s item %s re-run but not marked (HQ's key keeps a repeat a no-op): %v", g.ID, o.ID, b.Item, err)
 		}
 	}
