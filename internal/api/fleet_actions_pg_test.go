@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -610,5 +611,56 @@ func TestAReassignRoutesTheTaskThenAsksTheOldSessionForItsHandoff(t *testing.T) 
 	}
 	if fleetRows != 1 {
 		t.Fatalf("fleet rows %d (all %v); want exactly the handoff to from", fleetRows, f.rows(t))
+	}
+}
+
+// TestAProposalExpiresAfterTwelveHours: a card drawn 11 hours after its
+// proposal is still there; 13 hours after, it is expired ("12 h passed") and
+// not drawn. Its stop never ended (the re-read alone would keep it).
+func TestAProposalExpiresAfterTwelveHours(t *testing.T) {
+	f := newProposeFixture(t)
+	subject, _, _ := f.stopped(t, f.owner)
+	id := f.propose(t, subject, fleet.ClassStopNote)
+	card := `data-fleet-proposal="` + strconv.FormatInt(id, 10) + `"`
+	f.at = time.Now().Add(11 * time.Hour)
+	if html := f.digest(t, f.owner, false); !strings.Contains(html, card) {
+		t.Fatalf("11 h on, the card is gone")
+	}
+	f.at = time.Now().Add(13 * time.Hour)
+	if html := f.digest(t, f.owner, false); strings.Contains(html, card) {
+		t.Fatalf("13 h on, the card is still drawn")
+	}
+	if a := f.action(t, id); a.State != fleet.StateExpired || a.Outcome != "12 h passed" {
+		t.Fatalf("the expired action: %+v", a)
+	}
+}
+
+// TestConcurrentTapsOnOneCardQueueOneRowOnASmallPool: eight taps at once on
+// one card (a double tap, two devices, Approve and Approve all together), on
+// a 4-connection pool: exactly ONE row is queued, every tap answers, and none
+// waits out a statement timeout (the claim is one conditional UPDATE: no
+// connection is held across another's).
+func TestConcurrentTapsOnOneCardQueueOneRowOnASmallPool(t *testing.T) {
+	withPoolMaxConns(t, 4)
+	f := newProposeFixture(t)
+	subject, _, _ := f.stopped(t, f.owner)
+	id := f.propose(t, subject, fleet.ClassContinue)
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = f.card(t, fresh(f.asOwner), id, "approve", nil).Code
+		}(i)
+	}
+	wg.Wait()
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Errorf("tap %d answered %d", i, c)
+		}
+	}
+	if got := f.rows(t); len(got) != 1 || got[0][1] != strconv.FormatInt(id, 10) {
+		t.Fatalf("eight concurrent taps queued %v; want exactly one row", got)
 	}
 }
