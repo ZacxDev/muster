@@ -98,7 +98,7 @@ var templateLeak = regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b|https?://|[A-Za
 // TestNoTemplateNamesAHostAnAddressOrAMailBox (public repository).
 func TestNoTemplateNamesAHostAnAddressOrAMailBox(t *testing.T) {
 	// The guard can see a leak (positive control).
-	for _, bad := range []string{"reach 10.0.0.7", "see https://example.org", "mail ops@example.org", "on build.lan"} {
+	for _, bad := range []string{"reach 192.0.2.7", "see https://example.org", "mail ops@example.org", "on build.corp"} {
 		if !templateLeak.MatchString(bad) {
 			t.Fatalf("control: the guard misses %q", bad)
 		}
