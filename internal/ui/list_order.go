@@ -145,6 +145,17 @@ func (e listEntry) teamChief() bool {
 	return e.chief() && owner != 0
 }
 
+// officer is the declared officer the entry is an instance of
+// (AgentCardView.Officer, internal/api's binding rule), "" for none. A
+// mirrored window is never one here: a host officer's instance is its window,
+// and the server does not bind windows to officers for the sidebar.
+func (e listEntry) officer() string {
+	if e.agent != nil {
+		return e.agent.Officer
+	}
+	return ""
+}
+
 // primaryChief reports whether the entry is THE chief — where `/` opens
 // (AgentCardView.PrimaryChief, internal/api's primaryChief).
 func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
@@ -187,9 +198,11 @@ func navBefore(a, b listEntry) bool {
 // HomeHref is where home (`/`, and the retired /agents) opens for a viewer
 // with no chief to open (internal/api homeTarget): the session the viewer
 // opened LAST that is still listed (refs, newest first — the switcher's Recent
-// order), else the sidebar's first row (navOrder: whoever waits on the
-// operator, then the most recently active), else "" — nothing to open, and
-// home draws the onboarding page.
+// order), else the sidebar's first session row (navOrder: whoever waits on the
+// operator, then the most recently active; an officer instance its officer's
+// row stands in for is not a session row, navOfficerRowStandsIn), else "" —
+// nothing to open, and home draws the onboarding page. The caller blanks
+// AgentCardView.Officer when the server draws no Officers group.
 //
 // 🔴 A CONVERSATION, NOT A PAGE OF CONVERSATIONS (operator decision: "make the
 // default view open to the chief"). Without a chief, an empty page whose only
@@ -207,11 +220,17 @@ func HomeHref(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) 
 			}
 		}
 	}
-	if len(es) == 0 {
-		return ""
+	// The sidebar's first SESSION row: an officer's instance whose officer's
+	// row stands in for it (navOfficerRowStandsIn) is not one. (A recent ref
+	// above may still name one: that is a conversation the viewer opened.)
+	for _, e := range es {
+		if navOfficerRowStandsIn(e) {
+			continue
+		}
+		if e.agent != nil {
+			return e.agent.PageHref()
+		}
+		return MirrorCardHref(*e.mirror)
 	}
-	if e := es[0]; e.agent != nil {
-		return e.agent.PageHref()
-	}
-	return MirrorCardHref(*es[0].mirror)
+	return ""
 }

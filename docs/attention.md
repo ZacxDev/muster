@@ -513,7 +513,7 @@ claude-code agent — whenever muster has a database.
 
 | tool | does |
 |---|---|
-| `attention_ask {question, options?, timeout_seconds?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. Returns `{id, status: "pending", next}`. A dispatched agent's answer is [delivered to it](#delivery) as a new message, so it need not wait; a mirrored session must call `attention_wait`. |
+| `attention_ask {question, options?, timeout_seconds?, context?, attachments?, attachment_ids?}` | Files a question. `options` (at most 10) become buttons; you can still answer in free text. Open for 24 hours by default (60 s to 7 days), then it expires. `context` is one short line on why the agent asks (at most 500 characters, one line, refused past that); without it muster shows the session's focus title and its last message instead. `attachments` are file paths (a mirrored Claude Code session: its host uploads them) and `attachment_ids` files already uploaded (`ccd ask-attach` in a dispatched pod): at most 4 in all, 10 MiB each, images, PDF, text, XML/SVG or ZIP — see [Attachments and context](#attachments-and-context). Returns `{id, status: "pending", next}` (and `attachments`, their count, when there are any). A dispatched agent's answer is [delivered to it](#delivery) as a new message, so it need not wait; a mirrored session must call `attention_wait`. |
 | `attention_wait {id, wait_seconds?}` | Blocks until the ask is answered (`status: "answered"`, `answer`), answered in the session (`status: "answered_in_session"`, `answer` — see [Answering](#answering)), cancelled (muster also withdraws a chief's question about a session once the chief proposed something for that session — [chief.md](chief.md#asking-the-chief-from-a-sessions-view)) or expired, or `wait_seconds` (default 240, at most 600) pass — then answers `status: "pending"` and the agent calls it again. `wait_seconds: 0` reads it without waiting. At most 2 waits per agent and 20 per owner are open at once; past that a wait is refused at once. |
 | `attention_cancel {id}` | Withdraws an open ask. |
 | `tasks_list {status?}`, `task_get {id}`, `task_comment {id, body}`, `task_set_status {id, status}` | The agent's OWN task: the one it was dispatched for. The chief's: the owner's whole board. Any other task answers exactly what a task that does not exist answers. An agent may set `open`, `in_progress` or `ready_for_review` — never `complete`, and never on a task that is already complete (checked in the update itself). The same rule holds on `PATCH /api/tasks/{id}/status` when the caller is an agent (the chief asserting its name through the service credential); the operator's tokens are unchanged. |
@@ -584,6 +584,13 @@ carry this paragraph (`attentionInstruction`):
 > need to wait for it: you may end your turn. If you cannot continue without
 > it, you MAY instead block on it with attention_wait{id} (repeat it while it
 > answers "pending"); an answer you read there is not delivered a second time.
+> Give context{one short line: why you are asking now and what the answer
+> unblocks} with the question.
+
+While attachments are on, a claude-code agent's paragraph adds *"To show a
+file from your workspace, run `ccd ask-attach <path>` and pass the printed id
+in attachment_ids."*, and any other kind's adds *"Attachments are not available
+to you: an ask from you carries text only."* While they are off, neither.
 
 A mirrored session's paragraph (`mirrorAttentionInstructionFor`) differs by
 runtime only in the question tool it names — `AskUserQuestion` for Claude Code,
@@ -598,12 +605,106 @@ session's answer is never pushed. A turn that ends on an offer or a question
 typed into the chat reaches muster only as a **Session waiting** item, which
 does not say what is being asked.
 
+Both runtimes' paragraphs then add, for `attention_ask`, the same `context`
+sentence; while attachments are on, Claude Code's also says to show files with `attachments: [paths in
+your working directory]` (its host uploads them; see
+[Attachments and context](#attachments-and-context)). An opencode session's
+attachments are not supported yet.
+
 An [officer](officers.md) instance gets `officerAttentionInstruction` in its
 place (`attentionInstructionFor`): follow its charter, and by default finish
 the item with `officer_complete{outcome: "escalated", summary}` (HQ notifies the
 officer's owner) rather than `attention_ask`, which it uses only when its
 charter says to. An officers muster usually runs headless, so an attention ask
 there reaches nobody. The attention tools stay offered to it.
+
+### Attachments and context
+
+An agent's ask can carry **files** (a screenshot, a diagram, a log, a PDF) and
+a **why** — what it was doing and what the answer unblocks. Both are drawn
+under the question on its Asks card and on `/attention/asks/<id>`, and both are
+in `attention_list`'s items (`why`, `attachments`: name, type and size).
+
+**Files.** muster cannot read an agent's disk, so a file is sent from where it
+is into muster's one [upload store](uploads.md#an-asks-attachments) and the
+ask carries the upload's id:
+
+- **A mirrored Claude Code session** names files by path:
+  `attention_ask{question, attachments: ["out/shot.png"]}`. Its host's
+  `muster-mirror` (the local MCP endpoint) takes the paths out of the call,
+  resolves each against the calling session's working directory (its Claude
+  Code process's), sends it to `POST /mirror/ask-attachments` with the host's
+  mirror token, and forwards the call with `attachment_ids` in their place. A
+  path outside the working directory — `..`, an absolute path elsewhere, or a
+  symlink that leads out, checked after every symlink is resolved — a **hidden
+  file or anything in a hidden directory** (any part of the resolved path below
+  the working directory starting with `.`: `.env`, `.ssh/…`, `.aws/…`,
+  `.git/…`, also when reached through a symlink with an ordinary name), a
+  missing file, a fifth file, one over 10 MiB or of a type an ask cannot carry
+  is the call's tool error, and **no ask is filed**. The file opened is the
+  file checked: it is opened without following a link and without blocking,
+  and refused unless it is still the same regular file (device and inode), so
+  a file swapped in between the check and the read — a link, a FIFO, another
+  file — is never sent. If the call fails after some of its files were
+  uploaded — a later file refused, or muster refusing the ask — the host takes
+  those uploads back (`DELETE /mirror/ask-attachments/<id>`, best effort). An older `muster-mirror` forwards
+  the paths unchanged, and muster refuses them saying to update it. A mirrored
+  opencode session's attachments are **not supported yet** (refused, saying
+  so: it has no pane to read a working directory from); that is a follow-up.
+- **A dispatched claude-code agent** runs `ccd ask-attach <path>` in its pod
+  (the same confinement and the same open, against its workspace), which sends
+  the file to `POST /agent/ask-attachments` with the agent's own token and
+  prints `{"id", "name", "type", "size"}`; it passes the id in
+  `attachment_ids`. Paths sent to muster directly are refused with that
+  instruction. `ccd` ships only in the claude-code image, so **any other kind
+  of agent** (a gateway agent) is told instead that attachments are not
+  available to it — in its instructions and in that refusal.
+
+**Only while attachments are on.** With the upload store unconfigured or the
+feature off, nothing about attachments is offered: `attention_ask`'s schema
+has no `attachments` or `attachment_ids`, and no agent's or session's
+instructions mention them (the `context` sentence stays).
+
+Before the ask is filed, muster checks every id: an upload the asker's owner
+can read (row-level security), not revoked, of an allowed type and within the
+cap — anything else (another owner's upload, a revoked one, an id that does not
+exist) is refused with the same sentence, so nothing says which. The types are
+sniffed from the bytes, never the name: PNG, JPEG, GIF, WebP, PDF, plain text
+(Markdown, CSV, JSON, logs), XML (an SVG) and ZIP (Office files). HTML and
+anything unrecognised are refused.
+
+**Who sees a file.** `GET /attention/asks/<id>/attachments/<upload id>` needs a
+signed-in session and serves only a file the ask names, to whoever may read the
+ask — its owner, or a member (viewer and above) of the team that owns it —
+and 404 to everyone else, for a missing ask and an upload the ask does not name
+alike. The upload's own row is read on every request too: one revoked or past
+its expiry answers 404 even while its bytes are still in the store. An ask's
+upload lives 7 days (the longest an ask can stay open). There is no public link to it. Only the four raster images are served
+inline (the card's thumbnail, which opens full size in a new tab); an SVG, a
+PDF and everything else is a download chip with its name and size, served with
+[the inert headers](uploads.md#serving-uploaded-files), so nothing in a file
+runs.
+
+**Why.** `context` is the agent's own line, sanitised as the question is (one
+line; a control, format or bidi character is replaced) and refused past 500
+characters. Without it, muster stores a fallback read when the ask is filed:
+the session's focus title (`Working on: …`) and its last assistant message
+(`Last said: …`, at most 600 characters), with anything shaped like a secret
+redacted as a notification's text is. The two are never mixed: an ask that
+gives a context stores only it, and the transcript is not read. Both are the
+asker's words: escaped on every page, and data, not instructions, in
+`attention_list`.
+
+**Not in the summary API.** [The summary API](#the-summary-api) never carries
+Claude's last words, and the fallback is exactly that, so neither the why nor
+the attachments are added to it.
+
+Claude Code's own question tool (`AskUserQuestion`, [held questions](#mirrored-claude-code-sessions))
+has no field for files or a why. A held question's card gets the same
+fallback line when it is drawn: the session's focus title and the last thing
+its Claude said before the question (as its host read it while the picker
+shows), redacted and bounded as above. Not in `attention_list`, and not in the
+summary API.
 
 ## Mirrored Claude Code sessions
 

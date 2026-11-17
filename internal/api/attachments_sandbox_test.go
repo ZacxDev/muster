@@ -30,6 +30,10 @@ import (
 //   - GET /uploads/{id}/file       the owner's view (uploads)
 //   - GET /tasks/{id}/attachments/{aid}   a task's attachment (notes)
 //
+// (and a fourth, an ask's attachment, GET /attention/asks/{id}/attachments/
+// {upload}, walked over the same fixtures in ask_media_pg_test.go, which needs
+// Postgres)
+//
 // and each must answer every hostile fixture below with ALL of: a type that
 // names no markup, `nosniff`, a sandboxing CSP, and an `attachment`
 // disposition — unless the bytes are one of the four raster image types, the

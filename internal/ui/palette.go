@@ -186,7 +186,7 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
       title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
       prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
       age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
-      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n, mark: window.musterWaitMark(a),
+      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent') || (a.hasAttribute('data-nav-officer') ? 'officer' : ''), n: n, mark: window.musterWaitMark(a),
       // "Show tmux sessions": the place the server set (entryTmuxAttr), drawn
       // by the palette's row; never searched (the codename is, as code).
       tmux: a.getAttribute('data-switcher-tmux') || '' };
@@ -254,10 +254,11 @@ const paletteJS = `
   function hide(p) { try { if (isOpen(p)) p.hidePopover(); } catch (e) {} }
   // The entries searched: the switcher's All row when the page has the bar
   // (a bfcache restore redraws it: restore.go), else the sidebar's agent
-  // rows; the page's own session left out of both.
+  // rows and its Officers rows (an officer's row stands in for its instance
+  // there, nav_officers.go); the page's own session left out of both.
   function entries() {
     var es = document.querySelectorAll('#` + SwitcherID + ` [data-switcher-list="all"] a[data-switcher-entry]');
-    if (!es.length) es = document.querySelectorAll('#` + NavAgentsListID + ` a[data-nav-agent]:not([data-nav-current])');
+    if (!es.length) es = document.querySelectorAll('#` + NavAgentsListID + ` a[data-nav-agent]:not([data-nav-current]), #` + NavAgentsListID + ` a[data-nav-officer]:not([data-nav-current])');
     var out = [];
     for (var i = 0; i < es.length; i++) out.push(window.musterPaletteEntry(es[i], i));
     return out;

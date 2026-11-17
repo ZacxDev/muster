@@ -3,6 +3,7 @@ package uploads
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -139,7 +140,29 @@ func (c *capReader) Read(p []byte) (int, error) {
 // failed write is cleaned up explicitly (abort any incomplete upload, delete
 // any object) under a fresh bounded context.
 func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored, error) {
-	return s.put(ctx, r, filename, ObjectKeyFor, s.MaxBytes)
+	return s.put(ctx, r, filename, ObjectKeyFor, s.MaxBytes, nil, 0)
+}
+
+// RefusedTypeError is a file whose SNIFFED type the caller's allow refused
+// (PutChecked); nothing was stored.
+type RefusedTypeError struct{ ContentType string }
+
+func (e *RefusedTypeError) Error() string {
+	return "uploads: a file of type " + e.ContentType + " is refused here"
+}
+
+// PutChecked is Put for a caller with its own, narrower rule: the file is
+// refused (a *RefusedTypeError, before a byte is written to the store) unless
+// allow accepts the type sniffed from its first bytes, and max (≤ MaxBytes;
+// 0 or more is MaxBytes) caps it below the deployment's cap. An attention
+// ask's attachment is one (askattach.Allowed, askattach.MaxBytes). ttl is how long
+// the upload's row stays live (its ExpiresAt); 0 is LinkTTL. An ask's file lives
+// as long as an ask can stay open.
+func (s *Service) PutChecked(ctx context.Context, r io.Reader, filename string, max int64, ttl time.Duration, allow func(contentType string) bool) (Stored, error) {
+	if max <= 0 || max > s.MaxBytes {
+		max = s.MaxBytes
+	}
+	return s.put(ctx, r, filename, ObjectKeyFor, max, allow, ttl)
 }
 
 // PutForPage is Put for a file sent through shareable page pageID's link: the
@@ -156,7 +179,7 @@ func (s *Service) PutForPage(ctx context.Context, r io.Reader, filename string, 
 	if max <= 0 || max > s.MaxBytes {
 		max = s.MaxBytes
 	}
-	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) }, max)
+	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) }, max, nil, 0)
 }
 
 // DeletePageFiles deletes every object under page pageID's prefix — by
@@ -187,7 +210,7 @@ func (s *Service) ProbePages(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor func(string) string, max int64) (Stored, error) {
+func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor func(string) string, max int64, allow func(string) bool, ttl time.Duration) (Stored, error) {
 	br := bufio.NewReaderSize(r, SniffBytes)
 	head, perr := br.Peek(SniffBytes)
 	if len(head) == 0 {
@@ -197,6 +220,9 @@ func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor 
 		return Stored{}, ErrEmpty
 	}
 	contentType := Sniff(head)
+	if allow != nil && !allow(contentType) {
+		return Stored{}, &RefusedTypeError{ContentType: contentType}
+	}
 	id, err := NewPublicID()
 	if err != nil {
 		return Stored{}, err
@@ -231,7 +257,7 @@ func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor 
 		Filename:    CleanFilename(filename),
 		ContentType: contentType,
 		Size:        cr.n,
-		ExpiresAt:   s.now().Add(s.LinkTTL).Truncate(time.Second),
+		ExpiresAt:   s.now().Add(cmp.Or(ttl, s.LinkTTL)).Truncate(time.Second),
 	}
 	row, err := s.Store.Create(ctx, u)
 	if err != nil {

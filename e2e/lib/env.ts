@@ -456,6 +456,18 @@ export const asksFeedPort = port + 421;
 export const teamUxMainPort = port + 410;
 export const teamUxBrowserPort = port + 411;
 export const teamUxGotruePort = Number(process.env.MUSTER_E2E_TEAMUX_GOTRUE_PORT ?? port + 412);
+// tests/ask-media.spec.ts: an agent's ask carrying an image — its own server
+// (uploads on, against a fake S3 the spec plays), its connect listener, and
+// the fake S3 (+430 to +432: clear of the blocks above, and of asksFeedPort's +421).
+export const askMediaPort = port + 430;
+export const askMediaConnectPort = port + 431;
+export const askMediaS3Port = port + 432;
+// tests/agent-sidebar.spec.ts: the sidebar's Officers group with an officer
+// that runs in a pod — its own server over the noop driver, and its connect
+// listener (a pod officer in MUSTER_OFFICERS needs one). +440/+441: clear of
+// the blocks above, and of askMediaPort's +430 to +432.
+export const sidebarOfficersPort = port + 440;
+export const sidebarOfficersConnectPort = port + 441;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

@@ -77,20 +77,27 @@ func TestTheAskToolTellsAnAgentItNeedNotWaitAndAMirroredSessionThatItMust(t *tes
 // guard on a few words is walked by rewording): keep going on authorized
 // work; ask an owner's decision with the runtime's own question tool, else
 // attention_ask + attention_wait; never end a turn on an offer, a menu or a
-// question typed into the chat.
+// question typed into the chat. Each then carries attention_ask's context
+// sentence, and — only while uploads are on — Claude Code's how to attach
+// files (#767; an opencode session's attachments are not supported yet).
 const (
 	wantMirrorClaudeCodeAttention = `If work remains that you are authorized to do, keep going. ` +
 		`If a decision is your owner's — a choice, an approval, a missing fact — ask it with your AskUserQuestion tool: ` +
 		`it reaches your owner in muster's Attention view and on their phone. ` +
 		`If you do not have that tool, call attention_ask{question, options?} and then attention_wait{id} ` +
 		`(repeat it while it answers "pending") until it returns the answer, then continue. ` +
-		`Never end your turn on an offer, a menu of next steps, or a question typed into the chat.`
+		`Never end your turn on an offer, a menu of next steps, or a question typed into the chat. ` +
+		`When you call attention_ask: Give context{one short line: why you are asking now and what the answer unblocks} with the question.`
+	// wantMirrorClaudeCodeAttentionFiles is Claude Code's while uploads are on.
+	wantMirrorClaudeCodeAttentionFiles = wantMirrorClaudeCodeAttention + ` ` +
+		`To show files (a screenshot, a log), pass attachments: [paths in your working directory].`
 	wantMirrorOpenCodeAttention = `If work remains that you are authorized to do, keep going. ` +
 		`If a decision is your owner's — a choice, an approval, a missing fact — ask it with your question tool: ` +
 		`it reaches your owner in muster's Attention view and on their phone. ` +
 		`If you do not have that tool, call attention_ask{question, options?} and then attention_wait{id} ` +
 		`(repeat it while it answers "pending") until it returns the answer, then continue. ` +
-		`Never end your turn on an offer, a menu of next steps, or a question typed into the chat.`
+		`Never end your turn on an offer, a menu of next steps, or a question typed into the chat. ` +
+		`When you call attention_ask: Give context{one short line: why you are asking now and what the answer unblocks} with the question.`
 )
 
 // normInstruction collapses every whitespace run to one space, so a pin
@@ -103,9 +110,11 @@ func TestAMirroredSessionIsToldToKeepGoingAndAskWithItsOwnQuestionTool(t *testin
 	for _, c := range []struct {
 		name     string
 		openCode bool
+		files    bool
 		want     string
-	}{{"claude code", false, wantMirrorClaudeCodeAttention}, {"opencode", true, wantMirrorOpenCodeAttention}} {
-		if got := normInstruction(mirrorAttentionInstructionFor(c.openCode)); got != normInstruction(c.want) {
+	}{{"claude code", false, false, wantMirrorClaudeCodeAttention}, {"claude code, uploads on", false, true, wantMirrorClaudeCodeAttentionFiles},
+		{"opencode", true, false, wantMirrorOpenCodeAttention}, {"opencode, uploads on", true, true, wantMirrorOpenCodeAttention}} {
+		if got := normInstruction(mirrorAttentionInstructionFor(c.openCode, c.files)); got != normInstruction(c.want) {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}

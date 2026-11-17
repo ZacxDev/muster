@@ -283,6 +283,18 @@ type attentionItem struct {
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
 	Context *attention.ItemContext `json:"context,omitempty"`
+	// Why is why an agent's ask is here (attention.Ask's, migration 0145):
+	// its own context, or muster's fallback (focus, last); nil for none.
+	// Attachments are the files it carries. Both are the asker's: drawn
+	// escaped under the question (ask_media.go), and in attention_list.
+	Why         *attention.AskWhy      `json:"why,omitempty"`
+	Attachments []attention.Attachment `json:"attachments,omitempty"`
+	// heldLast is a held AskUserQuestion's session's last words before the
+	// question (its window's Pending.Last, as its host read them), "" for
+	// none and for every other item: the fallback why its card draws at
+	// render time (heldWhy). Not serialised — never in attention_list or the
+	// summary API.
+	heldLast string
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
 	choices []string
@@ -453,7 +465,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
-		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID}
+		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
@@ -565,7 +577,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 				continue
 			}
 			if e, ok := held[h.Host+"\x00"+w.ClaudeSession]; ok && w.ClaudeSession != "" {
-				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, offline: !h.Online}
+				// Its Pending (when the host reads one while the picker shows) is
+				// kept for the card's why: the last words before the question.
+				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, pending: w.Pending, offline: !h.Online}
 			} else if w.Status == mirror.StatusWaiting {
 				waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online}
 			}
@@ -595,6 +609,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		switch {
 		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
+			if wt.pending != nil {
+				it.heldLast = wt.pending.Last
+			}
 			// One question's choices are named in its PUSH (choices, not Options:
 			// attention_list serialises Options as answers attention_answer takes,
 			// and a held question is answered on its question card, not there);

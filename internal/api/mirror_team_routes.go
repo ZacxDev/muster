@@ -67,6 +67,10 @@ var mirrorTeamRoutes = map[string]mirrorTeamRule{
 	"GET /mirror/host":    mirrorTeamHostDoor,
 	"POST /mirror/ask":    mirrorTeamHostDoor,
 	"POST /mirror/mcp":    mirrorTeamHostDoor,
+	// An attention_ask's file, sent by the host's MCP proxy (ask_media.go).
+	"POST /mirror/ask-attachments": mirrorTeamHostDoor,
+	// …and its take-back when the ask was not filed (ask_media.go).
+	"DELETE /mirror/ask-attachments/{id}": mirrorTeamHostDoor,
 
 	"GET /mirror/terminal":         mirrorTeamView,
 	"GET /mirror/terminal/ws":      mirrorTeamViewOrKeys, // read-only at viewer; live keys (mode=interactive) at operator
