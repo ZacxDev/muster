@@ -103,7 +103,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // New-officer wizard (its first step), and one officer's page and edit form
   // (OFFICER: one made through the wizard's own POST for the measurement).
   'GET /officers': { where: 'signed-in', url: '/officers', ready: '#officer-new' },
-  'GET /officers/new': { where: 'signed-in', url: '/officers/new', ready: '#officer-form fieldset[data-step="1"]' },
+  'GET /officers/new': { where: 'signed-in', url: '/officers/new', ready: '#officer-form #officer-name' },
   'GET /officers/{officer}': { where: 'signed-in', url: 'OFFICER', ready: '#officer-head h1' },
   'GET /officers/{officer}/edit': { where: 'signed-in', url: 'OFFICER_EDIT', ready: '#officer-form #officer-charter' },
   // Account → Teams (account_teams.go, team sharing phase 2b.1): the admin's
