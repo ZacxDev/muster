@@ -10,6 +10,11 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question> [option…]   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ownercard <owner-id> <agent-name> <question> <option…>   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix prsession <owner-id> <claude-session> <owner/repo> <pr>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmprsessions <owner-id> <claude-session-prefix>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix episode <owner-id> <session-key> <stalled|needs_you> <host> <window>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmepisodes <owner-id> <session-key-prefix>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> [body] → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
@@ -341,6 +346,74 @@ func run(args []string) error {
 			return fmt.Errorf("ask from %s: %w", args[2], err)
 		}
 		fmt.Println(id)
+	case "ownercard":
+		// An OPEN ask_owner card of the named agent's (owner_card, 0092): the
+		// row its ask_owner call stores, for the fleet digest's Needs you
+		// (chief-fleet-digest.spec.ts), which lists the chief's own open cards.
+		owner, err := num(1)
+		if err != nil || len(args) < 5 {
+			return fmt.Errorf("usage: ownercard <owner-id> <agent-name> <question> <option…>")
+		}
+		opts, err := json.Marshal(append([]string{}, args[4:]...))
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, options, expires_at, owner_card)
+			SELECT $1, id, name, $3, $4::jsonb, now() + interval '1 hour', true FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3], string(opts)).Scan(&id); err != nil {
+			return fmt.Errorf("owner card from %s: %w", args[2], err)
+		}
+		fmt.Println(id)
+	case "prsession":
+		// A session_prs row (0055): Claude session <claude-session> created
+		// pull request <repo>#<pr>, as its host's hook would report it.
+		owner, err := num(1)
+		if err != nil || len(args) != 5 {
+			return fmt.Errorf("usage: prsession <owner-id> <claude-session> <owner/repo> <pr>")
+		}
+		pr, err := num(4)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO session_prs (owner_id, kind, repo, pr, claude_session) VALUES ($1, 'gh-pr-create', $2, $3, $4)
+			ON CONFLICT DO NOTHING`, owner, args[3], pr, args[2]); err != nil {
+			return err
+		}
+	case "episode":
+		// An OPEN stop (session_episodes, 0073) of a mirrored session, opened
+		// an hour ago: what the session-state pass writes once a window has
+		// been idle past MUSTER_CHIEF_NUDGE_IDLE — whose floor (10 minutes
+		// with the chief's nudges off) a browser spec cannot wait out. The
+		// pass then keeps it (it observes an open stop; it ends one only on
+		// work, the owner's word, or the window gone).
+		owner, err := num(1)
+		if err != nil || len(args) != 6 {
+			return fmt.Errorf("usage: episode <owner-id> <session-key> <stalled|needs_you> <host> <window>")
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO session_episodes (owner_id, session_kind, session_key, seq, state, mirror_host, mirror_session, mirror_window,
+				opened_at, state_since)
+			SELECT $1, 'mirror', $2, coalesce(max(seq), 0) + 1, $3, $4, 'work', $5, now() - interval '1 hour', now() - interval '1 hour'
+			FROM session_episodes WHERE owner_id = $1 AND session_kind = 'mirror' AND session_key = $2`,
+			owner, args[2], args[3], args[4], args[5]); err != nil {
+			return err
+		}
+	case "rmepisodes":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmepisodes <owner-id> <session-key-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM session_episodes WHERE owner_id = $1 AND starts_with(session_key, $2)`, owner, args[2]); err != nil {
+			return err
+		}
+	case "rmprsessions":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmprsessions <owner-id> <claude-session-prefix>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM session_prs WHERE owner_id = $1 AND starts_with(claude_session, $2)`, owner, args[2]); err != nil {
+			return err
+		}
 	case "rmask":
 		owner, err := num(1)
 		if err != nil || len(args) != 3 {

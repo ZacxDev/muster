@@ -182,6 +182,8 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireOperatorWrite(s.handleAgentSessionDefault))
 	// The chief's primary and side chats (chief_chats.go).
 	s.registerChiefChatRoutes(mux)
+	// The fleet digest card (fleet_digest.go).
+	s.registerFleetDigestRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the

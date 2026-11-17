@@ -994,6 +994,21 @@ func regexpLiteral(q string) string {
 	return b.String()
 }
 
+// SetSessionTitle names chat session sessionID title (cut to the title
+// column's bound), as the caller's principal: a session that is not theirs is
+// pgx.ErrNoRows. The chief's Fleet side chat is named so (internal/api
+// fleet_digest.go); a session's title is otherwise its first message's.
+func (s *PGStore) SetSessionTitle(ctx context.Context, sessionID int64, title string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE chat_sessions SET title = left($2, 200) WHERE id = $1`, sessionID, title)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (s *PGStore) GetSession(ctx context.Context, sessionID int64) (ChatSession, error) {
 	return scanSession(s.pool.QueryRow(ctx, `SELECT `+sessionCols+` FROM chat_sessions WHERE id=$1`, sessionID))
 }

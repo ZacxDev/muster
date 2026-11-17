@@ -59,8 +59,17 @@ type ClosedPRs struct {
 	// Now is the cache's clock (time.Now when nil).
 	Now func() time.Time
 
-	mu    sync.Mutex
-	cache map[string]prStateEntry
+	cache prStateCache
+}
+
+// prStateCache is a cache of GitHub's answers for pull requests, per pull
+// request, in front of one PRStateReader: 🔴 THE ONE CACHED READ of a pull
+// request's state — the closed-review settle (ClosedPRs) and the fleet
+// reader (fleet_read.go) each hold one, with their own lifetimes, and neither
+// reads GitHub any other way. The zero value is ready to use.
+type prStateCache struct {
+	mu      sync.Mutex
+	entries map[string]prStateEntry
 }
 
 // prStateEntry is one cached answer: the state when known, and until when it
@@ -104,10 +113,19 @@ func (c *ClosedPRs) now() time.Time {
 // state is pull request ref's state and whether it is known: from the cache,
 // else from GitHub within ctx's read budget (none: an arrival, one read).
 func (c *ClosedPRs) state(ctx context.Context, ref prroute.Ref) (githubapp.PRState, bool, error) {
+	return c.cache.read(ctx, c.States, ref, c.now(), c.Timeout, openPRTTL, closedPRTTL)
+}
+
+// read is pull request ref's state from reader, and whether it is known: the
+// cached answer while it is younger than its lifetime (openTTL for an open or
+// unknown answer, closedTTL for a closed one), else one GitHub read bounded by
+// timeout (prStateTimeout when 0) within ctx's read budget (withPRReadBudget;
+// none: no budget). A failed read is cached as unknown for openTTL, so a
+// GitHub that is down is not asked again on every call.
+func (c *prStateCache) read(ctx context.Context, reader PRStateReader, ref prroute.Ref, now time.Time, timeout, openTTL, closedTTL time.Duration) (githubapp.PRState, bool, error) {
 	key := prName(ref)
-	now := c.now()
 	c.mu.Lock()
-	e, hit := c.cache[key]
+	e, hit := c.entries[key]
 	c.mu.Unlock()
 	if hit && now.Before(e.until) {
 		return e.st, e.known, nil
@@ -115,22 +133,21 @@ func (c *ClosedPRs) state(ctx context.Context, ref prroute.Ref) (githubapp.PRSta
 	if b, ok := ctx.Value(prReadBudgetKey{}).(*atomic.Int32); ok && b.Add(-1) < 0 {
 		return githubapp.PRState{}, false, errPRReadBudget
 	}
-	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = prStateTimeout
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	st, err := c.States.PullRequestState(rctx, ref.Repo, ref.PR)
-	e = prStateEntry{st: st, known: err == nil, until: now.Add(openPRTTL)}
+	st, err := reader.PullRequestState(rctx, ref.Repo, ref.PR)
+	e = prStateEntry{st: st, known: err == nil, until: now.Add(openTTL)}
 	if e.known && st.State == "closed" {
-		e.until = now.Add(closedPRTTL)
+		e.until = now.Add(closedTTL)
 	}
 	c.mu.Lock()
-	if c.cache == nil || len(c.cache) >= prCacheMax {
-		c.cache = map[string]prStateEntry{}
+	if c.entries == nil || len(c.entries) >= prCacheMax {
+		c.entries = map[string]prStateEntry{}
 	}
-	c.cache[key] = e
+	c.entries[key] = e
 	c.mu.Unlock()
 	return st, e.known, err
 }

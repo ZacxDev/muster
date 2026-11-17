@@ -443,6 +443,10 @@ var bannerLedger = []string{
 	// 30 s and, where the chief's nudges classify, the same classifier runs on
 	// it — so the log must say which state this is.
 	envSessionState,
+	// THE FLEET DIGEST IS LEDGERED: ON, the chief panel draws a card over
+	// every one of the owner's sessions and fleet_list reads their stops and
+	// pull requests (the GitHub App) — so the log must say which state this is.
+	envFleetDigest,
 	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
 	// databases; OFF, they reach whatever address they name — so the log must
 	// say which.
@@ -933,6 +937,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// Session state: the banner branches on ext.Episodes (below).
 		SessionState: true,
+		// The fleet digest: the banner branches on ext.FleetDigest (below).
+		FleetDigest: true,
 		// The dial guard: the banner branches on ext.DialGuard (below).
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
@@ -994,6 +1000,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionRuntimes: []string{"claude-code"},
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
+		FleetDigest:     true,
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 		Pages:           pages.NewPG(nil),
 		CCUsageInterval: 5 * time.Minute,
@@ -1437,3 +1444,29 @@ func bannerTranscriber(t *testing.T, cfg config) api.Transcriber {
 	}
 	return tr
 }
+
+// The fleet digest's line says when its pull-request groups cannot fill (audit
+// round 1 🟡3): with no session_prs store (session routing + PR mail unwired)
+// it names the two variables that wire it; with the store but no GitHub App,
+// it says every state is unknown; with both it says they are on.
+func TestTheFleetDigestLineSaysWhatThePullRequestGroupsNeed(t *testing.T) {
+	cfg := config{FleetDigest: true, SessionState: true}
+	line := func(ext api.Extensions) string {
+		return lineNaming(renderBannerWithPool(t, cfg, ext, nil), envFleetDigest)
+	}
+	noPRs := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil)})
+	if !strings.Contains(noPRs, "pull-request groups EMPTY") || !strings.Contains(noPRs, envSessionRouting) || !strings.Contains(noPRs, envPRMailSenders) {
+		t.Errorf("no session_prs: the line does not say the PR groups are empty and why:\n%s", noPRs)
+	}
+	noApp := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil)})
+	if !strings.Contains(noApp, "pull-request groups EMPTY: every state is unknown with no GitHub App") {
+		t.Errorf("no GitHub App: the line does not say every state is unknown:\n%s", noApp)
+	}
+	both := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil), FleetPRStates: bannerPRStates{}})
+	if !strings.Contains(both, "pull-request groups ON") || strings.Contains(both, "EMPTY") {
+		t.Errorf("both wired: the line does not say the PR groups are on:\n%s", both)
+	}
+}
+
+// bannerPRStates is a GitHub pull-request read that is never called.
+type bannerPRStates struct{ api.PRStateReader }
