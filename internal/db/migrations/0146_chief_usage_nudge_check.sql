@@ -20,9 +20,8 @@
 -- bounded by the 3 s lock_timeout below only for the wait, not the scan; the
 -- table holds a few numbers per chief turn.
 --
--- Must apply after its predecessor, 0145 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT AT MERGE IF MAIN MOVED: 0145 is held by another open change,
--- and a sibling change takes 0147; take the next free number then.
+-- Must apply after its predecessor, 0145_attention_ask_media (the contiguity
+-- test refuses a gap).
 --
 -- ROLLBACK. An image from before 0146 never writes 'nudge_check', and reads
 -- the trigger only to group it (it shows such rows as "other"), so it runs

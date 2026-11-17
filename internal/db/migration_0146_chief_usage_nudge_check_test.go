@@ -5,15 +5,14 @@ import (
 	"testing"
 )
 
-// TestMigration0146CountsStallChecks: below 0146 (at 0144, the version this
-// branch was cut from; 0145 is another change's) chief_turn_usage refuses the
-// trigger 'nudge_check' (the control: the CHECK this migration widens is the
-// one that refuses it). After 0146 it stores one, still refuses a trigger no
+// TestMigration0146CountsStallChecks: below 0146 (at its predecessor, 0145)
+// chief_turn_usage refuses the trigger 'nudge_check' (the control: the CHECK
+// this migration widens is the one that refuses it). After 0146 it stores one, still refuses a trigger no
 // door writes, keeps every row it held, and re-applying the file changes
 // nothing. The header's rollback restores the narrower check.
 func TestMigration0146CountsStallChecks(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0146_nudge_check", 144)
+	pool := freshAt(ctx, t, "ms_0146_nudge_check", 145)
 	insert := func(trigger string) error {
 		_, err := pool.Exec(ctx, `INSERT INTO chief_turn_usage (owner_id, chief_agent, trigger, outcome) VALUES (1, 7, $1, 'other')`, trigger)
 		return err
