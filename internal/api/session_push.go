@@ -873,15 +873,21 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, rd asks
 	return out
 }
 
-// askFeedNow is the Open feed (askFeedHTML) and how many cards it holds: the
+// askFeedNow is the Open feed (askFeedHTML) and the open count: the
 // items (pageAttentionItems) in askGroups' order, the session-state rows in
 // the Waiting place (episodeRowsHTML). With a row drawn, the All clear state
 // is not — a stalled session is waiting on you. The Answered cards are the
 // Answered tab's (answeredAsksNow). rd is the render's one hub read
 // (asksRead), items built from it: nothing here reads the hosts again.
+//
+// The count is NOT the feed's cards: it is THE ONE OPEN COUNT (asksPendingOf,
+// asks_count.go) over the same items — the drafts in, the watched team asks
+// out — the number every other surface shows.
 func (s *Server) askFeedNow(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) (string, int) {
 	rows, n := s.episodeRowsHTML(ctx, rd, now)
-	return askFeedHTML(s.pageAttentionItems(items, rd.hosts), rows, n, now)
+	page := s.pageAttentionItems(items, rd.hosts)
+	out, _ := askFeedHTML(page, rows, n, now)
+	return out, asksPendingOf(ctx, page, n)
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state

@@ -1971,14 +1971,19 @@ var appScriptSrc = staticJS("app", `
       .slice(0, 40)               // ignore long varying tails
       .toLowerCase();
   }
-  window.toast = function (msg) {
+  // opts.tone 'info' is a confirmation, not an error (the Asks feed's "Sent
+  // to <session>"): the neutral surface, no error glyph, role=status. Coalesced
+  // and capped like every other toast; an info toast never merges with an
+  // error one (the tone is part of the key).
+  window.toast = function (msg, opts) {
+    var info = !!(opts && opts.tone === 'info');
     var host = document.getElementById('action-toasts');
     if (!host) { try { alert(msg); } catch (e) {} return; }
     // Dedupe/coalesce: a network blip fails every in-flight request at once, each
     // firing an (often near-identical) error toast. Collapse same-FAMILY messages
     // (by normalized key) into ONE toast with a ×N counter so a burst can never
     // flood the screen.
-    var key = toastKey(msg);
+    var key = (info ? 'info:' : '') + toastKey(msg);
     var nodes = host.querySelectorAll('[data-toast-key]');
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i].getAttribute('data-toast-key') === key) {
@@ -2001,13 +2006,19 @@ var appScriptSrc = staticJS("app", `
     // danger / on-danger: the pair the palette tests at 4.5:1. The old
     // translucent rose over the page measured 4.02:1, under AA for 14px text.
     // The glyph is the error SHAPE, so the toast does not rely on colour alone.
-    t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
-    t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
-    t.setAttribute('role', 'alert');
+    if (info) {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-s2 px-3 py-2 text-sm font-medium text-fg shadow-lg shadow-black/30 ring-1 ring-line';
+      t.setAttribute('role', 'status');
+      t.setAttribute('data-toast-tone', 'info');
+    } else {
+      t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
+      t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
+      t.setAttribute('role', 'alert');
+      t.innerHTML = TOAST_GLYPH;
+    }
     t.setAttribute('data-toast-msg', msg);
     t.setAttribute('data-toast-key', key);
     t.setAttribute('data-toast-count', '1');
-    t.innerHTML = TOAST_GLYPH;
     var tx = document.createElement('span');
     tx.setAttribute('data-toast-text', '');
     tx.textContent = msg;

@@ -36,7 +36,13 @@ const AttentionBadgePath = "/attention/badge"
 // twice and fetched the badge twice (measured: attention.spec's
 // "badge requests while nothing changed" saw 2). Debounced, the dispatches of
 // one event are one fetch, and the fetch still follows the last of them.
-const attentionBadgeTrigger = "load, sse:attention_queue.changed from:body delay:50ms, every 60s"
+//
+// asks:changed: on the Asks page the shell's SSE extension is not what hears
+// the queue — the page's own stream is (AttentionLiveScript), which says so
+// with asks:changed. Without it the More badge on the Asks page kept its old
+// count until the minute's poll while the page's "N open" had moved on (the
+// one open count, internal/api asks_count.go; e2e asks-feed.spec "one count").
+const attentionBadgeTrigger = "load, sse:attention_queue.changed from:body delay:50ms, asks:changed from:document delay:50ms, every 60s"
 
 // AttentionBadgeHTML is the badge for n waiting items: hidden at zero. It is
 // the slot's CONTENT and carries no htmx wiring of its own.
@@ -109,7 +115,8 @@ const askerAsksBusy = "if ((" + askBusyFunc + ")(this)) event.preventDefault()"
 // AttentionLiveScript keeps the element listID live: on the queue's SSE event
 // (event: internal/api's EventAttentionChanged) it re-fetches src into it —
 // unless the owner is typing an answer (askBusyFunc), in which case it waits
-// until they leave the field. The /attention page's list and a mirrored
+// until they leave the field, or an Asks card is collapsing out
+// (AsksCollapsingAttr), in which case it waits for the collapse to end. The /attention page's list and a mirrored
 // window's asks block use it; each is its own document (no htmx), so it opens
 // its own stream.
 func AttentionLiveScript(listID, src, event string) string {
@@ -123,12 +130,12 @@ func AttentionLiveScript(listID, src, event string) string {
   function refresh() {
     // The Asks page's other parts (its tabs' counts) follow the same event.
     try { document.dispatchEvent(new Event('asks:changed')); } catch (e) {}
-    if (busy(list)) { pending = true; return; }
+    if (busy(list) || list.querySelector('[` + AsksCollapsingAttr + `]')) { pending = true; return; }
     pending = false;
     fetch(src, { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.text() : null;
     }).then(function (html) {
-      if (html !== null && !busy(list)) {
+      if (html !== null && !busy(list) && !list.querySelector('[` + AsksCollapsingAttr + `]')) {
         list.innerHTML = html;
         // No htmx swap, so no htmx:load: the mics the new content draws are
         // shown by this event (dictate.go's DictateRevealEvent).
@@ -137,6 +144,9 @@ func AttentionLiveScript(listID, src, event string) string {
     }).catch(function () {});
   }
   list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });
+  // A refresh held back while an Asks card collapsed out (AsksCollapsingAttr)
+  // runs once it has.
+  list.addEventListener(` + strconv.Quote(AsksCollapsedEvent) + `, function () { if (pending) setTimeout(refresh, 0); });
   // A refresh a mic held back runs once the mic is idle again (dictate.go's
   // DictateIdleEvent); refresh asks busy() again, so a box the recording
   // filled still holds it.

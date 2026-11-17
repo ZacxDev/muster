@@ -274,7 +274,7 @@ const (
 func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, archived []plugins.DraftCard, nudges, logPanel, tab string) string {
 	top := asksTabOpen
 	switch {
-	case tab == asksTabLog, tab == asksTabAnswered:
+	case tab == asksTabAnswered, tab == asksTabLog && logPanel != "":
 		top = tab
 	case tab == asksTabNudges && nudges != "":
 		top = asksTabNudges
@@ -293,7 +293,12 @@ func (s *Server) asksTabsHTML(askList, answered string, drafts bool, pending, ar
 		tabs = append(tabs, ui.Tab{ID: asksTabNudges, Label: "Nudges",
 			Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="nudges-panel">` + nudges + `</div>`)})
 	}
-	tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
+	// The Log tab only with the ask log on (logPanel ""): off, it was a tab of
+	// setup prose ("set MUSTER_ASK_LOG=1 and restart"), which is the
+	// operator's docs' to say (docs/asks.md), not a tab's.
+	if logPanel != "" {
+		tabs = append(tabs, ui.Tab{ID: asksTabLog, Label: "Log", Panel: g.Raw(`<div class="flex flex-col gap-2 pt-3" data-testid="log-panel">` + logPanel + `</div>`)})
+	}
 	t := ui.TabsSelected("asks-tabs", "", "Asks", top, tabs...)
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col" data-asks-tabs><div class="flex overflow-x-auto border-b border-line">`)

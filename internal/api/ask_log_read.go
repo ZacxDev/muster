@@ -400,7 +400,15 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 		}
 		return b.String()
 	}
-	b.WriteString(askLogSummaryHTML(sum, s.askLogTextTTL()))
+	// The "Open" pill is THE ONE OPEN COUNT (asks_count.go), never the log's
+	// own rows still without an outcome: the log keeps history, and a row it
+	// never closed (a session gone, a restart) said "Open 3" beside an Open
+	// tab that was All clear.
+	open := -1
+	if n, ok := s.menuCount(ctx); ok {
+		open = n
+	}
+	b.WriteString(askLogSummaryHTML(sum, s.askLogTextTTL(), open))
 	rows, next, err := st.Page(ctx, f, before, asklog.DefaultPageSize)
 	if err != nil {
 		s.logger.Printf("ask log: page: %v", err)
@@ -505,8 +513,19 @@ func labelOrSince(v string) string {
 
 // askLogSummaryHTML is the summary: four tiles, the counts, and the questions
 // asked most often.
-func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration) string {
+//
+// open, when not negative, is what the "By outcome" Open pill says: the live
+// open count (asksPendingOf), the number the page's header and badges show.
+func askLogSummaryHTML(sum asklog.Summary, ttl time.Duration, open int) string {
 	esc := html.EscapeString
+	if open >= 0 {
+		byOutcome := make(map[string]int, len(sum.ByOutcome))
+		for k, v := range sum.ByOutcome {
+			byOutcome[k] = v
+		}
+		byOutcome[asklog.OutcomeOpen] = open
+		sum.ByOutcome = byOutcome
+	}
 	var b strings.Builder
 	tile := func(key, value, label string) {
 		b.WriteString(`<div class="` + ui.AsksLogStatClass + `" data-asklog-stat="` + key + `"><span class="` + ui.AsksLogStatValueClass + `">` + esc(value) +

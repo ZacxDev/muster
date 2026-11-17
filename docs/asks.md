@@ -85,8 +85,10 @@ themselves. Three readers, all of **your own** asks only:
   session. Then the summary of the filtered asks, then the asks themselves,
   newest first, 50 a page (*Older* / *Newest*). The tab's panel is read when
   you open it, not with the rest of the Asks page. With `MUSTER_ASK_LOG` off
-  it says so and how to turn it on; on, with nothing recorded yet, it says
-  that; with filters that match nothing, it offers to clear them.
+  the page has no Log tab; on, with nothing recorded yet, it says that; with
+  filters that match nothing, it offers to clear them. Its *By outcome* →
+  *Open* pill is the live open count (the number the page's heading and the
+  menu badges show), not the log's rows still without an outcome.
 - **The API**, with a personal token (`mst_…`):
   `GET /api/asks/log` and `GET /api/asks/summary`. Query parameters: `kind`,
   `runtime`, `outcome` (`open` for an ask not yet ended), `answered_by`

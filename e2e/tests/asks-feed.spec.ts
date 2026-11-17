@@ -220,6 +220,118 @@ for (const vp of [
       await expect(page.locator(`#ask-${ids.rotate}`)).toHaveCount(0);
     });
 
+    // 🔴 THE COLLAPSE PLAYS BEFORE THE CARD IS REMOVED (a frame probe). The
+    // answer's POST lands in tens of milliseconds, inside the 240ms collapse;
+    // settle() used to remove the card right then, so it vanished at full
+    // height (docs/attention.md promised "it collapses out"). Sampled per
+    // animation frame from the click: partway through the transition the card
+    // is still in the DOM and mid-collapse, and the last frame it is still
+    // connected it has collapsed to nothing. RED at origin/main d1ff2dbe: gone
+    // by ~65ms, at its full height.
+    test('an answered card plays its collapse before it is removed (frame probe)', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+      await openFeed(page);
+      const id = `ask-${ids.rotate}`;
+      const rotate = page.locator('#' + id);
+      await rotate.scrollIntoViewIfNeeded();
+      const h0 = await rotate.evaluate((el) => el.getBoundingClientRect().height);
+      expect(h0, 'the card has a height to collapse').toBeGreaterThan(60);
+      await page.evaluate((id) => {
+        const el = document.getElementById(id)!;
+        const out: { t: number; connected: boolean; h: number; shown: boolean }[] = [];
+        (window as unknown as { __probe: typeof out }).__probe = out;
+        el.addEventListener('click', () => {
+          const t0 = performance.now();
+          (function f() {
+            const t = performance.now() - t0;
+            const connected = el.isConnected;
+            out.push({ t, connected, h: connected ? el.getBoundingClientRect().height : 0, shown: connected && getComputedStyle(el).display !== 'none' });
+            if (t < 700) requestAnimationFrame(f);
+          })();
+        }, { capture: true, once: true });
+      }, id);
+      const posted = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.rotate}/answer` && r.request().method() === 'POST');
+      await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
+      expect((await posted).status(), 'the answer is taken (204)').toBe(204);
+      await expect(rotate).toHaveCount(0);
+      const frames = await page.waitForFunction(() => {
+        const p = (window as unknown as { __probe: { t: number }[] }).__probe;
+        return p.length && p[p.length - 1].t >= 700 ? p : null;
+      }).then((h) => h.jsonValue() as Promise<{ t: number; connected: boolean; h: number; shown: boolean }[]>);
+      const mid = frames.filter((f) => f.t >= 100 && f.t <= 180);
+      expect(mid.length, 'frames were sampled partway through the collapse').toBeGreaterThan(0);
+      for (const f of mid) {
+        expect(f.connected && f.shown, `at ${Math.round(f.t)}ms the card is still on the page: ${JSON.stringify(frames)}`).toBe(true);
+        expect(f.h, `at ${Math.round(f.t)}ms it is mid-collapse`).toBeGreaterThan(1);
+        expect(f.h, `at ${Math.round(f.t)}ms it is mid-collapse`).toBeLessThan(h0 - 1);
+      }
+      const lastShown = [...frames].reverse().find((f) => f.shown)!;
+      expect(lastShown.h, `the last frame it was shown, it had collapsed (${Math.round(lastShown.t)}ms)`).toBeLessThan(h0 * 0.25);
+      expect(frames.some((f) => !f.connected), 'and then it was removed').toBe(true);
+    });
+
+    // An INVARIANT GUARD (green at origin/main too): the wait for the
+    // collapse must not hold a reduced-motion card on the page.
+    test('under reduced motion an answered card leaves at once', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await openFeed(page);
+      const rotate = page.locator(`#ask-${ids.rotate}`);
+      await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
+      // Hidden as the post starts (no transition), then removed when the POST
+      // lands: nothing waits for a transitionend that never comes.
+      await expect(rotate, 'hidden at once').toBeHidden({ timeout: 300 });
+      await expect(rotate).toHaveCount(0, { timeout: 1500 });
+    });
+
+    // AN ACCEPTED ANSWER SAYS WHERE IT WENT: window.toast's info tone, "Sent
+    // to <the card's session name>" (role=status, not the error toast). A
+    // dismissal says nothing. RED at origin/main d1ff2dbe: no confirmation.
+    test('an accepted answer shows "Sent to <session>"; a dismissal does not', async ({ page }) => {
+      await openFeed(page);
+      const rotate = page.locator(`#ask-${ids.rotate}`);
+      const name = ((await rotate.locator('[data-attention-title]').textContent()) ?? '').trim();
+      expect(name, 'the card is titled').toBeTruthy();
+      const info = page.locator('#action-toasts [data-toast-tone="info"]');
+      await expect(info).toHaveCount(0);
+      await rotate.getByRole('button', { name: 'Rotate it', exact: true }).click();
+      await expect(info).toHaveCount(1);
+      await expect(info).toHaveText(`Sent to ${name}`);
+      await expect(info).toHaveAttribute('role', 'status');
+      await expect(page.locator('#action-toasts [role="alert"]'), 'not drawn as an error').toHaveCount(0);
+      // A dismissal of a question (a card that HAS a session name to say):
+      // no new toast (the info one is removed first; it fades on its own clock).
+      await info.evaluate((el) => el.remove());
+      const freetext = page.locator(`#ask-${ids.freetext}`);
+      expect(((await freetext.getAttribute('data-asks-who')) ?? '').trim(), 'the dismissed card has a name a toast could say').toBeTruthy();
+      const sent = page.waitForResponse((r) => new URL(r.url()).pathname === `/attention/asks/${ids.freetext}/cancel`);
+      await freetext.getByRole('button', { name: 'Dismiss without answering' }).click();
+      expect((await sent).status()).toBe(204);
+      await page.waitForTimeout(500);
+      // Read once, NOT retried: a toast fades by itself after 5s, so a retried
+      // toHaveCount(0) passes on a toast that WAS shown (it did, mutation-tested).
+      expect(await page.locator('#action-toasts [data-toast-tone="info"]').count(), 'a dismissal shows no "Sent to" toast').toBe(0);
+    });
+
+    // ONE OPEN COUNT, AS THE PAGE KEEPS IT (asks_count.go; the Go test
+    // TestEverySurfaceShowsTheSameOpenCount pins the server's): the header's
+    // "N open", the sidebar's More badge and the ☰ badge agree on load and
+    // again after a card leaves. RED at origin/main d1ff2dbe: the header left
+    // the fixture's reply draft out and the ☰ counted sidebar rows.
+    test('the header, the More badge and the menu badge show one count', async ({ page }) => {
+      await openFeed(page);
+      const more = page.locator('#attention-badge');
+      const menu = page.locator('#nav-waiting-badge');
+      // The ☰ is the phone's (beside the desktop rail it is hidden and never
+      // loads its count): there the third surface is the More badge again.
+      const phone = !!vp.use.isMobile;
+      const three = async () => [await openN(page), Number(await more.getAttribute('data-count')), Number(await (phone ? menu : more).getAttribute('data-count'))];
+      await expect.poll(async () => { const [a, b, c] = await three(); return a === b && b === c ? a : `${a}/${b}/${c}`; }, { timeout: 10_000 }).toBeGreaterThanOrEqual(5);
+      const n0 = await openN(page);
+      await page.locator(`#ask-${ids.rotate}`).getByRole('button', { name: 'Rotate it', exact: true }).click();
+      await expect(openCount(page)).toHaveText(`${n0 - 1} open`);
+      await expect.poll(three, { timeout: 15_000 }).toEqual([n0 - 1, n0 - 1, n0 - 1]);
+    });
+
     test('every answerable card carries the dictation mic', async ({ page }) => {
       await openFeed(page);
       // The fixture agent's question cards (another spec's may be open too).
@@ -341,7 +453,8 @@ for (const vp of [
         ['?tab=drafts', 'drafts'],
         ['?tab=archived', 'drafts'],
         ['?tab=nudges', 'nudges'],
-        ['?tab=log', 'log'],
+        // No ask log on this server: no Log tab, so its address opens Open.
+        ['?tab=log', 'open'],
         ['?tab=nonsense', 'open'],
       ]) {
         await page.goto(`${origin}/attention${q}`);

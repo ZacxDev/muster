@@ -5,10 +5,16 @@ to ask you something and wait for the answer instead of stopping.
 
 ## What is in it
 
-`/attention` — the **Asks** page (the **Asks** link in the menu, with a live
-count of everything below, pending reply drafts included) — is a **feed of
-cards** ([below](#the-card-feed)) in five tabs: **Open · Answered · Drafts ·
-Nudges · Log**. Its heading carries **N open**. The **Open** tab lists
+`/attention` — the **Asks** page (the **Asks** link in the menu) — is a
+**feed of cards** ([below](#the-card-feed)) in up to five tabs: **Open ·
+Answered · Drafts · Nudges · Log** (Drafts with plugins on, Nudges with nudges
+on, Log with the ask log on). Its heading carries **N open**.
+
+**One open count.** The heading's *N open*, the count on the sidebar's
+**More** (beside the Asks link), the badge on the ☰ menu button and the Log
+tab's *Open* pill are the same number: everything the Open tab lists that
+waits on you (a team's question you only watch is listed, not counted), its
+stalled rows, and your pending reply drafts. The **Open** tab lists
 everything waiting on you in one vertically scrolling feed: **questions**
 (questions and session questions) first, then **notices**, then **waiting**
 sessions (and the [stalled / waiting](#stalled--waiting-session-state) rows),
@@ -16,8 +22,11 @@ then **tasks to route** — **newest first** within a kind, by when each item
 started waiting (an ask's or a draft's creation, a session's own status time, a
 held question's creation), ties broken by the item's key. Each card carries its
 kind as a small badge (*Question*, *Notice*, *Waiting*, *Task to route*).
-Nothing waiting: a calm **All clear**. The **Answered** tab holds the recent
-answers (the last day's, at most 20), each with where it went.
+Nothing pending at all: a calm **All clear**. Nothing on the Open tab while
+reply drafts wait: *Nothing else is open* and how many drafts wait, with a link
+to the Drafts tab — never All clear. The **Answered** tab holds the recent
+answers (the last day's, at most 20), each titled by its session's name (the
+rule below) and saying where it went.
 
 **Every card names its session the same way:** the session's name as its title
 (its human name, else the window's label or tmux address, else the asking
@@ -38,7 +47,7 @@ a screen reader), never in the head.
 | Session waiting | A mirrored Claude Code or **opencode** window whose session reports `waiting` (a permission prompt, a question; for opencode a **permission request**). Shown with **what it waits on** (below) as its one line, its focus title, its exact tmux target ([`<where>`](#how-a-window-is-named)) and its age. | The mirror hub's live window list; nothing is stored. | **View in session** opens it (the rendered view). An opencode **permission request** on an `-interactive` host offers **Allow once** / **Reject** (never "always"), answered through opencode's API ([mirroring.md](mirroring.md#opencodes-permission-requests-and-questions)). On a host that does not relay, the card says the answer can't be relayed from here. It leaves the list when the session stops waiting — answered here, or in the terminal. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once — or an **opencode** window's question-tool form, read by the host from opencode's server. | The open question (`internal/askq`), live; an opencode question from the hub's live window list. It leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. It survives a muster restart: muster reads it open again in its waiting session's transcript ([mirroring.md](mirroring.md#a-question-survives-a-muster-restart-and-a-host-reconnect)). Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered (an opencode form: its first question and how many more) — never also "Session waiting". | **View in session** opens the rendered view, where the question card is (a Claude Code question's card says **Answer in session**). An opencode question of ONE single-select question (at most 4 options) offers its options on the card when its host is `-interactive`; any other is answered in the terminal, and the card says so. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open task** opens it. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
-| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Open tab: with [plugins](plugins.md) on, the page has a **Drafts** tab ([below](#the-reply-drafts-tab)), whose label carries the count ("Drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
+| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Open tab: with [plugins](plugins.md) on, the page has a **Drafts** tab ([below](#the-reply-drafts-tab)), whose label carries the count ("Drafts (2)"). The draft is still in the open count, the Open tab's empty state, its push and `attention_list`. |
 
 A **Session waiting** item for a Claude Code permission prompt should be rare:
 muster assumes sessions run without permission prompts, and the agents a host
@@ -64,8 +73,11 @@ taller than the screen still scrolls through).
   box, on attached media, on anything that scrolls sideways, at the left edge
   (the menu's swipe) or with text selected is left alone. Pinch-zoomed in, a
   sideways drag pans the zoomed page and never changes the tab.
-- **Answer** or **Dismiss** a card and it collapses out, the next card moves
-  up and takes focus, and the open count drops. The card's form posts (htmx)
+- **Answer** or **Dismiss** a card and it collapses out: the collapse plays
+  to its end before the card is removed (at once under *reduce motion*), the
+  next card moves up and takes focus, and the open count drops. An answer
+  that is taken says **Sent to** *the session's name* in a small toast; a
+  dismissal says nothing. The card's form posts (htmx)
   to the queue's own answer and dismiss routes with an
   `X-Muster-Asks-Card: 1` header, and only such a post is answered `204` (or,
   refused — the question closed meanwhile, an answer the asker cannot take —
@@ -93,7 +105,7 @@ taller than the screen still scrolls through).
 Open tab's old name), no `tab` and anything unknown open **Open**;
 `?tab=archived` opens **Drafts** with its archived list shown, where a
 decided draft lands. A tab that is not drawn (Drafts with plugins off, Nudges with
-nudges off) falls back to Open. A fragment (`#draft-12`, `#ask-12`) opens the
+nudges off, Log with the ask log off) falls back to Open. A fragment (`#draft-12`, `#ask-12`) opens the
 tab holding that card and scrolls to it.
 
 An ask's own page, `/attention/asks/<id>` (where its notification lands), is
@@ -110,11 +122,13 @@ first. A live decision to point you at a stalled session is a
 
 ### The Log tab
 
-The page always has a **Log** tab (`/attention?tab=log`): the [ask
-log](asks.md#reading-the-log) read back — what your agents asked you, how you
-answered and how long it took, with a summary on top and the questions asked
-most often. Its panel is read when you open the tab. With `MUSTER_ASK_LOG`
-off, it says how to turn it on.
+With the [ask log](asks.md) on (`MUSTER_ASK_LOG=1`), the page has a **Log**
+tab (`/attention?tab=log`): the [ask log](asks.md#reading-the-log) read back —
+what your agents asked you, how you answered and how long it took, with a
+summary on top and the questions asked most often. Its panel is read when you
+open the tab. Its *Open* pill is the [one open count](#what-is-in-it), not the
+log's own rows that never recorded an end. With the ask log off there is no
+Log tab.
 
 ### Notices
 
