@@ -347,6 +347,19 @@ component, never what was sent; at most one a minute per page.
 | submits per link | 20 a minute |
 | uploads per link | 10 a minute |
 | failed link lookups per client address | 60 a minute, then 429 |
+| one MCP request (`page_create` / `page_update`) | 1088 KiB: the blocks as sent, up to 1 MiB (twice the stored 512 KiB, for an encoder that escapes more than muster's), plus 64 KiB for the rest |
+| one MCP request (any other tool or method) | 64 KiB |
+
+The MCP request bound is one constant (`mirror.MaxMCPRequestBytes`, derived
+from the page limit) read by both hops a mirrored session's call crosses:
+muster's MCP server and the host's local proxy in `muster-mirror`. A page past
+512 KiB but inside it gets `page_create`'s own refusal ("a version holds at
+most 512 KiB"); a request past it is refused 413 by whichever hop read it,
+which names itself (`muster refused …` or `muster-mirror on this host
+refused …`). A `muster-mirror` older than this bound still refuses any
+request over 64 KiB with its old `{"error":"the request is too large"}`: a
+page over 64 KiB from a mirrored session needs the host's `muster-mirror`
+updated as well as the server.
 
 ## Telemetry
 

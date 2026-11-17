@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -216,14 +218,31 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "cross-origin MCP requests are refused"})
 		return
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	// The body is read under the LARGEST bound any tool takes (a page's
+	// blocks); each tool is held to its own below (mirror.MCPRequestLimit).
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mirror.MaxMCPRequestBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			// 413, as the host proxy answers it, with a JSON-RPC body that
+			// names THIS side: a mixed rollout must say which hop refused.
+			s.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"jsonrpc": "2.0", "id": nil,
+				"error": &mcpError{Code: -32600, Message: mirror.MCPTooLarge("muster")}})
+			return
+		}
 		s.writeMCP(w, nil, nil, &mcpError{Code: -32700, Message: "could not read the request"})
 		return
 	}
 	var req mcpRequest
 	if err := json.Unmarshal(raw, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
 		s.writeMCP(w, nil, nil, &mcpError{Code: -32600, Message: "not a JSON-RPC 2.0 request (batches are not supported)"})
+		return
+	}
+	// Only a page writer's tools/call may use the read bound; every other
+	// method keeps the tight one (a tools/call is held to its tool's below).
+	if req.Method != "tools/call" && len(raw) > mirror.MCPToolInputBytes {
+		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32600, Message: fmt.Sprintf("muster refused this %s request: it is %d KiB, and only a tools/call of %s or %s may be larger than %d KiB",
+			req.Method, len(raw)>>10, mirror.MCPPageCreateTool, mirror.MCPPageUpdateTool, mirror.MCPToolInputBytes>>10)})
 		return
 	}
 	// A notification (no id) gets 202 and no body.
@@ -279,6 +298,16 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 				return
 			}
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
+			return
+		}
+		// 🔴 EACH TOOL ITS OWN BOUND: the body was read under the page
+		// writers' (mirror.MCPRequestLimit); any other tool is refused past
+		// the tight one, as a tool error the model reads — before it runs.
+		if limit := mirror.MCPRequestLimit(req.Method, p.Name); len(raw) > limit {
+			s.writeMCPToolResult(w, req.ID, def, nil, func() string {
+				return toolErr("this %s call is %d KiB; muster takes at most %d KiB for it (only %s and %s take more, up to %d KiB)",
+					p.Name, len(raw)>>10, limit>>10, mirror.MCPPageCreateTool, mirror.MCPPageUpdateTool, mirror.MaxMCPRequestBytes>>10)
+			})
 			return
 		}
 		ctx, images := withToolImages(r.Context())

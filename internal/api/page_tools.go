@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -48,8 +49,10 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	pageCreateTool       = "page_create"
-	pageUpdateTool       = "page_update"
+	// The two page writers are named in internal/mirror, beside the MCP
+	// request bound that lets their blocks through (mirror.MCPRequestLimit).
+	pageCreateTool       = mirror.MCPPageCreateTool
+	pageUpdateTool       = mirror.MCPPageUpdateTool
 	pageGetTool          = "page_get"
 	pageListTool         = "page_list"
 	pageShareRequestTool = "page_share_request"
@@ -91,7 +94,7 @@ func pageBlocksSchema() map[string]any {
 			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
 			"Component ids are a letter then letters, digits, _ or -, unique on the page. Images must be inline (data: URIs); " +
-			"the whole page is at most 512 KiB.",
+			"the whole page is at most " + strconv.Itoa(pages.MaxVersionBytes>>10) + " KiB.",
 		"items": map[string]any{"type": "object", "required": []string{"type"},
 			"properties": map[string]any{
 				"type":         map[string]any{"type": "string", "enum": []string{pages.BlockMarkdown, pages.BlockQuestion, pages.BlockChoice, pages.BlockForm, pages.BlockUpload, pages.BlockApproval, pages.BlockHTML}},

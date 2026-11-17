@@ -895,9 +895,24 @@ func (c *mcpCall) takeInstance() (inst string, bad bool) {
 }
 
 // body is the request again, with its arguments as they are now.
+//
+// 🔴 IT IS NEVER LARGER THAN THE REQUEST IT WAS READ FROM (less what was
+// taken out). json.Marshal compacts every json.RawMessage with HTML escaping
+// ON, rewriting each <, > and & as \u003c — six bytes for one — so an html
+// block's markup could grow several-fold here, past muster's bound on the
+// request (mirror.MaxMCPRequestBytes) that the original fitted. Escaping off,
+// a RawMessage is only compacted: whitespace out, nothing in.
 func (c mcpCall) body() []byte {
-	c.params["arguments"], _ = json.Marshal(c.args)
-	c.top["params"], _ = json.Marshal(c.params)
-	b, _ := json.Marshal(c.top)
-	return b
+	c.params["arguments"] = marshalRaw(c.args)
+	c.top["params"] = marshalRaw(c.params)
+	return marshalRaw(c.top)
+}
+
+// marshalRaw is json.Marshal of a map of raw JSON without HTML escaping.
+func marshalRaw(m map[string]json.RawMessage) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(m)
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
