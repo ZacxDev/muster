@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1297,8 +1298,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a host spawn")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
+	// The invite token is random: one byte repeated 32 times has only 256
+	// values, so two worlds alive at once in one package database (test
+	// processes sharing it) collided on invites_token_hash_key.
+	opToken := make([]byte, 32)
+	_, err = rand.Read(opToken)
+	must(err, "op invite token")
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
-		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
+		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
