@@ -121,6 +121,25 @@ type (
 	}
 )
 
+// CharterGated is a backend that keeps which charter_version each instance
+// was last briefed with, so muster can hold an instance to its type's CURRENT
+// charter: an instance is one long conversation resumed across scale-to-zero,
+// and the charter reaches it only through officer_brief. internal/api answers
+// officer_brief with BriefFor, and refuses officer_claim (by id and
+// claim-next) and officer_complete with CharterCurrent's error until the
+// instance is briefed again. It is not a capability (Serves): it adds no
+// verb, only a precondition on core ones. The built-in backend implements it;
+// HQ's client does not — HQ holds its charters, and officer-backend/v1 gives
+// muster no read of the current charter_version short of a whole brief.
+type CharterGated interface {
+	// BriefFor is Brief for instance, recording the charter_version answered.
+	BriefFor(ctx context.Context, instance string) ([]byte, error)
+	// CharterCurrent is nil when instance was last briefed with the current
+	// charter_version, and a 409 charter_changed *HQError when it was not
+	// (or never was).
+	CharterCurrent(ctx context.Context, instance string) error
+}
+
 // ContractV1 is the contract version this muster speaks.
 const ContractV1 = "officer-backend/v1"
 
