@@ -432,64 +432,82 @@ type OutboundTarget struct {
 	Handle string `json:"handle,omitempty"`
 }
 
-// UnmarshalJSON takes Ref as a JSON string or a whole number (RefText): an
-// X post id is all digits, and an agent sends it as a number.
+// UnmarshalJSON takes Ref as a JSON string or a small whole number
+// (DecodeRef, as field "target.ref").
 func (t *OutboundTarget) UnmarshalJSON(b []byte) error {
 	if string(bytes.TrimSpace(b)) == "null" {
 		return nil
 	}
 	var w struct {
-		Kind   string  `json:"kind"`
-		Ref    RefText `json:"ref"`
-		Handle string  `json:"handle"`
+		Kind   string          `json:"kind"`
+		Ref    json.RawMessage `json:"ref"`
+		Handle string          `json:"handle"`
 	}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
-	*t = OutboundTarget{Kind: w.Kind, Ref: string(w.Ref), Handle: w.Handle}
+	ref, err := DecodeRef("target.ref", w.Ref)
+	if err != nil {
+		return err
+	}
+	*t = OutboundTarget{Kind: w.Kind, Ref: ref, Handle: w.Handle}
 	return nil
 }
 
-// RefText is an upstream reference as an officer files it (target.ref,
-// because_ref): a JSON string, or a JSON number that is a whole non-negative
-// integer — an X post id is all digits, and an agent sends it as one. The
-// number is kept as its exact digits (never through a float64, which cannot
-// hold a 19-digit id: 2122495152350453825 would become …824). A number with a
-// fraction, a sign or an exponent is REFUSED, not guessed at: no ref is
-// spelled that way, and an exponent form is what an id that already went
-// through a float looks like — its digits are gone, and storing the rounded
-// one would point at somebody else's post. Its length and characters are
-// checked where the string is (ValidThread, MaxTargetRefBytes).
-//
-// officers.ItemID is the lenient sibling for an HQ item id; this one is
-// stricter on purpose.
-type RefText string
+// MaxSafeRefNumber is the largest ref DecodeRef takes as a JSON number:
+// 2^53-1, JavaScript's Number.MAX_SAFE_INTEGER. Every whole number up to it is
+// exactly a float64, so a client that parsed it as one (Node does, and an
+// officer's runtime is Node) sent its true digits. Above it a float64 holds
+// only some integers: 2122495152350453825 arrives as 2122495152350453800, and
+// 2^53 itself is what 2^53+1 rounds to. Such a number may already be another
+// id, so it is refused, never stored.
+const MaxSafeRefNumber = 1<<53 - 1
 
-// UnmarshalJSON accepts a JSON string, or a JSON number of digits only.
-func (r *RefText) UnmarshalJSON(b []byte) error {
-	b = bytes.TrimSpace(b)
+// DecodeRef decodes raw, the JSON value of an upstream reference an officer
+// files (field names it in the error: "target.ref", "because_ref"). A JSON
+// string is taken as is; absent or null is "". A JSON number is taken as its
+// exact digits only when it is a whole non-negative integer of at most
+// MaxSafeRefNumber: a fraction, a sign or an exponent is refused (no ref is
+// spelled that way, and an exponent is what an id that went through a float
+// looks like), and so is a larger number, whose digits the client may already
+// have rounded (MaxSafeRefNumber). An X post id is above it, so it must come
+// as a string. Length and characters are checked where the string is
+// (ValidThread, MaxTargetRefBytes).
+func DecodeRef(field string, raw json.RawMessage) (string, error) {
+	b := bytes.TrimSpace(raw)
 	switch {
-	case string(b) == "null":
-		return nil
-	case len(b) > 0 && b[0] == '"':
+	case len(b) == 0 || string(b) == "null":
+		return "", nil
+	case b[0] == '"':
 		var s string
 		if err := json.Unmarshal(b, &s); err != nil {
-			return err
+			return "", err
 		}
-		*r = RefText(s)
-		return nil
+		return s, nil
 	}
 	var n json.Number
 	if err := json.Unmarshal(b, &n); err != nil {
-		return fmt.Errorf("a ref is a string or a whole number, not %.40s", b)
+		return "", fmt.Errorf("%s is a string or a whole number, not %.40s", field, b)
 	}
-	for _, c := range n.String() {
+	digits := n.String()
+	for _, c := range digits {
 		if c < '0' || c > '9' {
-			return fmt.Errorf("a ref given as a number is its digits only, not %.40s: send it as a string", b)
+			return "", fmt.Errorf("%s given as a number is its digits only, not %.40s: send it as a JSON string", field, b)
 		}
 	}
-	*r = RefText(n.String())
-	return nil
+	if v, err := strconv.ParseUint(digits, 10, 64); err != nil || v > MaxSafeRefNumber {
+		return "", fmt.Errorf("%s %.40s is a JSON number above 2^53-1, so your client may have rounded it (JavaScript does): "+
+			"send the id as a JSON string, e.g. %s", field, digits, refExample(field))
+	}
+	return digits, nil
+}
+
+// refExample is how field is spelled with its id as a string, for the error.
+func refExample(field string) string {
+	if parent, child, ok := strings.Cut(field, "."); ok {
+		return fmt.Sprintf(`"%s": {"%s": "<id>"}`, parent, child)
+	}
+	return fmt.Sprintf(`"%s": "<id>"`, field)
 }
 
 // DraftMedia is one uploaded medium of an outbound draft (0121's media).
