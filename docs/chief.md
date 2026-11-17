@@ -886,6 +886,67 @@ What applies on both:
   status OpenRouter sends for a spent limit has not been checked against the
   live service.
 
+### OpenRouter sessions, budget
+
+A side chat of the admin's chief may run on **any OpenRouter model**, with its
+own key and a muster-enforced budget. This is the spend door alone; no session
+runtime sends to it yet, so it does nothing until one does. It is off unless
+`MUSTER_CHIEF_SESSIONS_OPENROUTER=1` ([configuration](configuration.md)).
+
+- **How a request is recognised.** The session's runtime in the chief's pod
+  calls `POST /llm/v1/messages` with the chief's muster token
+  (`X-Muster-Token`) and `X-Muster-Chief-Session: <the session's key>`. A
+  request **without** that header is handled exactly as before. A request
+  **with** it goes only to this door: it is never served on the chief's own
+  route or `MUSTER_AGENT_OPENROUTER_KEY`, even when the door is off (then it is
+  refused).
+- **What is served.** The admin's chief, while it is on, for a chat session
+  that is that chief's own side chat (not its primary chat) whose stored model
+  is `openrouter/<id>`. Another owner's session, another agent's session, the
+  primary chat, a Claude session and an unknown key are refused. Each request
+  is pinned to the session's model, whatever the client asks for.
+- **Whose key.** `MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY`, the server's alone. It
+  never enters a pod. `MUSTER_AGENT_OPENROUTER_KEY` never stands in for it,
+  and boot is refused if the two are the same key: production's agents and the
+  chief rely on that key's credit limit.
+- **The budget.** Two caps, both checked before anything is sent, and both
+  read from what muster booked:
+  - `MUSTER_CHIEF_SESSIONS_DAILY_USD` (default **$20**): the owner's spend
+    across all their sessions in one UTC day. It resets at 00:00 UTC.
+  - `MUSTER_CHIEF_SESSIONS_SESSION_USD` (unset by default): one session's
+    spend over its life. When one session reaches it, the owner's other
+    sessions still run.
+- **What is booked.** The cost OpenRouter reports for each request
+  (`usage.cost`), counted by muster's proxy, into `chief_session_llm_usage`
+  (per owner, session and UTC day). The runtime's own cost figure is not used:
+  opencode reports list price times tokens, or 0. A response with no reported
+  cost is booked at the proxy's pessimistic estimate.
+- **A refusal is a 400.** A budget refusal names the spent and cap amounts and
+  when the cap resets. Every refusal on this door, a read that failed included,
+  is a 400 and never a 429 or 503. opencode, the session runtime, was measured
+  to retry a 503 forever and to fail a 400 at once, ending the turn with
+  muster's message.
+- **Before a turn.** The turn path can ask the same check
+  (`Server.CheckChiefSessionSpend`) before it sends, so a turn over budget
+  sends nothing.
+- **Choosing a model.** `GET /api/chief/openrouter-models?q=` (the admin only,
+  signed in) returns up to 10 catalogue models matching `q`, each with its id,
+  name, context length and list price. A new session's model is accepted as an
+  exact catalogue id or a unique fuzzy match, and stored as `openrouter/<id>`.
+  An ambiguous match is refused with the candidates; no match is refused with
+  the closest ids. If the catalogue (OpenRouter's public list, cached hourly)
+  cannot be read, a new model is **refused**, unless muster has a copy younger
+  than 24 hours, which is then used. There is no fallback that passes a model
+  on the shape of its id.
+- **Where to see it.** [`/usage`](usage.md) has a "Chief sessions on
+  OpenRouter" section.
+- **⚠ The header can be forged from inside the pod.** Anything in the chief's
+  pod holds the chief's token and can name any session key. At worst, spend
+  is booked to **another OpenRouter side chat of the same chief**, at that
+  session's model, still under the owner's daily cap. It cannot reach another
+  owner's session, the primary chat or a Claude session, and it cannot raise
+  the day's total.
+
 ## Restarting the chief
 
 The chief keeps running the image and tool set it was started on. After a muster

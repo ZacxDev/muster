@@ -13,10 +13,11 @@ import "testing"
 // schema; a new owned table added after 0127 is listed here, or the control
 // below counts one table too many.
 var ownedAfter0127 = []string{
-	"agent_secrets",                                // 0128
+	"agent_secrets",                              // 0128
 	"officer_contacts", "officer_contact_events", // 0132
 	"officer_public_branches",   // 0138
 	"plugin_chief_instructions", // 0141
+	"chief_session_llm_usage", // 0141
 }
 
 // sharedAfter0127 is every share-class table a migration AFTER 0127 shares

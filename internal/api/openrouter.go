@@ -69,6 +69,17 @@ func (c *modelCache) catalog(ctx context.Context) ([]CatalogModel, error) {
 	return c.entries, nil
 }
 
+// catalogAt is the cached catalogue, when it was fetched, and the error of
+// this call's refresh (nil when the copy is within the TTL or was just
+// fetched). Unlike catalog it hands back a stale copy WITH the error, so the
+// caller decides how old is too old (chiefSessionCatalog).
+func (c *modelCache) catalogAt(ctx context.Context) ([]CatalogModel, time.Time, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	err := c.refreshLocked(ctx)
+	return c.entries, c.fetched, err
+}
+
 func (c *modelCache) refreshLocked(ctx context.Context) error {
 	if len(c.ids) > 0 && time.Since(c.fetched) < openRouterCacheTTL {
 		return nil
@@ -132,6 +143,10 @@ func fetchOpenRouterCatalog(ctx context.Context) ([]CatalogModel, error) {
 			ID            string `json:"id"`
 			Name          string `json:"name"`
 			ContextLength int64  `json:"context_length"`
+			Pricing       struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+			} `json:"pricing"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -140,7 +155,8 @@ func fetchOpenRouterCatalog(ctx context.Context) ([]CatalogModel, error) {
 	out := make([]CatalogModel, 0, len(body.Data))
 	for _, m := range body.Data {
 		if m.ID != "" {
-			out = append(out, CatalogModel{ID: m.ID, Name: m.Name, ContextLength: max(m.ContextLength, 0)})
+			out = append(out, CatalogModel{ID: m.ID, Name: m.Name, ContextLength: max(m.ContextLength, 0),
+				Pricing: CatalogPricing{Prompt: m.Pricing.Prompt, Completion: m.Pricing.Completion}})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

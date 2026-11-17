@@ -92,6 +92,20 @@ func ValidateSessionRuntime(runtime, model string) (string, error) {
 	return model, nil
 }
 
+// OpenRouterModelPrefix is the route prefix of a model muster reaches through
+// OpenRouter: "openrouter/<catalogue id>" (the form every model check stores).
+const OpenRouterModelPrefix = "openrouter/"
+
+// SessionOnOpenRouter reports whether a chat session whose stored model is
+// model runs on OpenRouter: THE predicate the LLM proxy's chief-session door
+// asks (internal/api chief_session_llm.go) before it spends the chief
+// sessions' OpenRouter key on a session. A Claude session's model (an alias
+// or a claude-* id, claudeModelPattern: no "/") and a session with no model
+// never pass.
+func SessionOnOpenRouter(model string) bool {
+	return strings.HasPrefix(model, OpenRouterModelPrefix) && len(model) > len(OpenRouterModelPrefix)
+}
+
 // SessionRuntimeStore is the part of the session store migration 0030 added.
 // PGStore implements it; it is a separate interface so the many fakes of
 // [Store] do not each grow three methods, and a caller asserts it and falls

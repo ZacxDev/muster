@@ -425,6 +425,10 @@ type Server struct {
 	// by POST /llm/v1/messages as any non-routine agent is. Once set, only the
 	// admin's chief is served, and any other user's chief is refused 403.
 	chiefLLM *chiefLLMRuntime
+	// chiefSessions is the admin's chief's OpenRouter sessions' spend door
+	// (chief_session_llm.go). nil unless EnableChiefSessionsLLM was called;
+	// while nil, every request carrying X-Muster-Chief-Session is refused 400.
+	chiefSessions *chiefSessionsRuntime
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate

@@ -205,12 +205,79 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 </li>
 `)
 	}
-	b.WriteString(`</ul>
-<p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. "Estimated tokens avoided" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
+	b.WriteString("</ul>\n")
+	s.writeChiefSessionsUsage(r, &b, since)
+	b.WriteString(`<p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. "Estimated tokens avoided" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
 <a href="` + routingRulesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Routing rules</a>
 <a href="` + answersPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answers</a>
 </section>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Usage", "", false, b.String())
+}
+
+// writeChiefSessionsUsage writes the "Chief sessions on OpenRouter" section
+// (docs/usage.md): today's spend against the daily cap, the window by day, and
+// each session's model, turns, tokens and USD — from chief_session_llm_usage,
+// the proxy's own booking of the provider-reported cost. Nothing when the
+// server does not serve those sessions.
+func (s *Server) writeChiefSessionsUsage(r *http.Request, b *strings.Builder, since time.Time) {
+	cs := s.chiefSessions
+	if cs == nil {
+		return
+	}
+	rep, err := cs.store.SessionLLMReport(r.Context(), since)
+	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Chief sessions on OpenRouter</h2>
+<div class="flex flex-col gap-2" data-testid="usage-chief-sessions">
+`)
+	if err != nil {
+		s.logger.Printf("usage: chief sessions report: %v", err)
+		b.WriteString(problemNode("The chief sessions' spend could not be read."))
+		b.WriteString("</div>\n")
+		return
+	}
+	capText := "no per-session cap"
+	if cs.sessionUSD > 0 {
+		capText = "a session may spend " + usd(cs.sessionUSD)
+	}
+	b.WriteString(`<div class="` + flowsCardClass + `" data-testid="usage-chief-sessions-today" data-spent="` + strconv.FormatFloat(rep.Today, 'f', 6, 64) +
+		`" data-cap="` + strconv.FormatFloat(cs.dailyUSD, 'f', 2, 64) + `">
+<span class="text-sm font-semibold text-fg">Today ` + usd(rep.Today) + ` of ` + usd(cs.dailyUSD) + ` (UTC day; resets at 00:00 UTC)</span>
+<span class="text-xs text-fg2">` + capText + `. Booked from the cost OpenRouter reported for each request.</span>
+</div>
+<ul class="flex flex-col gap-2" data-testid="usage-chief-sessions-days">
+`)
+	for i := len(rep.Days) - 1; i >= 0; i-- {
+		d := rep.Days[i]
+		b.WriteString(`<li class="` + flowsCardClass + `" data-chief-sessions-day="` + d.Day.Format("2006-01-02") + `" data-usd="` +
+			strconv.FormatFloat(d.CostUSD, 'f', 6, 64) + `">
+<span class="text-sm text-fg">` + d.Day.Format("Mon 2 Jan") + ` · ` + usd(d.CostUSD) + ` · ` + num(d.Requests) + ` requests</span>
+</li>
+`)
+	}
+	b.WriteString(`</ul>
+<ul class="flex flex-col gap-2" data-testid="usage-chief-sessions-list">
+`)
+	if len(rep.Sessions) == 0 {
+		b.WriteString(`<li class="text-sm text-fg2">No chief session spent on OpenRouter in this window.</li>`)
+	}
+	esc := html.EscapeString
+	for _, row := range rep.Sessions {
+		b.WriteString(`<li class="` + flowsCardClass + `" data-chief-session="` + strconv.FormatInt(row.SessionID, 10) + `" data-usd="` +
+			strconv.FormatFloat(row.CostUSD, 'f', 6, 64) + `" data-turns="` + strconv.FormatInt(row.Turns, 10) + `">
+<span class="break-words text-sm font-semibold text-fg">Session #` + strconv.FormatInt(row.SessionID, 10) + ` <span class="font-mono text-xs text-fg2">` +
+			esc(row.Model) + `</span> · ` + usd(row.CostUSD) + `</span>
+<span class="text-xs text-fg2">` + num(row.Turns) + ` turns · ` + num(row.Requests) + ` requests · ` + esc(tokensText(row.Tokens)) + `</span>
+</li>
+`)
+	}
+	b.WriteString("</ul>\n</div>\n")
+}
+
+// usd is a dollar amount for the page: cents, or four places under a dollar.
+func usd(v float64) string {
+	if v < 1 {
+		return "$" + strconv.FormatFloat(v, 'f', 4, 64)
+	}
+	return "$" + strconv.FormatFloat(v, 'f', 2, 64)
 }
 
 // ruleFallbackText is the totals line's note on rule fallbacks ("" for none).

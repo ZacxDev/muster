@@ -450,6 +450,12 @@ const (
 	envChiefLLM = "MUSTER_CHIEF_LLM"
 	// TEST ONLY (testllm.go): the chief's LLM proxy upstream.
 	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
+	// The chief's OpenRouter sessions on the LLM proxy (chiefsessions.go):
+	// the switch, their own key, and the daily and per-session caps.
+	envChiefSessionsOpenRouter = "MUSTER_CHIEF_SESSIONS_OPENROUTER"
+	envChiefSessionsKey        = "MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY"
+	envChiefSessionsDailyUSD   = "MUSTER_CHIEF_SESSIONS_DAILY_USD"
+	envChiefSessionsSessionUSD = "MUSTER_CHIEF_SESSIONS_SESSION_USD"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -1047,6 +1053,9 @@ type config struct {
 	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only with the
 	// Compose chief runtime (testllm.go).
 	LLMTestUpstream string
+	// ChiefSessions is the chief's OpenRouter sessions' spend door
+	// (chiefsessions.go): On when MUSTER_CHIEF_SESSIONS_OPENROUTER=1.
+	ChiefSessions chiefSessionsConfig
 
 	// AgentGateway names the agent runtime whose chat wire this deployment talks:
 	// one of gatewayChoices. Default gatewayNone, which leaves
@@ -2067,6 +2076,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if err := c.applyChiefLLM(getenv); err != nil {
+		return config{}, err
+	}
+	if err := c.applyChiefSessions(getenv); err != nil {
 		return config{}, err
 	}
 	// Last: it refuses agent-plane variables set beside it, so every one of
