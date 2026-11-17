@@ -173,10 +173,13 @@ type doctorRun struct {
 // serverReport is the part of GET /api/doctor's body (internal/api.DoctorReport)
 // this client reads.
 type serverReport struct {
-	AuthMode       string `json:"auth_mode"`
-	HookTokenArmed bool   `json:"hook_token_armed"`
-	Push           bool   `json:"push"`
-	Dictation      bool   `json:"dictation"`
+	AuthMode string `json:"auth_mode"`
+	// BrowserPort is the browser listener's port in gotrue mode (absent from
+	// a server that predates it, and in password mode).
+	BrowserPort    int  `json:"browser_port"`
+	HookTokenArmed bool `json:"hook_token_armed"`
+	Push           bool `json:"push"`
+	Dictation      bool `json:"dictation"`
 	Mirror         struct {
 		Enabled bool `json:"enabled"`
 		Hosts   []struct {
@@ -1086,6 +1089,17 @@ func (d *doctorRun) print() int {
 	return failed
 }
 
+// urlWithPort is raw with its port replaced by port, "" when raw does not
+// parse or port is not one.
+func urlWithPort(raw string, port int) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || port < 1 || port > 65535 {
+		return ""
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+	return strings.TrimRight(u.String(), "/")
+}
+
 // printQR draws the URL as a QR code on stderr for the phone to scan, with
 // qrencode when this machine has it; the URL itself is printed either way.
 func (d *doctorRun) printQR(ctx context.Context) {
@@ -1093,6 +1107,21 @@ func (d *doctorRun) printQR(ctx context.Context) {
 	// A loopback URL is this machine only: a phone that scanned it would open
 	// its OWN localhost. No code; say how a phone gets in instead.
 	if loopback.HTTPURL(d.base) {
+		// Accounts mode: the address checked here is the machine-token port,
+		// which refuses a browser (onboarding round 3: doctor sent a person
+		// to it). A browser signs in on the browser listener.
+		if d.report != nil && d.report.AuthMode == "gotrue" {
+			if open := urlWithPort(d.base, d.report.BrowserPort); open != "" {
+				fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser): in accounts mode "+
+					"a browser signs in only on the browser listener (MUSTER_BROWSER_PORT=%d, published on the same host port); "+
+					"%s serves machine tokens and refuses a browser.\n", open, d.report.BrowserPort, d.base)
+			} else {
+				fmt.Fprintf(w, "\nIn accounts mode a browser signs in only on the browser listener (MUSTER_BROWSER_PORT, at the host "+
+					"port that publishes it): %s serves machine tokens and refuses a browser.\n", d.base)
+			}
+			fmt.Fprintf(w, "To use it from your phone, add HTTPS with Tailscale: %s\n", addPhoneDoc)
+			return
+		}
 		fmt.Fprintf(w, "\nmuster is at %s on this machine only (open it in this machine's browser).\n"+
 			"To use it from your phone, add HTTPS with Tailscale: %s\n", d.base, addPhoneDoc)
 		return
@@ -1430,6 +1459,12 @@ func (d *doctorRun) checkMCPRegistration() {
 	switch {
 	case len(found) == 0 && len(unreadable) > 0:
 		d.add(name, statusFail, "Claude Code's config could not be read as JSON: "+strings.Join(unreadable, ", "), "check the file; then "+fix)
+	case len(found) == 0 && !d.claudeInstalled():
+		// Not installed is not "not registered": the registration command
+		// alone would fail with `claude: command not found` (round 3).
+		d.add(name, statusFail, "muster-mirror serves "+want+", but Claude Code is not installed on this machine (no `claude` on PATH, "+
+			"in ~/.local/bin or in ~/.claude/local), so no session here can use it",
+			"install Claude Code first ("+claudeInstallHint+"); then "+fix)
 	case len(found) == 0:
 		d.add(name, statusFail, "muster-mirror serves "+want+", but no Claude Code scope for "+dir+" (user, local or project) registers an MCP server at it, "+
 			"so sessions here have no muster tools", fix)
@@ -1441,6 +1476,33 @@ func (d *doctorRun) checkMCPRegistration() {
 			" (that a session's shell exports MUSTER_MIRROR_MCP_SECRET is not checked here)", "")
 	}
 }
+
+// claudeInstallHint is how to install Claude Code, as a fix line says it.
+const claudeInstallHint = "`curl -fsSL https://claude.ai/install.sh | bash`, which needs no Node.js; or " +
+	"`npm install -g @anthropic-ai/claude-code`, which needs Node.js and npm"
+
+// claudeInstalled: a `claude` is on PATH, or where Claude Code's own
+// installers put it (~/.local/bin, ~/.claude/local), which the shell the
+// doctor runs in may not have on its PATH.
+func (d *doctorRun) claudeInstalled() bool {
+	if d.sys.lookPath != nil {
+		if _, err := d.sys.lookPath("claude"); err == nil {
+			return true
+		}
+	}
+	for _, p := range []string{filepath.Join(d.a.homeDir, ".local", "bin", "claude"), filepath.Join(d.a.homeDir, ".claude", "local", "claude")} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// askHookSettingsFile is a whole ~/.claude/settings.json that turns ask cards
+// on. docs/features.md#ask-cards shows the same document
+// (tests/features_config_test.py pins the two equal as JSON), and
+// TestTheAskHookSettingsFilePassesTheDoctor that this check reads it as set up.
+const askHookSettingsFile = `{"hooks": {"PreToolUse": [{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}]}}`
 
 // checkAskHook: Claude Code runs `muster-mirror ask` before AskUserQuestion
 // (a PreToolUse hook in its user settings), which draws ask cards.
@@ -1470,6 +1532,10 @@ func (d *doctorRun) checkAskHook() {
 	}
 	const snippet = `{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}`
 	fix := "add " + snippet + " to the hooks.PreToolUse list in " + path + " (docs/features.md#ask-cards)"
+	if errors.Is(err, os.ErrNotExist) {
+		// No file yet: the whole file, not a fragment to wrap (round 3).
+		fix = "create " + path + " holding " + askHookSettingsFile + " (docs/features.md#ask-cards)"
+	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		d.add(name, statusFail, "Claude Code's settings "+path+" could not be read as JSON", fix)
 		return

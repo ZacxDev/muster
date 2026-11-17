@@ -78,6 +78,26 @@ func TestDoctorRefusesAnUnarmedServerByTheField(t *testing.T) {
 	}
 }
 
+// TestDoctorReportsTheBrowserPortInGoTrueMode: in gotrue mode the report names
+// the browser listener's port, the only one a browser signs in on, so `muster
+// doctor` can point a person there instead of at the machine port it checked
+// (onboarding round 3); in password mode, where every port serves a browser,
+// it names none even with MUSTER_BROWSER_PORT set.
+func TestDoctorReportsTheBrowserPortInGoTrueMode(t *testing.T) {
+	gt := doctorServer(t, AuthConfig{Mode: AuthModeGoTrue, HookToken: testHookToken, BrowserPort: 18327}, Extensions{})
+	code, raw, rep := getDoctor(t, gt, testHookToken)
+	if code != http.StatusOK || rep.AuthMode != "gotrue" || rep.BrowserPort != 18327 {
+		t.Fatalf("gotrue: %d auth_mode=%q browser_port=%d, want 200 gotrue 18327", code, rep.AuthMode, rep.BrowserPort)
+	}
+	if raw["browser_port"] != float64(18327) {
+		t.Fatalf("the JSON field: browser_port=%v", raw["browser_port"])
+	}
+	pw := doctorServer(t, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken, BrowserPort: 18327}, Extensions{})
+	if _, raw, _ := getDoctor(t, pw, testHookToken); raw["browser_port"] != nil {
+		t.Fatalf("password mode reports browser_port=%v", raw["browser_port"])
+	}
+}
+
 // TestDoctorReportsWhatTheFeaturesRead: every boolean flips with the
 // dependency the feature itself reads, in both directions, so no field is a
 // constant that happens to match one fixture.
