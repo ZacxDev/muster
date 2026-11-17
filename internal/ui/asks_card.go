@@ -123,8 +123,10 @@ func AsksCardErrorHTML(text string) string {
 // asksFeedScriptSrc is the feed's behaviour, a static file (static_script.go).
 var asksFeedScriptSrc = staticJS("asks-feed", asksFeedJS)
 
-// AsksFeedScriptHTML is the feed script's tag, once per Asks page (and on an
-// ask page, whose card shares the component).
+// AsksFeedScriptHTML is the feed script's tag. It is written once, by the Asks
+// page alone (internal/api renderAsksPage, after the page's other scripts);
+// the ask page (/attention/asks/<id>) draws the card always expanded and does
+// not include it.
 func AsksFeedScriptHTML() string { return nodeString(staticScript(asksFeedScriptSrc)) }
 
 // AsksSwipeMinPx is the least horizontal travel that switches a tab (the
@@ -140,7 +142,29 @@ const (
 	// AsksSwipeEdgePx is the sidebar's open-swipe edge (components.go
 	// SB_EDGE): a gesture starting inside it is the sidebar's, never a tab's.
 	AsksSwipeEdgePx = 28
+	// AsksSwipeMaxScale: with the page pinch-zoomed past this
+	// (visualViewport.scale), a sideways drag is the browser's pan, never a
+	// tab swipe.
+	AsksSwipeMaxScale = 1.01
 )
+
+// A card post's refusal when the server's own fragment is not what came back
+// (the feed's script: refusal), and the feed notice's lead when the card is
+// gone meanwhile (refused).
+const (
+	AsksRefusalOffline = "Not sent: muster could not be reached. Try again."
+	// AsksRefusalSignIn: a 401 — which the shell's auth gate (components.go)
+	// also turns into a navigation to the sign-in.
+	AsksRefusalSignIn    = "Not sent: your sign-in has lapsed. Reload the page and sign in again."
+	AsksRefusalForbidden = "Not sent: muster refused it. Reload the page and try again."
+	AsksRefusalOther     = "That could not be recorded. Try again"
+	AsksRefusalGone      = "Your answer was not recorded"
+)
+
+// AsksFeedNoticeHTML is the Open feed's notice line: a card's post refused
+// after a refresh took the card off the page (its ask closed elsewhere), so
+// there is no card to say it on. Shown by the feed's script.
+const AsksFeedNoticeHTML = `<p id="asks-feed-notice" role="alert" class="` + AsksCardErrorClass + `" data-asks-feed-notice hidden></p>`
 
 // asksFeedJS: delegated on document, bound once per window, so it works on a
 // boosted navigation into the page and on cards a live refresh drew.
@@ -176,10 +200,16 @@ var asksFeedJS = `(function () {
   var expanded = {}, lastTab = -1;
   function reduced() { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } }
   function feed() { return document.getElementById('attention-items'); }
-  function cardsOf(list) {
+  // allCards: every card (and stalled row) of list not on its way out,
+  // SHOWN OR NOT — what is counted (a hidden tab's feed still holds its
+  // cards). cardsOf: those of them on screen — where focus can move.
+  function allCards(list) {
     return list ? Array.prototype.filter.call(list.querySelectorAll(CARD + ', [data-attention-episode]'), function (c) {
-      return !c.hasAttribute('data-asks-leaving') && c.offsetParent !== null;
+      return !c.hasAttribute('data-asks-leaving');
     }) : [];
+  }
+  function cardsOf(list) {
+    return allCards(list).filter(function (c) { return c.offsetParent !== null; });
   }
   function visibleList() {
     var p = document.querySelector('[data-asks-tabs] [role="tabpanel"]:not([hidden])');
@@ -192,13 +222,17 @@ var asksFeedJS = `(function () {
     if (card.id) { if (on) expanded[card.id] = true; else delete expanded[card.id]; }
   }
   function count() {
-    var n = cardsOf(feed()).length, el = document.querySelector('[data-asks-open-count]');
-    if (el) el.textContent = n + ' open';
     var list = feed();
-    if (list && n === 0 && !list.querySelector('[data-asks-empty]') && !list.querySelector('[data-asks-card]')) {
+    if (!list) return;
+    var n = allCards(list).length, el = document.querySelector('[data-asks-open-count]');
+    if (el) el.textContent = n + ' open';
+    var empty = list.querySelector('[data-asks-empty]');
+    // All clear only when the Open feed truly holds nothing (a card on its
+    // way out still counts as there until its post lands).
+    if (n === 0 && !empty && !list.querySelector(CARD + ', [data-attention-episode]')) {
       var tpl = document.getElementById('asks-empty-tpl');
       if (tpl) list.appendChild(tpl.content.cloneNode(true));
-    }
+    } else if (n > 0 && empty) empty.remove();
   }
   function focusCard(c) {
     if (!c) return;
@@ -214,8 +248,12 @@ var asksFeedJS = `(function () {
     var cards = cardsOf(card.parentElement), i = cards.indexOf(card);
     var next = cards[i + 1] || cards[i - 1] || null;
     var focused = card.contains(document.activeElement);
+    var q = card.querySelector('[data-attention-text]');
     card.setAttribute('data-asks-leaving', '');
-    if (card.id) leaving[card.id] = { next: next && next.id, focus: focused };
+    // node: the card itself, kept so a refused post can put it back even when
+    // a refresh replaced the feed meanwhile; refreshed / listed: whether a
+    // refresh has run since, and whether it still listed the card.
+    if (card.id) leaving[card.id] = { node: card, next: next && next.id, focus: focused, question: q ? q.textContent : '', refreshed: false, listed: false };
     if (reduced()) { card.style.display = 'none'; count(); return; }
     card.style.height = card.offsetHeight + 'px';
     void card.offsetHeight;
@@ -237,17 +275,55 @@ var asksFeedJS = `(function () {
     var a = document.activeElement;
     if (l && l.next && (l.focus || !a || a === document.body)) focusCard(document.getElementById(l.next));
   }
-  // refused: the card comes back (the node on the page NOW: a refresh may have
-  // replaced it), with the server's fragment in its error slot.
-  function refused(id, fragment) {
-    delete leaving[id];
+  // refusal: what a failed post says, as a node for the card's error slot.
+  // Only the server's own card fragment (asksCardFailed: text/html carrying
+  // data-asks-card-refusal) is drawn as sent; anything else — a 401's JSON, a
+  // 403, a network failure (status 0) — is one plain sentence, never raw.
+  function refusal(x) {
+    var st = x ? x.status : 0, ct = '';
+    try { ct = (x && x.getResponseHeader('Content-Type')) || ''; } catch (e) {}
+    var body = x && typeof x.responseText === 'string' ? x.responseText : '';
+    if (st >= 400 && ct.indexOf('text/html') === 0 && body.indexOf('data-asks-card-refusal') >= 0) {
+      var t = document.createElement('template');
+      t.innerHTML = body;
+      var p = t.content.querySelector('[data-asks-card-refusal]');
+      if (p) return p;
+    }
+    var n = document.createElement('p');
+    n.setAttribute('role', 'alert');
+    n.setAttribute('data-asks-card-refusal', '');
+    n.className = '` + AsksCardErrorClass + `';
+    n.textContent = st === 0 ? '` + AsksRefusalOffline + `' : st === 401 ? '` + AsksRefusalSignIn + `' : st === 403 ? '` + AsksRefusalForbidden + `' : '` + AsksRefusalOther + ` (' + st + ').';
+    return n;
+  }
+  // refused: the card comes back with the refusal in its error slot — the
+  // node on the page, or the kept one put back where it was when a refresh
+  // replaced the feed but still listed it. A refresh that no longer lists it
+  // (the ask closed elsewhere) gets no card back: the feed's notice says the
+  // post failed, never silently.
+  function refused(id, x) {
+    var l = leaving[id]; delete leaving[id];
+    var why = refusal(x), list = feed();
     var c = document.getElementById(id);
-    if (!c) return;
+    if (!c && l && list && (!l.refreshed || l.listed)) {
+      c = l.node;
+      var before = l.next && document.getElementById(l.next);
+      if (before && before.parentElement === list) list.insertBefore(c, before); else list.appendChild(c);
+    }
+    if (!c) {
+      var note = document.getElementById('asks-feed-notice');
+      if (note) {
+        note.textContent = '` + AsksRefusalGone + `' + (l && l.question ? ' (“' + l.question.trim().slice(0, 80) + '”): ' : ': ') + why.textContent;
+        note.hidden = false;
+      }
+      count();
+      return;
+    }
     c.removeAttribute('data-asks-leaving');
     c.classList.remove('asks-leave');
     c.style.height = ''; c.style.display = '';
     var slot = c.querySelector('[data-asks-card-error]');
-    if (slot) slot.innerHTML = fragment || '';
+    if (slot) { slot.innerHTML = ''; slot.appendChild(why); }
     count();
     focusCard(c);
   }
@@ -265,16 +341,20 @@ var asksFeedJS = `(function () {
     }
     var slot = card.querySelector('[data-asks-card-error]');
     if (slot) slot.innerHTML = '';
+    var note = document.getElementById('asks-feed-notice');
+    if (note) note.hidden = true;
     leave(card);
-  });
-  document.addEventListener('htmx:afterRequest', function (e) {
-    var form = e.detail && e.detail.elt;
-    if (!form || !form.hasAttribute || !form.hasAttribute('data-asks-card-form')) return;
+    // 🔴 ON THE FORM ITSELF, NOT THE DOCUMENT: a live refresh that replaced
+    // the feed meanwhile leaves this form detached, and htmx's afterRequest on
+    // a detached element never bubbles to the document — a document listener
+    // would never hear the post land (or fail).
     var id = form.getAttribute('data-asks-card-form');
-    if (!leaving[id]) return;
-    var x = e.detail.xhr;
-    if (x && x.status >= 200 && x.status < 300) settle(id);
-    else refused(id, x && x.status ? x.responseText : '');
+    form.addEventListener('htmx:afterRequest', function (ev) {
+      if (ev.target !== form || !leaving[id]) return;
+      var x = ev.detail && ev.detail.xhr;
+      if (x && x.status >= 200 && x.status < 300) settle(id);
+      else refused(id, x);
+    }, { once: true });
   });
 
   document.addEventListener('click', function (e) {
@@ -300,10 +380,22 @@ var asksFeedJS = `(function () {
     setExpanded(card, card.getAttribute('data-expanded') !== 'true');
   });
 
+  // overlayOpen: something modal is over the page — an open dialog, any
+  // shown aria-modal element, the notifications panel, the mobile sidebar.
+  // The feed's keys stand down while it is.
+  function overlayOpen() {
+    if (document.querySelector('dialog[open]')) return true;
+    var m = document.querySelectorAll('[aria-modal="true"]');
+    for (var i = 0; i < m.length; i++) if (m[i].getClientRects().length > 0 && !m[i].closest('[hidden]')) return true;
+    var np = document.getElementById('notif-panel');
+    if (np && !np.classList.contains('hidden')) return true;
+    var sb = document.getElementById('sidebar-root');
+    if (sb && sb.getAttribute('data-open') === 'true' && window.innerWidth < 1024) return true;
+    return false;
+  }
   document.addEventListener('keydown', function (e) {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
-    var dlg = document.querySelector('dialog[open]');
-    if (dlg) return;
+    if (overlayOpen()) return;
     var t = e.target, typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     var list = visibleList();
     if (!list) return;
@@ -326,34 +418,42 @@ var asksFeedJS = `(function () {
     if (k === 'd') { var mic = cur.querySelector('button[data-dictate]'); if (mic && !mic.hidden) { e.preventDefault(); mic.click(); } return; }
   });
 
-  // THE LIVE REFRESH (AttentionLiveScript) re-draws the Open feed and then
-  // dispatches the reveal event on it: keep what the owner had (open cards,
-  // the focused card, no card that is leaving or settled), and let new cards enter.
-  var known = null;
+  // THE LIVE REFRESHES re-draw a feed (the Open feed: AttentionLiveScript; the
+  // Answered feed: asksPageScript) and then dispatch the reveal event on it:
+  // keep what the owner had (expanded cards, the focused card, and — on the
+  // Open feed — no card that is leaving or settled), and let new cards enter.
+  var known = {};
   function ids(list) { var o = {}; Array.prototype.forEach.call(list.querySelectorAll(CARD), function (c) { if (c.id) o[c.id] = true; }); return o; }
   document.addEventListener('` + DictateRevealEvent + `', function (e) {
-    var list = feed();
-    if (!list || e.target !== list) return;
+    var list = e.target;
+    if (!list || !list.matches || !list.matches('[data-asks-feed]') || !list.id) return;
+    var open = list === feed();
     var focusId = list.getAttribute('data-asks-focus') || '';
     var now = Date.now();
     Object.keys(settled).forEach(function (k) { if (now - settled[k] > 60000) delete settled[k]; });
+    if (open) Object.keys(leaving).forEach(function (k) { leaving[k].refreshed = true; leaving[k].listed = false; });
     Array.prototype.forEach.call(list.querySelectorAll(CARD), function (c) {
-      if (c.id && (leaving[c.id] || settled[c.id])) { c.remove(); return; }
+      if (open && c.id && leaving[c.id]) { leaving[c.id].listed = true; c.remove(); return; }
+      if (open && c.id && settled[c.id]) { c.remove(); return; }
       if (expanded[c.id]) { c.classList.add('asks-instant'); setExpanded(c, true); }
-      if (known && !known[c.id] && !reduced()) { c.classList.add('asks-enter'); setTimeout(function () { c.classList.remove('asks-enter'); }, 400); }
+      if (known[list.id] && !known[list.id][c.id] && !reduced()) { c.classList.add('asks-enter'); setTimeout(function () { c.classList.remove('asks-enter'); }, 400); }
     });
     requestAnimationFrame(function () { Array.prototype.forEach.call(list.querySelectorAll('.asks-instant'), function (c) { c.classList.remove('asks-instant'); }); });
-    known = ids(list);
+    known[list.id] = ids(list);
     // The refresh is innerHTML, not an htmx swap: the new cards' hx-post forms
     // are processed here.
     if (window.htmx) try { window.htmx.process(list); } catch (err) {}
     if (focusId) { var f = document.getElementById(focusId); if (f && list.contains(f)) focusCard(f); }
-    count();
+    if (open) count();
   });
-  // Which card had focus when a refresh replaced it (focusout fires first).
+  // Which card had focus when a refresh replaced it (focusout fires first),
+  // per feed.
   document.addEventListener('focusin', function (e) {
-    var list = feed(), c = e.target && e.target.closest && e.target.closest(CARD);
-    if (list && c && list.contains(c) && e.target === c) list.setAttribute('data-asks-focus', c.id); else if (list && e.target !== list) list.removeAttribute('data-asks-focus');
+    var t = e.target, c = t && t.closest && t.closest(CARD), mine = c && c.closest('[data-asks-feed]');
+    Array.prototype.forEach.call(document.querySelectorAll('[data-asks-feed]'), function (list) {
+      if (list === mine && t === c) list.setAttribute('data-asks-focus', c.id);
+      else if (t !== list) list.removeAttribute('data-asks-focus');
+    });
   });
 
   // THE TAB SLIDE: the panel a tab change shows slides in from its side.
@@ -372,14 +472,18 @@ var asksFeedJS = `(function () {
     lastTab = i;
   }
   function watchTabs() { lastTab = selIndex(); }
+  // A tab change recounts (the count is the Open feed's, whatever is shown).
+  document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(count, 0); });
   document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(slide, 0); });
   document.addEventListener('keydown', function (e) { if (e.target && e.target.closest && e.target.closest('#asks-tabs [role="tab"]')) setTimeout(slide, 0); });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { watchTabs(); known = feed() ? ids(feed()) : null; });
-  else { watchTabs(); known = feed() ? ids(feed()) : null; }
-  document.addEventListener('htmx:load', function () { watchTabs(); known = feed() ? ids(feed()) : null; });
+  function remember() { Array.prototype.forEach.call(document.querySelectorAll('[data-asks-feed][id]'), function (l) { known[l.id] = ids(l); }); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { watchTabs(); remember(); });
+  else { watchTabs(); remember(); }
+  document.addEventListener('htmx:load', function () { watchTabs(); remember(); });
 
   // THE SWIPE: sideways on the feed area moves one tab, in its direction.
   var sw = null;
+  function zoomed() { var v = window.visualViewport; return !!(v && v.scale > ` + strconv.FormatFloat(AsksSwipeMaxScale, 'f', -1, 64) + `); }
   function ownsSideways(t) {
     for (var el = t; el && el.nodeType === 1 && el !== document.body; el = el.parentElement) {
       if (el.hasAttribute('data-own-swipe')) return true;
@@ -394,6 +498,10 @@ var asksFeedJS = `(function () {
     if (!area) return;
     var x = e.touches[0].clientX, y = e.touches[0].clientY;
     if (x <= ` + strconv.Itoa(AsksSwipeEdgePx) + `) return;
+    // Pinch-zoomed in: a sideways drag pans the zoomed page (touch-action is
+    // left to the browser), never a tab swipe. Checked when the finger lands:
+    // a pinch DURING a drag is two touches, which already ends the swipe.
+    if (zoomed()) return;
     if (t.closest('input,textarea,select,[contenteditable],[data-asks-media],[data-asks-answer-row],[data-own-swipe]')) return;
     if (ownsSideways(t)) return;
     var s = window.getSelection && String(window.getSelection());

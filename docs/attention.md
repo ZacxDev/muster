@@ -62,7 +62,8 @@ taller than the screen still scrolls through).
   the address follows. A swipe locks to one axis after a few pixels, so a
   vertical scroll never changes the tab, and a swipe that starts in the answer
   box, on attached media, on anything that scrolls sideways, at the left edge
-  (the menu's swipe) or with text selected is left alone.
+  (the menu's swipe) or with text selected is left alone. Pinch-zoomed in, a
+  sideways drag pans the zoomed page and never changes the tab.
 - **Answer** or **Dismiss** a card and it collapses out, the next card moves
   up and takes focus, and the open count drops. The card's form posts (htmx)
   to the queue's own answer and dismiss routes with an
@@ -71,7 +72,11 @@ taller than the screen still scrolls through).
   its error status and one line saying why, which the card shows when it comes
   back); every other post to those routes keeps its redirect. A card that is
   leaving is never brought back by a live refresh that arrives before its post
-  lands.
+  lands. When what comes back is not that line (a network failure, a refusal
+  from outside the queue), the card says so in a plain sentence; when the card
+  is no longer on the page by then (its ask closed elsewhere), a line above
+  the tabs says the answer was not recorded, and why. A failed delivery's
+  **Retry** (on the Answered tab) lands back on the Answered tab.
 - **On a keyboard**: <kbd>j</kbd>/<kbd>k</kbd> (or <kbd>↓</kbd>/<kbd>↑</kbd>
   from a card) move between cards, <kbd>Enter</kbd> expands, <kbd>a</kbd>
   focuses the answer box, <kbd>d</kbd> starts its mic, <kbd>Esc</kbd> leaves

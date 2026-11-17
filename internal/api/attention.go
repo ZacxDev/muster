@@ -1634,6 +1634,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
+	// The feed's notice: a card post refused after the card left the page.
+	b.WriteString(ui.AsksFeedNoticeHTML)
 	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
 	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + s.answeredAsksNow(r.Context(), now) + `</ul>`
 	// ALWAYS TABS: the Log tab (ask_log_read.go) is drawn whatever else is
@@ -2252,6 +2254,10 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
+// attentionAnsweredPath is the Asks page on its Answered tab: where a Retry
+// lands, and where its refusal is drawn.
+const attentionAnsweredPath = attentionPath + "?" + asksTabParam + "=" + asksTabAnswered
+
 // handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to
 // queued (the caller's own ask only — row-level security), then delivered now.
 func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Request) {
@@ -2268,18 +2274,19 @@ func (s *Server) handleAttentionRedeliverForm(w http.ResponseWriter, r *http.Req
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrNotRetryable):
-		s.renderAttentionPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.")
+		s.renderAsksPage(w, r, http.StatusConflict, "That answer's delivery has not failed, so there is nothing to retry.", asksTabAnswered, 0)
 		return
 	default:
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: retry the delivery of %d: %v", id, err)
 		}
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.renderAsksPage(w, r, attentionErrCode(err), attentionErrText(err, a), asksTabAnswered, 0)
 		return
 	}
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	s.startAnswerDelivery(a.Owner, a.ID, 0)
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	// Back to the Answered tab, where the Retry was (and its card's new state).
+	http.Redirect(w, r, attentionAnsweredPath, http.StatusSeeOther)
 }
 
 // attentionAnsweredWindow / attentionAnsweredShown bound the "Answered" list:

@@ -28,6 +28,8 @@ func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 		`<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>`,
 		`<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>`,
 		`data-asks-badge="question">Question</span>`,
+		// The feed's notice (a card refused after a refresh took it away), shut.
+		ui.AsksFeedNoticeHTML,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)

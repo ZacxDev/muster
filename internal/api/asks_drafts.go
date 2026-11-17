@@ -326,7 +326,7 @@ func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 }
 
 // asksPageScript is the page's own behaviour around the tabs (the cards' —
-// expand, answer, Undo, keys, swipe — is ui/asks_card.go's):
+// expand, answer and dismiss, keys, swipe — is ui/asks_card.go's):
 //
 //   - the tab is kept in the URL (?tab=), replaced not pushed, so a reload or
 //     a shared link opens the same tab. The PATH is always /attention: a
@@ -422,7 +422,13 @@ const asksPageScript = `<script>
   if (answered) document.addEventListener('asks:changed', function () {
     fetch('` + attentionPath + `/items?part=answered', { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.text() : null;
-    }).then(function (h) { if (h !== null) answered.innerHTML = h; }).catch(function () {});
+    }).then(function (h) {
+      if (h === null) return;
+      answered.innerHTML = h;
+      // The card feed's script keeps expanded cards and focus (its reveal
+      // handler serves every feed).
+      try { answered.dispatchEvent(new Event(` + "'" + ui.DictateRevealEvent + "'" + `, { bubbles: true })); } catch (e) {}
+    }).catch(function () {});
   });
   var pendingList = document.getElementById('asks-drafts-pending');
   var archivedList = document.getElementById('asks-drafts-archived');

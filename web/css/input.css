@@ -944,9 +944,14 @@ html:has([data-asks-feed]) {
   from { opacity: 0; transform: translateX(-24px); }
   to { opacity: 1; transform: none; }
 }
-/* A sideways swipe on the feed is the page's (it switches tabs). */
+/*
+ * A sideways swipe on the feed is the page's (it switches tabs: the feed's
+ * script reads the touches, passively). touch-action is NOT narrowed to pan-y:
+ * pinch-zoomed in, a sideways drag must pan the zoomed page — the script then
+ * takes no swipe at all (visualViewport.scale, AsksSwipeMaxScale).
+ */
 [data-asks-swipe] {
-  touch-action: pan-y pinch-zoom;
+  touch-action: auto;
   /* A panel sliding in from the side must not widen the page meanwhile (clip,
      not hidden: no scroll container, the document still scrolls the feed). */
   overflow-x: clip;
