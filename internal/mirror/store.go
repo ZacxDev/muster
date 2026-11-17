@@ -38,7 +38,7 @@ type Token struct {
 	// team token nobody has left since it was minted.
 	RotateAt *time.Time `json:"rotateAt,omitempty"`
 	// SpawnedAt is when this token's host first advertised -agent-spawn or had
-	// a host dispatch reserved on it (mirror_tokens.spawned_at, 0148). Nothing
+	// a host dispatch reserved on it (mirror_tokens.spawned_at, 0149). Nothing
 	// clears it: a host-spawned agent can read the token, so the mark ends
 	// only with the token (rotate it). Nil for a token whose host never did.
 	SpawnedAt *time.Time `json:"spawnedAt,omitempty"`
@@ -249,7 +249,7 @@ func (s *PGStore) RevokeToken(ctx context.Context, id int64) (bool, error) {
 }
 
 // MarkSpawned records that live token id's host has started agents
-// (mirror_tokens.spawned_at, 0148): once, keeping the first time. A revoked
+// (mirror_tokens.spawned_at, 0149): once, keeping the first time. A revoked
 // token is left alone. Service calls it under authz.System when the host's
 // hello advertises -agent-spawn (Service.markSpawned).
 func (s *PGStore) MarkSpawned(ctx context.Context, id int64) error {

@@ -489,7 +489,7 @@ const spawnedTokenWhy = "has started agents for the chief with this host token (
 // Both reads are the SERVER's, and neither is anything a window can set:
 //
 //   - the token the call came with is marked (mirror_tokens.spawned_at,
-//     0148): its host advertised -agent-spawn in a hello, or had a host
+//     0149): its host advertised -agent-spawn in a hello, or had a host
 //     dispatch reserved on it, at any time. 🔴 NOTHING BUT ROTATING THE
 //     TOKEN CLEARS IT. A spawned agent runs as the machine's user and can
 //     read the token, so neither a restart of muster, nor the host no longer
