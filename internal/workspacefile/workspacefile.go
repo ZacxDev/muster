@@ -9,7 +9,9 @@
 // root, an absolute one taken as is; every symlink on either is resolved
 // (filepath.EvalSymlinks, the root's own included); the result must lie inside
 // the resolved root and be a regular file. `..`, an absolute path elsewhere and
-// a symlink out are all refused (ErrOutside).
+// a symlink out are all refused (ErrOutside). So is anything whose resolved
+// location below the root has a part starting with "." — a dotfile, or a file
+// in a dot-directory such as .ssh, .aws or .git (ErrHidden).
 package workspacefile
 
 import (
@@ -23,10 +25,39 @@ import (
 // ErrOutside is a path that resolves outside the root.
 var ErrOutside = errors.New("the path is outside your workspace")
 
+// ErrHidden is a path that resolves to a hidden file, or into a hidden
+// directory, below the root: a component starting with "." (.env, .ssh, .aws,
+// .git). Those hold credentials and repository internals far more often than
+// anything an owner should be shown, so they are never uploaded.
+var ErrHidden = errors.New(`the path is a hidden file or inside a hidden directory (a part of it starts with "."), which is never uploaded`)
+
 // Resolve is p resolved inside root, or an error: p relative is joined to
 // root; every symlink on either is resolved; the result must be root itself's
 // descendant (ErrOutside otherwise) and a regular file.
 func Resolve(root, p string) (string, error) {
+	real, _, err := ResolveStat(root, p)
+	return real, err
+}
+
+// ResolveStat is Resolve, and the file it confined as it stood then: what an
+// opener compares the file it opened with (os.SameFile), so a file swapped in
+// between the two is refused rather than read.
+func ResolveStat(root, p string) (string, os.FileInfo, error) {
+	real, err := resolve(root, p)
+	if err != nil {
+		return "", nil, err
+	}
+	st, err := os.Lstat(real)
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot read %s: %v", p, err)
+	}
+	if !st.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("%s is not a regular file", p)
+	}
+	return real, st, nil
+}
+
+func resolve(root, p string) (string, error) {
 	if root == "" || !filepath.IsAbs(root) {
 		return "", fmt.Errorf("the workspace root %q is not an absolute path", root)
 	}
@@ -52,6 +83,16 @@ func Resolve(root, p string) (string, error) {
 	}
 	if !Within(realRoot, real) {
 		return "", ErrOutside
+	}
+	// Below the root, no part of where it RESOLVED may be hidden (ErrHidden):
+	// checked on the resolved location, so a symlink with an ordinary name
+	// that leads to .env is refused too. The root's own path is not read.
+	if rel, err := filepath.Rel(realRoot, real); err == nil {
+		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+			if strings.HasPrefix(part, ".") && part != "." {
+				return "", fmt.Errorf("%s: %w", p, ErrHidden)
+			}
+		}
 	}
 	st, err := os.Stat(real)
 	if err != nil {

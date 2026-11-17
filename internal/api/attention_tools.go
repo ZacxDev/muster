@@ -99,8 +99,11 @@ const attentionInstruction = "If you need your owner's input — a decision, a m
 	"Your owner sees the question in muster's Attention view and on their phone. When they answer, muster delivers the answer to you " +
 	"as a new message in your default session, so you do NOT need to wait for it: you may end your turn. If you cannot continue " +
 	"without it, you MAY instead block on it with attention_wait{id} (repeat it while it answers \"pending\"); an answer you read " +
-	"there is not delivered a second time. " + askMediaInstruction + " To show a file from your workspace, run `ccd ask-attach <path>` " +
-	"and pass the printed id in attachment_ids."
+	"there is not delivered a second time. " + askMediaInstruction
+
+// askAttachCcdInstruction is the sentence a claude-code agent's paragraph adds
+// while uploads are on (attentionInstructionFor): how to show a file.
+const askAttachCcdInstruction = "To show a file from your workspace, run `ccd ask-attach <path>` and pass the printed id in attachment_ids."
 
 // askMediaInstruction is the sentence both attention paragraphs carry about an
 // ask's context (ask_media.go).
@@ -119,12 +122,21 @@ const officerAttentionInstruction = "For anything that needs a human, follow you
 
 // attentionInstructionFor is THE attention paragraph agent a's instructions
 // carry: officerAttentionInstruction for an officer instance (officerOf),
-// attentionInstruction for every other dispatched agent.
+// attentionInstruction for every other dispatched agent — and, ONLY while
+// uploads are on (askUploadsOff), how to show a file: `ccd ask-attach` for a
+// kind whose pod ships ccd (shipsCcd), "not available" for any other.
 func (s *Server) attentionInstructionFor(a agents.Agent) string {
 	if _, _, ok := s.officerOf(a); ok {
 		return officerAttentionInstruction
 	}
-	return attentionInstruction
+	switch {
+	case s.askUploadsOff() != "":
+		return attentionInstruction
+	case shipsCcd(a):
+		return attentionInstruction + " " + askAttachCcdInstruction
+	default:
+		return attentionInstruction + " " + askAttachUnavailable + "."
+	}
 }
 
 // mirrorAttentionInstruction is a MIRRORED session's paragraph, per runtime
@@ -152,14 +164,18 @@ const (
 // given runtime reads: opencode's names its question tool, Claude Code's its.
 //
 // Each also carries the attention_ask context sentence (askMediaInstruction),
-// and Claude Code's how to show files: an opencode session's attachments are
-// not supported yet (internal/mirrorhost mcpproxy_attach.go).
-func mirrorAttentionInstructionFor(openCode bool) string {
+// and — files: uploads are on — Claude Code's how to show files: an opencode
+// session's attachments are not supported yet (internal/mirrorhost
+// mcpproxy_attach.go).
+func mirrorAttentionInstructionFor(openCode, files bool) string {
 	if openCode {
 		return mirrorAttentionInstruction(openCodeQuestionTool) + " When you call attention_ask: " + askMediaInstruction
 	}
-	return mirrorAttentionInstruction(claudeCodeQuestionTool) + " When you call attention_ask: " + askMediaInstruction +
-		" To show files (a screenshot, a log), pass attachments: [paths in your working directory]."
+	out := mirrorAttentionInstruction(claudeCodeQuestionTool) + " When you call attention_ask: " + askMediaInstruction
+	if files {
+		out += " To show files (a screenshot, a log), pass attachments: [paths in your working directory]."
+	}
+	return out
 }
 
 // answeredInSessionNote is what attention_wait says of an answered_in_session
@@ -250,10 +266,24 @@ func intProp(desc string, min, max int) map[string]any {
 	return map[string]any{"type": "integer", "description": desc, "minimum": min, "maximum": max}
 }
 
-// attentionToolDefs are the all-agents attention tools.
-func attentionToolDefs() []agents.ToolDef {
+// attentionToolDefs is the attention tools as this server offers them now:
+// attention_ask's attachment arguments only while uploads are on.
+func (s *Server) attentionToolDefs() []agents.ToolDef {
+	return attentionToolDefs(s.askUploadsOff() == "")
+}
+
+// mirrorAttentionInstructionFor is a mirrored session's paragraph as this
+// server offers it now: the attachment line only while uploads are on.
+func (s *Server) mirrorAttentionInstructionFor(openCode bool) string {
+	return mirrorAttentionInstructionFor(openCode, s.askUploadsOff() == "")
+}
+
+// attentionToolDefs are the all-agents attention tools; files: attention_ask
+// offers its attachment arguments (uploads are on). Their descriptions name
+// no runtime's verb: how a caller uploads is its own paragraph's to say.
+func attentionToolDefs(files bool) []agents.ToolDef {
 	id := intProp("The ask's id, as attention_ask returned it.", 1, 1<<53)
-	return []agents.ToolDef{
+	defs := []agents.ToolDef{
 		{Type: "function", Name: attentionAskTool,
 			Description: "Ask your owner a question and get their answer. It appears in muster's Attention view and as a notification on their phone. " +
 				"Offer options when the answer is a choice (they can still type a free answer). Returns the ask's id. A dispatched agent (the chief included) " +
@@ -268,10 +298,10 @@ func attentionToolDefs() []agents.ToolDef {
 				"context": map[string]any{"type": "string", "maxLength": attention.MaxWhyRunes,
 					"description": "Optional: one short line on WHY you are asking now — what you were doing and what the answer unblocks. Shown under the question. Without it, your owner is shown your session's focus title and your last message instead."},
 				"attachments": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": askattach.MaxCount,
-					"description": "Optional files to show with the question — a screenshot, a diagram, a log, a PDF: paths, relative to your working directory or absolute inside it (a mirrored Claude Code session; your host uploads them). " +
-						"At most " + strconv.Itoa(askattach.MaxCount) + ", " + strconv.FormatInt(askattach.MaxBytes>>20, 10) + " MiB each: PNG, JPEG, GIF, WebP, PDF, text, XML/SVG or ZIP. A dispatched agent uploads each with `ccd ask-attach <path>` and passes attachment_ids instead."},
+					"description": "Optional files to show with the question — a screenshot, a diagram, a log, a PDF: paths, relative to your working directory or absolute inside it, when your instructions say your host uploads them. " +
+						"At most " + strconv.Itoa(askattach.MaxCount) + ", " + strconv.FormatInt(askattach.MaxBytes>>20, 10) + " MiB each: PNG, JPEG, GIF, WebP, PDF, text, XML/SVG or ZIP; no hidden file."},
 				"attachment_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": askattach.MaxCount,
-					"description": "Optional: files already uploaded for this ask, as the ids `ccd ask-attach <path>` prints."},
+					"description": "Optional: ids of files already uploaded for this ask, when your instructions say how to upload one."},
 			}, "question")},
 		{Type: "function", Name: attentionWaitTool,
 			Description: "Wait for the answer to one of your asks. Returns as soon as it is answered (status \"answered\" with the answer), " +
@@ -286,6 +316,13 @@ func attentionToolDefs() []agents.ToolDef {
 			Description: "Withdraw one of your open asks (you no longer need the answer). It disappears from your owner's view.",
 			Parameters:  objSchema(map[string]any{"id": id}, "id")},
 	}
+	if !files {
+		// Uploads off: attention_ask offers no attachment argument at all.
+		props := defs[0].Parameters["properties"].(map[string]any)
+		delete(props, "attachments")
+		delete(props, "attachment_ids")
+	}
+	return defs
 }
 
 // taskToolDefs are the all-agents task tools.
@@ -519,7 +556,7 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 	// Paths reaching muster itself: it cannot read the caller's files
 	// (ask_media.go, askPathsRefusal).
 	if len(in.Attachments) > 0 {
-		return toolErr("%s", askPathsRefusal(c))
+		return toolErr("%s", s.askPathsRefusal(c))
 	}
 	files, refused := s.askAttachmentsFor(ctx, in.AttachmentIDs)
 	if refused != "" {

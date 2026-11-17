@@ -733,6 +733,7 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 	// and is forwarded with that session's KEY instead of a Claude session.
 	openCode := OpenCodeCaller(r)
 	agentKey := ""
+	var made askUploads
 	if method == "tools/call" {
 		if openCode {
 			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
@@ -761,12 +762,18 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 		// attention_ask's attachments: the files are on THIS host, so they are
 		// uploaded from here and the call carries their ids (mcpproxy_attach.go).
 		var refused string
-		if body, refused = p.uploadAskAttachments(r, body, sid, openCode); refused != "" {
+		if body, made, refused = p.uploadAskAttachments(r, body, sid, openCode); refused != "" {
 			mcpToolError(w, id, refused)
 			return nil, false
 		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
+	rctx := r.Context()
+	if len(made.ids) > 0 {
+		// send reads muster's reply and revokes these when it did not file
+		// the ask (revokeIfRefused).
+		rctx = context.WithValue(rctx, askUploadsKey{}, made)
+	}
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
 		return nil, false
@@ -820,8 +827,13 @@ func (p *MCPProxy) send(w http.ResponseWriter, req *http.Request) (*http.Respons
 			return nil, false
 		}
 		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
+		// The call never reached muster: an ask's uploads have no ask.
+		if u, _ := req.Context().Value(askUploadsKey{}).(askUploads); len(u.ids) > 0 {
+			p.revokeAskUploads(u)
+		}
 		return nil, false
 	}
+	p.revokeIfRefused(req, resp)
 	return resp, true
 }
 

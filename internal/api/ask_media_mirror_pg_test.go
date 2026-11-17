@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/askattach"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
@@ -41,7 +42,7 @@ func (seamWindows) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 
 func TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt(t *testing.T) {
 	objs := &uploadstest.Objects{}
-	f, ws, _, _ := newMirrorMCPFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
+	f, ws, _, members := newMirrorMCPFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		sg, err := uploads.NewSigner("ask-media-seam-signing-key-0123456789abcdef")
 		if err != nil {
 			t.Fatal(err)
@@ -96,6 +97,13 @@ func TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt(
 	if err != nil || up.Size != int64(len(askMediaPNG)) {
 		t.Fatalf("the upload row: %+v %v", up, err)
 	}
+	// Another owner's host cannot take it back: no 2xx, and it stays live.
+	if rec := f.call(t, http.MethodDelete, "/mirror/ask-attachments/"+up.PublicID, nil, mirrorAs(members, focusSID)); rec.Code < 300 {
+		t.Fatalf("another owner's host revoked the operator's upload: %d", rec.Code)
+	}
+	if u, err := f.srv.ext.Uploads.Store.Get(asUser(1), up.PublicID); err != nil || u.Revoked() {
+		t.Fatalf("after another owner's take-back: %+v %v", u, err)
+	}
 	if rec := f.call(t, http.MethodGet, askAttachmentPath(ask.ID, up.PublicID), nil, f.operator()); rec.Code != http.StatusOK || rec.Body.String() != string(askMediaPNG) {
 		t.Fatalf("the owner's fetch through the ask: %d", rec.Code)
 	}
@@ -108,6 +116,34 @@ func TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt(
 	}
 	if len(objs.Keys()) != before {
 		t.Fatal("a refused path stored a file")
+	}
+	// An ask muster refuses (an empty question) AFTER its file was uploaded:
+	// the proxy takes the upload back (round 1 G2), so the row is revoked and
+	// its object gone.
+	keysBefore := map[string]bool{}
+	for _, k := range objs.Keys() {
+		keysBefore[k] = true
+	}
+	revokedRows := func() int {
+		var n int
+		if err := f.pool.QueryRow(authz.System(context.Background()),
+			`SELECT count(*) FROM uploads WHERE owner_id = 1 AND revoked_at IS NOT NULL AND filename = 'screen.png'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	revokedBefore := revokedRows()
+	if out := call(map[string]any{"question": "   ", "attachments": []string{"screen.png"}}); out["isError"] != true {
+		t.Fatalf("an empty question with a file was filed: %v", out)
+	}
+	var orphan string
+	for _, k := range objs.Keys() {
+		if !keysBefore[k] {
+			orphan = k
+		}
+	}
+	if revoked := revokedRows() - revokedBefore; orphan != "" || revoked != 1 {
+		t.Fatalf("the refused ask's upload: object left %q, %d row(s) revoked; want none left and 1", orphan, revoked)
 	}
 	// The ask's own cap, below the store's (25 MiB here): one byte over
 	// askattach.MaxBytes is a 413 and stores nothing; exactly at it is stored.

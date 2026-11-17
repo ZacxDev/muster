@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/askattach"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -69,6 +70,7 @@ func askAttachmentPath(id int64, aid string) string {
 
 func (s *Server) registerAskMediaRoutes(mux Mux) {
 	mux.HandleFunc("POST "+askattach.MirrorPath, s.requireMirrorHostToken(s.handleMirrorAskAttachment))
+	mux.HandleFunc("DELETE "+askattach.MirrorPath+"/{id}", s.requireMirrorHostToken(s.handleMirrorAskAttachmentRevoke))
 	mux.HandleFunc("POST "+askattach.AgentPath, s.requireRelayAgent(s.handleAgentAskAttachment))
 	mux.HandleFunc("GET "+askPagePrefix+"{id}"+askAttachmentPathPrefix+"{upload}", s.requireSession(s.handleAskAttachment))
 }
@@ -99,6 +101,39 @@ func (s *Server) handleMirrorAskAttachment(w http.ResponseWriter, r *http.Reques
 // handleAgentAskAttachment is POST /agent/ask-attachments?filename=<name>: a
 // dispatched agent's pod (`ccd ask-attach`) sends one workspace file, on the
 // agent's own token, as the raw body.
+// handleMirrorAskAttachmentRevoke is DELETE /mirror/ask-attachments/{id}: a
+// mirror host takes back a file it uploaded for an attention_ask that was not
+// filed (internal/mirrorhost revokeAskUploads) — the upload is revoked and its
+// object deleted (uploads.Service.Revoke), as the composer's × does. Under the
+// host owner's principal (row-level security: only that owner's uploads), for
+// a session this host lists, as the upload itself was; any other id is 404.
+func (s *Server) handleMirrorAskAttachmentRevoke(w http.ResponseWriter, r *http.Request) {
+	if s.askUploadsOff() != "" {
+		http.NotFound(w, r)
+		return
+	}
+	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
+	if _, ok := s.mirrorSessionOf(r.Context(), t.Host, strings.TrimSpace(r.Header.Get(mirrorSessionHeader))); !ok {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "name the calling session (" + mirrorSessionHeader + "): one this host lists running now"})
+		return
+	}
+	id := r.PathValue("id")
+	objErr, err := s.ext.Uploads.Revoke(r.Context(), id)
+	switch {
+	case errors.Is(err, uploads.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		s.logger.Printf("ask attachments: revoking %s: %v", loggedID(id), err)
+		http.Error(w, "the upload could not be revoked", http.StatusInternalServerError)
+		return
+	case objErr != nil:
+		s.logger.Printf("ask attachments: %s revoked; %v", loggedID(id), objErr)
+	}
+	s.logger.Printf("ask attachments: host %s revoked %s (its ask was not filed)", t.Host, loggedID(id))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleAgentAskAttachment(w http.ResponseWriter, r *http.Request) {
 	s.storeAskAttachment(w, r)
 }
@@ -133,7 +168,7 @@ func (s *Server) storeAskAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithDeadline(r.Context(), deadline.Add(30*time.Second))
 	defer cancel()
 	name := r.URL.Query().Get("filename")
-	st, err := svc.PutChecked(ctx, http.MaxBytesReader(w, r.Body, limit+1), name, limit, askattach.Allowed)
+	st, err := svc.PutChecked(ctx, http.MaxBytesReader(w, r.Body, limit+1), name, limit, attention.MaxTimeout, askattach.Allowed)
 	if err != nil {
 		var refused *uploads.RefusedTypeError
 		var tooBig *http.MaxBytesError
@@ -197,15 +232,30 @@ func (s *Server) askAttachmentsFor(ctx context.Context, ids []string) ([]attenti
 }
 
 // askPathsRefusal is attention_ask's answer to attachments (PATHS) that reached
-// muster itself: muster cannot read the caller's files. A mirrored session's
-// host uploads them and sends ids instead (an older muster-mirror does not);
-// a dispatched agent uploads each with `ccd ask-attach`.
-func askPathsRefusal(c toolCaller) string {
+// muster itself: muster cannot read the caller's files. With uploads off, that
+// is the answer. A mirrored session's host uploads them and sends ids instead
+// (an older muster-mirror does not); a claude-code agent uploads each with
+// `ccd ask-attach` (shipsCcd); any other kind of agent has no way to, and is
+// told attachments are not available to it.
+func (s *Server) askPathsRefusal(c toolCaller) string {
+	if why := s.askUploadsOff(); why != "" {
+		return why
+	}
 	if c.agent != nil {
+		if !shipsCcd(*c.agent) {
+			return askAttachUnavailable + "; ask without attachments"
+		}
 		return "muster cannot read files in your workspace: run `ccd ask-attach <path>` in your shell for each file (it prints its id), then call attention_ask with attachment_ids: [those ids] instead of attachments"
 	}
 	return "this host's muster-mirror did not upload the attachments (it is older than muster's attachment support): update muster-mirror on this host, or ask without attachments"
 }
+
+// shipsCcd reports whether agent a's pod carries ccd — and so `ccd
+// ask-attach`: the claude-code kind's image alone.
+func shipsCcd(a agents.Agent) bool { return a.Kind == agents.KindClaudeCode }
+
+// askAttachUnavailable is what an agent with no way to upload a file is told.
+const askAttachUnavailable = "Attachments are not available to you: an ask from you carries text only"
 
 // askWhyFor is the why ask stores: the agent's own context when it gave one,
 // else the fallback (askFallbackWhy).
@@ -333,6 +383,19 @@ func (s *Server) handleAskAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if file == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// 🔴 THE UPLOAD'S OWN ROW DECIDES TOO, ON EVERY GET: revoked, past its
+	// expiry, gone, or not the ask's owner's is 404 — whether or not its object
+	// is still in the store (a revoke whose object delete failed, a lifecycle
+	// rule that has not run yet). Read by public id under the system principal
+	// (uploads.Store.LinkTarget), because a team member reading the team's ask
+	// cannot read the owner-isolated row; the ask was authorised above.
+	if u, err := s.ext.Uploads.Store.LinkTarget(r.Context(), file.ID); err != nil || u.Revoked() || !s.now().Before(u.ExpiresAt) || u.OwnerID != a.Owner {
+		if err != nil && !errors.Is(err, uploads.ErrNotFound) {
+			s.logger.Printf("ask attachments: ask %d file %s row: %v", id, file.ID, err)
+		}
 		http.NotFound(w, r)
 		return
 	}

@@ -630,6 +630,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /mirror/mcp",
 		// A session's ask attachment, sent by its host (ask_media.go).
 		"POST /mirror/ask-attachments",
+		"DELETE /mirror/ask-attachments/{id}",
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},

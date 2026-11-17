@@ -40,6 +40,9 @@ type fakeMusterForAsk struct {
 	files    map[string][]byte // id → bytes
 	sessions []string          // the session each upload named
 	calls    []string          // forwarded tools/call bodies
+	revoked  []string          // ids revoked (DELETE MirrorPath/{id})
+	// refuseAsk: the MCP door answers the forwarded call with a tool error.
+	refuseAsk bool
 }
 
 func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
@@ -49,6 +52,15 @@ func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, askattach.MirrorPath+"/") {
+			if r.Header.Get("Authorization") != "Bearer "+proxyToken {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			f.revoked = append(f.revoked, strings.TrimPrefix(r.URL.Path, askattach.MirrorPath+"/"))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		switch r.URL.Path {
 		case askattach.MirrorPath:
 			if r.Header.Get("Authorization") != "Bearer "+proxyToken {
@@ -63,6 +75,10 @@ func newFakeMusterForAsk(t *testing.T) (*fakeMusterForAsk, *httptest.Server) {
 		case MCPPath:
 			f.calls = append(f.calls, string(b))
 			w.Header().Set("Content-Type", "application/json")
+			if f.refuseAsk {
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\"error\":\"the question is empty\"}"}],"isError":true}}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\"id\":1}"}]}}`)
 		default:
 			http.NotFound(w, r)
@@ -177,7 +193,7 @@ func TestAnOpenCodeSessionsAttachmentsAreRefusedAsNotSupportedYet(t *testing.T) 
 	f, srv := newFakeMusterForAsk(t)
 	p := attachProxy(srv.URL, t.TempDir())
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	body, refused := p.uploadAskAttachments(r, []byte(askCall(map[string]any{"question": "q", "attachments": []string{"a.png"}})), "", true)
+	body, _, refused := p.uploadAskAttachments(r, []byte(askCall(map[string]any{"question": "q", "attachments": []string{"a.png"}})), "", true)
 	if body != nil || refused != "attachments from an opencode session are not supported yet (only a Claude Code session's are uploaded); ask without them" {
 		t.Fatalf("refused %q", refused)
 	}
@@ -194,5 +210,46 @@ func TestACallWithoutAttachmentsIsForwardedAsItWas(t *testing.T) {
 	}
 	if len(f.calls) != 1 || f.calls[0] != body || len(f.files) != 0 {
 		t.Fatalf("forwarded %q, uploaded %d", f.calls, len(f.files))
+	}
+}
+
+// TestFilesAlreadyUploadedAreRevokedWhenTheAskFails (round 1 G2): a call that
+// fails after some of its files were uploaded — a later file refused here, or
+// the forwarded call refused by muster — revokes, best effort, the uploads it
+// made, so nothing is left in the store for an ask that was never filed.
+func TestFilesAlreadyUploadedAreRevokedWhenTheAskFails(t *testing.T) {
+	cwd := t.TempDir()
+	for _, n := range []string{"a.png", "b.png"} {
+		if err := os.WriteFile(filepath.Join(cwd, n), attachPNG, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A later file refused here (missing): the first upload is revoked.
+	f, srv := newFakeMusterForAsk(t)
+	text := toolErrorText(t, postBody(t, attachProxy(srv.URL, cwd), attachCaller, askCall(map[string]any{"question": "q", "attachments": []string{"a.png", "gone.png"}})))
+	if !strings.Contains(text, "cannot read gone.png") || len(f.calls) != 0 {
+		t.Fatalf("refusal %q, %d call(s) forwarded", text, len(f.calls))
+	}
+	if len(f.files) != 1 || len(f.revoked) != 1 || f.revoked[0] != strings.Repeat("A", 22) {
+		t.Fatalf("uploaded %d, revoked %v; want the one upload revoked", len(f.files), f.revoked)
+	}
+	// The forwarded call refused by muster: every upload of the call is revoked,
+	// and the refusal reaches the caller unchanged.
+	f, srv = newFakeMusterForAsk(t)
+	f.refuseAsk = true
+	w := postBody(t, attachProxy(srv.URL, cwd), attachCaller, askCall(map[string]any{"question": "q", "attachments": []string{"a.png", "b.png"}}))
+	if !strings.Contains(w.Body.String(), "the question is empty") || len(f.calls) != 1 {
+		t.Fatalf("the refusal did not reach the caller: %s (%d calls)", w.Body, len(f.calls))
+	}
+	if strings.Join(f.revoked, ",") != strings.Repeat("A", 22)+","+strings.Repeat("B", 22) {
+		t.Fatalf("revoked %v; want both uploads", f.revoked)
+	}
+	// The control: an ask muster files keeps its uploads.
+	f, srv = newFakeMusterForAsk(t)
+	if w := postBody(t, attachProxy(srv.URL, cwd), attachCaller, askCall(map[string]any{"question": "q", "attachments": []string{"a.png"}})); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if len(f.revoked) != 0 {
+		t.Fatalf("a filed ask's uploads were revoked: %v", f.revoked)
 	}
 }

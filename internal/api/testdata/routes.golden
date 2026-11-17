@@ -45,6 +45,7 @@ DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
 DELETE /connector-standing-grants/{id}
 DELETE /connectors/{name}
+DELETE /mirror/ask-attachments/{id}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}

@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/askattach"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -166,7 +169,7 @@ func TestAnAttachmentOfAPersonalAskIsNotATeammatesAndATeamAsksIsEveryMembers(t *
 	personal := askAttachmentPath(mediaAskID(t, text), aID)
 	// The team's ask with the team's file, as a team host's session files it.
 	tctx := authz.WithPrincipal(context.Background(), teamActingPrincipal(team.ID, authz.ViaMirrorHost))
-	up, err := w.uploadSvc.PutChecked(tctx, strings.NewReader(string(askMediaPNG)), "team.png", askattach.MaxBytes, askattach.Allowed)
+	up, err := w.uploadSvc.PutChecked(tctx, strings.NewReader(string(askMediaPNG)), "team.png", askattach.MaxBytes, attention.MaxTimeout, askattach.Allowed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +223,15 @@ func TestAnAttachmentIDTheAskerCannotReadIsRefusedInOneSentence(t *testing.T) {
 	if text, isErr := w.askTool(t, w.a.token, map[string]any{"question": "q?", "attachment_ids": five}); !isErr || !strings.Contains(text, "at most 4 attachments") {
 		t.Errorf("five ids: %s", text)
 	}
-	// Paths reach a dispatched agent's muster: it says how to upload them.
-	if text, isErr := w.askTool(t, w.a.token, map[string]any{"question": "q?", "attachments": []string{"shot.png"}}); !isErr || !strings.Contains(text, "ccd ask-attach <path>") {
+	// Paths reach a dispatched agent's muster: a kind with no ccd (the world's
+	// agents are not claude-code) is told attachments are not available to it
+	// (a claude-code agent's `ccd ask-attach` answer is pinned in
+	// TestOnlyAClaudeCodeAgentIsToldToRunCcdAskAttach).
+	if w.a.agent.Kind == agents.KindClaudeCode {
+		t.Fatal("fixture: A's agent is claude-code")
+	}
+	if text, isErr := w.askTool(t, w.a.token, map[string]any{"question": "q?", "attachments": []string{"shot.png"}}); !isErr ||
+		text != askAttachUnavailable+"; ask without attachments" {
 		t.Errorf("paths from a dispatched agent: %s", text)
 	}
 	// None of them filed an ask.
@@ -356,5 +366,54 @@ func TestAnAsksAttachmentRouteServesHostileFilesNonExecutable(t *testing.T) {
 	// control served (a count that cannot move would prove nothing).
 	if refusedHTML != 1 || served != len(hostileFixtures) {
 		t.Fatalf("%d refused as HTML, %d served; want 1 and %d", refusedHTML, served, len(hostileFixtures))
+	}
+}
+
+// TestARevokedOrExpiredUploadIsNotServedThroughItsAsk (round 1 G1): the route
+// reads the upload's row on every GET and answers 404 for one revoked or past
+// its expiry, even while its object is still in the store.
+func TestARevokedOrExpiredUploadIsNotServedThroughItsAsk(t *testing.T) {
+	w := newIsoWorld(t)
+	path := func(name string) (string, string) {
+		_, id := w.askUpload(t, w.a.token, name, askMediaPNG)
+		text, isErr := w.askTool(t, w.a.token, map[string]any{"question": name + "?", "attachment_ids": []string{id}})
+		if isErr {
+			t.Fatal(text)
+		}
+		return askAttachmentPath(mediaAskID(t, text), id), id
+	}
+	revoked, rid := path("revoked.png")
+	// An ask's upload's row lives as long as an ask can stay open — not the
+	// store's link TTL (an hour here) — or it would stop being served while
+	// its ask still waits.
+	if u, err := w.uploadSvc.Store.Get(asUser(w.a.uid), rid); err != nil || u.ExpiresAt.Before(time.Now().Add(attention.MaxTimeout-time.Hour)) {
+		t.Fatalf("an ask's upload expires at %v (%v), want about %v from now", u.ExpiresAt, err, attention.MaxTimeout)
+	}
+	expired, eid := path("expired.png")
+	live, _ := path("live.png")
+	for _, p := range []string{revoked, expired, live} { // CONTROL: each is served first
+		if rec := w.do(w.h, http.MethodGet, p, "", cred{sessionUser: w.a.uid}); rec.Code != http.StatusOK {
+			t.Fatalf("%s before: %d", p, rec.Code)
+		}
+	}
+	// Revoke the ROW only (the store's Revoke, not the service's, which would
+	// also delete the object), and expire the other row.
+	if _, err := w.uploadSvc.Store.Revoke(asUser(w.a.uid), rid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(authz.System(context.Background()),
+		`UPDATE uploads SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour' WHERE public_id = $1`, eid); err != nil {
+		t.Fatal(err)
+	}
+	if !w.uploads.Has(uploads.ObjectKeyFor(rid)) || !w.uploads.Has(uploads.ObjectKeyFor(eid)) {
+		t.Fatal("fixture: the objects are gone")
+	}
+	for name, p := range map[string]string{"revoked": revoked, "expired": expired} {
+		if rec := w.do(w.h, http.MethodGet, p, "", cred{sessionUser: w.a.uid}); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "PNG") {
+			t.Errorf("a %s upload through its ask: %d", name, rec.Code)
+		}
+	}
+	if rec := w.do(w.h, http.MethodGet, live, "", cred{sessionUser: w.a.uid}); rec.Code != http.StatusOK {
+		t.Errorf("the live upload stopped being served: %d", rec.Code)
 	}
 }

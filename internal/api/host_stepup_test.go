@@ -38,7 +38,7 @@ func (s *officerAgents) Delete(_ context.Context, id int64) error {
 // list. TestEveryMirrorToolIsClassifiedForTheStepUp parses mirrorTools and
 // fails when it calls a function this map does not name (a new tool family).
 var mirrorToolDefFuncs = map[string]func() []agents.ToolDef{
-	"attentionToolDefs":          attentionToolDefs,
+	"attentionToolDefs":          func() []agents.ToolDef { return attentionToolDefs(true) },
 	"taskToolDefs":               taskToolDefs,
 	"attentionAnswerToolDef":     func() []agents.ToolDef { return []agents.ToolDef{attentionAnswerToolDef()} },
 	"agentDestroyToolDef":        func() []agents.ToolDef { return []agents.ToolDef{agentDestroyToolDef()} },

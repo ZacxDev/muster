@@ -489,7 +489,7 @@ func (s *Server) agentTools() []agentTool {
 	// connector_requests_list / connector_request_decide, for the same reason
 	// (connector_decide_tools.go), nor agent_destroy (agent_destroy_tool.go).
 	if s.attentionToolsOn() {
-		for _, d := range attentionToolDefs() {
+		for _, d := range s.attentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 		for _, d := range taskToolDefs() {

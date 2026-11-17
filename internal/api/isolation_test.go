@@ -469,9 +469,12 @@ var isolationClasses = map[string]routeClass{
 	// A session's ask attachment, sent by its host (ask_media.go): the host's
 	// token, a session it lists; it names no object.
 	"POST /mirror/ask-attachments": classMirrorHost,
-	"GET /mirror/host":             classMirrorHost,
-	"GET /mirror/terminal":         classMirror,
-	"GET /mirror/terminal/ws":      classMirror,
+	// …and its take-back (the host owner's own upload, by id, under row-level
+	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
+	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
+	"GET /mirror/host":                    classMirrorHost,
+	"GET /mirror/terminal":                classMirror,
+	"GET /mirror/terminal/ws":             classMirror,
 
 	// Browser flows (0012). The page and its forms are the session tier; the
 	// JSON API is a personal token only; the runner door is a runner token
@@ -2134,6 +2137,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
+	// session the host lists, which the walk names none of, so A's own call and
+	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the
+	// host's take-back revokes its owner's upload, and another owner's host
+	// naming that id gets 404 and leaves it live.
+	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
 	// so A's own PUT and a PUT naming a ghost both succeed — there is no
 	// "someone else's object" for the status to tell apart. That B's PUT of A's

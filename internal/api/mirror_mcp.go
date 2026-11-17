@@ -348,7 +348,7 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 func (s *Server) mirrorTools() []agents.ToolDef {
 	var out []agents.ToolDef
 	if s.attentionToolsOn() {
-		out = append(append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef()), agentDestroyToolDef())
+		out = append(append(append(append(out, attentionToolDefs(s.askUploadsOff() == "")...), taskToolDefs()...), attentionAnswerToolDef()), agentDestroyToolDef())
 		// chief_ask — a session's question to the owner's chief
 		// (chief_ask_tool.go) — when there are agents to find the chief among.
 		if s.chiefAskOn() {
@@ -533,7 +533,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		instructions = strings.Replace(instructions, "muster's tools for", "muster's tools, on a team host, for", 1)
 	}
 	if s.attentionToolsOn() && !remote {
-		instructions += " " + mirrorAttentionInstructionFor(openCode)
+		instructions += " " + s.mirrorAttentionInstructionFor(openCode)
 	}
 	if s.trackTaskOn() && !remote {
 		instructions += " " + trackTaskInstruction()

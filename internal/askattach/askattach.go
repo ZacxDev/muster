@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/ZacxDev/muster/internal/noredirect"
 	"github.com/ZacxDev/muster/internal/workspacefile"
 )
@@ -156,6 +158,42 @@ type Spec struct {
 	Noun string
 }
 
+// openResolved opens real — the file workspacefile.ResolveStat confined, as
+// want — and returns it with its own stat, or a refusal.
+//
+// 🔴 THE FILE READ IS THE FILE RESOLVED. Between the resolution and this open
+// the path can be swapped: O_NOFOLLOW refuses a symbolic link put in place of
+// the last part (real has none of its own: every link was resolved), O_NONBLOCK
+// keeps a FIFO or device put there from blocking the open, and the opened
+// descriptor's own stat must be a regular file AND the same file (device and
+// inode, os.SameFile) as the one confined — so a file replaced, or a directory
+// above it swapped for a link elsewhere, is refused rather than read.
+// (O_NONBLOCK changes nothing for a regular file's reads.)
+func openResolved(real string, want os.FileInfo, p string) (*os.File, os.FileInfo, error) {
+	fd, err := unix.Open(real, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, nil, fmt.Errorf("%s changed into a symbolic link while it was being read; nothing was sent", p)
+		}
+		return nil, nil, fmt.Errorf("cannot read %s: %v", p, err)
+	}
+	f := os.NewFile(uintptr(fd), real)
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("cannot read %s: %v", p, err)
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(want, st) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%s changed while it was being read (it is no longer the file that was checked); nothing was sent", p)
+	}
+	return f, st, nil
+}
+
+// afterResolve, when set (tests only), runs between the path's resolution and
+// its open: where a race would swap the file.
+var afterResolve func(real string)
+
 // errCapped is the streaming cap's failure, which Send reports as TooLarge.
 var errCapped = errors.New("the file grew past its cap while it was sent")
 
@@ -164,19 +202,18 @@ var errCapped = errors.New("the file grew past its cap while it was sent")
 // returns muster's 2xx answer body; a non-2xx is muster's refusal, in its own
 // words when it gave some.
 func Send(ctx context.Context, client *http.Client, s Spec, root, p string) ([]byte, error) {
-	real, err := workspacefile.Resolve(root, p)
+	real, want, err := workspacefile.ResolveStat(root, p)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open(real)
+	if afterResolve != nil {
+		afterResolve(real)
+	}
+	f, st, err := openResolved(real, want, p)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %v", p, err)
+		return nil, err
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %v", p, err)
-	}
 	if st.Size() > s.MaxBytes {
 		return nil, s.TooLarge(p)
 	}
