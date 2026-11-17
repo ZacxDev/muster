@@ -1498,6 +1498,12 @@ func (d *doctorRun) claudeInstalled() bool {
 	return false
 }
 
+// askHookSettingsFile is a whole ~/.claude/settings.json that turns ask cards
+// on. docs/features.md#ask-cards shows the same document
+// (tests/features_config_test.py pins the two equal as JSON), and
+// TestTheAskHookSettingsFilePassesTheDoctor that this check reads it as set up.
+const askHookSettingsFile = `{"hooks": {"PreToolUse": [{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}]}}`
+
 // checkAskHook: Claude Code runs `muster-mirror ask` before AskUserQuestion
 // (a PreToolUse hook in its user settings), which draws ask cards.
 func (d *doctorRun) checkAskHook() {
@@ -1526,6 +1532,10 @@ func (d *doctorRun) checkAskHook() {
 	}
 	const snippet = `{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "muster-mirror ask", "timeout": 10}]}`
 	fix := "add " + snippet + " to the hooks.PreToolUse list in " + path + " (docs/features.md#ask-cards)"
+	if errors.Is(err, os.ErrNotExist) {
+		// No file yet: the whole file, not a fragment to wrap (round 3).
+		fix = "create " + path + " holding " + askHookSettingsFile + " (docs/features.md#ask-cards)"
+	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		d.add(name, statusFail, "Claude Code's settings "+path+" could not be read as JSON", fix)
 		return

@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1177,34 +1176,24 @@ func TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt(t *testing.T) {
 	}
 }
 
-// TestTheAskCardsSettingsFileInTheDocsPassesTheDoctor: docs/features.md shows
-// the WHOLE ~/.claude/settings.json for ask cards (a blind install had only a
-// fragment to wrap, round 3). The seam: that exact file, copied as written,
-// is valid JSON that the doctor's ask-hook check reads as set up. The
-// control is the same file with the hook's command changed, which it does not.
-func TestTheAskCardsSettingsFileInTheDocsPassesTheDoctor(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "features.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, sec, ok := strings.Cut(string(raw), "\n### Ask cards\n")
-	if !ok {
-		t.Fatal("docs/features.md has no Ask cards section")
-	}
-	sec, _, _ = strings.Cut(sec, "\n### ")
-	m := regexp.MustCompile("(?s)```json\n(.*?)```").FindStringSubmatch(sec)
-	if m == nil {
-		t.Fatal("the Ask cards section shows no settings.json")
-	}
-	file := m[1]
-	if !json.Valid([]byte(file)) {
-		t.Fatalf("the settings.json the docs show is not a whole JSON document:\n%s", file)
+// TestTheAskHookSettingsFilePassesTheDoctor: the whole ~/.claude/settings.json
+// for ask cards (a blind install had only a fragment to wrap, round 3) is one
+// JSON document, which this check reads as set up; with no settings file the
+// fix line hands over that whole file. docs/features.md shows the same
+// document: tests/features_config_test.py pins it equal to this constant (the
+// docs are not in the nix build's source, so that half is not read here). The
+// control is the same file with the hook's command changed, which fails.
+func TestTheAskHookSettingsFilePassesTheDoctor(t *testing.T) {
+	if !json.Valid([]byte(askHookSettingsFile)) {
+		t.Fatalf("askHookSettingsFile is not a whole JSON document: %s", askHookSettingsFile)
 	}
 	check := func(body string) doctorCheck {
 		home := t.TempDir()
-		_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
-		if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
+		if body != "" {
+			_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+			if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		env := filepath.Join(home, "mirror.env")
 		_ = os.WriteFile(env, []byte("MUSTER_MIRROR_URL=http://localhost:8105\n"), 0o600)
@@ -1212,11 +1201,14 @@ func TestTheAskCardsSettingsFileInTheDocsPassesTheDoctor(t *testing.T) {
 		d.checkAskHook()
 		return d.checks[len(d.checks)-1]
 	}
-	if c := check(file); c.Status != statusPass {
-		t.Fatalf("the docs' settings.json: ask-hook %+v, want PASS", c)
+	if c := check(askHookSettingsFile); c.Status != statusPass {
+		t.Fatalf("the whole file: ask-hook %+v, want PASS", c)
 	}
-	if c := check(strings.Replace(file, "muster-mirror ask", "muster-mirror nope", 1)); c.Status == statusPass {
+	if c := check(strings.Replace(askHookSettingsFile, "muster-mirror ask", "muster-mirror nope", 1)); c.Status == statusPass {
 		t.Fatalf("control: a file with another command passed: %+v", c)
+	}
+	if c := check(""); c.Status != statusSkip || !strings.Contains(c.Fix, "holding "+askHookSettingsFile) {
+		t.Fatalf("no settings file: %+v, want a SKIP whose fix is the whole file", c)
 	}
 }
 
