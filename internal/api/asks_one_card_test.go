@@ -90,7 +90,9 @@ func asksStrayItems(t *testing.T, doc string) (stray []string, cards int) {
 func TestEveryAsksListItemIsACard(t *testing.T) {
 	now := designNow
 	var b strings.Builder
-	open, _ := askFeedHTML(designItems(), `<ul data-attention-episodes>`+
+	// A plugin pairing request is an Open card of its own (draftsTabItem).
+	pair := attentionItem{Key: pairKey(9), Kind: attentionKindPlugin, Source: "plugin pairing", Text: "A plugin asks for a token", Link: pairLink(9), Since: now}
+	open, _ := askFeedHTML(append(designItems(), pair), `<ul data-attention-episodes>`+
 		episodeCardHTML("episode-1", sessionstate.StateNeedsYou, "Ledger cleanup", "", "", "", now.Add(-time.Hour), now)+
 		episodeCardHTML("episode-2", sessionstate.StateStalled, "Billing", ui.AsksQuietCardClass, "", "", now.Add(-time.Hour), now)+`</ul>`, 2, now)
 	b.WriteString(open)
@@ -113,15 +115,15 @@ func TestEveryAsksListItemIsACard(t *testing.T) {
 	b.WriteString(outreachBatchCardHTML(batchGroup{id: "b1"}))
 	b.WriteString(chiefNudgeCardHTML(chiefnudge.Decision{ID: 3, Decision: "nudge", Mode: chiefnudge.ModeShadow, DecidedAt: now.Add(-time.Minute), Title: "Billing"}, now))
 	b.WriteString(askLogCardHTML(asklog.Ask{ID: 9, Kind: asklog.KindAttention, Question: "Ship it?", AskedAt: now.Add(-time.Hour)}, now, asklog.DefaultTextTTL))
-	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 2, Top: []asklog.TopQuestion{{Norm: "ship it", Count: 2}}}, asklog.DefaultTextTTL, -1))
-	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 1}, asklog.DefaultTextTTL, -1))
+	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 2, Top: []asklog.TopQuestion{{Norm: "ship it", Count: 2}}}, asklog.DefaultTextTTL))
+	b.WriteString(askLogSummaryHTML(asklog.Summary{Total: 1}, asklog.DefaultTextTTL))
 	stray, cards := asksStrayItems(t, b.String())
 	for _, s := range stray {
 		t.Errorf("an Asks list item that is not a card: %s", s)
 	}
-	// 6 Open cards + 2 stalled + 1 answered + 2 drafts + 1 batch + 1 nudge + 1 log row + 1 most asked.
-	if cards != 15 {
-		t.Errorf("%d cards found, want 15 (the checker must see every producer's card)", cards)
+	// 6 Open cards + a pairing request + 2 stalled + 1 answered + 2 drafts + 1 batch + 1 nudge + 1 log row + 1 most asked.
+	if cards != 16 {
+		t.Errorf("%d cards found, want 16 (the checker must see every producer's card)", cards)
 	}
 	// POSITIVE CONTROL: a fourth design IS caught.
 	if s, _ := asksStrayItems(t, `<li class="rounded-xl bg-s1 p-3" data-asklog-row>x</li>`); len(s) != 1 {

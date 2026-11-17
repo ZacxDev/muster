@@ -35,7 +35,7 @@ badge, the title, a muted line under it), its facts as small pills, its
 actions under them. A card with something more to show expands in place; the
 others do not. Every empty list says so the same way.
 Nothing pending at all: a calm **All clear**. Nothing on the Open tab while
-reply drafts wait: *Nothing else is open* and how many drafts wait, with a link
+drafts wait: *Nothing else is open* and how many drafts wait, with a link
 to the Drafts tab — never All clear. The **Answered** tab holds the recent
 answers (the last day's, at most 20), each titled by its session's name (the
 rule below): the question, your answer, and where it went as a pill
