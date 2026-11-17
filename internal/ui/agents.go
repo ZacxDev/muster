@@ -113,6 +113,14 @@ type AgentCardView struct {
 	// being the chief — a declared officer's instance (internal/api's
 	// deleteProtection). The server refuses the delete regardless.
 	DeleteProtected bool
+	// Officer is the declared officer this agent is an instance of — its
+	// registry key (officers.Officer.Key, what NavOfficer.Key names) — or ""
+	// for every other agent. 🔴 It is internal/api's ONE binding rule's answer
+	// (officerOfRow: officerOf plus the instance being its officer's current
+	// runtime's), composed in cardViewIndexed and never re-derived here: an
+	// agent NAMED like an officer instance is not one. The sidebar draws such
+	// an instance through its officer's row in the Officers group (navOfficers).
+	Officer string
 	// CanRotateCredentials: the viewer may rotate this agent's credentials —
 	// its owner (a person's own agent) or a manager of the team that owns it —
 	// and the deployment can (internal/api's canRotateCredentials). The ⋯ menu

@@ -320,3 +320,49 @@ func claimedID(t *testing.T, raw []byte) officers.ItemID {
 	}
 	return officers.ItemID(strconv.FormatInt(out.Item.ID, 10))
 }
+
+// TestTheSidebarsBatchedReadsMatchTheOneOfficerReads: SpentOn (the sidebar's
+// one spend query) answers exactly what SpentToday answers for the officer —
+// every pool and instance of the day summed, another day's left out — and
+// ItemCounts counts only the statuses asked for, per officer. An owner with
+// nothing booked is absent, never a stale value.
+func TestTheSidebarsBatchedReadsMatchTheOneOfficerReads(t *testing.T) {
+	s := budgetStore(t)
+	now := time.Date(2000, 3, 4, 12, 0, 0, 0, time.UTC)
+	bookSpend(t, s, "2000-03-04", "judgement", 1, 2.25)
+	bookSpend(t, s, "2000-03-04", "routine", 2, 1.5)
+	bookSpend(t, s, "2000-03-03", "judgement", 1, 40) // yesterday: not today's
+	b := builtin.NewBackend(s, budgetOfficerDecl(t), func() time.Time { return now }, dbtest.AsOperator)
+	one, err := b.SpentToday(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	many, err := s.SpentOn(ctxOp(), []int64{1}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := builtin.OfficerRef{Owner: 1, Officer: budgetOfficer}
+	if one != 3.75 || many[ref] != one {
+		t.Fatalf("SpentToday %v, SpentOn %v; want both 3.75", one, many[ref])
+	}
+	if got, err := s.SpentOn(ctxOp(), []int64{1}, now.AddDate(0, 0, 2)); err != nil || len(got) != 0 {
+		t.Fatalf("a day with nothing booked answers %v (%v), want no row", got, err)
+	}
+
+	for _, subj := range []string{"q1", "q2", "q3"} {
+		enqueueAs(t, s, "plugin.reply", subj, "", now)
+	}
+	if _, err := s.Pool().Exec(ctxOp(), `UPDATE officer_items SET status = 'claimed', claimed_by = 'x', lease_expires_at = now() + interval '1 hour' WHERE officer = $1 AND subject_key = 'q3'`, budgetOfficer); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.ItemCounts(ctxOp(), []int64{1}, []string{officers.StatusOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[ref] != 2 {
+		t.Fatalf("open items %d, want 2 (the claimed one is not queued)", counts[ref])
+	}
+	if counts, err = s.ItemCounts(ctxOp(), []int64{1}, []string{officers.StatusOpen, officers.StatusClaimed}); err != nil || counts[ref] != 3 {
+		t.Fatalf("open+claimed %d (%v), want 3", counts[ref], err)
+	}
+}
