@@ -371,6 +371,13 @@ none appears in your conversation with the chief:
 The call holds the chief's turn lock: a busy chief is skipped until the next
 sweep — nothing is recorded, and the same streak is asked about next sweep.
 
+Each check that ran is **counted** on the [Usage page](usage.md): one
+`chief_turn_usage` row with trigger `nudge_check`, carrying the tokens the
+chief's runtime reported for it, the chief's model as muster knows it, and how
+long it took (outcome `failed` when the call failed after it was sent). A
+check refused before anything ran (busy, no lane, not ready) writes no row;
+it is retried, and the retry that runs is the one counted.
+
 A claude-code chief whose ccd has no free lane for the check answers `503
 capacity`, before anything is sent. A check never takes a lane from one of your
 own sessions: when every lane (`CCD_MAX_SESSIONS`, default 3) is held by your

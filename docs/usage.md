@@ -11,7 +11,7 @@ chief. It is on whenever muster has a database. It needs no setting.
 
 | Field | What it is |
 |---|---|
-| trigger | What started the turn: `plugin` (an inbound plugin message: its plugin, its sender and its id), `task_event` (a task muster handed the chief), `owner_chat` (a line you typed in the chief's chat), `view` (a line you typed on a session's view), `answer` (your answer to its question, delivered), `session_question` (one of your mirrored sessions asked the chief with `chief_ask`), `hand_back` (a route handed back), `machine` (the machine message door, `POST /api/agents/{name}/messages`), `kickoff` (the chief's first turn), or `other`. |
+| trigger | What started the turn: `plugin` (an inbound plugin message: its plugin, its sender and its id), `task_event` (a task muster handed the chief), `owner_chat` (a line you typed in the chief's chat), `view` (a line you typed on a session's view), `answer` (your answer to its question, delivered), `session_question` (one of your mirrored sessions asked the chief with `chief_ask`), `hand_back` (a route handed back), `machine` (the machine message door, `POST /api/agents/{name}/messages`), `kickoff` (the chief's first turn), `nudge_check` (one [stall check](chief-nudges.md) of the nudge sweep: the fresh, tool-less, throwaway call that decides one stalled session; migration `0146`; a check refused before it ran is not recorded), or `other`. |
 | outcome | What the turn did, from the tools it called: `routed` (route_to_session, route_many), `task` (task_create_gated, task_forward, agent_dispatch), `ask` (ask_owner, attention_ask, task_route_attention), `settled` (plugin_message_settle), `rule_proposed` (routing_rule_propose and nothing above), `other`, or `failed`. A turn that also proposed a routing rule is flagged `rule_proposed` too. |
 | tokens | Input, output, cache read and cache creation, **as the chief's runtime reported them** for the turn. |
 | usage_known | False when the runtime reported no usage. Such a turn shows as unknown, not as free. |
@@ -64,7 +64,8 @@ Pick a window: the last 7 days or the last 30. The page shows:
 - **By day.** Messages, turns and tokens for each UTC day.
 - **Messages by source.** Each plugin's messages, split by who handled them.
 - **Chief tokens by source.** The chief's turns and tokens, grouped by what
-  started them and, for a plugin, which plugin.
+  started them and, for a plugin, which plugin. The stall checks are their own group
+  ("stall checks").
 - **Costliest senders.** The ten plugin senders whose messages cost the chief
   the most tokens.
 - **Rules.** Each approved rule: its hits in the window and in all, and its
