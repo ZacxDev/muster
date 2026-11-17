@@ -60,5 +60,11 @@ security. [Teams](../features.md#teams) build on it. [auth.md](../auth.md).
 
 1. Remove `MUSTER_AUTH_MODE` (password mode is the default), and point
    `tailscale serve` back at the main port.
-2. `docker compose up -d --wait`. Everyone signs in with the one shared
-   password again, as the admin.
+2. Delete the `docker-compose.override.yml` **and** the `GOTRUE_*` /
+   `MUSTER_GOTRUE_*` / `MUSTER_BROWSER_PORT` lines in `.env`, and set
+   `MUSTER_PUBLIC_URL` back to the main port's address. Both halves: an
+   override left behind without its `.env` lines does not parse (the one in
+   [auth.md](../auth.md#a-gotrue-server-beside-the-compose-stack)), and
+   `install.sh` refuses to update until it is gone.
+3. `mi_dc up -d --wait --remove-orphans` (stops a GoTrue the override ran).
+   Everyone signs in with the one shared password again, as the admin.

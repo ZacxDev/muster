@@ -123,12 +123,22 @@ mi_verify() {
   if command -v sha256sum >/dev/null 2>&1; then printf '%s\n' "$line" | sha256sum -c -
   else printf '%s\n' "$line" | shasum -a 256 -c -; fi
 }
-# mi_dc ARGS: docker compose on the hub's stack, with the person's
-# docker-compose.override.yml when there is one (an explicit -f turns
-# Compose's automatic override off; install.sh includes it the same way).
+# mi_override: the person's Compose override beside docker-compose.yml, the
+# file Compose itself would read (the first of its four names, in its order);
+# empty when there is none.
+mi_override() {
+  for f in compose.override.yml compose.override.yaml docker-compose.override.yml docker-compose.override.yaml; do
+    [ -e "$MUSTER_DIR/$f" ] && { echo "$MUSTER_DIR/$f"; return 0; }
+  done
+  return 0
+}
+# mi_dc ARGS: docker compose on the hub's stack, with that override when there
+# is one (an explicit -f turns Compose's automatic override off; install.sh
+# includes it the same way).
 mi_dc() {
-  if [ -e "$MUSTER_DIR/docker-compose.override.yml" ]; then
-    docker compose -f "$MUSTER_DIR/docker-compose.yml" -f "$MUSTER_DIR/docker-compose.override.yml" -p "${MUSTER_PROJECT:-muster}" "$@"
+  mi_ov=$(mi_override)
+  if [ -n "$mi_ov" ]; then
+    docker compose -f "$MUSTER_DIR/docker-compose.yml" -f "$mi_ov" -p "${MUSTER_PROJECT:-muster}" "$@"
   else
     docker compose -f "$MUSTER_DIR/docker-compose.yml" -p "${MUSTER_PROJECT:-muster}" "$@"
   fi
@@ -145,14 +155,21 @@ mi_logs() { mi_dc logs --no-color "$@" 2>&1 | grep -vF "$MI_SECRET_MARK"; }
 mi_local_url() { sed -n 's#^MUSTER_MIRROR_URL=\(http://localhost:[0-9]*\)/*$#\1#p' "$MI_MIRROR_ENV" 2>/dev/null | tail -n 1; }
 mi_local_port() { mi_local_url | sed -n 's#.*:\([0-9]*\)$#\1#p'; }
 # env_get KEY / env_set KEY VALUE: read and write the hub's .env, beside its
-# docker-compose.yml (created, mode 600, when missing). env_set passes the
+# docker-compose.yml (created, mode 600, when missing). A KEY line is any
+# spelling Compose reads: indented, after `export`, with spaces around `=`;
+# Compose takes the LAST one, and so does env_get. env_set replaces the first
+# and drops the rest, so no line it leaves can shadow its value. It passes the
 # value through the environment, never argv, and writes with umask 077.
-env_get() { [ -f "$MUSTER_DIR/.env" ] && sed -n "s/^$1=//p" "$MUSTER_DIR/.env" | tail -n 1; }
+env_get() {
+  [ -f "$MUSTER_DIR/.env" ] &&
+    sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1[[:space:]]*=[[:space:]]*//p" "$MUSTER_DIR/.env" |
+    sed 's/[[:space:]]*$//' | tail -n 1
+}
 env_set() {
   (umask 077
    [ -f "$MUSTER_DIR/.env" ] || : > "$MUSTER_DIR/.env"
-   MI_K="$1" MI_V="$2" awk 'BEGIN{k=ENVIRON["MI_K"]; v=ENVIRON["MI_V"]; done=0}
-     index($0, k"=")==1 {if(!done){print k"="v; done=1}; next} {print} END{if(!done) print k"="v}' \
+   MI_K="$1" MI_V="$2" awk 'BEGIN{k=ENVIRON["MI_K"]; v=ENVIRON["MI_V"]; done=0; re="^[ \t]*(export[ \t]+)?" k "[ \t]*="}
+     $0 ~ re {if(!done){print k"="v; done=1}; next} {print} END{if(!done) print k"="v}' \
      "$MUSTER_DIR/.env" > "$MUSTER_DIR/.env.tmp" && cat "$MUSTER_DIR/.env.tmp" > "$MUSTER_DIR/.env")
   rm -f "$MUSTER_DIR/.env.tmp"
   chmod 600 "$MUSTER_DIR/.env"
@@ -456,10 +473,10 @@ from "Another machine" in Step 3 first.
 
 `muster-mirror`'s settings (`~/.config/muster-mirror/env`) are merged, never
 overwritten: the installer rewrites only the lines it manages and keeps every
-other line. On the hub the block then writes muster's own address,
-`MUSTER_PUBLIC_URL=http://localhost:<port>`, into `~/muster/.env` when nothing
-set one yet (attachments and pages write every link on it; Step 3 replaces it
-with the HTTPS address), and restarts muster with it.
+other line. On a fresh hub the installer also writes muster's own address,
+`MUSTER_PUBLIC_URL=http://localhost:<port>`, into `~/muster/.env` (attachments
+and pages write every link on it; Step 3 replaces it with the HTTPS address)
+and says so; an update never writes it.
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
@@ -493,13 +510,6 @@ if [ "${ROLE:-hub}" != join ] && [ -n "$(mi_local_url)" ]; then
   # refuses to delete it from then on.
   curl -fsS -o /dev/null "$(mi_local_url)/health" && mi_save GUIDE_IN_USE 1
   case "${MUSTER_URL:-}" in https://*) ;; *) mi_save MUSTER_URL "$(mi_local_url)" ;; esac
-  # muster's own address, which every link it writes is on (attachments,
-  # pages): this machine's, until Step 3 sets the https one. Without it those
-  # features come up MISCONFIGURED on a hub with no Tailscale.
-  if [ "$rc" = 0 ] && [ -z "$(env_get MUSTER_PUBLIC_URL)" ]; then
-    env_set MUSTER_PUBLIC_URL "$(mi_local_url)"
-    mi_dc up -d --wait --quiet-pull || echo "MUSTER_PUBLIC_URL: muster did not come back up with it (see If this fails)"
-  fi
 fi
 echo "install.sh exited $rc; muster: ${MUSTER_URL:-unknown}"
 # Does a NEW login shell find the CLI? (This shell's PATH may predate
@@ -507,11 +517,6 @@ echo "install.sh exited $rc; muster: ${MUSTER_URL:-unknown}"
 # `env -i`: the login shell builds PATH from the profile alone, not from ours.
 [ "$(env -i HOME="$HOME" USER="$USER" "${SHELL:-sh}" -lc 'command -v muster' 2>/dev/null)" = "$MUSTER_BIN/muster" ] ||
   echo "NOTE: a new login shell does not find $MUSTER_BIN/muster: add $MUSTER_BIN to PATH in the shell profile"
-# A command run over ssh without a terminal (`ssh host 'muster …'`) is not a
-# login shell: it reads no profile, so only the system's own directories are
-# on its PATH.
-case ":/usr/local/bin:/usr/bin:/bin:" in *":$MUSTER_BIN:"*) ;; *)
-  echo "NOTE: \`ssh <this machine> 'muster …'\` (no login shell) does not find muster: use $MUSTER_BIN/muster there" ;; esac
 ```
 
 The installer prints one line per doctor check (`PASS`, `FAIL` or `SKIP`, with
@@ -547,14 +552,12 @@ for one) reports `SKIP`, never `FAIL`.
   `export PATH="$HOME/.local/bin:$PATH"` to the person's shell profile (ask
   first), or use the full path. No `NOTE` means a new terminal finds `muster`
   already; change nothing.
-- `NOTE: … (no login shell) does not find muster`: not a failure. A command
-  sent as `ssh <machine> '…'` runs without a login shell, so it reads no
-  profile; write `~/.local/bin/muster` (and `~/.local/bin/muster-mirror`) in
-  full there.
-- `MUSTER_PUBLIC_URL: muster did not come back up with it`: the block set
-  muster's own address (`MUSTER_PUBLIC_URL`, the base of every link it writes)
-  in `~/muster/.env` and restarted it. `mi_logs --tail=80 muster` says why it
-  did not start; then re-run this block.
+- `… does not work with release … and ~/muster/.env`: a
+  `docker-compose.override.yml` there needs `.env` lines that are gone
+  (accounts mode turned off by deleting them, the override left behind).
+  Nothing was changed. Ask the person which they meant: delete the override
+  too ([docs/auth.md](docs/auth.md#a-gotrue-server-beside-the-compose-stack),
+  "Turn it off"), or put the lines back; then re-run this block.
 - `linger is OFF`: the person declined, or `sudo` needs a password the
   agent cannot type: give them `sudo loginctl enable-linger "$USER"` to run.
 - It runs but no sessions appear: the person's tmux uses a different socket
@@ -797,6 +800,10 @@ listens on 127.0.0.1, so open it from the person's own computer through an ssh
 tunnel, `ssh -L <port>:127.0.0.1:<port> <user>@<hub>` with the hub's port
 (`mi_local_port`, 8105 by default), then `http://localhost:<port>` in that
 computer's browser. Tailscale (Step 3) is the way that needs no tunnel.
+
+**A command sent over ssh** (`ssh <machine> 'muster …'`) runs without a login
+shell, so it reads no profile and `~/.local/bin` is not on its PATH: write
+`~/.local/bin/muster` (and `~/.local/bin/muster-mirror`) in full there.
 
 Then tell the person, briefly:
 

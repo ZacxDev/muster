@@ -1080,12 +1080,6 @@ func TestDoctorDoesNotSayConnectedWhenItCannotNameThisMachine(t *testing.T) {
 	}
 }
 
-// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR: muster at plain http on
-// THIS machine (localhost, 127.0.0.1, [::1]) is the local quickstart. The
-// server check PASSes and says the phone needs HTTPS (with where to read how),
-// and no phone QR code is drawn — a phone scanning a loopback URL opens its
-// own localhost. The control, in TestDoctorEachCheckGoesRedWhenBroken: the
-// same over plain http to a LAN name or address FAILs, as before.
 // TestDoctorInAccountsModeNamesTheBrowserListener: in gotrue mode the port the
 // doctor checked is the machine-token one, which refuses a browser; a blind
 // install was told to open it (onboarding round 3). The note names the port
@@ -1154,22 +1148,28 @@ func TestDoctorTellsClaudeCodeMissingFromNotRegistered(t *testing.T) {
 	}
 }
 
-// TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt: a `claude` only in
-// ~/.local/bin (the native installer's place) counts as installed, so the
-// doctor does not send a person to install what they have.
+// TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt: a `claude` only where
+// Claude Code's installers put it, ~/.local/bin (the native installer) or
+// ~/.claude/local (the older local install), counts as installed, so the
+// doctor does not send a person to install what they have (docs/cli.md names
+// both). The controls: an empty home, and a non-executable file there.
 func TestDoctorFindsClaudeCodeWhereItsInstallerPutsIt(t *testing.T) {
 	sys := healthySystem()
 	sys.claude = false
-	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".local", "bin", "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	d := &doctorRun{a: &app{homeDir: home}, sys: sys.sys()}
-	if !d.claudeInstalled() {
-		t.Fatal("a claude in ~/.local/bin was not found")
+	for _, dir := range [][]string{{".local", "bin"}, {".claude", "local"}} {
+		for _, mode := range []os.FileMode{0o755, 0o644} {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(append([]string{home}, dir...)...), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(append(append([]string{home}, dir...), "claude")...), []byte("#!/bin/sh\n"), mode); err != nil {
+				t.Fatal(err)
+			}
+			got := (&doctorRun{a: &app{homeDir: home}, sys: sys.sys()}).claudeInstalled()
+			if want := mode&0o111 != 0; got != want {
+				t.Fatalf("a claude in ~/%s (mode %o): installed = %v, want %v", filepath.Join(dir...), mode, got, want)
+			}
+		}
 	}
 	if (&doctorRun{a: &app{homeDir: t.TempDir()}, sys: sys.sys()}).claudeInstalled() {
 		t.Fatal("control: an empty home reads as installed")
@@ -1212,6 +1212,12 @@ func TestTheAskHookSettingsFilePassesTheDoctor(t *testing.T) {
 	}
 }
 
+// TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR: muster at plain http on
+// THIS machine (localhost, 127.0.0.1, [::1]) is the local quickstart. The
+// server check PASSes and says the phone needs HTTPS (with where to read how),
+// and no phone QR code is drawn — a phone scanning a loopback URL opens its
+// own localhost. The control, in TestDoctorEachCheckGoesRedWhenBroken: the
+// same over plain http to a LAN name or address FAILs, as before.
 func TestDoctorLoopbackHTTPPassesWithAPhoneNoteAndNoQR(t *testing.T) {
 	for _, host := range []string{"", "localhost", "[::1]"} {
 		sys := healthySystem()

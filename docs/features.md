@@ -204,10 +204,9 @@ a short-lived link signed by muster, on muster's own address.
 [uploads.md](uploads.md).
 
 - **Needs:** an S3-compatible store and `MUSTER_PUBLIC_URL` (every link is
-  written on it). INSTALL.md sets it: to this machine's
-  `http://localhost:<port>` in "Install muster on this machine", to the HTTPS
-  address with Tailscale. After the one-line `install.sh` alone, add
-  `MUSTER_PUBLIC_URL=http://localhost:8105` to `.env` yourself. The `s3` profile bundles one:
+  written on it). A fresh install sets it to this machine's
+  `http://localhost:<port>` (`install.sh`, which INSTALL.md runs), and
+  INSTALL.md to the HTTPS address with Tailscale. The `s3` profile bundles one:
   [Silo](https://github.com/pgsty/silo), pgsty's maintained fork of MinIO
   (upstream MinIO is archived and no longer publishes images), pinned by
   digest, not published on the host. It creates the bucket and a lifecycle
@@ -558,7 +557,9 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
 - **Publish the browser port** with a `docker-compose.override.yml` beside
   `docker-compose.yml`, and point `tailscale serve` at 8107 instead of 8105
   (not 8106: with the chief on, that is the Compose stack's connect port).
-  INSTALL.md's `mi_dc` and `install.sh` add the override whenever it exists; a
+  INSTALL.md's `mi_dc` and `install.sh` add the override whenever it exists
+  (under any name Compose reads: `compose.override.yml`,
+  `docker-compose.override.yml`, or either as `.yaml`); a
   `docker compose` you type yourself reads it only when you name no file (in
   `~/muster`), so with `-f docker-compose.yml` add
   `-f docker-compose.override.yml` too, or that `up` drops the port. The

@@ -44,15 +44,17 @@ The link is written on `MUSTER_PUBLIC_URL`. In gotrue mode, when that is this
 machine's own `http://localhost` address on the main port (a hub without
 Tailscale), the command writes the link on the browser listener's port instead
 and says to set `MUSTER_PUBLIC_URL` there: the main port refuses a browser.
+It assumes each port is published on the same number on the host as in the
+container (the Compose stack's mapping, and the override below); with another
+mapping, set `MUSTER_PUBLIC_URL` to the address the browser opens.
 
 ### A GoTrue server beside the Compose stack
 
 The Compose stack ships no GoTrue. This `docker-compose.override.yml`, beside
 `~/muster/docker-compose.yml`, adds one with its own Postgres and publishes the
-browser listener on this machine. Its GoTrue settings are the ones the
-end-to-end tests run against (`e2e/gotrue/compose.yml`), and
-`tests/compose-check.sh` checks it parses with the release's compose file and
-issues the tokens muster accepts.
+browser listener on this machine. It runs the GoTrue image the end-to-end
+tests run (`e2e/gotrue/compose.yml`), and `tests/compose-check.sh` checks it
+parses with the release's compose file and issues the tokens muster accepts.
 
 ```yaml
 services:
@@ -107,6 +109,7 @@ services:
       GOTRUE_MAILER_AUTOCONFIRM: "true"
       GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_PASSWORD_MIN_LENGTH: "12"
       GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
       GOTRUE_RATE_LIMIT_HEADER: X-Muster-Client-IP
       # Passkeys, for the address the browser opens (its host is the RP id).
@@ -141,6 +144,15 @@ Tailscale, point `tailscale serve` at 8107, set `MUSTER_PUBLIC_URL` to the
 `mi_dc up -d --wait --quiet-pull` (which reads the override; a bare
 `docker compose -f docker-compose.yml` would not), and
 `mi_dc exec -T muster /muster-server invite --claim-admin`.
+
+**Turn it off:** delete `docker-compose.override.yml` **and** the `.env` lines
+above (`MUSTER_AUTH_MODE`, `MUSTER_GOTRUE_*`, `GOTRUE_*`,
+`MUSTER_BROWSER_PORT`), set `MUSTER_PUBLIC_URL` back to the main port's
+address (`http://localhost:8105`, or the `https://` one with `tailscale serve`
+pointed at 8105 again), then `mi_dc up -d --wait --remove-orphans` (which
+stops the GoTrue containers). Both halves: an override left behind without its
+`.env` lines does not parse, and `install.sh` refuses to update until it is
+gone.
 
 ## Users, roles and invites
 

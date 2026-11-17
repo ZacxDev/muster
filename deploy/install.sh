@@ -11,8 +11,11 @@
 #      muster-mirror settings);
 #   3. downloads the release's docker-compose.yml into ~/muster, checks it
 #      against the release's checksums.txt, and starts the stack with
-#      `docker compose up -d --wait` (no .env: muster-init generates the
-#      secrets, docs/quickstart-local.md);
+#      `docker compose up -d --wait` (muster-init generates the secrets,
+#      docs/quickstart-local.md; a fresh install's .env holds one line,
+#      MUSTER_PUBLIC_URL=http://localhost:<port>, and an update never writes
+#      it); a Compose override beside it that this release and .env cannot
+#      run is refused before anything changes;
 #   4. installs muster-mirror and the muster CLI (checksum-verified) into
 #      ~/.local/bin, mints this machine's mirror token, and runs muster-mirror
 #      as a user service (systemd on Linux, launchd on macOS) against
@@ -100,12 +103,20 @@ esac
 BASE="${MUSTER_RELEASE_BASE:-$REPO/releases/download/v$RELEASE}"
 # </dev/null: under `curl … | sh` stdin IS this script, and `docker compose
 # exec` would read (and eat) the rest of it.
-# The person's docker-compose.override.yml beside it, when there is one: an
-# explicit -f turns Compose's automatic override off, and a re-run that
-# dropped it would drop what it adds (accounts mode's browser port).
+# The person's Compose override beside it, when there is one: an explicit -f
+# turns Compose's automatic override off, and a re-run that dropped it would
+# drop what it adds (accounts mode's browser port). override prints the file
+# Compose itself would read: the first of its four names, in its own order.
+override() {
+  for f in compose.override.yml compose.override.yaml docker-compose.override.yml docker-compose.override.yaml; do
+    [ -e "$DIR/$f" ] && { echo "$DIR/$f"; return 0; }
+  done
+  return 0
+}
 dc() {
-  if [ -e "$DIR/docker-compose.override.yml" ]; then
-    docker compose -f "$DIR/docker-compose.yml" -f "$DIR/docker-compose.override.yml" -p "$PROJECT" "$@" </dev/null
+  dc_ov=$(override)
+  if [ -n "$dc_ov" ]; then
+    docker compose -f "$DIR/docker-compose.yml" -f "$dc_ov" -p "$PROJECT" "$@" </dev/null
   else
     docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null
   fi
@@ -144,8 +155,25 @@ if [ -z "$(docker ps -a -q --filter "label=com.docker.compose.project=$PROJECT")
    curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then
   die "something already answers on 127.0.0.1:$port, and it is not this install. Nothing was changed."
 fi
+# An override that no longer works with this release and .env (accounts mode
+# turned off by deleting its .env lines, the override left behind): `up`
+# would refuse it AFTER the new docker-compose.yml is in place, stranding the
+# stack half-updated. Refuse now, changing nothing.
+ov=$(override)
+if [ -n "$ov" ] && ! err=$(docker compose --project-directory "$DIR" -f "$tmp/docker-compose.yml" -f "$ov" -p "$PROJECT" config -q 2>&1 </dev/null); then
+  die "$ov does not work with release $RELEASE and $DIR/.env: $(printf '%s\n' "$err" | head -n 1). Nothing was changed. If you turned accounts mode off, delete $ov as well (docs/auth.md, \"Turn it off\"); else put back the .env lines it needs, and run this again."
+fi
+# A fresh install (this script never ran here, and no .env) gets muster's own
+# address, the base of every link it writes (attachments, pages). Never on an
+# update: a .env without it may be on purpose (a reverse proxy, relative links).
+fresh=""
+[ -e "$DIR/.muster-install" ] || [ -e "$DIR/.env" ] || fresh=1
 mkdir -p "$DIR"
 cp "$tmp/docker-compose.yml" "$DIR/docker-compose.yml"
+if [ -n "$fresh" ]; then
+  (umask 077; printf 'MUSTER_PUBLIC_URL=%s\n' "$URL" > "$DIR/.env")
+  say "wrote MUSTER_PUBLIC_URL=$URL to $DIR/.env (muster's own address; with HTTPS, set it to that address)"
+fi
 printf 'installed-by: install.sh\nrelease: %s\n' "$RELEASE" > "$DIR/.muster-install"
 say "starting muster $RELEASE in $DIR (compose project $PROJECT)"
 # --quiet-pull: the image downloads' progress bars are hundreds of KB that
@@ -199,8 +227,8 @@ tmux_dir=$(dirname "$(command -v tmux 2>/dev/null || echo /usr/bin/tmux)")
 {
   echo "$MARK"
   # An owned key in any spelling a shell or systemd reads is owned: indented,
-  # or after `export`.
-  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^[[:space:]]*(export[[:space:]]+)?($owned)=" || true
+  # after `export`, or with spaces before its `=`.
+  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^[[:space:]]*(export[[:space:]]+)?($owned)[[:space:]]*=" || true
   echo "MUSTER_MIRROR_URL=$URL"
   echo "MUSTER_MIRROR_TOKEN_FILE=$tok"
   echo "MUSTER_MIRROR_HOST=$host"

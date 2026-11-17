@@ -498,6 +498,13 @@ if r.returncode:
     sys.exit(f"docker compose config refused the override: {r.stderr.strip()}")
 svcs = json.loads(r.stdout)["services"]
 errs = []
+# Turned off by deleting its .env lines, the override left behind: Compose
+# must refuse it, which is what install.sh's pre-update check relies on.
+(tmp / "env-gotrue-gone").write_text("COMPOSE_PROFILES=\n")
+r = subprocess.run(["docker", "compose", "-f", compose, "-f", str(tmp / "gotrue-override.yml"), "--env-file",
+                    str(tmp / "env-gotrue-gone"), "-p", "compose-check", "config", "-q"], capture_output=True, text=True)
+if r.returncode == 0 or "required variable" not in r.stderr:
+    errs.append(f"the override without its .env lines still parses (rc {r.returncode}): install.sh could not refuse it")
 gt, m = svcs.get("gotrue"), svcs.get("muster", {})
 if not gt or "gotrue-db" not in svcs:
     sys.exit(f"services {sorted(svcs)}: no gotrue / gotrue-db")
