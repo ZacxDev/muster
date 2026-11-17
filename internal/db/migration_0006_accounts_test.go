@@ -115,7 +115,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
 //   - officer_pr_loops (0119, a draft officer's review-loop announcements).
 //   - officer_public_branches (0138, a draft officer's public branches and their items).
-//   - chief_session_llm_usage, chief_session_llm_reservations (0142, what the
+//   - chief_session_llm_usage, chief_session_llm_reservations (0144, what the
 //     chief's OpenRouter sessions spend, and hold in flight).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).

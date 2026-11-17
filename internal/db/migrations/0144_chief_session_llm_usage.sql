@@ -1,4 +1,4 @@
--- muster 0142 — WHAT A CHIEF'S OPENROUTER SESSIONS SPEND (internal/chiefusage
+-- muster 0144 — WHAT A CHIEF'S OPENROUTER SESSIONS SPEND (internal/chiefusage
 -- sessionllm.go; docs/chief.md "OpenRouter sessions, budget").
 --
 --   chief_session_llm_usage   one row per (owner, chat session, UTC day) the
@@ -38,17 +38,17 @@
 -- with the rest, and --rls-on re-applies this file (db.RLSOn), so every
 -- statement is idempotent.
 --
--- Must apply after its predecessor, 0141_plugin_chief_instructions (the
+-- Must apply after its predecessor, 0143_officer_items_subject_index (the
 -- contiguity test refuses a gap).
 -- 🔴 RENUMBER IT (and db.chiefSessionLLMUsageMigrationVersion) if another
--- migration takes 0142 first.
+-- migration takes 0144 first.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- tables):
 --   DROP TABLE public.chief_session_llm_reservations;
 --   DROP TABLE public.chief_session_llm_usage;   (its trigger goes with it)
 --   DROP FUNCTION public.chief_session_llm_usage_append_only();
---   DELETE FROM schema_migrations WHERE version = 142;
+--   DELETE FROM schema_migrations WHERE version = 144;
 
 SET LOCAL lock_timeout = '3s';
 
