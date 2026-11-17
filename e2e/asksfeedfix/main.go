@@ -5,12 +5,12 @@
 // constraints, its owner default) and as plain rows where the e2e harness has
 // no door (a task event, a reply draft, a nudge decision).
 //
-//	DATABASE_URL=…_e2e go run ./e2e/asksfeedfix seed <owner> <agent-name> <agent-token>   prints JSON ids
+//	DATABASE_URL=…_e2e go run ./e2e/asksfeedfix seed <owner> <agent-name>   prints JSON ids
 //	DATABASE_URL=…_e2e go run ./e2e/asksfeedfix clear <owner> <agent-name>
 //
 // The rows (all synthetic):
 //
-//   - a running agent <agent-name> (its token, so a spec could reach /mcp);
+//   - a running agent <agent-name> (no credentials: nothing here calls /mcp);
 //   - its question WITH options ("Deploy the importer to staging now?"), linked
 //     to a task, with two suggested replies;
 //   - its FREE-TEXT question ("Which branch should the release be cut from?");
@@ -54,8 +54,8 @@ func run(args []string) error {
 	if err := e2edb.Check(dsn); err != nil {
 		return err
 	}
-	if len(args) < 3 {
-		return fmt.Errorf("usage: asksfeedfix seed <owner> <agent-name> <agent-token> | clear <owner> <agent-name>")
+	if len(args) != 3 {
+		return fmt.Errorf("usage: asksfeedfix seed|clear <owner> <agent-name>")
 	}
 	owner, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || owner <= 0 {
@@ -79,13 +79,10 @@ func run(args []string) error {
 	case "clear":
 		return clear(as, pool, owner, name)
 	case "seed":
-		if len(args) != 4 {
-			return fmt.Errorf("usage: seed <owner> <agent-name> <agent-token>")
-		}
 		if err := clear(as, pool, owner, name); err != nil {
 			return err
 		}
-		return seed(as, pool, owner, name, args[3])
+		return seed(as, pool, owner, name)
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -105,10 +102,10 @@ func clear(ctx context.Context, pool *pgxpool.Pool, owner int64, name string) er
 	return nil
 }
 
-func seed(ctx context.Context, pool *pgxpool.Pool, owner int64, name, token string) error {
+func seed(ctx context.Context, pool *pgxpool.Pool, owner int64, name string) error {
 	var agentID int64
-	if err := pool.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off)
-		VALUES ($1, $2, $3, $2, 'running', $4, true) RETURNING id`, owner, name, "devpod-"+name, token).Scan(&agentID); err != nil {
+	if err := pool.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, kicked_off)
+		VALUES ($1, $2, $3, $2, 'running', true) RETURNING id`, owner, name, "devpod-"+name).Scan(&agentID); err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
 	var taskID int64

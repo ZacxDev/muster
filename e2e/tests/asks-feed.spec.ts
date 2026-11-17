@@ -35,7 +35,6 @@ import { touchDrag } from '../lib/touch';
 const origin = `http://localhost:${asksFeedPort}`;
 const stamp = Date.now().toString(36);
 const agent = 'e2e-feed-' + stamp;
-const agentToken = 'e2e-feed-agent-token-not-a-real-one-' + stamp;
 let server: Running | undefined;
 type Ids = { deploy: number; freetext: number; rotate: number; notice: number; answered: number; draft: number; task: number };
 let ids: Ids;
@@ -61,7 +60,7 @@ test.beforeAll(async () => {
 });
 
 test.beforeEach(async () => {
-  ids = JSON.parse(fix('seed', '1', agent, agentToken)) as Ids;
+  ids = JSON.parse(fix('seed', '1', agent)) as Ids;
 });
 
 test.afterAll(async () => {
