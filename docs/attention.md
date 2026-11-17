@@ -24,13 +24,23 @@ everything waiting on you in one vertically scrolling feed: **questions**
 sessions (and the [stalled / waiting](#stalled--waiting-session-state) rows),
 then **tasks to route** — **newest first** within a kind, by when each item
 started waiting (an ask's or a draft's creation, a session's own status time, a
-held question's creation), ties broken by the item's key. Each card carries its
-kind as a small badge (*Question*, *Notice*, *Waiting*, *Task to route*).
+held question's creation), ties broken by the item's key. A card that is not
+a question carries its kind as a small badge (*Notice*, *Waiting*, *Task to
+route*); a question, the most common card, carries none.
+
+**One card on every tab.** Every item on the page — an Open card, an
+Answered card, a reply draft, an outreach batch, a nudge decision, a stalled
+session, a log row — is the same card: one shape, one head (an optional kind
+badge, the title, a muted line under it), its facts as small pills, its
+actions under them. A card with something more to show expands in place; the
+others do not. Every empty list says so the same way.
 Nothing pending at all: a calm **All clear**. Nothing on the Open tab while
 reply drafts wait: *Nothing else is open* and how many drafts wait, with a link
 to the Drafts tab — never All clear. The **Answered** tab holds the recent
 answers (the last day's, at most 20), each titled by its session's name (the
-rule below) and saying where it went.
+rule below): the question, your answer, and where it went as a pill
+(*Delivered*, *Queued*, *Waiting for the session to read it*, *Delivery
+failed* …); expanded, the sentence that says it in full.
 
 **Every card names its session the same way:** the session's name as its title
 (its human name, else the window's label or tmux address, else the asking
@@ -40,9 +50,19 @@ Under the title: the question (or what the session waits on), a **why it's
 here** line (the session's focus title and its age, else a waiting session's
 last words, else why a task is in the queue), any attached media, and the
 card's actions. Its footer holds **View in session** (where muster can open the
-session), the task link (where the ask is about a task) and, at its end,
-Dismiss — a small ✕ button (named *Dismiss* or *Dismiss without answering* for
-a screen reader), never in the head.
+session) and the task link (where the ask is about a task). **Dismiss** — a
+small ✕ button (named *Dismiss* or *Dismiss without answering* for a screen
+reader) — ends the footer when the footer has links, and otherwise ends the
+answer row; never the head, and never a footer of its own. (A notice with
+nothing to link says **Dismiss** in words.) The microphone is drawn only while
+dictation is on. An ask's options sit two to a row when there are two to four
+short ones (each at most 18 characters), one to a row otherwise. The question
+is cut to three lines until the card is expanded.
+
+**The answer form is the same everywhere:** on a card here and in a session
+page's asks block, the asker's options first (Answer is then quiet), then the
+one-line box that grows, its mic and **Answer** on one row. A session page has
+no footer, so its Dismiss ends that row.
 
 | kind | what | where it comes from | how you act on it |
 |---|---|---|---|
@@ -179,12 +199,13 @@ when no window shows the session now.
 With `MUSTER_SESSION_STATE=1` ([configuration.md](configuration.md)) muster
 keeps one **episode** per stop of each of your sessions (the design:
 [design/session-state.md](design/session-state.md)), and the Asks tab draws the
-open ones as rows of its **Waiting** group, after its waiting sessions: one row
-per stop, oldest first, saying where the session is (its window's
-[`<where>`](#how-a-window-is-named), resolved when drawn, or the agent), whether it **needs you** or is **stalled**,
-for how long, and — for a window waiting on a prompt — what it waits on (the
-pending call or question's first line its host already sent, as the window's
-own item would show it). The row is one link to the session. A row has **no answer box**. A
+open ones as cards after its waiting sessions: one per stop, oldest first, its
+badge whether it **needs you** or is **stalled**, titled by where the session
+is (its window's [`<where>`](#how-a-window-is-named), resolved when drawn, or
+the agent), with how long, and — for a window waiting on a prompt — what it
+waits on (the pending call or question's first line its host already sent, as
+the window's own item would show it). Its footer's **View in session** opens
+the session. It has **no answer box**. A
 waiting window muster cannot answer is a row here instead of a "Session
 waiting" item (one muster cannot key, from an older host that sends no Claude
 session id, stays a "Session waiting" item with today's push, held the same 60
@@ -291,11 +312,15 @@ list of the drafts awaiting a decision, and under it **Show archived**, which
 shows the decided ones (`/attention?tab=archived`; **Hide archived** shuts it
 again, and the address follows):
 
-- **Awaiting decision** — each pending draft's card: who drafted it, for which
-  plugin and its state; the message it answers as a quote (untrusted, escaped)
-  and the exact text that would be sent, with **Approve and send** as the one
-  primary action (it needs a sign-in from the last few minutes, asked for in
-  place) and a small **Reject** beside it.
+- **Awaiting decision** — each pending draft's card: titled by who drafted it
+  (the agent's display name, as the sidebar names it), with pills for the
+  plugin, its state, when it expires (relative: *expires in 6d*) and its
+  length; the message it answers as a quote (marked *untrusted*, escaped) and
+  the exact text that would be sent, in the page's own type (every character
+  the draft carries is still shown: anything invisible or look-alike is spelled
+  out), with **Approve and send** as the one primary action (it needs a sign-in
+  from the last few minutes, asked for in place) and a small **Reject** under
+  it.
 - **Archived** — every draft that is no longer pending, moved here the moment
   you approve or reject it, or it is replaced by a newer draft or expires. Each
   shows its live status: approved and waiting for the plugin to collect it,

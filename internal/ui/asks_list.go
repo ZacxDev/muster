@@ -5,27 +5,30 @@ import (
 	"strconv"
 )
 
-// THE ASKS PAGE'S LIST COMPONENTS (internal/api renders the page; the classes
+// THE ASKS PAGE'S SHARED PIECES (internal/api renders the page; the classes
 // live here because the stylesheet scans internal/ui, not internal/api — a
 // class written only there is never emitted, with css-check green).
 //
-// The page is a FLAT LIST (operator decision 2026-11-12, "design pass on the
-// asks page"): no page card, no intro, no "Back to muster". Each group of
-// items has one label with its count (AsksGroupLabel); each item is a card
-// whose head names the session — its name as the title, host and age muted
-// under it, the tmux target small — and, when the item is about a session
-// muster can open, the head IS a link to it, with a chevron (AsksChevron). A
-// row with nothing to answer (a waiting window, a stalled session, a task) is
-// one link as a whole (AsksRowClass). Every target is 44px.
+// Since the design review the Asks page has ONE card (asks_card.go: the feed
+// card, AsksFeedCardClass; AsksCardClass is it too) and one each of the
+// pieces cards are made of: the pill (AsksPillBaseClass — counts, kind
+// badges, metadata), the primary button (AsksPrimaryButtonBase), the empty
+// state (AsksEmptyHTML). A session page's asks block (internal/api
+// attentionItemHTML) still draws a head that IS the link to the session
+// (AsksHeadLinkClass, AsksChevron) and rows that are one link (AsksRowClass).
+// Every target is 44px.
 
 const (
 	// AsksGroupClass is one group's <li> (its label, then its <ul>).
 	AsksGroupClass = "flex flex-col gap-2"
 	// AsksGroupListClass is a group's own <ul> of cards.
 	AsksGroupListClass = "flex flex-col gap-2"
-	// AsksCardClass is a card that holds controls (an ask's answer form, a
-	// draft's decision): a plain block, its head the link.
-	AsksCardClass = "flex min-w-0 flex-col gap-2 rounded-xl bg-s1 p-3 ring-1 ring-inset ring-line"
+	// AsksCardClass is every Asks card that is not the Open/Answered feed's
+	// expandable one — a draft, an outreach batch, a nudge, a log row, a
+	// stalled session — and since the design review it IS the feed card
+	// (AsksFeedCardClass): one card design on the page. Its <li> carries
+	// AsksFixedCardAttrs (TestEveryAsksListItemIsACard).
+	AsksCardClass = AsksFeedCardClass
 	// AsksRowClass is a card that is ONE link as a whole: a waiting window, a
 	// stalled session, a task to route. A real <a>, so it is keyboard- and
 	// screen-reader-reachable as a link (never a div with a click handler).
@@ -58,6 +61,10 @@ const (
 	// THE ANSWER FORM's options, the card feed's (internal/api
 	// askFeedAnswerFormHTML): full-width buttons; a tap answers.
 	AsksOptionsClass = "flex flex-col gap-1.5"
+	// AsksOptionsPairClass lays SHORT options (askOptionsShort) two to a row:
+	// the same full-width buttons, half as many rows (the design review's
+	// density target). A long option keeps the column.
+	AsksOptionsPairClass = "grid grid-cols-2 gap-1.5"
 	AsksOptionClass  = "press min-h-[44px] w-full rounded-lg bg-bg px-3 py-2 text-left text-sm leading-snug text-fg ring-1 ring-inset ring-edge transition hover:bg-s2"
 	// AsksActionsClass is the row of a card's actions: the primary one fills
 	// it, the secondary ones are small beside it.
@@ -67,16 +74,19 @@ const (
 	// box, then Reject) on the row under it. 🔴 NOT AsksActionsClass: there the
 	// primary form's flex-1 is a ZERO basis, and beside a reason box's
 	// intrinsic width the Reject form took the row and left Approve and send a
-	// sliver with its label unreadable — at every width, since the Asks page is
-	// one max-w-sm column (#689, e2e/tests/draft-card.spec.ts).
+	// sliver with its label unreadable — at a phone's width, and at a desktop's
+	// before the Asks column widened (#689, e2e/tests/draft-card.spec.ts).
 	AsksDecisionClass = "flex min-w-0 flex-col gap-2"
 	// AsksIconButtonClass is a small secondary action drawn as an icon (a 44px
 	// target): it MUST carry aria-label and title.
 	AsksIconButtonClass = "press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
 	// AsksSecondaryButtonClass is a small secondary action with words.
 	AsksSecondaryButtonClass = "press inline-flex min-h-[44px] shrink-0 items-center justify-center whitespace-nowrap rounded-lg px-3 text-sm font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"
-	// AsksPrimaryButtonClass is a card's one primary action.
-	AsksPrimaryButtonClass = "press min-h-[44px] w-full rounded-lg bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90"
+	// AsksPrimaryButtonBase is THE primary button (Answer, Approve and send):
+	// one size, 44px, text-sm. AsksPrimaryButtonClass fills its row (a draft's
+	// Approve and send, #689); AsksCardSendClass sits beside the answer box.
+	AsksPrimaryButtonBase  = "press min-h-[44px] rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90"
+	AsksPrimaryButtonClass = AsksPrimaryButtonBase + " w-full py-2"
 	// AsksQuoteClass is quoted text from outside (a draft's inbound message).
 	AsksQuoteClass = "flex min-w-0 flex-col gap-1 border-l-2 border-edge pl-3"
 	// AsksDetailsClass / AsksDetailsSummaryClass fold a card's secondary
@@ -84,8 +94,15 @@ const (
 	AsksDetailsClass        = "group/more min-w-0"
 	AsksDetailsSummaryClass = "press inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-1 text-xs font-medium text-fg2 transition hover:text-fg [&::-webkit-details-marker]:hidden"
 	AsksDetailsBodyClass    = "flex flex-col gap-1 pb-1"
-	// AsksPillClass is a small status pill (a nudge's mode).
-	AsksPillClass = "inline-flex shrink-0 items-center rounded-full bg-s2 px-2 py-0.5 text-[11px] font-semibold text-fg2"
+	// AsksPillBaseClass is THE pill (a count, a kind badge, a card's
+	// metadata): its tone is added by the caller (AsksPillClass's muted one,
+	// AsksKindBadge's per kind).
+	AsksPillBaseClass = "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-semibold"
+	// AsksPillClass is a muted metadata pill (a nudge's mode, a draft's
+	// plugin, an expiry, a delivery).
+	AsksPillClass = AsksPillBaseClass + " bg-s2 text-fg2"
+	// AsksPillsClass is a card's row of metadata pills.
+	AsksPillsClass = "flex min-w-0 flex-wrap items-center gap-1.5"
 )
 
 // AsksGroupLabel is one group's label: its name and its count, as an <h2>
@@ -95,7 +112,7 @@ const (
 // "Questions, 2" rather than "Questions2".
 func AsksGroupLabel(id, label string, n int) string {
 	return `<h2 id="` + html.EscapeString(id) + `" class="flex items-center gap-2 px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-asks-group-label>` +
-		html.EscapeString(label) + `<span class="sr-only">, </span><span class="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-s2 px-1.5 text-[11px] font-semibold tabular-nums text-fg2" data-asks-group-count>` +
+		html.EscapeString(label) + `<span class="sr-only">, </span><span class="` + AsksPillClass + ` tabular-nums" data-asks-group-count>` +
 		strconv.Itoa(n) + `</span></h2>`
 }
 

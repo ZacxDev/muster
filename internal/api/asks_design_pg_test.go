@@ -27,7 +27,9 @@ func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 		`<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">`,
 		`<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>`,
 		`<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>`,
-		`data-asks-badge="question">Question</span>`,
+		// A question carries no kind badge (the default card); the waiting
+		// window does.
+		`data-asks-badge="waiting">Waiting</span>`,
 		// The feed's notice (a card refused after a refresh took it away), shut.
 		ui.AsksFeedNoticeHTML,
 	} {
@@ -35,7 +37,7 @@ func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 			t.Errorf("the page lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70", `data-asks-group="`} {
+	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70", `data-asks-group="`, `data-asks-badge="question"`} {
 		if strings.Contains(page, bad) {
 			t.Errorf("the page still draws %q", bad)
 		}
@@ -99,8 +101,11 @@ func TestAWaitingEpisodeRowSaysWhatItWaitsOn(t *testing.T) {
 				t.Errorf("the row lacks %q:\n%s", want, row)
 			}
 		}
-		if strings.Contains(row, askViewInSession) || strings.Contains(row, "<form") {
-			t.Errorf("the row draws a text link or a form:\n%s", row)
+		// THE FEED CARD (the design review): a card, its way in the footer's
+		// View in session (the tap route), never a form.
+		if !strings.Contains(row, `data-asks-card data-asks-fixed`) || !strings.Contains(row, `data-asks-view-session data-attention-episode-open>`+askViewInSession+`</a>`) ||
+			strings.Contains(row, "<form") {
+			t.Errorf("the row is not a feed card with View in session:\n%s", row)
 		}
 	})
 	t.Run("fallback", func(t *testing.T) {

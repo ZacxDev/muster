@@ -56,7 +56,7 @@ func itemLi(t *testing.T, out, key string) string {
 	return li[:strings.Index(li, "</li>")+len("</li>")]
 }
 
-var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false" aria-controls="([^"]+)" aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle><span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span><span id="([^"]+)"`)
+var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false"(?: aria-controls="([^"]+)")? aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle>(?:<span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>)?<span id="([^"]+)"`)
 
 // TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
 // order questions, notices, waiting sessions, tasks to route; each card opens
@@ -69,7 +69,8 @@ func TestTheOpenFeedOrdersCardsByKindWithABadgeEach(t *testing.T) {
 	out := s.askListHTML(context.Background(), designItems(), asksRead{}, designNow)
 	var got []string
 	for _, m := range cardBadge.FindAllStringSubmatch(out, -1) {
-		if m[2] != m[1]+"-more" {
+		// A toggle names its more region only when the card has one.
+		if m[2] != "" && m[2] != m[1]+"-more" || m[2] != "" && !strings.Contains(out, `id="`+m[2]+`"`) {
 			t.Errorf("%s's toggle controls %q", m[1], m[2])
 		}
 		// Named "Details", described by its who-line (its own id).
@@ -78,7 +79,10 @@ func TestTheOpenFeedOrdersCardsByKindWithABadgeEach(t *testing.T) {
 		}
 		got = append(got, m[1]+"="+m[4]+":"+m[5])
 	}
-	want := "ask-1=question:Question|ask-2=question:Question|session-aaaaaaaaaaaaaaaa=question:Question|ask-5=notice:Notice|" +
+	// 🔴 A QUESTION CARRIES NO BADGE (the design review: "Question" on most
+	// cards was noise): only the other kinds say what they are. RED at
+	// origin/main, where every card had one.
+	want := "ask-1=:|ask-2=:|session-aaaaaaaaaaaaaaaa=:|ask-5=notice:Notice|" +
 		"session-bbbbbbbbbbbbbbbb=waiting:Waiting|task-3=task:Task to route"
 	if strings.Join(got, "|") != want {
 		t.Fatalf("cards %q,\nwant %q:\n%s", strings.Join(got, "|"), want, out)
@@ -408,14 +412,14 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 		PluginLabel: "Example inbox",
 	}
 	got := draftCardHTML(c)
-	for _, want := range []string{`class="` + ui.AsksQuoteClass + `" data-draft-original>`, "· untrusted · message 3", "&lt;i&gt;hi&lt;/i&gt;",
+	for _, want := range []string{`class="` + ui.AsksQuoteClass + `" data-draft-original>`, `data-draft-untrusted>untrusted</span>`, "&lt;i&gt;hi&lt;/i&gt;",
 		`data-runes="3"`, `ok\u{200b}`, `<div class="` + ui.AsksDecisionClass + `"><form method="POST" action="` + pluginsPath + `/drafts/7/approve" data-step-up-form class="min-w-0"><button type="submit" class="` + ui.AsksPrimaryButtonClass + `" data-draft-approve>`,
 		`<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the pending card lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Count(got, ui.AsksPrimaryButtonClass) != 1 || strings.Contains(got, "<i>") {
+	if strings.Count(got, ui.AsksPrimaryButtonClass) != 1 || strings.Contains(got, "<i>") || strings.Contains(got, "message 3") {
 		t.Errorf("the pending card has %d primary actions, or unescaped markup:\n%s", strings.Count(got, ui.AsksPrimaryButtonClass), got)
 	}
 	approved := c
@@ -431,5 +435,52 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 	gone.Draft.Status = plugins.DraftSuperseded
 	if got := draftCardHTML(gone); strings.Contains(got, "data-draft-approve") || strings.Contains(got, "data-draft-reject") {
 		t.Errorf("a replaced draft offers a decision:\n%s", got)
+	}
+}
+
+// TestADraftCardIsTheFeedCardWithItsFactsAsPills (the design review, 6, 9,
+// 10): a draft is THE feed card (data-asks-card, fixed), its head the kind
+// badge and the drafting agent's DISPLAY name (AgentDisplay, never the stored
+// slug when there is one) with its age; its facts are pills — the plugin, the
+// state, the expiry RELATIVE ("expires in 6d", never a UTC stamp), the
+// length; the reply is in the page's normal text, wrapping at words (it was
+// monospace broken anywhere); and the duplicate lines are gone ("message N",
+// "approving sends exactly this, once", the "Reply · N characters" label).
+// RED at origin/main: the old card, a raw UTC expiry, mono break-all.
+func TestADraftCardIsTheFeedCardWithItsFactsAsPills(t *testing.T) {
+	at := designNow
+	agent := int64(4)
+	c := plugins.DraftCard{
+		Draft: plugins.Draft{ID: 7, AgentID: &agent, AgentName: "marketing-acme-1", Body: "It is on by default at 600 requests a minute per key.", Status: plugins.DraftPending,
+			CreatedAt: at.Add(-2 * time.Minute), ExpiresAt: at.Add(6*24*time.Hour + time.Hour), CheckState: plugins.CheckSendable},
+		Message:      plugins.Message{ID: 3, Sender: "dana@example.com", Body: "Is it on by default?"},
+		PluginLabel:  "Example inbox",
+		AgentDisplay: "Marketing for Acme",
+	}
+	got := draftCardHTMLAt(c, at)
+	for _, want := range []string{
+		`class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs,
+		`data-asks-badge="draft">Reply draft</span>`,
+		`data-draft-agent>Marketing for Acme</span>`,
+		`>2m ago</time>`,
+		`data-draft-plugin>Example inbox</span>`,
+		`data-draft-state>Awaiting your decision</span>`,
+		`>expires in 6d</time></span>`,
+		`data-draft-runes>53 characters</span>`,
+		`<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>It is on by default at 600 requests a minute per key.</p>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the draft card lacks %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"marketing-acme-1", "UTC", "font-mono", "break-all font-mono", "approving sends exactly this", "message 3", "Reply · "} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the draft card still draws %q:\n%s", bad, got)
+		}
+	}
+	// No display name resolved: the stored name, as before.
+	c.AgentDisplay = ""
+	if got := draftCardHTMLAt(c, at); !strings.Contains(got, `data-draft-agent>marketing-acme-1</span>`) {
+		t.Errorf("without a display name the card does not fall back to the stored one:\n%s", got)
 	}
 }
