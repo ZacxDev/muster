@@ -150,3 +150,32 @@ test('a bad model is refused and starts no session', async ({ page }) => {
   const after = await page.request.get(origin + '/ui/chief/threads/search?q=');
   expect(((await after.text()).match(/data-chief-thread=/g) || []).length).toBe(count);
 });
+
+// "Continue in a new session" (internal/api chief_continue.go): on a SIDE chat
+// the panel offers it under the thread list, with the same runtime + model
+// picker as New session, posting to that chat's continue route. Nothing is
+// submitted here (no turn is sent on this server); the route itself is covered
+// by internal/api chief_continue_pg_test.go.
+test('a side chat offers Continue in a new session, posting to its own continue route', async ({ page }) => {
+  await signIn(page, origin);
+  await page.goto(origin + '/tasks');
+  await openThreads(page);
+  const active = page.locator('[data-chief-active-session]');
+  const was = await active.getAttribute('data-chief-active-session');
+  const cc = page.locator('[data-session-picker] form[data-new-session="claude-code"]');
+  await cc.locator('select[name="model"]').selectOption('sonnet');
+  await cc.getByRole('button', { name: 'Start' }).click();
+  await expect(active).not.toHaveAttribute('data-chief-active-session', was ?? '');
+  await expect(active).not.toHaveAttribute('data-chief-active-session', '');
+  const sid = await active.getAttribute('data-chief-active-session');
+  await openThreads(page);
+
+  const group = page.locator('[data-chief-continue]');
+  await expect(group).toHaveCount(1);
+  await group.locator('summary').click();
+  const form = group.locator('form[data-chief-continue-form="claude-code"]');
+  await expect(form).toBeVisible();
+  await expect(form).toHaveAttribute('hx-post', new RegExp(`/sessions/${sid}/continue\\?surface=chief-panel$`));
+  await expect(form.locator('select[name="model"] option')).toHaveText(['opus', 'sonnet', 'haiku']);
+  await expect(form.getByRole('button', { name: 'Continue' })).toBeVisible();
+});

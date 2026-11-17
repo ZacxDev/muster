@@ -84,6 +84,7 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		"internal/api/chief_chats.go (*Server).setChatArchived → primarySession":            "OWNER (archive leaves you on the primary)",
 		"internal/api/chief_chats.go (*Server).handleChiefFreshPrimary → primarySession":    "OWNER (elects the primary first)",
 		"internal/api/chief_chats.go (*Server).handleChiefFreshPrimary → FreshPrimary":      "OWNER (a fresh primary)",
+		"internal/api/chief_continue.go (*Server).handleChiefContinue → primarySession":   "OWNER (elects the primary first, so it is refused as a source)",
 
 		// --- not a delivery into a chief's chat
 		"internal/agentkickoff/agentkickoff.go (*Deliverer).deliver → LatestOrCreateSession": "NOT-A-DELIVERY (a new agent's first turn: its first session)",
@@ -144,6 +145,10 @@ func TestEveryTurnDoorCountsTheSession(t *testing.T) {
 		"internal/api/agents.go (*Server).chatTurn → countSessionTurn",
 		"internal/api/agents.go (*Server).handleAgentWS → countSessionTurn",
 		"internal/api/chat_busy.go (*Server).chatTurnWhenFree → countSessionTurn",
+		// Not a turn door: a continued chat is counted as working while the OLD
+		// chat writes its handover, so a page on it shows "working…" from the
+		// first moment (chief_continue.go).
+		"internal/api/chief_continue.go (*Server).continueSession → countSessionTurn",
 	}
 	got := callSites(t, map[string]bool{"countSessionTurn": true, "beginEdge": true, "begin": false})
 	var calls []string
