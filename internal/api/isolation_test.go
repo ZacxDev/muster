@@ -443,8 +443,11 @@ var isolationClasses = map[string]routeClass{
 	// An officer instance's workspace image for an ask (officers.go): its own
 	// token decides the officer; any other agent is refused.
 	"POST /agent/officer/ask-images": classAgentToken,
-	"POST /agent/work":               classAgentToken,
-	"POST /agent/task/comment":       classAgentToken,
+	// A dispatched agent's ask attachment (ask_media.go): stored as the
+	// agent's owner's own upload; it names no object.
+	"POST /agent/ask-attachments": classAgentToken,
+	"POST /agent/work":            classAgentToken,
+	"POST /agent/task/comment":    classAgentToken,
 
 	"/connect/{connector}/{host}/{path...}": classConnect,
 	"GET /agent/connectors":                 classConnect,
@@ -461,11 +464,17 @@ var isolationClasses = map[string]routeClass{
 	// open nothing on it and leak nothing.
 	"GET /mirror/connect": classPublic,
 	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
-	"POST /mirror/ask":        classPublic,
-	"POST /mirror/mcp":        classMirrorHost,
-	"GET /mirror/host":        classMirrorHost,
-	"GET /mirror/terminal":    classMirror,
-	"GET /mirror/terminal/ws": classMirror,
+	"POST /mirror/ask": classPublic,
+	"POST /mirror/mcp": classMirrorHost,
+	// A session's ask attachment, sent by its host (ask_media.go): the host's
+	// token, a session it lists; it names no object.
+	"POST /mirror/ask-attachments": classMirrorHost,
+	// …and its take-back (the host owner's own upload, by id, under row-level
+	// security; mirror_mcp_pg_test-style refusal walked in ask_media_mirror_pg_test.go).
+	"DELETE /mirror/ask-attachments/{id}": classMirrorHost,
+	"GET /mirror/host":                    classMirrorHost,
+	"GET /mirror/terminal":                classMirror,
+	"GET /mirror/terminal/ws":             classMirror,
 
 	// Browser flows (0012). The page and its forms are the session tier; the
 	// JSON API is a personal token only; the runner door is a runner token
@@ -693,10 +702,14 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/open/{key}": classParam,
 	// An ask's own page names A's ask by id (row-level security, and an
 	// explicit owner check).
-	"GET /attention/asks/{id}":         classParam,
-	"GET /attention/badge":             classList,
-	"POST /attention/asks/{id}/answer": classParam,
-	"POST /attention/asks/{id}/cancel": classParam,
+	"GET /attention/asks/{id}": classParam,
+	// An ask's attachment (ask_media.go): A's ask by id, and A's upload it
+	// carries by its public id — row-level security on the ask, an explicit
+	// owner-or-team check, and only an upload the ask names.
+	"GET /attention/asks/{id}/attachments/{upload}": classParam,
+	"GET /attention/badge":                          classList,
+	"POST /attention/asks/{id}/answer":              classParam,
+	"POST /attention/asks/{id}/cancel":              classParam,
 	// An unconfirmed answer delivery's Retry (migration 0031): one of the
 	// caller's asks by id, under row-level security.
 	"POST /attention/asks/{id}/redeliver": classParam,
@@ -1240,8 +1253,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Target: sendqueue.Target{Host: w.canary + "-host", Session: "main", Window: "@1"}, Body: w.canary + " queued", StepUpAt: time.Now()})
 	must(err, "a queued message")
 	// A's open ask (0025), asked by A's agent, its question carrying the canary.
+	// It carries A's upload as an attachment (0145), which its attachment
+	// route names.
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
-		Question: w.canary + " asks", Options: []string{"yes", "no"}})
+		Question: w.canary + " asks", Options: []string{"yes", "no"},
+		Attachments: []attention.Attachment{{ID: aUpload.PublicID, Name: aUpload.Filename, Type: aUpload.ContentType, Size: aUpload.Size}}})
 	must(err, "an ask")
 	// A's shareable page (0116): canary-titled, two versions (so A's rollback
 	// has one to move to), a live link and a canary-carrying response — the
@@ -1844,7 +1860,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
-		"{user}", strconv.FormatInt(o.user, 10),
+		"{user}", strconv.FormatInt(o.user, 10), "{upload}", o.upload,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
@@ -2121,6 +2137,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
+	// session the host lists, which the walk names none of, so A's own call and
+	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the
+	// host's take-back revokes its owner's upload, and another owner's host
+	// naming that id gets 404 and leaves it live.
+	"DELETE /mirror/ask-attachments/{id}": "needs a listed session: controlled in TestAMirroredSessionsFileGoesFromItsHostIntoTheUploadStoreAndItsAskShowsIt",
 	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
 	// so A's own PUT and a PUT naming a ghost both succeed — there is no
 	// "someone else's object" for the status to tell apart. That B's PUT of A's

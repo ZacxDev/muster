@@ -65,17 +65,18 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 
 // asksCardContextSlot is a card's "why it's here" line, "" for none.
 //
-// 🔴 THE SLOT THE ASK-CONTEXT WORK FILLS. Its PR adds an ask's optional
-// `context` (and, when it is absent, a fallback from the session's focus title
-// and the agent's last message before the ask) and exposes a render helper in
-// internal/ui/ask_media.go; whichever of the two PRs merges second wires that
-// helper in HERE. Until then the line is drawn from what the item already
-// carries: the session's focus title (with its age), else the item's second
-// line (a waiting session's last words), else — for a task to route — why it
-// is in the queue.
+// An agent's ask that carries a why (ask_media.go: its own `context`, or the
+// fallback muster stored — the session's focus title and the agent's last
+// message) and a held question (heldWhy: the same fallback, read at render
+// time) draw THAT line (ui.AskContextInline). Any other item is drawn from
+// what it already carries: the session's focus title (with its age), else the
+// item's second line (a waiting session's last words), else — for a task to
+// route — why it is in the queue.
 func asksCardContextSlot(it attentionItem, now time.Time) string {
 	var inner string
-	switch {
+	switch w := askCardWhy(it); {
+	case w != (ui.AskWhy{}):
+		inner = ui.AskContextInline(w)
 	case textplain.Title(it.Focus) != "":
 		inner = attentionFocusHTML(textplain.Title(it.Focus), ui.FocusAgeOf(it.focusAt, now))
 	case it.Detail != "" && it.Kind != attentionKindAsk:
@@ -93,12 +94,29 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 // asksCardMediaSlot is a card's media strip (images inline, other files as
 // chips), "" for none.
 //
-// 🔴 THE SLOT THE ASK-ATTACHMENTS WORK FILLS (internal/ui/ask_media.go's
-// helper, wired here by whichever PR merges second). Nothing an item carries
-// today is media, so it draws nothing. A strip that scrolls sideways must carry
-// data-asks-media (the card's script then never takes a tap or a swipe on it
-// for the card's own).
-func asksCardMediaSlot(it attentionItem) string { return "" }
+// An agent's ask's attachments (ask_media.go), through ui.AskMediaStrip:
+// images as thumbnails that open full size, other files as chips. The strip
+// carries data-asks-media, so the card's script never takes a tap or a swipe
+// on it for the card's own (its thumbnails and chips are links besides).
+func asksCardMediaSlot(it attentionItem) string {
+	if it.Kind != attentionKindAsk || len(it.Attachments) == 0 {
+		return ""
+	}
+	return ui.AskMediaStrip(askMediaView(it.AskID, it.Attachments)) + "\n"
+}
+
+// askCardWhy is the why line an item's card draws in its context slot: an
+// agent's ask's stored why, a held question's fallback (heldWhy); the zero
+// value for any other item and for one with none.
+func askCardWhy(it attentionItem) ui.AskWhy {
+	switch it.Kind {
+	case attentionKindAsk:
+		return askWhyView(it.Why)
+	case attentionKindQuestion:
+		return heldWhy(it)
+	}
+	return ui.AskWhy{}
+}
 
 // taskToRouteWhy is a task to route's context line: why it is in the queue
 // (unroutedTaskItems' Source, as a sentence).

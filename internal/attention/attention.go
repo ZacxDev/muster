@@ -300,6 +300,11 @@ type Ask struct {
 	// Context is the officer item the ask is about (New.Context, migration
 	// 0129), nil for none.
 	Context *ItemContext `json:"-"`
+	// Attachments are the files the asker attached (New.Attachments,
+	// migration 0145), nil for none.
+	Attachments []Attachment `json:"-"`
+	// Why is why the ask is here (New.Why, migration 0145), nil for none.
+	Why *AskWhy `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -378,6 +383,14 @@ type New struct {
 	// officerItemContext), never from an asker's arguments; Clean sanitises
 	// and bounds it (item_context.go).
 	Context *ItemContext
+	// Attachments are files of the asker's owner's upload store the ask
+	// carries (migration 0145; ask_media.go), nil for none. Set ONLY by
+	// internal/api's attention_ask, from upload rows it read under the
+	// owner's principal; Clean checks their shape and count.
+	Attachments []Attachment
+	// Why is why the ask is here (migration 0145): the agent's own context, or
+	// muster's fallback (ask_media.go). Clean sanitises and bounds it.
+	Why *AskWhy
 	// With is an audit row written in Create's OWN transaction, as the
 	// caller's principal, naming the new ask (Detail is called with its id):
 	// nil for none. Set ONLY by internal/api's agent_dispatch, for a held
@@ -432,6 +445,12 @@ func Clean(n New) (New, error) {
 		return n, err
 	}
 	n.Context = ictx
+	if n.Attachments, err = CleanAttachments(n.Attachments); err != nil {
+		return n, err
+	}
+	if n.Why, err = CleanWhy(n.Why); err != nil {
+		return n, err
+	}
 	if n.Notice {
 		switch {
 		case !n.Asker.System:
@@ -636,18 +655,18 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0)`
+	coalesce(about_key, ''), item_context, coalesce(answered_by_user, 0), attachments, why`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
-	var opts, sugg, ictx []byte
+	var opts, sugg, ictx, files, why []byte
 	var resolved, queued *time.Time
 	var status, delivery, kind string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey, &ictx, &a.AnsweredByUser); err != nil {
+		&a.SubjectKey, &ictx, &a.AnsweredByUser, &files, &why); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -673,6 +692,16 @@ func scan(row pgx.Row) (Ask, error) {
 	if len(ictx) > 0 {
 		if err := json.Unmarshal(ictx, &a.Context); err != nil {
 			return Ask{}, fmt.Errorf("attention: item context of ask %d: %w", a.ID, err)
+		}
+	}
+	if len(files) > 0 {
+		if err := json.Unmarshal(files, &a.Attachments); err != nil {
+			return Ask{}, fmt.Errorf("attention: attachments of ask %d: %w", a.ID, err)
+		}
+	}
+	if len(why) > 0 {
+		if err := json.Unmarshal(why, &a.Why); err != nil {
+			return Ask{}, fmt.Errorf("attention: why of ask %d: %w", a.ID, err)
 		}
 	}
 	return a, nil
@@ -760,11 +789,26 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		}
 		ictx = raw
 	}
+	var files, why any
+	if len(n.Attachments) > 0 {
+		raw, err := json.Marshal(n.Attachments)
+		if err != nil {
+			return Ask{}, err
+		}
+		files = raw
+	}
+	if n.Why != nil {
+		raw, err := json.Marshal(n.Why)
+		if err != nil {
+			return Ask{}, err
+		}
+		why = raw
+	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context, attachments, why)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb, $19::jsonb)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx, files, why))
 	if err != nil {
 		return Ask{}, err
 	}
