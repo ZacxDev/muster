@@ -21,7 +21,10 @@ import (
 // 🔴 ONE RECORDER PER TURN, IN chatTurn: every door's chief turn passes it (the
 // plugin deliverer, the owner's chat and view doors, an answer's delivery, a
 // hand-back), so no door can run a chief turn the page does not count. The
-// door only says what started the turn (chiefusage.WithTrigger).
+// door only says what started the turn (chiefusage.WithTrigger). The two
+// callers that run a chief call outside chatTurn record through the same
+// recorder themselves: gatewayTurn (the machine door, the kickoff) and the
+// stall check (chief_nudge.go askChiefForNudge, trigger nudge_check).
 // ---------------------------------------------------------------------------
 
 // chiefTurnUsage is one chief turn's recorder: the runtime's usage sink, the

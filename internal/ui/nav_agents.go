@@ -22,6 +22,11 @@ import (
 // switcher's labels) and its attention count — and opens what the switcher's
 // pill for it opens. The page's own session is marked.
 //
+// Below the list (and each team's group, navTeamGroups): the Officers group
+// — one row per declared officer the viewer can see, awake or asleep, an
+// officer's instance drawn through its officer's row unless it waits on the
+// operator (nav_officers.go) — and then the Superseded and Idle groups.
+//
 // The pages (Tasks, Connectors, Asks, Install, Account, Admin) moved into ONE
 // collapsed "More" disclosure at the bottom of the sidebar (navMore); the Asks
 // count rides on its header, so it shows while More is shut.
@@ -189,12 +194,23 @@ func navCurrent(raw string, list []AgentCardView) SwitcherCurrent {
 	return SwitcherCurrent{}
 }
 
-// NavAgentsList is the partial: the entries in navOrder, the page's own
-// session (currentURL, see navCurrent) marked.
+// NavAgentsList is the partial with no Officers group: NavAgentsWithOfficers
+// with no officers.
 func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL string, now time.Time) g.Node {
+	return NavAgentsWithOfficers(list, mirrors, nil, currentURL, now)
+}
+
+// NavAgentsWithOfficers is the partial: the entries in navOrder, the page's
+// own session (currentURL, see navCurrent) marked, and — when officers is not
+// empty — the Officers group (navOfficersGroup) below the team groups and
+// above Superseded and Idle.
+func NavAgentsWithOfficers(list []AgentCardView, mirrors []MirrorCardView, officers []NavOfficer, currentURL string, now time.Time) g.Node {
 	es := navOrder(list, mirrors)
 	if len(es) == 0 {
-		return P(g.Attr("data-nav-agents-empty", ""), Class("px-3 py-2 text-xs text-muted"), g.Text("No agents yet"))
+		return g.Group{
+			P(g.Attr("data-nav-agents-empty", ""), Class("px-3 py-2 text-xs text-muted"), g.Text("No agents yet")),
+			navOfficersGroup(officers, nil),
+		}
 	}
 	cur := navCurrent(currentURL, list)
 	// The switcher's items for the same entries: each row's label, and what
@@ -202,7 +218,22 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	items := switcherItems(es, cur, now)
 	var rows, idle, superseded []g.Node
 	var teams []navTeam
+	drawn := navOfficerKeys(officers)
+	var instances []navOfficerInstance
 	for i, e := range es {
+		// AN OFFICER'S INSTANCE IS DRAWN THROUGH ITS OFFICER'S ROW in the
+		// Officers group — never in the list, a team's group, Idle or
+		// Superseded — UNLESS IT WAITS ON THE OPERATOR: then it is drawn
+		// where any session that waits is (the waiting rows at the top, or
+		// its team's group), and its officer's row says "↑ waiting"
+		// (navOfficerInstanceDrawnHere). Only an instance whose officer HAS a
+		// row is moved: with the group off, nothing changes.
+		if k := e.officer(); k != "" && drawn[k] && !e.chief() {
+			instances = append(instances, navOfficerInstance{e: e, it: items[i]})
+			if navOfficerRowStandsIn(e) {
+				continue
+			}
+		}
 		// A TEAM's entry — a team host's session (team sharing 2b.3) or a team
 		// agent, its chief included (4.4) — is drawn in its team's ONE group
 		// (listEntry.team), below the viewer's own: two entries named alike —
@@ -226,6 +257,7 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	return g.Group{
 		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
 		navTeamGroups(teams),
+		navOfficersGroup(officers, instances),
 		navSupersededGroup(superseded),
 		navIdleGroup(idle),
 	}
@@ -475,6 +507,11 @@ func RenderNavWaiting(w io.Writer, list []AgentCardView, mirrors []MirrorCardVie
 // clock).
 func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, currentURL string, now time.Time) error {
 	return NavAgentsList(list, mirrors, currentURL, now).Render(w)
+}
+
+// RenderNavAgentsWithOfficers writes NavAgentsWithOfficers.
+func RenderNavAgentsWithOfficers(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, officers []NavOfficer, currentURL string, now time.Time) error {
+	return NavAgentsWithOfficers(list, mirrors, officers, currentURL, now).Render(w)
 }
 
 // navAgentRow is one row: a real-load link (hx-boost="false", as a switcher

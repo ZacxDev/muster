@@ -161,24 +161,8 @@ func TestAnAskImageUploadIsSniffedCappedAndCarriesTheAgentsToken(t *testing.T) {
 	}
 }
 
-// TestTheUploadCapHoldsWhileStreaming: capReader passes exactly the cap and
-// fails on the byte after it, so a file that grows after its Stat cannot send
-// more than the cap.
-func TestTheUploadCapHoldsWhileStreaming(t *testing.T) {
-	for _, tc := range []struct {
-		size     int
-		tooLarge bool
-	}{{askCap, false}, {askCap + 1, true}, {askCap + 4096, true}} {
-		r := &capReader{r: bytes.NewReader(make([]byte, tc.size)), left: askCap}
-		n, err := io.Copy(io.Discard, r)
-		if tc.tooLarge != errors.Is(err, errTooLarge) {
-			t.Errorf("%d bytes: copied %d, err %v; want too-large %v", tc.size, n, err, tc.tooLarge)
-		}
-		if n > askCap+1 {
-			t.Errorf("%d bytes: %d passed the cap", tc.size, n)
-		}
-	}
-}
+// (The streaming cap's own test moved to internal/askattach with the shared
+// client: TestTheUploadCapHoldsWhileStreaming.)
 
 // TestAnUploadIsSentToTheConfiguredMusterOnly: the request goes to base's own
 // host, the path and query built here (a filename with URL syntax in it stays

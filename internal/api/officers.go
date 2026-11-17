@@ -1412,14 +1412,34 @@ func (s *Server) deleteProtection(list []agents.Agent) func(agents.Agent) bool {
 // row of a pod officer or of another host) is not, so it can be removed
 // (destroyAgent's host-row branch) and the officer can run where it now is.
 func (s *Server) isDeclaredInstanceRow(a agents.Agent) bool {
+	_, ok := s.officerOfRow(a)
+	return ok
+}
+
+// officerOfRow is the declared officer a is a CURRENT instance row of
+// (isDeclaredInstanceRow's rule: officerOf, and the row is its officer's
+// current runtime's), ok false for every other agent. The delete protection
+// and the sidebar's Officers group (AgentCardView.Officer, officerKeyOf) read
+// it, so the group never claims a row the server would let be deleted as an
+// ordinary agent, nor the reverse.
+func (s *Server) officerOfRow(a agents.Agent) (officers.Officer, bool) {
 	o, _, ok := s.officerOf(a)
 	if !ok {
-		return false
+		return officers.Officer{}, false
 	}
 	if o.OnHost() {
-		return a.RunsOnHost == o.Host
+		return o, a.RunsOnHost == o.Host
 	}
-	return a.Provisioned()
+	return o, a.Provisioned()
+}
+
+// officerKeyOf is AgentCardView.Officer for a: its officer's registry key
+// (officers.Officer.Key) when officerOfRow binds it, else "".
+func (s *Server) officerKeyOf(a agents.Agent) string {
+	if o, ok := s.officerOfRow(a); ok {
+		return o.Key()
+	}
+	return ""
 }
 
 // agentIsDeleteProtected reads the agent table and answers deleteProtection

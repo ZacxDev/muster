@@ -151,6 +151,10 @@ type MCPProxy struct {
 	// session finds the window showing its root. nil: only a session a
 	// window shows itself is found.
 	OpenCodeAncestors func(id string) []string
+	// Cwd is process pid's working directory: where a calling session's
+	// attention_ask attachments are resolved from (mcpproxy_attach.go). nil
+	// reads this host's own processes (/proc on Linux, lsof on macOS).
+	Cwd func(pid int) (string, bool)
 
 	// Primary is the primary instance's name (URL, Token): what a call naming
 	// no instance runs on; "" reads DefaultPrimaryName (mcpinstances.go).
@@ -363,18 +367,27 @@ func (p *MCPProxy) session(ctx context.Context, r *http.Request) (string, error)
 
 // callerSession is session, and the window the caller's pane is in.
 func (p *MCPProxy) callerSession(ctx context.Context, r *http.Request) (string, WindowInfo, error) {
+	c, w, err := p.callerClaude(ctx, r)
+	return c.Gen, w, err
+}
+
+// callerClaude is the Claude Code pane the caller's pane header names (its
+// session in Gen, its process in PID), and its window: callerSession's ONE
+// resolution, which the attachment upload (mcpproxy_attach.go) reads the
+// session's working directory from.
+func (p *MCPProxy) callerClaude(ctx context.Context, r *http.Request) (ClaudePane, WindowInfo, error) {
 	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
 	if pane == "" {
-		return "", WindowInfo{}, fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+		return ClaudePane{}, WindowInfo{}, fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
 	}
 	if p.Windows == nil {
-		return "", WindowInfo{}, errors.New("this host cannot resolve a tmux pane")
+		return ClaudePane{}, WindowInfo{}, errors.New("this host cannot resolve a tmux pane")
 	}
 	// A FRESH read, not the last refresh's: a session that started since then
 	// is found now.
 	ws, err := p.Windows.Windows(ctx)
 	if err != nil {
-		return "", WindowInfo{}, fmt.Errorf("list windows: %w", err)
+		return ClaudePane{}, WindowInfo{}, fmt.Errorf("list windows: %w", err)
 	}
 	// What muster will be told, bounds applied (WireWindows: at most
 	// MaxOtherClaudePerWindow other panes per window, MaxOtherClaude in all):
@@ -391,14 +404,14 @@ func (p *MCPProxy) callerSession(ctx context.Context, r *http.Request) (string, 
 		for _, c := range append([]ClaudePane{derefClaude(w.Claude)}, w.Others...) {
 			if c.Pane == pane && c.Gen != "" {
 				if !listed[c.Gen] {
-					return "", WindowInfo{}, fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
+					return ClaudePane{}, WindowInfo{}, fmt.Errorf("pane %s runs Claude Code, but muster tracks at most %d other Claude panes per window (%d per host) and this one is past that",
 						pane, mirror.MaxOtherClaudePerWindow, mirror.MaxOtherClaude)
 				}
-				return c.Gen, w, nil
+				return c, w, nil
 			}
 		}
 	}
-	return "", WindowInfo{}, fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
+	return ClaudePane{}, WindowInfo{}, fmt.Errorf("no Claude Code session runs in pane %s (one that has not sent its first message has no transcript yet)", describePane(pane))
 }
 
 // describePane is a pane header's value as received — quoted, so an odd byte
@@ -720,6 +733,7 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 	// and is forwarded with that session's KEY instead of a Claude session.
 	openCode := OpenCodeCaller(r)
 	agentKey := ""
+	var made askUploads
 	if method == "tools/call" {
 		if openCode {
 			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(params))
@@ -745,8 +759,21 @@ func (p *MCPProxy) primaryRequest(w http.ResponseWriter, r *http.Request, method
 			}
 			cancel()
 		}
+		// attention_ask's attachments: the files are on THIS host, so they are
+		// uploaded from here and the call carries their ids (mcpproxy_attach.go).
+		var refused string
+		if body, made, refused = p.uploadAskAttachments(r, body, sid, openCode); refused != "" {
+			mcpToolError(w, id, refused)
+			return nil, false
+		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(body))
+	rctx := r.Context()
+	if len(made.ids) > 0 {
+		// send reads muster's reply and revokes these when it did not file
+		// the ask (revokeIfRefused).
+		rctx = context.WithValue(rctx, askUploadsKey{}, made)
+	}
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
 		return nil, false
@@ -800,8 +827,13 @@ func (p *MCPProxy) send(w http.ResponseWriter, req *http.Request) (*http.Respons
 			return nil, false
 		}
 		mcpRefuse(w, http.StatusBadGateway, "muster could not be reached")
+		// The call never reached muster: an ask's uploads have no ask.
+		if u, _ := req.Context().Value(askUploadsKey{}).(askUploads); len(u.ids) > 0 {
+			p.revokeAskUploads(u)
+		}
 		return nil, false
 	}
+	p.revokeIfRefused(req, resp)
 	return resp, true
 }
 

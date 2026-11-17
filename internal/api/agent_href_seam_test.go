@@ -337,6 +337,9 @@ var agentHrefCallLedger = map[string]int{
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,
+	// The sidebar's Officers group: a running officer's row opens its live
+	// instance's chat — a sidebar row's link, so the same list link.
+	"PageHref ← internal/ui/nav_officers.go:navOfficerRow": 1,
 	// The palette's server search answers each hit as its entry's href — the
 	// SAME href the row and the pill carry (AgentListHref of the latest
 	// session, as PageHref composes it), which is how the palette finds the

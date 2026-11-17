@@ -182,6 +182,31 @@ func (s *Store) ListItems(ctx context.Context, owner int64, officer, status stri
 	return out, nil
 }
 
+// ItemCounts is, in ONE query, how many items of each officer of owners have
+// one of statuses; an officer absent from the map has none. Read under ctx's
+// principal (row-level security), as the sidebar's Officers group reads it.
+func (s *Store) ItemCounts(ctx context.Context, owners []int64, statuses []string) (map[OfficerRef]int, error) {
+	out := map[OfficerRef]int{}
+	if len(owners) == 0 || len(statuses) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT owner_id, officer, count(*) FROM officer_items
+		WHERE owner_id = ANY($1::bigint[]) AND status = ANY($2::text[]) GROUP BY owner_id, officer`, owners, statuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r OfficerRef
+		var n int
+		if err := rows.Scan(&r.Owner, &r.Officer, &n); err != nil {
+			return nil, err
+		}
+		out[r] = n
+	}
+	return out, rows.Err()
+}
+
 // ResolveItem is the OWNER finishing owner's officer's item id by hand:
 // outcome done, no_action or escalated, with summary. Refused (an
 // *officers.HQError, 409 held) while an instance holds it under a live lease,

@@ -65,8 +65,8 @@ it off. The full list of features, with every `.env` line, is
 - [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
 - [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
-- [officers.md](officers.md) — officers: standing, queue-driven Claude Code agents whose queue and charter live in HQ; muster wakes them, scales them to zero, and holds their HQ token
-- [officers-builtin.md](officers-builtin.md) — officers on muster's own built-in backend: define a type, charter and officer with `muster officer`, enable it, asks and escalations through Attention
+- [officers-builtin.md](officers-builtin.md) — **start here for officers**: standing Claude Code agents with a charter and a queue, made on the Officers page (New officer, templates, Shadow then Live) on muster's own built-in backend; how they work, and the `MUSTER_OFFICERS`, CLI and admin-API reference
+- [officers.md](officers.md) — the officer reference: the HQ backend, and what every officer's instances get (pods, network, runner image, repositories, tools, tiers, the LLM proxy)
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**
@@ -103,4 +103,5 @@ it off. The full list of features, with every `.env` line, is
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
+- [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)

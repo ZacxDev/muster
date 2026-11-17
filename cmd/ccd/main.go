@@ -125,6 +125,8 @@ func run(args []string) int {
 		return runApprove(args, os.Stdin, os.Stdout, os.Stderr)
 	case "ask-image":
 		return runAskImage(args, os.Stdout, os.Stderr)
+	case "ask-attach":
+		return runAskAttach(args, os.Stdout, os.Stderr)
 	case "compose":
 		return runCompose(args, os.Stderr)
 	case "compose-epoch":
@@ -132,7 +134,7 @@ func run(args []string) int {
 	case "gh":
 		return runGH(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | compose | compose-epoch <dir> <epoch> | gh <read-only gh>)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | ask-attach <path> | compose | compose-epoch <dir> <epoch> | gh <read-only gh>)\n", cmd)
 		return 2
 	}
 }
