@@ -51,10 +51,11 @@ func fleetMetricQueries(t *testing.T) []string {
 // "ci", an older pull request and a push — so a query that drops a filter
 // answers a different number.
 func TestTheFleetMetricQueriesRun(t *testing.T) {
-	qs := fleetMetricQueries(t)
-	if len(qs) != 6 {
-		t.Fatalf("docs/design/fleet-metrics.md has %d sql blocks, want 6 (one per query this test checks)", len(qs))
-	}
+	// 🔴 THE DATABASE FIRST, THEN THE DOC: the nix build's check phase runs
+	// this package from a source tree without docs/ and without a database,
+	// where dbtest.DSN skips, as it skips every database test there. Where a
+	// database is required (MUSTER_TEST_REQUIRE_DB=1, the postgres tier) the
+	// whole tree is checked out, so a missing doc fails.
 	ctx, cancel := context.WithTimeout(authz.System(context.Background()), 2*time.Minute)
 	t.Cleanup(cancel)
 	pool, err := db.Connect(ctx, dbtest.DSN(t))
@@ -62,6 +63,10 @@ func TestTheFleetMetricQueriesRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	qs := fleetMetricQueries(t)
+	if len(qs) != 6 {
+		t.Fatalf("docs/design/fleet-metrics.md has %d sql blocks, want 6 (one per query this test checks)", len(qs))
+	}
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	owner := scanID(ctx, t, pool, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "fm-a-"+suffix)
 	other := scanID(ctx, t, pool, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "fm-b-"+suffix)
