@@ -693,8 +693,12 @@ opencode TUI on the host is a client of, `127.0.0.1:<port>`) through its HTTP
 API, with a **pair token** of its own — never the server's password. It needs
 **opencode 2 or later**: opencode 1 has no background service and writes no
 registration file (upgrade a 1.x with `opencode upgrade --major`;
-`opencode-pair` reads `opencode --version` and says which case it is). Pair each
-host once:
+`opencode-pair` reads `opencode --version` and says which case it is).
+opencode's plain installer, `curl -fsSL https://opencode.ai/install | bash`,
+installs opencode **1**; `curl -fsSL https://opencode.ai/v2/install | bash`
+installs 2 (into `~/.opencode/bin`). The registration file exists only once an
+opencode 2 server has run on the host, so **run opencode once first** (the TUI,
+or `opencode serve`). Then pair each host once:
 
 ```sh
 muster-mirror opencode-pair

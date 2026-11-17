@@ -134,6 +134,13 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      # With the s3 profile on, muster starts once the store is healthy (its
+      # healthcheck: the bucket exists), so its boot probe of the bucket finds
+      # it instead of answering NoSuchBucket. `required: false`: without the
+      # profile there is no s3 service, and muster starts without it.
+      s3:
+        condition: service_healthy
+        required: false
     ports:
       - "${MUSTER_BIND:-127.0.0.1}:${MUSTER_HTTP_PORT:-8105}:8105"
     # 🔴 ANCHORED: muster-init (below) runs the server's boot checks on THIS
