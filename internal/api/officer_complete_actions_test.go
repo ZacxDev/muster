@@ -42,7 +42,7 @@ func TestOfficerCompleteForwardsTheActionFieldsAsSent(t *testing.T) {
 	ctx := context.Background()
 	judge := r.addNamed(offKJudge+"1", 2301)
 	for i, f := range actionFields {
-		item := r.hq.AddTieredItem(offK, "release.evaluate", "civitai-web:img-"+f.key, officers.TierJudgement)
+		item := r.hq.AddTieredItem(offK, "release.evaluate", "web-app:img-"+f.key, officers.TierJudgement)
 		r.hq.SetClaim(item, judge.Name, time.Now().Add(10*time.Minute))
 		r.hq.ResetRequests()
 		args := `{"item_id":"` + item + `","outcome":"escalated","summary":"RATING: medium — DB owner: apply it ` + string(rune('a'+i)) + `","` + f.key + `":` + f.arg + `}`
@@ -62,7 +62,7 @@ func TestOfficerCompleteForwardsTheActionFieldsAsSent(t *testing.T) {
 			}
 		}
 	}
-	item := r.hq.AddTieredItem(offK, "release.evaluate", "civitai-web:img-both", officers.TierJudgement)
+	item := r.hq.AddTieredItem(offK, "release.evaluate", "web-app:img-both", officers.TierJudgement)
 	r.hq.SetClaim(item, judge.Name, time.Now().Add(10*time.Minute))
 	r.hq.ResetRequests()
 	args := `{"item_id":"` + item + `","outcome":"escalated","summary":"RATING: medium — DB owner: apply it","actions":` + actionsArg + `,"action_reports":` + actionReportsArg + `}`
@@ -87,7 +87,7 @@ func TestOfficerCompleteSendsNoActionKeyWhenNoneIsGiven(t *testing.T) {
 	r := newKubeOfficerRig(t)
 	ctx := context.Background()
 	judge := r.addNamed(offKJudge+"1", 2311)
-	item := r.hq.AddTieredItem(offK, "release.evaluate", "civitai-web:img-none", officers.TierJudgement)
+	item := r.hq.AddTieredItem(offK, "release.evaluate", "web-app:img-none", officers.TierJudgement)
 	r.hq.SetClaim(item, judge.Name, time.Now().Add(10*time.Minute))
 	r.hq.ResetRequests()
 	if out := r.s.dispatchAgentTool(ctx, judge, completeTool, `{"item_id":"`+item+`","outcome":"done","summary":"RATING: low — no action"}`); isToolErr(out) {
@@ -112,8 +112,8 @@ func TestOfficerCompleteOffersTheActionFieldsToAnHQOfficerOnly(t *testing.T) {
 		want bool
 	}{
 		{"builtin", officers.Officer{ID: "marketing:example", Backend: officers.BackendBuiltin}, false},
-		{"hq", officers.Officer{ID: "release:civitai-web"}, true},
-		{"hq routine", officers.Officer{ID: "release:civitai-web", Backend: officers.BackendHQ, Tier: officers.TierRoutine}, true},
+		{"hq", officers.Officer{ID: "release:web-app"}, true},
+		{"hq routine", officers.Officer{ID: "release:web-app", Backend: officers.BackendHQ, Tier: officers.TierRoutine}, true},
 	} {
 		props := completePropsOf(t, []agents.ToolDef{completeToolDef(c.o)})
 		for _, f := range actionFields {
@@ -140,7 +140,7 @@ func TestAnHQWithoutActionsRefusesThemAndTheRetryWithoutSucceeds(t *testing.T) {
 	ctx := context.Background()
 	r.hq.CompleteFields = hqtest.CompleteFieldsWithout("actions", "action_reports")
 	judge := r.addNamed(offKJudge+"1", 2331)
-	item := r.hq.AddTieredItem(offK, "release.evaluate", "civitai-web:img-old-hq", officers.TierJudgement)
+	item := r.hq.AddTieredItem(offK, "release.evaluate", "web-app:img-old-hq", officers.TierJudgement)
 	r.hq.SetClaim(item, judge.Name, time.Now().Add(10*time.Minute))
 	r.hq.ResetRequests()
 	out := r.s.dispatchAgentTool(ctx, judge, completeTool, `{"item_id":"`+item+`","outcome":"escalated","summary":"RATING: medium — DB owner: apply it","actions":`+actionsArg+`}`)
