@@ -1478,6 +1478,8 @@ func queueToolDefs() []agents.ToolDef {
 			})},
 		{Type: "function", Name: officers.ToolClaim,
 			Description: "Claim one item so no other instance works it. With NO item_id, HQ picks the next item for you (highest priority first, then the earliest due, then the oldest; never a blocked one) and the answer is that item — or item null when nothing is claimable: stop and wait. " +
+				"The answer's memory is what HQ recorded of your earlier work: history, open_threads (your escalations still open) and, when you have any, " +
+				"open_actions (the structured actions of those escalations still to confirm, least recently checked first: re-check them as your charter says). " +
 				"Give an item_id only when your charter says to claim a particular item. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
 			Parameters: objSchema(map[string]any{"item_id": strProp("Optional: the item's id, as officer_items or officer_brief returned it. Omit it to take the next item."), "lease_seconds": lease})},
 		{Type: "function", Name: officers.ToolHeartbeat,
@@ -1609,6 +1611,16 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 			"description": "Optional, a release-ticket item (your charter says when): the support tickets you link to a PR, " +
 				"[{ticket_id, pr, attribution: \"likely\"|\"confirmed\", gist: your own short paraphrase, never a quote of the ticket}], " +
 				"each ticket_id one of your item's payload tickets. HQ validates it and may refuse with 400."}
+		desc += " On a release.evaluate or release.post_report item: when you escalate, name each action a human must still take in `actions`; " +
+			"and report what you re-checked of the actions in your claim's memory.open_actions in `action_reports` (your charter says how)."
+		props["actions"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
+			"description": "Optional, outcome escalated, a release.evaluate or release.post_report item: what a human must still do, at most 5 " +
+				"[{kind: migration_applied|index_valid|flipt_key_exists|manual, target, condition?}] (your charter gives each kind's target and condition). " +
+				"HQ validates it (an unknown kind or a badly formed target is a 400) and a refused complete leaves the item held."}
+		props["action_reports"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true},
+			"description": "Optional, any outcome but needs_judgement, a release.evaluate or release.post_report item: what you found when you re-checked " +
+				"the actions your claim's memory.open_actions lists, [{item_id, index, status: done|still_open, evidence: the check you ran and what it returned}]. " +
+				"Report done only when your check showed it. HQ validates it and may refuse with 400."}
 	}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
@@ -1826,6 +1838,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		AttributedPRs json.RawMessage `json:"attributed_prs"`
 		Attribution   json.RawMessage `json:"attribution"`
 		Tickets       json.RawMessage `json:"tickets"`
+		// officer_complete's structured actions and action reports, kept as
+		// sent and forwarded unchanged under the same rule (civ-hq §5d).
+		Actions       json.RawMessage `json:"actions"`
+		ActionReports json.RawMessage `json:"action_reports"`
 		// officer_complete's hand-off, checked by completeHandoff.
 		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
@@ -1979,9 +1995,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// 🔴 REFUSED, NEVER DROPPED, on a builtin officer: it is not offered
 		// them, and its backend would complete the item without them.
 		if !completeTakesHQFields(o) {
-			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets} {
+			for f, raw := range map[string]json.RawMessage{"authors": in.Authors, "attributed_prs": in.AttributedPRs, "attribution": in.Attribution, "tickets": in.Tickets,
+				"actions": in.Actions, "action_reports": in.ActionReports} {
 				if len(bytes.TrimSpace(raw)) > 0 {
-					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution or tickets): complete without it", f, o.ID), true
+					return toolErr("%s is not served by officer %s's builtin backend (it has no author mail, attribution, tickets or structured actions): complete without it", f, o.ID), true
 				}
 			}
 		}
@@ -2015,7 +2032,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// HQ's bound, never the instance's own text.
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
 		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff,
-			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets}
+			AuthorsJSON: in.Authors, AttributedPRsJSON: in.AttributedPRs, AttributionJSON: in.Attribution, TicketsJSON: in.Tickets,
+			ActionsJSON: in.Actions, ActionReportsJSON: in.ActionReports}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {

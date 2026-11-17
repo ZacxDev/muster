@@ -174,7 +174,7 @@ func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-hooks-token")
 	briefInstance(t, srv, a) // until it is, its claim is refused charter_changed
 	props := completePropsOf(t, srv.MCPToolDefsFor(ctx, a))
-	for _, k := range []string{"authors", "attributed_prs", "attribution", "tickets"} {
+	for _, k := range []string{"authors", "attributed_prs", "attribution", "tickets", "actions", "action_reports"} {
 		if _, has := props[k]; has {
 			t.Errorf("a builtin officer's officer_complete offers %s", k)
 		}
@@ -186,6 +186,12 @@ func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
 	out := srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"drafted","tickets":[]}`)
 	if !isToolErr(out) || !strings.Contains(out, "tickets is not served by officer "+builtinOfficerID+"'s builtin backend") {
 		t.Fatalf("tickets from a builtin instance: %s, want muster's refusal naming tickets", out)
+	}
+	for _, k := range []string{"actions", "action_reports"} {
+		out := srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"drafted","`+k+`":[]}`)
+		if !isToolErr(out) || !strings.Contains(out, k+" is not served by officer "+builtinOfficerID+"'s builtin backend") {
+			t.Fatalf("%s from a builtin instance: %s, want muster's refusal naming %s", k, out, k)
+		}
 	}
 	var status string
 	if err := f.pool.QueryRow(ctx, `SELECT status FROM officer_items WHERE id = $1`, id).Scan(&status); err != nil {
