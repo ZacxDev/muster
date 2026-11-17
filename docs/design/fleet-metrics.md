@@ -51,23 +51,44 @@ was idle, not held on a prompt. It ends with an `end_reason`:
 `gone` and `reset` say nothing about who resolved the stop, so the metrics
 leave them out.
 
+⚠ A `worked` end is recorded only after the session has worked continuously
+for `EndAfter` (120 s, `internal/sessionstate`), so its `ended_at` comes at
+least that late. An `owner` or `viewed` end is recorded at once. A median that
+mixes the three is therefore slightly biased: the `worked` stops read longer
+than they were.
+
+⚠ A stop that has not ended has no wait to measure yet. Queries 1 and 2 report
+the open stops beside the ended ones: their count, and for query 1 their age
+so far. A median over ended stops alone reads low while long stops are still
+open.
+
 ## 1. Owner wait on a stop
 
 Minutes from a non-waiting stop opening to its end, for stops that opened in
-the window and ended by `owner`, `viewed` or `worked`. The median and the
-90th percentile.
+the window and ended by `owner`, `viewed` or `worked`: `stops`, and the
+median and 90th percentile. **These cover ended stops only.** Beside them,
+the non-waiting stops that opened in the window and are still open:
+`open_stops`, and the median and 90th percentile of their age so far.
 
 ```sql
-SELECT count(*) AS stops,
-       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM ended_at - opened_at)) / 60)::numeric, 1) AS median_min,
-       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM ended_at - opened_at)) / 60)::numeric, 1) AS p90_min
+SELECT count(*) FILTER (WHERE end_reason IN ('owner', 'viewed', 'worked')) AS stops,
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM ended_at - opened_at))
+             FILTER (WHERE end_reason IN ('owner', 'viewed', 'worked')) / 60)::numeric, 1) AS median_min,
+       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM ended_at - opened_at))
+             FILTER (WHERE end_reason IN ('owner', 'viewed', 'worked')) / 60)::numeric, 1) AS p90_min,
+       count(*) FILTER (WHERE ended_at IS NULL) AS open_stops,
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM now() - opened_at))
+             FILTER (WHERE ended_at IS NULL) / 60)::numeric, 1) AS open_median_min,
+       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM now() - opened_at))
+             FILTER (WHERE ended_at IS NULL) / 60)::numeric, 1) AS open_p90_min
 FROM session_episodes
 WHERE owner_id = $1 AND opened_at >= now() - $2::interval
-  AND NOT waiting AND end_reason IN ('owner', 'viewed', 'worked')
+  AND NOT waiting AND (end_reason IN ('owner', 'viewed', 'worked') OR ended_at IS NULL)
 ```
 
-The same, split by the UTC hour the stop opened in. It shows when stops wait
-longest, for example while the owner is asleep.
+The ended stops' wait, split by the UTC hour the stop opened in (ended stops
+only). It shows when stops wait longest, for example while the owner is
+asleep.
 
 ```sql
 SELECT extract(hour FROM opened_at AT TIME ZONE 'UTC')::int AS utc_hour, count(*) AS stops,
@@ -82,23 +103,30 @@ GROUP BY 1 ORDER BY 1
 
 Of the non-waiting stops that opened in the window and have ended (not
 `gone` or `reset`): how many ended `worked`, and the share in whole percent.
-A stop the chief resolves with a fleet action will count here once fleet
-actions exist. Until then it counts only through `worked`.
+The share is over **ended stops only**. `open_stops` counts the ones still
+open, which may yet end either way. A stop the chief resolves with a fleet
+action will count here once fleet actions exist. Until then it counts only
+through `worked`.
 
 ```sql
-SELECT count(*) AS ended,
+SELECT count(*) FILTER (WHERE ended_at IS NOT NULL) AS ended,
        count(*) FILTER (WHERE end_reason = 'worked') AS without_owner,
-       coalesce(round(100.0 * count(*) FILTER (WHERE end_reason = 'worked') / nullif(count(*), 0)), 0)::int AS pct
+       coalesce(round(100.0 * count(*) FILTER (WHERE end_reason = 'worked')
+             / nullif(count(*) FILTER (WHERE ended_at IS NOT NULL), 0)), 0)::int AS pct,
+       count(*) FILTER (WHERE ended_at IS NULL) AS open_stops
 FROM session_episodes
 WHERE owner_id = $1 AND opened_at >= now() - $2::interval
-  AND NOT waiting AND ended_at IS NOT NULL AND end_reason NOT IN ('gone', 'reset')
+  AND NOT waiting AND (ended_at IS NULL OR end_reason NOT IN ('gone', 'reset'))
 ```
 
 ## 3. CI waits left to the owner
 
-Stall decisions in the window whose reason is about CI, joined to the stop
-they were taken in (`chief_nudges.episode_id`): how many there were, how many
-the owner ended, and the median minutes from the decision to that end.
+Stops with a stall decision in the window whose reason is about CI, joined
+through `chief_nudges.episode_id`: how many there were, how many the owner
+ended, and the median minutes from the decision to that end. Counting
+decisions counts stops: a stop holds at most one decision (the unique index
+`chief_nudges_one_per_episode`, migration `0078`), and the test pins that. A
+decision taken with session state off has no stop and is not counted.
 
 ⚠ **This one is a heuristic.** "About CI" is a word match on the chief's own
 one-line `reason` (`ci`, `check`, `checks`, as whole words, any case). No
@@ -143,11 +171,15 @@ ORDER BY e.opened_at
 
 ## 5. The chief's cost per day
 
-The chief's turns per UTC day in the window: all turns, the input-side
+The chief's turns per UTC day: all turns, the input-side
 tokens (input + cache read + cache creation) and the output tokens. Then the
 stall checks (trigger `nudge_check`, migration `0146`): how many there were,
 their input-side tokens, and their share of the day's total tokens in whole
 percent.
+
+The rows are whole UTC days, starting the day after the one `now() - $2`
+falls in, so the oldest row is never a partial day. The last row is today so
+far.
 
 These are token **counts**, not a cost ([usage.md](../usage.md)): a cache
 read is billed far below an input token. Turns whose runtime reported no
@@ -165,7 +197,8 @@ SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS utc_day,
        coalesce(round(100.0 * sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) FILTER (WHERE trigger = 'nudge_check')
              / nullif(sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)), 0)::int AS checks_pct
 FROM chief_turn_usage
-WHERE owner_id = $1 AND created_at >= now() - $2::interval
+WHERE owner_id = $1
+  AND created_at >= (date_trunc('day', (now() - $2::interval) AT TIME ZONE 'UTC') + interval '1 day') AT TIME ZONE 'UTC'
 GROUP BY 1 ORDER BY 1
 ```
 

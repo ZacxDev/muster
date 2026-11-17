@@ -13,6 +13,13 @@
 -- changes: every existing row holds a value the wider check still allows.
 -- Idempotent; not re-applied by db.RLSOn (no table, no policy).
 --
+-- Not ADD CONSTRAINT … NOT VALID then VALIDATE: the migrator runs each file
+-- in ONE transaction (internal/db migrate.go), and the DROP and ADD already
+-- take ACCESS EXCLUSIVE until it commits, so a VALIDATE in the same
+-- transaction scans under that same lock and shortens nothing. The scan is
+-- bounded by the 3 s lock_timeout below only for the wait, not the scan; the
+-- table holds a few numbers per chief turn.
+--
 -- Must apply after its predecessor, 0145 (the contiguity test refuses a gap).
 -- 🔴 RENUMBER IT AT MERGE IF MAIN MOVED: 0145 is held by another open change,
 -- and a sibling change takes 0147; take the next free number then.

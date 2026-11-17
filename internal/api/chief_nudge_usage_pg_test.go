@@ -68,15 +68,15 @@ func nudgeCheckBody(reply, usage string) string {
 const nudgeCheckModel = "claude-nudge-check-sentinel-7"
 
 // withRealCheckGateway points the fixture's gateway at rt through the real
-// agentgateway, gives the boss nudgeCheckModel, and records chief turns.
-func withRealCheckGateway(t *testing.T, f *nudgeFixture, rt *nudgeCheckRuntime) {
+// agentgateway, gives chief nudgeCheckModel, and records chief turns.
+func withRealCheckGateway(t *testing.T, f *nudgeFixture, rt *nudgeCheckRuntime, chief agents.Agent) {
 	t.Helper()
 	sys := authz.System(context.Background())
-	if _, err := f.pool.Exec(sys, `UPDATE agents SET model = $2 WHERE id = $1`, f.boss.ID, nudgeCheckModel); err != nil {
+	if _, err := f.pool.Exec(sys, `UPDATE agents SET model = $2 WHERE id = $1`, chief.ID, nudgeCheckModel); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM chief_turn_usage WHERE chief_agent = $1`, f.boss.ID)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM chief_turn_usage WHERE chief_agent = $1`, chief.ID)
 	})
 	up := httptest.NewServer(rt)
 	t.Cleanup(up.Close)
@@ -101,12 +101,12 @@ type nudgeCheckRow struct {
 	pluginEmpty, senderNil bool
 }
 
-func nudgeCheckRows(t *testing.T, f *nudgeFixture) []nudgeCheckRow {
+func nudgeCheckRows(t *testing.T, f *nudgeFixture, chief int64) []nudgeCheckRow {
 	t.Helper()
 	rows, err := f.pool.Query(authz.System(context.Background()), `SELECT owner_id, trigger, outcome, usage_known, session_id IS NULL,
 		input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model, duration_ms >= 0,
 		plugin_name = '', plugin_message_id IS NULL
-		FROM chief_turn_usage WHERE chief_agent = $1 ORDER BY id`, f.boss.ID)
+		FROM chief_turn_usage WHERE chief_agent = $1 ORDER BY id`, chief)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,31 +130,48 @@ func nudgeCheckRows(t *testing.T, f *nudgeFixture) []nudgeCheckRow {
 // stalled session, one check — and exactly one chief_turn_usage row, trigger
 // nudge_check, carrying the runtime's own tokens (pairwise distinct literals),
 // the chief's model, no chat session (the check's is throwaway), under the
-// owner. A second pass that calls nothing (the streak is decided) adds none.
+// SWEPT owner. That owner is the fixture's member, NOT the operator (user 1),
+// so a row filed under the operator whatever the sweep's owner is cannot
+// pass. A second pass that calls nothing (the streak is decided) adds none.
 func TestAStallCheckWritesExactlyOneUsageRowTaggedNudgeCheck(t *testing.T) {
 	f := newNudgeFixture(t, false)
-	rt := &nudgeCheckRuntime{body: nudgeCheckBody(nudgeReply(nudgeOwnerID, "keep going until merged", "merge the pull request"),
+	// The operator has nothing stalled: no mirrored window, no transcript.
+	f.srv.nudgeReadHook = nil
+	f.mirror.windows = nil
+	if f.member == authz.OperatorUserID {
+		t.Fatal("instrument check: the fixture's member is the operator")
+	}
+	_, quoteID := f.stallAgent(t, f.worker, f.member)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM chief_nudges WHERE owner_id = $1`, f.member)
+	})
+	rt := &nudgeCheckRuntime{body: nudgeCheckBody(nudgeReply(strconv.FormatInt(quoteID, 10), "keep going until merged", "merge the pull request"),
 		`{"input_tokens":21,"output_tokens":43,"cache_read_input_tokens":6500,"cache_creation_input_tokens":870}`)}
-	withRealCheckGateway(t, f, rt)
+	withRealCheckGateway(t, f, rt, f.chief)
 
 	if n := f.pass(t); n != 1 {
 		t.Fatalf("decided %d, want 1", n)
 	}
 	// The check's reply went through the real gateway and was parsed: the
-	// decision is the scripted nudge, so the call the row counts really ran.
-	if d := f.one(t); d.Decision != chiefnudge.DecisionNudge {
-		t.Fatalf("decision %+v, want a nudge", d)
+	// member's decision is the scripted nudge, so the call the row counts ran.
+	var decision string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT decision FROM chief_nudges WHERE owner_id = $1 AND agent_id = $2`,
+		f.member, f.worker.ID).Scan(&decision); err != nil || decision != chiefnudge.DecisionNudge {
+		t.Fatalf("the member's decision %q (%v), want a nudge", decision, err)
 	}
-	want := nudgeCheckRow{owner: authz.OperatorUserID, trigger: "nudge_check", outcome: "other", known: true, noSession: true,
+	if got := nudgeCheckRows(t, f, f.boss.ID); len(got) != 0 {
+		t.Fatalf("the operator's chief has usage rows: %+v", got)
+	}
+	want := nudgeCheckRow{owner: f.member, trigger: "nudge_check", outcome: "other", known: true, noSession: true,
 		in: 21, out: 43, read: 6500, create: 870, model: nudgeCheckModel, durationNonNegative: true, pluginEmpty: true, senderNil: true}
-	got := nudgeCheckRows(t, f)
+	got := nudgeCheckRows(t, f, f.chief.ID)
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("chief_turn_usage rows for the chief = %+v\nwant exactly [%+v]", got, want)
 	}
 	if n := f.pass(t); n != 0 {
 		t.Fatalf("a second pass decided %d", n)
 	}
-	if got := nudgeCheckRows(t, f); len(got) != 1 {
+	if got := nudgeCheckRows(t, f, f.chief.ID); len(got) != 1 {
 		t.Fatalf("a pass that put nothing to the chief wrote usage rows: %+v", got)
 	}
 	rt.mu.Lock()
@@ -174,7 +191,7 @@ func TestARefusedStallCheckWritesNoUsageRow(t *testing.T) {
 	f := newNudgeFixture(t, false)
 	rt := &nudgeCheckRuntime{status: http.StatusServiceUnavailable,
 		body: `{"error":{"type":"` + agents.FailureCapacity + `","message":"no lane for the check"}}`}
-	withRealCheckGateway(t, f, rt)
+	withRealCheckGateway(t, f, rt, f.boss)
 
 	if n := f.pass(t); n != 0 {
 		t.Fatalf("decided %d, want 0 (a refused check is retried)", n)
@@ -185,7 +202,7 @@ func TestARefusedStallCheckWritesNoUsageRow(t *testing.T) {
 	if calls < 1 {
 		t.Fatalf("the runtime saw %d calls: the refusal was never exercised", calls)
 	}
-	if got := nudgeCheckRows(t, f); len(got) != 0 {
+	if got := nudgeCheckRows(t, f, f.boss.ID); len(got) != 0 {
 		t.Fatalf("a refused check wrote usage rows: %+v", got)
 	}
 }

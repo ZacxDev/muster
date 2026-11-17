@@ -48,8 +48,10 @@ func fleetMetricQueries(t *testing.T) []string {
 // owner ($1) and window ($2), over a fixed fixture, and answers literal
 // values. The fixture holds rows each query must leave out — another owner's,
 // rows outside the window, waiting / gone stops, a reason that only CONTAINS
-// "ci", an older pull request and a push — so a query that drops a filter
-// answers a different number.
+// "ci", an older pull request and a push, a turn on the window's partial
+// oldest UTC day — so a query that drops a filter answers a different number.
+// And rows each query must COUNT that an ended-only reading would drop: two
+// open stops.
 func TestTheFleetMetricQueriesRun(t *testing.T) {
 	// 🔴 THE DATABASE FIRST, THEN THE DOC: the nix build's check phase runs
 	// this package from a source tree without docs/ and without a database,
@@ -102,6 +104,11 @@ func TestTheFleetMetricQueriesRun(t *testing.T) {
 	episode(owner, "k6", false, base.AddDate(0, 0, -10), 40*time.Minute, "owner")
 	e7 := scanID(ctx, t, pool, `INSERT INTO session_episodes (owner_id, session_kind, session_key, seq, state, opened_at)
 		VALUES ($1, 'mirror', $2, 1, 'stalled', now() - interval '5 hours') RETURNING id`, owner, "k7-"+suffix)
+	// Open stops: k7 (5 h, also query 4's) and k8 (3 h); k9 is open but waiting.
+	scanID(ctx, t, pool, `INSERT INTO session_episodes (owner_id, session_kind, session_key, seq, state, opened_at)
+		VALUES ($1, 'mirror', $2, 1, 'stalled', now() - interval '3 hours') RETURNING id`, owner, "k8-"+suffix)
+	scanID(ctx, t, pool, `INSERT INTO session_episodes (owner_id, session_kind, session_key, seq, state, waiting, opened_at)
+		VALUES ($1, 'mirror', $2, 1, 'needs_you', true, now() - interval '1 hour') RETURNING id`, owner, "k9-"+suffix)
 	eOther := episode(other, "k1", false, base.Add(-2*h), 20*time.Minute, "worked")
 
 	nudge := func(o, ep int64, key, reason string, decided time.Time) {
@@ -113,6 +120,13 @@ func TestTheFleetMetricQueriesRun(t *testing.T) {
 	nudge(owner, e2, "k2", "waiting on Checks to finish", base.Add(-3*h+30*time.Minute))
 	nudge(owner, e3, "k3", "the circle of reviewers decides", base.Add(-4*h+time.Minute))
 	nudge(other, eOther, "k1", "CI is red", base.Add(-2*h+time.Minute))
+	// Query 3 counts decisions as stops because a stop holds at most one
+	// decision: chief_nudges_one_per_episode (0078) refuses a second.
+	if _, err := pool.Exec(ctx, `INSERT INTO chief_nudges (owner_id, session_kind, session_key, streak_key, decision, mode, outcome, reason, episode_id)
+		VALUES ($1, 'mirror', $2, 'since:2', 'leave', 'shadow', 'left', 'CI again', $3)`, owner, "k1-"+suffix, e1); err == nil ||
+		!strings.Contains(err.Error(), "chief_nudges_one_per_episode") {
+		t.Fatalf("a second decision on one stop: %v; want refused by chief_nudges_one_per_episode", err)
+	}
 
 	pr := func(o int64, key, kind string, n any, ref any, seen string) {
 		t.Helper()
@@ -135,6 +149,8 @@ func TestTheFleetMetricQueriesRun(t *testing.T) {
 	turn(owner, "other", false, 0, 0, 0, 0, "0 seconds")
 	turn(owner, "nudge_check", true, 999, 999, 999, 999, "10 days")
 	turn(other, "nudge_check", true, 7000, 7000, 7000, 7000, "0 seconds")
+	// Inside the 7-day window, but on its partial oldest UTC day.
+	turn(owner, "plugin", true, 31, 37, 41, 43, "6 days 23:59:59")
 	var today string
 	if err := pool.QueryRow(ctx, `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD')`).Scan(&today); err != nil {
 		t.Fatal(err)
@@ -172,18 +188,20 @@ func TestTheFleetMetricQueriesRun(t *testing.T) {
 	}
 	want := [][]string{
 		// 1: the three stops ended by owner / viewed / worked in the window
-		// (30, 90 and 10 min): median 30, p90 30 + 0.8 × 60 = 78.
-		{`{"stops":3,"median_min":30.0,"p90_min":78.0}`},
+		// (30, 90 and 10 min): median 30, p90 30 + 0.8 × 60 = 78; and the two
+		// open non-waiting ones (300 and 180 min so far): median 240, p90
+		// 180 + 0.9 × 120 = 288.
+		{`{"stops":3,"median_min":30.0,"p90_min":78.0,"open_stops":2,"open_median_min":240.0,"open_p90_min":288.0}`},
 		hourRows,
 		// 2: three ended (gone, waiting and out-of-window left out), one worked.
-		{`{"ended":3,"without_owner":1,"pct":33}`},
+		{`{"ended":3,"without_owner":1,"pct":33,"open_stops":2}`},
 		// 3: two CI reasons (CI, Checks), the owner ended one 20 min after the
 		// decision; "circle" is not a CI reason.
 		{`{"ci_stops":2,"ended_by_owner":1,"median_min_after_decision":20.0}`},
 		// 4: the one open stop, with its NEWEST pull request (not the push).
 		{`{"episode":` + strconv.FormatInt(e7, 10) + `,"repo":"example/repo","pr":11,"open_hours":5.0}`},
 		// 5: today's three turns (one unknown); the stall check is 307 of 1,467
-		// tokens (21%).
+		// tokens (21%). The partial oldest day is not a row.
 		{`{"utc_day":"` + today + `","turns":3,"unknown_turns":1,"input_side":1455,"output":12,"checks":1,"checks_input_side":305,"checks_pct":21}`},
 	}
 	for i, q := range qs {

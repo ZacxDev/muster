@@ -1270,6 +1270,9 @@ func (s *Server) askChiefForNudge(ctx context.Context, chief agents.Agent, key, 
 	defer cancel()
 	reply, err := s.ext.Gateway.Chat(tctx, chief, key, prompt, nil)
 	if usage != nil && agentgateway.Unsent(err) == "" {
+		// Synchronous: a slow database can hold the check up to finish's 5 s
+		// write timeout; a failed write is only logged and never changes the
+		// decision.
 		usage.finish(ctx, err)
 	}
 	switch {
