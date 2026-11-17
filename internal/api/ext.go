@@ -390,7 +390,7 @@ type Extensions struct {
 	// fleet_actions write. It needs FleetDigest (refused at boot without).
 	FleetPropose bool
 	// FleetActions is the fleet's action log (internal/fleet, migration
-	// 0148). nil (no database): fleet proposals are off whatever FleetPropose.
+	// 0149). nil (no database): fleet proposals are off whatever FleetPropose.
 	FleetActions fleet.Actions
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
@@ -740,6 +740,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 			Logger:           s.logger,
 			OnGrantRequested: s.onConnectorRequested,
 			AutoApprove:      s.approveFromStanding,
+			OnPendingRefusal: s.onPendingRefusal,
 			// The SAME signal EndStreams cancels: a relayed event stream ends with
 			// this package's own streams, on whichever listener it arrived.
 			StreamsEnd: s.streams.context(),
