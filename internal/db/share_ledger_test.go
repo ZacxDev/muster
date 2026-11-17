@@ -73,7 +73,7 @@ var personalOwned = []string{
 	"page_responses", "page_versions", "pages", "pins", "plugin_chief_instructions", "plugin_pair_requests",
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
-	// 0141: a chief's OpenRouter sessions' spend; the chief is personal.
+	// 0142: a chief's OpenRouter sessions' spend; the chief is personal.
 	"chief_session_llm_usage",
 }
 

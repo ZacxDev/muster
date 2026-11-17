@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHAT A CHIEF'S OPENROUTER SESSIONS SPEND (migration 0141; docs/chief.md
+// WHAT A CHIEF'S OPENROUTER SESSIONS SPEND (migration 0142; docs/chief.md
 // "OpenRouter sessions, budget").
 //
 // One chief_session_llm_usage row per (owner, chat session, UTC day) muster's

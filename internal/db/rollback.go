@@ -352,12 +352,12 @@ const officerPublicBranchesMigrationVersion = 138
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const pluginChiefInstructionsMigrationVersion = 141
 
-// chiefSessionLLMUsageMigrationVersion is 0141: chief_session_llm_usage (what
+// chiefSessionLLMUsageMigrationVersion is 0142: chief_session_llm_usage (what
 // the chief's OpenRouter sessions spend, internal/chiefusage sessionllm.go),
 // owned and under the same row-level security; same treatment again. Its body
 // is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const chiefSessionLLMUsageMigrationVersion = 141
+const chiefSessionLLMUsageMigrationVersion = 142
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

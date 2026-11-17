@@ -302,7 +302,7 @@ BEGIN
         ALTER TABLE public.plugin_chief_instructions DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.plugin_chief_instructions ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0141 (chief_session_llm_usage), when this schema has it; same reason as 0011.
+    -- 0142 (chief_session_llm_usage), when this schema has it; same reason as 0011.
     IF to_regclass('public.chief_session_llm_usage') IS NOT NULL THEN
         ALTER TABLE public.chief_session_llm_usage NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.chief_session_llm_usage DISABLE ROW LEVEL SECURITY;
