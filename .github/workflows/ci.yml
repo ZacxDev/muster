@@ -550,6 +550,37 @@ jobs:
       - name: scan
         run: python3 tests/leakscan.py
 
+  # Local: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+  #
+  # 🔴 BLOCKING. In source (text) mode govulncheck exits 3 when a vulnerable
+  # symbol is REACHABLE from muster's own code (call graph, not merely
+  # imported), and that fails this job. The standard library is judged by the
+  # toolchain setup-go installs from go.mod, so this is also the gate that the
+  # `go` directive names a patched Go release, not only that the dependencies
+  # are patched.
+  #
+  # ⚠ IT CAN GO RED WITH NO CODE CHANGE when a new advisory is published. The
+  # fix is the bump its output names (a dependency, or the `go` directive plus
+  # every site internal/modulegate/gotoolchain_test.go lists), never a skip.
+  #
+  # Its own job, like `leakscan`, so the verdict shows in the checks list. It is
+  # in publish-gate's needs, which blocks images and the release on it.
+  govulncheck:
+    name: govulncheck (reachable vulnerabilities)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   # Local: nix build .#muster-cli .#muster-migrate .#muster-mirror --no-link -L
   #
   # 🔴 THIS JOB EXISTS BECAUSE THE FLAKE WAS BROKEN FOR ITS ENTIRE LIFE AND
@@ -1638,7 +1669,7 @@ jobs:
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
     # 🔴 `!cancelled()`, AND THE VERDICT IS THE STEP BELOW, NOT `success()`: a
     # test job SKIPPED because main-verdict answered retest=false must not skip
     # this gate (and every publish behind it). tag_gate.py gate passes a job

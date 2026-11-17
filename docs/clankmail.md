@@ -78,7 +78,7 @@ The plugin ships **in the muster image** as `/muster-clankmail`. The image's ent
   which prints `muster-clankmail <plugin version>`.
 - **Build the image from source:** `docker build -t muster:local .` in a clone. Run muster
   itself from this same image.
-- **Build the binary only** (Go 1.25): `go build -o muster-clankmail ./cmd/muster-clankmail`. The
+- **Build the binary only** (Go 1.26.11 or newer, as `go.mod` requires): `go build -o muster-clankmail ./cmd/muster-clankmail`. The
   release archives (`muster_<os>_<arch>.tar.gz`, `muster-mirror_…`) do not include it; a release
   ships the plugin only inside the image.
 

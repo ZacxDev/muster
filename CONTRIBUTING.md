@@ -74,9 +74,21 @@ python3 tests/leakscan.py                             # the tree is clean
 MUSTER_TEST_REQUIRE_DB=1 go test -race -cover ./...   # the suite
 make css-check                                        # the committed stylesheet is current
 make verb-ledger                                      # the built CLI has exactly its verbs
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./... # no REACHABLE known vulnerability
 ```
 
-or `make check`, which runs all of them. The browser suite is `make e2e`; see
+or `make check`, which runs all but the last (govulncheck fetches the
+vulnerability database over the network, so it is CI's `govulncheck` job and a
+command you run by hand).
+
+🔴 **The Go toolchain is pinned in four places that must agree:** `go.mod`'s `go`
+directive (which carries the patch floor, e.g. `go 1.26.11`), every Dockerfile's
+`FROM golang:<version>`, `flake.nix`'s `buildGo1NNModule`/`go_1_NN` (with
+`flake.lock` new enough to carry that patch), and CI's `setup-go`, which follows
+`go.mod` through `go-version-file`. Move them together:
+`internal/modulegate/gotoolchain_test.go` fails when one disagrees or is below the
+floor. When `govulncheck` reports a standard-library advisory, the fix is to raise
+all four (and `goFloor` in that test) to the release it names. The browser suite is `make e2e`; see
 [docs/testing.md](docs/testing.md) for what it needs.
 
 `nix develop` gives you the pinned Go toolchain, `psql`/`pg_dump`, Python and the

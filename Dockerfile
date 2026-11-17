@@ -72,7 +72,7 @@ COPY internal/api/attention_ask_page.go ./internal/api/attention_ask_page.go
 RUN make css-check TAILWIND=./node_modules/.bin/tailwindcss
 
 # --- Stage 2: build the static Go binaries ----------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
