@@ -14,7 +14,7 @@ import (
 func TestMigration0147KeepsAChatLanesMarks(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0147_chat_marks", 146)
-	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind) VALUES (1, 'officer-release-web-1', 'ns-officer', 'claude-code') RETURNING id`)
+	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'officer-release-web-1', 'ns-officer') RETURNING id`)
 	sess := scanID(ctx, t, pool, `INSERT INTO chat_sessions (owner_id, agent_id, session_key, title, runtime) VALUES (1, $1, 'officer-chat:c-41', 't', 'claude-code') RETURNING id`, agent)
 	read := func() (seen, answered int64, err error) {
 		err = pool.QueryRow(ctx, `SELECT officer_chat_seen, officer_chat_answered FROM chat_sessions WHERE id = $1`, sess).Scan(&seen, &answered)
