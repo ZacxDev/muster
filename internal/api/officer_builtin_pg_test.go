@@ -172,6 +172,7 @@ func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
 		t.Fatalf("enqueue: %v, %v", created, err)
 	}
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-hooks-token")
+	briefInstance(t, srv, a) // until it is, its claim is refused charter_changed
 	props := completePropsOf(t, srv.MCPToolDefsFor(ctx, a))
 	for _, k := range []string{"authors", "attributed_prs", "attribution", "tickets"} {
 		if _, has := props[k]; has {

@@ -48,8 +48,9 @@ func NewBackend(store *Store, o officers.Officer, now func() time.Time, scope fu
 }
 
 var (
-	_ officers.Backend     = (*Backend)(nil)
-	_ officers.SwitchGated = (*Backend)(nil)
+	_ officers.Backend      = (*Backend)(nil)
+	_ officers.SwitchGated  = (*Backend)(nil)
+	_ officers.CharterGated = (*Backend)(nil)
 )
 
 // SwitchGatesWake implements officers.SwitchGated: the wake loop honours a
@@ -467,8 +468,32 @@ const briefRecent = 10
 
 // Brief implements officers.Backend: the officer, its type's charter, its
 // open items and its latest outcomes. An officer the store does not declare
-// is 404.
-func (b *Backend) Brief(ctx context.Context) ([]byte, error) {
+// is 404. It records no instance as briefed (BriefFor does).
+func (b *Backend) Brief(ctx context.Context) ([]byte, error) { return b.brief(ctx, "") }
+
+// BriefFor implements officers.CharterGated: Brief for instance, recording in
+// officer_defs.charter_briefed (migration 0140) that instance was handed the
+// charter_version this answer carries — in the ONE statement that reads the
+// charter, so the version recorded is the version answered.
+func (b *Backend) BriefFor(ctx context.Context, instance string) ([]byte, error) {
+	if strings.TrimSpace(instance) == "" {
+		return nil, refuse(http.StatusBadRequest, "bad_request", "an instance is required", nil)
+	}
+	return b.brief(ctx, instance)
+}
+
+// briefHeader is the brief's officer-and-type read, and recordBrief the same
+// read that also records instance $3 as briefed with the version it returns.
+const (
+	briefHeader = `SELECT t.key, t.name, t.charter, t.charter_version, d.enabled, d.mode
+		FROM officer_defs d JOIN officer_types t ON t.owner_id = d.owner_id AND t.key = d.type_key
+		WHERE d.owner_id = $1 AND d.officer = $2`
+	recordBrief = `UPDATE officer_defs d SET charter_briefed = d.charter_briefed || jsonb_build_object($3::text, t.charter_version)
+		FROM officer_types t WHERE t.owner_id = d.owner_id AND t.key = d.type_key AND d.owner_id = $1 AND d.officer = $2
+		RETURNING t.key, t.name, t.charter, t.charter_version, d.enabled, d.mode`
+)
+
+func (b *Backend) brief(ctx context.Context, instance string) ([]byte, error) {
 	ctx = b.scope(ctx)
 	var (
 		key, name, charter string
@@ -476,9 +501,13 @@ func (b *Backend) Brief(ctx context.Context) ([]byte, error) {
 		enabled            bool
 		mode               string
 	)
-	err := b.store.pool.QueryRow(ctx, `SELECT t.key, t.name, t.charter, t.charter_version, d.enabled, d.mode
-		FROM officer_defs d JOIN officer_types t ON t.owner_id = d.owner_id AND t.key = d.type_key
-		WHERE d.owner_id = $1 AND d.officer = $2`, b.officer.Owner, b.officer.ID).Scan(&key, &name, &charter, &version, &enabled, &mode)
+	var row pgx.Row
+	if instance == "" {
+		row = b.store.pool.QueryRow(ctx, briefHeader, b.officer.Owner, b.officer.ID)
+	} else {
+		row = b.store.pool.QueryRow(ctx, recordBrief, b.officer.Owner, b.officer.ID, instance)
+	}
+	err := row.Scan(&key, &name, &charter, &version, &enabled, &mode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, refuse(http.StatusNotFound, "not_found", "officer "+b.officer.ID+" is not declared in the built-in backend", nil)
 	}
@@ -512,6 +541,37 @@ func (b *Backend) Brief(ctx context.Context) ([]byte, error) {
 		"recent_items": recent,
 		"generated_at": b.now().UTC(),
 	})
+}
+
+// CharterChanged is the code of CharterCurrent's refusal.
+const CharterChanged = "charter_changed"
+
+// CharterCurrent implements officers.CharterGated: nil when instance was last
+// briefed (BriefFor) with its type's current charter_version; otherwise 409
+// charter_changed, naming both versions — an instance never briefed, or
+// briefed before migration 0140, is briefed version 0. An officer the store
+// does not declare is nil: the verb it gates answers that itself.
+func (b *Backend) CharterCurrent(ctx context.Context, instance string) error {
+	var current, briefed int
+	err := b.store.pool.QueryRow(b.scope(ctx), `SELECT t.charter_version, coalesce((d.charter_briefed->>$3)::int, 0)
+		FROM officer_defs d JOIN officer_types t ON t.owner_id = d.owner_id AND t.key = d.type_key
+		WHERE d.owner_id = $1 AND d.officer = $2`, b.officer.Owner, b.officer.ID, instance).Scan(&current, &briefed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return outage("charter", err)
+	}
+	if briefed >= current {
+		return nil
+	}
+	why := fmt.Sprintf("your charter changed to v%d since you were briefed (v%d)", current, briefed)
+	if briefed == 0 {
+		why = fmt.Sprintf("you have not been briefed on your charter (v%d)", current)
+	}
+	return refuse(http.StatusConflict, CharterChanged, why+": call "+officers.ToolBrief+", follow the charter it returns, then retry this call. "+
+		"An item you already hold stays yours: check it against that charter before you complete it.",
+		map[string]any{"charter_version": current, "briefed_charter_version": briefed})
 }
 
 // Enabled implements officers.Backend: the officer's switch; an officer the

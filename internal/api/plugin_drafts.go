@@ -237,10 +237,12 @@ func (s *Server) handlePluginDraftRenew(w http.ResponseWriter, r *http.Request) 
 }
 
 // handlePluginDraftChecks is GET /plugin/v1/drafts/checks (CapDraftChecks):
-// 200 {drafts: [{draft_id, message_external_id, body, created_at}]}, this
-// plugin's pending drafts awaiting its verdict, oldest first, at most
-// plugins.MaxChecksListed. Nothing is leased: answer each with POST
-// /plugin/v1/drafts/{id}/check.
+// 200 {drafts: [{draft_id, message_external_id, body, created_at, kind}]},
+// this plugin's pending drafts awaiting its verdict, oldest first, at most
+// plugins.MaxChecksListed. An outbound entry also carries media and the same
+// venue, target and because_ref (when it cites one) its claim will
+// (plugins.OutboundFields), so the plugin checks what it will act on. Nothing
+// is leased: answer each with POST /plugin/v1/drafts/{id}/check.
 func (s *Server) handlePluginDraftChecks(w http.ResponseWriter, r *http.Request) {
 	p := pluginFromContext(r.Context())
 	list, err := s.ext.Plugins.DraftsAwaitingCheck(r.Context(), p.ID, plugins.MaxChecksListed)

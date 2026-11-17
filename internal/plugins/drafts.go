@@ -236,14 +236,43 @@ type Claim struct {
 	ApprovedAt        time.Time `json:"approved_at"`
 	// Kind is "reply" (a reply draft) or "outbound" (outbound.go). Only an
 	// outbound claim carries the fields below (Claim.MarshalJSON).
-	Kind       string         `json:"kind"`
-	BodySHA256 string         `json:"body_sha256,omitempty"`
-	Venue      string         `json:"venue,omitempty"`
-	Target     OutboundTarget `json:"target"`
-	Media      []ClaimMedia   `json:"media"`
+	Kind       string `json:"kind"`
+	BodySHA256 string `json:"body_sha256,omitempty"`
+	OutboundFields
+	Media []ClaimMedia `json:"media"`
+}
+
+// OutboundFields is what BOTH of a plugin's listings of an outbound draft —
+// the check (AwaitingCheck) and the claim (Claim) — say about what it does,
+// beside its media: THE one source for both, built by outboundFieldsOf and
+// written by put. A plugin checks a draft on the same fields it later acts
+// on, so a field here cannot reach one listing and not the other: an outreach
+// draft's because_ref once reached only the claim, and a plugin that refuses
+// an outreach citing nothing refused every follow, like and dm at its check.
+type OutboundFields struct {
+	Venue  string         `json:"venue,omitempty"`
+	Target OutboundTarget `json:"target"`
 	// BecauseRef is an outreach draft's motivating engagement (outreach.go):
-	// the plugin may check it is still there before it acts.
+	// the plugin may check it is still there before it acts. "" (and no key
+	// on the wire) for a draft that cites none.
 	BecauseRef string `json:"because_ref,omitempty"`
+}
+
+// outboundFieldsOf is outbound draft d's OutboundFields.
+func outboundFieldsOf(d Draft) OutboundFields {
+	f := OutboundFields{Venue: d.VenueText(), Target: d.Target()}
+	if d.BecauseRef != nil {
+		f.BecauseRef = *d.BecauseRef
+	}
+	return f
+}
+
+// put writes f into a listing's wire form.
+func (f OutboundFields) put(out map[string]any) {
+	out["venue"], out["target"] = f.Venue, f.Target
+	if f.BecauseRef != "" {
+		out["because_ref"] = f.BecauseRef
+	}
 }
 
 // The draft kinds a claim or a check listing names.
@@ -253,15 +282,14 @@ const (
 )
 
 // MarshalJSON is the claim's wire form: a reply draft's four fields plus its
-// kind; an outbound draft's also its body hash, venue, target and media.
+// kind; an outbound draft's also its body hash, its media and its
+// OutboundFields (venue, target, because_ref when it cites one).
 func (c Claim) MarshalJSON() ([]byte, error) {
 	out := map[string]any{"draft_id": c.DraftID, "message_external_id": c.MessageExternalID, "body": c.Body,
 		"approved_at": c.ApprovedAt, "kind": c.Kind}
 	if c.Kind == DraftKindOutbound {
-		out["body_sha256"], out["venue"], out["target"], out["media"] = c.BodySHA256, c.Venue, c.Target, c.Media
-		if c.BecauseRef != "" {
-			out["because_ref"] = c.BecauseRef
-		}
+		out["body_sha256"], out["media"] = c.BodySHA256, c.Media
+		c.OutboundFields.put(out)
 	}
 	return json.Marshal(out)
 }
@@ -1120,10 +1148,7 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 		}
 		c = Claim{DraftID: d.ID, MessageExternalID: ext, Body: d.Body, ApprovedAt: d.ApprovedAt.UTC(), Kind: DraftKindReply}
 		if d.IsOutbound() {
-			c.Kind, c.BodySHA256, c.Venue, c.Target, c.Media = DraftKindOutbound, *d.ApprovedBodySHA256, d.VenueText(), d.Target(), claimMediaOf(d)
-			if d.BecauseRef != nil {
-				c.BecauseRef = *d.BecauseRef
-			}
+			c.Kind, c.BodySHA256, c.OutboundFields, c.Media = DraftKindOutbound, *d.ApprovedBodySHA256, outboundFieldsOf(d), claimMediaOf(d)
 		}
 		found = true
 		return audit(ctx, tx, "plugin.draft.claimed", DraftObject(d.ID), map[string]any{"plugin_id": pluginID})
@@ -1500,7 +1525,8 @@ func refuseRouteDraftTx(ctx context.Context, tx pgx.Tx, d Draft, detail string) 
 }
 
 // AwaitingCheck is one draft a plugin with CapDraftChecks is asked to check
-// (DraftsAwaitingCheck): the identity a claim hands out, and the text.
+// (DraftsAwaitingCheck): the identity a claim hands out, and the text; an
+// outbound one also what the claim will say it does (OutboundFields).
 type AwaitingCheck struct {
 	DraftID           int64     `json:"draft_id"`
 	MessageExternalID string    `json:"message_external_id"`
@@ -1508,18 +1534,19 @@ type AwaitingCheck struct {
 	CreatedAt         time.Time `json:"created_at"`
 	// Kind is DraftKindReply or DraftKindOutbound; only an outbound entry
 	// carries the fields below (AwaitingCheck.MarshalJSON).
-	Kind   string         `json:"kind"`
-	Venue  string         `json:"venue,omitempty"`
-	Target OutboundTarget `json:"target"`
-	Media  []CheckMedia   `json:"media"`
+	Kind string `json:"kind"`
+	OutboundFields
+	Media []CheckMedia `json:"media"`
 }
 
-// MarshalJSON is the checks listing's wire form (docs/plugins.md).
+// MarshalJSON is the checks listing's wire form (docs/plugins.md): an
+// outbound entry carries its media and the same OutboundFields its claim will.
 func (a AwaitingCheck) MarshalJSON() ([]byte, error) {
 	out := map[string]any{"draft_id": a.DraftID, "message_external_id": a.MessageExternalID, "body": a.Body,
 		"created_at": a.CreatedAt, "kind": a.Kind}
 	if a.Kind == DraftKindOutbound {
-		out["venue"], out["target"], out["media"] = a.Venue, a.Target, a.Media
+		out["media"] = a.Media
+		a.OutboundFields.put(out)
 	}
 	return json.Marshal(out)
 }
@@ -1551,7 +1578,7 @@ func (s *PGStore) DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit
 		d, err := scanDraftWith(r, &ext)
 		a := AwaitingCheck{DraftID: d.ID, MessageExternalID: ext, Body: d.Body, CreatedAt: d.CreatedAt.UTC(), Kind: DraftKindReply}
 		if d.IsOutbound() {
-			a.Kind, a.Venue, a.Target, a.Media = DraftKindOutbound, d.VenueText(), d.Target(), checkMediaOf(d)
+			a.Kind, a.OutboundFields, a.Media = DraftKindOutbound, outboundFieldsOf(d), checkMediaOf(d)
 		}
 		return a, err
 	})
