@@ -492,6 +492,10 @@ type Store interface {
 	// TasksForSession is the REVERSE lookup — every LIVE task a session touched,
 	// most-recently-touched first. It backs GET /api/sessions/{id}/tasks.
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
+	// TasksForSessions is TasksForSession for many sessions in ONE read, by
+	// session id, each list cut to its perSession most recent (0: all); a
+	// session with no link has no entry. It backs fleet_list's linked_tasks.
+	TasksForSessions(ctx context.Context, sessionIDs []string, perSession int) (map[string][]TaskLink, error)
 	// AddComment appends a comment to a task's thread.
 	AddComment(ctx context.Context, c Comment) (Comment, error)
 	// CreateOnceByTag creates n unless an OPEN task the caller can see already
