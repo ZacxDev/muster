@@ -80,10 +80,11 @@ var costFromRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
 
 // DefaultCompleteFields are the complete body fields the HQ this branch
 // targets decodes (civ-hq docs/OFFICERS.md, POST …/complete, plus the
-// release-ticket kind's `tickets`).
+// release-ticket kind's `tickets`, and the release escalation's structured
+// `actions` and `action_reports`, civ-hq §5d).
 var DefaultCompleteFields = []string{
 	"instance", "outcome", "summary", "links", "investigation", "cost_usd", "cost_from", "handoff",
-	"authors", "attributed_prs", "attribution", "tickets",
+	"authors", "attributed_prs", "attribution", "tickets", "actions", "action_reports",
 }
 
 // CompleteFieldsWithout is DefaultCompleteFields less drop, as a set for

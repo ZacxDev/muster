@@ -896,7 +896,7 @@ listing and again at dispatch):
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
-| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?, authors?, attributed_prs?, attribution?, tickets?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `authors`, `attributed_prs`, `attribution` and `tickets` are forwarded as sent, and never sent when absent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?, authors?, attributed_prs?, attribution?, tickets?, actions?, action_reports?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `authors`, `attributed_prs`, `attribution`, `tickets`, `actions` and `action_reports` are forwarded as sent, and never sent when absent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
@@ -1041,6 +1041,17 @@ dispatch both ask them.
   `no_author`, `nothing_pushed`, `head_not_live`)
   come back with HQ's status and body; HQ rolls the complete back, so the
   item stays held.
+- **`actions`, `action_reports`** (every instance of an HQ officer; HQ
+  takes them on `release.evaluate` / `release.post_report` items only):
+  `actions` is what a human must still do, named in a structured field on an
+  `escalated` complete, `[{kind, target, condition?}]`; `action_reports` is
+  what a later evaluation found when it re-checked the actions its claim's
+  `memory.open_actions` lists, `[{item_id, index, status: done|still_open,
+  evidence}]`. HQ resolves an escalation once its actions are confirmed
+  (HQ's officer guide, §5d "HQ resolves an escalation whose actions are
+  reported done"). Forwarded **as sent** under the same rule as the four
+  below: HQ's decoder validates them (unknown kinds, target formats,
+  bounds), and its `400` comes back with the item still held.
 - **`authors`, `attributed_prs`, `attribution`, `tickets`** (every instance of
   an HQ officer; HQ decides which items and outcomes take each). `authors` is
   `{"<login>": "<text>"}`: HQ mails each of the item's `payload.authors` its

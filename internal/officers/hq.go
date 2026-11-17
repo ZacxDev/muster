@@ -466,6 +466,16 @@ type Completion struct {
 	AttributedPRsJSON json.RawMessage `json:"-"`
 	AttributionJSON   json.RawMessage `json:"-"`
 	TicketsJSON       json.RawMessage `json:"-"`
+	// ActionsJSON and ActionReportsJSON are an instance's `actions` (what a
+	// human must still do, named in a structured field an escalation
+	// carries) and `action_reports` (what a later evaluation found of
+	// earlier escalations' actions) arguments (civ-hq docs/OFFICERS.md §5d
+	// "HQ resolves an escalation whose actions are reported done"), sent AS
+	// SENT under the same rule as the four above: HQ's decoder validates
+	// them (unknown kinds, target formats, bounds), so muster keeps no copy
+	// of that schema.
+	ActionsJSON       json.RawMessage `json:"-"`
+	ActionReportsJSON json.RawMessage `json:"-"`
 	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
@@ -604,6 +614,8 @@ func (c *Client) Complete(ctx context.Context, item ItemID, instance string, don
 		"attributed_prs": done.AttributedPRsJSON,
 		"attribution":    done.AttributionJSON,
 		"tickets":        done.TicketsJSON,
+		"actions":        done.ActionsJSON,
+		"action_reports": done.ActionReportsJSON,
 	} {
 		if raw = bytes.TrimSpace(raw); len(raw) > 0 {
 			body[key] = raw
