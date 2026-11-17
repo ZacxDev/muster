@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/stepup"
@@ -316,10 +317,10 @@ func TestAnotherOwnersSessionATeamWindowTheChiefAndAWorkingSessionAreRefused(t *
 	working, _ := f.window(f.owner, mirror.StatusBusy)
 	mine, _, _ := f.stopped(t, f.owner)
 	for subject, want := range map[string]string{
-		theirs:                                      fleetRefusedNotFound,
-		"mirror:" + teamKey:                         fleetRefusedNotFound,
+		theirs:              fleetRefusedNotFound,
+		"mirror:" + teamKey: fleetRefusedNotFound,
 		"agent:" + strconv.FormatInt(f.chief.ID, 10): fleetRefusedNotFound,
-		"mirror:" + working:                         fleetRefusedNotStopped,
+		"mirror:" + working:                          fleetRefusedNotStopped,
 	} {
 		for _, name := range []string{sessionInstructTool, sessionWrapTool} {
 			args := `{"subject":` + strconv.Quote(subject) + `,"reason":"x"}`
@@ -466,5 +467,148 @@ func TestTheChiefTextIsNeverTheOwnersWords(t *testing.T) {
 	last, ok, after = chiefnudge.SinceOwner([]chiefnudge.Msg{own}, nil, nudgeInjectedPrefixes)
 	if !ok || last.ID != "11" || after != 0 {
 		t.Fatalf("control: %+v %v %d", last, ok, after)
+	}
+}
+
+// closingMirror is the proposal fixture's mirror whose hosts advertise
+// agent-close, recording each close it is asked for.
+type closingMirror struct {
+	observedMirror
+	closes *[]mirror.AgentCloseReq
+}
+
+func (m closingMirror) Hosts(ctx context.Context) []mirror.HostView {
+	hs := m.observedMirror.Hosts(ctx)
+	for i := range hs {
+		hs[i].AgentClose = true
+	}
+	return hs
+}
+
+func (m closingMirror) CloseAgent(_ context.Context, _ string, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error) {
+	*m.closes = append(*m.closes, req)
+	return mirror.AgentCloseResult{Graceful: true, Reason: "the agent exited"}, nil
+}
+
+// setStatus sets owner's window w's status and its time.
+func (f *proposeFixture) setStatus(owner int64, w, status string, since int64) {
+	f.mirror.mu.Lock()
+	defer f.mirror.mu.Unlock()
+	for i := range f.mirror.own[owner] {
+		if f.mirror.own[owner][i].ID == w {
+			f.mirror.own[owner][i].Status, f.mirror.own[owner][i].StatusSince = status, since
+		}
+	}
+}
+
+// pass runs the owner's fleet step now (past its interval).
+func (f *proposeFixture) pass() {
+	f.srv.fleetPassAt.Delete(f.owner)
+	f.srv.fleetPass(f.asOwner, f.owner, f.srv.stallInputs(f.asOwner, nil))
+}
+
+// TestAWrapClosesTheSessionOnlyAfterItsHandoffTurn: "Write handoff, then
+// close" is one card. Approved, its handoff text is queued; once the row is
+// sent the action waits (sent, open); while the session stays on the streak
+// the handoff was sent on, nothing is closed; once it worked and stopped again
+// (a new streak), its window is closed — the window the card named, holding
+// its conversation — and the action finishes "closed". A second wrap, on a
+// session with an open pull request, is left open and says why.
+func TestAWrapClosesTheSessionOnlyAfterItsHandoffTurn(t *testing.T) {
+	f := newProposeFixture(t)
+	var closes []mirror.AgentCloseReq
+	f.srv.ext.Mirror = closingMirror{observedMirror{f.mirror}, &closes}
+	subject, key, window := f.stopped(t, f.owner)
+	m := f.tool(t, f.asOwner, sessionWrapTool, `{"subject":`+strconv.Quote(subject)+`,"reason":"its work is merged"}`)
+	id := int64(m["action_id"].(float64))
+	f.card(t, fresh(f.asOwner), id, "approve", nil)
+	got := f.rows(t)
+	if len(got) != 1 || got[0][0] != f.header()+"\nWrite your handoff (what is done, what is left, where), then stop." {
+		t.Fatalf("the wrap's handoff row: %q", got)
+	}
+	a := f.action(t, id)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE send_queue SET state = 'sent', claimed_at = now(), finished_at = now() WHERE id = $1`, a.SendQueueID); err != nil {
+		t.Fatal(err)
+	}
+	f.pass()
+	if a = f.action(t, id); a.State != fleet.StateSent || !a.FinishedAt.IsZero() || a.CloseAfter != "since:1700000000000" {
+		t.Fatalf("after the paste: %+v; want sent, open, waiting on its streak", a)
+	}
+	f.pass()
+	if len(closes) != 0 {
+		t.Fatalf("closed on the streak the handoff was sent on: %v", closes)
+	}
+	f.setStatus(f.owner, window, mirror.StatusIdle, 1700000777000)
+	f.pass()
+	if len(closes) != 1 || closes[0].Key != key || closes[0].Window != window || closes[0].Session != "work" {
+		t.Fatalf("closes %+v; want exactly the card's window", closes)
+	}
+	if a = f.action(t, id); a.FinishedAt.IsZero() || !strings.HasPrefix(a.Outcome, "closed") {
+		t.Fatalf("after the close: %+v", a)
+	}
+
+	// The refusal: an open pull request leaves the session open.
+	subject2, key2, window2 := f.stopped(t, f.owner)
+	f.pr(t, f.owner, key2, "example-org/sprocket", 707, &githubapp.PRState{State: "open", HeadSHA: "1234567890abcdef1234567890abcdef12345678"})
+	m = f.tool(t, f.asOwner, sessionWrapTool, `{"subject":`+strconv.Quote(subject2)+`,"reason":"wrap it"}`)
+	id2 := int64(m["action_id"].(float64))
+	f.card(t, fresh(f.asOwner), id2, "approve", nil)
+	a2 := f.action(t, id2)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE send_queue SET state = 'sent', claimed_at = now(), finished_at = now() WHERE id = $1`, a2.SendQueueID); err != nil {
+		t.Fatal(err)
+	}
+	f.pass()
+	f.setStatus(f.owner, window2, mirror.StatusIdle, 1700000888000)
+	f.pass()
+	if a2 = f.action(t, id2); a2.FinishedAt.IsZero() || a2.Outcome != "not closed: it has an open pull request" || len(closes) != 1 {
+		t.Fatalf("the open pull request's wrap: %+v, closes %d", a2, len(closes))
+	}
+}
+
+// TestAReassignRoutesTheTaskThenAsksTheOldSessionForItsHandoff: one card, two
+// steps on the tap: the task routed to `to` (a route row, its message queued
+// to that window), then `from` told the task moved — a fleet row with muster's
+// line and the reassign text. Before the tap, nothing.
+func TestAReassignRoutesTheTaskThenAsksTheOldSessionForItsHandoff(t *testing.T) {
+	f := newProposeFixture(t)
+	f.srv.ext.Routes, f.srv.ext.Routing = f.plugins, &Routing{}
+	from, _, _ := f.stopped(t, f.owner)
+	to, _, _ := f.stopped(t, f.owner)
+	n, err := f.notes.Create(f.asOwner, notes.Note{Title: "migrate the billing cron", Body: "move it to the new scheduler", Status: notes.StatusOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := f.tool(t, f.asOwner, workReassignTool, `{"task_id":`+strconv.FormatInt(n.ID, 10)+`,"from":`+strconv.Quote(from)+`,"to":`+strconv.Quote(to)+`,"reason":"the other session owns the scheduler"}`)
+	if m["state"] != fleet.StateProposed {
+		t.Fatalf("work_reassign: %v", m)
+	}
+	id := int64(m["action_id"].(float64))
+	if got := f.rows(t); len(got) != 0 {
+		t.Fatalf("before the tap: %v", got)
+	}
+	if m := f.tool(t, f.asOwner, workReassignTool, `{"task_id":999999999,"from":`+strconv.Quote(from)+`,"to":`+strconv.Quote(to)+`,"reason":"x"}`); m["refused"] != fleetRefusedTask {
+		t.Fatalf("another task: %v", m)
+	}
+	f.card(t, fresh(f.asOwner), id, "approve", nil)
+	a := f.action(t, id)
+	if a.RouteID == "" || a.State != fleet.StateQueued {
+		t.Fatalf("after the tap: %+v", a)
+	}
+	var routes int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM session_routes WHERE route_id = $1 AND task_id = $2`, a.RouteID, n.ID).Scan(&routes); err != nil || routes != 1 {
+		t.Fatalf("the task's route: %d %v", routes, err)
+	}
+	want := f.header() + "\nTask #" + strconv.FormatInt(n.ID, 10) + " has moved to another session (" + a.ToSubject + "). Stop work on it. Write your handoff (what is done, what is left, where), then stop."
+	var fleetRows int
+	for _, r := range f.rows(t) {
+		if r[1] == strconv.FormatInt(id, 10) {
+			fleetRows++
+			if r[0] != want && !strings.HasSuffix(r[0], "). Stop work on it. Write your handoff (what is done, what is left, where), then stop.") {
+				t.Errorf("the from session's row: %q", r[0])
+			}
+		}
+	}
+	if fleetRows != 1 {
+		t.Fatalf("fleet rows %d (all %v); want exactly the handoff to from", fleetRows, f.rows(t))
 	}
 }

@@ -10,7 +10,7 @@ import (
 
 func TestTheFixedTextsByteForByte(t *testing.T) {
 	for name, c := range map[string]struct{ got, want string }{
-		"continue": {ContinueText, "Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task."},
+		"continue":  {ContinueText, "Yes, continue with what you proposed. Ask with attention_ask before anything destructive, outward or outside this task."},
 		"stop_note": {StopNoteText, "Stop after this step and wait for your owner's next message. Do not start anything new; ask with attention_ask if something cannot wait."},
 		"handoff merged": {HandoffText(4321, PRMerged),
 			"Your PR #4321 is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop."},

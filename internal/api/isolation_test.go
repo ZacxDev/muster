@@ -297,18 +297,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/chief/fleet":         classList,
 	"GET /ui/chief/fleet/session": classList,
 	"POST /ui/chief/fleet/chat":   classList,
-	"GET /ui/connector-requests":  classList,
-	"GET /ui/connectors":          classList,
-	"GET /ui/connectors/new":      classList,
-	"GET /ui/notifications":       classList,
-	"GET /ui/tags":                classList,
-	"GET /ui/tasks":               classList,
-	"GET /ui/tasks/new":           classList,
-	"GET /ui/tasks/review-count":  classList,
-	"POST /chief/provision":       classList,
-	"POST /connectors":            classList,
-	"POST /tasks":                 classList,
-	"POST /tasks/merge":           classList, // the form names A's task as the loser
+	// Fleet proposals' cards (fleet_cards.go): each acts on the principal's
+	// own fleet_actions row by id (forced row-level security: another owner's
+	// id is not found), and the dialog route reads nothing.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": classParam,
+	"POST /ui/chief/fleet/bulk":                classList,
+	"GET /ui/chief/fleet/stepup":               classList,
+	"GET /ui/connector-requests":               classList,
+	"GET /ui/connectors":                       classList,
+	"GET /ui/connectors/new":                   classList,
+	"GET /ui/notifications":                    classList,
+	"GET /ui/tags":                             classList,
+	"GET /ui/tasks":                            classList,
+	"GET /ui/tasks/new":                        classList,
+	"GET /ui/tasks/review-count":               classList,
+	"POST /chief/provision":                    classList,
+	"POST /connectors":                         classList,
+	"POST /tasks":                              classList,
+	"POST /tasks/merge":                        classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,

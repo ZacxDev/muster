@@ -42,6 +42,8 @@ func TestOnlyTheViewDoorBindsASubject(t *testing.T) {
 		"internal/api/agent_send.go (*Server).startAgentTurn → runEnteredTurn(about)",
 		"internal/api/agent_send.go (*Server).handleAgentSend → startAgentTurn(nil)",
 		"internal/api/chief_nudge.go (*Server).sendNudgeTurn → startAgentTurn(nil)",
+		// A fleet proposal's approved text, as the chief's nudge is sent.
+		"internal/api/fleet_actions.go (*Server).fleetStartTurn → startAgentTurn(nil)",
 		"internal/api/ext.go (*Server).UseExtensions → startAgentTurn(nil)",
 		// 🔴 THE ONE NON-NIL SUBJECT: resolved by viewChiefSubject from the hub.
 		"internal/api/view_chief.go (*Server).handleViewChief → startAgentTurn(&about)",

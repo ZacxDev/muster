@@ -14,9 +14,9 @@ import (
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/prroute"
 	"github.com/ZacxDev/muster/internal/push"
-	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -622,29 +622,16 @@ func (s *Server) fleetDeliver(ctx context.Context, a fleet.Action, body string, 
 		s.kickSendQueue()
 		return fleetApproveResult{note: FleetQueued, sent: true}
 	case fleetDeliverTurn:
-		sess, err := s.ext.Agents.GetSession(ctx, a.ChatSessionID)
-		if err != nil || sess.AgentID != t.agent.ID {
-			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: "the agent's conversation is gone", Finish: true}, fleet.StateApproved)
-			return fleetApproveResult{note: FleetNotDeliverale + "the agent's conversation is gone"}
-		}
-		if ok, _ := s.turns.enterIdle(t.agent.ID); !ok {
-			s.fleetMove(ctx, a, fleet.Move{State: fleet.Suppressed(fleet.GuardMovedOn), Outcome: "a turn started first", Finish: true}, fleet.StateApproved)
-			return fleetApproveResult{note: FleetMovedOn, movedOn: true}
-		}
-		m := fleet.Move{State: fleet.StateSent, Finish: a.Class != fleet.ClassWrap, CloseAfter: a.StreakKey}
+		// 🔴 A POD AGENT'S TURN STARTS ON THE PASS, NEVER ON THE TAP: the card's
+		// routes do not reach the agent gateway (which a deployment may leave
+		// off), so the approval queues the action and the session-state pass
+		// starts the turn (fleetStartTurn), re-reading the stop first.
 		if owners {
-			m.Outcome = "edited: sent as the owner's own message"
+			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: "an agent's proposal is not edited", Finish: true}, fleet.StateApproved)
+			return fleetApproveResult{note: FleetNotDeliverale + "an agent's proposal is approved or rejected, not edited"}
 		}
-		if _, ok := s.fleetMove(ctx, a, m, fleet.StateApproved); !ok {
-			s.turns.leave(t.agent.ID)
-			return fleetApproveResult{note: FleetDecided}
-		}
-		typed := notTyped
-		if owners {
-			typed = requestOwner(ctx)
-		}
-		s.startAgentTurn(ctx, t.agent, sess, body, typed, nil)
-		return fleetApproveResult{note: FleetSent, sent: true}
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateQueued, Outcome: "its turn starts on the next session-state pass"}, fleet.StateApproved)
+		return fleetApproveResult{note: FleetQueued, sent: true}
 	}
 	s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: t.why, Finish: true}, fleet.StateApproved)
 	return fleetApproveResult{note: FleetNotDeliverale + t.why}
@@ -772,8 +759,9 @@ func (s *Server) sendQueueFleetGate(ctx context.Context, it sendqueue.Item) stri
 // --- the pass ----------------------------------------------------------------------
 
 // fleetPassEvery bounds how often one owner's fleet step runs (it reads the
-// whole fleet, pull requests included): the nudges' own interval.
-const fleetPassEvery = ChiefNudgeInterval
+// whole fleet, its pull-request states behind their own two-minute cache):
+// at most once per session-state pass, whoever else calls it.
+const fleetPassEvery = SessionStateInterval - time.Second
 
 // fleetPass is one owner's fleet step in the session-state pass, when the
 // fleet judges the owner's stops (stopJudgeOf): settle the actions in flight
@@ -808,6 +796,10 @@ func (s *Server) fleetSettle(octx context.Context, facts []nudgeCandidate) {
 		case fleet.StateProposed:
 			s.fleetExpire(octx, a)
 		case fleet.StateQueued:
+			if a.SubjectKind == chiefnudge.KindAgent && a.SendQueueID == 0 {
+				s.fleetStartTurn(octx, a)
+				continue
+			}
 			s.fleetSettleQueued(octx, a)
 		case fleet.StateSent:
 			if a.Class == fleet.ClassWrap {
@@ -820,6 +812,43 @@ func (s *Server) fleetSettle(octx context.Context, facts []nudgeCandidate) {
 			}
 		}
 	}
+}
+
+// fleetStartTurn starts approved agent action a's turn (sendNudgeTurn's
+// shape): the stop re-read first (moved on: suppressed, nothing sent), never
+// overlapping one of the agent's turns. A state that cannot be read leaves it
+// queued for the next pass.
+func (s *Server) fleetStartTurn(octx context.Context, a fleet.Action) {
+	if s.ext.Gateway == nil {
+		s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "the agent gateway is off on this server", Finish: true})
+		return
+	}
+	t := s.fleetTarget(octx, a)
+	if t.how != fleetDeliverTurn {
+		s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: firstNonBlank(t.why, "the agent cannot take a turn"), Finish: true})
+		return
+	}
+	switch s.fleetStillOn(octx, a) {
+	case nudgeUnknown:
+		return
+	case nudgeMovedOn, nudgeMovedAway:
+		s.fleetMove(octx, a, fleet.Move{State: fleet.Suppressed(fleet.GuardMovedOn), Outcome: "the conversation moved on before its turn", Finish: true})
+		return
+	}
+	sess, err := s.ext.Agents.GetSession(octx, a.ChatSessionID)
+	if err != nil || sess.AgentID != t.agent.ID {
+		s.fleetMove(octx, a, fleet.Move{State: fleet.StateFailed, Outcome: "the agent's conversation is gone", Finish: true})
+		return
+	}
+	if ok, _ := s.turns.enterIdle(t.agent.ID); !ok {
+		return // a turn started this instant: the next pass re-reads (and finds it moved on)
+	}
+	if _, ok := s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Finish: a.Class != fleet.ClassWrap, CloseAfter: a.StreakKey}); !ok {
+		s.turns.leave(t.agent.ID)
+		return
+	}
+	// The attribution line names the owner and the moment they approved it.
+	s.startAgentTurn(octx, t.agent, sess, fleet.Body(s.personName(octx, a.Owner), a.DecidedAt, a.Text), notTyped, nil) // muster's relay, never the owner's typed words
 }
 
 // fleetSettleQueued settles a queued action by its send-queue row.

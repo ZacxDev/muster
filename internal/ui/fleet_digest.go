@@ -152,6 +152,8 @@ const FleetGroupProposed = "proposed"
 // FleetProposalView is one proposal's card.
 type FleetProposalView struct {
 	ID int64
+	// Subject is its session's fleet id ("mirror:<key>", "agent:<id>").
+	Subject string
 	// Session is its session's label, Where the window or agent.
 	Session, Where string
 	// Verb is its class as a verb ("Continue", "Write handoff, then close").
@@ -321,10 +323,10 @@ func fleetCard(v FleetDigestView, state string) g.Node {
 			g.If(!inert, fleetAskChiefButton("", "Ask the chief", "ml-auto h-7"))),
 		P(g.Attr(fleetSinceAttr, ""), g.If(unavailable, g.Attr("data-fleet-unavailable", "")), g.If(unavailable, g.Attr("title", v.Unavailable)),
 			Class(sinceCls), g.Text(since)),
-			// A card action's note ("Sent.", "2 sent, 1 skipped (moved on)"):
-			// drawn only when an action left one, over the groups.
-			g.If(v.Note != "", P(g.Attr(fleetNoteAttr, ""), g.Attr("role", "status"),
-				Class("rounded-md bg-s2 px-2 py-1 text-[11px] text-fg"), g.Text(v.Note))),
+		// A card action's note ("Sent.", "2 sent, 1 skipped (moved on)"):
+		// drawn only when an action left one, over the groups.
+		g.If(v.Note != "", P(g.Attr(fleetNoteAttr, ""), g.Attr("role", "status"),
+			Class("rounded-md bg-s2 px-2 py-1 text-[11px] text-fg"), g.Text(v.Note))),
 		// The desktop groups: each opens inline.
 		Div(Class("hidden flex-col gap-0.5 sm:flex"), g.Map(groups, func(gr FleetGroupView) g.Node {
 			return fleetGroupDetails(gr, countOf(gr), inert, gr.Key == v.OpenGroup)
@@ -427,7 +429,7 @@ func fleetPost(path string) g.Node {
 // Edit · Reject · Open session.
 func fleetProposalRow(p FleetProposalView) g.Node {
 	id := strconv.FormatInt(p.ID, 10)
-	return Li(g.Attr(fleetProposalAttr, id),
+	return Li(g.Attr(fleetProposalAttr, id), g.Attr("data-fleet-proposal-subject", p.Subject),
 		Class("flex flex-col gap-1.5 rounded-lg bg-s1 p-2 text-xs ring-1 ring-inset ring-accent/40"),
 		Div(Class("flex items-baseline gap-2"),
 			Span(Class("min-w-0 flex-1 truncate font-medium text-fg"), g.Text(p.Session)),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -127,8 +128,8 @@ func (s *Server) handleFleetCardAction(w http.ResponseWriter, r *http.Request) {
 			note = "Not sent: the text is empty."
 		default:
 			a, err := s.ext.FleetActions.GetAction(ctx, id)
-			if err == nil && a.Class == fleet.ClassReassign {
-				note = "Not sent: a task move is approved or rejected, not edited."
+			if err == nil && (a.Class == fleet.ClassReassign || a.SubjectKind == chiefnudge.KindAgent) {
+				note = "Not sent: this proposal is approved or rejected, not edited."
 				break
 			}
 			note = s.fleetApprove(ctx, id, fleet.ViaWebEdit, &text).note
@@ -268,9 +269,9 @@ func (s *Server) fleetProposalViews(ctx context.Context, subs map[string]fleetSu
 		if a.State != fleet.StateProposed || s.fleetExpire(ctx, a) {
 			continue
 		}
-		p := ui.FleetProposalView{ID: a.ID, Session: firstNonBlank(a.Evidence.Label, firstNonBlank(a.Evidence.SubjectID, a.SubjectKey)),
+		p := ui.FleetProposalView{ID: a.ID, Subject: a.Evidence.SubjectID, Session: firstNonBlank(a.Evidence.Label, firstNonBlank(a.Evidence.SubjectID, a.SubjectKey)),
 			Verb: fleet.ClassVerb[a.Class], Reason: a.Reason, Text: fleet.Body(owner, now, a.Text), EditText: a.Text,
-			Age: fleetAge(now.Sub(a.CreatedAt)), Editable: a.Class != fleet.ClassReassign}
+			Age: fleetAge(now.Sub(a.CreatedAt)), Editable: a.Class != fleet.ClassReassign && a.SubjectKind != chiefnudge.KindAgent}
 		if a.Class == fleet.ClassReassign {
 			p.Text = "1. Route task #" + strconv.FormatInt(a.TaskID, 10) + " to " + a.ToSubject + " (as route_to_session does).\n2. Then send:\n" + p.Text
 		}

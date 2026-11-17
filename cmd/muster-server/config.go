@@ -259,13 +259,13 @@ const (
 	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
 	// session must be idle, the global hourly cap, and the owners whose nudges
 	// are sent (live).
-	envChiefNudges          = "MUSTER_CHIEF_NUDGES"
-	envSessionState         = "MUSTER_SESSION_STATE"
-	envFleetDigest          = "MUSTER_FLEET_DIGEST"
+	envChiefNudges  = "MUSTER_CHIEF_NUDGES"
+	envSessionState = "MUSTER_SESSION_STATE"
+	envFleetDigest  = "MUSTER_FLEET_DIGEST"
 	// envFleetOrchestration is off (the default) or propose: the chief's fleet
 	// write tools and the digest's proposal cards (internal/api
 	// fleet_actions.go). Later phases add shadow and live.
-	envFleetOrchestration = "MUSTER_FLEET_ORCHESTRATION"
+	envFleetOrchestration   = "MUSTER_FLEET_ORCHESTRATION"
 	envChiefNudgeIdle       = "MUSTER_CHIEF_NUDGE_IDLE"
 	envChiefNudgeHourlyCap  = "MUSTER_CHIEF_NUDGE_HOURLY_CAP"
 	envChiefNudgeLiveOwners = "MUSTER_CHIEF_NUDGE_LIVE_OWNERS"
@@ -907,7 +907,7 @@ type config struct {
 	SessionState bool
 	// FleetDigest turns on the chief panel's fleet digest card and
 	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
-	FleetDigest            bool
+	FleetDigest bool
 	// FleetPropose is MUSTER_FLEET_ORCHESTRATION=propose (off by default):
 	// the chief proposes actions on the owner's sessions, each sent only on
 	// the owner's tap. It needs FleetDigest (the cards are the digest's).

@@ -46,10 +46,10 @@ func TestTheActionLogIsAppendOnlyAsTheAppRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	for q, want := range map[string]string{
-		`DELETE FROM fleet_actions WHERE id = $1`:                          "cannot be deleted",
-		`UPDATE fleet_actions SET text = 'something else' WHERE id = $1`:   "only an action's progress may change",
-		`UPDATE fleet_actions SET subject_key = 'other' WHERE id = $1`:     "only an action's progress may change",
-		`UPDATE fleet_actions SET evidence = '{"x":1}' WHERE id = $1`:      "only an action's progress may change",
+		`DELETE FROM fleet_actions WHERE id = $1`:                                           "cannot be deleted",
+		`UPDATE fleet_actions SET text = 'something else' WHERE id = $1`:                    "only an action's progress may change",
+		`UPDATE fleet_actions SET subject_key = 'other' WHERE id = $1`:                      "only an action's progress may change",
+		`UPDATE fleet_actions SET evidence = '{"x":1}' WHERE id = $1`:                       "only an action's progress may change",
 		`UPDATE fleet_actions SET created_at = created_at - interval '1 day' WHERE id = $1`: "only an action's progress may change",
 	} {
 		_, err := p.pool.Exec(ctx, q, a.ID)

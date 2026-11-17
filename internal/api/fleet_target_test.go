@@ -49,10 +49,10 @@ func TestTheFleetTargetResolverPerSubjectKind(t *testing.T) {
 	noSend := targetHost(true, false, cc, dispatched, bound, unbound)
 	readOnly := targetHost(false, true, cc, dispatched, bound, unbound)
 	for _, c := range []struct {
-		name          string
-		h             mirror.HostView
-		w             mirror.Window
-		how, refused  string
+		name         string
+		h            mirror.HostView
+		w            mirror.Window
+		how, refused string
 	}{
 		{"mirrored Claude Code", all, cc, fleetDeliverQueue, ""},
 		{"a mirror-dispatched window", all, dispatched, fleetDeliverQueue, ""},
@@ -97,9 +97,9 @@ func TestTheFleetSeamLedger(t *testing.T) {
 	want := map[string]string{
 		"Propose":     "fleetFile,fleetProposeHandoffs",
 		"MoveAction":  "fleetMove",
-		"fleetTarget": "fleetDeliver,fleetFile,fleetProposeHandoffs",
+		"fleetTarget": "fleetDeliver,fleetFile,fleetProposeHandoffs,fleetStartTurn",
 		// fleetMove is the one door every state change goes through.
-		"fleetMove": "fleetApprove,fleetDeliver,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetWrapClose,sendQueueFleetGate",
+		"fleetMove": "fleetApprove,fleetDeliver,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetStartTurn,fleetWrapClose,sendQueueFleetGate",
 	}
 	got := map[string]map[string]bool{}
 	fset := token.NewFileSet()
