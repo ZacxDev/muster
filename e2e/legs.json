@@ -237,6 +237,7 @@
       "tests/mirror-chat.spec.ts",
       "tests/mirror-stepup.spec.ts",
       "tests/notify-tmux.spec.ts",
+      "tests/officers-flow.spec.ts",
       "tests/plugins.spec.ts",
       "tests/push.spec.ts",
       "tests/telemetry.spec.ts",
