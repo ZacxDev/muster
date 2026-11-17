@@ -31,6 +31,8 @@ var (
 	reDigits    = regexp.MustCompile(`[0-9]+`)
 	reHexLetter = regexp.MustCompile(`[a-f]`)
 	reHexDigit  = regexp.MustCompile(`[0-9]`)
+	// rePlaceholder is a placeholder Normalise itself writes (steps 2–6).
+	rePlaceholder = regexp.MustCompile(`\{(?:code|pr|path|sha|n)\}`)
 )
 
 // pathTrail is what a path token may end with that belongs to the sentence,
@@ -48,8 +50,13 @@ const pathTrail = ".,;:!?)]'\""
 //  5. a 7–40 character run of hex holding at least one digit AND one letter
 //     a–f, to {sha} — so neither a number nor a word like "defaced" is a sha;
 //  6. any other run of digits to {n};
-//  7. runs of white space to one space, and leading and trailing punctuation
-//     stripped (the braces of a placeholder excepted).
+//  7. runs of white space to one space, and leading and trailing punctuation,
+//     symbols and white space stripped together (the braces of a placeholder
+//     excepted) — so "? , ?" loses its comma too, not just the outer marks;
+//  8. "" when what is left holds no letter or digit outside a placeholder
+//     (only punctuation, symbols or placeholders: "," or "{code} {path}").
+//     That is no question to compare or group by — every such question would
+//     share the one normal form — so it gets none, as an empty question does.
 //
 // It is tested with literal input/output pairs, never with its own output.
 func Normalise(q string) string {
@@ -72,9 +79,20 @@ func Normalise(q string) string {
 		return h
 	})
 	s = reDigits.ReplaceAllString(s, "{n}")
-	s = strings.TrimSpace(reSpace.ReplaceAllString(s, " "))
-	s = strings.TrimFunc(s, func(r rune) bool { return (unicode.IsPunct(r) || unicode.IsSymbol(r)) && r != '{' && r != '}' })
-	return strings.TrimSpace(s)
+	s = reSpace.ReplaceAllString(s, " ")
+	s = strings.TrimFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || ((unicode.IsPunct(r) || unicode.IsSymbol(r)) && r != '{' && r != '}')
+	})
+	if !hasWords(s) {
+		return ""
+	}
+	return s
+}
+
+// hasWords reports whether s (a normal form) holds a letter or a digit outside
+// the placeholders Normalise writes.
+func hasWords(s string) bool {
+	return strings.ContainsFunc(rePlaceholder.ReplaceAllString(s, " "), func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) })
 }
 
 // prefilterStarts are the openings that make a last paragraph a question even

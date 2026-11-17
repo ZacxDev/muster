@@ -112,7 +112,10 @@ themselves. Three readers, all of **your own** asks only:
 | `top_questions` | the questions asked **at least twice**, by their normal form (the same normalisation the rules will match on), most often first: how many times, how many of them you answered, the median time to an answer, and the most frequent answer (trimmed, lower case) with how often it was given |
 
 A question whose text has expired has no normal form any more, so it leaves
-`top_questions` (the counts and times keep it). In the list, such a row says
+`top_questions` (the counts and times keep it). So does a question with no
+words in it — nothing but punctuation, symbols, code spans, paths or numbers
+once normalised: it gets no normal form (`question_norm` is empty), so such
+questions are not grouped together as one "repeated" question. In the list, such a row says
 its text expired (`text_expired: true` in the API) and keeps its kind, where
 it was asked, who answered, how it ended and how long it took.
 
