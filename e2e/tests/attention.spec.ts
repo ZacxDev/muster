@@ -247,7 +247,11 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Free text, then Dismiss on a third: both leave the list.
   await second.locator('textarea').fill('yes, rotate it');
   await Promise.all([page.waitForURL(origin + '/attention'), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
-  expect(JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text)).toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
+  // The page is already on /attention, so waitForURL can settle before the
+  // answer's post lands: poll for it, as for the dismiss below.
+  await expect
+    .poll(async () => JSON.parse((await mcpCall('attention_wait', { id: id2, wait_seconds: 0 })).text), { timeout: 15_000 })
+    .toMatchObject({ status: 'answered', answer: 'yes, rotate it' });
   const id3 = await ask('Ignore me?', []);
   await page.reload();
   await page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click();
