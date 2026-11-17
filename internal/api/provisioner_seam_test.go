@@ -172,6 +172,9 @@ var provisionerDeps = []provisionerDep{
 			// A fresh primary's handover (chief_chats.go handOverPrimary): two
 			// chief turns, runUserTurn → chatTurn.
 			"POST /agents/{id}/sessions/fresh-primary",
+			// A side chat continued in a new session (chief_continue.go
+			// continueSession): two chief turns, runUserTurn → chatTurn.
+			"POST /agents/{id}/sessions/{sid}/continue",
 		},
 		callers: []string{
 			"(*Server).chatTurn",         // Chat for a team's gateway agent (teamGatewayToolless); reached from every chat door, as runTurnWithTools is

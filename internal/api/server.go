@@ -324,6 +324,9 @@ type Server struct {
 	// freshPrimaries holds each chief (by id) a fresh primary is being made
 	// for, switch and handover (chief_chats.go handleChiefFreshPrimary).
 	freshPrimaries sync.Map
+	// continuing holds each SOURCE chat (by session id) being continued in a
+	// new session, handover included (chief_continue.go handleChiefContinue).
+	continuing sync.Map
 	// turnSessions is the chat session of each agent's running turn
 	// (turn_session.go): where an owner card it raises is answered.
 	turnSessions turnSessionRegistry

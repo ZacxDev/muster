@@ -466,3 +466,43 @@ func TestTheChiefContextChipTints(t *testing.T) {
 		t.Errorf("no readout draws %q (%v), want nothing", b.String(), err)
 	}
 }
+
+// TestTheContinuePickerIsOnASideChatOnly: "Continue in a new session" is under
+// the panel's list on a SIDE chat, with the New session picker's runtime and
+// models, posting runtime + model to that chat's continue route with a confirm
+// and its controls disabled while the request runs — and on no other chat, nor
+// anywhere when no runtime is offered.
+func TestTheContinuePickerIsOnASideChatOnly(t *testing.T) {
+	runtimes := []SessionRuntimeView{{Runtime: "claude-code", Label: "Claude Code"}}
+	models := []string{"opus", "sonnet", "haiku"}
+	for _, c := range chiefKinds {
+		chat := chiefChatView(ChatSurfaceChiefPanel, c.bar, []SessionView{{ID: c.bar.SessionID, Active: true}})
+		html := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, SessionRuntimes: runtimes, ClaudeModels: models}))
+		has := strings.Contains(html, chiefContinueAttr+`=""`)
+		if has != (c.kind == ChiefChatKindSide) {
+			t.Errorf("%s: Continue shown=%v, want only on a side chat", c.kind, has)
+		}
+		if !has {
+			continue
+		}
+		form := regexp.MustCompile(`<form ` + chiefContinueFormAttr + `="claude-code" hx-post="/agents/42/sessions/6/continue\?surface=chief-panel" ` +
+			`hx-target="#chief-panel-body" hx-swap="innerHTML" hx-confirm="[^"]+" hx-disabled-elt="find button, find select"[^>]*>` +
+			`<input type="hidden" name="runtime" value="claude-code">`)
+		if !form.MatchString(html) {
+			t.Errorf("side: no continue form posting to the chat's continue route:\n%s", html)
+		}
+		for _, m := range models {
+			if !strings.Contains(html, `<option value="`+m+`">`+m+`</option>`) {
+				t.Errorf("side: the continue picker lacks model %s", m)
+			}
+		}
+		if !strings.Contains(html, ">Continue in a new session</summary>") {
+			t.Error("side: the continue group is not labelled")
+		}
+		// No runtime offered: no picker.
+		bare := renderString(t, chiefThreadList(ChiefPanelView{Configured: true, Chat: chat, ClaudeModels: models}))
+		if strings.Contains(bare, chiefContinueAttr) {
+			t.Error("side: Continue offered with no runtime offered")
+		}
+	}
+}

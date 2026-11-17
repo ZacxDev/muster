@@ -699,8 +699,15 @@ func TestAFreshPrimaryHandsOver(t *testing.T) {
 	if keys[0] != old.SessionKey || texts[0] != FreshPrimaryHandoverPrompt {
 		t.Errorf("first turn: %q in %q, want the handover prompt in the old primary", texts[0], keys[0])
 	}
-	if keys[1] != fresh.SessionKey || texts[1] != FreshPrimaryHandoverPrefix+"HANDOVER: the deploy is half done" {
-		t.Errorf("second turn: %q in %q, want the handover in the new primary", texts[1], keys[1])
+	// The handover arrives FENCED, under a fresh nonce, behind muster's preface.
+	nonce := regexp.MustCompile(`nonce=([0-9a-f]{16}) count=1>>>`).FindStringSubmatch(texts[1])
+	if nonce == nil {
+		t.Fatalf("second turn carries no fenced block: %q", texts[1])
+	}
+	want := FreshPrimaryHandoverPreface + "\n\n<<<primary-handover untrusted nonce=" + nonce[1] + " count=1>>>\n" +
+		"| HANDOVER: the deploy is half done\n<<<end primary-handover nonce=" + nonce[1] + ">>>\n"
+	if keys[1] != fresh.SessionKey || texts[1] != want {
+		t.Errorf("second turn: %q in %q, want the fenced handover in the new primary:\n%q", texts[1], keys[1], want)
 	}
 	if s := f.sessions(t)[old.ID]; s.ArchivedAt == nil || s.IsDefault {
 		t.Errorf("the old primary is not archived: %+v", s)
@@ -728,7 +735,7 @@ func TestTheChatRoutesAreTheChiefsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{ui.ChiefSideChatPath(worker.ID), ui.ChiefFreshPrimaryPath(worker.ID),
-		ui.ChiefArchivePath(worker.ID, ws.ID, true), ui.ChiefArchivePath(worker.ID, ws.ID, false)} {
+		ui.ChiefArchivePath(worker.ID, ws.ID, true), ui.ChiefArchivePath(worker.ID, ws.ID, false), ui.ChiefContinuePath(worker.ID, ws.ID)} {
 		if w := f.post(t, path); w.Code != http.StatusNotFound {
 			t.Errorf("POST %s on a worker: %d, want 404", path, w.Code)
 		}

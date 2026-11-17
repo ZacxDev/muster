@@ -330,20 +330,23 @@ func chiefChatRowMenu(agentID, current int64, sess SessionView) g.Node {
 
 // chiefPanelChatActions is the chief PANEL's chat actions, under its thread list
 // (chiefThreadList): "+ New side chat", and the open chat's own — "Fresh
-// primary" on the primary, "Archive this chat" on a side chat, "Unarchive this
-// chat" on an archived one — each answered with the panel body re-rendered
-// (ChatSurfaceChiefPanel). Nothing for a panel not on a chief's chat.
-func chiefPanelChatActions(b *ChiefChatBar) g.Node {
+// primary" on the primary, "Archive this chat" and "Continue in a new session"
+// (chiefContinuePicker, where the New session picker is offered: runtimes,
+// claudeModels) on a side chat, "Unarchive this chat" on an archived one — each
+// answered with the panel body re-rendered (ChatSurfaceChiefPanel). Nothing for
+// a panel not on a chief's chat.
+func chiefPanelChatActions(b *ChiefChatBar, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
 	if b == nil {
 		return nil
 	}
 	kind, _ := chiefChatKind(*b)
-	var own g.Node
+	var own, cont g.Node
 	switch kind {
 	case ChiefChatKindPrimary:
 		own = chiefFreshPrimaryButton(b.AgentID, ChatSurfaceChiefPanel)
 	case ChiefChatKindSide:
 		own = chiefChatAction(ChatSurfaceChiefPanel, ChiefArchivePath(b.AgentID, b.SessionID, true), chiefArchiveAttr, "Archive this chat", "", false)
+		cont = chiefContinuePicker(b.AgentID, b.SessionID, runtimes, claudeModels)
 	case ChiefChatKindArchived:
 		own = chiefChatAction(ChatSurfaceChiefPanel, ChiefArchivePath(b.AgentID, b.SessionID, false), chiefUnarchiveAttr, "Unarchive this chat", "", false)
 	}
@@ -353,6 +356,87 @@ func chiefPanelChatActions(b *ChiefChatBar) g.Node {
 		Class("flex flex-none flex-wrap items-center gap-2 border-t border-line pt-2"),
 		ChiefSideChatButton(b.AgentID, ChatSurfaceChiefPanel),
 		own,
+		cont,
+	)
+}
+
+// ChiefContinuePath is the continue route of side chat sid: POST runtime +
+// model continues it in a new session (internal/api chief_continue.go).
+func ChiefContinuePath(agentID, sid int64) string {
+	return agentSessionsPath(agentID) + "/" + strconv.FormatInt(sid, 10) + "/continue"
+}
+
+// chiefContinueAttr marks the Continue picker; chiefContinueFormAttr each of
+// its forms, valued with the runtime it continues on.
+const (
+	chiefContinueAttr     = "data-chief-continue"
+	chiefContinueFormAttr = "data-chief-continue-form"
+)
+
+// ContinueConfirm is the Continue action's confirmation.
+const ContinueConfirm = "Continue this chat in a new session? This chat writes a handover for it, the new session " +
+	"starts from that handover, and this chat is then archived (Unarchive brings it back)."
+
+// chiefContinuePicker is "Continue in a new session" on a side chat: a
+// collapsed group (a native <details>, so it opens without script) holding the
+// same runtime + model forms as the New session picker (chiefNewSessionPicker),
+// each posting to the continue route. Nothing where no runtime is offered.
+//
+// PENDING AND FAILED ARE VISIBLE: the form's controls are disabled while its
+// request is in flight (hx-disabled-elt); the answer is the panel on the NEW
+// chat, drawn "working…" while the old chat writes its handover; a refusal
+// (409 while one is already running, 400 for a model the server refuses) is
+// toasted by the shell's htmx:responseError handler; and a handover that
+// failed says so in the new chat's first turn.
+func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
+	var forms []g.Node
+	for _, rt := range runtimes {
+		// claude-code is the one session runtime, as in chiefNewSessionPicker.
+		if rt.Runtime != "claude-code" {
+			continue
+		}
+		opts := make([]g.Node, 0, len(claudeModels))
+		for _, m := range claudeModels {
+			opts = append(opts, Option(Value(m), g.Text(m)))
+		}
+		forms = append(forms, Form(
+			g.Attr(chiefContinueFormAttr, rt.Runtime),
+			hx("hx-post", ChiefContinuePath(agentID, sid)+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
+			hx("hx-target", "#"+chiefPanelBodyID),
+			hx("hx-swap", "innerHTML"),
+			hx("hx-confirm", ContinueConfirm),
+			hx("hx-disabled-elt", "find button, find select"),
+			Class("flex items-center gap-2"),
+			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
+			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),
+			Select(
+				Name("model"),
+				g.Attr("aria-label", "Continue on "+rt.Label+" model"),
+				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60"),
+				g.Group(opts),
+			),
+			Button(
+				Type("submit"),
+				Class("press min-h-[40px] shrink-0 rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90 disabled:opacity-60"),
+				g.Text("Continue"),
+			),
+		))
+	}
+	if len(forms) == 0 {
+		return nil
+	}
+	return g.El("details",
+		g.Attr(chiefContinueAttr, ""),
+		Class("group w-full"),
+		g.El("summary",
+			Class("press inline-flex min-h-[36px] cursor-pointer list-none items-center gap-1 whitespace-nowrap rounded-lg bg-s1 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			g.Text("Continue in a new session"),
+		),
+		Div(
+			Class("mt-2 flex flex-col gap-2 rounded-lg bg-s1 p-2 ring-1 ring-inset ring-line"),
+			P(Class("text-xs text-muted"), g.Text("A new side chat on the model you pick starts from this chat's handover; this chat is then archived.")),
+			g.Group(forms),
+		),
 	)
 }
 

@@ -110,6 +110,7 @@ var teamAgentRoutes = map[string]teamAgentRule{
 	"POST /agents/{id}/sessions":                 teamAgentRefused,
 	"POST /agents/{id}/sessions/side":            teamAgentRefused,
 	"POST /agents/{id}/sessions/fresh-primary":   teamAgentRefused,
+	"POST /agents/{id}/sessions/{sid}/continue":  teamAgentRefused,
 	"POST /agents/{id}/sessions/{sid}/default":   teamAgentRefused,
 	"POST /agents/{id}/sessions/{sid}/archive":   teamAgentRefused,
 	"POST /agents/{id}/sessions/{sid}/unarchive": teamAgentRefused,

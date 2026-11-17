@@ -839,7 +839,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 				// The chief's chat actions — "+ New side chat", and Fresh primary /
 				// Archive / Unarchive for the chat the panel is on — under the list
 				// (chief_chats.go): what the chat bar over the transcript held.
-				chiefPanelChatActions(v.ChiefChat),
+				chiefPanelChatActions(v.ChiefChat, p.SessionRuntimes, p.ClaudeModels),
 			),
 		),
 	}

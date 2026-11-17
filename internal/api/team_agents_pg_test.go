@@ -223,7 +223,7 @@ var (
 	teamRefusedRoutes  = []string{
 		"POST /agents/{id}/model", "POST /agents/{id}/name",
 		"POST /agents/{id}/sessions", "POST /agents/{id}/sessions/side", "POST /agents/{id}/sessions/fresh-primary",
-		"POST /agents/{id}/sessions/{sid}/default", "POST /agents/{id}/sessions/{sid}/archive",
+		"POST /agents/{id}/sessions/{sid}/continue", "POST /agents/{id}/sessions/{sid}/default", "POST /agents/{id}/sessions/{sid}/archive",
 		"POST /agents/{id}/sessions/{sid}/unarchive",
 	}
 )

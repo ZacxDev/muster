@@ -333,6 +333,7 @@ var isolationClasses = map[string]routeClass{
 	// The chief's primary and side chats (chief_chats.go): A's chief, A's chat.
 	"POST /agents/{id}/sessions/side":            classParam,
 	"POST /agents/{id}/sessions/fresh-primary":   classParam,
+	"POST /agents/{id}/sessions/{sid}/continue":  classParam,
 	"POST /agents/{id}/sessions/{sid}/archive":   classParam,
 	"POST /agents/{id}/sessions/{sid}/unarchive": classParam,
 	"GET /ui/agents/{name}/chat-context":         classParam,
@@ -1716,6 +1717,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	// The chief's chats (chief_chats.go): A's CHIEF and its side chat, named
 	// before the generic /agents/{id} below, which names A's worker.
 	case strings.HasSuffix(path, "/sessions/side") || strings.HasSuffix(path, "/sessions/fresh-primary") ||
+		strings.HasSuffix(path, "/sessions/{sid}/continue") ||
 		strings.HasSuffix(path, "/sessions/{sid}/archive") || strings.HasSuffix(path, "/sessions/{sid}/unarchive"):
 		id, sid = strconv.FormatInt(o.chief, 10), strconv.FormatInt(o.chiefChat, 10)
 	case path == "/ui/agents/{name}/chat-context":
