@@ -266,6 +266,44 @@ func (s *PGStore) SessionPRs(ctx context.Context, claudeSessions []string, since
 	return out, rows.Err()
 }
 
+// LatestSessionPRs is, for each of claudeSessions, the principal's pull
+// requests it created or whose head branch it pushed (a push counts as
+// SessionPRs counts it: by the create row for its repo and branch), MOST
+// RECENTLY SEEN FIRST, at most per of them, inside PRSessionRetention. Each
+// row has its repo, its number and when it was last seen. The fleet reader's
+// prs (internal/api fleet_read.go): its first is the session's LATEST pull
+// request, which decides its digest group.
+func (s *PGStore) LatestSessionPRs(ctx context.Context, claudeSessions []string, per int) (map[string][]PRSession, error) {
+	out := map[string][]PRSession{}
+	if len(claudeSessions) == 0 || per <= 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT claude_session, repo, n, last FROM (
+			SELECT p.claude_session, p.repo, coalesce(p.pr, c.pr) AS n, max(p.last_seen) AS last,
+				row_number() OVER (PARTITION BY p.claude_session ORDER BY max(p.last_seen) DESC, p.repo, coalesce(p.pr, c.pr) DESC) AS rn
+			FROM session_prs p
+			LEFT JOIN LATERAL (SELECT c.pr FROM session_prs c
+				WHERE p.pr IS NULL AND c.kind = 'gh-pr-create' AND c.repo = p.repo AND c.head_ref = p.head_ref AND c.pr IS NOT NULL
+					AND c.last_seen > now() - make_interval(secs => $2)
+				ORDER BY c.last_seen DESC, c.id DESC LIMIT 1) c ON true
+			WHERE p.claude_session = ANY($1::text[]) AND p.last_seen > now() - make_interval(secs => $2)
+				AND coalesce(p.pr, c.pr) IS NOT NULL
+			GROUP BY p.claude_session, p.repo, coalesce(p.pr, c.pr)) x
+		WHERE rn <= $3 ORDER BY claude_session, rn`, claudeSessions, PRSessionRetention.Seconds(), per)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p PRSession
+		if err := rows.Scan(&p.ClaudeSession, &p.Repo, &p.PR, &p.LastSeen); err != nil {
+			return nil, err
+		}
+		out[p.ClaudeSession] = append(out[p.ClaudeSession], p)
+	}
+	return out, rows.Err()
+}
+
 // SessionRefs: see PRSessionStore.
 func (s *PGStore) SessionRefs(ctx context.Context, claudeSessions []string, mentions []prroute.Mention, branches []string) ([]PRSession, error) {
 	if len(claudeSessions) == 0 || (len(mentions) == 0 && len(branches) == 0) {

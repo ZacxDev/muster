@@ -335,7 +335,7 @@ func OwnerMessages(msgs []Msg, injected, prefixes []string, since time.Time, ski
 			continue
 		}
 		t := strings.TrimSpace(m.Text)
-		if t == "" || m.ID == "" || fenceOpen.MatchString(m.Text) || inj[t] || hasAnyPrefix(t, prefixes) {
+		if t == "" || m.ID == "" || injectedText(m, t, inj, prefixes) {
 			continue
 		}
 		if m.At.IsZero() || (!since.IsZero() && m.At.Before(since)) {
@@ -347,6 +347,45 @@ func OwnerMessages(msgs []Msg, injected, prefixes []string, since time.Time, ski
 		out = out[len(out)-MaxOwnerMessages:]
 	}
 	return out
+}
+
+// injectedText reports whether user-role message m (t its trimmed text) is
+// muster's own text, not the owner's: a fenced message, one of injected, or
+// one opening with one of prefixes. 🔴 ONE PREDICATE: OwnerMessages leaves
+// these out of the owner's words, and SinceOwner counts them after the owner's
+// newest — so a paste can never be both.
+func injectedText(m Msg, t string, inj map[string]bool, prefixes []string) bool {
+	return fenceOpen.MatchString(m.Text) || inj[t] || hasAnyPrefix(t, prefixes)
+}
+
+// SinceOwner is the owner's newest OWN message among msgs (oldest first) —
+// OwnerMessages' rule, with no time window and no kickoff skip — and how many
+// of muster's own user-role messages (injectedText: a nudge, a routed or
+// relayed message, a fenced paste) come after it in the conversation. With no
+// own message read, ok is false and after counts every injected message read.
+// The fleet reader's loop counter (internal/api fleet_list's
+// chief_texts_since_owner).
+func SinceOwner(msgs []Msg, injected, prefixes []string) (last Msg, ok bool, after int) {
+	inj := make(map[string]bool, len(injected))
+	for _, t := range injected {
+		if t = strings.TrimSpace(t); t != "" {
+			inj[t] = true
+		}
+	}
+	for _, m := range msgs {
+		if m.Role != "user" {
+			continue
+		}
+		t := strings.TrimSpace(m.Text)
+		switch {
+		case t == "":
+		case injectedText(m, t, inj, prefixes):
+			after++
+		case m.ID != "" && !m.At.IsZero():
+			last, ok, after = m, true, 0
+		}
+	}
+	return last, ok, after
 }
 
 // Untimed counts msgs' user-role messages that carry no time.

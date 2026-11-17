@@ -133,6 +133,9 @@ func featureCatalog() []features.Feature {
 		{ID: features.SessionState, Name: "Session state",
 			Description: "One push per stop, and the Asks page's Stalled / waiting section.",
 			Enable:      []features.Var{is(envSessionState, "1")}},
+		{ID: features.FleetDigest, Name: "Fleet digest",
+			Description: "A card at the top of the chief panel grouping every one of your sessions by what it needs.",
+			Enable:      []features.Var{is(envFleetDigest, "1")}},
 		{ID: features.AskLog, Name: "Ask log",
 			Description: "Every question an agent asks you, with your answer and how long it took, recorded for review.",
 			Enable:      []features.Var{is(envAskLog, "1")},
@@ -478,6 +481,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		st[features.ChiefNudges] = off(envChiefNudges + " is unset")
 	}
 	st[features.SessionState] = pick(ext.Episodes != nil, c.SessionState, "", envSessionState+"=1 but "+noDB, envSessionState+" is unset")
+	st[features.FleetDigest] = pick(ext.FleetDigest, c.FleetDigest, "", envFleetDigest+"=1 but "+noDB, envFleetDigest+" is unset")
 	st[features.AskLog] = pick(ext.AskLog != nil, c.AskLog.On, "", envAskLog+"=1 but "+noDB, envAskLog+" is unset")
 	switch {
 	case ext.Pages != nil && c.PublicURL == "":
