@@ -178,6 +178,7 @@ type Server struct {
 	mu       sync.Mutex
 	tokens   map[string]string // token -> officer id
 	items    map[string]*Item
+	chats    map[string]*fakeChat // chat id -> chat (chats.go)
 	nextID   int
 	down     bool
 	status   int
@@ -1493,6 +1494,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.write(w, http.StatusOK, map[string]any{"pr": 7251, "pr_key": "acme/widgets#7251", "item": r.URL.Query().Get("item"), "use": "attribution evidence only"})
 		}
+	case len(parts) == 4 && parts[1] == "chats":
+		s.chatRoute(w, officer, parts[2], parts[3], r.Method, r.URL.Query().Get("after"), body, now)
 	case len(parts) == 3 && parts[1] == "obs":
 		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
