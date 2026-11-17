@@ -95,6 +95,7 @@ func TestAStoredOutOfReachEscalationIsNotDeliveredAtSendTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-send-reach-token")
+	briefInstance(t, srv, a)
 	item := escalateOne(t, srv, store, a, "send-1", "secret-summary-words")
 	srv.SweepOfficerAttention(context.Background())
 	srv.SweepOfficerAttention(context.Background())
@@ -141,6 +142,7 @@ func TestAMemberRemovedAfterSaveStopsReceivingEscalations(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-send-removed-token")
+	briefInstance(t, srv, a)
 	escalateOne(t, srv, store, a, "send-before", "before")
 	srv.SweepOfficerAttention(context.Background())
 	if got := officerAsksOf(t, srv, declOther); len(got) != 1 {
@@ -221,6 +223,7 @@ func TestAnEscalationWhoseEveryStoredRecipientIsOutOfReachStillReachesTheOwner(t
 		t.Fatal(err)
 	}
 	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-send-all-dropped-token")
+	briefInstance(t, srv, a)
 	item := escalateOne(t, srv, store, a, "send-all", "all dropped")
 	var only int64
 	if err := f.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, status, outcome, summary, notices)
