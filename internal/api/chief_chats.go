@@ -282,8 +282,8 @@ const FreshPrimaryHandoverMarker = "primary-handover"
 
 // renderFreshPrimaryHandover is the new primary's first turn carrying summary,
 // the old primary's handover: FreshPrimaryHandoverPreface, then summary in a
-// fenced block under nonce, cut at 8 KiB (continueUnstructuredMaxBytes, the
-// cap a continue's plain-text handover has).
+// fenced block under nonce, cut at handoverMaxBytes (16 KiB, the one cap a
+// continue's handover has too).
 //
 // 🔴 FENCED AND CAPPED (it used to pass through whole and bare): the handover
 // is a model's words about a conversation that held plugin mail and other
@@ -291,7 +291,7 @@ const FreshPrimaryHandoverMarker = "primary-handover"
 // owner's — in the new primary. Each line is fence.Sanitize'd, as fence
 // requires.
 func renderFreshPrimaryHandover(summary, nonce string) string {
-	lines := strings.Split(cutHandover(summary, continueUnstructuredMaxBytes), "\n")
+	lines := strings.Split(cutHandover(summary, handoverMaxBytes), "\n")
 	for i, l := range lines {
 		lines[i] = fence.Sanitize(l)
 	}

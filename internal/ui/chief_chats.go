@@ -389,39 +389,10 @@ const ContinueConfirm = "Continue this chat in a new session? This chat writes a
 // toasted by the shell's htmx:responseError handler; and a handover that
 // failed says so in the new chat's first turn.
 func chiefContinuePicker(agentID, sid int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
-	var forms []g.Node
-	for _, rt := range runtimes {
-		// claude-code is the one session runtime, as in chiefNewSessionPicker.
-		if rt.Runtime != "claude-code" {
-			continue
-		}
-		opts := make([]g.Node, 0, len(claudeModels))
-		for _, m := range claudeModels {
-			opts = append(opts, Option(Value(m), g.Text(m)))
-		}
-		forms = append(forms, Form(
-			g.Attr(chiefContinueFormAttr, rt.Runtime),
-			hx("hx-post", ChiefContinuePath(agentID, sid)+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
-			hx("hx-target", "#"+chiefPanelBodyID),
-			hx("hx-swap", "innerHTML"),
-			hx("hx-confirm", ContinueConfirm),
-			hx("hx-disabled-elt", "find button, find select"),
-			Class("flex items-center gap-2"),
-			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
-			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),
-			Select(
-				Name("model"),
-				g.Attr("aria-label", "Continue on "+rt.Label+" model"),
-				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60"),
-				g.Group(opts),
-			),
-			Button(
-				Type("submit"),
-				Class("press min-h-[40px] shrink-0 rounded-lg bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90 disabled:opacity-60"),
-				g.Text("Continue"),
-			),
-		))
-	}
+	// The New session picker's forms (runtimeModelForms), posting to this chat's
+	// continue route, with a confirm.
+	forms := runtimeModelForms(runtimes, claudeModels, ChiefContinuePath(agentID, sid), chiefContinueFormAttr, "Continue",
+		hx("hx-confirm", ContinueConfirm))
 	if len(forms) == 0 {
 		return nil
 	}

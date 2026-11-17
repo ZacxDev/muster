@@ -171,8 +171,8 @@ func TestASideChatContinuesInANewSession(t *testing.T) {
 		"proposed_actions": []map[string]string{{"action": "nudge", "target": "build-7", "why": "stalled"}},
 		"open_questions":   []string{"close build-7?"},
 	}
-	raw, _ := json.Marshal(handover)
-	f.cg.replies[side.SessionKey] = "Handover:\n```json\n" + string(raw) + "\n```"
+	raw, _ := json.MarshalIndent(handover, "", "  ")
+	f.cg.replies[side.SessionKey] = string(raw)
 	f.cg.hold = make(chan struct{})
 
 	before := f.sessions(t)
@@ -233,8 +233,13 @@ func TestASideChatContinuesInANewSession(t *testing.T) {
 	if m == nil {
 		t.Fatalf("the new chat's first turn holds no fenced handover:\n%s", first)
 	}
-	body := fencedBody(t, first, continueHandoverPreface("haiku", ""), ContinueHandoverMarker, m[1])
-	var got ContinueHandover
+	body := fencedBody(t, first, continueHandoverPreface("haiku", false), ContinueHandoverMarker, m[1])
+	var got struct {
+		Summary  string `json:"summary"`
+		Findings []struct {
+			Text string `json:"text"`
+		} `json:"findings"`
+	}
 	if err := json.Unmarshal([]byte(strings.Join(body, "\n")), &got); err != nil {
 		t.Fatalf("the fenced body is not the handover JSON: %v\n%s", err, first)
 	}
@@ -320,28 +325,6 @@ func TestAFailedHandoverIsVisibleAndArchivesNothing(t *testing.T) {
 	}
 	if f.srv.sessionTurns.inFlight(next.SessionKey) {
 		t.Error("the new chat is still drawn working after the handover ended")
-	}
-}
-
-// TestAnUnparseableHandoverReachesTheNewChatUnstructured: prose instead of the
-// JSON block arrives as the raw text, fenced, marked unstructured — through the
-// route, not only the renderer.
-func TestAnUnparseableHandoverReachesTheNewChatUnstructured(t *testing.T) {
-	f := newContinueFixture(t)
-	side := f.sideOn(t, "haiku", "recon: the flaky test")
-	f.cg.replies[side.SessionKey] = "The flaky test is TestQueueDrain; it races the reaper."
-	if w := f.continueTo(t, f.chief.ID, side.ID, agents.SessionRuntimeClaudeCode, "sonnet"); w.Code != http.StatusOK {
-		t.Fatalf("continue: %d %s", w.Code, w.Body)
-	}
-	eventuallyAPI(t, "the two turns", func() bool { k, _, _ := f.gw.turns(); return len(k) == 2 })
-	_, _, texts := f.gw.turns()
-	m := continueNonceRE.FindStringSubmatch(texts[1])
-	if m == nil {
-		t.Fatalf("no fence: %q", texts[1])
-	}
-	body := fencedBody(t, texts[1], continueHandoverPreface("haiku", "not JSON in the handover schema"), ContinueHandoverMarker, m[1])
-	if strings.Join(body, "\n") != "The flaky test is TestQueueDrain; it races the reaper." {
-		t.Errorf("the unstructured body: %q", body)
 	}
 }
 
