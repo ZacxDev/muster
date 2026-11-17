@@ -346,7 +346,35 @@ func TestTheBodyContract(t *testing.T) {
 	}
 }
 
-// TestTheRateLimits: two open in this repository, three opened today across
+// TestTheOpenCapIsFour: with three of the officer's pull requests open in
+// this repository a fourth is admitted; with four, a fifth is refused with the
+// open-cap refusal naming the limit 4. The counts are spelled out here, not
+// read from officers.MaxOpenPRsPerRepo, so lowering the constant fails the
+// fourth's admission.
+func TestTheOpenCapIsFour(t *testing.T) {
+	yesterday := dNow.Add(-16 * time.Hour) // 23:00 the day before: not today's
+	openN := func(r *draftRig, n int) []PR {
+		var out []PR
+		for item := 1; item <= n; item++ {
+			out = append(out, PR{Number: 100 + item, State: "open", Author: BotLogin(r.infra.slug), AuthorType: "Bot",
+				HeadRef: "bot/engineering-example-web/" + itoa(item) + "-x", CreatedAt: yesterday, Body: goodBody(item)})
+		}
+		return out
+	}
+	r := newDraftRig()
+	r.infra.all = openN(r, 3)
+	if err := r.create(goodCreate()); err != nil {
+		t.Fatalf("a fourth open pull request (three open): %v, want it admitted", err)
+	}
+	r = newDraftRig()
+	r.infra.all = openN(r, 4)
+	err := r.create(goodCreate())
+	if !isGateRefusal(err) || !strings.Contains(err.Error(), "4 of this officer's pull requests are open in "+dInfra+"; the limit is 4") {
+		t.Fatalf("a fifth open pull request (four open): err = %v, want the open cap of 4", err)
+	}
+}
+
+// TestTheRateLimits: four open in this repository, three opened today across
 // the officer's repositories, or one already for the item (any state) is a
 // refusal. Pull requests by another author, of another shape, or opened
 // before today's UTC midnight do not count toward what they must not
@@ -362,8 +390,9 @@ func TestTheRateLimits(t *testing.T) {
 		setup func(r *draftRig)
 		want  string
 	}{
-		"two open here": {func(r *draftRig) {
-			r.infra.all = []PR{own(r, r.infra, "bot/", 1, "open", yesterday), own(r, r.infra, "bot/", 2, "open", yesterday)}
+		"four open here": {func(r *draftRig) {
+			r.infra.all = []PR{own(r, r.infra, "bot/", 1, "open", yesterday), own(r, r.infra, "bot/", 2, "open", yesterday),
+				own(r, r.infra, "bot/", 3, "open", yesterday), own(r, r.infra, "bot/", 4, "open", yesterday)}
 		}, "are open in " + dInfra},
 		"three today across repos": {func(r *draftRig) {
 			r.web.all = []PR{own(r, r.web, "officer/", 3, "closed", today), own(r, r.web, "officer/", 4, "closed", today)}
