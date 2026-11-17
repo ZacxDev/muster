@@ -184,7 +184,7 @@
       # fails loudly instead of building an unpatched binary — move the lock
       # forward, never the directive back.
       # `internal/modulegate/gotoolchain_test.go` pins that every Go build site
-      # names the same minor and meets the floor.
+      # names the `go` directive's minor.
       buildGoPinned = pkgs: pkgs.buildGo126Module;
 
       # 🔴 ONE BINDING, READ BY EVERY GO DERIVATION, BECAUSE THERE IS ONE

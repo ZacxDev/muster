@@ -11,12 +11,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// EVERY GO BUILD SITE NAMES THE SAME GO RELEASE, AND IT IS A PATCHED ONE.
+// EVERY GO BUILD SITE NAMES THE GO RELEASE go.mod's `go` DIRECTIVE NAMES.
 //
 // muster's binaries are compiled in four places, and each one picks its Go
 // toolchain by a different mechanism:
 //
-//   1. go.mod's `go` directive — what `go build` in a checkout requires.
+//   1. go.mod's `go` directive — what `go build` in a checkout requires. It is
+//      THE pin; the other three must agree with it.
 //   2. CI's actions/setup-go — follows go.mod, but ONLY via `go-version-file`;
 //      a literal `go-version:` is a second, independent statement.
 //   3. every Dockerfile's `FROM golang:<tag>` — the official image sets
@@ -27,121 +28,103 @@ import (
 //
 // 🔴 THE DEFECT THIS PINS IS DISAGREEMENT, NOT ONE STALE FILE. Each site can
 // look correct in isolation while the release binaries come from a different
-// one. So this test pins the RELATIONSHIP: one minor everywhere, at or above
-// goFloor, and the `go` directive itself carries the PATCH floor.
+// one. So this test pins the RELATIONSHIP: every site on the directive's
+// minor, and no second statement of the version beside the directive.
 //
-// 🔴 WHY THE PATCH LIVES IN THE `go` DIRECTIVE, not only in a `toolchain` line:
-// with `go 1.26.11`, a toolchain older than that refuses the module outright
-// ("go.mod requires go >= 1.26.11 (running go 1.26.8; GOTOOLCHAIN=local)"),
-// so a stale golang image or a stale flake.lock FAILS rather than builds an
-// unpatched binary. A `toolchain` line is ignored under GOTOOLCHAIN=local and
-// would let exactly that build through.
+// 🔴 THE PATCH FLOOR IS THE DIRECTIVE ITSELF, NOT THIS TEST. With `go 1.26.11`,
+// a toolchain older than that refuses the module outright ("go.mod requires
+// go >= 1.26.11 (running go 1.26.8; GOTOOLCHAIN=local)"), so a stale golang
+// image or a stale flake.lock FAILS rather than builds an unpatched binary.
+// Which patch is patched enough is the `govulncheck` CI job's claim. A
+// `toolchain` line is refused here: it is ignored under GOTOOLCHAIN=local, and
+// it would be a second number to keep in step.
 //
 // ⚠ WHAT THIS DOES NOT SEE: the PATCH of nix's `go_1_NN` (flake.lock decides
-// it, and only evaluating nixpkgs can read it) — the `go` directive above is
-// what makes a lock below the floor fail the `nix` CI job. And whether a newer
-// advisory has landed: that is the `govulncheck` CI job's claim, not this one.
+// it, and only evaluating nixpkgs can read it) or of a floating image tag.
+// For both, the directive's refusal is the guard.
 // ---------------------------------------------------------------------------
-
-// goFloor is the oldest Go release muster may be built with. Raise it when a
-// standard-library advisory reachable from muster is fixed in a newer patch
-// (the `govulncheck` CI job names it); never lower it.
-const goFloor = "1.26.11"
 
 var (
 	goDirective        = regexp.MustCompile(`(?m)^go\s+(\S+)\s*$`)
-	toolchainDirective = regexp.MustCompile(`(?m)^toolchain\s+go(\S+)\s*$`)
+	toolchainDirective = regexp.MustCompile(`(?m)^toolchain\s+(\S+)\s*$`)
 	// FROM [--platform=…] golang:<tag> [AS name]
-	fromGolang = regexp.MustCompile(`(?mi)^\s*FROM\s+(?:--\S+\s+)*(?:docker\.io/)?(?:library/)?golang:(\S+)`)
-	nixGo      = regexp.MustCompile(`\b(?:buildGo1(\d+)Module|go_1_(\d+))\b`)
+	fromGolang  = regexp.MustCompile(`(?mi)^\s*FROM\s+(?:--\S+\s+)*(?:docker\.io/)?(?:library/)?golang:(\S+)`)
+	nixBuilder  = regexp.MustCompile(`\bbuildGo1(\d+)Module\b`)
+	nixCompiler = regexp.MustCompile(`\bgo_1_(\d+)\b`)
+	// Nix comments: `# …` to end of line, and `/* … */`.
+	nixComment = regexp.MustCompile(`(?s)/\*.*?\*/|#[^\n]*`)
 	setupGo    = regexp.MustCompile(`(?m)^\s*-?\s*uses:\s*actions/setup-go@`)
 	goVerFile  = regexp.MustCompile(`(?m)^\s*go-version-file:\s*go\.mod\s*$`)
 	goVerLit   = regexp.MustCompile(`(?m)^\s*go-version:`)
-	imageTagGo = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)?)(?:-|$)`)
+	goMinorRe  = regexp.MustCompile(`^1\.(\d+)(?:\.\d+)?(?:-|$)`)
 )
 
-// goVersion parses "1.26", "1.26.11" or "1.26.11-alpine" into major, minor,
-// patch. ok is false for anything else (a floating "1-alpine", "alpine", a
-// release candidate), which the callers treat as a failure, not a skip.
-func goVersion(s string) (v [3]int, ok bool) {
-	m := imageTagGo.FindStringSubmatch(s)
+// goMinor returns NN from "1.NN", "1.NN.P" or "1.NN[.P]-variant". ok is false
+// for anything else (a floating "1-alpine", "alpine", a release candidate),
+// which the callers treat as a failure, not a skip.
+func goMinor(s string) (int, bool) {
+	m := goMinorRe.FindStringSubmatch(s)
 	if m == nil {
-		return v, false
+		return 0, false
 	}
-	parts := strings.Split(m[1], ".")
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return v, false
-		}
-		v[i] = n
-	}
-	return v, true
+	n, err := strconv.Atoi(m[1])
+	return n, err == nil
 }
 
-func versionLess(a, b [3]int) bool {
-	for i := range a {
-		if a[i] != b[i] {
-			return a[i] < b[i]
-		}
-	}
-	return false
-}
+// nixCode is flake.nix with its comments removed, so a version named in prose
+// can neither satisfy the positive control nor fail the agreement check.
+func nixCode(src string) string { return nixComment.ReplaceAllString(src, "") }
 
-func TestGoVersionParsesTheShapesTheSitesUse(t *testing.T) {
+func TestGoMinorParsesTheShapesTheSitesUse(t *testing.T) {
 	cases := map[string]struct {
-		want [3]int
+		want int
 		ok   bool
 	}{
-		"1.26.11":        {[3]int{1, 26, 11}, true},
-		"1.26.11-alpine": {[3]int{1, 26, 11}, true},
-		"1.25-alpine":    {[3]int{1, 25, 0}, true},
-		"1.27.4":         {[3]int{1, 27, 4}, true},
-		"1-alpine":       {[3]int{}, false},
-		"alpine":         {[3]int{}, false},
-		"1.26rc1":        {[3]int{}, false},
+		"1.26.11":        {26, true},
+		"1.26.11-alpine": {26, true},
+		"1.26-alpine":    {26, true},
+		"1.27":           {27, true},
+		"1-alpine":       {0, false},
+		"alpine":         {0, false},
+		"1.26rc1":        {0, false},
 	}
 	for in, c := range cases {
-		got, ok := goVersion(in)
+		got, ok := goMinor(in)
 		if ok != c.ok || (ok && got != c.want) {
-			t.Errorf("goVersion(%q) = %v,%v; want %v,%v", in, got, ok, c.want, c.ok)
+			t.Errorf("goMinor(%q) = %d,%v; want %d,%v", in, got, ok, c.want, c.ok)
 		}
-	}
-	if !versionLess([3]int{1, 26, 10}, [3]int{1, 26, 11}) ||
-		versionLess([3]int{1, 26, 11}, [3]int{1, 26, 11}) ||
-		!versionLess([3]int{1, 25, 14}, [3]int{1, 26, 0}) {
-		t.Fatal("versionLess orders patch/minor wrongly")
 	}
 }
 
-func TestGoToolchainFloorAgreesAcrossGoModDockerfilesFlakeAndCI(t *testing.T) {
-	root := moduleRoot(t)
-	floor, ok := goVersion(goFloor)
-	if !ok {
-		t.Fatalf("goFloor %q does not parse", goFloor)
+func TestNixCodeDropsCommentsOnly(t *testing.T) {
+	src := "a = pkgs.go_1_26; # go_1_25 in prose\n/* buildGo124Module */ b = pkgs.buildGo126Module;\n"
+	code := nixCode(src)
+	if got := nixCompiler.FindAllString(code, -1); len(got) != 1 || got[0] != "go_1_26" {
+		t.Errorf("compiler refs in code = %v; want [go_1_26]", got)
 	}
+	if got := nixBuilder.FindAllString(code, -1); len(got) != 1 || got[0] != "buildGo126Module" {
+		t.Errorf("builder refs in code = %v; want [buildGo126Module]", got)
+	}
+}
 
-	// --- 1. go.mod ---------------------------------------------------------
+func TestGoToolchainAgreesAcrossGoModDockerfilesFlakeAndCI(t *testing.T) {
+	root := moduleRoot(t)
+
+	// --- 1. go.mod: the pin --------------------------------------------------
 	gomod := readFile(t, filepath.Join(root, "go.mod"))
 	m := goDirective.FindStringSubmatch(gomod)
 	if m == nil {
 		t.Fatal("positive control FAILED: no `go` directive parsed from go.mod")
 	}
-	modV, ok := goVersion(m[1])
-	if !ok || strings.Count(m[1], ".") != 2 {
-		t.Fatalf("go.mod: `go %s` must name a full patch release (e.g. `go %s`): "+
-			"the patch in the `go` directive is what makes an older toolchain refuse to build",
-			m[1], goFloor)
-	}
-	if versionLess(modV, floor) {
-		t.Errorf("go.mod: `go %s` is below the floor %s", m[1], goFloor)
+	directive := m[1]
+	minor, ok := goMinor(directive)
+	if !ok {
+		t.Fatalf("go.mod: `go %s` does not parse as a Go 1.NN release", directive)
 	}
 	if tc := toolchainDirective.FindStringSubmatch(gomod); tc != nil {
-		if v, ok := goVersion(tc[1]); !ok || versionLess(v, floor) || v[1] != modV[1] {
-			t.Errorf("go.mod: `toolchain go%s` must be on the `go` directive's minor and >= %s", tc[1], goFloor)
-		}
+		t.Errorf("go.mod: `toolchain %s` is a second statement of the version; the `go` directive "+
+			"(`go %s`) is the pin, and GOTOOLCHAIN=local builds ignore a toolchain line", tc[1], directive)
 	}
-	minor := modV[1]
 
 	// --- 3. every Dockerfile that builds on the golang image ----------------
 	var froms []string
@@ -167,15 +150,9 @@ func TestGoToolchainFloorAgreesAcrossGoModDockerfilesFlakeAndCI(t *testing.T) {
 		rel, _ := filepath.Rel(root, p)
 		for _, fm := range fromGolang.FindAllStringSubmatch(string(b), -1) {
 			froms = append(froms, rel+": golang:"+fm[1])
-			v, ok := goVersion(fm[1])
-			switch {
-			case !ok || strings.Count(strings.SplitN(fm[1], "-", 2)[0], ".") != 2:
-				t.Errorf("%s: `golang:%s` must name a full patch release (e.g. golang:%s-alpine); "+
-					"the image runs GOTOOLCHAIN=local, so its tag IS the compiler", rel, fm[1], goFloor)
-			case v[1] != minor:
-				t.Errorf("%s: `golang:%s` is Go 1.%d but go.mod is Go 1.%d", rel, fm[1], v[1], minor)
-			case versionLess(v, floor):
-				t.Errorf("%s: `golang:%s` is below the floor %s", rel, fm[1], goFloor)
+			if v, ok := goMinor(fm[1]); !ok || v != minor {
+				t.Errorf("%s: `golang:%s` is not Go 1.%d, which go.mod's `go %s` names; "+
+					"the image runs GOTOOLCHAIN=local, so its tag IS the compiler", rel, fm[1], minor, directive)
 			}
 		}
 		return nil
@@ -191,17 +168,20 @@ func TestGoToolchainFloorAgreesAcrossGoModDockerfilesFlakeAndCI(t *testing.T) {
 			"(Dockerfile, images/claude-code-agent/Dockerfile)", len(froms), froms)
 	}
 
-	// --- 4. flake.nix ------------------------------------------------------
-	flake := readFile(t, filepath.Join(root, "flake.nix"))
-	nixHits := nixGo.FindAllStringSubmatch(flake, -1)
-	// 🔴 POSITIVE CONTROL: buildGoPinned and the dev shell's compiler.
-	if len(nixHits) < 2 {
-		t.Fatalf("positive control FAILED: found %d buildGo1NNModule/go_1_NN references in flake.nix; want at least 2", len(nixHits))
+	// --- 4. flake.nix, code only --------------------------------------------
+	code := nixCode(readFile(t, filepath.Join(root, "flake.nix")))
+	builders := nixBuilder.FindAllStringSubmatch(code, -1)
+	compilers := nixCompiler.FindAllStringSubmatch(code, -1)
+	// 🔴 POSITIVE CONTROL, ON CODE: `buildGoPinned` and the dev shell's
+	// compiler. A mention in a comment does not count, so deleting either
+	// expression cannot be papered over by the prose that explains it.
+	if len(builders) == 0 || len(compilers) == 0 {
+		t.Fatalf("positive control FAILED: flake.nix code has %d buildGo1NNModule and %d go_1_NN "+
+			"expression(s); want at least one of each", len(builders), len(compilers))
 	}
-	for _, h := range nixHits {
-		n := h[1] + h[2]
-		if got, _ := strconv.Atoi(n); got != minor {
-			t.Errorf("flake.nix: `%s` is Go 1.%s but go.mod is Go 1.%d", h[0], n, minor)
+	for _, h := range append(builders, compilers...) {
+		if got, _ := strconv.Atoi(h[1]); got != minor {
+			t.Errorf("flake.nix: `%s` is Go 1.%s but go.mod's `go %s` is Go 1.%d", h[0], h[1], directive, minor)
 		}
 	}
 
@@ -227,8 +207,8 @@ func TestGoToolchainFloorAgreesAcrossGoModDockerfilesFlakeAndCI(t *testing.T) {
 	if uses == 0 {
 		t.Fatal("positive control FAILED: no actions/setup-go step found in .github/workflows")
 	}
-	t.Logf("go.mod go %d.%d.%d; %d golang image(s) %v; %d flake reference(s); %d setup-go step(s) in %d workflow(s)",
-		modV[0], modV[1], modV[2], len(froms), froms, len(nixHits), uses, files)
+	t.Logf("go.mod go %s; %d golang image(s) %v; flake code: %d builder, %d compiler; %d setup-go step(s) in %d workflow(s)",
+		directive, len(froms), froms, len(builders), len(compilers), uses, files)
 }
 
 func readFile(t *testing.T, p string) string {
