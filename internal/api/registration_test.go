@@ -145,6 +145,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		ClosedPRs:     &ClosedPRs{},
 		Fleet:         struct{ fleet.Store }{},
 		FleetPRStates: stubFleetPRStates{},
+		FleetDigest:   true,
 		ChiefUsage:    struct{ chiefusage.Store }{},
 		AskAttempts:   &askattempt.Mem{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
