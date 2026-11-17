@@ -374,8 +374,8 @@ func TestADeniedGrantRecordsNoBlock(t *testing.T) {
 	}
 }
 
-// TestOnlyEscalatedItemsAreReRun: the operator's rule ("only escalated ones",
-// 2026-11-17). Of three items held at one refusal, the one that finished
+// TestOnlyEscalatedItemsAreReRun: the operator's rule ("only escalated
+// ones"). Of three items held at one refusal, the one that finished
 // escalated is re-run; the one that finished done and the one still being
 // worked are not — and all three are settled, so a later approval of the
 // grant looks at none of them again.
