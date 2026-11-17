@@ -29,6 +29,10 @@ const DoctorPath = "/api/doctor"
 type DoctorReport struct {
 	// AuthMode is "password" or "gotrue".
 	AuthMode string `json:"auth_mode"`
+	// BrowserPort is the browser listener's port (MUSTER_BROWSER_PORT) in
+	// gotrue mode, the only port a browser signs in on there; absent in
+	// password mode, where every listener serves browsers.
+	BrowserPort int `json:"browser_port,omitempty"`
 	// HookTokenArmed: MUSTER_HOOK_TOKEN is set and usable (HookArmingRefusal
 	// is empty). Stated even though a hook-token caller only gets here on an
 	// armed server, because a PERSONAL token is admitted either way and must
@@ -165,6 +169,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.auth.goTrueMode() {
 		rep.AuthMode = "gotrue"
+		rep.BrowserPort = s.auth.BrowserPort
 	}
 	if s.ext.Mirror != nil {
 		rep.Mirror.Enabled = true

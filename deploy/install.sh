@@ -11,8 +11,11 @@
 #      muster-mirror settings);
 #   3. downloads the release's docker-compose.yml into ~/muster, checks it
 #      against the release's checksums.txt, and starts the stack with
-#      `docker compose up -d --wait` (no .env: muster-init generates the
-#      secrets, docs/quickstart-local.md);
+#      `docker compose up -d --wait` (muster-init generates the secrets,
+#      docs/quickstart-local.md; a fresh install's .env holds one line,
+#      MUSTER_PUBLIC_URL=http://localhost:<port>, and an update never writes
+#      it); a Compose override beside it that this release and .env cannot
+#      run is refused before anything changes;
 #   4. installs muster-mirror and the muster CLI (checksum-verified) into
 #      ~/.local/bin, mints this machine's mirror token, and runs muster-mirror
 #      as a user service (systemd on Linux, launchd on macOS) against
@@ -100,7 +103,24 @@ esac
 BASE="${MUSTER_RELEASE_BASE:-$REPO/releases/download/v$RELEASE}"
 # </dev/null: under `curl … | sh` stdin IS this script, and `docker compose
 # exec` would read (and eat) the rest of it.
-dc() { docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null; }
+# The person's Compose override beside it, when there is one: an explicit -f
+# turns Compose's automatic override off, and a re-run that dropped it would
+# drop what it adds (accounts mode's browser port). override prints the file
+# Compose itself would read: the first of its four names, in its own order.
+override() {
+  for f in compose.override.yml compose.override.yaml docker-compose.override.yml docker-compose.override.yaml; do
+    [ -e "$DIR/$f" ] && { echo "$DIR/$f"; return 0; }
+  done
+  return 0
+}
+dc() {
+  dc_ov=$(override)
+  if [ -n "$dc_ov" ]; then
+    docker compose -f "$DIR/docker-compose.yml" -f "$dc_ov" -p "$PROJECT" "$@" </dev/null
+  else
+    docker compose -f "$DIR/docker-compose.yml" -p "$PROJECT" "$@" </dev/null
+  fi
+}
 # muster-init prints the generated sign-in password once, on a line carrying
 # this marker (cmd/muster-server/secretfiles.go, secretLineMarker): every log
 # this script shows drops it, so the password never reaches an agent's output.
@@ -135,11 +155,30 @@ if [ -z "$(docker ps -a -q --filter "label=com.docker.compose.project=$PROJECT")
    curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then
   die "something already answers on 127.0.0.1:$port, and it is not this install. Nothing was changed."
 fi
+# An override that no longer works with this release and .env (accounts mode
+# turned off by deleting its .env lines, the override left behind): `up`
+# would refuse it AFTER the new docker-compose.yml is in place, stranding the
+# stack half-updated. Refuse now, changing nothing.
+ov=$(override)
+if [ -n "$ov" ] && ! err=$(docker compose --project-directory "$DIR" -f "$tmp/docker-compose.yml" -f "$ov" -p "$PROJECT" config -q 2>&1 </dev/null); then
+  die "$ov does not work with release $RELEASE and $DIR/.env: $(printf '%s\n' "$err" | head -n 1). Nothing was changed. If you turned accounts mode off, delete $ov as well (docs/auth.md, \"Turn it off\"); else put back the .env lines it needs, and run this again."
+fi
+# A fresh install (this script never ran here, and no .env) gets muster's own
+# address, the base of every link it writes (attachments, pages). Never on an
+# update: a .env without it may be on purpose (a reverse proxy, relative links).
+fresh=""
+[ -e "$DIR/.muster-install" ] || [ -e "$DIR/.env" ] || fresh=1
 mkdir -p "$DIR"
 cp "$tmp/docker-compose.yml" "$DIR/docker-compose.yml"
+if [ -n "$fresh" ]; then
+  (umask 077; printf 'MUSTER_PUBLIC_URL=%s\n' "$URL" > "$DIR/.env")
+  say "wrote MUSTER_PUBLIC_URL=$URL to $DIR/.env (muster's own address; with HTTPS, set it to that address)"
+fi
 printf 'installed-by: install.sh\nrelease: %s\n' "$RELEASE" > "$DIR/.muster-install"
 say "starting muster $RELEASE in $DIR (compose project $PROJECT)"
-if ! dc up -d --wait --wait-timeout 300; then
+# --quiet-pull: the image downloads' progress bars are hundreds of KB that
+# bury this script's report (onboarding round 3); a failed pull still says why.
+if ! dc up -d --wait --quiet-pull --wait-timeout 300; then
   { dc logs --no-color --tail 15 muster-init muster 2>&1 || true; } | grep -vF "$SECRET_MARK" >&2 || true
   die "the stack did not come up; the reason is in the lines above (\`docker compose -f $DIR/docker-compose.yml -p $PROJECT logs muster-init muster | grep -vF '$SECRET_MARK'\`)"
 fi
@@ -188,8 +227,8 @@ tmux_dir=$(dirname "$(command -v tmux 2>/dev/null || echo /usr/bin/tmux)")
 {
   echo "$MARK"
   # An owned key in any spelling a shell or systemd reads is owned: indented,
-  # or after `export`.
-  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^[[:space:]]*(export[[:space:]]+)?($owned)=" || true
+  # after `export`, or with spaces before its `=`.
+  [ -e "$CFG/env" ] && grep -vxF "$MARK" "$CFG/env" | grep -Ev "^[[:space:]]*(export[[:space:]]+)?($owned)[[:space:]]*=" || true
   echo "MUSTER_MIRROR_URL=$URL"
   echo "MUSTER_MIRROR_TOKEN_FILE=$tok"
   echo "MUSTER_MIRROR_HOST=$host"
@@ -294,6 +333,23 @@ rm -f "$deploy"
 
 echo
 show="docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server show-secret ui-password"
+# Accounts mode (MUSTER_AUTH_MODE=gotrue): $URL is the machine-token port,
+# which refuses a browser; a person signs in on the browser listener, at the
+# host port that publishes it (docs/guides/gotrue.md).
+browser_port=$(dc config 2>/dev/null | sed -n 's/^ *MUSTER_BROWSER_PORT: *"\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' | head -n 1)
+if dc config 2>/dev/null | grep -Eq '^ *MUSTER_AUTH_MODE: *"?gotrue"?$'; then
+  hp=""
+  [ -z "$browser_port" ] || hp=$(dc port muster "$browser_port" 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)
+  if [ -n "$hp" ]; then
+    say "muster is at http://localhost:$hp (accounts mode: browsers sign in on the browser listener; $URL serves machine tokens only and refuses a browser)"
+  else
+    say "accounts mode: browsers sign in only on the browser listener (MUSTER_BROWSER_PORT${browser_port:+=$browser_port}), which no host port publishes:"
+    say "    add it to $DIR/docker-compose.override.yml (docs/guides/gotrue.md) and run this again. $URL serves machine tokens only"
+  fi
+  say "sign in with your own account (\`docker compose -f $DIR/docker-compose.yml -p $PROJECT exec muster /muster-server invite --claim-admin\` makes the first)"
+  [ "$rc" = 0 ] || say "the doctor found a problem (above); fix it and run this again — it is safe to"
+  exit "$rc"
+fi
 case "${MUSTER_PRINT_PASSWORD:-yes}" in
   no|0)
     say "muster is at $URL — open it in this machine's browser. The sign-in password is not printed here; show it with:"

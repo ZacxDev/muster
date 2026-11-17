@@ -78,7 +78,19 @@ func runOpenCodePair(args []string, getenv func(string) string, stdout, stderr i
 	defer cancel()
 	res, err := opencodehost.Pair(ctx, regs, expandHome(*tokenFile))
 	if errors.Is(err, opencodehost.ErrNoRegistration) {
-		fmt.Fprintf(stderr, "muster-mirror opencode-pair: %v: %s\n", err, openCodeNoRegistrationWhy(probeOpenCodeVersion(ctx)))
+		version, verr := probeOpenCodeVersion(ctx)
+		where := ""
+		// Not on PATH, but where opencode's own installer puts it: say so,
+		// and read THAT opencode's version (onboarding round 3: the pair was
+		// run from a shell whose PATH did not have ~/.opencode/bin).
+		if errors.Is(verr, exec.ErrNotFound) {
+			if p := filepath.Join(getenv("HOME"), ".opencode", "bin", "opencode"); getenv("HOME") != "" && isExecutable(p) {
+				where = fmt.Sprintf("opencode is at %s, which is not on this PATH (put %s on PATH here, and in the shell tmux starts); ",
+					p, filepath.Dir(p))
+				version, verr = openCodeVersion(ctx, p)
+			}
+		}
+		fmt.Fprintf(stderr, "muster-mirror opencode-pair: %v: %s%s\n", err, where, openCodeNoRegistrationWhy(version, verr))
 		return 1
 	}
 	if err != nil {
@@ -102,11 +114,31 @@ func probeOpenCodeVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return openCodeVersion(ctx, bin)
+}
+
+// openCodeVersion runs `<bin> --version`: its output, or the error.
+func openCodeVersion(ctx context.Context, bin string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "--version").Output()
 	return strings.TrimSpace(string(out)), err
 }
+
+// isExecutable: path is a regular file someone may execute.
+func isExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
+}
+
+// openCodeV2Install installs opencode 2. opencode's plain installer
+// (https://opencode.ai/install) installs opencode 1, which muster cannot pair
+// with (onboarding round 3); its own output names this one.
+const openCodeV2Install = "`curl -fsSL https://opencode.ai/v2/install | bash`"
+
+// openCodeRunOnce is the precondition every pair has: an opencode 2 server
+// has run on this host, which is what writes the registration file.
+const openCodeRunOnce = "run opencode once first (e.g. `opencode serve`, or the TUI in tmux), so it writes the registration file"
 
 // openCodeNoRegistrationWhy is what to do when no registration file exists,
 // from `opencode --version` (version, err): the registration file is written
@@ -119,8 +151,9 @@ func probeOpenCodeVersion(ctx context.Context) (string, error) {
 func openCodeNoRegistrationWhy(version string, err error) string {
 	want := fmt.Sprintf("muster needs opencode %d or later", opencodehost.MinMajorVersion)
 	if err != nil {
-		return fmt.Sprintf("%s, and `opencode --version` did not run (%v): install opencode %d (https://opencode.ai), start it once, "+
-			"then run this again", want, err, opencodehost.MinMajorVersion)
+		return fmt.Sprintf("%s, and `opencode --version` did not run (%v): install opencode %d with %s "+
+			"(https://opencode.ai/install installs opencode 1), %s, then run this again",
+			want, err, opencodehost.MinMajorVersion, openCodeV2Install, openCodeRunOnce)
 	}
 	major, ok := opencodehost.MajorVersion(version)
 	switch {
@@ -129,11 +162,11 @@ func openCodeNoRegistrationWhy(version string, err error) string {
 			"running (`opencode service status` on opencode %d), then run this again", want, version, opencodehost.MinMajorVersion)
 	case major < opencodehost.MinMajorVersion:
 		return fmt.Sprintf("this host has opencode %s, and %s: opencode %d has no background service, so it writes no registration "+
-			"file. Upgrade with `opencode upgrade --major`, start opencode once, then run this again",
-			opencodehost.NormalizeVersion(version), want, major)
+			"file. Upgrade with `opencode upgrade --major` (or install opencode %d with %s), %s, then run this again",
+			opencodehost.NormalizeVersion(version), want, major, opencodehost.MinMajorVersion, openCodeV2Install, openCodeRunOnce)
 	}
-	return fmt.Sprintf("opencode %s is installed, so its background service is most likely not running: start it with `opencode service start` "+
-		"(or start opencode once; `opencode service status` checks it), then run this again", opencodehost.NormalizeVersion(version))
+	return fmt.Sprintf("opencode %s is installed, but no opencode server has run here yet: %s (`opencode service start` starts its "+
+		"background service; `opencode service status` checks it), then run this again", opencodehost.NormalizeVersion(version), openCodeRunOnce)
 }
 
 // openCodeNotPairedWhy is why there is no opencode credential when the token

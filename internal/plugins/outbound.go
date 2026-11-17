@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -429,6 +430,66 @@ type OutboundTarget struct {
 	// Handle is a dm's or a follow's person (target_ref holds it); "" for
 	// every other kind.
 	Handle string `json:"handle,omitempty"`
+}
+
+// UnmarshalJSON takes Ref as a JSON string or a whole number (RefText): an
+// X post id is all digits, and an agent sends it as a number.
+func (t *OutboundTarget) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == "null" {
+		return nil
+	}
+	var w struct {
+		Kind   string  `json:"kind"`
+		Ref    RefText `json:"ref"`
+		Handle string  `json:"handle"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*t = OutboundTarget{Kind: w.Kind, Ref: string(w.Ref), Handle: w.Handle}
+	return nil
+}
+
+// RefText is an upstream reference as an officer files it (target.ref,
+// because_ref): a JSON string, or a JSON number that is a whole non-negative
+// integer — an X post id is all digits, and an agent sends it as one. The
+// number is kept as its exact digits (never through a float64, which cannot
+// hold a 19-digit id: 2122495152350453825 would become …824). A number with a
+// fraction, a sign or an exponent is REFUSED, not guessed at: no ref is
+// spelled that way, and an exponent form is what an id that already went
+// through a float looks like — its digits are gone, and storing the rounded
+// one would point at somebody else's post. Its length and characters are
+// checked where the string is (ValidThread, MaxTargetRefBytes).
+//
+// officers.ItemID is the lenient sibling for an HQ item id; this one is
+// stricter on purpose.
+type RefText string
+
+// UnmarshalJSON accepts a JSON string, or a JSON number of digits only.
+func (r *RefText) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	switch {
+	case string(b) == "null":
+		return nil
+	case len(b) > 0 && b[0] == '"':
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*r = RefText(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return fmt.Errorf("a ref is a string or a whole number, not %.40s", b)
+	}
+	for _, c := range n.String() {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("a ref given as a number is its digits only, not %.40s: send it as a string", b)
+		}
+	}
+	*r = RefText(n.String())
+	return nil
 }
 
 // DraftMedia is one uploaded medium of an outbound draft (0121's media).

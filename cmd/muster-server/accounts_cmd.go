@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/users"
 )
@@ -52,7 +56,8 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 			return 1
 		}
 		defer pool.Close()
-		link, err := api.NewAdminClaimLink(ctx, users.NewPG(pool), cfg.PublicURL, time.Now())
+		base, note := claimLinkBase(cfg)
+		link, err := api.NewAdminClaimLink(ctx, users.NewPG(pool), base, time.Now())
 		if err != nil {
 			fmt.Fprintf(stderr, "claim link: %v\n", err)
 			return 1
@@ -60,6 +65,9 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		fmt.Fprintf(stdout, "%s\n", link)
 		fmt.Fprintf(stderr, "single-use, valid for %s; any earlier unredeemed claim link is now revoked.\n"+
 			"Open it at the public address — the machine-token port refuses it.\n", api.ClaimTTL)
+		if note != "" {
+			fmt.Fprintln(stderr, note)
+		}
 		return 0
 	case len(args) == 3 && args[0] == "user" && (args[1] == "disable" || args[1] == "enable"):
 		id, err := strconv.ParseInt(args[2], 10, 64)
@@ -116,6 +124,41 @@ func runAccountCommand(ctx context.Context, args []string, getenv func(string) s
 		return 0
 	}
 	return usage()
+}
+
+// claimLinkBase is the address the admin claim link is written on, and a note
+// when it is not MUSTER_PUBLIC_URL as set. In gotrue mode only the browser
+// listener serves a claim, so a MUSTER_PUBLIC_URL that is this machine's own
+// loopback address on the MAIN port (a hub with no Tailscale, set to the
+// install's http://localhost:<port>) would print a link that refuses the
+// browser it is opened in (onboarding round 3): the link goes on the same
+// host at the browser listener's port instead, and the note says to set
+// MUSTER_PUBLIC_URL there. Any other address (https, another host, another
+// port) is taken as the person routed it, and kept.
+//
+// It assumes the Compose stack's mapping, the same port number on the host as
+// in the container (deploy/docker-compose.yml, and the override
+// docs/guides/gotrue.md gives for the browser port).
+func claimLinkBase(c config) (base, note string) {
+	if api.AuthMode(c.AuthMode) != api.AuthModeGoTrue || c.BrowserPort == 0 || !loopback.HTTPURL(c.PublicURL) {
+		return c.PublicURL, ""
+	}
+	u, err := url.Parse(strings.TrimSpace(c.PublicURL))
+	if err != nil {
+		return c.PublicURL, ""
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+	}
+	if port != strconv.Itoa(c.Port) {
+		return c.PublicURL, ""
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(c.BrowserPort))
+	base = strings.TrimRight(u.String(), "/")
+	return base, fmt.Sprintf("%s=%s is the machine-token port, which refuses a browser in gotrue mode: this link is on "+
+		"the browser listener (%s=%d) instead. Set %s=%s so every link muster writes is too",
+		envPublicURL, c.PublicURL, envBrowserPort, c.BrowserPort, envPublicURL, base)
 }
 
 // userCacheWindow is api's sub→user cache lifetime, as the CLI states it.

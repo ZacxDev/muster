@@ -195,3 +195,32 @@ func TestTheWakeLoopHonoursASwitchGatedBackendsSwitch(t *testing.T) {
 		hq.Close()
 	}
 }
+
+// TestABuiltinInstanceIsToldHowItsCharterChanges: a builtin instance's
+// kickoff and its re-prompt say what charter_changed means (muster refuses
+// its claim and complete until it is briefed again: officers.CharterGated),
+// and an HQ instance's say nothing of it (HQ does not gate on it). The whole
+// sentence is pinned: it is a claim about a machine-readable code.
+func TestABuiltinInstanceIsToldHowItsCharterChanges(t *testing.T) {
+	const kick = " Your charter can change while you run (its version is charter_version): when officer_claim or officer_complete answers " +
+		"charter_changed, call officer_brief again, follow the charter it returns from then on, and retry the call. " +
+		"An item you already hold stays yours: check it against that charter before you complete it.\n2. Work the queue"
+	const reprompt = "If officer_claim or officer_complete answers charter_changed, your charter changed: call officer_brief, follow it, and retry."
+	bi := parseOne(t, `{"id":"marketing:example","backend":"builtin"}`, nil)
+	tok := officers.TokenEnvPrefix + officers.TokenEnvSuffix("triage:example")
+	hq := parseOne(t, `{"id":"triage:example","hq_url":"https://hq.example.com/api/v1"}`, map[string]string{tok: "fixture-tok"})
+	if got := officers.KickoffText(bi, 1); !strings.Contains(got, "earlier conversation."+kick) {
+		t.Errorf("a builtin kickoff's step 1 does not end with the charter_changed sentence:\n%s", got)
+	}
+	if got := officers.RepromptText(bi, 1); !strings.HasSuffix(got, reprompt) {
+		t.Errorf("a builtin re-prompt: %q, want it to end %q", got, reprompt)
+	}
+	for _, got := range []string{officers.KickoffText(hq, 1), officers.RepromptText(hq, 1)} {
+		if strings.Contains(got, "charter_changed") {
+			t.Errorf("an HQ instance is told of charter_changed, which HQ never answers:\n%s", got)
+		}
+	}
+	if got := officers.RepromptText(hq, 1); !strings.HasSuffix(got, "Call officer_brief again only if you need your charter.") {
+		t.Errorf("an HQ re-prompt changed: %q", got)
+	}
+}

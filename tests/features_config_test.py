@@ -36,6 +36,7 @@ cannot fail is reported rather than passed.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -355,6 +356,29 @@ class FeaturesConfig(unittest.TestCase):
                          sorted(["nope.md -> docs/nope.md does not exist",
                                  "features.md#no-such-feature -> #no-such-feature is not a heading of docs/features.md",
                                  "#nowhere -> #nowhere is not a heading of docs/planted.md"]))
+
+    def test_the_ask_cards_settings_file_is_the_doctors(self) -> None:
+        # Round 3: a blind install had only a JSON fragment to wrap. The Ask
+        # cards section shows the whole ~/.claude/settings.json, and it is the
+        # document `muster doctor` hands over and checks (askHookSettingsFile,
+        # which TestTheAskHookSettingsFilePassesTheDoctor runs through the
+        # ask-hook check): equal as JSON, so a doc that drifts fails here.
+        src = (ROOT / "cmd/muster/doctor.go").read_text()
+        m = re.search(r"(?m)^const askHookSettingsFile = `([^`]*)`$", src)
+        self.assertIsNotNone(m, "cmd/muster/doctor.go has no askHookSettingsFile")
+        want = json.loads(m.group(1))
+
+        def shown(features: str):
+            sec = features.split("\n### Ask cards\n", 1)
+            self.assertEqual(len(sec), 2, "docs/features.md has no Ask cards section")
+            block = re.search(r"```json\n(.*?)```", sec[1].split("\n### ", 1)[0], re.S)
+            self.assertIsNotNone(block, "the Ask cards section shows no settings.json")
+            return json.loads(block.group(1))
+
+        self.assertEqual(shown(self.features), want)
+        # Negative control: the doc with another command is not the file.
+        other = self.features.replace('"command": "muster-mirror ask"', '"command": "muster-mirror nope"', 1)
+        self.assertNotEqual(shown(other), want, "control: a changed command went unseen")
 
 
 if __name__ == "__main__":

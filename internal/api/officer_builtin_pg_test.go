@@ -150,3 +150,51 @@ func TestABuiltinOfficerWithNoDatabaseIsRefusedAtBoot(t *testing.T) {
 		t.Fatal("the officer runtime was left on after the refusal")
 	}
 }
+
+// TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields: a builtin officer's
+// instance is not offered authors, attributed_prs, attribution or tickets
+// (its backend has none of those features), and one it sends anyway is
+// refused by muster, the item still held — never completed with the field
+// silently dropped. The same complete without it is served.
+func TestABuiltinOfficerIsRefusedTheHQOnlyCompleteFields(t *testing.T) {
+	f := newConnFixture(t)
+	logs := &bytes.Buffer{}
+	ctx := dbtest.AsOperator(context.Background())
+	srv, store := builtinOfficerServer(t, f, `[{"id":"`+builtinOfficerID+`","backend":"builtin"}]`, logs)
+	if err := store.PutType(ctx, 1, builtin.Type{Key: "marketing", Name: "Marketing", Charter: "Draft posts."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutDef(ctx, 1, builtin.Def{Officer: builtinOfficerID, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	id, created, err := store.Enqueue(ctx, 1, builtin.NewItem{Officer: builtinOfficerID, Kind: "release.post", SubjectKey: "v1.3.0"}, time.Now())
+	if err != nil || !created {
+		t.Fatalf("enqueue: %v, %v", created, err)
+	}
+	a := startPoolInstance(t, f, srv, builtinOfficerID, "", 1, "fixture-builtin-hooks-token")
+	briefInstance(t, srv, a) // until it is, its claim is refused charter_changed
+	props := completePropsOf(t, srv.MCPToolDefsFor(ctx, a))
+	for _, k := range []string{"authors", "attributed_prs", "attribution", "tickets"} {
+		if _, has := props[k]; has {
+			t.Errorf("a builtin officer's officer_complete offers %s", k)
+		}
+	}
+	if out := srv.dispatchAgentTool(ctx, a, officers.ToolClaim, `{}`); isToolErr(out) {
+		t.Fatalf("claim-next: %s", out)
+	}
+	item := strconv.FormatInt(id, 10)
+	out := srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"drafted","tickets":[]}`)
+	if !isToolErr(out) || !strings.Contains(out, "tickets is not served by officer "+builtinOfficerID+"'s builtin backend") {
+		t.Fatalf("tickets from a builtin instance: %s, want muster's refusal naming tickets", out)
+	}
+	var status string
+	if err := f.pool.QueryRow(ctx, `SELECT status FROM officer_items WHERE id = $1`, id).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != officers.StatusClaimed {
+		t.Fatalf("a refused complete left the item %s, want claimed", status)
+	}
+	if out := srv.dispatchAgentTool(ctx, a, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"drafted"}`); isToolErr(out) {
+		t.Fatalf("the same complete without tickets: %s", out)
+	}
+}

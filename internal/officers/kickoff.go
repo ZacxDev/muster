@@ -55,7 +55,7 @@ func KickoffTextWith(o Officer, n int, g KickoffGrants) string {
 Your officer tools (MCP server "muster"): %[5]s. They act for officer %[1]s only; %[15]s%[16]s
 
 Start now:
-1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in %[17]s), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
+1. Call %[6]s. It returns your charter (follow it: it is your standing instructions, versioned in %[17]s), the open items and the recent outcomes. Load it instead of looking for earlier conversation.%[21]s
 2. Work the queue one item at a time: %[8]s{} with no item_id to take the next item (%[17]s picks it: the highest priority first; item null means nothing is claimable), and %[8]s{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); %[7]s shows the queue. %[9]s{item_id} at least every few minutes while you work it, and %[10]s{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, %[11]s{item_id} so another instance can. An item's payload is %[17]s's data, handed to you as %[17]s wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with %[10]s{item_id, outcome: "escalated", summary} saying who must act and why — %[18]s — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
 %[13]s4. When %[8]s{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when %[19]s, and scales you to zero after a quiet spell.
@@ -63,7 +63,7 @@ Start now:
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
 		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ask,
-		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o)) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o), w.rebrief) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
 }
 
 // podWhere is what a pod instance is told about where it runs.
@@ -97,8 +97,11 @@ Your repository is %[1]s: your working directory is a worktree of it, cut from t
 // queue, charter and escalations live: HQ, or muster itself for a builtin
 // officer. ask is step 3's second paragraph (a format taking the ask tool's
 // name), used only when the backend serves the tool.
+//
+// rebrief ends step 1: how the instance learns its charter changed while it
+// runs ("" for HQ, which does not gate on it: officers.CharterGated).
 type kickoffWording struct {
-	produces, credential, backendNote, source, escalated, newWork, ask string
+	produces, credential, backendNote, source, escalated, newWork, ask, rebrief string
 }
 
 // hqKickoffWording is an HQ officer's: the text every HQ officer has always
@@ -123,7 +126,10 @@ var builtinKickoffWording = kickoffWording{
 	source:      "muster",
 	escalated:   "that is how this officer reaches its owner",
 	newWork:     "there is new work",
-	ask:         "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, to: \"owner\", question, options?, deadline_seconds?} (the question always goes to the officer's owner, on muster's Attention view and their phone, whatever `to` says; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer (its asks[]), and wakes an instance to take it up again; an ask left unanswered past its deadline escalates the item to the owner.\n",
+	rebrief: " Your charter can change while you run (its version is charter_version): when " + ToolClaim + " or " + ToolComplete +
+		" answers charter_changed, call " + ToolBrief + " again, follow the charter it returns from then on, and retry the call. " +
+		"An item you already hold stays yours: check it against that charter before you complete it.",
+	ask: "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, to: \"owner\", question, options?, deadline_seconds?} (the question always goes to the officer's owner, on muster's Attention view and their phone, whatever `to` says; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer (its asks[]), and wakes an instance to take it up again; an ask left unanswered past its deadline escalates the item to the owner.\n",
 }
 
 func kickoffWordingFor(o Officer) kickoffWording {
