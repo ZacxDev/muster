@@ -424,6 +424,8 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
 - **An escalation** — `officer_complete{outcome: "escalated"}`, an expired ask,
   or the wall-time cap — writes, in the same transaction, one entry per
   recipient (the owner and each `--escalate-to` user). The sweep raises each
+  one still inside the officer's reach when it sends
+  ([Who an escalation can ask](#who-an-escalation-can-ask))
   as an Attention **ask** — the officer asking a human to act — exactly once,
   even with two replicas. **An answer flows back to the officer**: the item
   re-opens as a judgement item with the answer on its `asks[]`, the next
@@ -656,9 +658,32 @@ and the team officers page:
 The picker offers exactly that set. Any other id is refused with one
 answer, the same whether it names someone or no one, so a refusal never
 tells which ids are people. An id stored before this rule (when any person
-was accepted) is not dropped: it keeps its place — and is still asked —
-until the officer's next Edit, which shows it ticked and marked and refuses the save until it is
-unticked (a mode switch or a pause still works).
+was accepted) keeps its place in the stored list until the officer's next
+Edit, which shows it ticked and marked and refuses the save until it is
+unticked (a mode switch or a pause still works) — but it is **not asked**
+meanwhile.
+
+The same reach is checked again **when an escalation is sent**, read at that
+moment: the sweep raises an escalation only to a recipient inside the
+officer's reach *now*. A recipient outside it — an id stored before the rule,
+or a member who has left the team since the officer was saved — is dropped:
+their entry on the item is given up (never retried), and muster logs one
+line per dropped recipient naming the officer, the item and the user id
+(never the item's text):
+
+```
+officers: <officer>: item <n>: the escalation to user <id> is dropped: that user cannot see the officer
+```
+
+The owner (the team, for a team officer) is always in the reach, so an
+officer whose every `--escalate-to` id is out of reach still asks its owner,
+exactly as with an empty list. If the reach cannot be read (a database
+error), nothing is raised to that recipient on that sweep and the next sweep
+tries again. This holds for every built-in officer — declared in the
+database or in `MUSTER_OFFICERS`, on pods or on a host — since all of them
+escalate through the one sweep; a `MUSTER_OFFICERS` officer's `owner` is a
+person or a team like any other, so the rule reads the same. (An HQ-backed
+officer has no `escalate_to` in muster: HQ notifies its owner.)
 
 ## Declared in the database (no restart)
 

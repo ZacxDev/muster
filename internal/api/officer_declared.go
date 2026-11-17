@@ -971,8 +971,10 @@ const escalationOutOfReach = "escalate_to may name only people who can already s
 //
 // Stored lists are NOT rewritten: an id stored before this rule (any person
 // was accepted) stays until the officer's next replace, which refuses it —
-// so the next Edit asks the person to untick it, rather than the server
-// dropping a recipient silently (docs/officers-builtin.md).
+// so the next Edit asks the person to untick it. Until then it is NOT asked:
+// the send-time half (escalationReachesNow, at raiseOfficerNotice) drops any
+// recipient outside the reach read at the moment of sending, and logs it
+// (docs/officers-builtin.md).
 func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, ids []int64) error {
 	for _, u := range ids {
 		if u <= 0 {
@@ -982,13 +984,9 @@ func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, 
 	if len(ids) == 0 {
 		return nil
 	}
-	reach, err := s.escalationReach(ctx, owner, team)
+	in, err := s.escalationReachSet(ctx, owner, team)
 	if err != nil {
 		return officerReadFailed{err}
-	}
-	in := make(map[int64]bool, len(reach))
-	for _, t := range reach {
-		in[t.ID] = true
 	}
 	for _, u := range ids {
 		if !in[u] {
@@ -996,6 +994,47 @@ func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, 
 		}
 	}
 	return nil
+}
+
+// escalationReachSet is escalationReach as a set of ids: what both halves of
+// the one rule test membership against — the write-time refusal
+// (escalationRefusal) and the send-time filter (escalationReachesNow).
+func (s *Server) escalationReachSet(ctx context.Context, owner int64, team bool) (map[int64]bool, error) {
+	reach, err := s.escalationReach(ctx, owner, team)
+	if err != nil {
+		return nil, err
+	}
+	in := make(map[int64]bool, len(reach))
+	for _, t := range reach {
+		in[t.ID] = true
+	}
+	return in, nil
+}
+
+// escalationReachesNow is the SEND-TIME half of the one escalation rule (Q1):
+// whether owner's officer's escalation may still be raised to recipient,
+// answered from escalationReach read NOW — so an id stored before the rule
+// existed, or a member removed from a team after the officer was saved, is
+// not asked. owner's kind (team or person) is read now too; an owner that
+// names nobody reads as a person (its reach is then itself alone). Used by
+// the escalation sweep (raiseOfficerNotice) for every builtin officer —
+// DB-declared or MUSTER_OFFICERS, pod or host runtime — since all of them
+// escalate through the one notices queue.
+func (s *Server) escalationReachesNow(ctx context.Context, owner, recipient int64) (bool, error) {
+	team := false
+	a, err := s.accountOfChecked(ctx, owner)
+	switch {
+	case errors.Is(err, users.ErrNotFound):
+	case err != nil:
+		return false, fmt.Errorf("officers: read owner %d: %w", owner, err)
+	default:
+		team = a.Team
+	}
+	in, err := s.escalationReachSet(ctx, owner, team)
+	if err != nil {
+		return false, err
+	}
+	return in[recipient], nil
 }
 
 // checkDeclaredOwner is the team rule for d, through THE one check

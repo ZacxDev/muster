@@ -259,7 +259,29 @@ func (s *Server) settleOfficerEscalation(ctx, sys context.Context, e builtin.Ope
 
 // raiseOfficerNotice raises escalation n as an Attention ask to its
 // recipient and records it; the loser of a race withdraws its copy.
+//
+// 🔴 THE SEND-TIME HALF OF THE ONE ESCALATION RULE (Q1): a recipient outside
+// the officer's reach, read NOW (escalationReachesNow — the same reach the
+// write doors refuse against), is not asked: its notice is given up
+// (NoticeAbandoned) with one log line naming the officer, the item and the
+// recipient id, never the item's text. That covers an escalate_to id stored
+// before the write-time rule, and a member who left the team after the
+// officer was saved. The owner is always in the reach, so the owner's own
+// notice is raised as with an empty escalate_to. A reach that cannot be read
+// raises nothing this sweep; the next sweep tries again.
 func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotice) {
+	ok, err := s.escalationReachesNow(sys, n.Owner, n.Recipient)
+	if err != nil {
+		s.logger.Printf("officers: %s: item %d: the escalation to user %d is held: its officer's reach could not be read: %v", n.Officer, n.Item, n.Recipient, err)
+		return
+	}
+	if !ok {
+		s.logger.Printf("officers: %s: item %d: the escalation to user %d is dropped: that user cannot see the officer", n.Officer, n.Item, n.Recipient)
+		if aerr := s.officerStore.NoticeAbandoned(sys, n.Owner, n.Item, n.Recipient); aerr != nil {
+			s.logger.Printf("officers: %s: item %d: give up the escalation to user %d: %v", n.Officer, n.Item, n.Recipient, aerr)
+		}
+		return
+	}
 	rctx := s.attentionPrincipal(ctx, n.Recipient)
 	a, err := s.ext.Attention.Create(rctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(n.Officer)},
