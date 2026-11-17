@@ -965,24 +965,23 @@ jobs:
   # satisfied by a draft run (see there).
   #
   # 🔴 DRAFT PULL REQUESTS SKIP THE INTEGRATION JOBS TOO, NOT ONLY THE LEGS.
-  # On a draft run (12 sampled, 2026-11-14 → 11-17) the legs were already gone,
-  # and the run still started 22 jobs — more than the account's 20 concurrent
-  # hosted jobs on its own — for 93 job-minutes p50, with every job queueing
-  # 6m21s p50 for a slot. The jobs below that build images, clusters or the
-  # whole compose stack are skipped on a draft as the legs are:
-  # `release-dry-run` (12m33s p50, a draft run's longest job), `chart-kind`
-  # (three legs, ~11.5 job-minutes), `ccd-image`, `docshots` and `image-pr`.
-  # A draft keeps the fast feedback: build + vet, the Go suite, the leak gate,
-  # nix, the stylesheet, the real-tmux and macOS suites, and the chart's lint
-  # and ledgers. Marking the PR ready runs all of them (`ready_for_review`),
-  # and so does every push to `main` and every tag.
+  # With the legs gone a draft run still started more jobs than the account
+  # runs at once, so every job queued for a slot (measurements: PR #778). The
+  # jobs below that build images, clusters or the whole compose stack are
+  # skipped on a draft as the legs are: `release-dry-run`, `chart-kind`,
+  # `ccd-image`, `docshots` and `image-pr`. A draft keeps the fast feedback:
+  # build + vet, the Go suite, the leak gate, nix, the stylesheet, the
+  # real-tmux and macOS suites, and the chart's lint and ledgers. Marking the
+  # PR ready runs all of them (`ready_for_review`), and so does every push to
+  # `main` and every tag.
   #
   # ⚠ NONE OF THEM IS A REQUIRED CHECK (only `e2e (playwright, chromium)` is),
   # and a SKIPPED job counts as passing for branch protection — so if one is
   # ever made required, it needs the treatment the `e2e` job has (a draft name
   # that never carries the required one), or a ready PR could merge on a
-  # draft run's skip. `publish-gate` runs only on a push, so it does not read
-  # these skips as refusals. The set is pinned as a ledger by
+  # draft run's skip. `publish-gate` is skipped on a draft too, so it never
+  # reads these skips as refusals; on a ready PR it still refuses any skip.
+  # The set is pinned as a ledger by
   # TestCIDraftRunsSkipExactlyTheIntegrationJobs (internal/modulegate).
   e2e-leg:
     name: e2e leg ${{ matrix.leg }} (playwright, chromium)
@@ -1654,12 +1653,12 @@ jobs:
     # and the release while this gate passed. Pinned by
     # TestCIPublishJobsCheckTheirNeedsExplicitly (internal/modulegate).
     #
-    # 🔴 ON A `push` ONLY (main or a vX.Y.Z tag), the only event whose jobs
-    # behind it publish anything. On a pull request it gated nothing, and a
-    # draft run skips several of its needs (see above `e2e-leg`), which
-    # tag_gate.py gate rightly refuses. A red test job still fails a pull
-    # request's run without it.
-    if: ${{ !cancelled() && github.event_name == 'push' }}
+    # 🔴 NOT ON A DRAFT PULL REQUEST: a draft run skips several of its needs
+    # (see above `e2e-leg`), which tag_gate.py gate rightly refuses. On a
+    # ready pull request it still runs, and there it is the one check that
+    # goes red when a test job SKIPPED that should have run (a mis-edited
+    # `if:`): a skip is green to the run and to branch protection.
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
