@@ -357,7 +357,7 @@ func TestTheAsksPageReadsTheLogOnlyOnItsTab(t *testing.T) {
 	f.seedTwoOwners(t)
 	page := f.session(t, attentionPath+"?kind=attention_ask", f.a).Body.String()
 	if !strings.Contains(page, `data-asklog-lazy data-src="/attention/log?kind=attention_ask"`) || strings.Contains(page, f.canary) ||
-		selectedTab(t, page, "asks-tabs-tab-ask") != "true" {
+		selectedTab(t, page, "asks-tabs-tab-open") != "true" {
 		t.Fatalf("the Ask tab's page: the log is not a placeholder, or was read:\n%s", page)
 	}
 	page = f.session(t, attentionPath+"?tab=log&kind=attention_ask", f.a).Body.String()

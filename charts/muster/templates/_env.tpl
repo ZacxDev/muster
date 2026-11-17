@@ -65,6 +65,13 @@ GoTrue that is not running, with a JWT secret no Secret holds. */ -}}
   value: openrouter
 {{- include "muster.env" (dict "name" "MUSTER_CHIEF_LLM_MODEL" "value" $v.chief.openrouter.model) }}
 {{- end }}
+{{- if $v.chief.openrouterSessions.enabled }}
+- name: MUSTER_CHIEF_SESSIONS_OPENROUTER
+  value: "1"
+{{ include "muster.secretEnv" (dict "name" "MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY" "existing" (required "chief.openrouterSessions.existingSecret is required (key MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY)" $v.chief.openrouterSessions.existingSecret) "ctx" .) }}
+{{- include "muster.env" (dict "name" "MUSTER_CHIEF_SESSIONS_DAILY_USD" "value" $v.chief.openrouterSessions.dailyUSD) }}
+{{- include "muster.env" (dict "name" "MUSTER_CHIEF_SESSIONS_SESSION_USD" "value" $v.chief.openrouterSessions.sessionUSD) }}
+{{- end }}
 {{- if include "muster.connectOn" . }}
 - name: MUSTER_CONNECT_PORT
   value: {{ $v.service.connectPort | quote }}

@@ -265,6 +265,18 @@ chief:
   openrouter:
     enabled: false
     model: ""
+  # MUSTER_CHIEF_SESSIONS_OPENROUTER=1: the admin's chief's OpenRouter side
+  # chats, on a key of their own, under a muster budget
+  # (DOCS/chief.md#openrouter-sessions-budget).
+  openrouterSessions:
+    enabled: false
+    # A Secret with MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY (NOT the agents'
+    # MUSTER_AGENT_OPENROUTER_KEY). Required when enabled.
+    existingSecret: ""
+    # MUSTER_CHIEF_SESSIONS_DAILY_USD, a string ("" = the server's default, 20).
+    dailyUSD: ""
+    # MUSTER_CHIEF_SESSIONS_SESSION_USD, a string ("" = no per-session cap).
+    sessionUSD: ""
 
 # MUSTER_PLUGINS. DOCS/plugins.md
 plugins: false

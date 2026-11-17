@@ -719,7 +719,7 @@ Compose stack. **Check:** `chief session runtimes: ON (…)`.
 
 Your chief finds sessions that stopped short, and either nudges them with your
 own words or points you at them. Ships in **shadow mode**: decisions are
-recorded on the Asks page's Chief nudges tab, nothing is sent.
+recorded on the Asks page's Nudges tab, nothing is sent.
 [chief-nudges.md](chief-nudges.md).
 
 - **Needs** the [chief](#chief) on Kubernetes (in-cluster [dispatch](#dispatch)),

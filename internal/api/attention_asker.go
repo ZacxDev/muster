@@ -229,6 +229,11 @@ var askPageReturn = regexp.MustCompile(`^` + askPagePrefix + `[1-9][0-9]{0,18}$`
 // view, which must not fill with the queue page); given on the queue, the
 // queue page with its problem, as before.
 func (s *Server) attentionFormFailed(w http.ResponseWriter, r *http.Request, err error, cur attention.Ask) {
+	if asksCardRequest(r) {
+		// An Asks page card's htmx post: its status and a small fragment.
+		asksCardFailed(w, err, cur)
+		return
+	}
 	if page, ok := attentionReturnPage(r); ok {
 		code := noticeAskFailed
 		switch {

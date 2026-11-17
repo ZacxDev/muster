@@ -52,6 +52,11 @@ chief:
   openrouter:
     enabled: true
     model: example-vendor/example-model
+  openrouterSessions:
+    enabled: true
+    existingSecret: muster-chief-sessions-openrouter
+    dailyUSD: "12.5"
+    sessionUSD: "2.5"
 officers:
   enabled: true
   tokensSecret: muster-officer-tokens

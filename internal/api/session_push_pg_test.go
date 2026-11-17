@@ -722,7 +722,9 @@ func TestTheAsksListMovesAWaitingWindowIntoTheSectionLive(t *testing.T) {
 		if !strings.Contains(body, `id="episode-`+strconv.FormatInt(e.ID, 10)+`"`) {
 			t.Fatalf("%s: no row:\n%s", path, body)
 		}
-		if strings.Contains(body, `data-testid="attention-empty"`) {
+		// The feed itself (the page also carries the All clear state as the
+		// feed script's inert <template>, which says nothing).
+		if feed := askList(body); path == "/attention" && strings.Contains(feed, `data-testid="attention-empty"`) || path != "/attention" && strings.Contains(body, `data-testid="attention-empty"`) {
 			t.Fatalf("%s: says nothing is waiting beside a row:\n%s", path, body)
 		}
 	}

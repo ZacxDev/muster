@@ -112,16 +112,16 @@ func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("the queue's order: %v, want newest first %v", got, want)
 	}
-	// The page's Ask tab draws them WITHOUT the draft (drafts are the Reply
-	// drafts tab's, asks_drafts.go), in its GROUPS (askGroups: Questions, then
-	// Waiting) and newest first within each.
+	// The page's Open feed draws them WITHOUT the draft (drafts are the
+	// Drafts tab's, asks_drafts.go), in askGroups' order (questions, then
+	// waiting — each card its badge) and newest first within each.
 	page := f.page(t, "/attention/items")
 	if strings.Contains(page, `id="`+draftKey(d.ID)+`"`) {
 		t.Fatalf("the Ask list draws the reply draft: %s", page)
 	}
 	at := -1
-	for _, k := range []string{`data-asks-group="questions"`, `id="` + attentionAskKey(newest) + `"`, `id="` + attentionAskKey(old) + `"`,
-		`data-asks-group="waiting"`, `id="` + sessionKey("ws", "main", "@1") + `"`} {
+	for _, k := range []string{`id="` + attentionAskKey(newest) + `"`, `data-asks-badge="question"`, `id="` + attentionAskKey(old) + `"`,
+		`id="` + sessionKey("ws", "main", "@1") + `"`, `data-asks-badge="waiting"`} {
 		i := strings.Index(page, k)
 		if i <= at {
 			t.Fatalf("the page does not draw %s after what precedes it (at %d, want after %d): %s", k, i, at, page)

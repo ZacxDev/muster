@@ -531,6 +531,16 @@ var bannerExempt = map[string]string{
 		"(validateChiefLLM refuses boot without the key, so that is the one ON line); unset is the chief on its Claude " +
 		"account as before this variable existed, nothing new to announce, and the Features page lists it under the " +
 		"Claude Code agents feature's settings (Kubernetes; refused beside the Compose runtime)",
+	envChiefSessionsOpenRouter: "set to 1, api.EnableChiefSessionsLLM logs `chief sessions: the admin's chief's OpenRouter side " +
+		"chats may reach their models through the LLM proxy …` at boot, naming the caps (boot is refused without the key or a " +
+		"database, so that is the one ON line); unset, every request carrying X-Muster-Chief-Session is refused 400 and " +
+		"nothing else changes, nothing new to announce; the Features page lists it under Chief session runtimes",
+	envChiefSessionsKey: "a secret, never printed; named on the `chief sessions:` ON line, and refused at boot without " +
+		"MUSTER_CHIEF_SESSIONS_OPENROUTER=1 or when it equals MUSTER_AGENT_OPENROUTER_KEY",
+	envChiefSessionsDailyUSD: "printed with its value on the `chief sessions:` ON line; refused at boot without " +
+		"MUSTER_CHIEF_SESSIONS_OPENROUTER=1",
+	envChiefSessionsSessionUSD: "printed on the `chief sessions:` ON line in both its states (its value, or `no per-session " +
+		"cap`); refused at boot without MUSTER_CHIEF_SESSIONS_OPENROUTER=1",
 	envTestLLMUpstream: "TEST ONLY: announced on its own loud `llm proxy: 🔴 the chief's upstream is OVERRIDDEN …` line " +
 		"when set; unset (every real deployment) there is nothing to announce, and it is refused without the Compose chief runtime",
 	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +

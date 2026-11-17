@@ -70,6 +70,14 @@ Pick a window: the last 7 days or the last 30. The page shows:
 - **Rules.** Each approved rule: its hits in the window and in all, and its
   **estimated tokens avoided**. The page labels this figure as an estimate,
   not a measurement.
+- **Chief sessions on OpenRouter.** Shown only when the server serves them
+  (`MUSTER_CHIEF_SESSIONS_OPENROUTER=1`; [chief.md](chief.md#openrouter-sessions-budget)).
+  Today's spend against the daily cap (the UTC day, and whether a per-session
+  cap is set), the spend and requests for each UTC day of the window, and each
+  session with spend in the window: its model, turns, requests, tokens and
+  USD. These are **dollars**, not tokens: muster's LLM proxy books the cost
+  OpenRouter reported for each request (`chief_session_llm_usage`), not the
+  session runtime's own figure.
 
 The estimate takes a rule's hits in the window and multiplies them by the
 average total tokens of the chief's turns for that rule's plugin before the
@@ -81,7 +89,8 @@ such turns has nothing to estimate from, and the page says so.
 ⚠ A token total is a count, not a cost. A cache read is billed far below an
 input token, so two turns with the same total can cost very different
 amounts. The page shows the four kinds apart for that reason. muster records
-no prices.
+no prices. The one exception is the chief sessions on OpenRouter section,
+whose dollars are what the provider reported it billed.
 
 ## Using it
 

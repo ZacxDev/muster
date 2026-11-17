@@ -229,6 +229,10 @@ func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 		docs[name+" +faro"] = doc
 	}
 	restore()
+	// The Asks page is internal/api's document (renderAsksPage), not a shell
+	// one: the tag it writes from here is the card feed's, and internal/api's
+	// TestTheAsksPageLinksTheFeedScript pins that the page really writes it.
+	docs["asks page (internal/api)"] = AsksFeedScriptHTML()
 	for _, doc := range docs {
 		for _, m := range staticScriptTag.FindAllStringSubmatch(doc, -1) {
 			linked[m[1]] = true // ?v= is checked by expandStaticScripts / internal/api checkVersioned

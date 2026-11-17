@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // cleanCtx is c as an ask stores it (attention.Clean's rules).
@@ -50,7 +51,7 @@ func TestTheRenderedPluginReplyEscalationIsExactlyThis(t *testing.T) {
 		t.Fatalf("no labelled note before the answer form:\n%s", card)
 	}
 	want := `<p class="text-xs text-fg2" data-officer-note-label>The officer's note</p>
-<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>Officer marketing:example escalated item 13 (plugin.reply plugin:8:reply-example-42) to you:
+<p class="` + ui.AsksCardQuestionClass + `" data-attention-text>Officer marketing:example escalated item 13 (plugin.reply plugin:8:reply-example-42) to you:
 
 The sender asks about queued messages.
 I hold no facts on it.
