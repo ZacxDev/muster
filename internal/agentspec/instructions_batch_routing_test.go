@@ -39,10 +39,10 @@ func TestTheBatchRoutingSectionIsPinnedWhole(t *testing.T) {
 // and never in the Compose chief's (it is not offered route_many).
 func TestTheBatchRoutingSectionShipsOnlyToTheClaudeCodeChiefWithRouting(t *testing.T) {
 	for _, plugins := range []bool{false, true} {
-		if !strings.Contains(ChiefInstructionsClaudeCode(plugins, true), chiefBatchRoutingSectionClaudeCode) {
+		if !strings.Contains(ChiefInstructionsClaudeCode(plugins, true, "", nil), chiefBatchRoutingSectionClaudeCode) {
 			t.Errorf("plugins=%v routing on: the claude-code chief lacks the batch routing section", plugins)
 		}
-		if strings.Contains(ChiefInstructionsClaudeCode(plugins, false), "route_many") {
+		if strings.Contains(ChiefInstructionsClaudeCode(plugins, false, "", nil), "route_many") {
 			t.Errorf("plugins=%v routing off: the claude-code chief is told of route_many", plugins)
 		}
 		for _, routing := range []bool{false, true} {

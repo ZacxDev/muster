@@ -97,6 +97,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// poll, and the owner's decisions on /plugins.
 	s.registerPluginPairRoutes(mux)
 
+	// A plugin's chief instructions (plugin_chief_instructions.go): its PUT
+	// and GET (chief_extension), and the owner's toggle and approval.
+	s.registerPluginChiefInstructionRoutes(mux)
+
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
 	// is its ledger: a route added, dropped or moved to another capability turns
@@ -239,6 +243,8 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 var teamPluginRoutes = map[string]bool{
 	"POST /plugin/v1/handoffs/redeem":              true,
 	"GET /plugin/v1/self":                          true,
+	"GET /plugin/v1/chief/instructions":            false,
+	"PUT /plugin/v1/chief/instructions":            false,
 	"GET /plugin/v1/drafts/checks":                 false,
 	"GET /plugin/v1/tasks":                         false,
 	"POST /plugin/v1/drafts/claim":                 false,
@@ -591,13 +597,14 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
 <label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">optional: where your chief is told to record anything durable from these messages (empty: the name)</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="the name" class="` + flowsInputClass + `">
-` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginDeliverToFieldHTML() + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + s.pluginChiefExtensionFieldHTML() + s.pluginDeliverToFieldHTML() + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
 	if len(list) == 0 {
 		b.WriteString(`<li class="text-sm text-fg2">No plugins yet.</li>`)
 	}
+	chiefGated := false
 	for _, p := range list {
 		seen := "never seen"
 		if p.LastSeenAt != nil {
@@ -615,6 +622,12 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
 		} else {
 			b.WriteString(pluginDraftChecksToggleHTML(p))
+			if s.chiefInstructions() != nil {
+				b.WriteString(pluginChiefExtensionToggleHTML(p))
+				sec, gated := s.pluginChiefInstructionsHTML(r, p)
+				b.WriteString(sec)
+				chiefGated = chiefGated || gated
+			}
 			b.WriteString(s.pluginDeliverToFormHTML(p))
 			b.WriteString(`<form method="POST" action="` + pluginsPath + `/` + id + `/revoke">
 <button type="submit" class="` + flowsQuietButton + `">Revoke</button></form>`)
@@ -622,10 +635,19 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
-	if pairs := s.pairSectionHTML(r); pairs != "" {
-		// A pairing request's Approve is step-up gated (decidePairForm) and
-		// its form is marked data-step-up-form: the dialog it asks with.
-		b.WriteString(pairs + s.stepUpFormsHTML(r, PairStepUpWhy()))
+	pairs := s.pairSectionHTML(r)
+	b.WriteString(pairs)
+	// A pairing request's Approve (decidePairForm) and a plugin's chief
+	// instructions Approve (handleChiefInstructionsApprove) are step-up gated,
+	// their forms marked data-step-up-form: the ONE dialog they ask with,
+	// saying each gate the page draws.
+	switch {
+	case pairs != "" && chiefGated:
+		b.WriteString(s.stepUpFormsHTML(r, PairStepUpWhy()+" "+ChiefInstructionsStepUpWhy()))
+	case pairs != "":
+		b.WriteString(s.stepUpFormsHTML(r, PairStepUpWhy()))
+	case chiefGated:
+		b.WriteString(s.stepUpFormsHTML(r, ChiefInstructionsStepUpWhy()))
 	}
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
@@ -685,6 +707,11 @@ func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) 
 	// reply draft before its owner may approve it.
 	if r.PostFormValue("draft_checks") == "1" && !slices.Contains(in.Capabilities, plugins.CapDraftChecks) {
 		in.Capabilities = append(in.Capabilities, plugins.CapDraftChecks)
+	}
+	// chief_extension likewise (pluginChiefExtensionFieldHTML): the plugin
+	// may propose one section of instructions for the owner's chief.
+	if r.PostFormValue("chief_extension") == "1" && !slices.Contains(in.Capabilities, plugins.CapChiefExtension) {
+		in.Capabilities = append(in.Capabilities, plugins.CapChiefExtension)
 	}
 	if !slices.Contains(in.Capabilities, plugins.CapViewer) {
 		return in, ""

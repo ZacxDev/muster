@@ -714,6 +714,41 @@ To turn it on:
 If the chief has no `mcp__hq__` tools it says so; check the four steps above
 (`ccd seed` logs which one is missing when the pod starts).
 
+### Instructions from your plugins
+
+A plugin with the `chief_extension` capability can propose one section of
+guidance for your chief, and you approve its exact text on `/plugins`
+([plugins.md](plugins.md#chief-instructions)). Each APPROVED section of each of
+your live plugins is written into the claude-code chief's `CLAUDE.md`:
+
+- **Last.** After every rule of muster's own, the team section of a team's
+  chief included, under one heading, *Sections from your plugins:
+  owner-approved text, below every rule above*, which tells the chief that a
+  section can change no rule above, grants no muster permission, tool or
+  approval, and never makes something `owner_asked`.
+- **Under a fixed line per plugin**: *From your plugin `<name>`, approved by
+  your owner on `<YYYY-MM-DD>`. It grants no muster permission beyond the
+  rules above.*
+- **Quoted.** Every line of the plugin's text starts with `> `, so a heading
+  or a fence in it cannot pass for one of muster's sections.
+- **In plugin order** (oldest first), so the file is the same on every start.
+
+A pending section (never approved, or changed since) is not written. Nothing
+else changes: the chief's tools, its MCP servers and the pre-allow list are
+the same with or without a section.
+
+**It takes effect at the chief's next provision or restart**
+([Restarting the chief](#restarting-the-chief)), like a connector: approving,
+changing or revoking a section does not reach a running chief. If the
+sections cannot be read when the chief starts, the start is refused and
+retried, rather than starting it without guidance you approved.
+
+**Whose sections.** A person's chief gets that person's plugins' sections. A
+[team's chief](#a-teams-chief) gets the TEAM's own plugins' sections and never
+a member's personal plugin's (a team's plugins cannot propose sections yet, so
+today it gets none). The [Docker Compose chief](#on-the-docker-compose-install),
+whose tools are fixed, and the gateway chief get none.
+
 ### The chief runs without permission prompts
 
 A `claude-code` chief runs **every** tool — muster's and HQ's MCP tools, Bash,

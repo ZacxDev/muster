@@ -206,6 +206,13 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// A chief's approved plugin instruction sections (migration 0141),
+		// read while the provisioner builds the chief's spec — from loops and
+		// requests alike, with no principal that is the chief's owner (the
+		// shape of credentials.Plane.usesEnvironment). Every query names the
+		// owner on both tables; only the rendered name, date and text are
+		// handed on.
+		"internal/plugins.(*PGStore).ApprovedChiefSections",
 		// The host-dispatch sweep's owners: every owner with an open host
 		// dispatch, then each is acted on as that owner (ViaHostDispatch).
 		"internal/plugins.(*PGStore).HostDispatchOwners",

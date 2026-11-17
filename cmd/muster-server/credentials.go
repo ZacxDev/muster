@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/credentials"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // buildCredentialPlane builds the ONE decision of whose model-provider
@@ -155,5 +157,28 @@ func teamOwnerLookup(names teamNamer) func(ctx context.Context, owner int64) (st
 		}
 		name, ok := got[owner]
 		return name, ok, nil
+	}
+}
+
+// chiefSectionReader is the plugin store's read of an owner's approved chief
+// sections (plugins.PGStore.ApprovedChiefSections).
+type chiefSectionReader interface {
+	ApprovedChiefSections(ctx context.Context, owner int64) ([]plugins.ChiefSection, error)
+}
+
+// chiefSectionsLookup is agentprovision.Adapter.UseChiefPluginSections' lookup
+// over the plugin store: owner's approved sections, as the chief's prose takes
+// them. Field for field; nothing is added.
+func chiefSectionsLookup(r chiefSectionReader) func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error) {
+	return func(ctx context.Context, owner int64) ([]agentspec.PluginSection, error) {
+		got, err := r.ApprovedChiefSections(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]agentspec.PluginSection, 0, len(got))
+		for _, s := range got {
+			out = append(out, agentspec.PluginSection{Plugin: s.Plugin, ApprovedAt: s.ApprovedAt, Text: s.Text})
+		}
+		return out, nil
 	}
 }

@@ -754,6 +754,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// "agent text bound for an outside party" (internal/plugins/drafts.go).
 		pluginStore := plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		ext.Plugins = pluginStore
+		// A claude-code chief's CLAUDE.md renders its owner's APPROVED plugin
+		// instruction sections (chief_extension; docs/plugins.md#chief-instructions).
+		if prov != nil {
+			prov.UseChiefPluginSections(chiefSectionsLookup(pluginStore))
+		}
 		// Session routing (MUSTER_SESSION_ROUTING=1): the same store's routes
 		// half, and the allowlist whose routed answers relay without approval.
 		if cfg.sessionRoutingEnabled() {

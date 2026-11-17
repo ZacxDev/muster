@@ -155,6 +155,7 @@ GET /pages/{id}
 GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
+GET /plugin/v1/chief/instructions
 GET /plugin/v1/drafts/checks
 GET /plugin/v1/pair/{request_id}
 GET /plugin/v1/self
@@ -350,6 +351,8 @@ POST /plugins/messages/{id}/retry
 POST /plugins/outreach-batches/{id}/decide
 POST /plugins/pair/{id}/approve
 POST /plugins/pair/{id}/deny
+POST /plugins/{id}/approve-chief-instructions
+POST /plugins/{id}/chief-extension
 POST /plugins/{id}/deliver-to
 POST /plugins/{id}/draft-checks
 POST /plugins/{id}/revoke
@@ -416,3 +419,4 @@ PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags
 PUT /api/officers/defs/{officer}/schedules/{name}
 PUT /api/officers/types/{key}
 PUT /api/plugins/{id}/deliver-to
+PUT /plugin/v1/chief/instructions

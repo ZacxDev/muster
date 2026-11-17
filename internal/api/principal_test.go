@@ -141,6 +141,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/{id}/deliver-to",
+		"POST /plugins/{id}/chief-extension",
+		"POST /plugins/{id}/approve-chief-instructions",
 		"POST /plugins/pair/{id}/approve",
 		"POST /plugins/pair/{id}/deny",
 		"GET /plugins/drafts/{id}/media/{n}",
@@ -638,6 +640,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /plugin/v1/drafts/checks",
 		"POST /plugin/v1/drafts/{id}/check",
 		"POST /plugin/v1/drafts/{id}/media",
+		"PUT /plugin/v1/chief/instructions",
+		"GET /plugin/v1/chief/instructions",
 		"POST /plugin/v1/tasks",
 		"GET /plugin/v1/tasks",
 		"POST /plugin/v1/task-writes/claim",
@@ -700,7 +704,7 @@ func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plu
 	if tok == pPluginToken {
 		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
 			// Every capability, so the probe reaches every plugin route's handler.
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks}}, nil
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks, plugins.CapChiefExtension}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

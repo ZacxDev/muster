@@ -63,6 +63,9 @@ var stepUpChannels = map[string]stepUpChannel{
 	"chief_owner_release.go:typerSpeaksForOwner":          {how: "none"}, // whether a typed chat turn speaks for the owner
 	"plugin_handoffs.go:handlePluginHandoffMint":          {how: "none"}, // records stepped_up on the hand-off; refuses nobody
 	"mirror.go:freshForMillis":                            {how: "none"}, // how long the sign-in stays fresh, for the page's dialog
+
+	// A plugin's chief instructions (0141): the owner approves one exact text.
+	"plugin_chief_instructions.go:handleChiefInstructionsApprove": {how: "form", proof: "TestThePluginsPageChiefInstructionsApproveConfirmsInPlace"},
 }
 
 // stepUpGateSites parses internal/api's non-test sources and returns every

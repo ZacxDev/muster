@@ -296,6 +296,12 @@ BEGIN
         ALTER TABLE public.officer_public_branches DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_public_branches ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0141 (plugin_chief_instructions), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_chief_instructions') IS NOT NULL THEN
+        ALTER TABLE public.plugin_chief_instructions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_chief_instructions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_chief_instructions ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN
         ALTER TABLE public.officer_pr_loops NO FORCE ROW LEVEL SECURITY;
