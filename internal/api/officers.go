@@ -138,6 +138,14 @@ type officerRuntime struct {
 	// branches when no store is configured (publicBranchesFor), made once.
 	memPublicBranchesOnce sync.Once
 	memPublicBranches     *officers.MemPublicBranchStore
+	// blocks is OfficersConfig.ConnectorBlocks: which items each officer
+	// instance held while a pending grant refused it (connectorBlocks;
+	// officer_connector_rerun.go); memBlocks the in-memory one when none is
+	// configured, made once. reruns counts approvals' re-runs in flight.
+	blocks        officers.ConnectorBlockStore
+	memBlocksOnce sync.Once
+	memBlocks     *officers.MemConnectorBlockStore
+	reruns        sync.WaitGroup
 	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
 	// refused in shadow, per (officer, item), appended to that item's
 	// officer_complete summary. Guarded by shadowMu.
@@ -309,8 +317,13 @@ type OfficersConfig struct {
 	// is for (officers.PGPublicBranchStore, migration 0138); nil keeps them in
 	// this process's memory, which a restart forgets.
 	PublicBranches officers.PublicBranchStore
-	LLMUpstream    string
-	LLMHTTP        *http.Client
+	// ConnectorBlocks keeps which items each officer instance held while a
+	// pending connector grant refused it, so approving that grant re-runs
+	// them (officers.PGConnectorBlockStore, migration 0145); nil keeps them
+	// in this process's memory, which a restart forgets.
+	ConnectorBlocks officers.ConnectorBlockStore
+	LLMUpstream     string
+	LLMHTTP         *http.Client
 	// HostSpawns keeps the host officers' spawned sessions
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
@@ -565,6 +578,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
 		hostSpawns:      cfg.HostSpawns,
+		blocks:          cfg.ConnectorBlocks,
 		unclaimedAfter:  cfg.UnclaimedAfter,
 		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
 		imagePullSecret: cfg.ImagePullSecret}

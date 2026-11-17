@@ -880,6 +880,41 @@ An instance in `error` counts as up, so its claim is not released early; it
 lapses with its lease. If the release itself fails (HQ down), the lease lapse
 is the fallback.
 
+### Re-running blocked items
+
+An instance whose connector grant is still pending works its item blind: the
+connector refuses it, and it completes the item `escalated` ("operator:
+approve grant N") or `done`. Approving the grant used to change nothing for
+that item. muster now re-runs it (`internal/api/officer_connector_rerun.go`,
+`internal/officers/connector_blocks.go`):
+
+- **At the refusal.** Every access check that answers "pending" (the proxy,
+  `postgres_query`, `internal_http_request`, `officer_kube_read`), and an
+  explicit `connector_request` that leaves the grant pending, records each
+  item the instance holds a LIVE claim on in HQ, keyed by the grant's id
+  (`officer_connector_blocks`, migration 0145; in memory without a
+  database). A repeat refusal writes nothing. The link is the grant id and
+  HQ's claimed list, never an item's summary or a refusal's text.
+- **At the approval.** The operator's decision (`decideConnectorGrant`, the
+  one every door takes; an officer's grant is never approved from a standing
+  grant) asks HQ to re-run each recorded item of THAT grant, newest first,
+  through `POST /officers/{id}/items/{item}/rerun` with the officer's token,
+  key `connector-grant:<id>`. HQ enqueues a new item of the same subject, or
+  answers the live / newer item that already carries the work, once per
+  (item, key).
+- **Bounded.** Only items recorded within the last **7 days**
+  (`officers.RerunWindow`): an operator approves within a working week, and
+  older blocked work has a newer event of its own. At most **10** per
+  approval (`officers.RerunMaxPerApproval`), the rest logged and not sent. A
+  re-run HQ answered is marked and never sent again, and a second approval
+  of the same grant re-runs nothing.
+- **Degrades.** An HQ without the route answers 404: muster logs it and goes
+  on to the next item (the block stays unmarked). A builtin officer's
+  backend re-runs nothing (no `rerun` capability); muster logs it.
+
+A different connector's grant, or another agent's, re-runs nothing: the
+record is keyed by the grant id.
+
 ## The tools
 
 An officer's instances are offered these MCP tools on muster's MCP server, and no
@@ -3552,7 +3587,9 @@ uses `POST /officers/{id}/items/{item}/transcript`
 /officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)) and `PUT
 /officers/{id}/pools` ([Pools to HQ](#pools-to-hq)). `ccd ask-image` uses `POST
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
-`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
+`officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. An approved
+connector grant uses `POST /officers/{id}/items/{item}/rerun` `{key, reason}`
+([Re-running blocked items](#re-running-blocked-items)). Every
 officer may use `GET /officers/{id}/obs/queries` and `POST
 /officers/{id}/obs/query` ([Observability queries](#observability-queries)). Where the contract leaves a shape open, muster accepts:
 

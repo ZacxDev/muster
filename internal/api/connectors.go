@@ -496,6 +496,11 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 		s.approveFromStanding(ctx, g)
 	}
 	v, err := s.agentConnectorView(ctx, a, name)
+	if err == nil && v.Grant == connectors.StatusPending {
+		// Asked for while holding an item: that item is blocked on THIS
+		// grant until it is approved (officer_connector_rerun.go).
+		s.noteConnectorBlocked(ctx, a, v.GrantID, name)
+	}
 	return v, created, err
 }
 
@@ -1122,6 +1127,9 @@ func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve boo
 	var shared sharedApproval
 	if approve {
 		shared = s.shareApproval(ctx, g, via)
+		// An officer's items the pending grant refused are re-run now
+		// (officer_connector_rerun.go): THE approval of an officer's grant.
+		s.goRerunBlocked(ctx, g)
 	}
 	s.broadcast(ctx, EventConnectorChanged, strconv.FormatInt(id, 10))
 	return g, shared, nil

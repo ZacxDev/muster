@@ -43,16 +43,9 @@ func splitItemID(raw []byte) (rest []byte, item officers.ItemID, present bool, e
 // names (which must be among them), or its only one. With required false, an
 // instance holding none gets "" and no error (a read that is no item's).
 func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance string, named officers.ItemID, required bool) (officers.ItemID, error) {
-	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
+	held, err := s.heldItems(ctx, c, instance)
 	if err != nil {
 		return "", err
-	}
-	now := s.officerRT.clock()
-	var held []officers.ItemID
-	for _, it := range claimed {
-		if it.ClaimedBy == instance && it.LeaseLive(now) {
-			held = append(held, it.ID)
-		}
 	}
 	switch {
 	case named != "":
@@ -70,6 +63,23 @@ func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance stri
 		return "", errors.New("you hold no claimed item: claim one first (officer_claim) — every read is counted against the item it is for")
 	}
 	return "", fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
+}
+
+// heldItems is THE read of the items instance holds a LIVE claim on in HQ
+// (heldItem's, and the connector-block record's: officer_connector_rerun.go).
+func (s *Server) heldItems(ctx context.Context, c officers.Backend, instance string) ([]officers.ItemID, error) {
+	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return nil, err
+	}
+	now := s.officerRT.clock()
+	var held []officers.ItemID
+	for _, it := range claimed {
+		if it.ClaimedBy == instance && it.LeaseLive(now) {
+			held = append(held, it.ID)
+		}
+	}
+	return held, nil
 }
 
 // heldItemRefusal is tool's answer to a heldItem error: HQ's own refusal or

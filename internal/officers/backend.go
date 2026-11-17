@@ -162,7 +162,8 @@ const (
 	CapObs           = "obs"
 	CapObsRaw        = "obs.raw"
 	CapCaptain       = "x-captain"
-	CapShip          = "ship" // notices + preflight, for the ship gates
+	CapShip          = "ship"  // notices + preflight, for the ship gates
+	CapRerun         = "rerun" // re-run a finished item (connector_blocks.go)
 )
 
 // capabilityInterface is THE map from an optional verb's capability to the
@@ -185,6 +186,7 @@ var capabilityInterface = map[string]func(Backend) bool{
 	CapObsRaw:      func(b Backend) bool { _, ok := b.(ObsRawBackend); return ok },
 	CapCaptain:     func(b Backend) bool { _, ok := b.(CaptainBackend); return ok },
 	CapShip:        func(b Backend) bool { _, ok := b.(ShipBackend); return ok },
+	CapRerun:       func(b Backend) bool { _, ok := b.(RerunBackend); return ok },
 }
 
 // AllCapabilities is every capability this muster knows, sorted.
@@ -368,4 +370,5 @@ var (
 	_ ObsRawBackend      = (*Client)(nil)
 	_ CaptainBackend     = (*Client)(nil)
 	_ ShipBackend        = (*Client)(nil)
+	_ RerunBackend       = (*Client)(nil)
 )
