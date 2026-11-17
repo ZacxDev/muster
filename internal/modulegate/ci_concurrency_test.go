@@ -8,38 +8,44 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ONLY A PULL REQUEST'S CI RUNS MAY CANCEL EACH OTHER.
+// A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR OR ON `main`; A TAG RUN
+// IS NEVER CANCELLED OR DROPPED.
 //
-// 🔴 THE FINDING: the workflow's top-level group was `ci-${{ github.ref }}`
-// with `cancel-in-progress: true`, so a push to `main` cancelled the run of the
-// `main` commit before it — that commit was left with no CI verdict at all.
+// HISTORY. The group was first `ci-${{ github.ref }}` with
+// `cancel-in-progress: true` for every event, under which a later push to
+// `main` cancelled the run of the `main` commit before it. It then became "PR runs only; every other run in its own `run_id` group",
+// so each `main` push ran in full. Operator decision 2026-11-16: a newer push
+// to `main` cancels the older `main` run, because the downstream release tool
+// now releases the newest green `main` descendant that CONTAINS a commit whose
+// own run was cancelled.
 //
-// 🔴 TURNING `cancel-in-progress` OFF IS NOT THE FIX, WHICH IS WHY THIS PINS THE
-// GROUP AND NOT ONLY THE FLAG. A group holds one running and ONE pending run; a
-// newer pending run replaces the older pending one regardless of that flag, so
-// a shared group still drops the middle run of a burst. Every non-PR run must
-// be in a group of its own (`github.run_id`).
+// 🔴 THE TAG HALF IS THE LOAD-BEARING ONE. A vX.Y.Z tag run publishes the
+// release images and the GitHub release; it must keep a group of its own
+// (`github.run_id`) and `cancel-in-progress: false`. A GROUP, NOT ONLY THE
+// FLAG: a group holds one running and ONE pending run, and a newer pending run
+// replaces the older pending one whatever the flag says — so a tag sharing any
+// group could still be dropped while queued. The group expression routes ONLY
+// a pull_request event or ref `refs/heads/main` to a shared group.
 //
 // 🔴 EXACT STRING, NOT A SUBSTRING. The obvious substring check — "the group
 // mentions run_id" — accepts `github.ref || github.run_id`, which is always the
-// ref, i.e. the original bug. The block is three lines; a deliberate change to
-// it is a deliberate change to this test.
+// ref, i.e. tags in a shared group. The block is three lines; a deliberate
+// change to it is a deliberate change to this test.
 //
 // 🔴 WHAT THIS CANNOT SEE: it reads the YAML text, so it proves the expression
-// is spelled as intended, never how GitHub evaluates it. The PR-cancel half was
-// observed live on the PR that added this test; the push-to-`main` half can
-// only be observed after a merge.
+// is spelled as intended, never how GitHub evaluates it. The PR-cancel half is
+// observed live on any PR; the `main` and tag halves only after a merge.
 // It also reads ONLY the workflow-level block: a job-level `concurrency:` key is
 // not inspected, deliberately — a job may legitimately serialise itself.
 // ---------------------------------------------------------------------------
 
 const wantCIConcurrency = `concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}`
+  group: ci-${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}`
 
-// TestCIConcurrencyCancelsOnlyPullRequestRuns pins the workflow-level
-// concurrency block.
-func TestCIConcurrencyCancelsOnlyPullRequestRuns(t *testing.T) {
+// TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags pins the
+// workflow-level concurrency block.
+func TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags(t *testing.T) {
 	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -53,8 +59,8 @@ func TestCIConcurrencyCancelsOnlyPullRequestRuns(t *testing.T) {
 	}
 	if got != wantCIConcurrency {
 		t.Errorf("top-level concurrency block in %s is\n%s\n\nwant\n%s\n\n"+
-			"PR runs must share a per-ref, cancelling group; every other event must get "+
-			"its own `github.run_id` group, or a `main` commit can be cancelled or dropped.",
+			"PR and `main` runs must share a per-ref, cancelling group; every other event "+
+			"(a vX.Y.Z tag above all) must get its own `github.run_id` group and never be cancelled.",
 			path, got, wantCIConcurrency)
 	}
 }

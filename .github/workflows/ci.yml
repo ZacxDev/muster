@@ -61,23 +61,41 @@ on:
   # the `test` job (restore no cache) are ready for a nightly that does not
   # count against a release; adding one is the operator's call.
 
-# 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
-# CANCELLED OR DROPPED. A newer commit on a PR supersedes the older run of the
-# SAME PR (group `refs/pull/N/merge`), so that run is cancelled. A commit on
-# `main` is a distinct state of the trunk, and a cancelled run there is a commit
-# nobody ever got a verdict on — which happened under the previous
-# `ci-${{ github.ref }}` group, where a later push to `main` cancelled one.
+# 🔴 A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR OR ON `main`; A
+# vX.Y.Z TAG RUN IS NEVER CANCELLED OR DROPPED.
 #
-# ⚠ SO A NON-PR RUN GETS A GROUP OF ITS OWN (`run_id`), NOT MERELY
-# `cancel-in-progress: false`. A concurrency group holds one running and ONE
-# pending run, and a newer pending run REPLACES (cancels) the older pending one
-# whatever `cancel-in-progress` says — three quick pushes to `main` sharing a
-# group would silently drop the middle one. A group nothing else can join has
-# no pending slot to lose. Pinned as an exact string by
-# TestCIConcurrencyCancelsOnlyPullRequestRuns (internal/modulegate).
+# PULL REQUESTS: a newer commit on a PR cancels the older run of the SAME PR
+# (group `refs/pull/N/merge`).
+#
+# `main` (operator decision 2026-11-16): a newer push to `main` cancels the
+# older in-progress `main` run (group `refs/heads/main`). Until then every
+# `main` push ran in full in a group of its own, so a burst of merges queued
+# several full suites, each verdict landing after the commit was already
+# history. A cancelled `main` run leaves THAT commit without a verdict — the
+# reason this was once ruled out — and that is now accepted because the
+# release path no longer needs one: the downstream release tool, asked to
+# release a commit whose `main` run was cancelled, waits for the newest `main`
+# run whose head CONTAINS that commit and releases that green descendant
+# instead. A FAILED run still refuses. A shared group also means a newer PENDING run
+# replaces an older pending one (that is GitHub's rule whatever
+# `cancel-in-progress` says): the dropped middle commit of a burst is contained
+# in the run that replaced it, which is the same trade.
+#
+# 🔴 A TAG RUN KEEPS A GROUP OF ITS OWN (`run_id`) AND `cancel-in-progress:
+# false`. It publishes the release images and the GitHub release (`image-*`,
+# `release`); cancelling it part-way could leave a version half-published, and
+# the release tool pushed that tag expecting it to complete. Only a ref equal
+# to `refs/heads/main` or a pull_request event joins a shared group, so a tag —
+# or any trigger added later — can never be cancelled by, or replace, another
+# run. (A `main` run's own `image-*` jobs publish only `:<sha7>`; cancelling one
+# part-way leaves that sha unpublished, never a release version moved, and
+# ghcr-push.sh never overwrites a published tag.)
+#
+# Pinned as an exact string by TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags
+# (internal/modulegate).
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 jobs:
   # Local: python3 .github/scripts/tag_gate.py decide --repo ZacxDev/muster \
