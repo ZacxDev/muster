@@ -167,31 +167,26 @@ func TestADisabledOwnersTokenIsRefusedAndAnOutageIsNotRemembered(t *testing.T) {
 }
 
 // TestEveryHookTierWrapperTakesATokenEvenUnarmed: a personal token needs no
-// MUSTER_HOOK_TOKEN. On an UNARMED password-mode server a bad mst_ value is a
-// 401, not the open tier's admission as user 1 (which only a caller on this
-// machine gets); in gotrue mode, where the unarmed hook tier is 503 to a local
-// caller, a valid token is still admitted.
+// MUSTER_HOOK_TOKEN. On an UNARMED server — which refuses every shared-secret
+// caller 401 — a bad mst_ value is a 401 and a valid one is admitted as its
+// owner, in both modes.
 func TestEveryHookTierWrapperTakesATokenEvenUnarmed(t *testing.T) {
 	f := newFakeAPITokens()
 	tok := f.add(t, 7)
 	bad, _ := apitokens.New()
 	open := tokenTestServer(t, AuthConfig{UIPassword: "a-long-operator-password"}, f)
-	const local = "127.0.0.1:1234"
-	if code, body := whoami(t, open, "", local); code != 200 || body["userId"] != float64(1) {
-		t.Fatalf("CONTROL: the unarmed tier with no credential, local caller: %d %v; want the open admission as user 1", code, body)
+	if code, body := whoami(t, open, "", "127.0.0.1:1234"); code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: the unarmed tier with no credential: %d %v; want 401", code, body)
 	}
-	if code, body := whoami(t, open, "", ""); code != http.StatusUnauthorized {
-		t.Fatalf("the unarmed tier with no credential, remote caller: %d %v; want 401", code, body)
-	}
-	if code, body := whoami(t, open, bad, local); code != http.StatusUnauthorized {
-		t.Fatalf("an unknown personal token on the open tier: %d %v; want 401", code, body)
+	if code, body := whoami(t, open, bad, ""); code != http.StatusUnauthorized {
+		t.Fatalf("an unknown personal token on the unarmed tier: %d %v; want 401", code, body)
 	}
 	if code, body := whoami(t, open, tok, ""); code != 200 || body["userId"] != float64(7) {
 		t.Fatalf("a valid token on the open tier: %d %v", code, body)
 	}
 	gt := tokenTestServer(t, AuthConfig{Mode: AuthModeGoTrue}, f)
-	if code, _ := whoami(t, gt, "", local); code != http.StatusServiceUnavailable {
-		t.Fatalf("CONTROL: gotrue mode, unarmed, no credential, local caller: %d; want 503", code)
+	if code, _ := whoami(t, gt, "", ""); code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: gotrue mode, unarmed, no credential: %d; want 401", code)
 	}
 	if code, body := whoami(t, gt, tok, ""); code != 200 || body["userId"] != float64(7) {
 		t.Fatalf("gotrue mode, unarmed: a valid personal token: %d %v", code, body)

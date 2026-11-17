@@ -42,7 +42,10 @@ func testConfig() config {
 		// Long enough to clear api.minUIPasswordLen, so the browser tier is
 		// CONFIGURED rather than fail-closed — otherwise every browser surface
 		// answers 503 and this test would be measuring the refusal.
-		UIPassword:  "correct-horse-battery-staple-not-a-real-password",
+		UIPassword: "correct-horse-battery-staple-not-a-real-password",
+		// Required at boot in every mode (validateListeners), so a fixture that
+		// is meant to be a bootable configuration carries one.
+		HookToken:   fixtureHookToken,
 		Standalone:  true,
 		RouterActor: defaultRouterActor,
 	}

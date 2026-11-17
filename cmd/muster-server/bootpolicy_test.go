@@ -10,50 +10,37 @@ import (
 	"testing"
 )
 
-// fixtureHookToken arms the hook tier in the struct-literal fixtures whose
-// subject is some other refusal: validate() refuses an unarmed server that is
-// reachable from beyond this machine (validateListeners), so a fixture meant to
-// boot has to be armed, or bound to loopback.
+// fixtureHookToken arms the hook tier in the fixtures whose subject is some
+// other refusal: validate() refuses every configuration without a
+// MUSTER_HOOK_TOKEN (validateListeners), so a fixture meant to boot is armed.
 const fixtureHookToken = "fixture-hook-token-0123456789abcdef"
 
-// TestTheHookTierBootPolicy is the whole boot policy for an unarmed hook tier, as
-// a table: auth mode x MUSTER_HOOK_TOKEN (set / empty / unset) x where the
-// listeners are bound.
+// TestTheHookTierBootPolicy: MUSTER_HOOK_TOKEN is required in both auth modes,
+// whatever else is configured. A table of mode x token (set / empty / blank /
+// unset) x a few layouts — a loopback public URL, a public https one, a browser
+// listener — so that no layout can be the one that lets an unarmed server boot.
 //
-// 🔴 THE TOKEN IS UNSET OR EMPTY → BOOT ONLY WHEN ONLY THIS MACHINE CAN REACH
-// THE SERVER. "Empty" is its own row because a Kubernetes Secret whose key holds
-// "" delivers exactly that, and it must read as unset (it arms nothing). Each
-// row goes through loadConfig — the parse a real boot uses — and then validate.
+// "Empty" is its own row because a Kubernetes Secret whose key holds "" delivers
+// exactly that. Each row goes through loadConfig — the parse a real boot uses —
+// and then validate.
 func TestTheHookTierBootPolicy(t *testing.T) {
-	type tokenCase struct {
+	tokens := []struct {
 		name string
 		env  map[string]string // added to the env; "unset" adds nothing
-	}
-	tokens := []tokenCase{
+	}{
 		{"set", map[string]string{envHookToken: fixtureHookToken}},
 		{"empty", map[string]string{envHookToken: ""}},
+		{"blank", map[string]string{envHookToken: strings.Repeat(" ", 16)}},
 		{"unset", nil},
 	}
-	type bindCase struct {
-		name     string
-		env      map[string]string
-		loopback bool
-	}
-	binds := []bindCase{
-		{"every interface (unset)", nil, false},
-		{"0.0.0.0", map[string]string{envBindAddress: "0.0.0.0"}, false},
-		{"a LAN address", map[string]string{envBindAddress: "192.0.2.10"}, false},
-		{"127.0.0.1", map[string]string{envBindAddress: "127.0.0.1"}, true},
-		{"127.0.0.53 (all of 127/8)", map[string]string{envBindAddress: "127.0.0.53"}, true},
-		{"::1", map[string]string{envBindAddress: "::1"}, true},
-		{"127.0.0.1 with a loopback public URL", map[string]string{envBindAddress: "127.0.0.1", envPublicURL: "http://localhost:8105"}, true},
-		// A public URL naming another host means a proxy forwards other machines
-		// to the loopback listener: the bind address no longer says who reaches it.
-		{"127.0.0.1 behind a public URL", map[string]string{envBindAddress: "127.0.0.1", envPublicURL: "https://muster.example.com"}, false},
-		// Every enabled listener binds the one address, the browser listener
-		// included.
-		{"127.0.0.1 with a browser listener", map[string]string{envBindAddress: "127.0.0.1", envBrowserPort: "18106"}, true},
-		{"every interface with a browser listener", map[string]string{envBrowserPort: "18106"}, false},
+	layouts := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"no public URL", nil},
+		{"a loopback public URL", map[string]string{envPublicURL: "http://localhost:8105"}},
+		{"a public https URL", map[string]string{envPublicURL: "https://muster.example.com"}},
+		{"a browser listener", map[string]string{envBrowserPort: "18106"}},
 	}
 	modes := map[string]map[string]string{
 		"password": {},
@@ -66,14 +53,14 @@ func TestTheHookTierBootPolicy(t *testing.T) {
 	}
 	for mode, modeEnv := range modes {
 		for _, tok := range tokens {
-			for _, b := range binds {
-				t.Run(mode+"/token "+tok.name+"/"+b.name, func(t *testing.T) {
+			for _, l := range layouts {
+				t.Run(mode+"/token "+tok.name+"/"+l.name, func(t *testing.T) {
 					env := map[string]string{
 						envDatabase:   "postgres://x/y",
 						envStandalone: "1",
 						envUIPassword: "correct-horse-battery-staple",
 					}
-					for _, m := range []map[string]string{modeEnv, tok.env, b.env} {
+					for _, m := range []map[string]string{modeEnv, tok.env, l.env} {
 						for k, v := range m {
 							env[k] = v
 						}
@@ -83,70 +70,27 @@ func TestTheHookTierBootPolicy(t *testing.T) {
 						t.Fatalf("loadConfig: %v", err)
 					}
 					err = c.validate()
-
-					armed := tok.name == "set"
-					// gotrue mode refuses an unarmed tier on every layout: its
-					// per-user logins make the machine user nobody at the keyboard.
-					wantBoot := armed || (mode == "password" && b.loopback)
-					if wantBoot {
+					if tok.name == "set" {
 						if err != nil {
 							t.Fatalf("validate() = %v, want it to boot", err)
 						}
 						return
 					}
 					if err == nil {
-						t.Fatalf("validate() = nil: an unarmed hook tier reachable beyond this machine boots")
+						t.Fatalf("validate() = nil: a server with no hook token boots")
 					}
 					if !strings.Contains(err.Error(), envHookToken) {
 						t.Fatalf("the refusal does not name %s: %v", envHookToken, err)
 					}
-					// The password-mode refusal is validateListeners', and it says how
-					// to make a value; gotrue mode's is validateAuthMode's.
-					if mode == "password" && !strings.Contains(err.Error(), "openssl rand -hex 32") {
+					// The refusal says how to make a value. (A blank value of 16
+					// spaces passes the length floor, so it reaches the same check
+					// as unset; gotrue mode's unset refusal is validateAuthMode's.)
+					if (mode == "password" || tok.name == "blank") && !strings.Contains(err.Error(), "openssl rand -hex 32") {
 						t.Fatalf("the refusal does not say how to generate a value: %v", err)
 					}
 				})
 			}
 		}
-	}
-}
-
-// TestAWhitespaceHookTokenIsUnset: a value of only blanks arms nothing, so it
-// gets the unset row's answer rather than booting as if armed.
-func TestAWhitespaceHookTokenIsUnset(t *testing.T) {
-	c := memoBase()
-	c.HookToken = strings.Repeat(" ", 16)
-	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "openssl rand -hex 32") {
-		t.Fatalf("a blank hook token on every interface: validate() = %v, want the unarmed refusal", err)
-	}
-	c.BindAddress = "127.0.0.1"
-	if err := c.validate(); err != nil {
-		t.Fatalf("control: the same token on loopback is refused: %v", err)
-	}
-}
-
-// TestTheBindAddressIsAnIPLiteral: MUSTER_BIND_ADDRESS is parsed, and a value
-// that is not an IP address (a name, a port, a zone) is refused naming it.
-func TestTheBindAddressIsAnIPLiteral(t *testing.T) {
-	for _, v := range []string{"localhost", "127.0.0.1:8105", "fe80::1%eth0", "muster.example.com", "[::1]"} {
-		_, err := loadConfig(func(k string) string {
-			if k == envBindAddress {
-				return v
-			}
-			return ""
-		})
-		if err == nil || !strings.Contains(err.Error(), envBindAddress) {
-			t.Errorf("%s=%q: loadConfig = %v, want a refusal naming it", envBindAddress, v, err)
-		}
-	}
-	c, err := loadConfig(func(k string) string {
-		if k == envBindAddress {
-			return " ::1 "
-		}
-		return ""
-	})
-	if err != nil || c.BindAddress != "::1" {
-		t.Fatalf("control: %s=::1 parsed to %q, %v", envBindAddress, c.BindAddress, err)
 	}
 }
 
@@ -280,11 +224,10 @@ func TestAnHTTPSPublicURLGetsASecureCookieAndHSTS(t *testing.T) {
 	}
 }
 
-// TestTheMetricsListenerAndTheBindAddressAreWired boots the real app with
-// MUSTER_BIND_ADDRESS=127.0.0.1 and a MUSTER_METRICS_PORT: the main listener is
-// bound to that address, /metrics is a 404 on it, and the metrics port serves
-// the registry (and is bound to the same address).
-func TestTheMetricsListenerAndTheBindAddressAreWired(t *testing.T) {
+// TestTheMetricsListenerIsWired boots the real app with a MUSTER_METRICS_PORT:
+// /metrics is a 404 on the main listener, and the metrics port serves the
+// registry.
+func TestTheMetricsListenerIsWired(t *testing.T) {
 	free, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -293,12 +236,8 @@ func TestTheMetricsListenerAndTheBindAddressAreWired(t *testing.T) {
 	free.Close()
 
 	cfg := testConfig()
-	cfg.BindAddress = "127.0.0.1"
 	cfg.MetricsPort = metricsPort
 	base := startServer(t, cfg)
-	if !strings.HasPrefix(base, "http://127.0.0.1:") {
-		t.Fatalf("the main listener is at %s; want it bound to %s=127.0.0.1", base, envBindAddress)
-	}
 	get := func(u string) (int, string) {
 		t.Helper()
 		resp, err := http.Get(u)

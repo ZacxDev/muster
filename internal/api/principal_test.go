@@ -966,74 +966,33 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 	}
 }
 
-// TestAnUnarmedHookTierLooksArmedToARemoteCaller covers the branch the main
-// walk cannot reach: a server with NO MUSTER_HOOK_TOKEN, driven on every
-// ViaHook route with no credential, from three callers.
+// TestAnUnarmedHookTierAdmitsNobody covers the branch the main walk cannot
+// reach: a server with NO MUSTER_HOOK_TOKEN, driven on every ViaHook route with
+// no credential, from a loopback caller, an IPv6 loopback caller, a remote one
+// and a forwarded one. No route may reach a handler or attach a principal, and
+// every answer is a 401 — what an armed server gives a missing token, so
+// nothing says the server is unarmed (no 503, no HookUnarmedField). The tier
+// used to admit such a caller as user 1, the admin.
 //
-//   - REMOTE (a non-loopback TCP peer): no route may reach a handler or attach a
-//     principal, and every answer is the 401 an armed server gives a missing
-//     token — nothing that says the server is unarmed (no 503, no
-//     HookUnarmedField). It used to be admitted as user 1, the admin.
-//   - FORWARDED (a loopback peer carrying a proxy's header): the same as remote.
-//   - LOCAL (a loopback peer, no forwarding header): requireHookToken and
-//     requireHookOrServiceToken admit it with the machine principal — an
-//     admitted request with none is exactly what PR 3 turns into an empty board
-//     — and requireArmedHookToken refuses it 503 with HookUnarmedField.
-func TestAnUnarmedHookTierLooksArmedToARemoteCaller(t *testing.T) {
+// The control: the same server armed admits the token on every route, so the
+// refusals are the missing secret and not a route that refuses everything.
+func TestAnUnarmedHookTierAdmitsNobody(t *testing.T) {
 	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
-	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
-	// and session routing's answer (it decides what an outside party is sent).
-	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
-		"POST /api/plugin-threads":                                         true,
-		"POST /api/pr-sessions":                                            true,
-		"GET /api/pr-sessions":                                             true,
-		"POST /api/plugins/messages/{id}/retry":                            true,
-		"PUT /api/plugins/{id}/deliver-to":                                 true,
-		"DELETE /api/agents/{name}":                                        true,
-		"GET /api/officers/types":                                          true,
-		"GET /api/officers/types/{key}":                                    true,
-		"PUT /api/officers/types/{key}":                                    true,
-		"DELETE /api/officers/types/{key}":                                 true,
-		"GET /api/officers/defs":                                           true,
-		"PUT /api/officers/defs/{officer}":                                 true,
-		"DELETE /api/officers/defs/{officer}":                              true,
-		"GET /api/officers/defs/{officer}/items":                           true,
-		"POST /api/officers/defs/{officer}/items":                          true,
-		"POST /api/officers/defs/{officer}/items/{id}/resolve":             true,
-		"GET /api/officers/defs/{officer}/schedules":                       true,
-		"GET /api/officers/defs/{officer}/usage":                           true,
-		"PUT /api/officers/defs/{officer}/schedules/{name}":                true,
-		"DELETE /api/officers/defs/{officer}/schedules/{name}":             true,
-		"GET /api/officers/defs/{officer}/contacts":                        true,
-		"GET /api/officers/defs/{officer}/contacts/{venue}/{handle}":       true,
-		"PUT /api/officers/defs/{officer}/contacts/{venue}/{handle}/flags": true,
-		"DELETE /api/officers/defs/{officer}/contacts/{venue}/{handle}":    true,
-		"GET /api/officers/declared":                                       true,
-		"POST /api/officers/declared":                                      true,
-		"GET /api/officers/declared/{officer}":                             true,
-		"PUT /api/officers/declared/{officer}":                             true,
-		"DELETE /api/officers/declared/{officer}":                          true,
-		"POST /api/officers/declared/{officer}/pause":                      true,
-		"POST /api/officers/declared/{officer}/resume":                     true,
-		"GET /api/officers/runtime-options":                                true,
-		"POST /api/chief/replace":                                          true,
-		"POST /api/agents":                                                 true,
-		"GET /api/doctor":                                                  true}
-	for _, pattern := range routeVias[authz.ViaHook] {
+	routes := routeVias[authz.ViaHook]
+	if len(routes) < 10 {
+		t.Fatalf("instrument check: only %d ViaHook routes", len(routes))
+	}
+	for _, pattern := range routes {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {
-			for _, remote := range []struct {
-				name, addr, forwardedFor string
-			}{
-				{"remote", "192.0.2.1:1234", ""},
-				{"remote IPv6", "[2001:db8::7]:1234", ""},
-				{"forwarded", "127.0.0.1:1234", "198.51.100.7"},
+			for _, caller := range []struct{ addr, forwardedFor string }{
+				{"127.0.0.1:1234", ""}, {"[::1]:1234", ""}, {"192.0.2.1:1234", ""}, {"127.0.0.1:1234", "198.51.100.7"},
 			} {
 				*seen = nil
 				req := httptest.NewRequest(method, path, nil)
-				req.RemoteAddr = remote.addr
-				if remote.forwardedFor != "" {
-					req.Header.Set("X-Forwarded-For", remote.forwardedFor)
+				req.RemoteAddr = caller.addr
+				if caller.forwardedFor != "" {
+					req.Header.Set("X-Forwarded-For", caller.forwardedFor)
 				}
 				rec := httptest.NewRecorder()
 				aborted := func() (aborted bool) {
@@ -1046,33 +1005,26 @@ func TestAnUnarmedHookTierLooksArmedToARemoteCaller(t *testing.T) {
 					return false
 				}()
 				if aborted || len(*seen) != 0 {
-					t.Fatalf("%s caller, unarmed: reached the handler as %v", remote.name, *seen)
+					t.Fatalf("caller %v, unarmed: reached the handler as %v", caller, *seen)
 				}
-				if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), HookUnarmedField) {
-					t.Fatalf("%s caller, unarmed: %d %s; want the armed server's 401, saying nothing about "+
-						"the configuration", remote.name, rec.Code, rec.Body.String())
-				}
-			}
-
-			*seen = nil
-			req := httptest.NewRequest(method, path, nil)
-			req.RemoteAddr = "127.0.0.1:1234"
-			if armed[pattern] {
-				rec := httptest.NewRecorder()
-				h.ServeHTTP(rec, req)
-				if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"`+HookUnarmedField+`":true`) ||
+				if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), HookUnarmedField) ||
 					strings.Contains(rec.Body.String(), "MUSTER_") {
-					t.Fatalf("the armed route on an unarmed server, local caller: %d %s; want a 503 carrying %s "+
-						"and naming no setting", rec.Code, rec.Body.String(), HookUnarmedField)
+					t.Fatalf("caller %v, unarmed: %d %s; want a 401 that says nothing about the configuration",
+						caller, rec.Code, rec.Body.String())
 				}
-				return
-			}
-			aborted, code := serve(t, h, req)
-			want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
-			if !aborted || len(*seen) != 1 || (*seen)[0] != want {
-				t.Fatalf("unarmed hook tier, local caller: aborted=%v status %d saw %v; want %v", aborted, code, *seen, want)
 			}
 		})
+	}
+	_, armed, seenArmed := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword, HookToken: pHookToken})
+	for _, pattern := range routes {
+		method, path := concretePath(pattern)
+		*seenArmed = nil
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer "+pHookToken)
+		want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
+		if aborted, code := serve(t, armed, req); !aborted || len(*seenArmed) != 1 || (*seenArmed)[0] != want {
+			t.Fatalf("CONTROL: %s armed, with the token: aborted=%v status %d saw %v; want %v", pattern, aborted, code, *seenArmed, want)
+		}
 	}
 }
 

@@ -1107,27 +1107,27 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	handler := srv.Handler()
 	a.http = &http.Server{
-		Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.Port)),
+		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	if cfg.ConnectPort != 0 {
 		a.connect = &http.Server{
-			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.ConnectPort)),
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.ConnectPort)),
 			Handler:           api.OnlyConnectSurface(handler),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
 	if cfg.BrowserPort != 0 {
 		a.browser = &http.Server{
-			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.BrowserPort)),
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.BrowserPort)),
 			Handler:           api.BrowserListener(handler),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
 	if cfg.MetricsPort != 0 {
 		a.metrics = &http.Server{
-			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.MetricsPort)),
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.MetricsPort)),
 			Handler:           api.MetricsHandler(),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
@@ -1802,14 +1802,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
 	} else {
-		l.Printf("machine hook tier: OPEN TO THIS MACHINE ONLY — %s is unset, which boots only "+
-			"with every listener on loopback (%s) and no public URL naming another host; the hook "+
-			"endpoints answer a loopback caller with no credential and refuse every other one", envHookToken, envBindAddress)
-	}
-	if a.cfg.BindAddress != "" {
-		l.Printf("listen address: %s (%s) — every listener binds it", a.cfg.BindAddress, envBindAddress)
-	} else {
-		l.Printf("listen address: every interface — %s is unset", envBindAddress)
+		l.Printf("machine hook tier: CLOSED — %s is unset, so every hook endpoint refuses every caller "+
+			"(only a server built without config validation can get here)", envHookToken)
 	}
 	if a.cfg.MetricsPort != 0 {
 		l.Printf("metrics: ON — /metrics is served on its own listener, %s=%d, and on no other port",
@@ -1866,8 +1860,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg))
 	default:
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
-			"server will NOT report ready while a notes store is wired, on purpose: see "+
-			"/readyz for the reason", envRouterURL, envStandalone)
+			"server will NOT report ready while a notes store is wired, on purpose: /readyz "+
+			"answers 503 and logs the reason (a \"readyz: not ready\" line)", envRouterURL, envStandalone)
 	}
 
 	// The claude-code approval relay's gate, on its own line: it is configurable

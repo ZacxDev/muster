@@ -45,8 +45,7 @@ flowchart LR
 | connect | `MUSTER_CONNECT_PORT` | Only the routes agents need: connectors, approvals, MCP and `/health`. |
 | metrics | `MUSTER_METRICS_PORT` | `GET /metrics` (Prometheus) and nothing else. Unset: `/metrics` is served nowhere. |
 
-Every listener binds `MUSTER_BIND_ADDRESS` (unset: every interface). Without
-`MUSTER_HOOK_TOKEN` the server boots only when that is a loopback address
+The server does not start without `MUSTER_HOOK_TOKEN`
 ([configuration.md](configuration.md#muster-server-sign-in-and-machine-credentials)).
 
 The main and browser listeners serve these. The connect listener serves only

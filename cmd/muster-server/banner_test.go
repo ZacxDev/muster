@@ -294,9 +294,7 @@ var bannerLedger = []string{
 	envBrowserPort,
 	envSecureCookies,
 	envHookToken,
-	// The listen address and the metrics listener: one line each, both
-	// directions.
-	envBindAddress,
+	// The metrics listener: one line, both directions.
 	envMetricsPort,
 	envServiceToken,
 	envRouterURL,
@@ -828,7 +826,6 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Database:            "postgres://x/y",
 		UIPassword:          strings.Repeat("p", 40),
 		SecureCookies:       true,
-		BindAddress:         "127.0.0.1",
 		MetricsPort:         18193,
 		AndroidAllowPINKeys: true,
 		HookToken:           "hook",

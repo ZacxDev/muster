@@ -21,7 +21,7 @@ func TestAPlaceholderOrShortHookTokenRefusesToBoot(t *testing.T) {
 			t.Errorf("HookToken %q: validate() = %v, want a refusal naming %s", tok, err, envHookToken)
 		}
 	}
-	// The boundary: exactly 12 characters boots. Unset boots only on loopback
+	// The boundary: exactly 12 characters boots. Unset never does
 	// (validateListeners; TestTheHookTierBootPolicy has the whole table).
 	c := memoBase()
 	c.HookToken = "twelve-chars"
@@ -30,10 +30,6 @@ func TestAPlaceholderOrShortHookTokenRefusesToBoot(t *testing.T) {
 	}
 	c.HookToken = ""
 	if err := c.validate(); err == nil || !strings.Contains(err.Error(), envHookToken) {
-		t.Errorf("HookToken unset on every interface: validate() = %v, want a refusal naming %s", err, envHookToken)
-	}
-	c.BindAddress = "127.0.0.1"
-	if err := c.validate(); err != nil {
-		t.Errorf("HookToken unset on loopback: refused: %v", err)
+		t.Errorf("HookToken unset: validate() = %v, want a refusal naming %s", err, envHookToken)
 	}
 }
