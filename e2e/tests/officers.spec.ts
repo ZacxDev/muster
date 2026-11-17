@@ -7,9 +7,9 @@ import { baseURL, hookToken } from '../lib/env';
 // plane, so the wizard must say pods are not available and why.
 //
 // At a desktop (1280×800) and a phone (390×844) each, the person: opens
-// Officers from the nav, starts the New-officer wizard, steps through it (name
-// and instructions → where it runs → when it works → what it may do → review:
-// with one template there is no "Start from" step), creates it in Shadow,
+// Officers from the nav, starts the New-officer wizard, steps through it
+// (start from → name and instructions → where it runs → when it works → what
+// it may do → review), creates it in Shadow,
 // finds it in the list, opens its page, pauses and resumes it, and deletes it,
 // the list then saying so. And a host officer whose machine this server does
 // not see (it has no mirror hub) keeps that machine through an Edit saved in
@@ -55,14 +55,19 @@ for (const size of sizes) {
       await page.waitForURL(/\/officers\/new$/);
       const step = (n: number) => page.locator(`fieldset[data-step="${n}"]`);
       const next = page.locator('[data-wizard-next]');
-      // No "Start from" step while Blank is the one template (round 0's D1):
-      // the wizard opens at the name, and the template rides in a hidden field.
-      await expect(step(1)).toHaveCount(0);
-      await expect(page.locator('#officer-form input[type=hidden][name=template]')).toHaveValue('blank');
+      // 1. Start from (officers O-D: the template catalogue): Blank chosen,
+      // the no-JS button removed by the script. Next with Blank still chosen
+      // goes on without redrawing the form.
+      await expect(step(1)).toBeVisible();
+      await expect(step(2)).toBeHidden();
+      await expect(page.locator('#wizard-progress li').first()).toHaveText('1. Start from');
+      await expect(step(1).locator('input[name=template][value=blank]')).toBeChecked();
+      await expect(page.locator('#officer-template-pick')).toHaveCount(0);
+      await next.click();
       // 2. Name and instructions: Next refuses an empty name.
       await expect(step(2)).toBeVisible();
       await expect(step(3)).toBeHidden();
-      await expect(page.locator('#wizard-progress li').first()).toHaveText('1. Name and instructions');
+      await expect(page.locator('#officer-name')).toHaveValue('');
       await next.click();
       await expect(step(2)).toBeVisible();
       await page.fill('#officer-name', name);
@@ -150,5 +155,44 @@ for (const size of sizes) {
         await removeOfficer(hid);
       }
     });
+  });
+}
+
+// THE TEMPLATES (officers O-D), at a desktop and a phone: choosing one on
+// "Start from" and pressing Next redraws the wizard at "Name and
+// instructions" with that template's starting values — which the person can
+// still change — and nothing is created by choosing.
+const templates = [
+  { key: 'session-minder', name: 'Session minder', charter: 'session.stalled', wake: 'manual', preset: null, cap: 'session_minder' },
+  { key: 'marketing', name: 'Marketing', charter: 'Your venue is manual', wake: 'schedule', preset: 'weekly', cap: null },
+  { key: 'qa', name: 'QA', charter: 'You test; you never fix.', wake: 'schedule', preset: 'weekdays', cap: null },
+];
+for (const size of sizes) {
+  test.describe(`the officer templates at ${size.name} size`, () => {
+    test.use({ viewport: size.viewport });
+    for (const tpl of templates) {
+      test(`starting from ${tpl.key} fills in the wizard`, async ({ page }) => {
+        await page.goto('/officers/new');
+        const step = (n: number) => page.locator(`fieldset[data-step="${n}"]`);
+        await expect(step(1)).toBeVisible();
+        await step(1).locator(`input[name=template][value="${tpl.key}"]`).check();
+        await page.locator('[data-wizard-next]').click();
+        // The form is redrawn (a POST answering 200) at step 2.
+        await expect(step(2)).toBeVisible();
+        await expect(page.locator('#officer-form')).toHaveAttribute('data-template', tpl.key);
+        await expect(page.locator('#officer-name')).toHaveValue(tpl.name);
+        await expect(page.locator('#officer-charter')).toHaveValue(new RegExp(tpl.charter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        await expect(page.locator(`input[name=wake][value=${tpl.wake}]`)).toBeChecked();
+        if (tpl.preset) await expect(page.locator('#officer-preset')).toHaveValue(tpl.preset);
+        await expect(page.locator('input[name=cap]:checked')).toHaveCount(tpl.cap ? 1 : 0);
+        if (tpl.cap) await expect(page.locator(`input[name=cap][value=${tpl.cap}]`)).toBeChecked();
+        await expect(page.locator('#officer-repo')).toHaveValue('');
+        await expect(page.locator('input[name=mode][value=shadow]')).toBeChecked();
+        // Back shows the template chosen.
+        await page.locator('[data-wizard-back]').click();
+        await expect(step(1).locator(`input[name=template][value="${tpl.key}"]`)).toBeChecked();
+        await noSidewaysScroll(page);
+      });
+    }
   });
 }

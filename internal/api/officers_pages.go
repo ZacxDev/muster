@@ -526,32 +526,8 @@ func autoWords(opts runtimeOptions) string {
 
 // --- the form -------------------------------------------------------------------
 
-// officerTemplate is a starting point the wizard's first step offers.
-//
-// 🔴 THE SEAM O-D FILLS. Templates are a catalogue (O-D); this slice has the
-// one entry this PR ships, "Blank officer", and the wizard draws whatever it
-// holds as the first step's choices. A template sets the form's starting
-// values (formValues) and nothing else: everything it fills is still the
-// person's to read and change, and the create goes through the one core.
-type officerTemplate struct {
-	Key, Name, Summary string
-	// Values are the form's starting values ("" fields are blank).
-	Values formValues
-}
-
-var officerTemplates = []officerTemplate{
-	{Key: "blank", Name: "Blank officer", Summary: "Start from nothing: you write its instructions."},
-}
-
-// templateNamed is the template keyed key (the first when key is unknown).
-func templateNamed(key string) officerTemplate {
-	for _, t := range officerTemplates {
-		if t.Key == key {
-			return t
-		}
-	}
-	return officerTemplates[0]
-}
+// The templates the wizard's first step offers are officer_templates.go's
+// catalogue (officerTemplates, templateNamed).
 
 // formValues is the officer form's fields, as typed (or as stored, on edit).
 type formValues struct {
@@ -606,6 +582,7 @@ func presetCron(key string) string {
 var officerCaps = []struct{ Key, Label string }{
 	{builtin.CapOutboundDrafts, "Draft posts and replies for your approval (outbound drafts through a bound plugin)"},
 	{builtin.CapContacts, "Keep a record of the people it hears from (contacts)"},
+	{builtin.CapSessionMinder, "Mind my stopped sessions: muster queues each one as an item for it, and my chief stops nudging me while it is switched on (needs session state)"},
 }
 
 // fieldErrs is a form's refusals, by field.
@@ -854,6 +831,9 @@ type formPage struct {
 	// refreshed: the wizard was redrawn for another owner (its "Whose
 	// officer" choice changed), so it opens at that step.
 	refreshed bool
+	// picked: the wizard was redrawn with a template's starting values (its
+	// "Start from" choice), so it opens at the step after it.
+	picked bool
 }
 
 // escalationChoice is one person (or the team) an escalation can also ask.
@@ -1003,6 +983,8 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 			first = 6
 		case fp.refreshed:
 			first = 2 // the owner choice's own step
+		case fp.picked:
+			first = 2 // the step after "Start from"
 		}
 	}
 	var b strings.Builder
@@ -1014,7 +996,7 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 		}
 		b.WriteString(problemNode(msg))
 	}
-	b.WriteString(`<form method="POST" action="` + esc(action) + `" id="officer-form" class="flex flex-col gap-4" data-wizard="` + strconv.FormatBool(!fp.edit) + `" data-first-step="` + strconv.Itoa(first) + `">`)
+	b.WriteString(`<form method="POST" action="` + esc(action) + `" id="officer-form" class="flex flex-col gap-4" data-wizard="` + strconv.FormatBool(!fp.edit) + `" data-first-step="` + strconv.Itoa(first) + `" data-template="` + esc(f.Template) + `">`)
 	if fp.edit {
 		b.WriteString(fp.sc.ownerField())
 		if f.ModeWas != "" {
@@ -1055,6 +1037,11 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 			b.WriteString(`<label class="flex items-start gap-2 rounded-lg p-3 ring-1 ring-inset ring-edge"><input type="radio" name="template" value="` + esc(t.Key) + `"` + checkedIf(on) + ` class="mt-1">
 <span class="flex flex-col"><span class="text-sm font-semibold text-fg">` + esc(t.Name) + `</span><span class="text-xs text-fg2">` + esc(t.Summary) + `</span></span></label>`)
 		}
+		// Without the script, this redraws the form with the chosen
+		// template's starting values; the script submits it when Next leaves
+		// this step with another template chosen, and removes the button.
+		b.WriteString(`<p class="text-xs text-fg2">A template only fills in the next steps: you can change everything it sets.</p>
+<button type="submit" name="` + wizardTemplateField + `" value="1" formnovalidate class="` + adminQuiet + ` self-start" id="officer-template-pick">Use this starting point</button>`)
 		b.WriteString(`</fieldset>`)
 	}
 	// 2. basics
@@ -1292,7 +1279,16 @@ const wizardScript = `<script>
     for (var k = 0; k < els.length; k++) { if (!els[k].checkValidity()) { els[k].reportValidity(); return false; } }
     return true;
   }
-  next.addEventListener('click', function(){ if (stepValid(at)) { show(at + 1); var f = steps[at].querySelector('input:not([type=hidden]), textarea, select'); if (f) f.focus(); } });
+  var pick = document.getElementById('officer-template-pick');
+  if (pick) pick.remove();
+  next.addEventListener('click', function(){
+    // Leaving "Start from" with another template chosen redraws the form with
+    // its starting values, opening at the next step.
+    if (steps[at].dataset.step === '1' && val('template') !== form.dataset.template) {
+      var t = document.createElement('input'); t.type = 'hidden'; t.name = '` + wizardTemplateField + `'; t.value = '1';
+      form.appendChild(t); form.submit(); return;
+    }
+    if (stepValid(at)) { show(at + 1); var f = steps[at].querySelector('input:not([type=hidden]), textarea, select'); if (f) f.focus(); } });
   back.addEventListener('click', function(){ show(at - 1); });
   form.addEventListener('change', hostRisk);
   var owner = document.getElementById('officer-owner'), refresh = document.getElementById('officer-owner-refresh');
@@ -1320,6 +1316,7 @@ func (s *Server) handleOfficerNewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	t := templateNamed(r.FormValue("template"))
 	f := t.Values
+	f.Caps = append([]string(nil), t.Values.Caps...)
 	f.Template = t.Key
 	s.renderOfficerForm(w, r, http.StatusOK, s.formPageFor(r.Context(), sc, f, nil, "", false, ""))
 }
@@ -1362,6 +1359,27 @@ func (s *Server) wizardRefresh(w http.ResponseWriter, r *http.Request, sc office
 	s.renderOfficerForm(w, r, http.StatusOK, fp)
 }
 
+// wizardTemplateField is the wizard's "start from this template" submission:
+// the form posted with it set re-renders with the chosen template's starting
+// values (for the owner it names) and creates nothing. Its button is the
+// no-JS path; the wizard's script submits it when Next leaves "Start from"
+// with a template other than the one the form was drawn with.
+const wizardTemplateField = "pick_template"
+
+// wizardPickTemplate is the wizard redrawn for sc with the chosen template's
+// starting values, opening at the step after "Start from". 🔴 THE TEMPLATE'S
+// VALUES REPLACE what was typed (a new starting point), all but the owner,
+// which the scope already carries.
+func (s *Server) wizardPickTemplate(w http.ResponseWriter, r *http.Request, sc officerScope) {
+	t := templateNamed(r.FormValue("template"))
+	f := t.Values
+	f.Caps = append([]string(nil), t.Values.Caps...)
+	f.Template = t.Key
+	fp := s.formPageFor(r.Context(), sc, f, nil, "", false, "")
+	fp.picked = true
+	s.renderOfficerForm(w, r, http.StatusOK, fp)
+}
+
 func (s *Server) handleOfficerCreate(w http.ResponseWriter, r *http.Request) {
 	sc, ok := s.scopeFor(w, r)
 	if !ok {
@@ -1373,6 +1391,10 @@ func (s *Server) handleOfficerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.FormValue(wizardRefreshField) != "" {
 		s.wizardRefresh(w, r, sc)
+		return
+	}
+	if r.FormValue(wizardTemplateField) != "" {
+		s.wizardPickTemplate(w, r, sc)
 		return
 	}
 	ctx := r.Context()

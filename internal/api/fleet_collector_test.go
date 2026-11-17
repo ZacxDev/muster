@@ -228,6 +228,15 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		"stallInputs":       "api.nudgeCandidates",
 		"stallFacts":        "api.sessionStateOwner,api.stallInputs",
 		"nudgeCandidates":   "api.sweepOwnerNudges",
+		// 🔴 THE STALL NUDGES' CANDIDATE RULE (stalledSessions) has exactly two
+		// readers: the chief's sweep and the Session minder's feed
+		// (session_minder.go) — so a minder is fed the stops the chief would
+		// have judged, never a copy of the rule. And the one "does a minder
+		// mind this owner" predicate (sessionMinderOf) gates the sweep, the
+		// stop's push wait and the feed, all three.
+		"stalledSessions":   "api.feedSessionMinder,api.nudgeCandidates",
+		"sessionMinderOf":   "api.episodeChiefJudges,api.feedSessionMinder,api.sweepOwnerNudges",
+		"feedSessionMinder": "api.sessionStateOwner",
 		// 🔴 THE STALL CLASSIFIER'S ONE DOOR (session_state.go): every call to
 		// the classifier is classifyStall's, which redacts and cuts its input,
 		// and its two callers are the nudge sweep and session state. A third

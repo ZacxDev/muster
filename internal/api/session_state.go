@@ -271,6 +271,11 @@ func (s *Server) sessionStateOwner(octx context.Context, o sessionstate.Owner, b
 		ep, has := byKey[k]
 		s.sessionStateStep(octx, sp, c, ep, has)
 	}
+	// The Session minder's feed (session_minder.go): the stops just stepped,
+	// read through the nudges' own candidate rule. Persons only.
+	if !team {
+		s.feedSessionMinder(octx, owner, read.sessions)
+	}
 	for k, ep := range byKey {
 		if seen[k] {
 			continue

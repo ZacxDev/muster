@@ -100,10 +100,10 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // a fresh admin has none, so the empty state is what it draws.
   'GET /officers/spawns': { where: 'signed-in', url: '/officers/spawns', ready: '#officer-spawns-empty' },
   // The Officers pages (officers_pages.go, officers O-C): the admin's list, the
-  // New-officer wizard (its first step), and one officer's page and edit form
+  // New-officer wizard (its first step, "Start from": O-D's templates), and one officer's page and edit form
   // (OFFICER: one made through the wizard's own POST for the measurement).
   'GET /officers': { where: 'signed-in', url: '/officers', ready: '#officer-new' },
-  'GET /officers/new': { where: 'signed-in', url: '/officers/new', ready: '#officer-form #officer-name' },
+  'GET /officers/new': { where: 'signed-in', url: '/officers/new', ready: '#officer-form input[name=template][value=blank]' },
   'GET /officers/{officer}': { where: 'signed-in', url: 'OFFICER', ready: '#officer-head h1' },
   'GET /officers/{officer}/edit': { where: 'signed-in', url: 'OFFICER_EDIT', ready: '#officer-form #officer-charter' },
   // Account → Teams (account_teams.go, team sharing phase 2b.1): the admin's
