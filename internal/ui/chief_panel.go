@@ -1273,10 +1273,12 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
         return;
       }
       if (t.closest('[` + fleetSheetCloseAttr + `]')) { closeSheets(); return; }
-      // A proposal's Edit opens (or shuts) its text box.
+      // A proposal's Edit opens (or shuts) its text box: the one in ITS card
+      // (each card is drawn in the desktop group and in the phone sheet).
       var ed = t.closest('[data-fleet-edit]');
       if (ed) {
-        var form = document.getElementById(ed.getAttribute('aria-controls') || '');
+        var cardEl = ed.closest('[` + fleetProposalAttr + `]');
+        var form = cardEl && cardEl.querySelector('[data-fleet-edit-form]');
         if (form) {
           var show = form.hasAttribute('hidden');
           if (show) form.removeAttribute('hidden'); else form.setAttribute('hidden', '');

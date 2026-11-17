@@ -445,7 +445,7 @@ func fleetProposalRow(p FleetProposalView) g.Node {
 			fleetButton("Approve", "bg-accent/20 text-fg ring-accent/60 hover:bg-accent/30", g.Attr("data-fleet-approve", id),
 				fleetPost(FleetActionPath(p.ID, "approve"))),
 			g.If(p.Editable, fleetButton("Edit", "bg-s2 text-fg2 ring-edge hover:bg-s3", g.Attr("data-fleet-edit", id),
-				g.Attr("aria-expanded", "false"), g.Attr("aria-controls", "fleet-edit-"+id))),
+				g.Attr("aria-expanded", "false"))),
 			fleetButton("Reject", "bg-s2 text-fg2 ring-edge hover:bg-s3", g.Attr("data-fleet-reject", id),
 				fleetPost(FleetActionPath(p.ID, "reject"))),
 			g.If(p.Href != "", A(Href(p.Href), g.Attr(fleetOpenAttr, id),
@@ -453,13 +453,15 @@ func fleetProposalRow(p FleetProposalView) g.Node {
 				g.Text("Open session")))),
 		// Edit: the text in a box, sent as the owner's own message (no chief
 		// line) — a fresh sign-in is asked for if the current one is stale.
-		g.If(p.Editable, Form(ID("fleet-edit-"+id), g.Attr("data-fleet-edit-form", id), g.Attr("hidden", ""),
+		// 🔴 NO ids: the card is drawn twice (the desktop group and the phone
+		// sheet), so the Edit button finds ITS form by the card it is in.
+		g.If(p.Editable, Form(g.Attr("data-fleet-edit-form", id), g.Attr("hidden", ""),
 			fleetPost(FleetActionPath(p.ID, "edit")),
 			Class("flex flex-col gap-1.5"),
-			Label(For("fleet-edit-text-"+id), Class("text-[10px] font-semibold uppercase tracking-wide text-muted"),
-				g.Text("Your message (sent as yours, with no chief line)")),
-			Textarea(ID("fleet-edit-text-"+id), Name("text"), Rows("5"), MaxLength("4096"),
-				Class("w-full rounded-md bg-bg p-2 font-mono text-[11px] text-fg ring-1 ring-inset ring-edge"), g.Text(p.EditText)),
+			Label(Class("flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted"),
+				g.Text("Your message (sent as yours, with no chief line)"),
+				Textarea(Name("text"), Rows("5"), MaxLength("4096"),
+					Class("w-full rounded-md bg-bg p-2 font-mono text-[11px] normal-case tracking-normal text-fg ring-1 ring-inset ring-edge"), g.Text(p.EditText))),
 			Button(Type("submit"), Class("press inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-accent/20 px-3 text-xs font-medium text-fg ring-1 ring-inset ring-accent/60 sm:min-h-[28px] sm:w-auto"),
 				g.Text("Send as mine")))),
 	)
