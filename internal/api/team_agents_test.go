@@ -174,10 +174,9 @@ func TestAMemberWithNoChiefIsNotHandedTheTeamsChief(t *testing.T) {
 // member's OWN chief — newer than the team's — never the team's, which their
 // list holds since 0131.
 //
-// ⚠ With NO chief of their own, home falls through to the most recent
-// session, which may be the team chief's page: that is a visible team agent
-// opened as a session, not handed over as the member's chief, and is left
-// as it is (plan §3.1's "home" fallback is a later slice).
+// With NO chief of their own, home falls through to the member's own
+// sessions only (TestHomeWithNoChiefOpensNoTeamAgent); falling back to a team
+// chief is a later slice (plan §3.1's "home" fallback).
 //
 // 🔴 RED at origin/main 006bbe5c: home opened the team chief (lowest id).
 func TestHomeDoesNotOpenTheTeamsChief(t *testing.T) {

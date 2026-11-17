@@ -144,17 +144,16 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("entries: %w", err)
 	}
-	if except.agent != 0 {
-		kept := cards[:0]
-		for _, c := range cards {
-			if c.ID != except.agent {
-				kept = append(kept, c)
-			}
+	// Home is the viewer's own: a team agent (team sharing 4.4, its chief
+	// included — AgentCardView.TeamOwner) and a team host's session (2b.3)
+	// are listed in their team's group, and never where `/` lands.
+	kept := cards[:0]
+	for _, c := range cards {
+		if c.ID != except.agent && c.TeamOwner == 0 {
+			kept = append(kept, c)
 		}
-		cards = kept
 	}
-	// Home is the viewer's own: a team host's session (team sharing 2b.3) is
-	// listed in its team's group, and never where `/` lands.
+	cards = kept
 	own := mirrors[:0:0]
 	for _, m := range mirrors {
 		if m.Owner == 0 {

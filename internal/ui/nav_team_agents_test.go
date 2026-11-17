@@ -161,3 +161,50 @@ func TestTheSwitcherTellsTheViewersChiefFromTheTeams(t *testing.T) {
 		t.Errorf("the team's chief's search words %q do not carry its team", label[40].Words)
 	}
 }
+
+// TestATeamsEntriesAreNamedForTheirTeam: the team's chief's sidebar row
+// SHOWS the bare name under its team's heading (SwitcherItem.InTeam) while
+// what the palette reads (data-switcher-name) keeps the team; a team HOST
+// SESSION whose name clashes with the viewer's own window is labelled with
+// its team too (listEntry.team covers both kinds); and the team's name is a
+// search word of the team's host session.
+//
+// Fixture values are pairwise distinct: the team ("Platform") is none of the
+// hosts, sessions or labels, and the clashing windows are on different hosts
+// ("tower", "atlas") with distinct sessions ("build", "relay").
+func TestATeamsEntriesAreNamedForTheirTeam(t *testing.T) {
+	list, mirrors := navTeamFixture()
+	own := MirrorCardView{Host: "atlas", Session: "relay", Window: "@5", Label: "build:1", Online: true, ActiveAt: navNow.Add(-5 * time.Minute)}
+	mirrors = append(mirrors, own)
+	var b strings.Builder
+	if err := RenderNavAgents(&b, list, mirrors, "", navNow); err != nil {
+		t.Fatal(err)
+	}
+	root := ccParse(t, b.String())
+	row := func(id string) *html.Node {
+		t.Helper()
+		ns := ccWithAttr(root, "id", id)
+		if len(ns) != 1 {
+			t.Fatalf("%d rows with id %s, want 1", len(ns), id)
+		}
+		return ns[0]
+	}
+	chief := row("nav-agent-40")
+	if got := ccText(chief); got != "chief" {
+		t.Errorf("the team's chief's row shows %q under its team's heading, want the bare \"chief\"", got)
+	}
+	if got, _ := ccAttr(chief, "data-switcher-name"); got != "chief · Platform" {
+		t.Errorf("the team's chief's palette name is %q, want \"chief · Platform\"", got)
+	}
+	teamWin := row("nav-" + mirrorCardID(mirrors[0]))
+	if got, _ := ccAttr(teamWin, "data-switcher-name"); got != "build:1 · Platform" {
+		t.Errorf("the team's clashing window is named %q, want \"build:1 · Platform\"", got)
+	}
+	if got, _ := ccAttr(row("nav-"+mirrorCardID(own)), "data-switcher-name"); got != "build:1" {
+		t.Errorf("the viewer's own clashing window is named %q, want \"build:1\"", got)
+	}
+	words, _ := ccAttr(teamWin, "data-switcher-words")
+	if !slices.Contains(strings.Fields(words), "platform") {
+		t.Errorf("the team's window's search words %q do not carry its team \"platform\"", words)
+	}
+}
