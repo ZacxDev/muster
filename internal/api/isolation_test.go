@@ -2149,6 +2149,12 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
+	// A fleet proposal's card action (fleet_cards.go): the walk's server runs
+	// with fleet proposals off, so every id answers 404 for A and the ghost
+	// alike. That another owner's tap on A's proposal decides nothing and sends
+	// nothing (forced row-level security on fleet_actions) is
+	// TestAnotherOwnersProposalCannotBeDecided's.
+	"POST /ui/chief/fleet/actions/{id}/{verb}": "fleet proposals off in the walk: controlled in TestAnotherOwnersProposalCannotBeDecided",
 	// An unfiled ask's upload taken back by its host (ask_media.go): it needs a
 	// session the host lists, which the walk names none of, so A's own call and
 	// the ghost's are both 403. Controlled in ask_media_mirror_pg_test.go: the

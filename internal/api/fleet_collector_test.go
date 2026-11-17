@@ -237,7 +237,7 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		// The fleet's handoff proposals (fleet_actions.go) are its third
 		// reader: a finished session is proposed a handoff only on a stop the
 		// chief would have judged.
-		"stalledSessions":   "api.feedSessionMinder,api.fleetProposeHandoffs,api.nudgeCandidates",
+		"stalledSessions": "api.feedSessionMinder,api.fleetProposeHandoffs,api.nudgeCandidates",
 		// 🔴 ONE JUDGE PER OWNER (stop_judge.go): stopJudgeOf is the one
 		// reader of sessionMinderOf that decides who judges, and the sweep, the
 		// push wait, the minder's feed and the fleet's step all ask it.

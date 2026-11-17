@@ -187,13 +187,24 @@ func TestTheBatchedPushIsClaimedAtMostEveryThirtyMinutesAndOnlyForNewProposals(t
 	if _, due, err := p.ClaimPush(ctx, t0.Add(29*time.Minute)); err != nil || due {
 		t.Fatalf("29 minutes later: due %v %v", due, err)
 	}
+	// A NEW proposal inside the 30 minutes is not pushed yet either: the
+	// last push was 29 minutes ago (its created_at, now, is after the push
+	// was recorded only because the push is dated back here).
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_pushed_at = now() - interval '29 minutes' WHERE owner_id = 3`)
+	if _, err := p.Propose(ctx, proposal("a11ce5e5-0008", 9008, ClassContinue, ContinueText)); err != nil {
+		t.Fatal(err)
+	}
+	if _, due, err := p.ClaimPush(ctx, time.Now()); err != nil || due {
+		t.Fatalf("a new proposal 29 minutes after the last push: due %v %v; want not yet", due, err)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_pushed_at = $1 WHERE owner_id = 3`, t0)
 	// 31 minutes on, nothing new since the push (t0 is an hour ahead of every
 	// created_at): not due.
 	if _, due, err := p.ClaimPush(ctx, t0.Add(31*time.Minute)); err != nil || due {
 		t.Fatalf("31 minutes later, nothing new: due %v %v", due, err)
 	}
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE fleet_owner_marks SET proposals_pushed_at = now() - interval '2 hours' WHERE owner_id = 3`)
-	if n, due, err := p.ClaimPush(ctx, time.Now()); err != nil || !due || n != 2 {
-		t.Fatalf("proposals newer than the last push, 30 min on: %d %v %v; want 2, due", n, due, err)
+	if n, due, err := p.ClaimPush(ctx, time.Now()); err != nil || !due || n != 3 {
+		t.Fatalf("proposals newer than the last push, 30 min on: %d %v %v; want 3, due", n, due, err)
 	}
 }

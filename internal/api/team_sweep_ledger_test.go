@@ -23,6 +23,7 @@ var teamSweepClasses = map[string]string{
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "officer cap holds",
 	"officer_cap_hold.go Server.officerBudgetNotice":       "never withdrawn: information only, replaced by its per-day tag",
 	"server.go Server.goNotify":                            "never: the sink; it builds no push of its own",
+	"fleet_actions.go fleetPushNotification":               "never: fleet proposals are personal (fleet_actions is personal); replaced by its tag",
 	"session_push.go Server.episodeNotification":           "session episodes",
 	"host_dispatch_done.go Server.announceHostOutcome":     "never: host dispatches are personal (host_dispatches is personal)",
 	"succession.go Server.armSuccessionPush":               "never: succession is a person's chief's; refused on team sessions (G4)",

@@ -635,6 +635,31 @@ func TestAProposalExpiresAfterTwelveHours(t *testing.T) {
 	}
 }
 
+// TestAnotherOwnersProposalCannotBeDecided: another owner's approve, edit,
+// reject and bulk naming this owner's proposal id decide nothing and send
+// nothing — the proposal stays open. Positive control: the owner's own tap
+// queues.
+func TestAnotherOwnersProposalCannotBeDecided(t *testing.T) {
+	f := newProposeFixture(t)
+	stranger := f.newMember(t)
+	subject, _, _ := f.stopped(t, f.owner)
+	id := f.propose(t, subject, fleet.ClassContinue)
+	theirs := fresh(f.as(stranger))
+	for _, verb := range []string{"approve", "edit", "reject"} {
+		f.card(t, theirs, id, verb, url.Values{"text": {"not mine to send"}})
+	}
+	req := httptest.NewRequest(http.MethodPost, ui.FleetBulkPath, strings.NewReader(url.Values{"op": {"approve"}, "id": {strconv.FormatInt(id, 10)}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	f.srv.handleFleetBulk(httptest.NewRecorder(), req.WithContext(theirs))
+	if a := f.action(t, id); a.State != fleet.StateProposed || len(f.rows(t)) != 0 {
+		t.Fatalf("another owner's taps moved it: %+v rows %v", a, f.rows(t))
+	}
+	f.card(t, fresh(f.asOwner), id, "approve", nil)
+	if a := f.action(t, id); a.State != fleet.StateQueued || len(f.rows(t)) != 1 {
+		t.Fatalf("control: the owner's own tap: %+v rows %v", a, f.rows(t))
+	}
+}
+
 // TestConcurrentTapsOnOneCardQueueOneRowOnASmallPool: eight taps at once on
 // one card (a double tap, two devices, Approve and Approve all together), on
 // a 4-connection pool: exactly ONE row is queued, every tap answers, and none

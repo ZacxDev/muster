@@ -471,6 +471,7 @@ var agentReadCallers = map[string]string{
 	"AgentsByNoteIDs Server.apiAgentsByNote": "machine: GET /api/tasks, hook and API tokens",
 
 	"Get Server.acceptEndSession":            "own: ag.OwnerID == requestOwner(ctx)",
+	"Get Server.fleetTarget":                 "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
 	"Get Server.askingAgentHref":             "own: a.OwnerID == owner",
 	"Get Server.approveFromStanding":         "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.decideConnectorGrant":        "own: the grant is owner-isolated (connector_grants)",
