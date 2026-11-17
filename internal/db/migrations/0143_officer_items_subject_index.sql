@@ -1,4 +1,4 @@
--- muster 0142 — AN INDEX FOR "HAS THIS OFFICER EVER HAD THIS SUBJECT?"
+-- muster 0143 — AN INDEX FOR "HAS THIS OFFICER EVER HAD THIS SUBJECT?"
 -- (officers O-D; internal/officers/builtin store.go EnqueueOnce, fed by the
 -- session minder, internal/api session_minder.go).
 --
@@ -23,7 +23,7 @@
 -- older image runs unchanged over it. Idempotent.
 --
 -- Must apply after its predecessor, 0141 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT if another migration takes 0142 first.
+-- 🔴 RENUMBER IT if another migration takes 0143 first.
 --
 -- ROLLBACK (no image rollback needed; any image runs with or without it):
 --   DROP INDEX IF EXISTS public.officer_items_subject_ever;
