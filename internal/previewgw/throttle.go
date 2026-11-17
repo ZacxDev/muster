@@ -1,9 +1,6 @@
 package previewgw
 
 import (
-	"net"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -26,27 +23,6 @@ const (
 	PathMesh   Path = "mesh"
 	PathPublic Path = "public"
 )
-
-// peerOf is the throttle's key for a request on a listener of path p. The
-// mesh listener sits behind the relay, which sets X-Real-IP; the public one
-// behind the edge, which sets CF-Connecting-IP. Without the header, the TCP
-// peer.
-//
-// It is a THROTTLE key, not an identity: nothing else reads it.
-func peerOf(p Path, r *http.Request) string {
-	h := "X-Real-IP"
-	if p == PathPublic {
-		h = "CF-Connecting-IP"
-	}
-	if v := strings.TrimSpace(r.Header.Get(h)); v != "" && len(v) <= 64 {
-		return v
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
 
 // maxFailKeys bounds the limiter's map. Keys are cheap for an
 // unauthenticated client to vary (a header on the public path), so past this

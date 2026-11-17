@@ -143,6 +143,7 @@ the configuration.
 |---|---|---|---|
 | sign-in | `auth.mode`, `auth.existingSecret`, `secureCookies` | `MUSTER_AUTH_MODE`, `MUSTER_UI_PASSWORD`, `MUSTER_HOOK_TOKEN`, `MUSTER_SECURE_COOKIES` | [auth.md](auth.md) |
 | GoTrue | `auth.mode: gotrue`, `gotrue.*` (with `gotrue.enabled: false`, `gotrue.url` and `gotrue.existingSecret` are required) | `MUSTER_GOTRUE_URL`, `MUSTER_GOTRUE_JWT_SECRET`, `MUSTER_BROWSER_PORT` | [auth.md](auth.md#gotrue) |
+| client address | `clientAddress.trustedProxies`, `clientAddress.header` | `MUSTER_TRUSTED_PROXIES`, `MUSTER_CLIENT_IP_HEADER` | [configuration.md](configuration.md#client-addresses-behind-a-proxy) |
 | database | `postgres.*`, `externalDatabase.*` | `DATABASE_URL` | [configuration.md](configuration.md#muster-server-core) |
 | agent plane | `agents.enabled`, `agents.provisioner`, `agents.gatewayImage`, `agents.namespacePrefix`, `agents.workspace` | `MUSTER_AGENT_PROVISIONER`, `MUSTER_AGENT_IMAGE_REPO`/`_TAG`, `MUSTER_AGENT_API_URL`, `MUSTER_AGENT_NAMESPACE_PREFIX`, `MUSTER_AGENT_NETPOL_FROM_NAMESPACE`/`_FROM_POD_LABELS` | [provisioner.md](provisioner.md) |
 | agent chat | `agents.gateway.*` | `MUSTER_AGENT_GATEWAY`, `MUSTER_AGENT_GATEWAY_MODEL`, `MUSTER_AGENT_RUNTIME_CONFIG`/`_INSTALL` | [provisioner.md](provisioner.md#the-two-switches) |
@@ -259,6 +260,15 @@ not time them out:
 - **Traefik:** WebSockets and streaming work with no annotation;
 - **HTTPRoute:** set `httpRoute.timeouts` to your implementation's form of
   "no request timeout" (several take `{request: "0s"}`).
+
+muster believes no forwarding header by default: every client address is the
+TCP peer, which behind an ingress is the controller's pod, so all clients share
+the per-address limits. To tell them apart, set `clientAddress.trustedProxies`
+to the controller pods' range and `clientAddress.header` to the header the
+controller writes (`X-Forwarded-For` for ingress-nginx and Traefik). Do not
+trust a range a client can connect from directly, and do not pick
+`CF-Connecting-IP` unless every request reaching the controller came through
+Cloudflare ([Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 The ingress exposes every route, including `/metrics`, which is
 unauthenticated ([architecture.md](architecture.md#listeners)): block it at

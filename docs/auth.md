@@ -720,9 +720,9 @@ A device route request with a valid credential is charged only to its phone:
 credential) is charged to its address: 120 a minute, then 429. So junk sent
 from an address a phone shares cannot lock that phone out. Registering push,
 which makes muster send a test push, is limited to 5 a minute per phone. The
-address is the one the edge reports: on the browser listener that is
-`CF-Connecting-IP` (or the first `X-Forwarded-For` entry), which only an edge in
-front of muster can be trusted to set.
+address is the TCP peer, or the client a trusted proxy names
+(`MUSTER_TRUSTED_PROXIES` with `MUSTER_CLIENT_IP_HEADER`; see
+[Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 
 **Account → Devices** (on `/account`) lists each phone: its name, app version,
 when it was paired, when it was last seen, whether push is registered, and its

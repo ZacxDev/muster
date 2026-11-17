@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
@@ -107,11 +109,23 @@ func TestThePathIsDecidedByTheListener(t *testing.T) {
 	}
 }
 
-// Ten bad tokens a minute from one peer get 401; the 11th gets 429. A valid
-// token from that peer is still accepted, another peer is still 401, and a
-// new minute starts afresh.
+// trustLoopback is a policy trusting the test servers' loopback peer to name
+// the client in header h: the relay or edge in front of the gateway.
+func trustLoopback(t *testing.T, h string) *clientaddr.Policy {
+	t.Helper()
+	p, err := clientaddr.New(clientaddr.Config{TrustedProxies: "127.0.0.1/32, ::1/128", Header: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Ten bad tokens a minute from one client get 401; the 11th gets 429. A valid
+// token from that client is still accepted, another client is still 401, and a
+// new minute starts afresh. The clients are named by the trusted relay in
+// X-Real-IP (PREVIEW_TRUSTED_PROXIES, PREVIEW_CLIENT_IP_HEADER).
 func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
-	e := newGW(t, gwOpts{})
+	e := newGW(t, gwOpts{clientAddr: trustLoopback(t, clientaddr.HeaderXRealIP)})
 	good := e.mint(t, 1, "alpha")
 	bad := wire.TokenPrefix + strings.Repeat("A", hostTokenLen-len(wire.TokenPrefix))
 	peer := func(ip string) http.Header { return http.Header{"X-Real-Ip": {ip}} }
@@ -142,11 +156,12 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 	}
 }
 
-// The public listener keys the throttle on CF-Connecting-IP: ten bad tokens
-// from one such peer, then 429 on the 11th; a fresh CF-Connecting-IP is still
-// 401. There is no cap across peers (round 0, D1).
+// Behind a trusted edge that writes CF-Connecting-IP, the public listener keys
+// the throttle on it: ten bad tokens from one such client, then 429 on the
+// 11th; a fresh CF-Connecting-IP is still 401. There is no cap across clients
+// (round 0, D1).
 func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
-	e := newGW(t, gwOpts{})
+	e := newGW(t, gwOpts{clientAddr: trustLoopback(t, clientaddr.HeaderCFConnectingIP)})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
 	cf := func(ip string) http.Header { return http.Header{"Cf-Connecting-Ip": {ip}} }
 	for i := 1; i <= 10; i++ {
@@ -162,6 +177,31 @@ func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
 	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.2")})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("public bad token from a fresh CF-Connecting-IP: HTTP %d; want 401", statusOf(resp))
+	}
+}
+
+// With no proxy trusted (the default), a peer cannot choose its throttle key:
+// ten bad tokens, each naming a DIFFERENT client in every forwarding header,
+// all count against the TCP peer, so the 11th is 429 — on both listeners.
+func TestAnUntrustedPeerCannotChooseItsThrottleKey(t *testing.T) {
+	for _, listener := range []string{"mesh", "public"} {
+		e := newGW(t, gwOpts{})
+		bad := wire.TokenPrefix + strings.Repeat("C", hostTokenLen-len(wire.TokenPrefix))
+		typed := func(i int) http.Header {
+			ip := "198.51.100." + strconv.Itoa(i)
+			return http.Header{"X-Real-Ip": {ip}, "Cf-Connecting-Ip": {ip}, "X-Forwarded-For": {ip}}
+		}
+		for i := 1; i <= 10; i++ {
+			_, resp, _ := e.dialHost(t, dialOpts{listener: listener, token: bad, hostName: "alpha", header: typed(i)})
+			if statusOf(resp) != http.StatusUnauthorized {
+				t.Fatalf("%s bad token #%d: HTTP %d; want 401", listener, i, statusOf(resp))
+			}
+		}
+		_, resp, _ := e.dialHost(t, dialOpts{listener: listener, token: bad, hostName: "alpha", header: typed(11)})
+		if statusOf(resp) != http.StatusTooManyRequests {
+			t.Fatalf("%s: the 11th bad token from ONE peer, naming an 11th client in every forwarding header: HTTP %d; "+
+				"want 429 (an untrusted peer's headers are not its key)", listener, statusOf(resp))
+		}
 	}
 }
 

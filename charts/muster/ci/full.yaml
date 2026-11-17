@@ -2,6 +2,9 @@
 image:
   tag: 1.2.3
 publicUrl: https://muster.example.com
+clientAddress:
+  trustedProxies: [192.0.2.0/24]
+  header: X-Forwarded-For
 plugins: true
 auth:
   mode: gotrue

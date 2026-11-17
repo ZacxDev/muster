@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
@@ -101,9 +102,12 @@ type Gateway struct {
 	o     Options
 
 	failMesh, failPublic *failLimiter
-	ttl, idle            time.Duration
-	keepalive            time.Duration
-	proxy                http.Handler
+	// addr keys both throttles: the TCP peer unless it is a trusted proxy
+	// (Config.ClientAddr), with its warnings logged.
+	addr      *clientaddr.Policy
+	ttl, idle time.Duration
+	keepalive time.Duration
+	proxy     http.Handler
 
 	reg     *prometheus.Registry
 	m       *gwMetrics
@@ -163,6 +167,7 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		boot: hex.EncodeToString(b), o: o,
 		failMesh:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		failPublic: newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		addr:       cfg.ClientAddr.WithLog(func(f string, a ...any) { o.Log.Warn(fmt.Sprintf(f, a...)) }),
 		ttl:        cfg.TTL, idle: cfg.Idle, keepalive: o.StreamKeepalive,
 		reg:     reg,
 		m:       newMetrics(reg),
@@ -407,7 +412,7 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			return
 		}
 		refuse := func() {
-			if lim.fail(peerOf(p, r)) {
+			if lim.fail(g.addr.Resolve(r)) {
 				http.Error(w, "too many failed host-token checks from this address; wait a minute", http.StatusTooManyRequests)
 				return
 			}

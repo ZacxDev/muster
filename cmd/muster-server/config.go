@@ -26,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
@@ -89,6 +90,11 @@ const (
 	envBrowserPort  = "MUSTER_BROWSER_PORT"
 
 	envPublicURL = "MUSTER_PUBLIC_URL"
+
+	// Whose forwarding header names a request's client (internal/clientaddr):
+	// both or neither. Unset, the TCP peer on every listener.
+	envTrustedProxies = "MUSTER_TRUSTED_PROXIES"
+	envClientIPHeader = "MUSTER_CLIENT_IP_HEADER"
 
 	// The GitHub App (internal/githubapp): muster's GitHub identity (for
 	// admins), and the only one. The ID and the key are a pair, and the account allowlist is REQUIRED with
@@ -846,6 +852,9 @@ type config struct {
 	PluginTaskNamespaces []string
 	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed (nil when unset).
 	PluginOrigins []plugins.OriginPattern
+	// ClientAddr is MUSTER_TRUSTED_PROXIES with MUSTER_CLIENT_IP_HEADER,
+	// parsed; never nil after loadConfig (an unset pair is the strict policy).
+	ClientAddr *clientaddr.Policy
 	// SessionRouting is MUSTER_SESSION_ROUTING=1; RouteRelayAllow is
 	// MUSTER_ROUTE_RELAY_ALLOW, parsed (validate refuses one that does not parse).
 	SessionRouting     bool
@@ -1794,6 +1803,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 			envPluginOrigins, envPublicURL, u.Host)
 	}
 	c.PluginOrigins = origins
+
+	if c.ClientAddr, err = clientaddr.New(clientaddr.Config{
+		TrustedProxies: getenv(envTrustedProxies), Header: getenv(envClientIPHeader),
+		TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader,
+	}); err != nil {
+		return config{}, fmt.Errorf("invalid client address settings: %w", err)
+	}
 
 	w, err := stepup.ParseWindow(getenv(envStepUpWindow))
 	if err != nil {

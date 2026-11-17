@@ -164,6 +164,10 @@ services:
       # On: the session cookie is Secure, except on this machine's own
       # http://localhost page, which gets it without (docs/configuration.md).
       MUSTER_SECURE_COOKIES: ${MUSTER_SECURE_COOKIES:-1}
+      # Behind a reverse proxy: whose forwarding header names the client.
+      # Empty trusts nothing (the client is the TCP peer). Both or neither.
+      MUSTER_TRUSTED_PROXIES: ${MUSTER_TRUSTED_PROXIES:-}
+      MUSTER_CLIENT_IP_HEADER: ${MUSTER_CLIENT_IP_HEADER:-}
 
       # ---- optional: every value below is empty unless .env sets it --------
       # docs/features.md names what each feature needs; .env.example has every

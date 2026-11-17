@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
@@ -168,6 +169,9 @@ type gwOpts struct {
 	maxBody   int64         // Config.MaxBody; 0 = the default
 	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
 	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
+	// clientAddr is Config.ClientAddr; nil = the strict default. Every test
+	// request's TCP peer is loopback (the httptest servers).
+	clientAddr *clientaddr.Policy
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -186,7 +190,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	dir := t.TempDir()
 	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
-		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody}
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody, ClientAddr: o.clientAddr}
 	if o.keepalive == 0 {
 		o.keepalive = time.Hour
 	}

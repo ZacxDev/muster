@@ -356,6 +356,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
 		PublicURL:            cfg.PublicURL,
 		PluginOrigins:        cfg.PluginOrigins,
+		ClientAddr:           cfg.ClientAddr,
 	}
 
 	if cfg.Database != "" {
@@ -2143,6 +2144,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("plugin origins: OFF — %s is unset, so no Host is refused as a plugin's", envPluginOrigins)
 	}
+	l.Printf("%s", a.cfg.ClientAddr.Describe())
 
 	// The agent door to browser flows. The deployment's own names are
 	// configuration, and their ABSENCE is a state an operator must be told

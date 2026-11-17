@@ -26,9 +26,10 @@ import (
 // Sign-in throttles for gotrue mode.
 //
 // 🔴 THE KEY IS THE ACCOUNT, NOT THE ADDRESS, AND THERE IS NO GLOBAL CEILING.
-// The client address comes from CF-Connecting-IP / X-Forwarded-For on the
-// browser listener, and anything that reaches the edge without passing the CDN
-// can write those — so an address-only limit is walked by rotating it, and a
+// The client address (clientIP) is the TCP peer unless that peer is a trusted
+// proxy, so it is no longer client-typed — but one proxy can front every
+// client, and a trusted proxy can be misconfigured to pass a typed header
+// through — so an address-only limit can still be walked or shared, and a
 // process-wide ceiling (an earlier draft had one) is a lever any anonymous
 // caller pulls to lock EVERY user out. Failures are therefore counted per
 // ACCOUNT (the normalised email): after accountFreeFailures, each further

@@ -25,6 +25,17 @@ names the value that switches it on.
 {{- end }}
 - name: MUSTER_SECURE_COOKIES
   value: {{ ternary "1" "0" $v.secureCookies | quote }}
+{{- if or $v.clientAddress.trustedProxies $v.clientAddress.header }}
+{{- /* Both or neither: the server refuses to boot on one alone, so fail the
+render instead of shipping a pod that crash-loops. */ -}}
+{{- if not (and $v.clientAddress.trustedProxies $v.clientAddress.header) }}
+{{- fail "clientAddress: set both trustedProxies and header, or neither" }}
+{{- end }}
+- name: MUSTER_TRUSTED_PROXIES
+  value: {{ join "," $v.clientAddress.trustedProxies | quote }}
+- name: MUSTER_CLIENT_IP_HEADER
+  value: {{ $v.clientAddress.header | quote }}
+{{- end }}
 - name: MUSTER_AUTH_MODE
   value: {{ $v.auth.mode | quote }}
 {{- if eq $v.auth.mode "password" }}

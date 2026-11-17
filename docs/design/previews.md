@@ -577,10 +577,10 @@ preview content.
   other public services (for example the edge, then the deployment's relay
   into the cluster). It must pass `Host` through, pass WebSocket upgrades, not
   buffer streaming responses, and set `CF-Connecting-IP` or `X-Forwarded-For`.
-  **As built (#561):** the gateway never reads `X-Forwarded-For`. Its
-  failed-token throttle keys on `CF-Connecting-IP` on the public listener and
-  `X-Real-IP` on the mesh listener (else the TCP peer), so the edge and the
-  relay must **overwrite** those headers with the real client address.
+  **As built:** the failed-token throttle keys on the client address from
+  `internal/clientaddr`: the TCP peer, unless the peer is inside
+  `PREVIEW_TRUSTED_PROXIES`, in which case the client named in
+  `PREVIEW_CLIENT_IP_HEADER`. Both listeners use the same setting.
   Its TLS (an origin certificate, or the relay's own) is the deployment's
   choice, and is separate from the edge certificate.
 - **No single sign-on proxy** in front of the zone: the gateway does its own

@@ -69,9 +69,9 @@ const (
 	// The device routes' throttles, per window (deviceWindow), each a
 	// boundedWindow so a flood of distinct keys cannot grow them without bound.
 	// A code and a credential are 256 bits, so they bound database work and
-	// outbound requests, not guessing. The address is clientIP: on the browser
-	// listener that is CF-Connecting-IP (or X-Forwarded-For), which only the
-	// edge in front of muster can be trusted to set (docs/auth.md).
+	// outbound requests, not guessing. The address is clientIP: the TCP peer,
+	// or the client a trusted proxy names (MUSTER_TRUSTED_PROXIES,
+	// docs/configuration.md#client-addresses-behind-a-proxy).
 	deviceWindow = time.Minute
 	// devicePairPerAddr: pairing attempts per client address.
 	devicePairPerAddr = 10
