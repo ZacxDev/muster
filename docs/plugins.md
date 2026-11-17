@@ -699,7 +699,7 @@ muster stores the message (the same hourly allowance; `body` defaults to the
 text, `sender` to the handle, `thread` to the event's ref) and, in the same
 transaction, records the person and the event and puts them on the officer's
 **one open item of the day for that person**
-([officers-builtin.md](officers-builtin.md#5c-people-and-outreach)). A
+([officers-builtin.md](officers-builtin.md#people-and-outreach)). A
 `block`, or their words asking to stop, sets the person **do-not-contact**.
 
 | answer | meaning |
