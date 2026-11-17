@@ -78,6 +78,45 @@ type Item struct {
 // costFromRe is HQ's cost source id (civ-hq store/officer_cost.go).
 var costFromRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
 
+// DefaultCompleteFields are the complete body fields the HQ this branch
+// targets decodes (civ-hq docs/OFFICERS.md, POST …/complete, plus the
+// release-ticket kind's `tickets`).
+var DefaultCompleteFields = []string{
+	"instance", "outcome", "summary", "links", "investigation", "cost_usd", "cost_from", "handoff",
+	"authors", "attributed_prs", "attribution", "tickets",
+}
+
+// CompleteFieldsWithout is DefaultCompleteFields less drop, as a set for
+// Server.CompleteFields: an HQ that predates those fields.
+func CompleteFieldsWithout(drop ...string) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range DefaultCompleteFields {
+		out[f] = true
+	}
+	for _, f := range drop {
+		delete(out, f)
+	}
+	return out
+}
+
+// completeUnknownRefusal is real HQ's answer to a complete body with a field
+// its decoder does not know: generic, naming no field.
+const completeUnknownRefusal = "body must be one JSON object {instance, outcome, summary, links?, …}"
+
+// completeUnknownField reports whether body has a field fields (nil:
+// DefaultCompleteFields) does not accept.
+func completeUnknownField(body map[string]any, fields map[string]bool) bool {
+	if fields == nil {
+		fields = CompleteFieldsWithout()
+	}
+	for k := range body {
+		if !fields[k] {
+			return true
+		}
+	}
+	return false
+}
+
 // costOf is a complete body's cost as HQ checks it (civ-hq api/officers.go
 // officerCostOf, store/officer_cost.go checkOfficerCost): sent false when the
 // body names neither field; a refusal message when only one is, or a value HQ
@@ -242,7 +281,14 @@ type Server struct {
 	// PreCost is an HQ from before item cost (migration 0126): it refuses
 	// unknown body fields, so a complete carrying cost_usd or cost_from is a
 	// 400 and nothing is written.
-	PreCost         bool
+	PreCost bool
+	// CompleteFields is the set of complete body fields this HQ decodes;
+	// nil is DefaultCompleteFields. Real HQ's decoder refuses any other
+	// field (DisallowUnknownFields) with a generic 400 that does NOT name the
+	// field, and writes nothing; the fake does the same. A test simulates an
+	// HQ that predates a field by setting a set without it
+	// (CompleteFieldsWithout).
+	CompleteFields  map[string]bool
 	completeRefusal *refusal
 	// TaskReadOff makes the task read route answer 403 task_read_off (the
 	// officer's type has no task_read), as civ-hq's officer task route does.
@@ -1634,6 +1680,10 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		_, hasFrom := body["cost_from"]
 		if (hasUSD || hasFrom) && s.PreCost {
 			s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object {instance, outcome, summary, links?, investigation?}", "code": "invalid"})
+			return
+		}
+		if completeUnknownField(body, s.CompleteFields) {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": completeUnknownRefusal, "code": "invalid"})
 			return
 		}
 		costUSD, costFrom, costSent, costRefusal := costOf(body)
