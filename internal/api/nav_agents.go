@@ -16,7 +16,9 @@ import (
 // way the session switcher builds its entries (agentsListEntries with no
 // live instance read — the rows show names, recency and attention, never a
 // pod's status, so no request waits on the apiserver). The row of the page the
-// request came from is marked: htmx names that page in HX-Current-URL.
+// request came from is marked: htmx names that page in HX-Current-URL. The
+// Officers group's roster (navOfficers, nav_officers.go) is in memory plus at
+// most three batched reads, never one per officer.
 //
 // No agent store: the empty list, not an error — the sidebar is on every
 // page, and a deployment without agents has nothing to list. A failed read is
@@ -38,7 +40,10 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.gatePreviewMarks(r.Context(), mirrors)
-	if err := ui.RenderNavAgents(w, cards, mirrors, r.Header.Get("HX-Current-URL"), s.now()); err != nil {
+	// The Officers group's roster (nav_officers.go): in memory, plus at most
+	// three batched reads; none when the server keeps no officers.
+	officers := s.navOfficers(r.Context())
+	if err := ui.RenderNavAgentsWithOfficers(w, cards, mirrors, officers, r.Header.Get("HX-Current-URL"), s.now()); err != nil {
 		s.logger.Printf("nav agents: render: %v", err)
 	}
 }

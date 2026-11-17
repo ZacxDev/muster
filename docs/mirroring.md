@@ -174,6 +174,10 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   sidebar, under a collapsed **Idle (N)** group — never one waiting on you, the
   chief, or the page you are on. The group remembers whether you opened it.
   Nothing on a host is closed.
+- **Officers.** Every officer you can see has one row in an **Officers**
+  group below the sessions (and any team's group) and above **Superseded** and
+  **Idle**; an officer's instance is not listed as a session of its own unless
+  it waits on you ([officers-builtin.md](officers-builtin.md#the-officers-page)).
 - **What a row says.** Besides its name: how many things wait on you there, a
   dot when it waits on you with nothing to count (an agent at a permission
   prompt), **offline** while its host is not serving it, and how many

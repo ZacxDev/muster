@@ -452,6 +452,10 @@ export const asksLogPort = port + 414;
 export const teamUxMainPort = port + 410;
 export const teamUxBrowserPort = port + 411;
 export const teamUxGotruePort = Number(process.env.MUSTER_E2E_TEAMUX_GOTRUE_PORT ?? port + 412);
+// tests/agent-sidebar.spec.ts: the sidebar's Officers group with an officer
+// that runs in a pod — its own server over the noop driver (+430: clear of
+// the blocks above).
+export const sidebarOfficersPort = port + 430;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

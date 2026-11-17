@@ -145,6 +145,17 @@ func (e listEntry) teamChief() bool {
 	return e.chief() && owner != 0
 }
 
+// officer is the declared officer the entry is an instance of
+// (AgentCardView.Officer, internal/api's binding rule), "" for none. A
+// mirrored window is never one here: a host officer's instance is its window,
+// and the server does not bind windows to officers for the sidebar.
+func (e listEntry) officer() string {
+	if e.agent != nil {
+		return e.agent.Officer
+	}
+	return ""
+}
+
 // primaryChief reports whether the entry is THE chief — where `/` opens
 // (AgentCardView.PrimaryChief, internal/api's primaryChief).
 func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }

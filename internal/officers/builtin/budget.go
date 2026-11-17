@@ -32,14 +32,60 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// spentTodaySQL is THE sum the daily budget is measured against.
-const spentTodaySQL = `SELECT coalesce(sum(cost_usd), 0)::float8 FROM officer_llm_usage
+// spendSum is THE sum the daily budget is measured against: an officer's
+// officer_llm_usage cost for one UTC day, every pool and instance summed.
+// spentTodaySQL (one officer) and spentOnSQL (the sidebar's batch) both read
+// it, so the two cannot disagree on what "spent" means.
+const spendSum = `coalesce(sum(cost_usd), 0)::float8 FROM officer_llm_usage`
+
+// spentTodaySQL is spendSum for one officer.
+const spentTodaySQL = `SELECT ` + spendSum + `
 	WHERE owner_id = $1 AND officer = $2 AND day = $3::date`
+
+// spentOnSQL is spendSum for every officer of the owners $1, one row each that
+// booked anything on the day $2.
+const spentOnSQL = `SELECT owner_id, officer, ` + spendSum + `
+	WHERE owner_id = ANY($1::bigint[]) AND day = $2::date GROUP BY owner_id, officer`
+
+// spendDay is the UTC day now falls on, as the usage rows key it.
+func spendDay(now time.Time) string { return now.UTC().Format("2006-01-02") }
 
 func (b *Backend) spentToday(ctx context.Context, q rowQuerier, now time.Time) (float64, error) {
 	var spent float64
-	err := q.QueryRow(ctx, spentTodaySQL, b.officer.Owner, b.officer.ID, now.UTC().Format("2006-01-02")).Scan(&spent)
+	err := q.QueryRow(ctx, spentTodaySQL, b.officer.Owner, b.officer.ID, spendDay(now)).Scan(&spent)
 	return spent, err
+}
+
+// OfficerRef names one officer: its owner and its id.
+type OfficerRef struct {
+	Owner   int64
+	Officer string
+}
+
+// SpentOn is, in ONE query, the spend on now's UTC day of every officer of
+// owners that booked any (spendSum, the budget's own sum); an officer absent
+// from the map spent nothing that day. Read under ctx's principal (row-level
+// security), as the sidebar's Officers group reads it. An error is the read
+// failing — the caller draws no figure, never a zero.
+func (s *Store) SpentOn(ctx context.Context, owners []int64, now time.Time) (map[OfficerRef]float64, error) {
+	out := map[OfficerRef]float64{}
+	if len(owners) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, spentOnSQL, owners, spendDay(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r OfficerRef
+		var v float64
+		if err := rows.Scan(&r.Owner, &r.Officer, &v); err != nil {
+			return nil, err
+		}
+		out[r] = v
+	}
+	return out, rows.Err()
 }
 
 // SpentToday implements officers.BudgetBackend: the officer's spend on now's

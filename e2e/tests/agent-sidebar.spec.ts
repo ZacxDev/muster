@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, repoRoot } from '../lib/env';
+import { dsn, hookToken, repoRoot, sidebarOfficersPort, versionA } from '../lib/env';
+import { startServer, Running } from '../lib/server';
+import { signIn } from '../lib/signin';
 import { openMore } from '../lib/nav';
 
 // THE SIDEBAR IS A LIST OF AGENTS, AND HOME IS THE CHIEF'S CHAT
@@ -284,5 +286,142 @@ test.describe('desktop', () => {
     // CONTROL: with the chief back, `/` opens it again.
     await page.goto('/');
     await expect(page).toHaveURL(onAgent(CHIEF));
+  });
+});
+
+// THE OFFICERS GROUP (internal/ui nav_officers.go): one row per declared
+// officer under an "Officers" heading, below the list and above Idle; an
+// asleep officer's row opens its page; an instance that waits on the operator
+// is lifted to the waiting rows at the top and its officer's row is marked.
+//
+// Its own server over the noop driver, so an officer declared to run in pods
+// RUNS there (it is in the roster's registry, and its instance's agent row is
+// bound to it by the server's rule). Two officers, declared through the admin
+// API: a sleeper (no instance, a daily budget, nothing spent: "$0.00 / $8") and
+// a waiter whose first instance's row is this spec's own, with an open ask.
+//
+// 🔴 RED at origin/main: no #sidebar-officers-group, no data-nav-officer row,
+// and the waiter's instance is an ordinary row with no officer row to mark.
+test.describe('the Officers group', () => {
+  const origin = `http://localhost:${sidebarOfficersPort}`;
+  const SLEEPER = `e2e-sleeper-${stamp}:main`;
+  const WAITER = `e2e-waiter-${stamp}:main`;
+  const OFF_QUESTION = 'Which release notes template should the digest use?';
+  let server: Running | undefined;
+  let instance = '';
+  let offAsk = '';
+
+  async function declare(id: string, name: string, extra: Record<string, unknown>) {
+    const r = await fetch(`${origin}/api/officers/declared`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${hookToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, name, charter: 'Summarise the queue. Never post anything.', runtime: 'pod', mode: 'shadow', ...extra }),
+    });
+    const body = await r.json();
+    expect(r.status, `officer ${id} is declared: ${JSON.stringify(body)}`).toBe(201);
+    return body as { instances?: string[]; running?: boolean; reason?: string };
+  }
+  async function remove(id: string) {
+    await fetch(`${origin}/api/officers/declared/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${hookToken}` } });
+  }
+
+  test.beforeAll(async () => {
+    test.setTimeout(120_000);
+    server = await startServer(versionA, sidebarOfficersPort, {
+      MUSTER_AGENT_PROVISIONER: 'noop',
+      MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
+      MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
+      MUSTER_AGENT_KINDS: 'claude-code',
+      MUSTER_AGENT_CC_IMAGE: 'ghcr.io/example-org/claude-code-agent:e2e',
+      MUSTER_AGENT_CC_ACCOUNTS: 'alpha',
+      MUSTER_AGENT_CC_TOKEN_ALPHA: 'sk-ant-oat01-FAKE-e2e-sidebar-officers',
+      MUSTER_OFFICERS: '[]',
+    });
+    await declare(SLEEPER, 'E2E sleeper', { daily_budget_usd: 8 });
+    const w = await declare(WAITER, 'E2E waiter', {});
+    expect(w.running, `the waiter runs in a pod here: ${w.reason ?? ''}`).toBe(true);
+    instance = (w.instances ?? [])[0] ?? '';
+    expect(instance, 'the waiter names its first instance').not.toBe('');
+    fix('agent', '1', instance, `e2e-nav-officer-token-not-a-real-one-${stamp}`);
+    offAsk = fix('ask', '1', instance, OFF_QUESTION);
+  });
+
+  test.afterAll(async () => {
+    if (offAsk) fix('rmask', '1', offAsk);
+    if (server) {
+      await remove(SLEEPER);
+      await remove(WAITER);
+    }
+    if (instance) fix('rmagent', '1', instance);
+    await server?.stop();
+  });
+
+  // officerRow is the group's row of the officer called name.
+  const officerRow = (page: Page, name: string) =>
+    page.locator('#sidebar-officers-group a[data-nav-officer]').filter({ has: page.locator('[data-nav-name]', { hasText: name }) });
+
+  async function expectGroup(page: Page) {
+    const group = page.locator('#sidebar-officers-group');
+    await expect(group).toBeVisible();
+    await expect(page.locator('#sidebar-officers-label')).toHaveText('Officers');
+    // The sleeper: asleep, its page, its budget against nothing spent.
+    const sleeper = officerRow(page, 'E2E sleeper');
+    await expect(sleeper).toHaveCount(1);
+    await expect(sleeper).toHaveAttribute('data-nav-officer-state', 'asleep');
+    await expect(sleeper).toHaveAttribute('href', `/officers/${SLEEPER}`);
+    await expect(sleeper.locator('[data-nav-officer-spend]')).toHaveText('$0.00 / $8');
+    await expect(sleeper.locator('[data-nav-officer-facts]')).toHaveText('asleep · 0 queued');
+    // The waiter: one row in the group, marked; its waiting instance is a
+    // session row of the list, NOT in the group, and above every row that
+    // does not wait.
+    const waiter = officerRow(page, 'E2E waiter');
+    await expect(waiter).toHaveCount(1);
+    await expect(waiter.locator('[data-nav-officer-waiting]')).toHaveText('↑ waiting');
+    const inst = rowOf(page, instance);
+    await expect(inst).toHaveCount(1);
+    await expect(inst).toHaveAttribute('data-nav-wait', '');
+    await expect(group.locator(`a[href^="/agents/${instance}"]`)).toHaveCount(0);
+    const flags = await rows(page).evaluateAll((as) =>
+      as.filter((a) => !a.closest('#sidebar-idle')).map((a) => ({ href: a.getAttribute('href') || '', chief: a.hasAttribute('data-nav-chief'), wait: a.hasAttribute('data-nav-wait') })),
+    );
+    const at = flags.findIndex((f) => f.href.startsWith(`/agents/${instance}`));
+    const firstPlain = flags.findIndex((f) => !f.chief && !f.wait);
+    expect(at, `the waiting instance is listed: ${JSON.stringify(flags)}`).toBeGreaterThanOrEqual(0);
+    if (firstPlain >= 0) expect(at, `the waiting instance is above every row that does not wait: ${JSON.stringify(flags)}`).toBeLessThan(firstPlain);
+    // The group is below the list and above Idle (when there is one).
+    const order = await page.evaluate(() => {
+      const list = document.querySelector('#sidebar-agents-list [aria-labelledby="sidebar-agents-label"]');
+      const g = document.getElementById('sidebar-officers-group');
+      const idle = document.getElementById('sidebar-idle');
+      const after = (a: Element | null, b: Element | null) => !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return { listFirst: !list || after(list, g), idleAfter: !idle || after(g, idle) };
+    });
+    expect(order).toEqual({ listFirst: true, idleAfter: true });
+  }
+
+  test('desktop: the rail shows the Officers group; an asleep officer opens its page', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await signIn(page, origin);
+    await page.goto(`${origin}/tasks`);
+    await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+    await expectGroup(page);
+    await shot(page, 'desktop-officers-group');
+    await officerRow(page, 'E2E sleeper').click();
+    await expect(page).toHaveURL(`${origin}/officers/${SLEEPER}`);
+  });
+
+  test('phone: the drawer shows the Officers group, every row a 44px target', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await signIn(page, origin);
+    await page.goto(`${origin}/tasks`);
+    await page.locator('#sidebar-open').click();
+    await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+    await expectGroup(page);
+    await expectNoSidewaysScroll(page, 'the drawer open with officers');
+    const small = await page.locator('#sidebar-officers-group a[data-nav-officer]').evaluateAll((as) =>
+      as.map((a) => Math.round(a.getBoundingClientRect().height)).filter((h) => h < 44),
+    );
+    expect(small, 'officer rows under 44px tall').toEqual([]);
+    await shot(page, 'phone-officers-group');
   });
 });

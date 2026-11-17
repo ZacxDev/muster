@@ -682,6 +682,18 @@ machines with what is in its way (not connected, cannot close windows,
 Claude Code missing or not logged in) — the same answer as
 `GET /api/officers/runtime-options`.
 
+**In the sidebar**, an **Officers** group lists every officer you can see —
+yours and your teams' (each labelled with its team) — one row each, awake or
+asleep, below your sessions and above **Superseded** and **Idle**. A row says
+whether the officer is running or asleep and how many items are queued for
+it; with a `daily_budget_usd` it also shows the day's spend against it
+(`$6.40 / $10`) and **held** once the cap has stopped it for the day (nothing
+when it has no budget, and no figure when the spend could not be read). It
+opens the running instance's chat, else the officer's page. An instance that
+waits on you is listed with the other waiting sessions at the top, and its
+officer's row says **↑ waiting**. A host officer's row says neither running
+nor asleep (its instances are mirrored windows) and opens its page.
+
 **New officer** is a wizard, one step at a time:
 
 1. **Start from** — a template ([below](#templates)), *Blank officer* by
