@@ -868,8 +868,9 @@ Standing Claude Code agents with a job description, woken by a queue kept in
 **HQ**, an external server, or in muster's own database (the
 [built-in backend](officers-builtin.md)). [officers.md](officers.md).
 
-Each officer's instances run on one of two runtimes (`runtime` in its
-`MUSTER_OFFICERS` entry):
+Each officer's instances run on one of two runtimes, chosen on the
+[Officers page](officers-builtin.md#the-officers-page) (*Let muster choose*
+picks one) or by `runtime` in a `MUSTER_OFFICERS` entry:
 
 - **Pods** (the default): **needs [dispatch](#dispatch) with the `claude-code`
   kind, and the connector store's agent door** (`MUSTER_CONNECT_PORT`,
@@ -879,7 +880,8 @@ Each officer's instances run on one of two runtimes (`runtime` in its
   instance is a Claude Code window on ONE of your machines, started by its
   `muster-mirror`. **Works in the Compose stack**: needs the database, the
   built-in backend, and a `muster-mirror` on that machine with `-interactive
-  -agent-spawn` and the officer's `repo` on `-agent-spawn-repos`. Outbound
+  -agent-spawn` (and the officer's `repo`, if it names one, on
+  `-agent-spawn-repos`; without one it works in a scratch directory). Outbound
   drafts (`officer_post_draft`, approved by the owner) and `connectors`
   (approved per request; not `github`) work. Not available there: HQ, tiers,
   models, `read_repos`, the LLM proxy, kube reads, ship gates and transcripts

@@ -77,8 +77,9 @@ shown in muster; a message from muster is typed into that same window.
 [mirroring.md](mirroring.md#mirrored-sessions-and-dispatched-agents).
 
 **Officer.** A standing Claude Code agent with a job description and a queue,
-woken when work arrives. [officers.md](officers.md),
-[officers-builtin.md](officers-builtin.md).
+woken when work arrives; made on the Officers page.
+[officers-builtin.md](officers-builtin.md#the-officers-page),
+[officers.md](officers.md).
 
 **Page.** A small page an agent publishes for you (a showcase, a form, uploads),
 shareable by a link you approve. [pages.md](pages.md).
