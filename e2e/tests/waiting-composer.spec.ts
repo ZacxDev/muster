@@ -162,8 +162,10 @@ for (const vp of [
     test.use(vp.use);
     const tap = async (page: Page, sel: string) => (vp.phone ? page.locator(sel).tap() : page.locator(sel).click());
 
-    // The ☰ badge is the ONE OPEN COUNT (asks_count.go). RED at origin/main
-    // 271e6726 where its base differed: it counted the sidebar's rows.
+    // The ☰ badge is the ONE OPEN COUNT (asks_count.go). An INVARIANT GUARD
+    // here (green at origin/main 271e6726 too: in this rig every open item has
+    // a sidebar row, so the two counts agree); the regression coverage is
+    // asks-feed.spec's "one count" and TestEverySurfaceShowsTheSameOpenCount.
     test('the ☰ badge counts what waits: shown when an ask arrives, gone when it is answered, live', async ({ page }) => {
       test.setTimeout(120_000);
       await rig.login(page);
