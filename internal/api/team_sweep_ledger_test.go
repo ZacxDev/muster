@@ -21,6 +21,7 @@ var teamSweepClasses = map[string]string{
 	"outreach_batch.go Server.notifyBatchAwaiting":         "drafts",
 	"push_task.go Server.notifyTaskDone":                   "tasks in review",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "officer cap holds",
+	"officer_cap_hold.go Server.officerBudgetNotice":       "never withdrawn: information only, replaced by its per-day tag",
 	"server.go Server.goNotify":                            "never: the sink; it builds no push of its own",
 	"session_push.go Server.episodeNotification":           "session episodes",
 	"host_dispatch_done.go Server.announceHostOutcome":     "never: host dispatches are personal (host_dispatches is personal)",

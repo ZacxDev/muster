@@ -1623,7 +1623,7 @@ func (s *Server) handleOfficerRunNow(w http.ResponseWriter, r *http.Request) {
 	}
 	// One live "run now" at a time: a second tap while the first is still
 	// open returns that item (the store's dedupe on kind and subject).
-	id, created, err := s.officerStore.EnqueueChecked(r.Context(), sc.Owner, builtin.NewItem{Officer: row.Officer, Kind: runNowKind, SubjectKey: "run-now"}, s.officerNow())
+	id, created, err := s.officerStore.EnqueueChecked(r.Context(), sc.Owner, builtin.NewItem{Officer: row.Officer, Kind: runNowKind, SubjectKey: "run-now", Origin: officers.OriginOwner}, s.officerNow())
 	notice := "queued"
 	if err == nil && !created {
 		notice = "already-queued"

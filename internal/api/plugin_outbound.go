@@ -49,13 +49,22 @@ type officerPluginLink struct {
 
 var _ plugins.OfficerLink = officerPluginLink{}
 
+// clock is the link's clock: the officer runtime's (linkPluginsToOfficers),
+// or time.Now when none was given.
+func (l officerPluginLink) clock() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
+}
+
 func (l officerPluginLink) Defined(ctx context.Context, owner int64, officer string) (bool, error) {
 	return l.store.Defined(ctx, owner, officer)
 }
 
 func (l officerPluginLink) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, it plugins.OfficerItem) (int64, error) {
 	id, err := l.store.EnqueueTx(ctx, tx, owner, builtin.NewItem{Officer: it.Officer, Kind: it.Kind, SubjectKey: it.SubjectKey,
-		Payload: it.Payload}, time.Now())
+		Payload: it.Payload}, l.clock())
 	if errors.Is(err, builtin.ErrNotFound) {
 		return 0, plugins.ErrOfficerUnavailable
 	}
@@ -645,6 +654,11 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
 		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
 	e.FollowUp = &builtin.NewItem{Officer: officer, Kind: draftRefusedKind, SubjectKey: "draft:" + id, Payload: payload}
+	if by == settledByOwner {
+		// The owner rejected it: their redraft request is their own item, so it
+		// bypasses a spent daily budget (officers.OriginOwner).
+		e.FollowUp.Origin = officers.OriginOwner
+	}
 	return e
 }
 

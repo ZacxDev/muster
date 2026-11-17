@@ -32,6 +32,9 @@ type Backend struct {
 	// faultDoubleClaim is the conformance suite's fault (export_test.go):
 	// a claim of an item another instance holds under a live lease succeeds.
 	faultDoubleClaim bool
+	// faultSpendRead is a test fault (export_test.go): the daily budget's
+	// spend read fails.
+	faultSpendRead bool
 }
 
 // NewBackend is officer o's backend over store. now is the clock every lease
@@ -70,7 +73,7 @@ func (b *Backend) Scrub(s string) string { return s }
 // itemCols is what every verb reads of an item, in itemRow's scan order.
 const itemCols = `id, officer, kind, subject_key, payload, status, tier, priority, not_before, blocked,
 	coalesce(claimed_by, ''), claimed_at, lease_expires_at, attempts, coalesce(outcome, ''), coalesce(summary, ''),
-	links, coalesce(routine_summary, ''), investigation, cost_usd::float8, coalesce(cost_from, ''), created_at, updated_at, asks`
+	links, coalesce(routine_summary, ''), investigation, cost_usd::float8, coalesce(cost_from, ''), created_at, updated_at, asks, origin`
 
 // itemRow is an item as the contract spells it (the JSON an instance reads).
 type itemRow struct {
@@ -100,13 +103,15 @@ type itemRow struct {
 	// Asks are the Attention asks raised on the item (officer_ask_person,
 	// migration 0120), with their answers once given.
 	Asks json.RawMessage `json:"asks"`
+	// Origin is who enqueued it: officers.OriginOwner or "" (migration 0142).
+	Origin string `json:"origin,omitempty"`
 }
 
 func scanItem(row pgx.Row) (itemRow, error) {
 	var it itemRow
 	err := row.Scan(&it.ID, &it.OfficerID, &it.Kind, &it.SubjectKey, &it.Payload, &it.Status, &it.Tier, &it.Priority, &it.NotBefore, &it.Blocked,
 		&it.ClaimedBy, &it.ClaimedAt, &it.LeaseExpiresAt, &it.Attempts, &it.Outcome, &it.Summary,
-		&it.Links, &it.RoutineSummary, &it.Investigation, &it.CostUSD, &it.CostFrom, &it.CreatedAt, &it.UpdatedAt, &it.Asks)
+		&it.Links, &it.RoutineSummary, &it.Investigation, &it.CostUSD, &it.CostFrom, &it.CreatedAt, &it.UpdatedAt, &it.Asks, &it.Origin)
 	return it, err
 }
 
@@ -193,6 +198,7 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 	if tier != "" && !validTier(tier) {
 		return nil, refuse(http.StatusBadRequest, "bad_request", "tier must be routine or judgement", nil)
 	}
+	held, unreadable, spent := b.budgetGate(ctx, b.now())
 	return b.tx(ctx, "claim", func(tx pgx.Tx) ([]byte, error) {
 		it, err := b.lockItem(ctx, tx, item)
 		if err != nil {
@@ -215,6 +221,9 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 			return nil, refuse(http.StatusConflict, "not_due", "not due yet", map[string]any{"not_before": it.NotBefore})
 		case it.Status == "waiting":
 			return nil, refuse(http.StatusConflict, "waiting", waitingWhy(it), nil)
+		}
+		if held && !b.officer.BypassesBudget(it.asItem()) {
+			return nil, overBudgetRefusal(b.officer, unreadable, spent, now)
 		}
 		exp := now.Add(time.Duration(officers.ClampLease(leaseSeconds)) * time.Second)
 		it, err = scanItem(tx.QueryRow(ctx, `UPDATE officer_items SET status = 'claimed', claimed_by = $2, claimed_at = $3, lease_expires_at = $4,
@@ -249,11 +258,22 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 	// ONE transaction: the claim and the person rendered into the officer's
 	// copy (withPersonTx) — a read that fails rolls the claim back as an
 	// outage, never hands over an item without its person.
+	// Over its daily budget, or with its spend unreadable, claim-next takes
+	// only an item that bypasses the budget (overBudgetClaimable).
+	held, _, _ := b.budgetGate(ctx, now)
 	return b.tx(ctx, "claim-next", func(tx pgx.Tx) ([]byte, error) {
+		where, args := claimable, []any{b.officer.Owner, b.officer.ID, now, tier, instance, exp}
+		if held {
+			kinds := b.officer.Budget.RoutineKinds
+			if kinds == nil {
+				kinds = []string{}
+			}
+			where, args = where+overBudgetClaimable, append(args, kinds)
+		}
 		it, err := scanItem(tx.QueryRow(b.scope(ctx), `UPDATE officer_items SET status = 'claimed', claimed_by = $5, claimed_at = $3,
 			lease_expires_at = $6, attempts = attempts + 1, updated_at = $3
-			WHERE id = (SELECT id FROM officer_items WHERE `+claimable+` ORDER BY `+queueOrder+` FOR UPDATE SKIP LOCKED LIMIT 1)
-			RETURNING `+itemCols, b.officer.Owner, b.officer.ID, now, tier, instance, exp))
+			WHERE id = (SELECT id FROM officer_items WHERE `+where+` ORDER BY `+queueOrder+` FOR UPDATE SKIP LOCKED LIMIT 1)
+			RETURNING `+itemCols, args...))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return answer(map[string]any{"item": nil, "lease_expires_at": nil})
 		}

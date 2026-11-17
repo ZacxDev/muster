@@ -443,6 +443,57 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
 - a switched-off officer is not fed, and its schedules still advance (no
   backlog on switching it back on).
 
+## 4c. Daily budget and routine batching
+
+Two optional fields on the officer's `MUSTER_OFFICERS` entry (builtin only;
+on an HQ officer they are refused at boot, and `daily_budget_usd` is refused
+on a `"runtime": "host"` officer, whose spend is not booked and whose windows
+hold the hook token that enqueues as the owner):
+
+```json
+{"id": "marketing:example", "backend": "builtin", "max_instances": 1,
+ "daily_budget_usd": 10,
+ "routine_kinds": ["plugin.note", "plugin.snapshot", "plugin.engagement"],
+ "routine_wake_at": "09:00"}
+```
+
+- **`daily_budget_usd`** (0–1000, 0 = no cap): the cap on what the officer
+  spends per UTC day, measured against its own `officer_llm_usage` rows for the
+  day, every pool and instance summed (what `muster officer usage` shows). Once
+  the day's spend reaches it, the wake loop stops waking the officer and the
+  claim refuses it new work (409 `over_budget`; claim-next skips such items)
+  until the next UTC midnight. **Only an item the owner enqueued, whose kind is
+  not routine, gets through**: one enqueued through the admin API
+  (`muster officer item enqueue`), "Run now", or the follow-up of a draft the
+  owner rejected (`officer_items.origin = 'owner'`). Items from plugins,
+  schedules and muster's own follow-ups wait for the next day. The owner is
+  told once per UTC day, on the attention channel, when the cap is reached (a
+  restarted muster tells them once more that day). An unreadable spend is
+  treated like a spent one for that pass — the cap's work waits, the owner's
+  own non-routine items are still woken for and claimed — and the owner is
+  told once per UTC day that the spend cannot be read.
+- An owner enqueue that matches a live item of the same kind and subject
+  (say, one a plugin filed) returns that item, as always, and makes it the
+  owner's, so it is not held back.
+- The cap stops **wakes**; it does not end a turn. An instance holding a claim
+  when the cap is reached finishes it, and the spend is only as fresh as the
+  usage collector's last push (every 10 minutes), so the day's total can end up
+  above the cap.
+- **`routine_kinds`** with **`routine_wake_at`** (`"HH:MM"`, UTC; each needs
+  the other): an item of a listed kind (matched exactly, never by pattern) is
+  enqueued with `not_before` at the next `routine_wake_at`, unless it names a
+  `not_before` of its own. It neither wakes the officer nor can be claimed
+  before then, and every routine item queued during the day comes due at the
+  same minute, so one wake works them all. **A routine kind never bypasses the
+  budget**, whoever enqueued it.
+- **Rolling back:** an older muster refuses these fields as unknown at boot.
+  Remove `daily_budget_usd`, `routine_kinds` and `routine_wake_at` from
+  `MUSTER_OFFICERS` **before** rolling the image back to a version without
+  them; rolling forward, deploy the image first, then add them.
+- Separately from these fields, the wake loop no longer wakes an officer for an
+  item whose `not_before` is still ahead (`--not-before` included): the claim
+  refuses such an item, so the wake claimed nothing.
+
 ## 5. Asks and escalations, through Attention
 
 - **An instance's question** — `officer_ask_person{item_id, to: "owner",

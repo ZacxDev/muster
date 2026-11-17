@@ -320,8 +320,14 @@ func (s *Server) handleOfficerItemEnqueue(w http.ResponseWriter, r *http.Request
 		return
 	}
 	officer := r.PathValue("officer")
+	// The admin API is the owner's own administration of their officer (what
+	// `muster officer item enqueue` calls, with a personal token or the
+	// operator's hook token): what it enqueues is the owner's item
+	// (officers.OriginOwner), which bypasses a spent daily budget unless its
+	// kind is routine. Machines feed an officer through plugins and schedules,
+	// which never write it.
 	id, created, err := s.officerStore.EnqueueChecked(r.Context(), adminOwner(r), builtin.NewItem{Officer: officer, Kind: in.Kind, SubjectKey: in.SubjectKey,
-		Payload: in.Payload, Tier: in.Tier, Priority: in.Priority, NotBefore: in.NotBefore}, s.officerNow())
+		Payload: in.Payload, Tier: in.Tier, Priority: in.Priority, NotBefore: in.NotBefore, Origin: officers.OriginOwner}, s.officerNow())
 	if err != nil {
 		s.adminStoreErr(w, "officer", err)
 		return

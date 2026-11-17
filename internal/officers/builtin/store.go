@@ -18,11 +18,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // Store is the built-in backend's tables. Every call runs under row-level
 // security, so ctx must act as the officer's owner (or the operator).
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// routine is SetRoutinePolicy's policy (nil: nothing is deferred).
+	routine routinePolicyHolder
+}
 
 // NewStore is the store over pool.
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
@@ -96,6 +102,10 @@ type NewItem struct {
 	// normal or low ("" is normal).
 	Tier, Priority string
 	NotBefore      *time.Time
+	// Origin is officers.OriginOwner when the officer's owner enqueued it
+	// (the admin API behind `muster officer item enqueue`, "Run now", their rejection of a
+	// draft); "" otherwise. Only an owner item bypasses a spent daily budget.
+	Origin string
 }
 
 // Enqueue adds an open item, or — when the officer already has a LIVE item
@@ -106,6 +116,7 @@ func (s *Store) Enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 }
 
 func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Time, retried bool) (id int64, created bool, err error) {
+	n = s.deferRoutine(owner, n, now)
 	payload := n.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -117,12 +128,14 @@ func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 	if prio == "" {
 		prio = "normal"
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
-		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+	var inserted bool
+	err = s.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at, origin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
+		`+enqueueConflict, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now, n.Origin).Scan(&id, &inserted)
 	if err == nil {
-		return id, true, nil
+		// inserted false: the live item of that kind and subject, just
+		// made the owner's (enqueueConflict).
+		return id, inserted, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, err
@@ -136,6 +149,19 @@ func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 	}
 	return id, false, err
 }
+
+// enqueueConflict is both enqueues' answer to a live item of the same kind
+// and subject (the contract's dedupe): that item is returned and not created,
+// and — when THIS enqueue is the owner's and that item is not yet — it
+// becomes the owner's (origin), so the owner's enqueue is not swallowed by an
+// identical plugin item a spent daily budget holds back (officers.
+// Officer.BypassesBudget). Anything else about the live item is left as it
+// is. An item already the owner's, or a non-owner enqueue, updates nothing:
+// no row is returned and the caller reads the live item's id. inserted tells
+// a new row (xmax 0) from the upgraded one.
+const enqueueConflict = `ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting')
+		DO UPDATE SET origin = EXCLUDED.origin WHERE EXCLUDED.origin = '` + officers.OriginOwner + `' AND officer_items.origin <> '` + officers.OriginOwner + `'
+		RETURNING id, (xmax::text = '0')`
 
 // SetBlocked marks item id blocked (by unfinished work) or not.
 func (s *Store) SetBlocked(ctx context.Context, owner int64, id int64, blocked bool) error {
@@ -165,6 +191,7 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 	if !defined {
 		return 0, fmt.Errorf("%w: officer %s", ErrNotFound, n.Officer)
 	}
+	n = s.deferRoutine(owner, n, now)
 	payload := n.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -177,10 +204,10 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 		prio = "normal"
 	}
 	var id int64
-	err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
-		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+	var inserted bool
+	err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at, origin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
+		`+enqueueConflict, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now, n.Origin).Scan(&id, &inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
 			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&id)
