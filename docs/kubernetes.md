@@ -264,9 +264,12 @@ not time them out:
 muster believes no forwarding header by default: every client address is the
 TCP peer, which behind an ingress is the controller's pod, so all clients share
 the per-address limits. To tell them apart, set `clientAddress.trustedProxies`
-to the controller pods' range and `clientAddress.header` to the header the
-controller writes (`X-Forwarded-For` for ingress-nginx and Traefik). Do not
-trust a range a client can connect from directly, and do not pick
+to the controller's own addresses and `clientAddress.header` to the header the
+controller writes (`X-Forwarded-For` for ingress-nginx and Traefik). 🔴 Do not
+trust the cluster's whole pod range: the agent pods muster provisions connect
+to muster-server from it, and an agent inside a trusted range could choose its
+own address in every limit and audit row. Do not trust a range a client can
+connect from directly either, and do not pick
 `CF-Connecting-IP` unless every request reaching the controller came through
 Cloudflare ([Client addresses behind a proxy](configuration.md#client-addresses-behind-a-proxy)).
 

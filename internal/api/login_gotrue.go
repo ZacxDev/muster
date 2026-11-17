@@ -35,8 +35,10 @@ import (
 // ACCOUNT (the normalised email): after accountFreeFailures, each further
 // failure doubles the wait before that account may try again, from
 // accountBackoffBase up to accountBackoffMax. The per-address count
-// (loginFailureLimit per loginFailureWindow) is kept as a secondary limit on
-// one source spraying many accounts. GoTrue applies its own limits too.
+// (loginFailureLimit per loginFailureWindow) counts FAILURES only and never
+// refuses before the credential is judged: past it, a wrong guess is answered
+// 429, a correct one is admitted (a shared address must not be a lockout
+// lever). GoTrue applies its own limits too.
 //
 // ⚠ THE ACCOUNT BACKOFF IS ITSELF A TARGETED LOCKOUT: someone who knows your
 // email can keep you waiting up to accountBackoffMax by failing on purpose. That
@@ -300,6 +302,10 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("login: rejected a sign-in attempt from %s", ip)
+			if ticket.addrOver {
+				s.renderGoTrueLogin(w, http.StatusTooManyRequests, next, email, "Too many attempts. Wait a few minutes and try again.")
+				return
+			}
 			s.renderGoTrueLogin(w, http.StatusUnauthorized, next, email, "That email and password do not match.")
 		default:
 			s.logger.Printf("login: GoTrue is unavailable: %v", err)

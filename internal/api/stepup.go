@@ -195,6 +195,9 @@ func (s *Server) confirmGoTrue(w http.ResponseWriter, r *http.Request, password 
 		case gotrue.IsClientError(err):
 			outcome = outcomeFailed
 			s.logger.Printf("stepup: user %d failed to confirm (from %s)", me.ID, ip)
+			if ticket.addrOver {
+				return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
+			}
 			return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 		default:
 			s.logger.Printf("stepup: GoTrue is unavailable: %v", err)
@@ -364,6 +367,12 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+			if ticket.addrOver { // judged and wrong, from an address past its failure limit
+				// Not stepUpRefuseUnspent: GoTrue has seen, and may have spent,
+				// this challenge.
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+				return
+			}
 		}
 		s.writeGoTrueRefusal(w, "a passkey confirm", err, PasskeyRejectedRefusal)
 		return
@@ -421,11 +430,12 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 // again, a new session cookie issued now.
 func (s *Server) confirmOperatorPassword(w http.ResponseWriter, r *http.Request, password string) stepUpOutcome {
 	now := time.Now()
-	if !s.loginRate.allow(now, loginRateBurst, loginRateWindow) {
-		return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
-	}
+	// Compared first; only a wrong password counts (loginRateBurst's comment).
 	if password == "" || !auth.ConstantTimeEqual(password, s.auth.UIPassword) {
 		s.logger.Printf("stepup: rejected an operator-password confirm")
+		if s.loginRate.fail(now, loginRateBurst, loginRateWindow) {
+			return stepUpRefused(http.StatusTooManyRequests, stepUpThrottled)
+		}
 		return stepUpRefused(http.StatusUnauthorized, stepUpWrongPassword)
 	}
 	s.setPasswordSessionCookie(w, r)

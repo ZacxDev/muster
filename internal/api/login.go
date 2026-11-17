@@ -33,16 +33,17 @@ import (
 // refuseUnauthenticated and the tests cannot drift.
 const loginPath = "/login"
 
-// loginRateBurst / loginRateWindow bound password guesses.
+// loginRateBurst / loginRateWindow count wrong operator passwords, process-wide.
 //
-// 🔴 THE BUCKET IS PROCESS-WIDE, NOT PER-IP, AND THAT IS THE CONSERVATIVE
-// CHOICE HERE. A per-IP bucket is keyed on something the caller picks — on a LAN
-// an attacker has the whole subnet to rotate through, and behind the ingress
-// every request shares one source. A shared bucket means a determined guesser
-// can lock the operator out for the window, which is the trade taken on purpose:
-// this secret protects a remote shell, and a brief self-inflicted lockout is
-// cheaper than an unbounded guessing rate. The window is short enough that the
-// operator's own retry succeeds within a minute.
+// 🔴 THE PASSWORD IS COMPARED FIRST, AND THE CORRECT ONE IS ALWAYS ADMITTED.
+// The count holds FAILURES only (rateLimiter.fail): past loginRateBurst in a
+// window a wrong password is answered 429 instead of 401. It used to be taken
+// before the compare, so ten junk POSTs a minute from anyone kept the
+// operator's correct password at 429 for as long as they kept sending
+// (TestAJunkFloodDoesNotLockTheOperatorOut). The cost, stated: the count no
+// longer slows a guesser down (a correct guess is admitted whatever the
+// count), so the operator password's strength is the guessing defence — the
+// Compose install generates it, and configuration.md asks for a long one.
 const (
 	loginRateBurst  = 10
 	loginRateWindow = time.Minute
@@ -173,15 +174,13 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := r.FormValue("next")
-	if !s.loginRate.allow(time.Now(), loginRateBurst, loginRateWindow) {
-		// 429, not 401: the credential was never judged, and saying otherwise
-		// would teach a guesser that this password was wrong.
-		s.renderLoginPage(w, http.StatusTooManyRequests, next,
-			"Too many attempts. Wait a minute and try again.")
-		return
-	}
 	if !auth.ConstantTimeEqual(r.FormValue("password"), s.auth.UIPassword) {
 		s.logger.Printf("login: rejected a password attempt")
+		if s.loginRate.fail(time.Now(), loginRateBurst, loginRateWindow) {
+			s.renderLoginPage(w, http.StatusTooManyRequests, next,
+				"Too many attempts. Wait a minute and try again.")
+			return
+		}
 		s.renderLoginPage(w, http.StatusUnauthorized, next, "That password is not right.")
 		return
 	}

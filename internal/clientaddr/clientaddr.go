@@ -237,10 +237,15 @@ func (p *Policy) Resolve(r *http.Request) string {
 	if a, ok := p.fromHeader(r.Header); ok {
 		return a.String()
 	}
-	if p.logf != nil {
+	// Logged only when the peer sent SOME forwarding header: a trusted peer
+	// sending none is a request it originated itself (a health probe from a
+	// node address, a sidecar), and that is not a misconfiguration to report
+	// once a minute forever. A header that is present but not usable, or the
+	// wrong one, is.
+	if names := forwardingIn(r.Header); p.logf != nil && len(names) > 0 {
 		p.missing.do(p.now(), func(suppressed int) {
-			p.logf("client address: trusted proxy %s sent no usable %s, so the proxy's own address is used%s",
-				peer, p.header, suppressedNote(suppressed))
+			p.logf("client address: trusted proxy %s sent %s but no usable %s, so the proxy's own address is used%s",
+				peer, strings.Join(names, ", "), p.header, suppressedNote(suppressed))
 		})
 	}
 	return peer.String()

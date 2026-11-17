@@ -8,8 +8,10 @@ import (
 // The failed-token throttle, as muster's mirror connect has it
 // (docs/mirroring.md, "Tokens, revocation, rate limits"): only FAILURES count,
 // a valid token is never refused by it, and a peer past the limit gets 429
-// instead of 401 for its failures. The token's 256 bits are the guessing
-// defence; the throttle tells a misconfigured host it is hammering.
+// instead of 401 for its failures. The peer is the TCP peer (clientaddr.Of
+// outside muster's middleware): no forwarding header is read, so behind a
+// relay every host shares the relay's bucket. The token's 256 bits are the
+// guessing defence; the throttle tells a misconfigured host it is hammering.
 const (
 	// FailLimit failed token checks per FailWindow per peer; the next is 429.
 	FailLimit  = 10

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
@@ -109,74 +108,59 @@ func TestThePathIsDecidedByTheListener(t *testing.T) {
 	}
 }
 
-// trustLoopback is a policy trusting the test servers' loopback peer to name
-// the client in header h: the relay or edge in front of the gateway.
-func trustLoopback(t *testing.T, h string) *clientaddr.Policy {
-	t.Helper()
-	p, err := clientaddr.New(clientaddr.Config{TrustedProxies: "127.0.0.1/32, ::1/128", Header: h})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// Ten bad tokens a minute from one client get 401; the 11th gets 429. A valid
-// token from that client is still accepted, another client is still 401, and a
-// new minute starts afresh. The clients are named by the trusted relay in
-// X-Real-IP (PREVIEW_TRUSTED_PROXIES, PREVIEW_CLIENT_IP_HEADER).
+// Ten bad tokens a minute from one peer get 401; the 11th gets 429. A valid
+// token from that peer is still accepted, another peer is still 401, and a
+// new minute starts afresh. The peers are real TCP source addresses.
 func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
-	e := newGW(t, gwOpts{clientAddr: trustLoopback(t, clientaddr.HeaderXRealIP)})
+	e := newGW(t, gwOpts{})
 	good := e.mint(t, 1, "alpha")
 	bad := wire.TokenPrefix + strings.Repeat("A", hostTokenLen-len(wire.TokenPrefix))
-	peer := func(ip string) http.Header { return http.Header{"X-Real-Ip": {ip}} }
 	for i := 1; i <= 10; i++ { // literal: 10 a minute is the contract
-		_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+		_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 		if statusOf(resp) != http.StatusUnauthorized {
 			t.Fatalf("bad token #%d: HTTP %d; want 401", i, statusOf(resp))
 		}
 	}
-	_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusTooManyRequests {
 		t.Fatalf("bad token #11: HTTP %d; want 429", statusOf(resp))
 	}
 	// A malformed token counts the same.
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: "junk", hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: "junk", hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusTooManyRequests {
 		t.Fatalf("malformed token past the limit: HTTP %d; want 429", statusOf(resp))
 	}
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.2")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.12"})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("another peer's first bad token: HTTP %d; want 401", statusOf(resp))
 	}
-	e.mustDial(t, dialOpts{listener: "mesh", token: good, hostName: "alpha", header: peer("198.51.100.1")})
+	e.mustDial(t, dialOpts{listener: "mesh", token: good, hostName: "alpha", from: "127.0.0.11"})
 	e.clock.Advance(time.Minute)
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", from: "127.0.0.11"})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("bad token in the next minute: HTTP %d; want 401", statusOf(resp))
 	}
 }
 
-// Behind a trusted edge that writes CF-Connecting-IP, the public listener keys
-// the throttle on it: ten bad tokens from one such client, then 429 on the
-// 11th; a fresh CF-Connecting-IP is still 401. There is no cap across clients
-// (round 0, D1).
-func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
-	e := newGW(t, gwOpts{clientAddr: trustLoopback(t, clientaddr.HeaderCFConnectingIP)})
+// The public listener throttles per TCP peer too: ten bad tokens from one
+// peer, then 429 on the 11th; another peer is still 401. There is no cap
+// across peers.
+func TestThePublicListenerThrottlesPerPeer(t *testing.T) {
+	e := newGW(t, gwOpts{})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
-	cf := func(ip string) http.Header { return http.Header{"Cf-Connecting-Ip": {ip}} }
 	for i := 1; i <= 10; i++ {
-		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
+		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.21"})
 		if statusOf(resp) != http.StatusUnauthorized {
 			t.Fatalf("public bad token #%d: HTTP %d; want 401", i, statusOf(resp))
 		}
 	}
-	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
+	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.21"})
 	if statusOf(resp) != http.StatusTooManyRequests {
-		t.Fatalf("public bad token #11 from one CF-Connecting-IP: HTTP %d; want 429", statusOf(resp))
+		t.Fatalf("public bad token #11 from one peer: HTTP %d; want 429", statusOf(resp))
 	}
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.2")})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", from: "127.0.0.22"})
 	if statusOf(resp) != http.StatusUnauthorized {
-		t.Fatalf("public bad token from a fresh CF-Connecting-IP: HTTP %d; want 401", statusOf(resp))
+		t.Fatalf("public bad token from another peer: HTTP %d; want 401", statusOf(resp))
 	}
 }
 

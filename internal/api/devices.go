@@ -274,9 +274,18 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": DevicesNotServed})
 		return
 	}
-	if !s.deviceLimits.pair.take(clientIP(r), s.now(), deviceWindow, devicePairPerAddr) {
-		s.refuseDeviceThrottled(w)
-		return
+	// 🔴 THE CODE IS CHECKED FIRST; ONLY A FAILED ATTEMPT IS COUNTED. The count
+	// used to be taken before Redeem, so ten junk attempts from an address a
+	// phone shares (a proxy, a NAT) refused a VALID code without asking about
+	// it. A code is 256 bits: a limit in front of it buys nothing, and the
+	// failure count still answers a guesser 429 past devicePairPerAddr
+	// (TestAValidPairingCodeIsRedeemedAfterJunkFromItsAddress).
+	failed := func(status int, body map[string]any) {
+		if !s.deviceLimits.pair.take(clientIP(r), s.now(), deviceWindow, devicePairPerAddr) {
+			s.refuseDeviceThrottled(w)
+			return
+		}
+		s.writeJSON(w, status, body)
 	}
 	var body struct {
 		Code           string `json:"code"`
@@ -287,7 +296,7 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		StepUpKeyLevel string `json:"stepup_key_level"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceBody)).Decode(&body); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{
+		failed(http.StatusBadRequest, map[string]any{
 			"error": `the body is {"code","name","app_version","stepup_pubkey" (base64 SubjectPublicKeyInfo, EC P-256),` +
 				`"stepup_key_type","stepup_key_level"}; the three step-up fields are all present or all absent`})
 		return
@@ -308,7 +317,7 @@ func (s *Server) handleDevicePair(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, devices.ErrBadCode), errors.Is(err, devices.ErrUserDisabled),
 		errors.Is(err, devices.ErrSessionEnded), errors.Is(err, devices.ErrSignedOut):
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": DevicePairRefusal})
+		failed(http.StatusUnauthorized, map[string]any{"error": DevicePairRefusal})
 		return
 	default:
 		s.logger.Printf("devices: pair: %v", err)

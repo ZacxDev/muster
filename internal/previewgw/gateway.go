@@ -102,12 +102,9 @@ type Gateway struct {
 	o     Options
 
 	failMesh, failPublic *failLimiter
-	// addr keys both throttles: the TCP peer unless it is a trusted proxy
-	// (Config.ClientAddr), with its warnings logged.
-	addr      *clientaddr.Policy
-	ttl, idle time.Duration
-	keepalive time.Duration
-	proxy     http.Handler
+	ttl, idle            time.Duration
+	keepalive            time.Duration
+	proxy                http.Handler
 
 	reg     *prometheus.Registry
 	m       *gwMetrics
@@ -167,7 +164,6 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		boot: hex.EncodeToString(b), o: o,
 		failMesh:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		failPublic: newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
-		addr:       cfg.ClientAddr.WithLog(func(f string, a ...any) { o.Log.Warn(fmt.Sprintf(f, a...)) }),
 		ttl:        cfg.TTL, idle: cfg.Idle, keepalive: o.StreamKeepalive,
 		reg:     reg,
 		m:       newMetrics(reg),
@@ -412,7 +408,11 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			return
 		}
 		refuse := func() {
-			if lim.fail(g.addr.Resolve(r)) {
+			// The TCP peer, never a header: the throttle runs only after the
+			// token check failed and only turns that 401 into a 429, so a
+			// precise key behind a relay would protect nothing, while a header
+			// key would let a client pick its own bucket.
+			if lim.fail(clientaddr.Of(r)) {
 				http.Error(w, "too many failed host-token checks from this address; wait a minute", http.StatusTooManyRequests)
 				return
 			}

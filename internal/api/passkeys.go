@@ -216,6 +216,10 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
 		s.logger.Printf("passkeys: refused a sign-in assertion without user verification from %s", ip)
+		if ticket.addrOver {
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
+			return
+		}
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyNoUVRefusal})
 		return
 	}
@@ -224,6 +228,10 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+			if ticket.addrOver { // judged and wrong, from an address past its failure limit
+				s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "Too many attempts. Wait a few minutes and try again."})
+				return
+			}
 		}
 		// A refusal of a credential muster can show is not this account's says
 		// so, and lets the page tell the password manager to stop offering it

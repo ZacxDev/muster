@@ -152,35 +152,9 @@ func TestLoadConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	checkPreviewClientAddressSettings(t, env)
 	bad := filepath.Join(dir, "bad")
 	_ = os.WriteFile(bad, []byte("mst_notaplugin\n"), 0o600)
 	if _, err := LoadConfig(env(map[string]string{"PLUGIN_TOKENS_FILE": bad})); err == nil || strings.Contains(err.Error(), "mst_notaplugin") {
 		t.Errorf("a non-plugin token: %v (must be refused without echoing it)", err)
-	}
-}
-
-// checkPreviewClientAddressSettings: PREVIEW_TRUSTED_PROXIES and
-// PREVIEW_CLIENT_IP_HEADER are read into Config.ClientAddr (both or neither),
-// and unset is the strict default. Called by TestLoadConfig with its valid
-// environment.
-func checkPreviewClientAddressSettings(t *testing.T, env func(map[string]string) func(string) string) {
-	t.Helper()
-	c, err := LoadConfig(env(nil))
-	if err != nil || c.ClientAddr.Header() != "" {
-		t.Fatalf("unset: header %q, err %v; want the strict default", c.ClientAddr.Header(), err)
-	}
-	c, err = LoadConfig(env(map[string]string{"PREVIEW_TRUSTED_PROXIES": "10.0.0.0/8", "PREVIEW_CLIENT_IP_HEADER": "x-real-ip"}))
-	if err != nil || c.ClientAddr.Header() != "X-Real-IP" || strings.Join(c.ClientAddr.Trusted(), ",") != "10.0.0.0/8" {
-		t.Fatalf("both set: %v %v, err %v", c.ClientAddr.Header(), c.ClientAddr.Trusted(), err)
-	}
-	for _, over := range []map[string]string{
-		{"PREVIEW_TRUSTED_PROXIES": "10.0.0.0/8"},
-		{"PREVIEW_CLIENT_IP_HEADER": "CF-Connecting-IP"},
-		{"PREVIEW_TRUSTED_PROXIES": "0.0.0.0/0", "PREVIEW_CLIENT_IP_HEADER": "CF-Connecting-IP"},
-	} {
-		if _, err := LoadConfig(env(over)); err == nil || !strings.Contains(err.Error(), "PREVIEW_") {
-			t.Errorf("%v: %v, want a refusal naming the variable", over, err)
-		}
 	}
 }

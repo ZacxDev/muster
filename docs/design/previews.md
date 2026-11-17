@@ -577,10 +577,9 @@ preview content.
   other public services (for example the edge, then the deployment's relay
   into the cluster). It must pass `Host` through, pass WebSocket upgrades, not
   buffer streaming responses, and set `CF-Connecting-IP` or `X-Forwarded-For`.
-  **As built:** the failed-token throttle keys on the client address from
-  `internal/clientaddr`: the TCP peer, unless the peer is inside
-  `PREVIEW_TRUSTED_PROXIES`, in which case the client named in
-  `PREVIEW_CLIENT_IP_HEADER`. Both listeners use the same setting.
+  **As built:** the failed-token throttle keys on the TCP peer on both
+  listeners and reads no forwarding header. It only turns a failed check's
+  401 into a 429, so a per-host key behind the relay would protect nothing.
   Its TLS (an origin certificate, or the relay's own) is the deployment's
   choice, and is separate from the edge certificate.
 - **No single sign-on proxy** in front of the zone: the gateway does its own

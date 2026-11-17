@@ -266,8 +266,17 @@ func TestATrustedProxyWithoutTheHeaderIsLogged(t *testing.T) {
 	if got := p.Resolve(req(proxyPeer, map[string]string{"CF-Connecting-IP": realClient})); got != realClient || len(lines) != 0 {
 		t.Fatalf("header present: %q, logged %q", got, lines)
 	}
-	if got := p.Resolve(req(proxyPeer, nil)); got != proxyAddr || len(lines) != 1 || !strings.Contains(lines[0], "sent no usable CF-Connecting-IP") {
-		t.Fatalf("header absent: %q, logged %q", got, lines)
+	// A trusted peer that sends no forwarding header at all (a health probe
+	// from a node address) is its own client and logs nothing, however often.
+	for range 3 {
+		if got := p.Resolve(req(proxyPeer, nil)); got != proxyAddr || len(lines) != 0 {
+			t.Fatalf("no forwarding header from the trusted peer: %q, logged %q", got, lines)
+		}
+	}
+	// The wrong header, or the right one unusable: logged, naming what came.
+	if got := p.Resolve(req(proxyPeer, map[string]string{"X-Forwarded-For": realClient})); got != proxyAddr || len(lines) != 1 ||
+		!strings.Contains(lines[0], "sent X-Forwarded-For but no usable CF-Connecting-IP") {
+		t.Fatalf("the wrong header: %q, logged %q", got, lines)
 	}
 }
 

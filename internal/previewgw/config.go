@@ -28,8 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/ZacxDev/muster/internal/clientaddr"
 )
 
 // Config is the gateway's configuration.
@@ -70,10 +68,6 @@ type Config struct {
 	// (PREVIEW_MAX_BODY); past it the request is refused 413 body_too_large.
 	// Zero means DefaultMaxBody.
 	MaxBody int64
-	// ClientAddr is PREVIEW_TRUSTED_PROXIES with PREVIEW_CLIENT_IP_HEADER: the
-	// failed-token throttle's key on BOTH listeners (internal/clientaddr). nil
-	// (both unset) is the TCP peer, every forwarding header ignored.
-	ClientAddr *clientaddr.Policy
 }
 
 // Lifecycle defaults (docs/design/previews.md, "Lifecycle").
@@ -143,12 +137,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if c.MaxBody, err = byteSize("PREVIEW_MAX_BODY", getenv("PREVIEW_MAX_BODY"), DefaultMaxBody); err != nil {
-		return Config{}, err
-	}
-	if c.ClientAddr, err = clientaddr.New(clientaddr.Config{
-		TrustedProxies: getenv("PREVIEW_TRUSTED_PROXIES"), Header: getenv("PREVIEW_CLIENT_IP_HEADER"),
-		TrustedVar: "PREVIEW_TRUSTED_PROXIES", HeaderVar: "PREVIEW_CLIENT_IP_HEADER",
-	}); err != nil {
 		return Config{}, err
 	}
 	return c, nil

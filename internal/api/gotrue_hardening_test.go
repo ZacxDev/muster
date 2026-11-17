@@ -194,12 +194,25 @@ func TestSignInBackoffIsPerAccountWithNoGlobalLockout(t *testing.T) {
 	if c := login("victim@example.com", good, "203.0.113.53"); c != http.StatusSeeOther {
 		t.Fatalf("after success the count must restart: %d, want 303", c)
 	}
-	// One address spraying many accounts hits the per-address limit.
+	// One address spraying many accounts hits the per-address limit — for its
+	// FAILURES: a wrong password there is 429, an email that is no muster
+	// account is refused unasked, and a correct sign-in is still admitted (a
+	// shared address must not be a lockout lever).
 	for i := 0; i < loginFailureLimit; i++ {
 		login("nobody"+string(rune('a'+i))+"@example.com", "wrong password!!", "192.0.2.77")
 	}
-	if c := login("other@example.com", good, "192.0.2.77"); c != http.StatusTooManyRequests {
-		t.Fatalf("a spraying address: %d, want 429", c)
+	calls := f.fake.CountCalls("POST", "/token")
+	if c := login("nobody-more@example.com", "wrong password!!", "192.0.2.77"); c != http.StatusTooManyRequests {
+		t.Fatalf("a spraying address, another invented email: %d, want 429", c)
+	}
+	if n := f.fake.CountCalls("POST", "/token"); n != calls {
+		t.Fatalf("an invented email from an address past its limit reached GoTrue (%d calls, was %d)", n, calls)
+	}
+	if c := login("other@example.com", "wrong password!!", "192.0.2.77"); c != http.StatusTooManyRequests {
+		t.Fatalf("a spraying address, a wrong password for a real account: %d, want 429", c)
+	}
+	if c := login("other@example.com", good, "192.0.2.77"); c != http.StatusSeeOther {
+		t.Fatalf("a spraying address, the CORRECT password: %d, want 303 (the address limit never refuses a correct credential)", c)
 	}
 	// No global lever: hundreds of failures on other accounts and addresses do
 	// not stop a fresh account from a fresh address.

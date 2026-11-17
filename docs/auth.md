@@ -10,8 +10,11 @@
   admin.
 - If it is unset or shorter than 12 characters, every browser page answers 503
   and `/login` says which variable is missing. It fails closed.
-- `POST /login` compares in constant time and is limited to 10 attempts a
-  minute.
+- `POST /login` compares in constant time first. The correct password is
+  always admitted. Wrong ones are counted, 10 a minute for the whole server,
+  and past that a wrong one is answered 429. The step-up confirm shares the
+  count. Because a correct guess is admitted whatever the count, the count
+  does not slow a guesser down: use a long, generated password.
 - The session cookie lasts 30 days. Set `MUSTER_SECURE_COOKIES=1` when muster
   is served over TLS.
 
@@ -29,7 +32,10 @@ Supabase auth server.
   browser sessions. The main port then serves machine tokens only. On the browser
   listener, the shared hook and service secrets are refused with 403.
 - **Throttling** is per account: 3 free failures, then a backoff that doubles up
-  to 5 minutes. There is also a limit per client address.
+  to 5 minutes. Failures are also counted per client address (10 in 10
+  minutes). That count never refuses a correct password or passkey: past it,
+  a wrong attempt is answered 429, and an attempt at an email that is not a
+  muster account is refused without asking GoTrue.
 
 ### Setting up the first admin
 
@@ -714,7 +720,9 @@ with nothing cached: a phone whose pairing sign-in is at or before the account's
 session cutoff or latest Sign out everywhere, or whose account is disabled, is
 refused, and is not sent notifications, even if its row somehow survived.
 
-**Throttles.** Pairing is limited to 10 attempts a minute per client address.
+**Throttles.** Failed pairing attempts are limited to 10 a minute per client
+address. The code is checked first, so a valid code is redeemed whatever the
+address's count.
 A device route request with a valid credential is charged only to its phone:
 60 a minute. A refused request (no, a malformed, or an unknown or revoked
 credential) is charged to its address: 120 a minute, then 429. So junk sent

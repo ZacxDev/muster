@@ -560,16 +560,28 @@ type RouterNotification struct {
 // window is three fields and no goroutine, and the property that matters — a
 // hard ceiling on attempts per minute — is the same.
 //
-// ⚠ IT IS GLOBAL, NOT PER-CALLER, AND THAT IS THE ORIGINAL BEHAVIOUR KEPT ON
-// PURPOSE. A per-IP bucket sounds better and is worse here: the ceiling exists
-// to bound guessing against ONE shared operator password, and an attacker with
-// more than one source address would get the whole budget per address. The cost
-// is that a guesser can lock a legitimate operator out for up to a window, on a
-// service with one operator.
+// Two uses: allow gates an attempt before it runs (the scroll limiter, keyed
+// per user); fail counts an attempt only after it was judged wrong (the
+// operator-password count, Server.loginRate, which must never refuse the
+// correct password — loginRateBurst's comment).
 type rateLimiter struct {
 	mu          sync.Mutex
 	windowStart time.Time
 	count       int
+}
+
+// fail records one FAILED attempt at now and reports whether the window is
+// now past burst (the caller answers that failure 429). It is never consulted
+// for an attempt that succeeded, so it cannot refuse a correct credential.
+func (l *rateLimiter) fail(now time.Time, burst int, window time.Duration) (over bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.windowStart) >= window {
+		l.windowStart = now
+		l.count = 0
+	}
+	l.count++
+	return l.count > burst
 }
 
 // allow reports whether one more attempt may proceed at now, and records it.

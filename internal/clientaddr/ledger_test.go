@@ -44,7 +44,15 @@ var sitesLedger = map[string][]string{
 
 // TestEveryClientAddressReadIsInTheLedger walks the module's non-test Go with
 // the parser (so comments, which mention these headers freely, are not sites)
-// and compares what it finds with sitesLedger.
+// and compares what it finds with sitesLedger. A site is a string LITERAL that
+// is a client-address header name (any case), a use of clientaddr's Header*
+// constants outside this package, a .RemoteAddr field read or call, or a
+// RemoteAddr method.
+//
+// ⚠ WHAT IT CANNOT SEE, stated: a header name assembled at run time
+// ("X-Forwarded-" + "For", a value read from config) and a peer address taken
+// from a net.Conn by another route (a type assertion, reflection). Those are
+// not idioms anywhere in this module; this test pins the ones that are.
 func TestEveryClientAddressReadIsInTheLedger(t *testing.T) {
 	root := moduleRoot(t)
 	got := scanSites(t, root)
@@ -123,6 +131,12 @@ func scanSites(t *testing.T, root string) map[string][]string {
 					out[rel] = append(out[rel], "header:"+strings.ToLower(strings.TrimSpace(v)))
 				}
 			case *ast.SelectorExpr:
+				// The exported header-name constants are the other way to name a
+				// header without a literal: any use outside this package is a site.
+				if id, ok := x.X.(*ast.Ident); ok && id.Name == "clientaddr" && strings.HasPrefix(x.Sel.Name, "Header") &&
+					!strings.HasPrefix(rel, "internal/clientaddr/") {
+					out[rel] = append(out[rel], "const:clientaddr."+x.Sel.Name)
+				}
 				if x.Sel.Name == "RemoteAddr" {
 					if calls[x] {
 						out[rel] = append(out[rel], "call:RemoteAddr")

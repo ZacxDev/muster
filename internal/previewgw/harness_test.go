@@ -19,7 +19,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
@@ -169,9 +168,6 @@ type gwOpts struct {
 	maxBody   int64         // Config.MaxBody; 0 = the default
 	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
 	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
-	// clientAddr is Config.ClientAddr; nil = the strict default. Every test
-	// request's TCP peer is loopback (the httptest servers).
-	clientAddr *clientaddr.Policy
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -190,7 +186,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	dir := t.TempDir()
 	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
-		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody, ClientAddr: o.clientAddr}
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody}
 	if o.keepalive == 0 {
 		o.keepalive = time.Hour
 	}
@@ -297,6 +293,10 @@ type dialOpts struct {
 	// holdAnswers: the host never answers the gateway's POSTs (each blocks
 	// until the gateway gives up on it).
 	holdAnswers bool
+	// from is the source address the host dials from (a loopback address,
+	// 127.0.0.x); "" is the system's choice (127.0.0.1). It is the TCP peer
+	// the gateway sees, which is the throttle's key.
+	from string
 }
 
 // dialHost dials e's listener as a host would. A refusal returns the
@@ -328,6 +328,10 @@ func (e *gwEnv) dialHost(t *testing.T, o dialOpts) (*fakeHost, *http.Response, e
 	dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dcancel()
 	tr := &http.Transport{TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{}}
+	if o.from != "" {
+		d := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(o.from)}}
+		tr.DialContext = d.DialContext
+	}
 	ws, resp, err := websocket.Dial(dctx, "ws"+strings.TrimPrefix(srv.URL, "http")+wire.HostPath, &websocket.DialOptions{
 		HTTPHeader: h, HTTPClient: &http.Client{Transport: tr}, Host: o.hostHdr})
 	if err != nil {

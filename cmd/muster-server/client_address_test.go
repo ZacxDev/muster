@@ -35,8 +35,8 @@ func (s *syncBuf) String() string {
 // read by loadConfig, are refused when only one is set, are announced in the
 // boot banner, and reach the handler every listener serves (the seam the api
 // package's hand-built Extensions cannot see). The handler's own warnings are
-// the observable: a trusted peer sending no header, and a forwarding header
-// from an untrusted peer. httptest's peer is 192.0.2.1.
+// the observable: a trusted peer sending the wrong header, and a forwarding
+// header from an untrusted peer. httptest's peer is 192.0.2.1.
 func TestClientAddressSettings(t *testing.T) {
 	env := func(trusted, header string) func(string) string {
 		return func(k string) string {
@@ -82,11 +82,9 @@ func TestClientAddressSettings(t *testing.T) {
 		}
 		return a, buf
 	}
-	get := func(h http.Handler, xff string) {
+	get := func(h http.Handler, name, value string) {
 		r := httptest.NewRequest(http.MethodGet, "/health", nil)
-		if xff != "" {
-			r.Header.Set("X-Forwarded-For", xff)
-		}
+		r.Header.Set(name, value)
 		h.ServeHTTP(httptest.NewRecorder(), r)
 	}
 	listeners := func(a *app) map[string]http.Handler {
@@ -100,8 +98,8 @@ func TestClientAddressSettings(t *testing.T) {
 		if !strings.Contains(onLog.String(), "client address: TRUSTED PROXIES — when the TCP peer is in 192.0.2.0/24") {
 			t.Fatalf("banner with both set: no TRUSTED PROXIES line:\n%s", onLog)
 		}
-		get(listeners(on)[name], "")
-		if !strings.Contains(onLog.String(), "trusted proxy 192.0.2.1 sent no usable X-Forwarded-For") {
+		get(listeners(on)[name], "CF-Connecting-IP", "198.51.100.7")
+		if !strings.Contains(onLog.String(), "trusted proxy 192.0.2.1 sent CF-Connecting-IP but no usable X-Forwarded-For") {
 			t.Errorf("%s listener: the trusted policy did not reach the handler (no trusted-peer warning):\n%s", name, onLog)
 		}
 
@@ -109,7 +107,7 @@ func TestClientAddressSettings(t *testing.T) {
 		if !strings.Contains(offLog.String(), "client address: STRICT") {
 			t.Fatalf("banner with both unset: no STRICT line:\n%s", offLog)
 		}
-		get(listeners(off)[name], "198.51.100.7")
+		get(listeners(off)[name], "X-Forwarded-For", "198.51.100.7")
 		if !strings.Contains(offLog.String(), "ignored X-Forwarded-For from 192.0.2.1, which is not a trusted proxy (MUSTER_TRUSTED_PROXIES)") {
 			t.Errorf("%s listener: the strict policy did not log a forwarding header from an untrusted peer:\n%s", name, offLog)
 		}
