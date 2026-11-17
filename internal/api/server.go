@@ -119,6 +119,14 @@ type Server struct {
 	// ocAnswered is the opencode asks lately answered from a card
 	// (mirror_opencode_ask.go: openCodeAnswers).
 	ocAnswered openCodeAnswers
+	// fleetPRs is the fleet reader's cache of GitHub's pull-request answers
+	// (fleet_read.go): its own, two minutes long, beside the closed-review
+	// settle's (pr_closed.go).
+	fleetPRs prStateCache
+	// fleetOwners is fleet_list's cache of each stopped session's owner facts
+	// (last_owner_message_at, chief_texts_since_owner), per episode and streak
+	// (fleet_read.go).
+	fleetOwners fleetOwnerCache
 	// ledgers is the rendered views' tool-context ledger checkpoints, which a
 	// resuming socket starts from (mirror_ledger.go).
 	ledgers ledgerCheckpoints

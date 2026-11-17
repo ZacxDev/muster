@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -360,6 +361,17 @@ type Extensions struct {
 	// sessions. nil (no database): no state pass runs. It does NOT depend on
 	// ChiefNudge — the state, and the episodes, are code-only.
 	Episodes sessionstate.Store
+
+	// Fleet is the fleet's action log and the digest's marks (internal/fleet,
+	// migration 0147; fleet_read.go, fleet_digest.go). nil (no database): no
+	// notify is recorded, fleet_list carries no open_fleet_actions, and the
+	// digest keeps no "since you last looked" baseline and no Fleet chat.
+	Fleet fleet.Store
+	// FleetPRStates is the GitHub App's pull-request read the fleet reader
+	// asks for each session's pull requests' state (fleet_read.go), behind its
+	// own two-minute cache. nil — no GitHub App — reads every state as
+	// unknown, and the digest's Waiting on CI and Done groups stay empty.
+	FleetPRStates PRStateReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

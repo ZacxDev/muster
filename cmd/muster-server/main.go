@@ -77,6 +77,7 @@ import (
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
@@ -470,6 +471,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			}
 			ext.GitHubApp = gapp
 			ext.GitHubAppTeams = cfg.TeamsOnGitHubApp
+			// The fleet reader's pull-request states (internal/api fleet_read.go):
+			// the App's own server-side read, behind the reader's two-minute cache.
+			ext.FleetPRStates = gapp
 			if ext.Connectors != nil {
 				// Admins, and the listed teams' own agents: the App is the
 				// deployment's (connectors.WithVirtual). ONE predicate,
@@ -624,6 +628,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.SessionState {
 			ext.Episodes = sessionstate.NewPG(a.pool)
 		}
+		// The fleet's action log and the digest's marks (migration 0147): the
+		// digest card and fleet_list read it; the episode push writes its one
+		// notify class (internal/api fleet_read.go).
+		ext.Fleet = fleet.NewPG(a.pool)
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {

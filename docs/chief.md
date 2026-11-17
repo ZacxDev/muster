@@ -1370,6 +1370,79 @@ The routes: `POST /agents/{id}/sessions/side`, `POST
 /ui/agents/{name}/chat-context?session=N` for the chip. Each answers only for
 your own chief.
 
+## Fleet digest
+
+The chief panel opens with a **fleet digest** card at the top, above whichever
+chat is open: one place that shows every one of your sessions by what it needs.
+It is muster's own rendering of what it already knows about your sessions. It
+is not a chat message, it runs no chief turn and it calls no model, so it costs
+nothing to look at. Switching chats under it leaves it where it is.
+
+It reads only **your own** sessions: the agents you dispatched, and the windows
+of your own mirror hosts. A team's hosts and agents, which you may also see,
+belong to that team's chief and are never in it. Another user's sessions are
+never in it either.
+
+The states come from [session state](design/session-state.md)
+(`MUSTER_SESSION_STATE=1`). With it off, the card says there is no digest and
+`fleet_list` leaves its `state` out.
+
+**The groups**, each with its count:
+
+| group | which sessions |
+|---|---|
+| **Needs you** | a prompt or picker is on screen, or a stop that asks you something; and the chief's **own** open `ask_owner` cards, each with an **Answer** link, so they are cleared in the same place |
+| **Waiting on CI** | stopped, with its latest pull request open. muster does not read checks yet, so whether CI is still running is unknown, and the group says so |
+| **Working** | no open stop: busy, or idle for less than the stall threshold |
+| **Done, can wrap** | stopped, its latest pull request merged or closed, and nothing queued to it |
+| **Stalled** | any other stop: no pull request, a message on its way to it, or a pull request GitHub did not answer for. An unknown state is never Done |
+
+A session's pull requests are the ones muster recorded it creating (its host's
+hook, [plugins.md](plugins.md#a-pull-request-review-mail)), newest first. Their
+state is read through the [GitHub App](github-app.md) and reused for up to two
+minutes. Without the App every state is unknown and those sessions are
+Stalled. The chief itself is not listed.
+
+**Since you last looked** counts what moved since your previous look: stops
+that opened, Done sessions whose pull request closed, and new chief questions.
+Opening the panel is a look. Opens less than 10 minutes apart count as one look,
+so reopening the panel does not reset the line.
+
+**Opening a group.** On a wide screen each group opens in place. On a phone the
+card is one row of chips, one per group, and a chip opens that group in a
+bottom sheet. Tapping a session's name opens it under its row: its stops in
+the last 24 hours, its pull requests, the tasks linked to it, and its last
+message (secrets redacted and cut, as `session_context` shows it). **Open
+session** goes to its rendered view (its terminal, for a window with none), or
+an agent's conversation.
+
+**Ask the chief about this** opens the chief's **Fleet** side chat. It is a
+side chat of its own, never the primary, and is created the first time you use
+it. The message box is filled with a line naming the session, and you write
+your question after it. **Nothing is sent until you press Send.** A draft
+already in the box is kept, and the line goes after it.
+
+The card refreshes on its own when something enters or leaves your attention
+queue (a stop opened, pushed or ended, an ask raised or answered), and every two
+minutes while the panel is open. It does not refresh while a group, a sheet or
+a session is open, so a refresh never closes what you opened.
+
+**`fleet_list`** gives the chief the same view. Each row adds `state`
+(`working`, `stalled`, `needs_you` or `waiting`), `episode` `{id, since,
+jev_label}` for an open stop, `prs` `[{repo, number, state, head_sha12}]` for a
+mirrored session, `open_fleet_actions`, and for a stopped session
+`last_owner_message_at` and `chief_texts_since_owner` (how many of muster's
+texts it has had since your last message to it). Its sizes and its fence are
+unchanged.
+
+**The log.** `fleet_actions` ([schema](schema.md)) is the fleet's audit log,
+append-only. For now it holds one `notify` row for each stop muster pushed to
+you, closed with the stop's end. Nothing in the digest acts on a session.
+
+The routes: `GET /ui/chief/fleet` (the card), `GET /ui/chief/fleet/session?id=`
+(a drill-in) and `POST /ui/chief/fleet/chat` (the Fleet chat). Each reads only
+your own fleet.
+
 ## Replacing the chief on another kind
 
 An agent's kind is fixed for life. To move the chief to another kind, replace

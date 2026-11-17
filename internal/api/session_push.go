@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sessionstate"
@@ -340,7 +341,44 @@ func (s *Server) pushEpisode(octx context.Context, ep sessionstate.Episode, idle
 		return // pushed already — by the hook, another pass or a replica
 	}
 	s.goNotify(ep.Owner, push.EventAttention, s.episodeNotification(octx, ep, idle, hosts), nil)
+	s.recordFleetNotify(octx, ep)
 	s.attentionChanged(ep.Owner, episodeKey(ep.ID))
+}
+
+// recordFleetNotify writes the fleet's `notify` for ep (internal/fleet,
+// migration 0147): this stop needed its owner, and muster pushed it. 🔴 THE ONE
+// WRITER OF THE CLASS, at the push's one claim, so the log holds exactly the
+// stops muster told the owner about — one row per episode, ids and labels
+// only. A failed write is logged; it never holds the push.
+func (s *Server) recordFleetNotify(octx context.Context, ep sessionstate.Episode) {
+	// A team's stops are its own chief's fleet, not an owner's (Phase 1 keeps
+	// the log to persons).
+	if s.ext.Fleet == nil || authz.MustFrom(octx).Team {
+		return
+	}
+	ev := map[string]any{"episode": ep.ID, "state": ep.State, "waiting": ep.Waiting}
+	if ep.Jev.Label != "" {
+		ev["jev_label"] = ep.Jev.Label
+	}
+	reason := "pushed: a stop that needs its owner (" + ep.State + ")"
+	if ep.Waiting {
+		reason = "pushed: a prompt waiting on its owner"
+	}
+	if _, err := s.ext.Fleet.RecordNotify(octx, fleet.Notify{SubjectKind: ep.Kind, SubjectKey: ep.Key, Host: ep.Host, Window: ep.Window,
+		AgentID: ep.AgentID, EpisodeID: ep.ID, Evidence: ev, Reason: reason}); err != nil {
+		s.logger.Printf("session state: episode %d: the fleet's notify: %v", ep.ID, err)
+	}
+}
+
+// settleFleetActions finishes owner's open fleet actions whose episode ended
+// (fleet.Store.Settle), as octx's principal.
+func (s *Server) settleFleetActions(octx context.Context, owner int64) {
+	if s.ext.Fleet == nil {
+		return
+	}
+	if _, err := s.ext.Fleet.Settle(octx); err != nil {
+		s.logger.Printf("session state: owner %d: settle the fleet's actions: %v", owner, err)
+	}
 }
 
 // reshowEpisode puts back, QUIETLY, the notification of a stop that came back

@@ -288,6 +288,9 @@ var agentJSLedger = map[string]int{
 // an agent's page (and the redirects that must agree with them).
 var agentHrefCallLedger = map[string]int{
 	"AgentPath ← internal/ui/agent_href.go:AgentSessionHref": 2,
+	// The fleet digest's Open session for an agent (fleet_read.go): its stop's
+	// conversation, or the bare page when it has none.
+	"AgentSessionHref ← internal/api/fleet_read.go:fleetSessionHref": 1,
 	// Push-tap targets stay BARE on purpose (#237): a notification is resolved
 	// when TAPPED, and the bare URL picks the latest session at that moment.
 	// askingAgentHref passes session 0 for an agent's own ask (bare, as

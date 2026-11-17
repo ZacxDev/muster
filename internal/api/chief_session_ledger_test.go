@@ -67,7 +67,12 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		"internal/api/pr_closed.go (*Server).settleClosedPRMessage → chiefPrimaryID":           "PRIMARY (a closed PR)",
 		"internal/api/view_chief.go (*Server).handleViewChief → primarySession":                "PRIMARY (a line typed on a session's view goes to the primary)",
 		"internal/api/view_chief.go (*Server).handleViewChiefLog → primarySession":             "PRIMARY (a read of it)",
-		"internal/api/chief_panel_ui.go (*Server).writeChiefPanelBodyFor → primarySession":     "PRIMARY (the panel elects it)",
+		"internal/api/chief_panel_ui.go (*Server).writeChiefPanelBodyWith → primarySession":    "PRIMARY (the panel elects it)",
+		// The fleet digest's Fleet side chat (fleet_digest.go): the owner's tap opens it,
+		// a side chat of its own, never the primary (operator decision, the plan's A5).
+		"internal/api/fleet_digest.go (*Server).fleetChat → primarySession":  "OWNER (the primary elected first, so the Fleet chat cannot be taken for it)",
+		"internal/api/fleet_digest.go (*Server).fleetChat → CreateSessionOn": "OWNER (the Fleet side chat, on its own lane)",
+		"internal/api/fleet_digest.go (*Server).fleetChat → CreateSession":   "OWNER (the Fleet side chat, a legacy chief)",
 
 		// --- the owner chose the chat
 		"internal/api/agents.go (*Server).resolveSessions → primarySession":                 "OWNER (the chief page opens on the primary)",

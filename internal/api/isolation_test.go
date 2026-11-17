@@ -291,18 +291,24 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/agents/repos":         classList,
 	"GET /ui/chief/panel":          classList,
 	"GET /ui/chief/threads/search": classList,
-	"GET /ui/connector-requests":   classList,
-	"GET /ui/connectors":           classList,
-	"GET /ui/connectors/new":       classList,
-	"GET /ui/notifications":        classList,
-	"GET /ui/tags":                 classList,
-	"GET /ui/tasks":                classList,
-	"GET /ui/tasks/new":            classList,
-	"GET /ui/tasks/review-count":   classList,
-	"POST /chief/provision":        classList,
-	"POST /connectors":             classList,
-	"POST /tasks":                  classList,
-	"POST /tasks/merge":            classList, // the form names A's task as the loser
+	// The fleet digest (fleet_digest.go): the caller's own fleet reader. The
+	// drill-in's ?id= and the Fleet chat's about= are resolved only inside the
+	// caller's own fleet (TestTheDigestIsTheOwnersOwnFleet).
+	"GET /ui/chief/fleet":         classList,
+	"GET /ui/chief/fleet/session": classList,
+	"POST /ui/chief/fleet/chat":   classList,
+	"GET /ui/connector-requests":  classList,
+	"GET /ui/connectors":          classList,
+	"GET /ui/connectors/new":      classList,
+	"GET /ui/notifications":       classList,
+	"GET /ui/tags":                classList,
+	"GET /ui/tasks":               classList,
+	"GET /ui/tasks/new":           classList,
+	"GET /ui/tasks/review-count":  classList,
+	"POST /chief/provision":       classList,
+	"POST /connectors":            classList,
+	"POST /tasks":                 classList,
+	"POST /tasks/merge":           classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,

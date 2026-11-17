@@ -199,6 +199,11 @@ func (s *Server) sessionStateOwner(octx context.Context, o sessionstate.Owner, b
 	for _, e := range open {
 		byKey[e.Kind+":"+e.Key] = e
 	}
+	// The fleet's notifies of stops this pass (or an earlier one) ended are
+	// finished with the episode's end (internal/fleet Settle), after the pass.
+	if !team {
+		defer s.settleFleetActions(octx, owner)
+	}
 	// ONE read of the owner's hosts for everything below: the stall facts,
 	// which hosts can say a window is gone and the window an episode's push
 	// names (statePass.hs).
