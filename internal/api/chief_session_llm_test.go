@@ -32,6 +32,14 @@ type fakeSessionLLM struct {
 	mu     sync.Mutex
 	refs   map[string]chiefusage.SessionRef
 	booked []chiefusage.SessionLLMUsage
+	held   map[int64]fakeHold
+	next   int64
+}
+
+// fakeHold is one reservation in fakeSessionLLM.
+type fakeHold struct {
+	session int64
+	usd     float64
 }
 
 func (f *fakeSessionLLM) SessionRef(_ context.Context, key string) (chiefusage.SessionRef, bool, error) {
@@ -41,32 +49,58 @@ func (f *fakeSessionLLM) SessionRef(_ context.Context, key string) (chiefusage.S
 	return r, ok, nil
 }
 
-func (f *fakeSessionLLM) DaySpent(context.Context, time.Time) (float64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var t float64
+func (f *fakeSessionLLM) spendLocked(id int64) chiefusage.SessionSpend {
+	var sp chiefusage.SessionSpend
 	for _, u := range f.booked {
-		t += u.CostUSD
-	}
-	return t, nil
-}
-
-func (f *fakeSessionLLM) SessionSpent(_ context.Context, id int64) (float64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var t float64
-	for _, u := range f.booked {
+		sp.DaySpent += u.CostUSD
 		if u.SessionID == id {
-			t += u.CostUSD
+			sp.SessionSpent += u.CostUSD
 		}
 	}
-	return t, nil
+	for _, r := range f.held {
+		sp.DayReserved += r.usd
+		if r.session == id {
+			sp.SessionReserved += r.usd
+		}
+	}
+	return sp
 }
 
-func (f *fakeSessionLLM) BookSessionLLM(_ context.Context, u chiefusage.SessionLLMUsage) error {
+func (f *fakeSessionLLM) Spend(_ context.Context, id int64, _ time.Time) (chiefusage.SessionSpend, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.spendLocked(id), nil
+}
+
+func (f *fakeSessionLLM) Reserve(_ context.Context, id int64, _ time.Time, _ time.Duration,
+	decide func(chiefusage.SessionSpend) float64) (int64, chiefusage.SessionSpend, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp := f.spendLocked(id)
+	usd := decide(sp)
+	if !(usd > 0) {
+		return 0, sp, nil
+	}
+	if f.held == nil {
+		f.held = map[int64]fakeHold{}
+	}
+	f.next++
+	f.held[f.next] = fakeHold{session: id, usd: usd}
+	return f.next, sp, nil
+}
+
+func (f *fakeSessionLLM) Settle(_ context.Context, id int64, u chiefusage.SessionLLMUsage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.held, id)
 	f.booked = append(f.booked, u)
+	return nil
+}
+
+func (f *fakeSessionLLM) Release(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.held, id)
 	return nil
 }
 
@@ -82,6 +116,9 @@ const (
 	keyAdminSide   = "agent:zesty-stoat:side:7f3a"
 	keyMemberSide  = "agent:member-chief:side:2c9d"
 	keyAdminClaude = "agent:zesty-stoat:side:claude-5e1b"
+	// keyOtherOwnerSameAgent names a row carrying the admin chief's agent id
+	// under another owner: the agent half of the check passes it.
+	keyOtherOwnerSameAgent = "agent:zesty-stoat:side:owner2-91aa"
 )
 
 func fakeSessions() *fakeSessionLLM {
@@ -89,6 +126,9 @@ func fakeSessions() *fakeSessionLLM {
 		keyAdminSide:   {ID: 701, OwnerID: 1, AgentID: 10, Model: "openrouter/vendor-a/alpha-7b"},
 		keyMemberSide:  {ID: 702, OwnerID: 2, AgentID: 20, Model: "openrouter/vendor-b/beta-13b"},
 		keyAdminClaude: {ID: 703, OwnerID: 1, AgentID: 10, Model: "sonnet"},
+		// The admin chief's agent id under another owner: only the OWNER half
+		// of the check can refuse it.
+		keyOtherOwnerSameAgent: {ID: 704, OwnerID: 2, AgentID: 10, Model: "openrouter/vendor-c/beta-70b-instruct"},
 	}}
 }
 
@@ -195,6 +235,13 @@ func TestTheSessionDoorRefusesAnotherOwnersSessionOnItsOwnCheck(t *testing.T) {
 	}
 	if n := r.up.calls(); n != 0 || st.bookings() != 0 {
 		t.Fatalf("another owner's session: %d upstream calls, %d bookings", n, st.bookings())
+	}
+	w = r.postSession(t, tokAdminChief, keyOtherOwnerSameAgent)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "is not one of this chief's") {
+		t.Fatalf("another owner's row with this chief's agent id: %d %s, want 400 not this chief's", w.Code, w.Body)
+	}
+	if n := r.up.calls(); n != 0 || st.bookings() != 0 {
+		t.Fatalf("another owner's row with this chief's agent id: %d upstream calls, %d bookings", n, st.bookings())
 	}
 	w = r.postSession(t, tokAdminChief, keyAdminClaude)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "does not run on OpenRouter") {

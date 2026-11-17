@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,10 +39,14 @@ import (
 // chief agent — is not its primary chat, and runs on OpenRouter
 // (agents.SessionOnOpenRouter). Every other case is refused, nothing sent.
 //
-// 🔴 EVERY REFUSAL ON THIS DOOR IS A 400. opencode, the session runtime, was
-// measured to retry a 503 forever and to fail a 400 at once; a 400 ends the
-// turn with muster's message. A transient fault (a read that failed) says
-// "retry the turn shortly" in the text instead.
+// 🔴 EVERY REFUSAL THIS DOOR WRITES ITSELF IS A 400 — its checks above and
+// the budget's (chiefSessionLedger, through the proxy). opencode, the session
+// runtime, was measured to retry a 503 forever and to fail a 400 at once; a
+// 400 ends the turn with muster's message, and a transient fault (a read that
+// failed) says "retry the turn shortly" in the text instead. NOT covered: the
+// connector door in front (requireConnectorAgent) answers 401/503 before this
+// door runs (no token, no store, an owner role it cannot read), and the
+// provider's own error statuses are relayed (llmproxy).
 //
 // 🔴 THE KEY IS MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY AND NOTHING ELSE. It is
 // read by the server only, attached by the proxy, never put in a pod or a
@@ -51,9 +57,11 @@ import (
 // ⚠ THE HEADER CAN BE FORGED FROM INSIDE THE POD. Anything in the chief's pod
 // holds the chief's token and can send any session key. What that buys, and
 // only that: spend booked to ANOTHER OpenRouter side chat of the SAME chief,
-// pinned to that session's model, still under the owner's daily cap. Another
-// owner's session, the primary chat and a Claude session are refused above,
-// and the daily cap is per owner, so a forged key cannot raise the day's total.
+// pinned to that session's model. Another owner's session, the primary chat
+// and a Claude session are refused above. The daily cap is per owner and is
+// enforced by reservation (the budget section below), so a forged key admits
+// nothing the owner's day has no room for — with that section's one limit: a
+// request billed above its own estimate.
 // ---------------------------------------------------------------------------
 
 // ChiefSessionHeader is the header naming the chat session a chief's
@@ -254,26 +262,177 @@ func chiefSessionUpstreamModel(stored string) string {
 	return id
 }
 
-// chiefSessionLedger is a chief session's budget and spend book on the
-// proxy (llmproxy.Ledger): THE pre-turn check, asked per request, and
-// chief_session_llm_usage.
+// ---------------------------------------------------------------------------
+// THE BUDGET, UNDER CONCURRENCY: RESERVE, THEN SEND
+//
+// Every request reserves a PESSIMISTIC ESTIMATE of its cost against both caps
+// before it is sent (chiefusage Reserve: the check and the reservation are one
+// transaction under a per-owner advisory lock, so they hold across muster
+// processes). The estimate counts EVERY BODY BYTE as an input token and the
+// request's max_tokens as output, each at the model's catalogue list price ×
+// chiefSessionPriceMargin, never below the proxy's own pessimistic rates
+// (llmproxy.EstimateUSDPer*), and at fallback rates far above any list price
+// when the catalogue has no price for the model. When the caps leave less room
+// than that, max_tokens is CUT to what the room pays for; when the room cannot
+// pay for chiefSessionMinMaxTokens of output, the request is refused (400,
+// nothing sent). The reservation is replaced by the booked cost (the
+// provider's) when the response ends, dropped when the request is not booked,
+// and stops counting at chiefSessionReservationTTL if its process died.
+//
+// 🔴 WHAT HOLDS, EXACTLY: at every admission, booked + reserved ≤ each cap.
+// What is BOOKED stays within a cap as long as no request costs more than its
+// own estimate. The provider's billed cost can exceed it (billed prices have
+// run above list prices, and the margin is finite); such an overrun is booked
+// as it is, the cap can be passed by that much, and the next request is then
+// refused.
+// ---------------------------------------------------------------------------
+
+// Budget estimate settings (see the header above).
+const (
+	// chiefSessionPriceMargin multiplies the catalogue's list price.
+	chiefSessionPriceMargin = 1.25
+	// chiefSessionFallbackUSDPer*Token price a model the catalogue gives no
+	// usable price for: far above any current list price, so it over-reserves.
+	chiefSessionFallbackUSDPerInputToken  = 20e-6
+	chiefSessionFallbackUSDPerOutputToken = 100e-6
+	// chiefSessionMinMaxTokens is the least output a request is cut to; with
+	// less room than that pays for, it is refused.
+	chiefSessionMinMaxTokens = 256
+	// chiefSessionMinRequestUSD is the least a request is reserved at.
+	chiefSessionMinRequestUSD = 0.0001
+	// chiefSessionDefaultMaxTokens is assumed (and sent) for a request that
+	// names no max_tokens.
+	chiefSessionDefaultMaxTokens = 32000
+	// chiefSessionReservationTTL is how long a reservation counts if its
+	// request is never settled or released (a process that died).
+	chiefSessionReservationTTL = 30 * time.Minute
+)
+
+// chiefSessionRates are a session model's pessimistic USD per input and
+// output token: the catalogue's list price × the margin, floored at the
+// proxy's estimate rates; the fallback rates when the catalogue cannot be
+// read or gives no price (missing, unparsable or negative, as OpenRouter
+// writes a router's variable price).
+func (s *Server) chiefSessionRates(ctx context.Context, stored string) (in, out float64) {
+	in, out = chiefSessionFallbackUSDPerInputToken, chiefSessionFallbackUSDPerOutputToken
+	if s.ext.ModelCatalog == nil {
+		return in, out
+	}
+	cat, err := s.ext.ModelCatalog.Models(ctx)
+	if err != nil {
+		return in, out
+	}
+	id := chiefSessionUpstreamModel(stored)
+	for _, m := range cat {
+		if m.ID != id {
+			continue
+		}
+		pi, err1 := strconv.ParseFloat(m.Pricing.Prompt, 64)
+		po, err2 := strconv.ParseFloat(m.Pricing.Completion, 64)
+		if err1 != nil || err2 != nil || pi < 0 || po < 0 || math.IsNaN(pi+po) || math.IsInf(pi+po, 0) {
+			return in, out
+		}
+		return max(pi*chiefSessionPriceMargin, llmproxy.EstimateUSDPerInputToken),
+			max(po*chiefSessionPriceMargin, llmproxy.EstimateUSDPerOutputToken)
+	}
+	return in, out
+}
+
+// chiefSessionBudget is one request's view of the caps and the rates.
+type chiefSessionBudget struct {
+	dailyUSD, sessionUSD float64 // sessionUSD 0: no per-session cap
+	in, out              float64 // USD per token
+	day                  time.Time
+}
+
+// decide is THE budget decision, for a request of bodyBytes asking for asked
+// output tokens (0: none named) against sp: the USD to reserve and the
+// max_tokens to send, or a refusal.
+func (b chiefSessionBudget) decide(sp chiefusage.SessionSpend, bodyBytes int, asked int64) (float64, int64, string) {
+	room, sessionBinds := b.dailyUSD-sp.DaySpent-sp.DayReserved, false
+	if b.sessionUSD > 0 {
+		if r := b.sessionUSD - sp.SessionSpent - sp.SessionReserved; r < room {
+			room, sessionBinds = r, true
+		}
+	}
+	inCost := float64(bodyBytes) * b.in
+	minimal := max(inCost+chiefSessionMinMaxTokens*b.out, chiefSessionMinRequestUSD)
+	if room < minimal {
+		return 0, 0, b.refusal(sp, sessionBinds)
+	}
+	want := asked
+	if want <= 0 {
+		want = chiefSessionDefaultMaxTokens
+	}
+	if full := inCost + float64(want)*b.out; full <= room {
+		return max(full, chiefSessionMinRequestUSD), want, ""
+	}
+	cut := int64(math.Floor((room - inCost) / b.out))
+	return max(inCost+float64(cut)*b.out, chiefSessionMinRequestUSD), cut, ""
+}
+
+// refusal is the sentence for a request the caps have no room for.
+func (b chiefSessionBudget) refusal(sp chiefusage.SessionSpend, sessionBinds bool) string {
+	if sessionBinds {
+		return fmt.Sprintf("this session has spent $%.4f of its $%.2f cap%s (%s); nothing was sent. Continue in a new session",
+			sp.SessionSpent, b.sessionUSD, inFlight(sp.SessionReserved), envChiefSessionsSessionName)
+	}
+	return fmt.Sprintf("your chief's OpenRouter sessions have spent $%.4f of today's $%.2f cap%s (%s, UTC day %s; it resets at "+
+		"00:00 UTC); nothing was sent", sp.DaySpent, b.dailyUSD, inFlight(sp.DayReserved), envChiefSessionsDailyName,
+		b.day.Format("2006-01-02"))
+}
+
+// inFlight names reserved spend in a refusal ("" for none).
+func inFlight(usd float64) string {
+	if usd <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", and $%.4f more is held by requests in flight", usd)
+}
+
+// chiefSessionLedger is a chief session's budget and spend book on the proxy
+// (llmproxy.Ledger): a reservation per request (the header above), settled
+// into chief_session_llm_usage.
 type chiefSessionLedger struct {
 	s       *Server
 	session chiefusage.SessionRef
 }
 
-func (l chiefSessionLedger) Admit(ctx context.Context, day time.Time) (string, error) {
-	sp, err := l.s.chiefSessionSpend(ctx, l.session.ID, day)
+func (l chiefSessionLedger) Admit(ctx context.Context, req llmproxy.LedgerRequest) (llmproxy.LedgerAdmission, error) {
+	cs := l.s.chiefSessions
+	in, out := l.s.chiefSessionRates(ctx, l.session.Model)
+	b := chiefSessionBudget{dailyUSD: cs.dailyUSD, sessionUSD: cs.sessionUSD, in: in, out: out, day: req.Day}
+	var maxTok int64
+	var refusal string
+	id, _, err := cs.store.Reserve(ctx, l.session.ID, req.Day, chiefSessionReservationTTL, func(sp chiefusage.SessionSpend) float64 {
+		var amount float64
+		amount, maxTok, refusal = b.decide(sp, req.BodyBytes, req.MaxTokens)
+		return amount
+	})
 	if err != nil {
-		return "", err
+		return llmproxy.LedgerAdmission{}, fmt.Errorf("chief sessions: reserve: %w", err)
 	}
-	return sp.Refusal, nil
+	if refusal != "" {
+		return llmproxy.LedgerAdmission{Refusal: refusal}, nil
+	}
+	return llmproxy.LedgerAdmission{MaxTokens: maxTok, Ticket: id}, nil
 }
 
-func (l chiefSessionLedger) Book(ctx context.Context, u llmproxy.Usage) error {
-	return l.s.chiefSessions.store.BookSessionLLM(ctx, chiefusage.SessionLLMUsage{SessionID: l.session.ID,
+func (l chiefSessionLedger) Book(ctx context.Context, ticket any, u llmproxy.Usage) error {
+	id, _ := ticket.(int64)
+	return l.s.chiefSessions.store.Settle(ctx, id, chiefusage.SessionLLMUsage{SessionID: l.session.ID,
 		Model: l.session.Model, Day: u.Day, Input: u.Input, Output: u.Output, CacheRead: u.CacheRead,
 		CacheWrite: u.CacheWrite, CostUSD: u.CostUSD, Estimated: u.Estimated})
+}
+
+func (l chiefSessionLedger) Release(ctx context.Context, ticket any) {
+	id, _ := ticket.(int64)
+	if id <= 0 {
+		return
+	}
+	if err := l.s.chiefSessions.store.Release(ctx, id); err != nil {
+		l.s.logger.Printf("chief sessions: release reservation %d (it lapses at its expiry instead): %v", id, err)
+	}
 }
 
 // ChiefSessionSpend is a chief session's budget as CheckChiefSessionSpend
@@ -281,12 +440,13 @@ func (l chiefSessionLedger) Book(ctx context.Context, u llmproxy.Usage) error {
 type ChiefSessionSpend struct {
 	// Day is the UTC day it was read for; the daily cap resets at its end.
 	Day time.Time
-	// DaySpentUSD is the owner's chief-session spend on Day, against
-	// DailyCapUSD.
-	DaySpentUSD, DailyCapUSD float64
-	// SessionSpentUSD is the session's lifetime spend, against SessionCapUSD
-	// (0: no per-session cap).
-	SessionSpentUSD, SessionCapUSD float64
+	// DaySpentUSD is the owner's booked chief-session spend on Day and
+	// DayReservedUSD what requests in flight hold, against DailyCapUSD.
+	DaySpentUSD, DayReservedUSD, DailyCapUSD float64
+	// SessionSpentUSD is the session's lifetime booked spend and
+	// SessionReservedUSD what its requests in flight hold, against
+	// SessionCapUSD (0: no per-session cap).
+	SessionSpentUSD, SessionReservedUSD, SessionCapUSD float64
 	// Refusal is "" when the session may spend, else the sentence the owner
 	// is shown (the spent and cap amounts and when it resets).
 	Refusal string
@@ -297,43 +457,28 @@ type ChiefSessionSpend struct {
 var ErrChiefSessionsOff = errors.New("chief sessions on OpenRouter are off on this server")
 
 // CheckChiefSessionSpend is THE PRE-TURN CHECK for a chief session on
-// OpenRouter (sessionID, chat_sessions.id): whether its owner's spend today
-// has reached the daily cap, or the session's own the per-session cap. ctx
-// must act as the session's owner (row-level security). The proxy door asks
-// the same check before every request (chiefSessionLedger.Admit); the turn
-// path asks it before it sends a turn, so a refused turn sends nothing and
-// the chat can say why.
+// OpenRouter (sessionID, chat_sessions.id): whether the caps leave room for a
+// minimal request — chiefSessionMinMaxTokens of output at the proxy's floor
+// output rate — counting booked spend and requests in flight. ctx must act as
+// the session's owner (row-level security). It reserves nothing: each request
+// of the turn is admitted by the proxy door's own reservation
+// (chiefSessionLedger.Admit), the same decision (chiefSessionBudget.decide).
 func (s *Server) CheckChiefSessionSpend(ctx context.Context, sessionID int64) (ChiefSessionSpend, error) {
-	if s.chiefSessions == nil {
+	cs := s.chiefSessions
+	if cs == nil {
 		return ChiefSessionSpend{}, ErrChiefSessionsOff
 	}
-	return s.chiefSessionSpend(ctx, sessionID, llmproxy.Day(s.chiefSessions.now()))
-}
-
-// chiefSessionSpend is CheckChiefSessionSpend for UTC day day.
-func (s *Server) chiefSessionSpend(ctx context.Context, sessionID int64, day time.Time) (ChiefSessionSpend, error) {
-	cs := s.chiefSessions
-	sp := ChiefSessionSpend{Day: day, DailyCapUSD: cs.dailyUSD, SessionCapUSD: cs.sessionUSD}
-	var err error
-	if sp.DaySpentUSD, err = cs.store.DaySpent(ctx, day); err != nil {
-		return sp, fmt.Errorf("chief sessions: read the day's spend: %w", err)
+	day := llmproxy.Day(cs.now())
+	sp, err := cs.store.Spend(ctx, sessionID, day)
+	if err != nil {
+		return ChiefSessionSpend{}, fmt.Errorf("chief sessions: read the spend: %w", err)
 	}
-	if sp.DaySpentUSD >= sp.DailyCapUSD {
-		sp.Refusal = fmt.Sprintf("your chief's OpenRouter sessions have spent $%.4f of today's $%.2f cap (%s, UTC day %s; it "+
-			"resets at 00:00 UTC); nothing was sent", sp.DaySpentUSD, sp.DailyCapUSD, envChiefSessionsDailyName,
-			day.Format("2006-01-02"))
-		return sp, nil
-	}
-	if sp.SessionCapUSD > 0 {
-		if sp.SessionSpentUSD, err = cs.store.SessionSpent(ctx, sessionID); err != nil {
-			return sp, fmt.Errorf("chief sessions: read the session's spend: %w", err)
-		}
-		if sp.SessionSpentUSD >= sp.SessionCapUSD {
-			sp.Refusal = fmt.Sprintf("this session has spent $%.4f of its $%.2f cap (%s); nothing was sent. Continue in a "+
-				"new session", sp.SessionSpentUSD, sp.SessionCapUSD, envChiefSessionsSessionName)
-		}
-	}
-	return sp, nil
+	b := chiefSessionBudget{dailyUSD: cs.dailyUSD, sessionUSD: cs.sessionUSD, in: llmproxy.EstimateUSDPerInputToken,
+		out: llmproxy.EstimateUSDPerOutputToken, day: day}
+	_, _, refusal := b.decide(sp, 0, chiefSessionMinMaxTokens)
+	return ChiefSessionSpend{Day: day, DaySpentUSD: sp.DaySpent, DayReservedUSD: sp.DayReserved, DailyCapUSD: cs.dailyUSD,
+		SessionSpentUSD: sp.SessionSpent, SessionReservedUSD: sp.SessionReserved, SessionCapUSD: cs.sessionUSD,
+		Refusal: refusal}, nil
 }
 
 // ---------------------------------------------------------------------------

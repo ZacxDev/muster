@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,14 @@ import (
 // count, never the session runtime's (opencode reports list price × tokens, or
 // 0) — and the budget is read back from it: the owner's day for the daily cap,
 // the session's lifetime for the optional per-session cap.
+//
+// 🔴 THE CAPS HOLD UNDER CONCURRENCY BY RESERVATION, NOT BY A READ. Checking
+// the booked spend and booking after the response let N concurrent requests
+// all pass the same check. Reserve instead checks AND records the request's
+// pessimistic estimate in one transaction, under a per-owner advisory lock
+// (pg_advisory_xact_lock), so the next request — in any muster process — sees
+// it; Settle replaces it by the booked cost, Release drops it, and one whose
+// request died stops counting at expires_at.
 //
 // 🔴 OWNED AND UNDER ROW-LEVEL SECURITY: ctx acts as the chief's owner; every
 // write lands under that owner and every read is that owner's alone.
@@ -47,18 +56,32 @@ type SessionLLMUsage struct {
 	Estimated                            bool
 }
 
+// SessionSpend is what a chief session's caps are checked against: the
+// owner's booked USD on the day and in flight (live reservations, any
+// session), and the session's booked USD over its life and in flight.
+type SessionSpend struct {
+	DaySpent, DayReserved         float64
+	SessionSpent, SessionReserved float64
+}
+
 // SessionLLMStore is the chief sessions' spend book. PGStore implements it.
 type SessionLLMStore interface {
 	// SessionRef reads the session with this session key, as ctx's owner sees
 	// it (row-level security: another owner's session reads as none); ok
 	// false when there is none.
 	SessionRef(ctx context.Context, sessionKey string) (SessionRef, bool, error)
-	// DaySpent is ctx's owner's booked USD on day, over every session.
-	DaySpent(ctx context.Context, day time.Time) (float64, error)
-	// SessionSpent is session sessionID's booked USD over its whole life.
-	SessionSpent(ctx context.Context, sessionID int64) (float64, error)
-	// BookSessionLLM adds u (one request) to its (owner, session, day) row.
-	BookSessionLLM(ctx context.Context, u SessionLLMUsage) error
+	// Spend is session sessionID's SessionSpend on day, as ctx's owner.
+	Spend(ctx context.Context, sessionID int64, day time.Time) (SessionSpend, error)
+	// Reserve reads the SessionSpend and asks decide how much to reserve for
+	// one request, in ONE transaction under the owner's lock: decide's
+	// answer above 0 is recorded as a reservation (id), lasting ttl; 0
+	// reserves nothing (id 0). The spend decide saw is returned.
+	Reserve(ctx context.Context, sessionID int64, day time.Time, ttl time.Duration,
+		decide func(SessionSpend) float64) (int64, SessionSpend, error)
+	// Settle books u and drops reservation id, in one transaction.
+	Settle(ctx context.Context, id int64, u SessionLLMUsage) error
+	// Release drops reservation id (its request was not sent, or failed).
+	Release(ctx context.Context, id int64) error
 	// SessionLLMReport is the usage page's section over [since, now).
 	SessionLLMReport(ctx context.Context, since time.Time) (SessionLLMReport, error)
 }
@@ -135,9 +158,18 @@ func (s *PGStore) SessionSpent(ctx context.Context, sessionID int64) (float64, e
 	return usd, err
 }
 
-// BookSessionLLM implements SessionLLMStore: one statement, so two concurrent
-// requests never lose a count.
+// execer is a pool or a transaction.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// BookSessionLLM adds u to its (owner, session, day) row: one statement, so
+// two concurrent requests never lose a count. Settle is the proxy's path.
 func (s *PGStore) BookSessionLLM(ctx context.Context, u SessionLLMUsage) error {
+	return bookSessionLLM(ctx, s.pool, u)
+}
+
+func bookSessionLLM(ctx context.Context, x execer, u SessionLLMUsage) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
@@ -146,7 +178,7 @@ func (s *PGStore) BookSessionLLM(ctx context.Context, u SessionLLMUsage) error {
 	if u.Estimated {
 		est = 1
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = x.Exec(ctx, `
 		INSERT INTO chief_session_llm_usage (owner_id, session_id, day, model, requests, input_tokens, output_tokens,
 		                                     cache_read_tokens, cache_write_tokens, cost_usd, estimated_requests)
 		VALUES ($1, $2, $3::date, $4, 1, $5, $6, $7, $8, $9, $10)
@@ -162,6 +194,96 @@ func (s *PGStore) BookSessionLLM(ctx context.Context, u SessionLLMUsage) error {
 			updated_at         = now()`,
 		o, u.SessionID, u.Day.UTC().Format("2006-01-02"), cut(u.Model, 200), max(u.Input, 0), max(u.Output, 0),
 		max(u.CacheRead, 0), max(u.CacheWrite, 0), max(u.CostUSD, 0), est)
+	return err
+}
+
+// sessionSpend reads the SessionSpend inside q (a transaction or the pool).
+func sessionSpend(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, o, sessionID int64, day time.Time) (SessionSpend, error) {
+	var sp SessionSpend
+	err := q.QueryRow(ctx, `SELECT
+		(SELECT coalesce(sum(cost_usd), 0)::float8 FROM chief_session_llm_usage WHERE owner_id = $1 AND day = $3::date),
+		(SELECT coalesce(sum(amount_usd), 0)::float8 FROM chief_session_llm_reservations WHERE owner_id = $1 AND expires_at > now()),
+		(SELECT coalesce(sum(cost_usd), 0)::float8 FROM chief_session_llm_usage WHERE owner_id = $1 AND session_id = $2),
+		(SELECT coalesce(sum(amount_usd), 0)::float8 FROM chief_session_llm_reservations
+			WHERE owner_id = $1 AND session_id = $2 AND expires_at > now())`,
+		o, sessionID, day.UTC().Format("2006-01-02")).Scan(&sp.DaySpent, &sp.DayReserved, &sp.SessionSpent, &sp.SessionReserved)
+	return sp, err
+}
+
+// Spend implements SessionLLMStore.
+func (s *PGStore) Spend(ctx context.Context, sessionID int64, day time.Time) (SessionSpend, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return SessionSpend{}, err
+	}
+	return sessionSpend(ctx, s.pool, o, sessionID, day)
+}
+
+// Reserve implements SessionLLMStore. The advisory lock is per owner and
+// transaction-scoped: every Reserve of one owner, in every muster process,
+// runs one at a time, and each sees the reservations of those before it.
+func (s *PGStore) Reserve(ctx context.Context, sessionID int64, day time.Time, ttl time.Duration,
+	decide func(SessionSpend) float64) (int64, SessionSpend, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return 0, SessionSpend{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, SessionSpend{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief-session-llm:' || $1::bigint::text, 0))`, o); err != nil {
+		return 0, SessionSpend{}, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM chief_session_llm_reservations WHERE owner_id = $1 AND expires_at <= now()`, o); err != nil {
+		return 0, SessionSpend{}, err
+	}
+	sp, err := sessionSpend(ctx, tx, o, sessionID, day)
+	if err != nil {
+		return 0, sp, err
+	}
+	amount := decide(sp)
+	if !(amount > 0) {
+		return 0, sp, tx.Commit(ctx)
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, `INSERT INTO chief_session_llm_reservations (owner_id, session_id, amount_usd, expires_at)
+		VALUES ($1, $2, $3, now() + make_interval(secs => $4)) RETURNING id`, o, sessionID, amount, ttl.Seconds()).Scan(&id); err != nil {
+		return 0, sp, err
+	}
+	return id, sp, tx.Commit(ctx)
+}
+
+// Settle implements SessionLLMStore.
+func (s *PGStore) Settle(ctx context.Context, id int64, u SessionLLMUsage) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM chief_session_llm_reservations WHERE id = $1 AND owner_id = $2`, id, o); err != nil {
+		return err
+	}
+	if err := bookSessionLLM(ctx, tx, u); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Release implements SessionLLMStore.
+func (s *PGStore) Release(ctx context.Context, id int64) error {
+	o, err := owner(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `DELETE FROM chief_session_llm_reservations WHERE id = $1 AND owner_id = $2`, id, o)
 	return err
 }
 

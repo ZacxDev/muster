@@ -74,7 +74,7 @@ var personalOwned = []string{
 	"push_preferences", "push_subscriptions", "recents", "session_tags", "suggest_preferences",
 	"suggest_usage", "user_credentials",
 	// 0142: a chief's OpenRouter sessions' spend; the chief is personal.
-	"chief_session_llm_usage",
+	"chief_session_llm_usage", "chief_session_llm_reservations",
 }
 
 // lentOwned is EVERY owned table that is PERSONAL — owner_isolation, only its

@@ -909,26 +909,52 @@ runtime sends to it yet, so it does nothing until one does. It is off unless
   never enters a pod. `MUSTER_AGENT_OPENROUTER_KEY` never stands in for it,
   and boot is refused if the two are the same key: production's agents and the
   chief rely on that key's credit limit.
-- **The budget.** Two caps, both checked before anything is sent, and both
-  read from what muster booked:
+- **The budget.** Two caps:
   - `MUSTER_CHIEF_SESSIONS_DAILY_USD` (default **$20**): the owner's spend
     across all their sessions in one UTC day. It resets at 00:00 UTC.
   - `MUSTER_CHIEF_SESSIONS_SESSION_USD` (unset by default): one session's
     spend over its life. When one session reaches it, the owner's other
     sessions still run.
+- **How the caps hold when requests overlap.** Before a request is sent,
+  muster reserves a pessimistic estimate of its cost against both caps. The
+  check and the reservation are one database transaction under a per-owner
+  lock, so they hold across muster processes and across concurrent requests.
+  - The estimate counts every byte of the request body as an input token and
+    the request's `max_tokens` as output. Each is priced at the model's
+    catalogue list price × 1.25, never below the proxy's own pessimistic
+    rates. A model the catalogue gives no price for is priced far above any
+    list price.
+  - If the caps leave less room than that, **`max_tokens` is cut** to what the
+    room pays for.
+  - If the room cannot pay for 256 output tokens, the request is **refused**,
+    and nothing is sent.
+  - When the response ends, the reservation is replaced by the booked cost. A
+    request that was not booked releases its reservation. A reservation whose
+    request never finished (its process died) stops counting after 30 minutes.
+  - **What holds exactly:** at every admission, booked plus reserved is no
+    more than each cap. The booked total stays within a cap as long as no
+    request is billed above its own estimate. If OpenRouter bills more than
+    that (billed prices have run above list prices), the overrun is booked as
+    it is and the next request is refused.
 - **What is booked.** The cost OpenRouter reports for each request
   (`usage.cost`), counted by muster's proxy, into `chief_session_llm_usage`
   (per owner, session and UTC day). The runtime's own cost figure is not used:
   opencode reports list price times tokens, or 0. A response with no reported
-  cost is booked at the proxy's pessimistic estimate.
-- **A refusal is a 400.** A budget refusal names the spent and cap amounts and
-  when the cap resets. Every refusal on this door, a read that failed included,
-  is a 400 and never a 429 or 503. opencode, the session runtime, was measured
-  to retry a 503 forever and to fail a 400 at once, ending the turn with
-  muster's message.
-- **Before a turn.** The turn path can ask the same check
-  (`Server.CheckChiefSessionSpend`) before it sends, so a turn over budget
-  sends nothing.
+  cost is booked at the proxy's pessimistic estimate. The book only grows: a
+  database trigger refuses deleting a row and lowering any count or cost,
+  whatever role asks.
+- **A refusal is a 400.** A budget refusal names the spent and cap amounts,
+  what requests in flight hold, and when the cap resets. Every refusal the door
+  writes itself (its checks and the budget, a read that failed included) is a
+  400, never a 429 or 503. opencode, the session runtime, was measured to retry
+  a 503 forever and to fail a 400 at once, ending the turn with muster's
+  message. Two things are not the door's. The connector door in front of it
+  can answer 401 or 503 first (no token, no store, an owner role it cannot
+  read). An error status from OpenRouter is relayed as it is.
+- **Before a turn.** The turn path can ask `Server.CheckChiefSessionSpend`
+  before it sends: it refuses when the caps, counting requests in flight, have
+  no room for a minimal request. It reserves nothing; each request of the turn
+  is admitted by its own reservation.
 - **Choosing a model.** `GET /api/chief/openrouter-models?q=` (the admin only,
   signed in) returns up to 10 catalogue models matching `q`, each with its id,
   name, context length and list price; this search ranks fuzzily. A new
@@ -944,9 +970,11 @@ runtime sends to it yet, so it does nothing until one does. It is off unless
 - **⚠ The header can be forged from inside the pod.** Anything in the chief's
   pod holds the chief's token and can name any session key. At worst, spend
   is booked to **another OpenRouter side chat of the same chief**, at that
-  session's model, still under the owner's daily cap. It cannot reach another
-  owner's session, the primary chat or a Claude session, and it cannot raise
-  the day's total.
+  session's model. It cannot reach another owner's session, the primary chat
+  or a Claude session. The daily cap is per owner and enforced by
+  reservation, so a forged key admits nothing the owner's day has no room
+  for. The one limit is the one above: a request billed above its own
+  estimate.
 
 ## Restarting the chief
 

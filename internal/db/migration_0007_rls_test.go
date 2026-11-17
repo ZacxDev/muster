@@ -118,6 +118,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO routing_rules (plugin_id, plugin_name, match_sender, action, settle_reason, chief_agent, source_message) VALUES ($1, 'example', 'news@example.test', 'settle', 'a newsletter', 1, $2)`, func() []any { return []any{plugin, message} }, nil},
 		{`INSERT INTO chief_turn_usage (chief_agent, trigger, outcome, input_tokens) VALUES ($1, 'plugin', 'settled', 12)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO chief_session_llm_usage (session_id, day, model, requests, cost_usd) VALUES ($1, '2000-01-01', 'openrouter/example/model', 1, 0.01)`, func() []any { return []any{agent} }, nil},
+		{`INSERT INTO chief_session_llm_reservations (session_id, amount_usd, expires_at) VALUES ($1, 0.01, now() + interval '1 minute')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO plugin_message_handling (plugin_message_id, handler) VALUES ($1, 'chief')`, func() []any { return []any{message} }, nil},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},

@@ -352,10 +352,12 @@ const officerPublicBranchesMigrationVersion = 138
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const pluginChiefInstructionsMigrationVersion = 141
 
-// chiefSessionLLMUsageMigrationVersion is 0142: chief_session_llm_usage (what
-// the chief's OpenRouter sessions spend, internal/chiefusage sessionllm.go),
-// owned and under the same row-level security; same treatment again. Its body
-// is idempotent.
+// chiefSessionLLMUsageMigrationVersion is 0142: chief_session_llm_usage and
+// chief_session_llm_reservations (what the chief's OpenRouter sessions spend
+// and hold in flight, internal/chiefusage sessionllm.go), owned and under the
+// same row-level security; same treatment again, re-applied when
+// chief_session_llm_usage exists (the one migration creates both). Its body is
+// idempotent (the append-only trigger is re-created).
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const chiefSessionLLMUsageMigrationVersion = 142
 

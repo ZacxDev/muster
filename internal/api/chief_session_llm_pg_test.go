@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -24,20 +28,76 @@ import (
 //
 // Fixture values are pairwise distinct and distinct from every constant the
 // assertions name: a request costs 0.004; the daily caps used are 0.011 and
-// 0.5; the session cap 0.007; the default daily cap is 20.
+// 0.5; the session cap 0.007; the default daily cap is 20; the catalogue's
+// list prices are 0.0000001 (prompt) and 0.0000002 (completion) a token.
 
 // sessPGCost is what the stub provider reports per request.
 const sessPGCost = 0.004
+
+// sessProvider is a stub OpenRouter for the session door: it records each
+// request's key, model and max_tokens, waits delay before answering (so
+// concurrent requests are in flight together), and reports cost.
+type sessProvider struct {
+	*httptest.Server
+	mu     sync.Mutex
+	n      int
+	auth   []string
+	model  []string
+	maxTok []int64
+	cost   float64
+	delay  time.Duration
+}
+
+func newSessProvider(t *testing.T, cost float64, delay time.Duration) *sessProvider {
+	t.Helper()
+	p := &sessProvider{cost: cost, delay: delay}
+	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model     string `json:"model"`
+			MaxTokens int64  `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		p.mu.Lock()
+		p.n++
+		p.auth = append(p.auth, r.Header.Get("Authorization"))
+		p.model = append(p.model, body.Model)
+		p.maxTok = append(p.maxTok, body.MaxTokens)
+		p.mu.Unlock()
+		if r.URL.Path != "/api/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(p.delay)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sess\",\"model\":%q,\"usage\":{\"input_tokens\":1000,\"cache_read_input_tokens\":300,\"output_tokens\":1}}}\n\n", body.Model)
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7,\"cost\":%v}}\n\n", p.cost)
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(p.Server.Close)
+	return p
+}
+
+func (p *sessProvider) calls() int { p.mu.Lock(); defer p.mu.Unlock(); return p.n }
+
+// sessPGCatalog prices the fixture sessions' models (list prices, USD a token).
+func sessPGCatalog() ModelCatalog {
+	var cat []CatalogModel
+	for _, id := range []string{"vendor-x/model-x1", "vendor-y/model-y2", "vendor-p/model-p3", "vendor-w/model-w4", "vendor-m/model-m5"} {
+		cat = append(cat, CatalogModel{ID: id, Name: id, Pricing: CatalogPricing{Prompt: "0.0000001", Completion: "0.0000002"}})
+	}
+	return agedCatalog{cat: cat, at: time.Now()}
+}
 
 // sessPG is a server on a fresh database with the chief LLM ON (the agents'
 // key, chiefAdminKey) and the session door ON (chiefSessionsKey), and the
 // rows the tests address.
 type sessPG struct {
 	f    *connFixture
-	up   *llmProvider
+	up   *sessProvider
 	logs *llmLogs
 	sys  context.Context
 
+	member                               int64 // the member's user id
 	adminChief, adminWorker, memberChief int64
 	// session keys, and the ids of X and Y
 	keyX, keyY, keyPrimary, keyClaude, keyWorker, keyMember string
@@ -52,16 +112,31 @@ const (
 
 func newSessPG(t *testing.T, daily, session float64) *sessPG {
 	t.Helper()
-	p := &sessPG{up: newLLMProvider(t, sessPGCost), logs: &llmLogs{}}
+	return newSessPGWith(t, daily, session, 0)
+}
+
+// newSessPGWith is newSessPG with a provider that answers after delay.
+func newSessPGWith(t *testing.T, daily, session float64, delay time.Duration) *sessPG {
+	t.Helper()
+	p := &sessPG{up: newSessProvider(t, sessPGCost, delay), logs: &llmLogs{}}
 	p.f = newConnFixtureWith(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		ext.ChiefPrefs = chiefLLMPrefs{}
 		ext.ChiefUsage = chiefusage.NewPG(pool)
+		ext.ModelCatalog = sessPGCatalog()
 		ext.Provisioner, ext.SessionLiveness, ext.Kinds = stubProvisioner{}, stubLiveness{}, stubKinds{pick: "acct-one"}
 	})
 	dsn := dbtest.DSN(t)
-	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member') ON CONFLICT (id) DO NOTHING`)
+	// TRUNCATE as the owner: the usage book refuses a row DELETE to everyone.
 	dbtest.OwnerExec(t, dsn, `TRUNCATE chief_session_llm_usage, chief_turn_usage`)
+	dbtest.OwnerExec(t, dsn, `DO $$ BEGIN IF to_regclass('public.chief_session_llm_reservations') IS NOT NULL THEN
+		TRUNCATE public.chief_session_llm_reservations; END IF; END $$`)
 	p.sys = authz.System(context.Background())
+	// The member is created as any user is, so its id comes from the identity
+	// sequence and can never collide with one the sequence hands out later.
+	if err := p.f.pool.QueryRow(p.sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`,
+		fmt.Sprintf("sess-pg-member-%d", time.Now().UnixNano())).Scan(&p.member); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
 	agent := func(owner int64, name, display, tok string) int64 {
 		var id int64
 		if err := p.f.pool.QueryRow(p.sys, `INSERT INTO agents (owner_id, name, namespace, hooks_token, display_name)
@@ -75,7 +150,7 @@ func newSessPG(t *testing.T, daily, session float64) *sessPG {
 	}
 	p.adminChief = agent(1, "sess-pg-chief", ChiefDisplayName, tokSessAdminChief)
 	p.adminWorker = agent(1, "sess-pg-worker", "worker", tokSessAdminWorker)
-	p.memberChief = agent(2, "sess-pg-member-chief", ChiefDisplayName, tokSessMemberChief)
+	p.memberChief = agent(p.member, "sess-pg-member-chief", ChiefDisplayName, tokSessMemberChief)
 	chat := func(agentID, owner int64, key, runtime, model string, primary bool) int64 {
 		var id int64
 		if err := p.f.pool.QueryRow(p.sys, `INSERT INTO chat_sessions (agent_id, owner_id, session_key, runtime, model, is_default)
@@ -91,7 +166,7 @@ func newSessPG(t *testing.T, daily, session float64) *sessPG {
 	chat(p.adminChief, 1, p.keyPrimary, "claude-code", "openrouter/vendor-p/model-p3", true)
 	chat(p.adminChief, 1, p.keyClaude, "claude-code", "sonnet", false)
 	chat(p.adminWorker, 1, p.keyWorker, "claude-code", "openrouter/vendor-w/model-w4", false)
-	chat(p.memberChief, 2, p.keyMember, "claude-code", "openrouter/vendor-m/model-m5", false)
+	chat(p.memberChief, p.member, p.keyMember, "claude-code", "openrouter/vendor-m/model-m5", false)
 
 	s := p.f.srv
 	s.logger.SetOutput(p.logs)
@@ -296,5 +371,85 @@ func TestTheUsagePageShowsTheChiefSessionsSection(t *testing.T) {
 	}
 	if strings.Count(body, "data-chief-sessions-day=") != 30 {
 		t.Errorf("want 30 days in the 30-day window, got %d", strings.Count(body, "data-chief-sessions-day="))
+	}
+}
+
+// postBody is post with a request body of its own.
+func (p *sessPG) postBody(t *testing.T, tok, key, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return serveCall(t, p.f.h, http.MethodPost, "/llm/v1/messages?beta=true", strings.NewReader(body), map[string]string{
+		"Content-Type": "application/json", "Anthropic-Version": "2023-06-01", "Authorization": "Bearer " + tok,
+		"X-Muster-Token": tok, ChiefSessionHeader: key})
+}
+
+// ownerBooked is the admin's whole booked spend, every session.
+func (p *sessPG) ownerBooked(t *testing.T) float64 {
+	t.Helper()
+	var usd float64
+	if err := p.f.pool.QueryRow(p.sys, `SELECT coalesce(sum(cost_usd), 0)::float8 FROM chief_session_llm_usage WHERE owner_id = 1`).Scan(&usd); err != nil {
+		t.Fatal(err)
+	}
+	return usd
+}
+
+// TestConcurrentRequestsCannotOverrunTheDailyCap is the round-1 auditor's
+// scenario: 20 requests at once ($0.004 each, the provider slow enough that
+// they are all in flight together) against a $0.011 daily cap. What is booked
+// never exceeds the cap; every request not admitted is a 400 with nothing
+// sent; and no reservation outlives its request.
+func TestConcurrentRequestsCannotOverrunTheDailyCap(t *testing.T) {
+	p := newSessPGWith(t, 0.011, 0, 300*time.Millisecond)
+	const n = 20
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = p.post(t, tokSessAdminChief, p.keyX).Code
+		}(i)
+	}
+	wg.Wait()
+	served, refused := 0, 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusOK:
+			served++
+		case http.StatusBadRequest:
+			refused++
+		}
+	}
+	booked := p.ownerBooked(t)
+	if booked > 0.011+1e-9 {
+		t.Errorf("concurrent: $%.4f booked over the $0.011 daily cap (%d of %d served)", booked, served, n)
+	}
+	if served == 0 || served+refused != n {
+		t.Errorf("concurrent: %d served, %d refused of %d (codes %v)", served, refused, n, codes)
+	}
+	if calls := p.up.calls(); calls != served {
+		t.Errorf("concurrent: %d requests reached the provider, %d were served: a refused request was sent", calls, served)
+	}
+	var live int64
+	if err := p.f.pool.QueryRow(p.sys, `SELECT count(*) FROM chief_session_llm_reservations`).Scan(&live); err != nil || live != 0 {
+		t.Errorf("concurrent: %d reservations left after every request ended (%v)", live, err)
+	}
+}
+
+// TestAHugeMaxTokensIsClampedToTheRemainingBudget: a request asking for 10
+// million output tokens against a $0.5 cap is sent with max_tokens cut to what
+// the budget can pay for at the pessimistic rate ($1.2 per million output
+// tokens here, the proxy's floor rate, above this model's list price): at most
+// 416,667, and not far below it.
+func TestAHugeMaxTokensIsClampedToTheRemainingBudget(t *testing.T) {
+	p := newSessPG(t, 0.5, 0)
+	body := `{"model":"claude-sonnet-4-5","stream":true,"max_tokens":10000000,"messages":[{"role":"user","content":"hi"}]}`
+	if w := p.postBody(t, tokSessAdminChief, p.keyX, body); w.Code != http.StatusOK {
+		t.Fatalf("huge max_tokens: %d %s", w.Code, w.Body)
+	}
+	p.up.mu.Lock()
+	got := p.up.maxTok[0]
+	p.up.mu.Unlock()
+	if got >= 10000000 || got > 416667 || got < 400000 {
+		t.Fatalf("upstream max_tokens = %d, want it clamped to the budget (400,000 to 416,667)", got)
 	}
 }
