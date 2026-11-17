@@ -35,7 +35,13 @@ const (
 	focusSearchToolName = "focus_search"
 )
 
-func focusToolDefs() []agents.ToolDef {
+// fleet is MUSTER_FLEET_DIGEST: on, fleet_list's description names the fleet
+// fields it then carries; off, both are as they were before the digest.
+func focusToolDefs(fleet bool) []agents.ToolDef {
+	fleetFields := ""
+	if fleet {
+		fleetFields = fleetListFleetFieldsDoc
+	}
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored agent windows (Claude Code, opencode) — compactly: " +
@@ -52,12 +58,7 @@ func focusToolDefs() []agents.ToolDef {
 				"status, role (worked or created)}, the " + strconv.Itoa(fleetLinkedTasksMax) + " most recently touched at most. " +
 				"It is not a claim: a link does not say the session still holds the task (task_get shows claims). [] means no such " +
 				"link; an opencode session's is always [] today, because muster links only Claude Code sessions from claimants. " +
-				"Each row also carries the fleet's view of it: state (working, stalled, needs_you, or waiting — a prompt on screen; absent, " +
-				"with state_unavailable, when muster's session-state pass is off), episode {id, since, jev_label} for an open stop, " +
-				"prs [{repo, number, state: open|merged|closed|unknown, head_sha12}] for a mirrored session's pull requests muster recorded " +
-				"it creating, newest first (GitHub's state, at most 2 minutes old; checks are not read), open_fleet_actions, and for a " +
-				"stopped session last_owner_message_at (your owner's newest own message in it) and chief_texts_since_owner (how many of " +
-				"muster's and your texts — nudges, routed messages — it received since). " +
+				fleetFields +
 				"active_within_hours lists only recently active sessions. " +
 				"Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{
@@ -85,6 +86,15 @@ func focusToolDefs() []agents.ToolDef {
 			}, "query")},
 	}
 }
+
+// fleetListFleetFieldsDoc is fleet_list's description of the fleet fields,
+// with the digest on (MUSTER_FLEET_DIGEST).
+const fleetListFleetFieldsDoc = "Each row also carries the fleet's view of it: state (working, stalled, needs_you, or waiting — a prompt on screen; absent, " +
+	"with state_unavailable, when muster's session-state pass is off), episode {id, since, jev_label} for an open stop, " +
+	"prs [{repo, number, state: open|merged|closed|unknown, head_sha12}] for a mirrored session's pull requests muster recorded " +
+	"it creating, newest first (GitHub's state, at most 2 minutes old; checks are not read), and for a " +
+	"stopped session last_owner_message_at (your owner's newest own message in it) and chief_texts_since_owner (how many of " +
+	"muster's and your texts — nudges, routed messages — it received since). "
 
 // fleetListRow is one fleet_list row: nothing a decision does not need.
 type fleetListRow struct {
@@ -140,9 +150,6 @@ type fleetListRow struct {
 	// read was not made (owner_facts_unread counts those).
 	LastOwnerMessageAt   string `json:"last_owner_message_at,omitempty"`
 	ChiefTextsSinceOwner *int   `json:"chief_texts_since_owner,omitempty"`
-	// OpenFleetActions is its open fleet actions (fleet_actions); absent with
-	// no store.
-	OpenFleetActions *int `json:"open_fleet_actions,omitempty"`
 }
 
 // fleetLinkedTask is one of a fleet_list row's linked_tasks.
@@ -218,10 +225,6 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 			prs := sub.prs
 			r.PRs = &prs
 		}
-		if fr.openOn {
-			n := sub.open
-			r.OpenFleetActions = &n
-		}
 		if sub.kind == chiefnudge.KindMirror {
 			mirrorKeys = append(mirrorKeys, sub.key)
 			mirrorRows[sub.key] = len(rows)
@@ -232,7 +235,7 @@ func (s *Server) toolFleetList(ctx context.Context, arguments string) string {
 	if !s.attachLinkedTasks(ctx, rows, mirrorKeys, mirrorRows) {
 		out["linked_tasks_unavailable"] = "could not read the sessions' linked tasks"
 	}
-	if !fr.stateOn {
+	if s.ext.FleetDigest && !fr.stateOn {
 		out["state_unavailable"] = fleetStateUnavailable
 	}
 	if unread > 0 {

@@ -247,7 +247,10 @@ func ChiefPanelToggle() g.Node {
 // them — along with the operator's half-typed message and the live WebSocket —
 // so it is a sibling of the FABs and popovers, which are body-level for exactly
 // this reason.
-func ChiefPanel() g.Node {
+//
+// fleet draws the fleet digest card's slot (Features.FleetDigest,
+// MUSTER_FLEET_DIGEST); off, the panel is exactly as it was before the digest.
+func ChiefPanel(fleet bool) g.Node {
 	return Aside(
 		ID(chiefPanelID),
 		g.Attr(chiefPanelAttr, ""),
@@ -306,7 +309,7 @@ func ChiefPanel() g.Node {
 		// The fleet digest (fleet_digest.go): pinned above whichever chat the
 		// body below shows, in a slot of its own, so a thread switch swaps the
 		// chat and leaves the card.
-		fleetDigestSlot(),
+		g.If(fleet, fleetDigestSlot()),
 		// The body: an hx-swap target, fetched the first time the panel opens and
 		// on every open after that.
 		//

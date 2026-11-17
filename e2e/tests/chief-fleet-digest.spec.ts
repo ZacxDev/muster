@@ -73,6 +73,8 @@ const rig = new MirrorRig(chiefFleetPort, 'e2e-cfleet', {
   MUSTER_E2E_SUGGEST_URL: `http://127.0.0.1:${chiefFleetFakePort}/v1/chat/completions`,
   // Session state: each window's stop is an episode (the digest's states).
   MUSTER_SESSION_STATE: '1',
+  // The digest itself is opt-in (MUSTER_FLEET_DIGEST).
+  MUSTER_FLEET_DIGEST: '1',
   // The pull requests muster records sessions creating (session_prs) are
   // the PR-mail feature's store.
   MUSTER_PLUGINS: '1',

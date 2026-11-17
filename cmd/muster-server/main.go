@@ -632,6 +632,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// digest card and fleet_list read it; the episode push writes its one
 		// notify class (internal/api fleet_read.go).
 		ext.Fleet = fleet.NewPG(a.pool)
+		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
+		// fleet_list's fleet fields. Off by default; it needs a database.
+		ext.FleetDigest = cfg.FleetDigest
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -2115,6 +2118,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("session state: INERT — %s=1 but there is no database", envSessionState)
 	default:
 		l.Printf("session state: OFF — %s is unset", envSessionState)
+	}
+	switch {
+	case ext.FleetDigest && ext.Episodes != nil:
+		l.Printf("fleet digest: ON (%s=1) — the chief panel shows the fleet digest card (each of the owner's own sessions grouped by "+
+			"what it needs, no model, no chief turn) and fleet_list carries state, episode, prs and the owner facts", envFleetDigest)
+	case ext.FleetDigest:
+		l.Printf("fleet digest: ON (%s=1) — but %s is unset, so the card says there are no states and fleet_list carries none", envFleetDigest, envSessionState)
+	case a.cfg.FleetDigest:
+		l.Printf("fleet digest: INERT — %s=1 but there is no database", envFleetDigest)
+	default:
+		l.Printf("fleet digest: OFF — %s is unset", envFleetDigest)
 	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)

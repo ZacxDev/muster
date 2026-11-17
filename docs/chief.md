@@ -1372,6 +1372,10 @@ your own chief.
 
 ## Fleet digest
 
+**Off by default:** `MUSTER_FLEET_DIGEST=1` turns it on
+([configuration](configuration.md)). Unset, the panel has no card, its routes
+answer 404, and `fleet_list` is as it was before it.
+
 The chief panel opens with a **fleet digest** card at the top, above whichever
 chat is open: one place that shows every one of your sessions by what it needs.
 It is muster's own rendering of what it already knows about your sessions. It
@@ -1430,14 +1434,12 @@ a session is open, so a refresh never closes what you opened.
 **`fleet_list`** gives the chief the same view. Each row adds `state`
 (`working`, `stalled`, `needs_you` or `waiting`), `episode` `{id, since,
 jev_label}` for an open stop, `prs` `[{repo, number, state, head_sha12}]` for a
-mirrored session, `open_fleet_actions`, and for a stopped session
+mirrored session, and for a stopped session
 `last_owner_message_at` and `chief_texts_since_owner` (how many of muster's
 texts it has had since your last message to it). Its sizes and its fence are
 unchanged.
 
-**The log.** `fleet_actions` ([schema](schema.md)) is the fleet's audit log,
-append-only. For now it holds one `notify` row for each stop muster pushed to
-you, closed with the stop's end. Nothing in the digest acts on a session.
+Nothing in the digest acts on a session.
 
 The routes: `GET /ui/chief/fleet` (the card), `GET /ui/chief/fleet/session?id=`
 (a drill-in) and `POST /ui/chief/fleet/chat` (the Fleet chat). Each reads only

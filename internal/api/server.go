@@ -977,7 +977,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil, Pages: s.pagesOn(), Officers: s.officersOn(),
-		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx)}
+		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx), FleetDigest: s.ext.FleetDigest}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

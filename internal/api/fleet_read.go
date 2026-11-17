@@ -39,8 +39,7 @@ import (
 //     through the App's own read behind a two-minute cache (fleetPRTTL), at
 //     most fleetPRReadsPerCall reads a call;
 //   - whether a message is queued to it (only where it decides a group: a
-//     stall whose latest pull request closed);
-//   - its open fleet actions (fleet_actions, one query).
+//     stall whose latest pull request closed).
 //
 // 🔴 OWN HOSTS ONLY, NEVER A TEAM'S. The mirrored sessions come from
 // Mirror.Hosts (the principal's own), never VisibleHosts (which adds the
@@ -97,8 +96,6 @@ type fleetSubject struct {
 	// inFlight: a message is queued to it (read only where it decides a
 	// group).
 	inFlight bool
-	// open is its open fleet actions.
-	open int
 }
 
 // fleetReadResult is one read of the fleet.
@@ -106,8 +103,6 @@ type fleetReadResult struct {
 	subjects []fleetSubject
 	// stateOn: the open episodes were read, so every state is known.
 	stateOn bool
-	// openOn: the open fleet actions were read.
-	openOn bool
 }
 
 // errFleetAgents: the agent list could not be read.
@@ -133,7 +128,12 @@ func (s *Server) readFleet(ctx context.Context, f fleetListFilter) (fleetReadRes
 		idx := s.instanceIndex(ctx)
 		// 🔴 THE OWNER'S OWN (ownedBy): a member's list can hold a team's
 		// agents (team sharing), which are the team's chief's to orchestrate.
-		for _, a := range ownedBy(list, owner) {
+		// With the digest off (MUSTER_FLEET_DIGEST unset) fleet_list is
+		// exactly as it was before it, every listed agent included.
+		if s.ext.FleetDigest {
+			list = ownedBy(list, owner)
+		}
+		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			status := liveStatusIndexed(a, idx)
 			at := a.CreatedAt
@@ -178,10 +178,14 @@ func (s *Server) readFleet(ctx context.Context, f fleetListFilter) (fleetReadRes
 		out.subjects = append(out.subjects, fleetSubject{kind: chiefnudge.KindMirror, key: e.SessionKey(), view: e, row: r,
 			waitingNow: st.Status == mirror.StatusWaiting})
 	}
+	// 🔴 OFF (MUSTER_FLEET_DIGEST unset), THE ROWS ARE fleet_list's AS THEY
+	// WERE: no episode read, no pull-request read, no GitHub call.
+	if !s.ext.FleetDigest {
+		return out, nil
+	}
 	out.stateOn = s.attachFleetEpisodes(ctx, out.subjects)
 	s.attachFleetPRs(ctx, out.subjects)
 	s.attachFleetInFlight(ctx, out.subjects)
-	out.openOn = s.attachFleetOpenActions(ctx, out.subjects)
 	return out, nil
 }
 
@@ -346,33 +350,6 @@ func (s *Server) attachFleetInFlight(ctx context.Context, subs []fleetSubject) {
 			}
 		}
 	}
-}
-
-// attachFleetOpenActions sets each subject's open fleet actions from ONE read;
-// false when there is no store or the read failed.
-func (s *Server) attachFleetOpenActions(ctx context.Context, subs []fleetSubject) bool {
-	if s.ext.Fleet == nil {
-		return false
-	}
-	counts, err := s.ext.Fleet.OpenCounts(ctx)
-	if err != nil {
-		s.logger.Printf("fleet: open actions: %v", err)
-		return false
-	}
-	for i := range subs {
-		sub := &subs[i]
-		if sub.kind == chiefnudge.KindMirror {
-			sub.open = counts[sessionstate.KindMirror+":"+sub.key]
-			continue
-		}
-		// An agent's actions are per conversation ("<id>:<chat>").
-		for k, n := range counts {
-			if strings.HasPrefix(k, sessionstate.KindAgent+":"+sub.key+":") {
-				sub.open += n
-			}
-		}
-	}
-	return true
 }
 
 // chiefOpenCards is the chief's own open ask_owner cards (attention asks

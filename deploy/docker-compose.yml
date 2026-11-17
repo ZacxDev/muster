@@ -252,6 +252,11 @@ services:
       MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
       MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
 
+      # The fleet digest: the chief panel's card over all your sessions, and
+      # fleet_list's fleet fields (docs/chief.md#fleet-digest). Off by
+      # default; its states come from session state, above.
+      MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
+
       # Shareable pages: agents publish pages and ask before a share link goes
       # live (docs/features.md#pages). Off by default; needs only the database.
       MUSTER_PAGES: ${MUSTER_PAGES:-}

@@ -26,7 +26,10 @@ func TestTheSkeletonNamesTheFleetPackagesGroups(t *testing.T) {
 // slot (the skeleton, state loading) BEFORE the chat body, outside it — a
 // thread switch swaps the body and leaves the card.
 func TestThePanelPinsTheDigestAboveTheChat(t *testing.T) {
-	html := renderString(t, ChiefPanel())
+	if off := renderString(t, ChiefPanel(false)); strings.Contains(off, `id="`+fleetDigestSlotID+`"`) || strings.Contains(off, "data-fleet-") {
+		t.Fatalf("MUSTER_FLEET_DIGEST off: the panel draws the digest slot:\n%s", off)
+	}
+	html := renderString(t, ChiefPanel(true))
 	slot := strings.Index(html, `id="`+fleetDigestSlotID+`"`)
 	body := strings.Index(html, `id="`+chiefPanelBodyID+`"`)
 	if slot < 0 || body < 0 || slot > body {

@@ -131,6 +131,7 @@ func newFleetFixture(t *testing.T) *fleetFixture {
 		ext.Mirror = f.mirror
 		ext.PRSessions = g.plugins
 		ext.FleetPRStates = f.prs
+		ext.FleetDigest = true
 	})
 	pool = f.pool
 	f.eps = sessionstate.NewPG(pool)
@@ -432,7 +433,7 @@ func TestTheDigestIsTheOwnersOwnFleet(t *testing.T) {
 }
 
 // TestFleetListCarriesTheFleetFields: fleet_list's new fields, as literals,
-// on a stall with an open pull request, a recorded notify and an owner
+// on a stall with an open pull request and an owner
 // message followed by two of muster's texts; on a working window; on a
 // prompt on screen; and on the worker agent.
 func TestFleetListCarriesTheFleetFields(t *testing.T) {
@@ -444,9 +445,6 @@ func TestFleetListCarriesTheFleetFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.pr(t, o, stalled, "example-org/gadget", 42, &githubapp.PRState{State: "open", HeadSHA: "fedcba9876543210fedcba9876543210fedcba98"})
-	if ok, err := f.srv.ext.Fleet.RecordNotify(f.asOwner, fleet.Notify{SubjectKind: "mirror", SubjectKey: stalled, EpisodeID: ep.ID}); err != nil || !ok {
-		t.Fatal(ok, err)
-	}
 	working, _ := f.window(o, mirror.StatusBusy)
 	waiting, _ := f.window(o, mirror.StatusWaiting)
 	ownerAt := time.Date(2000, 1, 2, 2, 30, 0, 0, time.UTC)
@@ -487,19 +485,16 @@ func TestFleetListCarriesTheFleetFields(t *testing.T) {
 		{"mirror:" + stalled, "state", `"stalled"`},
 		{"mirror:" + stalled, "episode", `{"id":` + epID + `,"since":"2000-01-02T03:04:05Z","jev_label":"asks_permission"}`},
 		{"mirror:" + stalled, "prs", `[{"repo":"example-org/gadget","number":42,"state":"open","head_sha12":"fedcba987654"}]`},
-		{"mirror:" + stalled, "open_fleet_actions", `1`},
 		{"mirror:" + stalled, "last_owner_message_at", `"2000-01-02T02:30:00Z"`},
 		{"mirror:" + stalled, "chief_texts_since_owner", `2`},
 		{"mirror:" + working, "state", `"working"`},
 		{"mirror:" + working, "episode", ``},
 		{"mirror:" + working, "prs", `[]`},
-		{"mirror:" + working, "open_fleet_actions", `0`},
 		{"mirror:" + working, "last_owner_message_at", ``},
 		{"mirror:" + working, "chief_texts_since_owner", ``},
 		{"mirror:" + waiting, "state", `"waiting"`},
 		{"agent:" + strconv.FormatInt(f.worker.ID, 10), "state", `"working"`},
 		{"agent:" + strconv.FormatInt(f.worker.ID, 10), "prs", ``},
-		{"agent:" + strconv.FormatInt(f.worker.ID, 10), "open_fleet_actions", `0`},
 	} {
 		if g := field(tc.id, tc.key); g != tc.want {
 			t.Errorf("%s %s = %s; want %s", tc.id, tc.key, g, tc.want)
@@ -583,32 +578,55 @@ func TestTheFleetChatOpensWithADraftAndSendsNothing(t *testing.T) {
 	}
 }
 
-// TestThePushRecordsOneNotifyAndTheSweepSettlesIt: the episode push's claim
-// writes the fleet's notify (once, however often it is pushed), it is open
-// while the stop is, and the pass's settle finishes it with the stop's end.
-func TestThePushRecordsOneNotifyAndTheSweepSettlesIt(t *testing.T) {
+// TestTheDigestIsOffUnlessTheFlagIsSet: with MUSTER_FLEET_DIGEST unset the
+// build is the one before the digest — the shell draws no card slot, the three
+// routes answer 404 (and ?look=1 records nothing), fleet_list's rows carry
+// none of the fleet fields and its description names none. The same fleet,
+// flag on, carries them (the positive control: their absence is the flag).
+func TestTheDigestIsOffUnlessTheFlagIsSet(t *testing.T) {
 	f := newFleetFixture(t)
 	k, w := f.window(f.owner, mirror.StatusIdle)
-	ep := f.stop(t, f.owner, k, w, sessionstate.StateNeedsYou, false, fleetT0)
-	f.srv.pushEpisode(f.asOwner, ep, time.Hour, nil)
-	f.srv.pushEpisode(f.asOwner, ep, time.Hour, nil)
-	if got, err := f.srv.ext.Fleet.OpenCounts(f.asOwner); err != nil || got["mirror:"+k] != 1 || len(got) != 1 {
-		t.Fatalf("after the push: open %v, %v; want mirror:%s 1", got, err, k)
+	f.stop(t, f.owner, k, w, sessionstate.StateStalled, false, fleetT0)
+	f.pr(t, f.owner, k, "example-org/widget", 301, &githubapp.PRState{State: "open"})
+	fleetKeys := []string{`"state"`, `"episode"`, `"prs"`, `"last_owner_message_at"`, `"chief_texts_since_owner"`, `"state_unavailable"`, `"owner_facts_unread"`}
+
+	on := f.srv.toolFleetList(f.asOwner, `{}`)
+	if !strings.Contains(on, `"state":"stalled"`) || !strings.Contains(on, `"prs":[`) {
+		t.Fatalf("control: flag on, fleet_list lacks the fleet fields:\n%s", on)
 	}
-	var reason, state string
-	if err := f.pool.QueryRow(f.asOwner, `SELECT reason, state FROM fleet_actions WHERE episode_id = $1`, ep.ID).Scan(&reason, &state); err != nil ||
-		state != "sent" || reason != "pushed: a stop that needs its owner (needs_you)" {
-		t.Fatalf("the notify: %q %q %v", reason, state, err)
+
+	f.srv.ext.FleetDigest = false
+	off := f.srv.toolFleetList(f.asOwner, `{}`)
+	for _, k := range fleetKeys {
+		if strings.Contains(off, k+":") {
+			t.Errorf("flag off: fleet_list carries %s:\n%s", k, off)
+		}
 	}
-	if _, err := f.eps.End(f.asOwner, ep.ID, sessionstate.EndViewed, time.Now()); err != nil {
-		t.Fatal(err)
+	for _, d := range focusToolDefs(false) {
+		if d.Name == fleetListToolName && strings.Contains(d.Description, "fleet's view") {
+			t.Errorf("flag off: fleet_list's description names the fleet fields")
+		}
 	}
-	f.srv.settleFleetActions(f.asOwner, f.owner)
-	if got, _ := f.srv.ext.Fleet.OpenCounts(f.asOwner); len(got) != 0 {
-		t.Fatalf("after the settle: open %v; want none", got)
+	if f.srv.shellFeatures(f.asOwner).FleetDigest {
+		t.Errorf("flag off: the shell would draw the digest slot")
 	}
-	var outcome string
-	if err := f.pool.QueryRow(f.asOwner, `SELECT outcome FROM fleet_actions WHERE episode_id = $1`, ep.ID).Scan(&outcome); err != nil || outcome != "viewed" {
-		t.Fatalf("the settled notify's outcome: %q %v; want viewed", outcome, err)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, ui.FleetDigestPath+"?look=1", nil),
+		httptest.NewRequest(http.MethodGet, ui.FleetDrillPath+"?id=mirror%3A"+k, nil),
+		httptest.NewRequest(http.MethodPost, ui.FleetChatPath, strings.NewReader("about=mirror%3A"+k)),
+	} {
+		rec := httptest.NewRecorder()
+		h := map[string]http.HandlerFunc{ui.FleetDigestPath: f.srv.handleFleetDigest, ui.FleetDrillPath: f.srv.handleFleetDrill, ui.FleetChatPath: f.srv.handleFleetChat}[req.URL.Path]
+		h(rec, req.WithContext(f.asOwner))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("flag off: %s %s answered %d; want 404", req.Method, req.URL.Path, rec.Code)
+		}
+	}
+	if b, err := f.srv.ext.Fleet.Baseline(f.asOwner); err != nil || !b.IsZero() {
+		t.Errorf("flag off: ?look=1 moved the marks: %v %v", b, err)
+	}
+	var looked int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM fleet_owner_marks`).Scan(&looked); err != nil || looked != 0 {
+		t.Errorf("flag off: ?look=1 wrote %d marks rows (%v); want 0", looked, err)
 	}
 }

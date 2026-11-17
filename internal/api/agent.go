@@ -427,7 +427,7 @@ func (s *Server) agentTools() []agentTool {
 	// MUSTER_FOCUS_INTERVAL=0) means nothing NEW is summarized; the stored
 	// history and the overview still work, so they stay offered.
 	if s.ext.Focus != nil {
-		for _, d := range focusToolDefs() {
+		for _, d := range focusToolDefs(s.ext.FleetDigest) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
 		// sessions_overview (sessions_overview.go): what every live session is

@@ -119,7 +119,7 @@ func TestTheChiefPanelBodyCarriesTheBubbleClamp(t *testing.T) {
 	if chat < 0 || clamp > chat {
 		t.Errorf("the clamp script (at %d) is not ahead of agentChatScript (at %d)", clamp, chat)
 	}
-	if n := strings.Count(renderString(t, ChiefPanel()), "window.muClamp"); n != 0 {
+	if n := strings.Count(renderString(t, ChiefPanel(true)), "window.muClamp"); n != 0 {
 		t.Errorf("the chief panel frame carries the bubble clamp (%d)", n)
 	}
 }

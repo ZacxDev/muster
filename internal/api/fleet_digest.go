@@ -32,6 +32,9 @@ import (
 // queues a message. The Fleet chat route OPENS a side chat and fills its box:
 // the owner presses Send, or nothing is sent.
 //
+// 🔴 OFF UNLESS MUSTER_FLEET_DIGEST=1: every route answers 404, the shell
+// draws no slot (ui.Features.FleetDigest), and fleet_list is as it was.
+//
 // 🔴 EVERY ROUTE IS THE OWNER'S OWN: the reader is the principal's own hosts
 // and agents, and a drill-in names a session by its fleet id, answered only
 // when the owner's own fleet holds it — another owner's id, a team's window,
@@ -96,6 +99,10 @@ func fleetSessionOf(sub fleetSubject) fleet.Session {
 // look (the panel opened on it) and draws "since" against the look before;
 // a refresh draws against the stored baseline and moves nothing.
 func (s *Server) handleFleetDigest(w http.ResponseWriter, r *http.Request) {
+	if !s.ext.FleetDigest {
+		http.NotFound(w, r)
+		return
+	}
 	ctx := r.Context()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	now := s.now()
@@ -203,6 +210,10 @@ type episodeRecentReader interface {
 // linked tasks, its last message (redacted and cut as session_context shows
 // it) and where Open session goes.
 func (s *Server) handleFleetDrill(w http.ResponseWriter, r *http.Request) {
+	if !s.ext.FleetDigest {
+		http.NotFound(w, r)
+		return
+	}
 	ctx := r.Context()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	write := func(v ui.FleetDrillView) {
@@ -328,6 +339,10 @@ type sessionTitleSetter interface {
 // about the session `about` names (or the fleet). 🔴 NOTHING IS SENT: the
 // draft is the box's, and the owner presses Send.
 func (s *Server) handleFleetChat(w http.ResponseWriter, r *http.Request) {
+	if !s.ext.FleetDigest {
+		http.NotFound(w, r)
+		return
+	}
 	ctx := r.Context()
 	if s.ext.Agents == nil {
 		s.writeChiefPanelBody(ctx, w, "")

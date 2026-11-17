@@ -47,6 +47,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
+| [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; the GitHub App for pull requests' states | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -437,6 +438,24 @@ session, never quoting it), and open stops are listed as rows of the Asks page's
   instead of one push per stop.
 - **Check:** `session state: ON (MUSTER_SESSION_STATE=1) — …`; off, the line
   reads `session state: OFF — MUSTER_SESSION_STATE is unset` (for `0` too).
+
+### Fleet digest
+
+A card at the top of the chief panel, above whichever chat is open, that groups
+every one of your own sessions by what it needs — Needs you, Waiting on CI,
+Working, Done (can wrap), Stalled — with a drill-in per session and a Fleet
+side chat to ask the chief about one ([chief.md](chief.md#fleet-digest)). No
+model and no chief turn: muster draws it from what it already knows.
+
+- **Needs:** [session state](#session-state) for the states, and the
+  [chief](#chief). With the [GitHub App](#github-app), each session's pull
+  requests' states (otherwise unknown, and those sessions are Stalled).
+- **Turn it on:** `MUSTER_FLEET_DIGEST=1` in `.env`. It also adds the fleet
+  fields to the chief's `fleet_list`.
+- **Turning it off:** unset it. The panel then has no card, its routes answer
+  404 and `fleet_list` is as before.
+- **Check:** `fleet digest: ON (MUSTER_FLEET_DIGEST=1) — …`; off, the line
+  reads `fleet digest: OFF — MUSTER_FLEET_DIGEST is unset`.
 
 ### Ask log
 

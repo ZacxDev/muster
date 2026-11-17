@@ -31,13 +31,12 @@ func TestTheFleetReadersSubjectSources(t *testing.T) {
 		"chiefOpenCards": {"Attention.Open"},
 		// What each session carries (not who is in the fleet, but pinned so
 		// a new read is a decision too).
-		"attachFleetEpisodes":    {"Episodes.OpenEpisodes"},
-		"attachFleetInFlight":    {"SendQueue.List"},
-		"attachFleetOpenActions": {"Fleet.OpenCounts"},
-		"attachFleetPRs":         {"FleetPRStates", "PRSessions"},
+		"attachFleetEpisodes": {"Episodes.OpenEpisodes"},
+		"attachFleetInFlight": {"SendQueue.List"},
+		"attachFleetPRs":      {"FleetPRStates", "PRSessions"},
 	}
 	// readFleet's own helpers: the source functions it calls on s.
-	wantCalls := []string{"attachFleetEpisodes", "attachFleetInFlight", "attachFleetOpenActions", "attachFleetPRs",
+	wantCalls := []string{"attachFleetEpisodes", "attachFleetInFlight", "attachFleetPRs",
 		"focusIndex", "instanceIndex", "mirrorFocusEntries", "now"}
 
 	fset := token.NewFileSet()

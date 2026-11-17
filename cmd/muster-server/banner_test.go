@@ -443,6 +443,10 @@ var bannerLedger = []string{
 	// 30 s and, where the chief's nudges classify, the same classifier runs on
 	// it — so the log must say which state this is.
 	envSessionState,
+	// THE FLEET DIGEST IS LEDGERED: ON, the chief panel draws a card over
+	// every one of the owner's sessions and fleet_list reads their stops and
+	// pull requests (the GitHub App) — so the log must say which state this is.
+	envFleetDigest,
 	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
 	// databases; OFF, they reach whatever address they name — so the log must
 	// say which.
@@ -933,6 +937,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// Session state: the banner branches on ext.Episodes (below).
 		SessionState: true,
+		// The fleet digest: the banner branches on ext.FleetDigest (below).
+		FleetDigest: true,
 		// The dial guard: the banner branches on ext.DialGuard (below).
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
@@ -994,6 +1000,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionRuntimes: []string{"claude-code"},
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
+		FleetDigest:     true,
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 		Pages:           pages.NewPG(nil),
 		CCUsageInterval: 5 * time.Minute,

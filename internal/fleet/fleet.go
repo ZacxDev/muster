@@ -1,6 +1,6 @@
 // Package fleet is the chief's view of its owner's whole fleet: each
 // session's fleet state, the digest's groups (docs/chief.md "Fleet digest"),
-// and the fleet's action log and marks (migration 0147, store.go).
+// and the digest's marks (migration 0147, store.go).
 //
 // Everything in this file is a pure function of what internal/api's fleet
 // reader read (fleet_read.go): the hub's own windows, the session-state

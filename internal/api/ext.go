@@ -362,10 +362,15 @@ type Extensions struct {
 	// ChiefNudge — the state, and the episodes, are code-only.
 	Episodes sessionstate.Store
 
-	// Fleet is the fleet's action log and the digest's marks (internal/fleet,
-	// migration 0147; fleet_read.go, fleet_digest.go). nil (no database): no
-	// notify is recorded, fleet_list carries no open_fleet_actions, and the
-	// digest keeps no "since you last looked" baseline and no Fleet chat.
+	// FleetDigest turns on the fleet digest (MUSTER_FLEET_DIGEST=1;
+	// fleet_digest.go): the chief panel's digest card, its routes, and
+	// fleet_list's fleet fields (state, episode, prs and the owner facts).
+	// False, the default, is exactly the build before it: no card slot, the
+	// routes answer 404, fleet_list's rows are as they were.
+	FleetDigest bool
+	// Fleet is the digest's marks (internal/fleet, migration 0147). nil (no
+	// database): the digest keeps no "since you last looked" baseline and no
+	// Fleet chat.
 	Fleet fleet.Store
 	// FleetPRStates is the GitHub App's pull-request read the fleet reader
 	// asks for each session's pull requests' state (fleet_read.go), behind its
