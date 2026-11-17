@@ -33,7 +33,7 @@ func testAppKeyPEM(t *testing.T) string {
 func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 	keyPEM := testAppKeyPEM(t)
 	load := func(env map[string]string) (config, error) {
-		full := map[string]string{envDatabase: "postgres://unused", envStandalone: "1"}
+		full := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1"}
 		for k, v := range env {
 			full[k] = v
 		}

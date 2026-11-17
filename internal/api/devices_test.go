@@ -62,6 +62,8 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 		t.Run(pattern, func(t *testing.T) {
 			*seen = nil
 			req := httptest.NewRequest(method, path, strings.NewReader(""))
+			// A caller on this machine: the one an unarmed hook tier serves.
+			req.RemoteAddr = "127.0.0.1:1234"
 			req.Header.Set("Authorization", "Bearer "+pDeviceToken)
 			if session[pattern] {
 				req.Header.Set("Cookie", sessionCookieFor(s))

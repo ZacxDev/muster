@@ -16,7 +16,8 @@ export DATABASE_URL='postgres://muster:muster@127.0.0.1:55432/muster_dev?sslmode
 export MUSTER_UI_PASSWORD='pick-a-password-of-12+-chars'
 export MUSTER_STANDALONE=1         # no external permission router
 export MUSTER_MIRROR=1             # turn mirrored sessions on
-go run ./cmd/muster-server         # migrates, then listens on :8105 (all interfaces)
+export MUSTER_BIND_ADDRESS=127.0.0.1  # this machine only (make run sets it too)
+go run ./cmd/muster-server         # migrates, then listens on 127.0.0.1:8105
 ```
 
 Open <http://127.0.0.1:8105> and sign in with the password. Then mirror your
@@ -32,9 +33,13 @@ Your tmux windows now appear under **Agents**. Drop `-interactive` to make them
 read-only. `-allow-http` is for local development only; a real deployment uses
 https. When you are done, `make test-db-down` removes the database.
 
-⚠ This setup listens on every interface and sets no `MUSTER_HOOK_TOKEN`, so
-the machine API is open to anyone who can reach the port. Keep it on a trusted
-machine, or set the token ([auth.md](auth.md#machine-credentials)).
+This setup sets no `MUSTER_HOOK_TOKEN`, which muster allows only because every
+listener is bound to loopback: the machine API then answers callers on this
+machine without a credential and refuses everyone else. To reach it from
+another machine, set a token first (`export MUSTER_HOOK_TOKEN=$(openssl rand
+-hex 32)`, [auth.md](auth.md#machine-credentials)) and then
+`MUSTER_BIND_ADDRESS=0.0.0.0`; without the token, muster refuses to boot on a
+non-loopback address.
 
 The server prints one line per feature at boot, saying what is on, what is off,
 and which variable changes it. Every variable is listed in

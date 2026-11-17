@@ -675,23 +675,30 @@ func TestPasswordModeIgnoresGoTrueCookies(t *testing.T) {
 // anyone as user 1; in gotrue mode it answers 503 instead (the boot refusal in
 // cmd/muster-server is the first wall, this the second).
 func TestGoTrueModeClosesAnUnarmedHookTier(t *testing.T) {
-	probe := func(cfg AuthConfig) (int, bool) {
+	probe := func(cfg AuthConfig, remote string) (int, bool) {
 		s := New(nil, cfg, log.New(io.Discard, "", 0))
 		admitted := false
 		s.principalProbe = func(*http.Request) { admitted = true; panic(errProbeAbort) }
 		w := httptest.NewRecorder()
 		func() {
 			defer func() { _ = recover() }()
-			s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/tags", nil))
+			r := httptest.NewRequest("GET", "/api/tags", nil)
+			r.RemoteAddr = remote
+			s.Handler().ServeHTTP(w, r)
 		}()
 		return w.Code, admitted
 	}
-	if code, admitted := probe(AuthConfig{Mode: AuthModeGoTrue}); admitted || code != http.StatusServiceUnavailable {
-		t.Fatalf("gotrue mode, no hook token: admitted=%v code=%d, want refused 503", admitted, code)
+	// A caller on this machine: refused 503, even though password mode admits it.
+	if code, admitted := probe(AuthConfig{Mode: AuthModeGoTrue}, "127.0.0.1:1234"); admitted || code != http.StatusServiceUnavailable {
+		t.Fatalf("gotrue mode, no hook token, local caller: admitted=%v code=%d, want refused 503", admitted, code)
 	}
-	// Control: password mode keeps the documented back-compat opening.
-	if _, admitted := probe(AuthConfig{UIPassword: strings.Repeat("p", 20)}); !admitted {
-		t.Fatal("control: password mode with no hook token no longer admits (back-compat changed)")
+	// Any other caller: refused, with the armed server's 401.
+	if code, admitted := probe(AuthConfig{Mode: AuthModeGoTrue}, "192.0.2.1:1234"); admitted || code != http.StatusUnauthorized {
+		t.Fatalf("gotrue mode, no hook token, remote caller: admitted=%v code=%d, want refused 401", admitted, code)
+	}
+	// Control: password mode keeps the development opening for a local caller.
+	if _, admitted := probe(AuthConfig{UIPassword: strings.Repeat("p", 20)}, "127.0.0.1:1234"); !admitted {
+		t.Fatal("control: password mode with no hook token no longer admits a local caller")
 	}
 }
 

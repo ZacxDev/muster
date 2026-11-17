@@ -96,7 +96,6 @@ var publicRoutes = []string{
 	"GET /brand/logo.png",
 	"GET /brand/icon-192.png",
 	"GET /brand/icon-512.png",
-	"GET /metrics",
 	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
 	// admits it and no request Principal is attached — internal/mirror
 	// authenticates its own per-host mirror token (mirror_tokens, looked up under
@@ -967,14 +966,20 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 	}
 }
 
-// TestAnUnarmedHookTierStillActsAsTheMachineUser covers the branch the main
-// walk cannot reach: with NO MUSTER_HOOK_TOKEN, requireHookToken and
-// requireHookOrServiceToken admit an uncredentialed caller (back-compat; see
-// requireHookToken). Such a request must still carry the machine principal —
-// an admitted request with none is exactly what PR 3 turns into an empty
-// board. requireArmedHookToken refuses instead (503), so its routes are the
-// hook routes that must NOT reach a handler here.
-func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
+// TestAnUnarmedHookTierLooksArmedToARemoteCaller covers the branch the main
+// walk cannot reach: a server with NO MUSTER_HOOK_TOKEN, driven on every
+// ViaHook route with no credential, from three callers.
+//
+//   - REMOTE (a non-loopback TCP peer): no route may reach a handler or attach a
+//     principal, and every answer is the 401 an armed server gives a missing
+//     token — nothing that says the server is unarmed (no 503, no
+//     HookUnarmedField). It used to be admitted as user 1, the admin.
+//   - FORWARDED (a loopback peer carrying a proxy's header): the same as remote.
+//   - LOCAL (a loopback peer, no forwarding header): requireHookToken and
+//     requireHookOrServiceToken admit it with the machine principal — an
+//     admitted request with none is exactly what PR 3 turns into an empty board
+//     — and requireArmedHookToken refuses it 503 with HookUnarmedField.
+func TestAnUnarmedHookTierLooksArmedToARemoteCaller(t *testing.T) {
 	_, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
 	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
 	// and session routing's answer (it decides what an outside party is sent).
@@ -1017,17 +1022,55 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {
+			for _, remote := range []struct {
+				name, addr, forwardedFor string
+			}{
+				{"remote", "192.0.2.1:1234", ""},
+				{"remote IPv6", "[2001:db8::7]:1234", ""},
+				{"forwarded", "127.0.0.1:1234", "198.51.100.7"},
+			} {
+				*seen = nil
+				req := httptest.NewRequest(method, path, nil)
+				req.RemoteAddr = remote.addr
+				if remote.forwardedFor != "" {
+					req.Header.Set("X-Forwarded-For", remote.forwardedFor)
+				}
+				rec := httptest.NewRecorder()
+				aborted := func() (aborted bool) {
+					defer func() {
+						if r := recover(); r != nil {
+							aborted = true
+						}
+					}()
+					h.ServeHTTP(rec, req)
+					return false
+				}()
+				if aborted || len(*seen) != 0 {
+					t.Fatalf("%s caller, unarmed: reached the handler as %v", remote.name, *seen)
+				}
+				if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), HookUnarmedField) {
+					t.Fatalf("%s caller, unarmed: %d %s; want the armed server's 401, saying nothing about "+
+						"the configuration", remote.name, rec.Code, rec.Body.String())
+				}
+			}
+
 			*seen = nil
-			aborted, code := serve(t, h, httptest.NewRequest(method, path, nil))
+			req := httptest.NewRequest(method, path, nil)
+			req.RemoteAddr = "127.0.0.1:1234"
 			if armed[pattern] {
-				if aborted || code != http.StatusServiceUnavailable {
-					t.Fatalf("the armed route on an unarmed server: aborted=%v status %d; want a 503 refusal", aborted, code)
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"`+HookUnarmedField+`":true`) ||
+					strings.Contains(rec.Body.String(), "MUSTER_") {
+					t.Fatalf("the armed route on an unarmed server, local caller: %d %s; want a 503 carrying %s "+
+						"and naming no setting", rec.Code, rec.Body.String(), HookUnarmedField)
 				}
 				return
 			}
+			aborted, code := serve(t, h, req)
 			want := authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaHook}
 			if !aborted || len(*seen) != 1 || (*seen)[0] != want {
-				t.Fatalf("unarmed hook tier: aborted=%v status %d saw %v; want %v", aborted, code, *seen, want)
+				t.Fatalf("unarmed hook tier, local caller: aborted=%v status %d saw %v; want %v", aborted, code, *seen, want)
 			}
 		})
 	}

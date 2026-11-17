@@ -52,8 +52,15 @@ func testConfig() config {
 // base URL. It fails the test rather than skipping if anything goes wrong.
 func startServer(t *testing.T, cfg config) string {
 	t.Helper()
+	return startServerLogged(t, cfg, quietLogger())
+}
 
-	app, err := buildApp(context.Background(), cfg, quietLogger())
+// startServerLogged is startServer with the app's logger supplied, for a test
+// that asserts on what the server logs.
+func startServerLogged(t *testing.T, cfg config, logger *log.Logger) string {
+	t.Helper()
+
+	app, err := buildApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}

@@ -294,6 +294,10 @@ var bannerLedger = []string{
 	envBrowserPort,
 	envSecureCookies,
 	envHookToken,
+	// The listen address and the metrics listener: one line each, both
+	// directions.
+	envBindAddress,
+	envMetricsPort,
 	envServiceToken,
 	envRouterURL,
 	// The approval relay's own gate: its off-state is "every claude-code prompt
@@ -824,6 +828,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Database:            "postgres://x/y",
 		UIPassword:          strings.Repeat("p", 40),
 		SecureCookies:       true,
+		BindAddress:         "127.0.0.1",
+		MetricsPort:         18193,
 		AndroidAllowPINKeys: true,
 		HookToken:           "hook",
 		ServiceToken:        strings.Repeat("s", 40),

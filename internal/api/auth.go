@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -70,9 +72,11 @@ type AuthConfig struct {
 	// FAIL-CLOSED: unset or too short means the browser surface refuses, it does
 	// NOT mean the surface is open. See BrowserAuthRefusal.
 	UIPassword string
-	// SecureCookies marks the session cookie Secure. It is off by default because
-	// a common path to this server is a plain-HTTP LAN port, and a Secure cookie
-	// there is never sent — which would present as "login succeeds and then
+	// SecureCookies marks the session cookie Secure. It is the RESOLVED value:
+	// cmd/muster-server turns it on when MUSTER_SECURE_COOKIES says so, or when
+	// that is unset and MUSTER_PUBLIC_URL is https (an explicit 0 is the
+	// opt-out). Off is right only for a plain-HTTP LAN port, where a Secure
+	// cookie is never sent — which would present as "login succeeds and then
 	// nothing is logged in".
 	SecureCookies bool
 	// Mode is MUSTER_AUTH_MODE. The zero value is AuthModePassword, so every
@@ -438,22 +442,21 @@ func isDocumentNavigation(r *http.Request) bool {
 // configured, the request must present it as `Authorization: Bearer <token>` or
 // `X-Muster-Token: <token>` (constant-time compared).
 //
-// 🔴 WHEN NO HookToken IS CONFIGURED THIS WRAPPER ADMITS EVERYONE WHO CAN REACH
-// THE PORT. Say it that way round: an earlier version of this comment said the
-// handler is "left open for back-compat", which describes the mechanism and
-// hides the consequence. A deployment whose port is reachable directly — over
-// plain HTTP, bypassing any forward-auth proxy in front of the public path —
-// lets every device on that network call every route on this tier — POST
-// /api/send, the /api/response poll cycle, POST /api/tmux/snapshot — with no
-// credential at all.
+// 🔴 WHEN NO HookToken IS CONFIGURED THIS WRAPPER ADMITS A CALLER ON THIS
+// MACHINE, AND NO ONE ELSE. Unarmed, it used to admit everyone who could reach
+// the port, as the machine user — user 1, the admin. It now admits only a
+// localCaller in password mode (hookTierOpenTo); every other caller gets the
+// armed server's 401, and gotrue mode refuses even a local one
+// (refuseUnarmedHookTier). cmd/muster-server refuses to boot unarmed unless only
+// this machine can reach it (validateListeners), so the remaining opening is the
+// development setup: a server bound to loopback, whose hook scripts run on the
+// same machine.
 //
-// The back-compat rationale is real and is kept: the hook scripts predate the
-// token, and refusing them on an unconfigured server would break the highest-traffic
-// operator-visible surface. It is a debt to EXISTING callers, not a house style —
+// The back-compat rationale for leaving that one opening is the hook scripts
+// that predate the token. It is a debt to EXISTING callers, not a house style —
 // every other door in this file (BrowserAuthRefusal, TerminalWriteRefusal,
 // ChiefWriteRefusal, ServiceWriteRefusal) is fail-closed, and HookArmingRefusal
-// exists so a NEW route on this credential does not inherit the opening. main()
-// warns at boot when the token is unset.
+// exists so a NEW route on this credential does not inherit even that.
 func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A PERSONAL token (mst_…) is its own door, decided before anything about
@@ -470,14 +473,14 @@ func (s *Server) requireHookToken(next http.HandlerFunc) http.HandlerFunc {
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
-		if s.refuseUnarmedHookInGoTrueMode(w) {
+		if s.refuseUnarmedHookTier(w, r) {
 			return
 		}
-		if !s.auth.hookTokenEnforced() || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
+		if s.hookTierOpenTo(r) || auth.ConstantTimeEqual(hookTokenFromRequest(r), s.auth.HookToken) {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": hookTokenRefusalText})
 	}
 }
 
@@ -526,24 +529,69 @@ func (s *Server) refuseSharedTokenOnBrowserListener(w http.ResponseWriter, r *ht
 	return true
 }
 
-// refuseUnarmedHookInGoTrueMode answers 503 (and reports true) when the hook
-// tier is unarmed in gotrue mode.
+// refuseUnarmedHookTier answers 503 (and reports true) when the hook tier is
+// unarmed in gotrue mode and the caller is on this machine.
 //
-// 🔴 THE ENFORCE-WHEN-SET OPENING IS A PASSWORD-MODE DEBT ONLY. Unarmed, the
-// hook wrappers admit anyone as the machine user — user 1, the admin. With one
-// shared operator that is the documented back-compat; beside per-user logins it
-// is an anonymous admin door. cmd/muster-server refuses to BOOT gotrue mode
-// this way; this is the second wall, so a server built some other way still
-// cannot serve it (TestGoTrueModeClosesAnUnarmedHookTier).
-func (s *Server) refuseUnarmedHookInGoTrueMode(w http.ResponseWriter) bool {
-	if !s.auth.goTrueMode() || s.auth.hookTokenEnforced() {
+// 🔴 UNARMED, THE HOOK WRAPPERS WOULD ADMIT ANYONE AS THE MACHINE USER — USER 1,
+// THE ADMIN. cmd/muster-server refuses to BOOT that way unless only this machine
+// can reach the server (validateListeners), and in gotrue mode not at all; this
+// and hookTierOpenTo are the second wall, so a server built some other way, or a
+// loopback listener a proxy on the same machine forwards to, still cannot serve it:
+//
+//   - a caller that is not localCaller is never let through unarmed: the
+//     wrapper runs its ARMED path, whose compare against an empty secret always
+//     fails, so the answer is exactly what an armed server gives a missing or
+//     wrong token and says nothing about how this one is configured
+//     (TestAnUnarmedHookTierLooksArmedToARemoteCaller);
+//   - gotrue mode refuses a local caller too, here: its per-user logins make
+//     "whoever is on this machine" a different person from the machine user
+//     (TestGoTrueModeClosesAnUnarmedHookTier);
+//   - a local caller in password mode is served (hookTierOpenTo), which is the
+//     development setup the boot policy allows.
+func (s *Server) refuseUnarmedHookTier(w http.ResponseWriter, r *http.Request) bool {
+	if !s.auth.goTrueMode() || s.auth.hookTokenEnforced() || !localCaller(r) {
 		return false
 	}
 	s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-		"error":          "this server does not serve the machine hook tier: " + s.auth.HookArmingRefusal(),
+		"error":          "this server does not serve the machine hook tier",
 		HookUnarmedField: true,
 	})
 	return true
+}
+
+// hookTierOpenTo reports whether the hook tier admits r WITHOUT a credential:
+// only when it is unarmed, in password mode, and r is a localCaller.
+func (s *Server) hookTierOpenTo(r *http.Request) bool {
+	return !s.auth.hookTokenEnforced() && !s.auth.goTrueMode() && localCaller(r)
+}
+
+// hookTokenRefusalText is the 401 body every hook-tier wrapper writes for a
+// missing or wrong credential — and, so that the two cannot be told apart, for
+// a remote caller of an unarmed one.
+const hookTokenRefusalText = "invalid or missing hook token"
+
+// forwardingHeaders are the request headers a reverse proxy adds to say whom it
+// is forwarding for. A request carrying any of them did not originate on this
+// machine, whatever its TCP peer.
+var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP", "CF-Connecting-IP"}
+
+// localCaller reports whether r was made from this machine: its TCP peer is a
+// loopback address (127.0.0.0/8, ::1) and it carries no forwarding header. A
+// proxy on the same machine has a loopback peer too, which is why the headers
+// are checked; the boot policy refuses the proxy that adds none (a public URL
+// naming another host).
+func localCaller(r *http.Request) bool {
+	for _, h := range forwardingHeaders {
+		if r.Header.Get(h) != "" {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Unmap().IsLoopback()
 }
 
 // HookArmingRefusal reports why this server must not serve a FAIL-CLOSED hook-tier
@@ -623,9 +671,14 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
-		if reason := s.auth.HookArmingRefusal(); reason != "" {
+		// 🔴 THE REASON IS NOT WRITTEN, AND A REMOTE CALLER IS NOT TOLD AT ALL. A
+		// caller that is not localCaller falls through to the compare below,
+		// which fails against an empty secret: the armed server's 401. A local
+		// one gets the marker its CLI branches on and a sentence that names no
+		// setting.
+		if s.auth.HookArmingRefusal() != "" && localCaller(r) {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"error":          "this server does not serve the machine agent-steering write: " + reason,
+				"error":          "this server does not serve this machine route",
 				HookUnarmedField: true,
 			})
 			return
@@ -634,7 +687,7 @@ func (s *Server) requireArmedHookToken(next http.HandlerFunc) http.HandlerFunc {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or missing hook token"})
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": hookTokenRefusalText})
 	}
 }
 
@@ -897,10 +950,10 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
 			return
 		}
-		if s.refuseUnarmedHookInGoTrueMode(w) {
+		if s.refuseUnarmedHookTier(w, r) {
 			return
 		}
-		if !s.auth.hookTokenEnforced() {
+		if s.hookTierOpenTo(r) {
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))
 			return
 		}

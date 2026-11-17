@@ -232,6 +232,10 @@ type app struct {
 	// browser is the listener gotrue mode serves browser sessions on
 	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
 	browser *http.Server
+	// metrics is the listener that serves /metrics and nothing else
+	// (api.MetricsHandler); nil unless MUSTER_METRICS_PORT is set. /metrics is
+	// on no other listener.
+	metrics *http.Server
 	pool    *pgxpool.Pool
 	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
 	// declares none.
@@ -1103,21 +1107,28 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	handler := srv.Handler()
 	a.http = &http.Server{
-		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),
+		Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.Port)),
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	if cfg.ConnectPort != 0 {
 		a.connect = &http.Server{
-			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.ConnectPort)),
+			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.ConnectPort)),
 			Handler:           api.OnlyConnectSurface(handler),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
 	if cfg.BrowserPort != 0 {
 		a.browser = &http.Server{
-			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.BrowserPort)),
+			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.BrowserPort)),
 			Handler:           api.BrowserListener(handler),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
+	}
+	if cfg.MetricsPort != 0 {
+		a.metrics = &http.Server{
+			Addr:              net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.MetricsPort)),
+			Handler:           api.MetricsHandler(),
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
@@ -1289,7 +1300,7 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
-	var connectLn, browserLn net.Listener
+	var connectLn, browserLn, metricsLn net.Listener
 	if a.connect != nil {
 		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
 			ln.Close()
@@ -1305,13 +1316,23 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 			return fmt.Errorf("listen %s (%s): %w", a.browser.Addr, envBrowserPort, err)
 		}
 	}
+	if a.metrics != nil {
+		if metricsLn, err = net.Listen("tcp", a.metrics.Addr); err != nil {
+			for _, l := range []net.Listener{ln, connectLn, browserLn} {
+				if l != nil {
+					l.Close()
+				}
+			}
+			return fmt.Errorf("listen %s (%s): %w", a.metrics.Addr, envMetricsPort, err)
+		}
+	}
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 3)
+	serveErr := make(chan error, 4)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
@@ -1326,6 +1347,12 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 		go func() {
 			a.logger.Printf("muster browser listener on %s (%s)", browserLn.Addr(), envBrowserPort)
 			serveErr <- a.browser.Serve(browserLn)
+		}()
+	}
+	if metricsLn != nil {
+		go func() {
+			a.logger.Printf("muster metrics listener on %s (%s; /metrics only)", metricsLn.Addr(), envMetricsPort)
+			serveErr <- a.metrics.Serve(metricsLn)
 		}()
 	}
 
@@ -1525,6 +1552,11 @@ func (a *app) shutdown() {
 	if a.browser != nil {
 		if err := a.browser.Shutdown(drainCtx); err != nil {
 			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
+	}
+	if a.metrics != nil {
+		if err := a.metrics.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("metrics listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
 	// The machine jobs this process accepted and will now never finish: fail
@@ -1750,7 +1782,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// this banner said so. That is exactly the "silent healthy state and silent
 	// refusing state are byte-identical" case this function's own header is about.
 	if a.cfg.SecureCookies {
-		l.Printf("session cookie: SECURE — %s is set, so the cookie is sent over HTTPS only. "+
+		l.Printf("session cookie: SECURE — %s is on (or unset, with an https public URL), so the cookie is sent over HTTPS only. "+
 			"A plain-HTTP LAN port will NOT be able to log in against this process. The one exception is "+
 			"a page this machine serves itself over http://localhost, 127.0.0.1 or [::1]: it gets the cookie "+
 			"without Secure, so every browser keeps it, and that traffic never leaves the loopback interface",
@@ -1761,18 +1793,29 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			gotrueNote = " (this is the PASSWORD-mode cookie, unused here: gotrue mode's " +
 				"cookies are always Secure — see the auth mode line)"
 		}
-		l.Printf("session cookie: NOT Secure — %s is unset, which is the DEFAULT and is "+
+		l.Printf("session cookie: NOT Secure — %s is off, or unset with no https public URL, which is "+
 			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
-			"set it: without it the session cookie travels with no Secure attribute and any "+
+			"give it its https public URL: without it the session cookie travels with no Secure attribute and any "+
 			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
 	}
 
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
 	} else {
-		l.Printf("machine hook tier: OPEN — %s is unset, so the hook endpoints require NO "+
-			"credential. That is enforce-when-set back-compat, not a default anyone chose; "+
-			"the LAN port is included", envHookToken)
+		l.Printf("machine hook tier: OPEN TO THIS MACHINE ONLY — %s is unset, which boots only "+
+			"with every listener on loopback (%s) and no public URL naming another host; the hook "+
+			"endpoints answer a loopback caller with no credential and refuse every other one", envHookToken, envBindAddress)
+	}
+	if a.cfg.BindAddress != "" {
+		l.Printf("listen address: %s (%s) — every listener binds it", a.cfg.BindAddress, envBindAddress)
+	} else {
+		l.Printf("listen address: every interface — %s is unset", envBindAddress)
+	}
+	if a.cfg.MetricsPort != 0 {
+		l.Printf("metrics: ON — /metrics is served on its own listener, %s=%d, and on no other port",
+			envMetricsPort, a.cfg.MetricsPort)
+	} else {
+		l.Printf("metrics: OFF — %s is unset, so /metrics is served on no port", envMetricsPort)
 	}
 
 	if reason := a.cfg.serviceWriteRefusal(); reason != "" {

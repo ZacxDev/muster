@@ -694,7 +694,11 @@ func (s *Server) Handler() http.Handler {
 // check, and it is a RELATIONSHIP guard — it records twice, from two different
 // servers, and compares — not a count.
 func (s *Server) registerAll(mux Mux) {
-	// --- Open: no app auth. Health, metrics, assets, PWA. ---
+	// --- Open: no app auth. Health, assets, PWA. ---
+	//
+	// /metrics is NOT here: it is served only on its own listener
+	// (MetricsHandler, MUSTER_METRICS_PORT), never on a port the public edge
+	// routes to.
 	//
 	// ⚠ "Open" here means muster asks for no session — and do not assume an edge
 	// in front of it asks either. A deployment that relies on muster's own
@@ -705,7 +709,6 @@ func (s *Server) registerAll(mux Mux) {
 	// per-user (pwa.go).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.Handle("GET /static/", staticHandler())
 	// PWA: served from root so the service worker's scope is "/" and the
 	// manifest resolves relative to the document root.
@@ -1137,11 +1140,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // keeps the pod out of rotation rather than putting a wrong sentence in front
 // of an operator. See UseExtensions.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	// 🔴 THE BODY IS THE STATUS AND NOTHING ELSE: this route answers anyone,
+	// and the reason (which wiring is missing, that the database is down, the
+	// build) goes to the log, where the operator reads it.
 	if len(s.extDefects) > 0 {
+		s.logger.Printf("readyz: not ready: server wiring is incomplete: %v", s.extDefects)
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": "not ready",
-			"error":  "server wiring is incomplete",
-			"detail": s.extDefects,
 		})
 		return
 	}
@@ -1149,12 +1154,28 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := s.readyCheck(ctx); err != nil {
+			s.logger.Printf("readyz: not ready: database unreachable: %v", err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"status": "not ready", "error": "database unreachable"})
+				"status": "not ready"})
 			return
 		}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "version": BuildVersion})
+	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
+
+// MetricsHandler is the metrics listener's whole handler: GET /metrics (the
+// Prometheus exposition of the default registry) and a 404 for every other
+// path.
+//
+// 🔴 IT IS A SEPARATE HANDLER, NOT A ROUTE ON registerAll's MUX, BECAUSE THE
+// METRICS NAME SPEND, BUDGETS AND VOLUMES. Every listener the main handler
+// backs is one a public edge may route to, and a plain proxy forwards every
+// path; /metrics on its own port is unreachable from there unless an operator
+// routes that port too (TestMetricsAreServedOnlyOnTheMetricsListener).
+func MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
+	return mux
 }
 
 // --- PWA assets: see pwa.go (the manifest, sw.js, /share, the badge count) ---

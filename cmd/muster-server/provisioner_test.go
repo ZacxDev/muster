@@ -33,6 +33,7 @@ func provisionerTestConfig(driver string) config {
 		AgentImageRepo:       "registry.example.test/muster/agent-runtime",
 		AgentAPIURL:          "http://muster.example.test:8105",
 		AgentNamespacePrefix: agents.NamespacePrefix,
+		HookToken:            fixtureHookToken,
 	}
 }
 
@@ -233,6 +234,8 @@ func TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith(t *testing.T) {
 					return "registry.example.test/muster/agent-runtime"
 				case envAgentAPIURL:
 					return "http://muster.example.test:8105"
+				case envHookToken:
+					return fixtureHookToken
 				case envDatabase:
 					return "postgres://unused"
 				case envAgentNSPrefix:
@@ -461,7 +464,7 @@ func TestAStalePrivilegeApplyVariableChangesNothing(t *testing.T) {
 		envAgentProvisioner: provisionerK8s,
 		envAgentImageRepo:   "registry.example.test/muster/agent-runtime",
 		envAgentAPIURL:      "http://muster.example.test:8105",
-		envDatabase:         "postgres://unused",
+		envDatabase:         "postgres://unused", envHookToken: fixtureHookToken,
 	}
 	load := func(extra map[string]string) config {
 		t.Helper()

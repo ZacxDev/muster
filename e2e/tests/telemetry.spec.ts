@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import { test, expect } from '../lib/fixtures';
-import { telemetryPort } from '../lib/env';
+import { telemetryMetricsPort, telemetryPort } from '../lib/env';
 import { MirrorRig, cc, entryMatches, mirroredEntries } from '../lib/mirrorhost';
 
 // OPENING A SESSION, TRACED (docs/telemetry.md), against a REAL muster-server
@@ -48,6 +48,7 @@ test.beforeAll(async () => {
     OTEL_EXPORTER_OTLP_ENDPOINT: otlp.url,
     MUSTER_FARO_UPSTREAM: faro.url + '/collect',
     MUSTER_FARO_TRACING: '1',
+    MUSTER_METRICS_PORT: String(telemetryMetricsPort),
   });
   await rig.start();
 });
@@ -271,8 +272,9 @@ test('a disconnect is reported with its reason, by the page and by the server', 
   expect(ev.attributes.reason).toBe('host_disconnected');
   expect(ev.attributes.phase).toBe('live');
 
-  // The server counted the same end, by the same closed word.
-  const metrics = await (await page.request.get(rig.origin + '/metrics')).text();
+  // The server counted the same end, by the same closed word — on its metrics
+  // listener, the only one that serves /metrics.
+  const metrics = await (await page.request.get(`http://127.0.0.1:${telemetryMetricsPort}/metrics`)).text();
   expect(metrics).toMatch(/muster_view_disconnects_total\{reason="host_disconnected",view="mirror_view"\} [1-9]/);
 });
 

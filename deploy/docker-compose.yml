@@ -298,6 +298,11 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      # Prometheus metrics: /metrics is served ONLY on this port, and only when
+      # it is set. Not published to the host: a scraper on this Compose network
+      # reaches muster:<port>; to scrape from the host, add a ports entry bound
+      # to 127.0.0.1 (docs/configuration.md).
+      MUSTER_METRICS_PORT: ${MUSTER_METRICS_PORT:-}
       OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-}
       OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: ${OTEL_EXPORTER_OTLP_TRACES_TIMEOUT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-}

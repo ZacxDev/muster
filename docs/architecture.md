@@ -43,16 +43,24 @@ flowchart LR
 | main | `MUSTER_PORT` (8105) | Everything. In gotrue mode, machine tokens only. |
 | browser | `MUSTER_BROWSER_PORT` | Browser sessions in gotrue mode. The shared secrets are refused here. |
 | connect | `MUSTER_CONNECT_PORT` | Only the routes agents need: connectors, approvals, MCP and `/health`. |
+| metrics | `MUSTER_METRICS_PORT` | `GET /metrics` (Prometheus) and nothing else. Unset: `/metrics` is served nowhere. |
+
+Every listener binds `MUSTER_BIND_ADDRESS` (unset: every interface). Without
+`MUSTER_HOOK_TOKEN` the server boots only when that is a loopback address
+([configuration.md](configuration.md#muster-server-sign-in-and-machine-credentials)).
 
 The main and browser listeners serve these. The connect listener serves only
 `/health`.
 
 - `GET /health`: liveness, with no database check. It reports the version and
-  uptime.
+  uptime (the `muster` CLI reads the version for its version-skew check).
 - `GET /readyz`: 200 only when the wiring is complete and the database answers
-  within 2 seconds.
-- `GET /metrics`: Prometheus metrics. It is unauthenticated, so keep it off the
-  public internet.
+  within 2 seconds. The body is `{"status": "ready"}` or
+  `{"status": "not ready"}`; the reason is in the server log.
+
+`/metrics` is on none of them: it is unauthenticated and names spend, budgets
+and volumes, so it has its own listener, which a public route to muster does
+not reach.
 
 ## Packages, roughly
 

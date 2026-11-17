@@ -124,8 +124,10 @@ vet:
 
 # Run the server. Every MUSTER_* name is spelled once, in
 # cmd/muster-server/config.go; DATABASE_URL is required and the binary says so.
+# It binds loopback unless MUSTER_BIND_ADDRESS says otherwise: a server with no
+# MUSTER_HOOK_TOKEN boots only there (docs/development.md).
 run:
-	go run ./cmd/muster-server
+	MUSTER_BIND_ADDRESS="$${MUSTER_BIND_ADDRESS-127.0.0.1}" go run ./cmd/muster-server
 
 # 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
 # the cheapest end-to-end proof that the stylesheet the container would serve is

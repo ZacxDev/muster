@@ -48,7 +48,7 @@ func SetTelemetryConnectSrc(rawURL string) {
 // OnlyConnectSurface and MUSTER_BROWSER_PORT's BrowserListener) wraps this one
 // Handler, so the refusal covers all three (TestAPluginOriginHostIsRefusedOnEveryListener).
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
-	return s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next)))))
+	return s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next)), hstsFor(s.auth.PublicURL))))
 }
 
 // PluginOriginHostRefusal is the 421 body for a request whose Host is under
@@ -219,9 +219,16 @@ const permissionsPolicy = "microphone=(self)"
 // collector when telemetry is on). img-src also admits other origins' brand
 // icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
 // keeps the magic-link token out of the Referer header.
-func securityHeaders(next http.Handler) http.Handler {
+//
+// hsts, when not empty, is the Strict-Transport-Security value (hstsFor): sent
+// on every response when the public URL is https. A browser ignores it on a
+// plain-http response, so a loopback development page is unaffected.
+func securityHeaders(next http.Handler, hsts string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		if hsts != "" {
+			h.Set("Strict-Transport-Security", hsts)
+		}
 		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'", ""))
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
@@ -229,6 +236,20 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Permissions-Policy", permissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hstsMaxAge is one year, the value browsers' preload lists ask for. No
+// includeSubDomains: the public URL's host is muster's, its siblings are not.
+const hstsMaxAge = "max-age=31536000"
+
+// hstsFor is the Strict-Transport-Security value for a server whose public URL
+// is publicURL: hstsMaxAge when it is https, "" (no header) otherwise.
+func hstsFor(publicURL string) string {
+	u, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+		return ""
+	}
+	return hstsMaxAge
 }
 
 // serverSwitcherImgSrc is what the web app's server switcher may DRAW from

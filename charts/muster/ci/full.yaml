@@ -3,6 +3,8 @@ image:
   tag: 1.2.3
 publicUrl: https://muster.example.com
 plugins: true
+metrics:
+  enabled: true
 auth:
   mode: gotrue
 gotrue:

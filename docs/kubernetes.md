@@ -260,9 +260,11 @@ not time them out:
 - **HTTPRoute:** set `httpRoute.timeouts` to your implementation's form of
   "no request timeout" (several take `{request: "0s"}`).
 
-The ingress exposes every route, including `/metrics`, which is
-unauthenticated ([architecture.md](architecture.md#listeners)): block it at
-the edge if the host is public. In gotrue mode the shared hook and service
+The ingress exposes every route of the listener it targets. `/metrics` is not
+one of them: it is served only on its own listener, which the chart opens with
+`metrics.enabled: true` as the Service port `metrics` (`service.metricsPort`,
+8108) for an in-cluster scraper, and which neither the ingress nor the
+HTTPRoute routes ([architecture.md](architecture.md#listeners)). In gotrue mode the shared hook and service
 tokens are refused on the browser listener; a machine client that uses them
 must reach the main port (`service.port`), for example inside the cluster.
 

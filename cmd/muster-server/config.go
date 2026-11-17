@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/ZacxDev/muster/internal/officers"
 	"maps"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -30,6 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/loopback"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -75,6 +77,13 @@ const defaultPort = 8105
 const (
 	envPort     = "MUSTER_PORT"
 	envDatabase = "DATABASE_URL"
+	// The address every listener binds (validateListeners): unset means every
+	// interface. A loopback address is what lets a server boot with no
+	// MUSTER_HOOK_TOKEN.
+	envBindAddress = "MUSTER_BIND_ADDRESS"
+	// The /metrics listener's port (api.MetricsHandler): unset means /metrics
+	// is not served at all. Never the main, browser or connect port.
+	envMetricsPort = "MUSTER_METRICS_PORT"
 
 	envUIPassword    = "MUSTER_UI_PASSWORD"
 	envHookToken     = "MUSTER_HOOK_TOKEN"
@@ -733,6 +742,12 @@ var headerName = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
 type config struct {
 	Port     int
 	Database string
+	// BindAddress is MUSTER_BIND_ADDRESS: the IP literal every listener binds,
+	// "" for every interface. See validateListeners.
+	BindAddress string
+	// MetricsPort, when non-zero, binds the metrics listener: the only one that
+	// serves /metrics (api.MetricsHandler), and nothing else.
+	MetricsPort int
 
 	UIPassword    string
 	HookToken     string
@@ -1591,7 +1606,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		UIPassword:           getenv(envUIPassword),
 		HookToken:            getenv(envHookToken),
 		ServiceToken:         getenv(envServiceToken),
-		SecureCookies:        envFlag(getenv, envSecureCookies),
+		SecureCookies:        secureCookies(getenv(envSecureCookies), getenv(envPublicURL)),
 		AuthMode:             strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
 		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
 		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
@@ -1755,6 +1770,21 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envPort, v)
 		}
 		c.Port = p
+	}
+	if v := strings.TrimSpace(getenv(envMetricsPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535, or unset to serve no /metrics", envMetricsPort, v)
+		}
+		c.MetricsPort = p
+	}
+	if v := strings.TrimSpace(getenv(envBindAddress)); v != "" {
+		addr, err := netip.ParseAddr(v)
+		if err != nil || addr.Zone() != "" {
+			return config{}, fmt.Errorf("invalid %s %q: want an IP address (127.0.0.1, ::1, 0.0.0.0), "+
+				"or unset for every interface", envBindAddress, v)
+		}
+		c.BindAddress = addr.String()
 	}
 
 	// 🔴 PARSED HERE, AND REFUSED HERE, FOR THE REASON EVERY OTHER AGENT-SPEC
@@ -2621,7 +2651,84 @@ func (c config) validate() error {
 	if err := c.validateOfficerEgress(); err != nil {
 		return err
 	}
-	return c.validateProvisioner()
+	if err := c.validateProvisioner(); err != nil {
+		return err
+	}
+	return c.validateListeners()
+}
+
+// validateListeners refuses a listener layout this server must not boot with:
+// a metrics port that collides with another listener, and an unset
+// MUSTER_HOOK_TOKEN on a server that is reachable from beyond this machine.
+//
+// 🔴 THE HOOK TIER ACTS AS USER 1, THE ADMIN. Unset, its token is not checked,
+// so the only thing between a caller and every machine route is who can reach
+// the listener. That is acceptable on exactly one layout: every listener bound
+// to a loopback address AND no public URL naming another host (a URL that is
+// not this machine means a proxy forwards other machines to the loopback
+// listener, so the bind address no longer says who can reach it). Everywhere
+// else the server refuses to boot, in BOTH auth modes; gotrue mode refuses an
+// unset token on every layout (validateAuthMode), because its per-user logins
+// make the machine user a different person from whoever is at the keyboard.
+//
+// An EMPTY value is unset: a Secret whose key holds "" arms nothing.
+func (c config) validateListeners() error {
+	if c.MetricsPort != 0 && (c.MetricsPort == c.Port || c.MetricsPort == c.BrowserPort || c.MetricsPort == c.ConnectPort) {
+		return fmt.Errorf("%s=%d collides with another listener's port: /metrics gets a listener of its own", envMetricsPort, c.MetricsPort)
+	}
+	if strings.TrimSpace(c.HookToken) != "" || c.localOnly() {
+		return nil
+	}
+	where := envBindAddress + " is unset, so muster listens on every interface"
+	if c.BindAddress != "" && !c.bindLoopback() {
+		where = fmt.Sprintf("%s=%s is not a loopback address", envBindAddress, c.BindAddress)
+	} else if c.bindLoopback() {
+		where = fmt.Sprintf("%s=%s names another host, so a proxy forwards other machines to this loopback listener", envPublicURL, c.PublicURL)
+	}
+	return fmt.Errorf("%s is not set and %s: every machine route would answer without a credential, as the "+
+		"admin. Set %s to a secret (generate one with `openssl rand -hex 32`); a server only this machine can "+
+		"reach may instead bind loopback (%s=127.0.0.1) with no %s", envHookToken, where, envHookToken,
+		envBindAddress, envPublicURL)
+}
+
+// bindLoopback reports whether MUSTER_BIND_ADDRESS is a loopback address
+// (127.0.0.0/8 or ::1). Unset binds every interface, which is not.
+func (c config) bindLoopback() bool {
+	addr, err := netip.ParseAddr(c.BindAddress)
+	return err == nil && addr.Unmap().IsLoopback()
+}
+
+// localOnly reports whether only this machine can reach the server: every
+// listener is bound to loopback (they all bind BindAddress) and the public
+// URL, when set, is a loopback one too.
+func (c config) localOnly() bool {
+	if !c.bindLoopback() {
+		return false
+	}
+	if strings.TrimSpace(c.PublicURL) == "" {
+		return true
+	}
+	u, err := url.Parse(strings.TrimSpace(c.PublicURL))
+	return err == nil && loopback.Host(u.Host)
+}
+
+// secureCookies resolves MUSTER_SECURE_COOKIES: an explicit value wins (an
+// affirmative is on, anything else — 0, false, off — is the opt-out), and
+// UNSET follows the public URL, on when it is https. A deployment reached over
+// TLS therefore gets a Secure cookie without having to know the variable
+// exists; a plain-http LAN port, where a Secure cookie would never be sent,
+// keeps working.
+func secureCookies(v, publicURL string) bool {
+	if strings.TrimSpace(v) != "" {
+		return envFlag(func(string) string { return v }, envSecureCookies)
+	}
+	return httpsURL(publicURL)
+}
+
+// httpsURL reports whether raw is an https URL with a host.
+func httpsURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(u.Scheme, "https") && u.Host != ""
 }
 
 // faroSettings is the page's Faro configuration: with a relay upstream the

@@ -77,6 +77,9 @@ func TestGoTrueModeRefusesToBootUnlessEveryPreconditionHolds(t *testing.T) {
 	// arms the admin claim.
 	pw := validGoTrueConfig()
 	pw.AuthMode, pw.GoTrueURL, pw.GoTrueSecret, pw.HookToken, pw.BrowserPort = "password", "", "", "", 0
+	// Unarmed, password mode boots only where only this machine can reach it
+	// (validateListeners; TestTheHookTierBootPolicy).
+	pw.BindAddress = "127.0.0.1"
 	if err := pw.validate(); err != nil {
 		t.Fatalf("password mode with nothing gotrue set: %v", err)
 	}

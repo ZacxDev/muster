@@ -503,15 +503,34 @@ func TestRouteGatePositiveControl(t *testing.T) {
 // extra. The direction that matters is the one checked: a literal in the
 // source that the recorder never saw is a registration happening somewhere
 // this gate cannot see.
+// offTheMainMux is every literal route pattern the module registers on a
+// handler that is deliberately NOT registerAll's, with the reason. Each one is
+// asserted both ways: present in the sources (so the entry cannot outlive its
+// code) and ABSENT from the recorded set (so it is not served on the main
+// handler as well, which is the whole point of putting it elsewhere).
+var offTheMainMux = map[string]string{
+	"GET /metrics": "MetricsHandler: the metrics listener's own mux, served only on MUSTER_METRICS_PORT and on no " +
+		"listener the main handler backs (TestMetricsAreServedOnlyOnTheMetricsListener)",
+}
+
 func assertNoRouteOutsideTheChokepoint(t *testing.T, recorded []string, inSource map[string]string) {
 	t.Helper()
 	have := make(map[string]bool, len(recorded))
 	for _, r := range recorded {
 		have[r] = true
 	}
+	for pat := range offTheMainMux {
+		if _, ok := inSource[pat]; !ok {
+			t.Errorf("offTheMainMux lists %q, which no source registers any more: delete the entry", pat)
+		}
+		if have[pat] {
+			t.Errorf("offTheMainMux lists %q, and RegisterRoutes records it too: it is on the main handler, "+
+				"which is what registering it elsewhere was meant to prevent", pat)
+		}
+	}
 	var orphans []string
 	for pat, pos := range inSource {
-		if !have[pat] {
+		if _, off := offTheMainMux[pat]; !have[pat] && !off {
 			orphans = append(orphans, fmt.Sprintf("  %q at %s", pat, pos))
 		}
 	}
