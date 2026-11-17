@@ -141,6 +141,12 @@ var (
 		// and the AskUserQuestion hook's door (AuthenticateHost).
 		"internal/mirror.(*Service).authenticate",
 		"internal/mirror.(*Service).watchToken",
+		// The spawning-host mark (mirror_tokens.spawned_at): the hub's hook
+		// for a hello advertising -agent-spawn writes it on the token THIS
+		// connection authenticated with (connTok's id, found by authenticate
+		// above), one column, by id; no request principal exists on the hub's
+		// goroutine. The owner it would run as is that token's own.
+		"internal/mirror.(*Service).markSpawned",
 		// Accounts PR 4: the account store (users, invites). Both tables are
 		// under FORCE row-level security (0009), and every query there (except
 		// Role, which roleOf above calls under System) is how a request LEARNS
