@@ -172,7 +172,7 @@ func (s *Server) askContextLinks(ctx context.Context, a attention.Ask, it attent
 	if len(links) == 0 {
 		return ""
 	}
-	return `<div class="` + ui.AsksCardFooterClass + ` border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n"
+	return `<div class="` + ui.AsksCardFooterClass + ` gap-x-4 border-t border-line pt-2" data-asks-footer>` + strings.Join(links, "") + "</div>\n"
 }
 
 // askLiveHTML is the ask page's live region: an open ask's options and

@@ -119,12 +119,14 @@ for (const vp of [
       await swipe('right');
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
 
-      // A VERTICAL scroll, drifting sideways as a thumb does: no tab change —
-      // and the page did scroll (the gesture was real, not ignored).
+      // A VERTICAL scroll, drifting LEFT by more than a swipe's minimum (as
+      // a thumb does): it is locked vertical at its first moves, so no tab
+      // change — and the page did scroll (the gesture was real, not ignored).
       await page.evaluate(() => window.scrollTo(0, 0));
       const before = await page.evaluate(() => window.scrollY);
       const area = (await page.locator('[data-asks-swipe]').boundingBox())!;
-      await touchDrag(page, { x: area.x + area.width * 0.5, y: vp.use.viewport.height - 120 }, { x: area.x + area.width * 0.5 + 40, y: 160 }, 16);
+      const x0 = area.x + area.width * 0.75;
+      await touchDrag(page, { x: x0, y: vp.use.viewport.height - 120 }, { x: x0 - Math.max(110, area.width * 0.25), y: 160 }, 16);
       await expect.poll(() => page.evaluate(() => window.scrollY), { message: 'the vertical drag scrolled the page' }).toBeGreaterThan(before);
       await expect(selectedTab(page)).toHaveAttribute('data-tab', 'open');
       await expect(page).toHaveURL(`${origin}/attention`);
@@ -241,6 +243,8 @@ for (const vp of [
       await toast.getByRole('button', { name: 'Undo' }).click();
       await expect(card).toBeVisible();
       await expect(openCount(page)).toHaveText('5 open');
+      // Past the moment the dismissal would have been sent: still open.
+      await page.waitForTimeout(6500);
       expect(await askState(), 'Undo sent nothing').not.toContain('Dismissed');
       // Again, and let it lapse: now it is sent.
       await card.getByRole('button', { name: 'Dismiss without answering' }).click();
