@@ -65,6 +65,9 @@ AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/feature
 # The Compose chief's spec volume path: the Compose file mounts it where the
 # runtime's default (/run/muster-spec) looks, so it is not an .env line.
 NOT_FORWARDED = {
+    "MUSTER_BIND_ADDRESS": "inside the container muster must listen on every interface for the published port to reach it; "
+    "the Compose file binds the HOST side to 127.0.0.1 instead (MUSTER_BIND), and arms the hook token, which the boot "
+    "policy needs on a non-loopback bind",
     "MUSTER_CC_USAGE_POLL": "opt-in: the Claude account usage poller calls the provider's usage endpoint with every pooled "
     "account's token, so the Compose file leaves it off rather than forwarding a switch nobody set",
     "MUSTER_CC_USAGE_POLL_INTERVAL": "the usage poller's interval; refused without MUSTER_CC_USAGE_POLL, which the Compose file does not forward",
