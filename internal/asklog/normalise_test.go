@@ -26,6 +26,20 @@ func TestNormaliseLiteralPairs(t *testing.T) {
 		// NFC: a decomposed é is the composed one.
 		{"Café or not?", "café or not"},
 		{"", ""},
+		// Leading and trailing punctuation, symbols and space go TOGETHER: a
+		// mark separated from the words by a space goes too.
+		{"Shall I go on → ,", "shall i go on"},
+		// No letter or digit outside a placeholder: no normal form at all, so
+		// no two such questions share one (synthetic shapes: symbols around a
+		// comma, punctuation only, placeholders only).
+		{"→ , ←", ""},
+		{"✅ , ✅", ""},
+		{"? , ?", ""},
+		{"`one` , `two`?", ""},
+		{"See a/b and `c`?", "see {path} and {code}"},
+		// A letter in any script is a word; a bare number is a placeholder.
+		{"確認 , しますか？", "確認 , しますか"},
+		{"→ 3 ←", ""},
 	} {
 		if got := Normalise(c.in); got != c.want {
 			t.Errorf("Normalise(%q) = %q, want %q", c.in, got, c.want)

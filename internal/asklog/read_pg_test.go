@@ -256,6 +256,42 @@ func TestARowWhoseTextExpiredIsListedWithoutItAndLeavesTheTopQuestions(t *testin
 	}
 }
 
+// TestAQuestionWithNoWordsIsNotAskedMostOften: three different questions
+// that hold no letter or digit outside a placeholder (synthetic shapes:
+// symbols around a comma, punctuation only, code spans only) are stored with
+// NO normal form, so the summary does not group them into one repeated
+// question; the fixture's real repeat, "shall i continue" (asked three
+// times), still is the one top question — the positive control.
+func TestAQuestionWithNoWordsIsNotAskedMostOften(t *testing.T) {
+	f := newReadFixture(t)
+	ctx := asUser(2)
+	var ids []int64
+	for i, q := range []string{"→ , ←", "? , ?", "`one` , `two`?"} {
+		id, _, err := f.p.Open(ctx, Ask{Kind: KindPlainText, Runtime: RuntimeClaudeCode, Host: "alpha", TmuxSession: "s1",
+			Question: q, AskedAt: t0.Add(time.Duration(20+i) * time.Hour)})
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	rows, _, err := f.p.Page(ctx, Filter{Since: t0.Add(20 * time.Hour)}, 0, 0)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("page: %d rows (%v); want the three", len(rows), err)
+	}
+	for _, a := range rows {
+		if a.Question == "" || a.QuestionNorm != "" {
+			t.Errorf("row %d: question %q norm %q; want the question kept and no normal form", a.ID, a.Question, a.QuestionNorm)
+		}
+	}
+	s, err := f.p.Summarize(ctx, Filter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Total != 10 || len(s.Top) != 1 || s.Top[0].Norm != "shall i continue" || s.Top[0].Count != 3 {
+		t.Fatalf("total %d top %+v; want 10 asks and the one repeated question \"shall i continue\" ×3", s.Total, s.Top)
+	}
+}
+
 // TestAFilterTheReaderDoesNotKnowIsRefused: a misspelt kind, outcome,
 // runtime or answerer is an error, not an empty page that reads as "none".
 func TestAFilterTheReaderDoesNotKnowIsRefused(t *testing.T) {
