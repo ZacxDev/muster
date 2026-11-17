@@ -123,7 +123,10 @@ func TestAgentDestroyEndsAHostDispatchAndReleasesItsTask(t *testing.T) {
 	delete(args, "request_key")
 	args["task_id"] = task.ID
 	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, args))
-	c := toolCaller{asker: attention.Asker{MirrorHost: "host-bravo", MirrorSession: focusSID, Label: "owner's session"}}
+	// The owner's OWN session: not the one the fake host's spawn reply names
+	// (spawnMirror's AgentSession, which is focusSID) — a session the server
+	// recorded as a dispatch's is refused (spawnedByRecord).
+	c := toolCaller{asker: attention.Asker{MirrorHost: "host-bravo", MirrorSession: secondSID, Label: "owner's session"}}
 	out := f.srv.toolAgentDestroy(f.asOwner, c, `{"host_dispatch": `+strconv.FormatInt(id, 10)+`}`)
 	if !strings.Contains(out, `"ended":true`) || !strings.Contains(out, "still open on host-bravo: close it there") {
 		t.Fatalf("agent_destroy host_dispatch: %s", out)

@@ -10,11 +10,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,10 +48,22 @@ import (
 // name the owner's pane and decide as them. So every owner-authority tool from
 // a remote caller files the card, whatever this registry says.
 //
+// 🔴 SO IS A MACHINE THAT STARTS AGENTS FOR THE CHIEF (hostSpawnStepUp): a
+// host that has advertised -agent-spawn since this process started, or one
+// muster has a host dispatch on (open, or ended within hostSpawnStepUpWindow).
+// A spawned agent runs as the machine's user too, so it can name the owner's
+// pane, clear its own window's dispatch tag, or read the host's token and
+// call this door directly: whichever window a call names, on such a machine
+// it proves nothing about who decided. Neither trigger is anything a window
+// can set — the hello's capability and the server's own host_dispatches rows
+// — and both outlast the spawned window itself, so an agent that opens a
+// fresh untagged window, or restarts the mirror without -agent-spawn, is
+// still on a gated machine.
+//
 // What is NOT gated: the owner deciding in muster's own web UI (the Reply
 // drafts tab, Connectors, Attention), which is the owner's signed-in browser;
-// any machine with no host officer declared on it and mirrored HERE; the read
-// tools.
+// any machine mirrored HERE with no host officer declared on it that does not
+// start agents for the chief; the read tools.
 // ---------------------------------------------------------------------------
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
@@ -85,7 +99,7 @@ var hostStepUpExempt = map[string]string{
 	pluginDraftsListTool:       "a read",
 	pluginOutboundBatchGetTool: "a read",
 	pluginMessagesListTool:     "a read",
-	dispatchRequestTool:        "files a held start; dispatch_approve is the decision",
+	dispatchRequestTool:        "files a held start that starts nothing; dispatch_approve is the decision",
 	pageCreateTool:             "the session's own page; a link needs the owner's tap",
 	pageUpdateTool:             "the session's own page",
 	pageGetTool:                "a read",
@@ -278,22 +292,39 @@ const (
 
 // hostStepUpGate is the mirror door's gate, run on every call after the host
 // instance rule: an owner-authority tool from a machine that runs a host
-// officer files a confirmation card and runs nothing (ok true, the tool's
-// answer is the card); any other call is not the gate's (ok false).
+// officer, from a machine that starts agents for the chief (hostSpawnStepUp),
+// or from a remote caller, files a confirmation card and runs nothing (ok
+// true, the tool's answer is the card); any other call is not the gate's (ok
+// false). Which window the call names plays no part.
 func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, name, args string) (string, bool) {
 	what, gated := hostStepUpTools[name]
 	if !gated {
 		return "", false
 	}
 	p, _ := authz.From(ctx)
-	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
-	if len(ids) == 0 && !c.remote {
-		return "", false
+	// A call the tool itself refuses as a session muster started for the
+	// chief files no card: the owner is never asked to confirm a call that
+	// could only be refused (ownersOwnSession runs again inside the tool).
+	if why := s.ownersOwnSession(ctx, c); why == ownerAuthoritySpawned {
+		return toolErr("%s", why), true
 	}
-	// why is the reason the card gives: this machine's officers, or — a remote
-	// caller — that this muster cannot see its machine at all.
+	ids := s.hostOfficersOnMachine(ctx, p.UserID, host)
+	spawn := ""
+	if len(ids) == 0 && !c.remote {
+		if spawn = s.hostSpawnStepUp(ctx, p.UserID, host); spawn == "" {
+			return "", false
+		}
+	}
+	// why is the reason the card gives: this machine's officers, that it
+	// starts agents for the chief, or — a remote caller — that this muster
+	// cannot see its machine at all.
 	why := "This machine runs host officer " + strings.Join(ids, ", ")
-	if len(ids) == 0 {
+	switch {
+	case len(ids) > 0:
+	case spawn != "":
+		why = "This machine " + spawn + "; such an agent runs as the machine's user"
+		ids = []string{"none; it starts agents for the chief"}
+	default:
 		why = "This call came from a host that is mirrored to another muster, so this one cannot tell whether that machine runs a host officer"
 		ids = []string{"unknown: mirrored elsewhere"}
 	}
@@ -316,7 +347,7 @@ func (s *Server) hostStepUpGate(ctx context.Context, host string, c toolCaller, 
 	}
 	s.hostDecisions.put(ask.ID, hostDecision{owner: p.UserID, host: host, caller: c, tool: name, args: args})
 	s.askFiled(ask)
-	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "))
+	s.logger.Printf("step-up: %s from %s/%s waits for card %d (host officer %s on the machine; %s)", name, host, c.asker.MirrorSession, ask.ID, strings.Join(ids, ", "), firstNonBlank(spawn, "no agent spawn"))
 	return toolJSON(map[string]any{"status": "awaiting_owner_confirmation", "card": ask.ID,
 		"next": "Nothing was done yet. Your owner confirms or refuses this on their phone; it then runs once, exactly as asked. " +
 			"Do not call it again; read the outcome with the list tools later."}), true
@@ -432,4 +463,97 @@ func hostStepUpToolNames() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// hostSpawnStepUpWindow is how long after its last host dispatch ENDED a
+// machine is still gated as one that starts agents for the chief. It cannot
+// reach further back than the store's own horizon for ended rows
+// (plugins.HostDispatchesForHost: 7 days).
+const hostSpawnStepUpWindow = 7 * 24 * time.Hour
+
+// spawnHostsCap bounds spawnHosts. Past it the set stops growing, and a host
+// it could not record is still gated while it advertises -agent-spawn or has
+// a recorded dispatch (hostSpawnStepUp reads both live too).
+const spawnHostsCap = 4096
+
+// spawnHostKey names one owner's host.
+type spawnHostKey struct {
+	owner int64
+	host  string
+}
+
+// spawnHosts is the (owner, host) pairs seen advertising -agent-spawn since
+// this process started. In memory: a restart forgets a host that has since
+// stopped advertising it and has no recorded dispatch in the window.
+type spawnHosts struct {
+	mu   sync.Mutex
+	seen map[spawnHostKey]bool
+}
+
+func (h *spawnHosts) note(owner int64, host string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.seen == nil {
+		h.seen = map[spawnHostKey]bool{}
+	}
+	if len(h.seen) < spawnHostsCap {
+		h.seen[spawnHostKey{owner, host}] = true
+	}
+}
+
+func (h *spawnHosts) has(owner int64, host string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.seen[spawnHostKey{owner, host}]
+}
+
+// noteSpawnHosts records every host of the principal's that advertises
+// -agent-spawn now (HostView.AgentSpawn). The listing hook calls it, so a
+// host is recorded the first time it lists anything.
+func (s *Server) noteSpawnHosts(ctx context.Context, owner int64) {
+	if s.ext.Mirror == nil {
+		return
+	}
+	for _, v := range s.ext.Mirror.Hosts(ctx) {
+		if len(v.AgentSpawn) > 0 {
+			s.spawnHosts.note(owner, v.Host)
+		}
+	}
+}
+
+// hostSpawnStepUp is why owner's host is gated as a machine that starts
+// agents for the chief — a clause for the card ("advertises …", "has a host
+// dispatch …") — or "" when it is not one. Each read is the SERVER's: the
+// host's hello now (HostView.AgentSpawn), the hellos seen since this process
+// started (spawnHosts), and the host_dispatches rows (open, or ended within
+// hostSpawnStepUpWindow). ⚠ An unreadable dispatch store gates (the closed
+// direction).
+func (s *Server) hostSpawnStepUp(ctx context.Context, owner int64, host string) string {
+	if s.ext.Mirror != nil {
+		for _, v := range s.ext.Mirror.Hosts(ctx) {
+			if v.Host == host && len(v.AgentSpawn) > 0 {
+				s.spawnHosts.note(owner, host)
+				return "starts agents for the chief (-agent-spawn)"
+			}
+		}
+	}
+	if s.spawnHosts.has(owner, host) {
+		return "has started agents for the chief (-agent-spawn) since muster last restarted"
+	}
+	st := s.hostDispatches()
+	if st == nil {
+		return ""
+	}
+	rows, err := st.HostDispatchesForHost(ctx, host)
+	if err != nil {
+		s.logger.Printf("step-up: read host %s's dispatches: %v; its door stays gated", host, err)
+		return "could not be checked for agents muster started there"
+	}
+	cutoff := s.now().Add(-hostSpawnStepUpWindow)
+	for _, r := range rows {
+		if r.Status != plugins.HostDispatchEnded || r.EndedAt.After(cutoff) {
+			return "has a recent host dispatch (an agent muster started there for the chief)"
+		}
+	}
+	return ""
 }

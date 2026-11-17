@@ -33,8 +33,9 @@ appear in a mirrored session waits for you in the Terminal view, and muster
 never types into it ([sending-and-step-up.md](sending-and-step-up.md)). (An
 opencode permission request is the exception: on an `-interactive` host its
 card offers Allow once and Reject, [below](#opencodes-permission-requests-and-questions).)
-The agents a host starts for your chief are started without permission prompts
-by default ([below](#permission-prompts-in-a-spawned-agent)).
+The agents a host starts for your chief are started in their normal permission
+mode by default; starting them without permission prompts is opt-in
+([below](#permission-prompts-in-a-spawned-agent)).
 
 A mirrored session is a window onto a session you are already running. muster
 starts no process for it, and keeps no copy of the conversation. So when you
@@ -1465,7 +1466,7 @@ with no repository starts in a private scratch directory with `-agent-spawn` alo
 | `-agent-spawn-officer-rate` | `MUSTER_MIRROR_AGENT_SPAWN_OFFICER_RATE` | `20/10m,400/24h` | this host's own ceiling on every officer spawn together ([below](#officer-spawns-have-their-own-ceiling)) |
 | `-claude-path` | `MUSTER_MIRROR_CLAUDE_PATH` | (the tmux server's PATH) | the absolute path of the `claude` a spawn runs, when the tmux server's PATH does not reach it |
 | `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log |
-| `-agent-spawn-skip-permissions` | `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | **on** | start each spawned agent **without permission prompts** ([below](#permission-prompts-in-a-spawned-agent)). `=false` (env `0` or `false`) starts it in its normal permission mode instead; a value that is not a bool stops the daemon |
+| `-agent-spawn-skip-permissions` | `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS` | **off** | opt-in: start each spawned agent **without permission prompts** ([below](#permission-prompts-in-a-spawned-agent)). Unset, each starts in its normal permission mode; set it (env `1` or `true`) to skip them; a value that is not a bool stops the daemon |
 
 **What the host decides, whatever muster sends.** muster names a runtime, a
 repository, a base branch, the prompt and a display name. The host:
@@ -1521,11 +1522,11 @@ repository, a base branch, the prompt and a display name. The host:
 - writes the prompt to a `0600` file under `$XDG_RUNTIME_DIR/muster-mirror/prompts/`
   (no `XDG_RUNTIME_DIR`: nothing spawns), which a constant wrapper reads and
   deletes, and opens a window `cc-<dispatch>-<slug>` in the session `agents`
-  running `claude --session-id <uuid> --permission-mode bypassPermissions --
-  <prompt>` under your login shell (`claude --session-id <uuid> -- <prompt>`,
-  with no permission flag, when `-agent-spawn-skip-permissions=false`). An
-  opencode window runs `muster-mirror opencode --opencode-bin <opencode> -s
-  <session> --auto` (no `--auto` with the setting off). The window carries
+  running `claude --session-id <uuid> -- <prompt>` under your login shell
+  (with `-agent-spawn-skip-permissions`, `claude --session-id <uuid>
+  --permission-mode bypassPermissions -- <prompt>`). An opencode window runs
+  `muster-mirror opencode --opencode-bin <opencode> -s <session>` (with
+  `--auto` when the setting is on). The window carries
   the tmux window option
   `@muster-dispatch <dispatch>`; a global or `agents`-session value of it blocks
   spawning;
@@ -1581,23 +1582,35 @@ officers' included, counted against `-agent-spawn-rate`. After the upgrade:
 
 ### Permission prompts in a spawned agent
 
-**muster assumes your sessions run without permission prompts**, and the
-agents a host starts for your chief are started that way by default. Skipping permissions means **the agent runs every tool —
-shell commands, file edits, network fetches — without asking anyone first**.
-Nobody approves a tool call; what bounds the agent is what bounds the host
-spawn anyway: the repository allow-list, the fresh worktree, the rate limit
-and audit log above, and whatever deny rules your own CLI configuration has.
+The agents a host starts for your chief start in their **normal permission
+mode by default**: a tool use your settings do not allow waits for you in the
+Terminal view. Starting them **without permission prompts is opt-in**
+(`-agent-spawn-skip-permissions`). Skipping permissions means **the agent runs
+every tool — shell commands, file edits, network fetches — without asking
+anyone first**. Nobody approves a tool call; what bounds the agent is what
+bounds the host spawn anyway: the repository allow-list, the fresh worktree,
+the rate limit and audit log above, whatever deny rules your own CLI
+configuration has, and the [step-up gate](#a-machine-that-starts-agents-is-step-up-gated)
+on your own authority.
 
-| runtime | with `-agent-spawn-skip-permissions` (the default) | with `=false` |
+🔴 **Why it is opt-in.** A spawned agent runs as your user on that machine, so
+it can do anything your user can there — including calling muster through
+another of your sessions (naming its pane to the host's MCP endpoint), clearing
+its own window's `@muster-dispatch` tag, or reading this mirror's token. In
+normal permission mode each of those is a command you see and can refuse;
+without prompts nothing asks you. What it cannot do either way is act with your
+authority on muster without your phone: see below.
+
+| runtime | by default | with `-agent-spawn-skip-permissions` |
 |---|---|---|
-| Claude Code | `--permission-mode bypassPermissions` (Claude Code's own flag, the same mode as `--dangerously-skip-permissions`) | normal permission mode: each tool use your settings do not allow waits for you in the Terminal view |
-| opencode | `--auto` ("Auto-approve permissions that are not explicitly denied", `opencode --help`): your `deny` rules still hold, your `ask` rules are approved. ⚠ Unverified against a live opencode: that the TUI's `--auto` also approves asks raised by a prompt muster posted through the API (the launcher passes the flag on; `cmd/muster-mirror/opencode_launch.go`) | opencode's own default: it already runs without asking unless a rule of yours says `ask`, and such an ask reaches the [Attention view](attention.md) |
+| Claude Code | normal permission mode: each tool use your settings do not allow waits for you in the Terminal view | `--permission-mode bypassPermissions` (Claude Code's own flag, the same mode as `--dangerously-skip-permissions`) |
+| opencode | opencode's own default: it already runs without asking unless a rule of yours says `ask`, and such an ask reaches the [Attention view](attention.md) | `--auto` ("Auto-approve permissions that are not explicitly denied", `opencode --help`): your `deny` rules still hold, your `ask` rules are approved. ⚠ Unverified against a live opencode: that the TUI's `--auto` also approves asks raised by a prompt muster posted through the API (the launcher passes the flag on; `cmd/muster-mirror/opencode_launch.go`) |
 
-- **Turning it off.** Start the mirror with
-  `-agent-spawn-skip-permissions=false`, or set
-  `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=0` in its environment, and
-  restart it. Spawned agents then start exactly as they did before the setting
-  existed. A running agent keeps the mode it was started with.
+- **Turning it on.** Start the mirror with `-agent-spawn-skip-permissions`, or
+  set `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=1` in its environment, and
+  restart it. A running agent keeps the mode it was started with. ⚠ A host
+  that relied on the old default (on) now starts its agents with permission
+  prompts until you set it.
 - **What the agent and your chief are told.** The host says in its hello
   whether it skips permissions, and muster words the spawned agent's first
   message and the chief's answer by it: "You run without permission prompts …"
@@ -1615,7 +1628,7 @@ and audit log above, and whatever deny rules your own CLI configuration has.
   task without stopping at the screen, and **nothing on disk changes**: your
   `~/.claude/settings.json` is not written, and a `claude` you start yourself
   in bypass mode still asks you once. A spawn in normal permission mode
-  (`=false`, or a root mirror) passes neither flag. Read from Claude Code
+  (the default, or a root mirror) passes neither flag. Read from Claude Code
   2.1.289's own source and measured against it with an isolated config
   directory; `internal/mirrorhost/agentspawn.go` (`claudeBypassAccepted`)
   says how.
@@ -1633,13 +1646,12 @@ and audit log above, and whatever deny rules your own CLI configuration has.
   runs in its default mode, so it **asks** — while the host's hello, and so
   what the agent and your chief are told, still say it runs without prompts.
   muster does not read your Claude Code settings and cannot tell. On such a
-  host, turn this setting off (`-agent-spawn-skip-permissions=false`) so the
-  wording matches what runs.
+  host, leave this setting off so the wording matches what runs.
 - **A mirror running as root.** Claude Code exits at once (status 1) when it
   is started with `bypassPermissions` as root outside a sandbox of its own. So
   when the mirror's effective uid is 0, the host starts **claude in normal
-  permission mode whatever this setting says** — its argv is the one
-  `=false` gives — and says in its hello that it does not skip them, so the
+  permission mode whatever this setting says** — its argv is the default
+  one — and says in its hello that it does not skip them, so the
   agent and your chief are told normal permission mode; the startup line says
   why. opencode's `--auto` is unaffected. The hello carries one bool per host
   rather than one per runtime because Claude Code's is the only wording that
@@ -1653,6 +1665,38 @@ and audit log above, and whatever deny rules your own CLI configuration has.
   window that is waiting on a prompt stays
   ([sending-and-step-up.md](sending-and-step-up.md)): if a prompt does appear,
   you answer it in the Terminal view.
+
+### A machine that starts agents is step-up gated
+
+The mirror door names its caller by a header, and every process of your user
+on a machine can set it, a spawned agent included. So muster does not take
+the owner-authority tools (`attention_answer`, `connector_request_decide`,
+`plugin_draft_decide`, `plugin_request_decide`, `plugin_message_route`,
+`plugin_outbound_batch_decide`, `route_reply`, `dispatch_approve`,
+`agent_destroy`, `chief_restart`) from such a machine as your decision. On a
+machine that **starts agents for the chief**, each of them is a **confirmation
+card on your paired phone**, whichever of your sessions the call names, and
+nothing runs until you answer Confirm there (a signed action; a browser answer
+is refused). It is the same gate a machine running a
+[host officer](design/officers-on-hosts.md) has. A machine counts as one when:
+
+- its mirror advertises `-agent-spawn` now, or has since muster last
+  restarted; or
+- muster has a host dispatch on it that is open, or ended within the last 7
+  days.
+
+Neither is anything a window can set, so an agent that names your pane,
+clears its own window's tag, or calls muster with this host's token directly
+is gated all the same, and so is one that opens a fresh window or restarts the
+mirror without `-agent-spawn`. What it costs: on such a machine your own
+sessions' owner-authority calls are cards too. Deciding in muster's web UI
+(Attention, Connectors, the Reply drafts tab) is never gated.
+
+Separately, every owner-authority tool refuses a session muster started for
+the chief outright ("a session muster started for the chief cannot use it"),
+read from muster's own record of the host's dispatches (the session and window
+the host's spawn reply named), not from the window's tag. No card is filed for
+such a call.
 
 ### Starting agents on a tenant's tmux server
 

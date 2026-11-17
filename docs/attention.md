@@ -41,8 +41,9 @@ a screen reader), never in the head.
 | Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Open tab: with [plugins](plugins.md) on, the page has a **Drafts** tab ([below](#the-reply-drafts-tab)), whose label carries the count ("Drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
 
 A **Session waiting** item for a Claude Code permission prompt should be rare:
-muster assumes sessions run without permission prompts, and the agents a host
-starts for your chief are started that way by default
+muster assumes sessions run without permission prompts. The agents a host
+starts for your chief start in their normal permission mode unless the host
+opts in to skipping them
 ([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). When one
 does wait, you answer it in the session's Terminal view; muster never types
 into it ([sending-and-step-up.md](sending-and-step-up.md)).

@@ -273,10 +273,12 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
   window whose Rendered view resolves can be viewed, and Rendered-view
   detection is unverified on a real Mac. No Windows.
 - **muster assumes sessions run without permission prompts.** Start your own
-  Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
-  starts for your chief are started without them by default, so they run
-  their tools without asking (`-agent-spawn-skip-permissions=false` turns that
-  off: [docs/mirroring.md](docs/mirroring.md#permission-prompts-in-a-spawned-agent)).
+  Claude Code sessions in `bypassPermissions` or auto mode. The agents a host
+  starts for your chief start in their normal permission mode unless that
+  host opts in with `-agent-spawn-skip-permissions`
+  ([docs/mirroring.md](docs/mirroring.md#permission-prompts-in-a-spawned-agent)),
+  and owner-authority calls from such a host need your phone
+  ([docs/mirroring.md](docs/mirroring.md#a-machine-that-starts-agents-is-step-up-gated)).
   A Claude Code permission prompt that does appear is answered in the Terminal
   view: the chat view refuses to type into a waiting prompt, and there is no
   one-tap approve ([docs/sending-and-step-up.md](docs/sending-and-step-up.md)).
