@@ -585,6 +585,10 @@ type formValues struct {
 	// Policy is the stored type policy (edit only), kept but for its
 	// capabilities.
 	Policy json.RawMessage
+	// Kept is the stored declaration (edit only): the fields the form does
+	// not show — max instances, idle, poll, model — are replaced with their
+	// stored values, never reset to the defaults by a save.
+	Kept *officers.Declaration
 }
 
 // schedulePresets are the wizard's named schedules (cron, UTC).
@@ -767,6 +771,15 @@ func declaredInOf(f formValues, edit bool) (declaredIn, fieldErrs) {
 	paused := f.Paused
 	in := declaredIn{ID: id, Name: f.Name, Charter: f.Charter, Runtime: runtime, Host: host, Repo: f.Repo,
 		Connectors: splitList(f.Connectors), ReadRepos: splitList(f.ReadRepos), Mode: &mode, Paused: &paused, EscalateTo: f.Escalate}
+	if k := f.Kept; k != nil {
+		in.MaxInstances, in.Model = k.MaxInstances, k.Model
+		if k.IdleAfter > 0 {
+			in.IdleAfter = k.IdleAfter.String()
+		}
+		if k.PollInterval > 0 {
+			in.PollInterval = k.PollInterval.String()
+		}
+	}
 	pol, err := policyWith(f.Policy, f.Caps)
 	if err != nil {
 		errs["cap"] = "Its stored policy is not JSON this form can keep; change it with `muster officer type put`."
@@ -1321,7 +1334,7 @@ func joinQuery(sc officerScope, q string) string {
 func (s *Server) declaredFormOf(ctx context.Context, owner int64, row builtin.DeclaredRow) formValues {
 	f := formValues{Name: row.TypeName, Runtime: row.Fields.Runtime, Host: row.Fields.Host, Repo: row.Fields.Repo,
 		Connectors: strings.Join(row.Fields.Connectors, ", "), ReadRepos: strings.Join(row.Fields.ReadRepos, ", "),
-		Escalate: row.EscalateTo, Mode: row.Mode, Paused: !row.Enabled}
+		Escalate: row.EscalateTo, Mode: row.Mode, Paused: !row.Enabled, Kept: &row.Fields}
 	if t, err := s.officerStore.GetType(ctx, owner, row.TypeKey); err == nil {
 		f.Charter, f.Policy, f.Caps = t.Charter, t.Policy, policyCaps(t.Policy)
 	}
@@ -1370,7 +1383,7 @@ func (s *Server) handleOfficerEdit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	stored := s.declaredFormOf(ctx, sc.Owner, row)
 	f := readForm(r)
-	f.ID, f.Paused, f.Policy = row.Officer, stored.Paused, stored.Policy
+	f.ID, f.Paused, f.Policy, f.Kept = row.Officer, stored.Paused, stored.Policy, stored.Kept
 	in, errs := declaredInOf(f, true)
 	if len(errs) > 0 {
 		s.renderOfficerForm(w, r, http.StatusBadRequest, s.formPageFor(ctx, sc, f, errs, "", true, row.Officer))

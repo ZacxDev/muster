@@ -462,3 +462,32 @@ func TestTheDeleteNeedsItsIDTyped(t *testing.T) {
 		t.Fatal("the deleted officer is still in the live registry")
 	}
 }
+
+// TestAnEditKeepsWhatTheFormDoesNotShow: an officer created through the API
+// with a non-default max_instances, idle, poll and model keeps all four
+// through the page's Edit save and its Shadow/Live switch — the form does not
+// show them, and a whole-record replace would otherwise reset them.
+func TestAnEditKeepsWhatTheFormDoesNotShow(t *testing.T) {
+	r := newPageRig(t, declRigOpts{pods: true})
+	body := `{"id":"` + declID + `","name":"Scout","charter":"c","runtime":"pod","max_instances":2,"idle_scale_to_zero_after":"45m","poll_interval":"2m","model":"model-x"}`
+	if rec := r.hook(t, http.MethodPost, "/api/officers/declared", body); rec.Code != http.StatusCreated {
+		t.Fatalf("seed: %d %s", rec.Code, rec.Body.String())
+	}
+	want := func(step string) {
+		t.Helper()
+		row, err := r.store.GetDeclared(authz.System(context.Background()), 1, declID)
+		f := row.Fields
+		if err != nil || f.MaxInstances != 2 || f.IdleAfter.String() != "45m0s" || f.PollInterval.String() != "2m0s" || f.Model != "model-x" {
+			t.Fatalf("after %s: max %d idle %s poll %s model %q (%v); want 2, 45m, 2m, model-x", step, f.MaxInstances, f.IdleAfter, f.PollInterval, f.Model, err)
+		}
+	}
+	edit := url.Values{"name": {"Scout"}, "charter": {"changed"}, "runtime": {"pod"}, "mode": {"live"}}
+	if rec := r.page(t, 1, http.MethodPost, "/officers/"+declID+"/edit", edit); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the edit save: %d %.600s", rec.Code, rec.Body.String())
+	}
+	want("an Edit save")
+	if rec := r.page(t, 1, http.MethodPost, "/officers/"+declID+"/mode", url.Values{"mode": {"shadow"}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the mode switch: %d", rec.Code)
+	}
+	want("Switch to Shadow")
+}
