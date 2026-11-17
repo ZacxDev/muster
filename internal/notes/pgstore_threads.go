@@ -381,23 +381,53 @@ func (s *PGStore) sessionsForNotes(ctx context.Context, ids []int64) ([]noteSess
 // applies — a dismissed task answers 404 by id, so listing it here would hand a
 // caller an id it cannot then fetch.
 func (s *PGStore) TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error) {
+	by, err := s.TasksForSessions(ctx, []string{sessionID}, 0)
+	if err != nil {
+		return nil, err
+	}
+	if out := by[sessionID]; out != nil {
+		return out, nil
+	}
+	return make([]TaskLink, 0), nil
+}
+
+// TasksForSessions is TasksForSession for many sessions in ONE query, each
+// session's list in TasksForSession's order and cut to its perSession most
+// recent (0: all). A session with no live link has no entry. The read runs
+// as ctx's principal, so row-level security decides which task_sessions rows
+// and tasks are seen: another owner's link naming the same session id is not.
+// roles, when given, keeps only links of those roles — BEFORE the cut, so a
+// left-out role never crowds the cap; none given keeps every role.
+func (s *PGStore) TasksForSessions(ctx context.Context, sessionIDs []string, perSession int, roles ...string) (map[string][]TaskLink, error) {
+	out := map[string][]TaskLink{}
+	if len(sessionIDs) == 0 {
+		return out, nil
+	}
+	if perSession < 0 {
+		perSession = 0
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT n.id, n.title, n.directory, n.status, ts.role, ts.first_seen_at, ts.last_seen_at
-		  FROM task_sessions ts
-		  JOIN notes n ON n.id = ts.note_id
-		 WHERE ts.session_id = $1 AND n.`+liveOnly+`
-		 ORDER BY ts.last_seen_at DESC, n.id DESC`, sessionID)
+		SELECT session_id, id, ext_key, title, directory, status, role, first_seen_at, last_seen_at FROM (
+		  SELECT ts.session_id, n.id, COALESCE(n.ext_key, '') AS ext_key, n.title, n.directory, n.status, ts.role,
+		         ts.first_seen_at, ts.last_seen_at,
+		         row_number() OVER (PARTITION BY ts.session_id ORDER BY ts.last_seen_at DESC, n.id DESC) AS rn
+		    FROM task_sessions ts
+		    JOIN notes n ON n.id = ts.note_id
+		   WHERE ts.session_id = ANY($1) AND n.`+liveOnly+`
+		     AND (cardinality($3::text[]) = 0 OR ts.role = ANY($3::text[]))) l
+		 WHERE $2 = 0 OR rn <= $2
+		 ORDER BY session_id, rn`, sessionIDs, perSession, append([]string{}, roles...))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]TaskLink, 0)
 	for rows.Next() {
+		var sid string
 		var t TaskLink
-		if err := rows.Scan(&t.NoteID, &t.Title, &t.Directory, &t.Status, &t.Role, &t.FirstSeenAt, &t.LastSeenAt); err != nil {
+		if err := rows.Scan(&sid, &t.NoteID, &t.Key, &t.Title, &t.Directory, &t.Status, &t.Role, &t.FirstSeenAt, &t.LastSeenAt); err != nil {
 			return nil, err
 		}
-		out = append(out, t)
+		out[sid] = append(out[sid], t)
 	}
 	return out, rows.Err()
 }

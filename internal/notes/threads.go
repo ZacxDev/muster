@@ -187,7 +187,10 @@ type SessionLink struct {
 // state so a caller (a /handoff writer, say) can render the list without a second
 // round trip per task.
 type TaskLink struct {
-	NoteID      int64     `json:"id"`
+	NoteID int64 `json:"id"`
+	// Key is the task's plugin task key when it is a reference (notes.ext_key,
+	// Reference.Key); "" for an ordinary task.
+	Key         string    `json:"key,omitempty"`
 	Title       string    `json:"title"`
 	Directory   string    `json:"directory"`
 	Status      string    `json:"status"`

@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -162,11 +163,20 @@ func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (fo
 func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus.Summarizer) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{},
+	s.UseExtensions(Extensions{Notes: noLinkNotes{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{},
 		Mirror: fm, Focus: store, FocusSummarizer: summ})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts
+}
+
+// noLinkNotes is stubNotesStore answering the one task read fleet_list
+// makes (its linked_tasks): no session has a linked task. Any other call
+// still panics, as stubNotesStore's do.
+type noLinkNotes struct{ stubNotesStore }
+
+func (noLinkNotes) TasksForSessions(context.Context, []string, int, ...string) (map[string][]notes.TaskLink, error) {
+	return map[string][]notes.TaskLink{}, nil
 }
 
 func operatorCtx() context.Context {
