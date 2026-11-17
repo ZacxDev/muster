@@ -456,6 +456,12 @@ export const asksFeedPort = port + 421;
 export const teamUxMainPort = port + 410;
 export const teamUxBrowserPort = port + 411;
 export const teamUxGotruePort = Number(process.env.MUSTER_E2E_TEAMUX_GOTRUE_PORT ?? port + 412);
+// tests/ask-media.spec.ts: an agent's ask carrying an image — its own server
+// (uploads on, against a fake S3 the spec plays), its connect listener, and
+// the fake S3 (+420 to +422: clear of the blocks above).
+export const askMediaPort = port + 420;
+export const askMediaConnectPort = port + 421;
+export const askMediaS3Port = port + 422;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

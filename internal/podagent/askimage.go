@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/askimage"
+	"github.com/ZacxDev/muster/internal/workspacefile"
 )
 
 // --- an officer instance's workspace file, uploaded as an ask image ----------
@@ -35,54 +36,15 @@ import (
 // AskImagePath is muster's route an officer instance uploads an ask image to.
 const AskImagePath = "/agent/officer/ask-images"
 
-// ErrOutsideWorkspace is a path that resolves outside the workspace root.
-var ErrOutsideWorkspace = errors.New("the path is outside your workspace")
+// ErrOutsideWorkspace is a path that resolves outside the workspace root
+// (internal/workspacefile, the one rule).
+var ErrOutsideWorkspace = workspacefile.ErrOutside
 
-// ResolveWorkspaceFile is p resolved inside root, or an error: p relative is
-// joined to root; every symlink on either is resolved; the result must be
-// root itself's descendant (ErrOutsideWorkspace otherwise) and a regular file.
-func ResolveWorkspaceFile(root, p string) (string, error) {
-	if root == "" || !filepath.IsAbs(root) {
-		return "", fmt.Errorf("the workspace root %q is not an absolute path", root)
-	}
-	if strings.TrimSpace(p) == "" {
-		return "", errors.New("no path given")
-	}
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", fmt.Errorf("the workspace root: %v", err)
-	}
-	full := p
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(root, full)
-	}
-	// Lexically first: a clear refusal for `..` and a foreign absolute path,
-	// whether or not the target exists.
-	if !within(filepath.Clean(root), filepath.Clean(full)) && !within(realRoot, filepath.Clean(full)) {
-		return "", ErrOutsideWorkspace
-	}
-	real, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %v", p, err)
-	}
-	if !within(realRoot, real) {
-		return "", ErrOutsideWorkspace
-	}
-	st, err := os.Stat(real)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %v", p, err)
-	}
-	if !st.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file", p)
-	}
-	return real, nil
-}
-
-// within reports whether p is root or a descendant of it (both cleaned).
-func within(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-}
+// ResolveWorkspaceFile is p resolved inside root (workspacefile.Resolve): p
+// relative is joined to root; every symlink on either is resolved; the result
+// must be root itself's descendant (ErrOutsideWorkspace otherwise) and a
+// regular file.
+func ResolveWorkspaceFile(root, p string) (string, error) { return workspacefile.Resolve(root, p) }
 
 // errTooLarge is an image over askimage.MaxBytes, found while streaming it.
 var errTooLarge = fmt.Errorf("the image is over %d MiB", askimage.MaxBytes>>20)

@@ -283,6 +283,12 @@ type attentionItem struct {
 	// migration 0129), nil for none: drawn apart from the question on the
 	// card and the ask page (officerContextHTML), and in attention_list.
 	Context *attention.ItemContext `json:"context,omitempty"`
+	// Why is why an agent's ask is here (attention.Ask's, migration 0143):
+	// its own context, or muster's fallback (focus, last); nil for none.
+	// Attachments are the files it carries. Both are the asker's: drawn
+	// escaped under the question (ask_media.go), and in attention_list.
+	Why         *attention.AskWhy      `json:"why,omitempty"`
+	Attachments []attention.Attachment `json:"attachments,omitempty"`
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
 	choices []string
@@ -453,7 +459,7 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
-		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID}
+		ownerCard: a.OwnerCard, owner: a.Owner, taskID: a.TaskID, Why: a.Why, Attachments: a.Attachments}
 	if a.Asker.System {
 		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
@@ -1867,6 +1873,10 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	if it.Detail != "" {
 		b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
 `)
+	}
+	// An agent's ask: why it is here and the files it carries (ask_media.go).
+	if it.Kind == attentionKindAsk {
+		b.WriteString(askMediaHTML(it.AskID, it.Why, it.Attachments))
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
 	b.WriteString(officerContextHTML(it.Context))

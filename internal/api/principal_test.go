@@ -183,6 +183,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/open/{key}",
 		// An ask's own page, where its tap lands (attention_ask_page.go).
 		"GET /attention/asks/{id}",
+		// An ask's attachment (ask_media.go), to who may read the ask.
+		"GET /attention/asks/{id}/attachments/{upload}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
@@ -626,6 +628,8 @@ var routeVias = map[authz.Via][]string{
 	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
+		// A session's ask attachment, sent by its host (ask_media.go).
+		"POST /mirror/ask-attachments",
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
@@ -686,6 +690,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /agent/approvals",
 		"POST /agent/blocked",
 		"POST /agent/officer/ask-images",
+		"POST /agent/ask-attachments",
 		"POST /agent/work",
 	},
 }

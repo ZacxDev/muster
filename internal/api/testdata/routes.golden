@@ -114,6 +114,7 @@ GET /apple-touch-icon.png
 GET /attention
 GET /attention/asker
 GET /attention/asks/{id}
+GET /attention/asks/{id}/attachments/{upload}
 GET /attention/badge
 GET /attention/drafts
 GET /attention/items
@@ -247,6 +248,7 @@ POST /admin/users/{id}/passkeys/delete
 POST /admin/users/{id}/reset-link
 POST /admin/users/{id}/role
 POST /agent/approvals
+POST /agent/ask-attachments
 POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/officer/ask-images
@@ -317,6 +319,7 @@ POST /login
 POST /logout
 POST /mcp
 POST /mirror/ask
+POST /mirror/ask-attachments
 POST /mirror/confirm-send
 POST /mirror/mcp
 POST /mirror/terminal/scroll
