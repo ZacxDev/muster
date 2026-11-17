@@ -308,6 +308,11 @@ type Server struct {
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
 	verbRefusal map[string]*refusal
 	derivedAsks []DerivedAsk
+	// RerunAbsent makes POST …/items/{item}/rerun answer as an HQ without
+	// the route does (its router's catch-all 404 not_found "no such route").
+	// RerunCalls is every rerun request that reached the route, in order.
+	RerunAbsent bool
+	RerunCalls  []RerunCall
 	// gapTasks: every accepted gap-tasks request (civ-hq §5o), in order.
 	gapTasks []GapTask
 	// closedGapTasks: gap task ids a test closed (CloseGapTask).
@@ -930,6 +935,14 @@ func (s *Server) Complete(id string) {
 	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "done", "", nil
 }
 
+// Escalate finishes item id escalated, as an instance's complete would.
+func (s *Server) Escalate(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it := s.items[id]
+	it.Status, it.Outcome, it.ClaimedBy, it.LeaseExpiresAt = "escalated", "escalated", "", nil
+}
+
 // Notice is one accepted sensitive-path notice.
 type Notice struct {
 	Officer string
@@ -1294,6 +1307,20 @@ func (s *Server) Item(id string) Item {
 	return *s.items[id]
 }
 
+// Items returns officer's items, in id order.
+func (s *Server) Items(officer string) []Item {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Item
+	for _, it := range s.items {
+		if it.OfficerID == officer {
+			out = append(out, *it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return numID(out[i].ID) < numID(out[j].ID) })
+	return out
+}
+
 // Requests returns every request recorded so far.
 func (s *Server) Requests() []Request {
 	s.mu.Lock()
@@ -1606,9 +1633,17 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.write(w, http.StatusCreated, map[string]any{"merge": map[string]any{"id": 77}, "ask": map[string]any{"id": 88}, "item": map[string]any{"id": id}})
 		return
 	}
+	if verb == "rerun" && s.RerunAbsent {
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	}
 	it, ok := s.items[id]
 	if !ok || it.OfficerID != officer {
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such item"})
+		return
+	}
+	if verb == "rerun" {
+		s.rerun(w, officer, it, body, now)
 		return
 	}
 	instance, _ := body["instance"].(string)
@@ -1779,6 +1814,88 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 	default:
 		s.write(w, http.StatusNotFound, map[string]any{"error": "no such verb"})
 	}
+}
+
+// RerunCall is one rerun request the route took: the item and the body.
+type RerunCall struct {
+	Officer, Item, Key, Reason string
+}
+
+// Reruns returns every rerun request the route took, in order.
+func (s *Server) Reruns() []RerunCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RerunCall(nil), s.RerunCalls...)
+}
+
+// rerun serves POST …/items/{item}/rerun as civ-hq's route does
+// (store/officer_rerun.go): {key, reason} only; an item already re-run with
+// that key answers it ("already"); a later item of the same officer, kind and
+// subject answers it ("live" while live, else "superseded"); a live source or
+// live item of the subject answers it ("live"); else a NEW open item of the
+// same kind and subject, payload.rerun_of naming the source and key (201).
+func (s *Server) rerun(w http.ResponseWriter, officer string, it *Item, body map[string]any, now time.Time) {
+	for k := range body {
+		if k != "key" && k != "reason" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "invalid"})
+			return
+		}
+	}
+	key, _ := body["key"].(string)
+	reason, _ := body["reason"].(string)
+	if key == "" || reason == "" {
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "key and reason are required", "code": "invalid"})
+		return
+	}
+	s.RerunCalls = append(s.RerunCalls, RerunCall{Officer: officer, Item: it.ID, Key: key, Reason: reason})
+	isLive := func(x *Item) bool { return x.Status == "open" || x.Status == "claimed" || x.Status == "waiting" }
+	answer := func(code int, x *Item, rerun string) {
+		s.write(w, code, map[string]any{"item": *x, "source_item_id": numID(it.ID), "rerun": rerun})
+	}
+	var newest *Item
+	for _, x := range s.items {
+		if x.OfficerID != officer || x.Kind != it.Kind || x.SubjectKey != it.SubjectKey || numID(x.ID) <= numID(it.ID) {
+			continue
+		}
+		var p struct {
+			RerunOf struct {
+				ItemID int    `json:"item_id"`
+				Key    string `json:"key"`
+			} `json:"rerun_of"`
+		}
+		if json.Unmarshal(x.Payload, &p) == nil && p.RerunOf.ItemID == numID(it.ID) && p.RerunOf.Key == key {
+			answer(http.StatusOK, x, "already")
+			return
+		}
+		if newest == nil || numID(x.ID) > numID(newest.ID) {
+			newest = x
+		}
+	}
+	if newest != nil {
+		if isLive(newest) {
+			answer(http.StatusOK, newest, "live")
+		} else {
+			answer(http.StatusOK, newest, "superseded")
+		}
+		return
+	}
+	if isLive(it) {
+		answer(http.StatusOK, it, "live")
+		return
+	}
+	p := map[string]any{}
+	_ = json.Unmarshal(it.Payload, &p)
+	if p == nil {
+		p = map[string]any{}
+	}
+	p["rerun_of"] = map[string]any{"item_id": numID(it.ID), "status": it.Status, "outcome": it.Outcome, "key": key, "reason": reason}
+	raw, _ := json.Marshal(p)
+	s.nextID++
+	id := strconv.Itoa(s.nextID)
+	n := &Item{ID: id, OfficerID: officer, Kind: it.Kind, SubjectKey: it.SubjectKey, Status: "open", UpdatedAt: now,
+		Priority: it.Priority, Payload: raw}
+	s.items[id] = n
+	answer(http.StatusCreated, n, "created")
 }
 
 // investigationInvalid is HQ's check of an investigation block (civ-hq
