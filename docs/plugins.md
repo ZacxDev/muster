@@ -997,7 +997,7 @@ reply to one of their recorded [engagements](#engagement-kind-engagement) — is
 |---|---|---|
 | `target` | | `{"kind": "dm", "handle"}`, `{"kind": "follow", "handle"}` or `{"kind": "like", "ref"}` |
 | `body` | post, reply, dm (required); follow, like (refused) | a follow or a like is no text |
-| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it. A string, or a whole JSON number kept as its exact digits (so is `target.ref`); a number with a fraction, a sign or an exponent is refused, because an id that went through a float has lost its digits |
+| `because_ref` | dm, follow, like (required); reply (optional) | the ref of the person's recorded engagement that motivates it. **Send an X id as a JSON string** (`"because_ref": "2122495152350453825"`; so is `target.ref`). A JSON number is taken as its digits only when it is whole, non-negative and at most 2^53-1 (9007199254740991): a larger one is refused, because a client that parses JSON numbers as doubles (JavaScript does) has already rounded it (`2122495152350453825` arrives as `2122495152350453800`, which is someone else's id); a fraction, a sign or an exponent is refused too |
 | `contact` | like, reply (optional) | the person's handle, when the target is not one of their recorded engagements |
 | `reason` | follow, like (required); others (optional) | the officer's one line (at most 200 characters), shown on the outreach batch |
 

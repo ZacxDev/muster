@@ -160,24 +160,36 @@ func keyDiff(a, b map[string]any) (onlyA, onlyB []string) {
 	return onlyA, onlyB
 }
 
-// TestAnOutreachRefMayBeAJSONNumber: an X post id is all digits and an agent
-// sends it as a JSON number. officer_post_draft takes because_ref and
-// target.ref as a number or a string and stores the exact digits — a 19-digit
-// id, which float64 cannot hold (2122495152350453825 → …824), included. A
-// number that is not a whole non-negative integer (a fraction, a sign, an
-// exponent) is refused rather than guessed at: an exponent form is what an id
-// that already went through a float looks like, and its digits are gone.
-func TestAnOutreachRefMayBeAJSONNumber(t *testing.T) {
+// toolError is an officer tool answer's "error" sentence ("" for none).
+func toolError(out string) string {
+	var m struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal([]byte(out), &m)
+	return m.Error
+}
+
+// TestAnOutreachRefIsAStringOrASmallWholeNumber: officer_post_draft takes
+// because_ref and target.ref as a JSON string (kept exactly, at any length) or
+// a JSON number of digits only up to 2^53-1. An X post id is above that, and an
+// officer's runtime (Node) parses a JSON number as a float64 before muster sees
+// it: 2122495152350453825 arrives as 2122495152350453800, which is nobody's
+// engagement, and the officer was told "not a recorded engagement" with no
+// hint why. So a number above 2^53-1 is refused BY THE REF DECODER, saying to
+// send the id as a string, and nothing is filed. A fraction, a sign or an
+// exponent is refused too.
+func TestAnOutreachRefIsAStringOrASmallWholeNumber(t *testing.T) {
 	w := newOutboundWorld(t, true)
 	w.engagement("quanta", "reply", "2122495152350453825", "how does it scale?")
 	w.engagement("nia", "reply", "2122495152350453901", "great thread")
 	w.engagement("nia", "reply", "2122495152350453902", "and the cost?")
-	w.engagement("sam", "reply", "2122495152350453977", "does it batch?")
+	w.engagement("small", "reply", "9007199254740991", "a small id")
 
+	// The string form of a 19-digit id: filed, stored with its exact digits.
 	id, out := w.outreach(map[string]any{"target": map[string]any{"kind": "follow", "handle": "quanta"},
-		"because_ref": json.Number("2122495152350453825"), "reason": "asked a good question"})
+		"because_ref": "2122495152350453825", "reason": "asked a good question"})
 	if id == 0 {
-		t.Fatalf("a follow whose because_ref is a JSON number was refused: %s", out)
+		t.Fatalf("a follow whose because_ref is the string of a 19-digit id was refused: %s", out)
 	}
 	if d := w.draft(id); d.BecauseRef == nil || *d.BecauseRef != "2122495152350453825" {
 		t.Fatalf("the stored because_ref: %v", d.BecauseRef)
@@ -185,20 +197,49 @@ func TestAnOutreachRefMayBeAJSONNumber(t *testing.T) {
 	if e := w.checksEntry(id); e == nil || e["because_ref"] != "2122495152350453825" {
 		t.Fatalf("the check listing's because_ref: %v", e)
 	}
-
-	// target.ref as a number too: a like of one post because of another.
-	id, out = w.outreach(map[string]any{"target": map[string]any{"kind": "like", "ref": json.Number("2122495152350453901")},
-		"because_ref": json.Number("2122495152350453902"), "reason": "kind words"})
+	id, out = w.outreach(map[string]any{"target": map[string]any{"kind": "like", "ref": "2122495152350453901"},
+		"because_ref": "2122495152350453902", "reason": "kind words"})
 	if id == 0 {
-		t.Fatalf("a like whose refs are JSON numbers was refused: %s", out)
+		t.Fatalf("a like whose refs are strings was refused: %s", out)
 	}
 	if d := w.draft(id); d.TargetRef == nil || *d.TargetRef != "2122495152350453901" || d.BecauseRef == nil || *d.BecauseRef != "2122495152350453902" {
 		t.Fatalf("the stored like: target_ref %v because_ref %v", d.TargetRef, d.BecauseRef)
 	}
 
-	// The refused forms. Each one IS a recorded engagement's ref, so no later
-	// guard (no_qualifying_engagement, person_unresolved) could refuse it in
-	// RefText's place: only the decoder can, and the answer must be its own.
+	// 2^53-1 as a JSON number: the largest one taken, as its digits.
+	id, out = w.outreach(map[string]any{"target": map[string]any{"kind": "follow", "handle": "small"},
+		"because_ref": json.Number("9007199254740991"), "reason": "r"})
+	if id == 0 {
+		t.Fatalf("a because_ref of 2^53-1 as a JSON number was refused: %s", out)
+	}
+	if d := w.draft(id); d.BecauseRef == nil || *d.BecauseRef != "9007199254740991" {
+		t.Fatalf("the stored because_ref: %v", d.BecauseRef)
+	}
+
+	// Above 2^53-1: refused with the fix spelled out. Each one IS a recorded
+	// engagement's ref, so no later guard (no_qualifying_engagement) could
+	// refuse it in the decoder's place: the answer must be the decoder's own.
+	for i, n := range []string{"9007199254740992", "2122495152350453800"} {
+		b, tg := "big-b"+strconv.Itoa(i), "big-t"+strconv.Itoa(i)
+		w.engagement(b, "reply", n, "a question")
+		w.engagement(tg, "reply", n+"1", "a question")
+		w.engagement(tg, "reply", tg+"-why", "another")
+		id, out := w.outreach(map[string]any{"target": map[string]any{"kind": "follow", "handle": b},
+			"because_ref": json.Number(n), "reason": "r"})
+		want := "because_ref " + n + ` is a JSON number above 2^53-1, so your client may have rounded it (JavaScript does): ` +
+			`send the id as a JSON string, e.g. "because_ref": "<id>"`
+		if id != 0 || toolError(out) != want {
+			t.Errorf("because_ref %s: want refused with\n%q\ngot draft %d: %s", n, want, id, out)
+		}
+		id, out = w.outreach(map[string]any{"target": map[string]any{"kind": "like", "ref": json.Number(n + "1")},
+			"because_ref": tg + "-why", "reason": "r"})
+		if id != 0 || !strings.Contains(toolError(out), "target.ref "+n+"1 is a JSON number above 2^53-1") ||
+			!strings.Contains(toolError(out), `send the id as a JSON string, e.g. "target": {"ref": "<id>"}`) {
+			t.Errorf("target.ref %s1: want refused by the ref decoder, got draft %d: %s", n, id, out)
+		}
+	}
+
+	// The malformed numbers.
 	for i, bad := range []struct{ because, target string }{
 		{"2.122495152350453977e18", "2.122495152350453978e18"},
 		{"2122495152350453977.0", "2122495152350453978.0"},
@@ -219,14 +260,5 @@ func TestAnOutreachRefMayBeAJSONNumber(t *testing.T) {
 		if id != 0 || !strings.Contains(out, "digits only") {
 			t.Errorf("target.ref %s: want refused by the ref decoder, got draft %d: %s", bad.target, id, out)
 		}
-	}
-	// The control: the string form of sam's id is filed and stored as is.
-	id, out = w.outreach(map[string]any{"target": map[string]any{"kind": "follow", "handle": "sam"},
-		"because_ref": "2122495152350453977", "reason": "r"})
-	if id == 0 {
-		t.Fatalf("control: the string form was refused: %s", out)
-	}
-	if d := w.draft(id); d.BecauseRef == nil || *d.BecauseRef != "2122495152350453977" {
-		t.Fatalf("the stored string because_ref: %v", d.BecauseRef)
 	}
 }

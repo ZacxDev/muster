@@ -453,7 +453,7 @@ func postDraftToolDef() agents.ToolDef {
 			"target": objSchema(map[string]any{
 				"kind": map[string]any{"type": "string", "enum": plugins.TargetKinds},
 				"ref": strProp("For a reply: the upstream reference of what it answers (an item's thread). For a like: what to like. Omit for a post, a dm and a follow. " +
-					"An all-digit id may be a string or a whole number."),
+					"Send an X id as a JSON string (\"ref\": \"2122495152350453825\"): a number above 2^53-1 is refused, since your client may have rounded it."),
 				"handle": strProp("For a dm or a follow: the person's handle (as their engagement item names it). Omit otherwise."),
 			}, "kind"),
 			"body": strProp("The exact text to post or send, at most 16 KiB. Required for a post, a reply and a dm; omit for a follow and a like. " +
@@ -462,7 +462,7 @@ func postDraftToolDef() agents.ToolDef {
 					plugins.VenueX, plugins.XMaxWeight, plugins.XURLWeight, plugins.XThreadSeparator, plugins.XMaxThreadParts) +
 				"A body that breaks its venue's rules is refused when filed, naming the part."),
 			"because_ref": strProp("For a dm, a follow and a like (optional for a reply): the ref of the person's recorded engagement that motivates it. " +
-				"An all-digit id may be a string or a whole number."),
+				"Send an X id as a JSON string (\"because_ref\": \"2122495152350453825\"): a number above 2^53-1 is refused, since your client may have rounded it."),
 			"contact": strProp("For a like or a reply whose target is not one of the person's recorded engagements: the person's handle."),
 			"reason":  strProp("Your one-line reason (at most 200 characters): required for a follow and a like, shown on your owner's outreach batch."),
 			"media": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": plugins.MaxMediaRefs,
@@ -511,17 +511,21 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		Body   string                 `json:"body"`
 		Media  []string               `json:"media"`
 		ItemID officers.ItemID        `json:"item_id"`
-		// outreach (plugins outreach.go). A string or a whole JSON number,
-		// kept as its exact digits (plugins.RefText), as target.ref is.
-		BecauseRef plugins.RefText `json:"because_ref"`
+		// outreach (plugins outreach.go). A string, or a small whole JSON
+		// number (plugins.DecodeRef), as target.ref is.
+		BecauseRef json.RawMessage `json:"because_ref"`
 		Contact    string          `json:"contact"`
 		Reason     string          `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("arguments are {plugin, venue, target: {kind, ref?, handle?}, body?, media?, item_id?, because_ref?, contact?, reason?}: %v", err)
 	}
+	becauseRef, err := plugins.DecodeRef("because_ref", in.BecauseRef)
+	if err != nil {
+		return toolErr("%v", err)
+	}
 	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media,
-		PublicLinks: officerPublicLinks(o), BecauseRef: string(in.BecauseRef), Contact: in.Contact, Reason: in.Reason}
+		PublicLinks: officerPublicLinks(o), BecauseRef: becauseRef, Contact: in.Contact, Reason: in.Reason}
 	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
 		// Whether this instance holds it is decided in the filing's
 		// transaction, under the item's row lock (plugins.FileOutbound).
