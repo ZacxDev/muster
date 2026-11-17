@@ -56,7 +56,7 @@ func itemLi(t *testing.T, out, key string) string {
 	return li[:strings.Index(li, "</li>")+len("</li>")]
 }
 
-var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false" aria-controls="([^"]+)" data-asks-toggle><span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span>`)
+var cardBadge = regexp.MustCompile(`<li id="([^"]+)"[^>]*data-asks-card[^>]*>\s*<button type="button" class="[^"]*" aria-expanded="false" aria-controls="([^"]+)" aria-label="Details" aria-describedby="([^"]+)" data-asks-toggle><span class="[^"]*" data-asks-badge="([a-z]+)">([^<]+)</span><span id="([^"]+)"`)
 
 // TestTheOpenFeedOrdersCardsByKindWithABadgeEach: one flat feed, in the
 // order questions, notices, waiting sessions, tasks to route; each card opens
@@ -72,7 +72,11 @@ func TestTheOpenFeedOrdersCardsByKindWithABadgeEach(t *testing.T) {
 		if m[2] != m[1]+"-more" {
 			t.Errorf("%s's toggle controls %q", m[1], m[2])
 		}
-		got = append(got, m[1]+"="+m[3]+":"+m[4])
+		// Named "Details", described by its who-line (its own id).
+		if m[3] != m[1]+"-who" || m[6] != m[1]+"-who" {
+			t.Errorf("%s's toggle is described by %q, its who-line is %q", m[1], m[3], m[6])
+		}
+		got = append(got, m[1]+"="+m[4]+":"+m[5])
 	}
 	want := "ask-1=question:Question|ask-2=question:Question|session-aaaaaaaaaaaaaaaa=question:Question|ask-5=notice:Notice|" +
 		"session-bbbbbbbbbbbbbbbb=waiting:Waiting|task-3=task:Task to route"

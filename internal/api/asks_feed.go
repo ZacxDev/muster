@@ -148,8 +148,13 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		who = `<span class="` + ui.AsksTitleClass + `" data-attention-title>` + esc(title) + `</span>` + sub
 		text = esc(rest)
 	}
-	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + esc(more) + `" data-asks-toggle>` +
-		ui.AsksKindBadge(kind, label) + `<span class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
+	// 🔴 THE TOGGLE IS NAMED FOR WHAT IT DOES ("Details", ui.AsksCardToggleLabel),
+	// its words (who, how long) its DESCRIPTION: named by its content it read
+	// as a second control saying the card's words — "… just now" — beside the
+	// card's own options (e2e waiting-composer: two buttons matched "no").
+	b.WriteString(`<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + esc(more) + `" aria-label="` + ui.AsksCardToggleLabel +
+		`" aria-describedby="` + esc(it.Key) + `-who" data-asks-toggle>` +
+		ui.AsksKindBadge(kind, label) + `<span id="` + esc(it.Key) + `-who" class="` + ui.AsksCardWhoClass + `">` + who + `</span>` + ui.AsksCardChevron + `</button>
 `)
 	// THE QUESTION (what a waiting session waits on: its pending call).
 	switch {
@@ -379,8 +384,9 @@ func answeredCardHTML(a attention.Ask, hosts []mirror.HostView, now time.Time, p
 	key := "answered-" + id
 	var b strings.Builder
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" data-asks-toggle>` + ui.AsksKindBadge("answered", "Answered") +
-		`<span class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `" data-attention-source>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
+<button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" aria-label="` + ui.AsksCardToggleLabel +
+		`" aria-describedby="` + key + `-who" data-asks-toggle>` + ui.AsksKindBadge("answered", "Answered") +
+		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `" data-attention-source>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
 <p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
 <p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>

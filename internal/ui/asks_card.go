@@ -96,6 +96,11 @@ func AsksKindBadge(kind, label string) string {
 		`" data-asks-badge="` + html.EscapeString(kind) + `">` + html.EscapeString(label) + `</span>`
 }
 
+// AsksCardToggleLabel is a card head's accessible NAME: what the toggle does.
+// Its visible words (who, how long) are its description (aria-describedby),
+// so the head never reads as another control saying the card's words.
+const AsksCardToggleLabel = "Details"
+
 // AsksCardChevron is the head's expand mark: it turns when the card opens.
 const AsksCardChevron = `<svg class="asks-chevron h-4 w-4 shrink-0 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>`
 
