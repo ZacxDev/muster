@@ -343,6 +343,56 @@ func TestATeamSessionsPreviewRunsOnTheTeamsPlugin(t *testing.T) {
 	}
 }
 
+// TestATeamSessionPageDrawsPreviewOnlyOnTheTeamsPlugin (#753): what a team
+// session's two session views draw for Preview, decided at page load by the
+// team branches of handleMirrorView (mirror_view.go) and handleMirrorTerminal
+// (mirror.go), both through teamViewerPlugins. cal (a VIEWER) has a live
+// viewer plugin of her OWN; the team's window @7 has something to preview.
+//
+//   - The team has NO viewer plugin: neither page draws a Preview slot (no
+//     button, no poll), and cal's own plugin is never drawn in its place.
+//   - The team mints one: both pages draw the slot, with the panel on the
+//     TEAM's plugin, never cal's.
+//
+// A GUARD PIN, not a regression test: both branches already read the team's
+// plugins (green at origin/main 94bea5e9). It is what kills a mutant that
+// swaps either page's team read for the viewer's own (viewerPlugins) — the
+// fallback docs/previews.md says never happens. The poll and the mint are
+// pinned by TestATeamSessionsPreviewRunsOnTheTeamsPlugin.
+func TestATeamSessionPageDrawsPreviewOnlyOnTheTeamsPlugin(t *testing.T) {
+	f := newTPlug(t)
+	w := f.w
+	calCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.cal, Role: authz.RoleMember, Via: authz.ViaSession})
+	_, calPlugin := f.viewerPlugin(t, calCtx, "tplug-pc-"+w.suffix, "https://c.viewer.example.net/e")
+	w.srv.ext.Mirror = &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, teamHosts: []mirror.HostView{{Owner: f.team, Host: "build-01", Online: true, Interactive: true, Rendered: true,
+		Windows:  []mirror.Window{{Session: "main", ID: "@7", Index: 1, Active: true, Claude: true}},
+		Previews: map[string]mirror.WindowPreviews{"@7": {Offered: 2}}}}}
+	q := url.Values{"host": {"build-01"}, "session": {"main"}, "window": {"@7"}, "owner": {strconv.FormatInt(f.team, 10)}}.Encode()
+	pages := []string{"/mirror/view?" + q, "/mirror/terminal?" + q}
+	chip := func(id int64) string { return `data-plugin="` + strconv.FormatInt(id, 10) + `"` }
+	get := func(page string) string {
+		t.Helper()
+		rec := w.do(w.h, "GET", page, "", cred{sessionUser: f.cal})
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "build-01") {
+			t.Fatalf("instrument check FAILED: cal's %s: %d %q; want the team's session view", page, rec.Code, truncate(rec.Body.String(), 200))
+		}
+		return rec.Body.String()
+	}
+	for _, page := range pages {
+		body := get(page)
+		if strings.Contains(body, `id="preview-slot"`) || strings.Contains(body, chip(calPlugin.ID)) {
+			t.Errorf("%s with NO team viewer plugin: draws a Preview slot or cal's own plugin %d; want neither", page, calPlugin.ID)
+		}
+	}
+	_, teamPlugin := f.viewerPlugin(t, f.teamCtx(), "tplug-pt-"+w.suffix, "https://t.viewer.example.net/e")
+	for _, page := range pages {
+		body := get(page)
+		if !strings.Contains(body, `id="preview-slot"`) || !strings.Contains(body, chip(teamPlugin.ID)) || strings.Contains(body, chip(calPlugin.ID)) {
+			t.Errorf("%s with the team's viewer plugin %d: want the Preview slot on it, never cal's %d", page, teamPlugin.ID, calPlugin.ID)
+		}
+	}
+}
+
 // TestATeamPreviewReadsTheMembersRoleFresh (#696 round 1, M8b): cal's
 // request was admitted while she was a viewer of the team — its principal's
 // cached memberships still say so — and she is removed before the preview
