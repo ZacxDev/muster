@@ -189,7 +189,7 @@ at most once: a later idle streak of the same stop is pushed, not judged again
 pass to open the stop's episode before it judges it.
 
 With session state off, in live mode an **ask** decision raises a
-[notice](#live-mode), not a question: "ask" below names the chief's decision, which the Chief nudges tab
+[notice](#live-mode), not a question: "ask" below names the chief's decision, which the Nudges tab
 records with its question. The chief is asked for no options: a notice has
 nothing to choose. (Rows from before notices still show the options they hold.)
 
@@ -259,7 +259,7 @@ answer *this* question is the chief's judgement, which code does not check.
 **It has its own live gate** (operator decision 2026-11-04, "Separate shadow
 gate"): a needs-you nudge is sent only for an owner on **both**
 `MUSTER_CHIEF_NUDGE_LIVE_OWNERS` and `MUSTER_CHIEF_NUDGE_NEEDS_YOU_LIVE_OWNERS`.
-For everyone else it is shadow: recorded on the Chief nudges tab as
+For everyone else it is shadow: recorded on the Nudges tab as
 `would_send`, never pasted, not counted toward the hourly cap, and the stop is
 pushed. That includes an `asks_permission` stop, which before step 3a was
 nudged live on the old list alone (operator decision on #433). Every other nudge (to a session the classifier says asked nothing, or
@@ -313,7 +313,7 @@ quoting the Chief chat is sent only for an owner
 also on `MUSTER_CHIEF_NUDGE_CHIEF_CHAT_QUOTES_LIVE_OWNERS`, on top of every
 list it is otherwise under (`MUSTER_CHIEF_NUDGE_LIVE_OWNERS`, and the needs-you
 list for a needs-you stop). For everyone else it is shadow: recorded as
-`would_send` with its source on the Chief nudges tab, never pasted, and the
+`would_send` with its source on the Nudges tab, never pasted, and the
 stop pushed.
 
 **The whole decision is under that gate when your Chief chat was in view**
@@ -385,7 +385,7 @@ ccd's 60 seconds. Either refusal is:
   first try (above), and logged once per idle streak, on its first refusal;
 - after **30 minutes** of refusals, recorded on that session as
   `suppressed:lanes_full` (capacity) or `suppressed:chief_not_ready`, with a
-  detail saying why and what to change — so it shows on the Chief nudges tab,
+  detail saying why and what to change — so it shows on the Nudges tab,
   and that idle streak is not asked about again (the next one is judged
   afresh, and waits its own 30 minutes if the lanes are still full).
 

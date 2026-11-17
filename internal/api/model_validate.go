@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -67,6 +68,26 @@ type CatalogModel struct {
 	// states it (OpenRouter's context_length); 0 unknown. The chief chat's
 	// context chip reads it (modelContextWindow).
 	ContextLength int64
+	// Pricing is the catalogue's list price, as OpenRouter writes it (USD per
+	// token, a decimal string; "" unknown). For the chief sessions' model
+	// picker to show: never what muster books (the provider's billed cost is).
+	Pricing CatalogPricing
+}
+
+// CatalogPricing is a model's list price per token, as the catalogue states it.
+type CatalogPricing struct {
+	Prompt     string `json:"prompt"`
+	Completion string `json:"completion"`
+}
+
+// AgedModelCatalog is a ModelCatalog that also says how old its copy is:
+// the chief sessions' model check refuses a copy older than
+// chiefSessionCatalogMaxAge. A catalogue without it is read as fresh whenever
+// it answers.
+type AgedModelCatalog interface {
+	// ModelsAt is the catalogue, when it was fetched, and the error of the
+	// refresh just attempted (a stale copy may come WITH an error).
+	ModelsAt(ctx context.Context) ([]CatalogModel, time.Time, error)
 }
 
 // ModelCatalog is the catalogue the model check reads. api.OpenRouterCatalog is
@@ -87,6 +108,10 @@ type openRouterCatalog struct{}
 
 func (openRouterCatalog) Models(ctx context.Context) ([]CatalogModel, error) {
 	return orCache.catalog(ctx)
+}
+
+func (openRouterCatalog) ModelsAt(ctx context.Context) ([]CatalogModel, time.Time, error) {
+	return orCache.catalogAt(ctx)
 }
 
 // ErrModelUnknown marks a model the catalogue check refused. It is wrapped
@@ -112,6 +137,9 @@ type modelResolution struct {
 	// closest ids (agent-runtime slugs), at most modelSuggestionsMax.
 	Refusal     string
 	Suggestions []string
+	// Ambiguous: the refusal is that more than one model matched (Suggestions
+	// are those models), not that none did.
+	Ambiguous bool
 }
 
 // Err is the refusal as an error (nil when it passed).
@@ -203,6 +231,16 @@ func resolveModel(raw string, cat []CatalogModel, catErr error) modelResolution 
 			"use an id (vendor/model, e.g. %q)", in, "openrouter/vendor/model-name")
 		return r
 	}
+	return matchCatalog(in, cat)
+}
+
+// matchCatalog is the catalogue half of the model check, shared by
+// resolveModel and the chief sessions' model check (resolveChiefSessionModel):
+// in (trimmed, non-empty) against a READ catalogue cat — an exact id, a case
+// variant of one id, or a display name / spacing variant of exactly one
+// model; else a refusal, Ambiguous when more than one model matched.
+func matchCatalog(in string, cat []CatalogModel) modelResolution {
+	r := modelResolution{Input: in, Model: in}
 	const route = "openrouter/"
 	ids := make(map[string]bool, len(cat))
 	for _, m := range cat {
@@ -255,6 +293,7 @@ func resolveModel(raw string, cat []CatalogModel, catErr error) modelResolution 
 		return answer(hits[0])
 	case len(hits) > 1:
 		sort.Strings(hits)
+		r.Ambiguous = true
 		r.Suggestions = slugs(hits, slug)
 		r.Refusal = fmt.Sprintf("model %q matches more than one model (%s): name one of them by id",
 			in, strings.Join(r.Suggestions, ", "))

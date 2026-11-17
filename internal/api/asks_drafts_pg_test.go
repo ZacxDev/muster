@@ -87,6 +87,23 @@ func panelHidden(t *testing.T, page, id string) bool {
 	return strings.Contains(m, " hidden")
 }
 
+// archivedShown reports whether the Drafts tab's archived list is shown on
+// page (draftsPanel's "Show archived": its section not hidden, its toggle
+// expanded — both, or the test fails).
+func archivedShown(t *testing.T, page string) bool {
+	t.Helper()
+	sec := regexp.MustCompile(`<section id="asks-drafts-archived-section"[^>]*>`).FindString(page)
+	btn := regexp.MustCompile(`<button type="button" id="asks-drafts-archived-toggle"[^>]*>(Show|Hide) archived</button>`).FindStringSubmatch(page)
+	if sec == "" || btn == nil {
+		t.Fatalf("no archived section or toggle on the page")
+	}
+	shown := !strings.Contains(sec, " hidden")
+	if shown != strings.Contains(btn[0], `aria-expanded="true"`) || shown != (btn[1] == "Hide") {
+		t.Fatalf("the archived section and its toggle disagree: %s / %s", sec, btn[0])
+	}
+	return shown
+}
+
 func draftAnchor(id int64) string { return `id="draft-` + strconv.FormatInt(id, 10) + `"` }
 
 // TestTheAsksPageSplitsAsksFromReplyDrafts: one ask, one waiting session and
@@ -103,7 +120,7 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 
 	page := f.page(t, "/attention")
 	for _, want := range []string{"<title>Asks · muster</title>", `>Asks</h1>`,
-		`id="asks-tabs" role="tablist" aria-label="Asks"`, `id="asks-drafts-tabs" role="tablist" aria-label="Reply drafts"`} {
+		`id="asks-tabs" role="tablist" aria-label="Asks"`, `id="asks-drafts-archived-toggle"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
 		}
@@ -111,10 +128,10 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 	if strings.Contains(page, ">Attention</h1>") {
 		t.Error("the page is still headed Attention")
 	}
-	if got := selectedTab(t, page, "asks-tabs-tab-ask"); got != "true" {
-		t.Errorf("with no ?tab the Ask tab is aria-selected=%s; want true", got)
+	if got := selectedTab(t, page, "asks-tabs-tab-open"); got != "true" {
+		t.Errorf("with no ?tab the Open tab is aria-selected=%s; want true", got)
 	}
-	if !strings.Contains(page, `id="asks-tabs-tab-drafts"`) || !strings.Contains(page, ">Reply drafts (1)</button>") {
+	if !strings.Contains(page, `id="asks-tabs-tab-drafts"`) || !strings.Contains(page, ">Drafts (1)</button>") {
 		t.Errorf("the Reply drafts tab does not count its one pending draft")
 	}
 	al := askList(page)
@@ -166,19 +183,18 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 
 	// ?tab= opens the named tab with no script.
 	dp := f.page(t, "/attention?tab=drafts")
-	if selectedTab(t, dp, "asks-tabs-tab-drafts") != "true" || selectedTab(t, dp, "asks-drafts-tabs-tab-drafts") != "true" ||
-		!panelHidden(t, dp, "asks-tabs-panel-ask") || panelHidden(t, dp, "asks-tabs-panel-drafts") || panelHidden(t, dp, "asks-drafts-tabs-panel-drafts") {
+	if selectedTab(t, dp, "asks-tabs-tab-drafts") != "true" || archivedShown(t, dp) ||
+		!panelHidden(t, dp, "asks-tabs-panel-open") || panelHidden(t, dp, "asks-tabs-panel-drafts") || strings.Contains(dp, `id="asks-drafts-tabs"`) {
 		t.Fatal("?tab=drafts does not open Reply drafts → Awaiting decision")
 	}
 	ap := f.page(t, "/attention?tab=archived")
-	if selectedTab(t, ap, "asks-tabs-tab-drafts") != "true" || selectedTab(t, ap, "asks-drafts-tabs-tab-archived") != "true" ||
-		!panelHidden(t, ap, "asks-drafts-tabs-panel-drafts") || panelHidden(t, ap, "asks-drafts-tabs-panel-archived") {
+	if selectedTab(t, ap, "asks-tabs-tab-drafts") != "true" || !archivedShown(t, ap) || !strings.Contains(pendingList(ap), `id="asks-drafts-pending"`) {
 		t.Fatal("?tab=archived does not open Reply drafts → Archived")
 	}
 	// An old /attention#ask-N link (a phone's notification, an agent card's
 	// badge): the fragment never reaches the server, so the plain page must
 	// draw that ask on its VISIBLE default tab.
-	if panelHidden(t, page, "asks-tabs-panel-ask") || !strings.Contains(askList(page), ask) {
+	if panelHidden(t, page, "asks-tabs-panel-open") || !strings.Contains(askList(page), ask) {
 		t.Fatal("/attention#ask-N: the ask is not on the visible default tab")
 	}
 
@@ -217,11 +233,11 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 	page = page[:i] + page[i+j+len("</dialog>"):]
 	// (The confirm dialog is no proxy for the tab: the Asks page draws it
 	// whatever the plugins, for a team's gated cards — #717.)
-	if strings.Contains(page, "Reply drafts") || strings.Contains(page, `id="asks-drafts-tabs"`) {
+	if strings.Contains(page, "Reply drafts") || strings.Contains(page, `id="asks-drafts-archived-toggle"`) {
 		t.Fatal("with plugins off the page offers a Reply drafts tab")
 	}
-	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 2 || got[0][1] != asksTabAsk || got[1][1] != asksTabLog {
-		t.Fatalf("with plugins off the page's tabs are %v; want ask and log", got)
+	if got := regexp.MustCompile(`id="asks-tabs-tab-([a-z]+)"`).FindAllStringSubmatch(page, -1); len(got) != 3 || got[0][1] != "open" || got[1][1] != "answered" || got[2][1] != "log" {
+		t.Fatalf("with plugins off the page's tabs are %v; want open, answered and log", got)
 	}
 }
 
@@ -299,7 +315,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	}
 	rec := d.do("POST", path(d1, "reject"), "", d.session(d.a, false, true))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "can no longer be withdrawn") ||
-		selectedTab(t, rec.Body.String(), "asks-drafts-tabs-tab-archived") != "true" {
+		!archivedShown(t, rec.Body.String()) {
 		t.Fatalf("withdrawing a claimed draft: %d; want 409 drawn on Archived with the reason", rec.Code)
 	}
 	// Sent.
@@ -403,7 +419,7 @@ func TestAStaleApprovalOnTheAsksPageIsRefusedWithTheConfirm(t *testing.T) {
 		t.Fatalf("a stale form approval: %d; want 403 and the reason", rec.Code)
 	}
 	if !strings.Contains(body, ">Asks</h1>") || selectedTab(t, body, "asks-tabs-tab-drafts") != "true" ||
-		selectedTab(t, body, "asks-drafts-tabs-tab-drafts") != "true" || !strings.Contains(body, `id="term-confirm"`) ||
+		archivedShown(t, body) || !strings.Contains(body, `id="term-confirm"`) ||
 		!strings.Contains(pendingList(body), draftAnchor(id)) {
 		t.Fatal("the refusal is not drawn on Reply drafts → Awaiting decision with the confirm dialog and the draft")
 	}
@@ -457,7 +473,7 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 	}
 	if !strings.Contains(j.Pending, draftAnchor(pend)) || strings.Contains(j.Pending, draftAnchor(done)) ||
 		!strings.Contains(j.Archived, draftAnchor(done)) || strings.Contains(j.Archived, draftAnchor(pend)) ||
-		j.PendingIDs != strconv.FormatInt(pend, 10) || j.Count != nil || j.Label != "Reply drafts (1)" {
+		j.PendingIDs != strconv.FormatInt(pend, 10) || j.Count != nil || j.Label != "Drafts (1)" {
 		t.Fatalf("the fragment: %+v", j)
 	}
 	rec = d.do("GET", "/attention/drafts", "", d.session(d.b, false, false))
@@ -521,12 +537,12 @@ func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 		t.Fatalf("draft: %s", out)
 	}
 	page := d.do("GET", "/attention", "", d.session(d.a, false, true)).Body.String()
-	want := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
-		`<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li></ul>`
+	want := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` +
+		ui.AsksAllClearHTML + `</ul>`
 	if got := askList(page); got != want {
 		t.Fatalf("the Ask tab's list:\n%s\nwant exactly:\n%s", got, want)
 	}
-	if !strings.Contains(page, ">Reply drafts (1)</button>") || !strings.Contains(pendingList(page), draftAnchor(id)) {
+	if !strings.Contains(page, ">Drafts (1)</button>") || !strings.Contains(pendingList(page), draftAnchor(id)) {
 		t.Fatal("the draft is not counted on its tab or not under Awaiting decision")
 	}
 }

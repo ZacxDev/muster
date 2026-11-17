@@ -324,18 +324,16 @@ async function wordsAreWhole(card: ReturnType<Page['locator']>) {
   }
 }
 
-// theQueueDrawsTheCompactForm: the Asks queue (/attention) draws the same
-// answer form as the session page's block (internal/api attentionItemsHTMLTo)
-// — except that its box sits behind its options ("Type an answer", the Asks
-// page's design pass): opened, a one-line box and Answer, Dismiss the small
-// icon in the card's footer, nothing wider than the page.
+// theQueueDrawsTheCompactForm: the Asks queue (/attention) draws its card
+// feed's answer form (internal/api askFeedAnswerFormHTML): the options, then a
+// one-line box beside its mic and Answer, Dismiss the small icon in the card's
+// footer, nothing wider than the page.
 async function theQueueDrawsTheCompactForm(page: Page, name: string) {
   await page.goto(origin + '/attention');
   const card = page.locator('[data-attention-item]').filter({ hasText: 'Question 1:' });
   await expect(card).toHaveCount(1);
   await card.scrollIntoViewIfNeeded();
-  await expect(card.locator('textarea[name="answer"]'), 'the box is behind the options').toBeHidden();
-  await card.getByText('Type an answer', { exact: true }).click();
+  await expect(card.locator('textarea[name="answer"]'), 'the box is on the card').toBeVisible();
   await shot(page, name);
   const ans = (await card.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
   const dis = (await card.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;

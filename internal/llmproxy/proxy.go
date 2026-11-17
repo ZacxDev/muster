@@ -21,6 +21,11 @@
 // no budget, no item cap and no usage row — the key's own provider-side credit
 // limit is its cap, so a 402 is answered with the caller's KeyRemedy.
 //
+// A chief session on OpenRouter is the third (Caller.Ledger): the same
+// allowlist, pin and metering, on its own key, with its budget and spend
+// book handed in by the route layer instead of the officer Store, and every
+// budget refusal a 400.
+//
 // 🔴 THE KEY IS ATTACHED HERE AND NOWHERE ELSE. It is never logged, never
 // audited, never sent to the client: every byte relayed downstream is passed
 // through redact first, a 401/403 body (and a KeyRemedy caller's 402 body) is
@@ -133,7 +138,64 @@ type Caller struct {
 	// on a 402 (a spent credit limit), which is NOT counted as a refused key;
 	// an officer's 402 is relayed.
 	KeyRemedy string
+	// Ledger, when set, is this caller's own budget and spend book, in place
+	// of the proxy's Store, its DailyBudgetUSD and the per-item meter: asked
+	// before anything is sent (Ledger.Admit) and booked after (Ledger.Book).
+	// A chief session on OpenRouter is the one such caller (internal/api
+	// chief_session_llm.go): its budget is per owner and per session, which
+	// the officer Store's (officer, pool) keys cannot say.
+	//
+	// 🔴 A LEDGER REFUSAL IS A 400, NEVER A 429 OR A 503, and so is a ledger
+	// that cannot be read: the session runtime (opencode) was measured to
+	// retry a 503 forever and to fail a 400 at once, ending the turn with the
+	// message. Unbudgeted is ignored when a Ledger is set.
+	Ledger Ledger
 }
+
+// Ledger is a caller's own budget and spend book (Caller.Ledger).
+type Ledger interface {
+	// Admit is asked before the request is sent: a refusal (a 400, nothing
+	// sent), or an admission that may cut max_tokens and holds a ticket — the
+	// request's reservation — which is settled by Book or dropped by Release,
+	// exactly one of them, whatever happens to the request. An error refuses
+	// too (a 400).
+	Admit(ctx context.Context, req LedgerRequest) (LedgerAdmission, error)
+	// Book books one request's usage and settles its ticket, after the
+	// response (before it ends, so the next request is checked against it).
+	Book(ctx context.Context, ticket any, u Usage) error
+	// Release drops a ticket whose request was not booked (not sent, or
+	// answered with an error the provider bills nothing for).
+	Release(ctx context.Context, ticket any)
+}
+
+// LedgerRequest is what Admit is told of a request: the UTC day it is booked
+// to, the size of the body that will be sent, and its max_tokens (0 absent).
+type LedgerRequest struct {
+	Day       time.Time
+	BodyBytes int
+	MaxTokens int64
+}
+
+// LedgerAdmission is Admit's answer. Refusal non-empty refuses. MaxTokens
+// above 0 replaces the request's max_tokens (it is never raised above one the
+// client sent).
+type LedgerAdmission struct {
+	Refusal   string
+	MaxTokens int64
+	Ticket    any
+}
+
+// ledgerTicket is one Ledger request's admission ticket and whether it was
+// settled (booked); an unsettled one is released when the request ends.
+type ledgerTicket struct {
+	ticket  any
+	settled bool
+}
+
+// LedgerRefusalStatus is the status of every refusal a Ledger caller gets
+// from its budget: a 400, which the session runtime fails at once (see
+// Caller.Ledger).
+const LedgerRefusalStatus = http.StatusBadRequest
 
 // Usage is one request's metered usage, booked to the store.
 type Usage struct {
@@ -438,9 +500,49 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	day := Day(start)
 	item := ""
 	var fl *flight // the request's count in flight on its hold (nil: none)
+	// A Ledger caller (a chief session) is checked by its own ledger alone:
+	// no Store, no item cap (Caller.Ledger). Its admission may cut max_tokens,
+	// and holds a reservation that is settled by book or released here.
+	var lt *ledgerTicket
+	if c.Ledger != nil {
+		var asked int64
+		if raw, ok := fwd["max_tokens"]; ok {
+			_ = json.Unmarshal(raw, &asked)
+		}
+		adm, err := c.Ledger.Admit(r.Context(), LedgerRequest{Day: day, BodyBytes: len(out), MaxTokens: asked})
+		if err != nil {
+			p.log.Printf("llm proxy: %s agent=%q: the budget could not be read (refusing, nothing sent): %v", c.Officer, c.AgentName, err)
+			Refuse(w, LedgerRefusalStatus, "invalid_request_error", "the budget could not be read just now; nothing was sent. "+
+				"Stop here and retry the turn shortly.")
+			finish("refused_store", LedgerRefusalStatus)
+			return
+		}
+		if adm.Refusal != "" {
+			Refuse(w, LedgerRefusalStatus, "invalid_request_error", adm.Refusal)
+			finish("refused_budget", LedgerRefusalStatus)
+			return
+		}
+		lt = &ledgerTicket{ticket: adm.Ticket}
+		defer func() {
+			if !lt.settled {
+				c.Ledger.Release(context.WithoutCancel(r.Context()), lt.ticket)
+			}
+		}()
+		if adm.MaxTokens > 0 && (asked <= 0 || adm.MaxTokens < asked) {
+			if asked > 0 {
+				p.log.Printf("llm proxy: %s agent=%q: max_tokens %d cut to %d (the budget left)", c.Officer, c.AgentName, asked, adm.MaxTokens)
+			}
+			fwd["max_tokens"], _ = json.Marshal(adm.MaxTokens)
+			if out, err = json.Marshal(fwd); err != nil {
+				Refuse(w, http.StatusBadRequest, "invalid_request_error", "the body could not be re-encoded")
+				finish("refused_bad_request", http.StatusBadRequest)
+				return
+			}
+		}
+	}
 	// An Unbudgeted caller (the chief) skips the budget and the item cap
 	// entirely: the key's own credit limit is its cap (Caller.Unbudgeted).
-	if !c.Unbudgeted {
+	if c.Ledger == nil && !c.Unbudgeted {
 		metrics.OfficerLLMBudget.WithLabelValues(c.Officer, c.Pool).Set(c.DailyBudgetUSD)
 		spent, err := p.store.SpentToday(r.Context(), c.Officer, c.Pool, day)
 		if err != nil {
@@ -521,7 +623,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		if sent {
 			// Written, then no response: the provider may have billed it, so it
 			// is booked from the pessimistic estimate.
-			p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec)
+			p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec, lt)
 		} else {
 			p.log.Printf("llm proxy: officer %s: the provider could not be reached (nothing sent, nothing booked): %v", c.Officer, err)
 		}
@@ -616,7 +718,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 	// Booked BEFORE the response ends (this handler returning ends it), so the
 	// instance's next request is checked against it.
-	p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec)
+	p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec, lt)
 	if streamErr != nil || m.ErrorType != "" {
 		finish("upstream_error", resp.StatusCode)
 		return
@@ -669,7 +771,8 @@ func redactError(b []byte, key string) []byte {
 }
 
 // book meters one request's usage: metrics, the per-item count, the store.
-func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, fl *flight, day time.Time, m *meter, reqBytes int, rec *Record) {
+func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, fl *flight, day time.Time, m *meter, reqBytes int, rec *Record,
+	lt *ledgerTicket) {
 	u := m.Usage
 	rec.Provider, rec.MessageID, rec.StopReason = m.Provider, m.MessageID, m.StopReason
 	if m.Model != "" {
@@ -700,6 +803,21 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 	metrics.OfficerLLMCost.WithLabelValues(c.Officer, inst).Add(cost)
 	if estimated {
 		metrics.OfficerLLMCostEstimated.WithLabelValues(c.Officer).Inc()
+	}
+	if c.Ledger != nil && lt != nil {
+		// The caller's own book (Caller.Ledger): no per-item meter. The ticket
+		// is settled here, booked or not: a failed write is logged, and the
+		// reservation then lapses at its expiry rather than being released
+		// as if nothing had been spent.
+		lt.settled = true
+		err := c.Ledger.Book(context.WithoutCancel(ctx), lt.ticket, Usage{Officer: c.Officer, Pool: c.Pool, Instance: c.Instance, Day: day,
+			Input: rec.Input, Output: rec.Output, CacheRead: rec.CacheRead, CacheWrite: rec.CacheWrite, CostUSD: cost, Estimated: estimated})
+		if err != nil {
+			metrics.OfficerLLMBookFailures.WithLabelValues(c.Officer).Inc()
+			p.log.Printf("llm proxy: 🔴 %s agent=%q: usage of $%.6f could NOT be written (the budget would not see it): %v",
+				c.Officer, c.AgentName, cost, err)
+		}
+		return
 	}
 	if c.Unbudgeted {
 		// 🔴 NOT BOOKED, DELIBERATELY, AND SAID SO. Nothing reads an Unbudgeted

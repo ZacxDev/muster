@@ -77,6 +77,8 @@ def fixture_secrets(binary) -> dict:
         "muster-officer-tokens": {"MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB": "hq-fixture-officer-token"},
         "muster-github-app": {"MUSTER_GITHUB_APP_PRIVATE_KEY": rsa_pem()},
         "muster-openrouter": {"MUSTER_AGENT_OPENROUTER_KEY": "sk-or-v1-fixture"},
+        # A key of its own: the server refuses the agents' key here.
+        "muster-chief-sessions-openrouter": {"MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY": "sk-or-v1-fixture-chief-sessions"},
     }
 
 

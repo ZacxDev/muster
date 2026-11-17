@@ -866,16 +866,22 @@ var episodeQuietText = map[string]string{
 	sessionstate.QuietRepushFloor: "held: the session was pushed under 2 minutes ago",
 }
 
-// askListHTML is the Asks list's <li>s, as the page draws them and as its live
-// refresh redraws them: the items (pageAttentionItems) in their groups, the
-// session-state rows in the Waiting group (episodeRowsHTML), then the
-// Answered group (askGroupsHTML). With a row drawn, the list's "Nothing is
-// waiting on you." line is not — a stalled session is waiting on you. rd is
-// the render's one hub read (asksRead), items built from it: nothing here
-// reads the hosts again.
+// askListHTML is the Open feed's <li>s, as the page draws them and as its live
+// refresh redraws them (askFeedNow).
 func (s *Server) askListHTML(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) string {
+	out, _ := s.askFeedNow(ctx, items, rd, now)
+	return out
+}
+
+// askFeedNow is the Open feed (askFeedHTML) and how many cards it holds: the
+// items (pageAttentionItems) in askGroups' order, the session-state rows in
+// the Waiting place (episodeRowsHTML). With a row drawn, the All clear state
+// is not — a stalled session is waiting on you. The Answered cards are the
+// Answered tab's (answeredAsksNow). rd is the render's one hub read
+// (asksRead), items built from it: nothing here reads the hosts again.
+func (s *Server) askFeedNow(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) (string, int) {
 	rows, n := s.episodeRowsHTML(ctx, rd, now)
-	return askGroupsHTML(s.pageAttentionItems(items, rd.hosts), rows, n, s.answeredAsksNow(ctx, now), now)
+	return askFeedHTML(s.pageAttentionItems(items, rd.hosts), rows, n, now)
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state

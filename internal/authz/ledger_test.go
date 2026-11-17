@@ -367,6 +367,10 @@ var (
 		// security confines it to that user's rows. A fixture command, never
 		// linked into a binary, and it refuses any database not ending in _e2e.
 		"e2e/askfix.run",
+		// The Asks card feed's browser fixture (e2e/asksfeedfix): the same, for
+		// one owner's queue of every kind. A fixture command, never linked into
+		// a binary, and it refuses any database not ending in _e2e.
+		"e2e/asksfeedfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

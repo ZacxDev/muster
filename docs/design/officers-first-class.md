@@ -61,7 +61,7 @@ through `ClientHQ.Client(o)` from **25 routes**:
 |---|---|---|
 | core | items `GET /officers/{id}/items`, brief, claim, claim-next, heartbeat, complete (with `investigation`, `cost_usd`/`cost_from`), release, officer `GET /officers/{id}` (`enabled`) | wake loop (`Reconciler` via the `HQ` adapter), the six queue tools, the one-claim and held-item checks, the ship and shepherd item gates, failover |
 | asks | `POST …/items/{item}/asks`, `POST /officers/{id}/ask-images` | `officer_ask_person`, the ask-image upload route |
-| derived asks | task-asks, flood-blocks | `officer_task_ask`, `officer_flood_block_propose` |
+| derived asks | task-asks, flood-blocks, rollout-promotions | `officer_task_ask`, `officer_flood_block_propose`, `officer_rollout_promote_propose` |
 | gap tasks | `POST …/items/{item}/gap-tasks` | `officer_gap_task` |
 | tasks read | `GET /officers/{id}/tasks`, `…/tasks/{task}` | `officer_task_list`, `officer_task_get` |
 | PR context | `GET /officers/{id}/prs/{n}/context` | `officer_pr_context` |
@@ -100,7 +100,7 @@ type Backend interface {
 ```
 
 Every optional verb group above is its own small interface
-(`AsksBackend`, `TaskAsksBackend`, `FloodBlocksBackend`, `GapTasksBackend`,
+(`AsksBackend`, `TaskAsksBackend`, `FloodBlocksBackend`, `RolloutPromotionsBackend`, `GapTasksBackend`,
 `TasksBackend`, `PRContextBackend`, `ObsBackend`, `ObsRawBackend`,
 `TranscriptBackend`, `UsageBackend`, `PoolsBackend`, `ShipBackend`,
 `CaptainBackend`). `officers.Backends` caches one backend per officer and is
@@ -121,7 +121,7 @@ nothing).
 
 `Capabilities{Contract, Verbs}`. The capability names: `tiers`,
 `investigation`, `cost` (features of the core verbs), and one per optional
-verb group: `asks`, `task-asks`, `flood-blocks`, `gap-tasks`, `tasks-read`,
+verb group: `asks`, `task-asks`, `flood-blocks`, `rollout-promotions`, `gap-tasks`, `tasks-read`,
 `pr-context`, `obs`, `obs.raw`, `transcript`, `usage`, `pools`, `ship`,
 `x-captain`.
 

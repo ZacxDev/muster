@@ -76,6 +76,14 @@ NOT_FORWARDED = {
     "MUSTER_CHIEF_SPEC_DIR": "the Compose file mounts the chief's spec volume at the runtime's default, /run/muster-spec",
     "MUSTER_CHIEF_LLM": "the Kubernetes chief's switch onto the LLM proxy; muster refuses it beside MUSTER_CHIEF_RUNTIME=compose, "
     "whose chief's credential decides instead",
+    # The chief's OpenRouter sessions' spend door (docs/chief.md "OpenRouter
+    # sessions, budget"): inert until the opencode lane in the Kubernetes
+    # chief's pod sends X-Muster-Chief-Session; Compose forwarding is decided
+    # with that lane.
+    **{name: "the chief's OpenRouter sessions' spend door: inert until the Kubernetes chief's opencode lane sends "
+       "its header; not offered on Compose yet" for name in [
+        "MUSTER_CHIEF_SESSIONS_OPENROUTER", "MUSTER_CHIEF_SESSIONS_OPENROUTER_KEY",
+        "MUSTER_CHIEF_SESSIONS_DAILY_USD", "MUSTER_CHIEF_SESSIONS_SESSION_USD"]},
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",
         "MUSTER_AGENT_GATEWAY_PORT", "MUSTER_AGENT_RUNTIME_CONFIG", "MUSTER_AGENT_RUNTIME_INSTALL",

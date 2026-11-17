@@ -41,6 +41,7 @@ const LLMMessagesRoute = "POST /llm/v1/messages"
 func (s *Server) registerLLMRoutes(mux Mux) {
 	mux.HandleFunc(LLMMessagesRoute, s.requireConnectorAgent(s.serveLLMMessages))
 	mux.HandleFunc(llmPathPrefix, s.handleLLMOtherPath)
+	mux.HandleFunc(ChiefSessionModelsRoute, s.requireSession(s.handleChiefSessionModels))
 }
 
 // handleLLMOtherPath refuses every /llm/ request but POST /llm/v1/messages.
@@ -70,6 +71,15 @@ func (s *Server) handleLLMOtherPath(w http.ResponseWriter, r *http.Request) {
 // fault.
 func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
+	// 🔴 A REQUEST CARRYING X-Muster-Chief-Session IS A CHIEF SESSION'S, AND
+	// GOES TO ITS DOOR ALONE (chief_session_llm.go), whether that door is on
+	// or not: never on to the chief's own route, whose key is
+	// MUSTER_AGENT_OPENROUTER_KEY, nor to an officer's. A request without the
+	// header takes the path below exactly as before.
+	if chiefSessionRequest(r) {
+		s.serveChiefSessionLLM(w, r, a)
+		return
+	}
 	o, n, isOfficer := s.officerOf(a)
 	// proxied: a routine pool's instance beside the officer's `llm`, or a
 	// judgement pool's beside tiers.judgement.llm (officers.ProxyAgent, the one

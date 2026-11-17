@@ -9,26 +9,47 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/sessionstate"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// TestTheAsksPageIsAFlatListWithNoIntroAndNoBackLink: the page draws its
-// heading and its groups and nothing around them — no bordered page card, no
-// "Everything waiting on you" paragraph, no "Back to muster" link. RED at
-// origin/main: all three were drawn.
-func TestTheAsksPageIsAFlatListWithNoIntroAndNoBackLink(t *testing.T) {
+// TestTheAsksPageIsACardFeedWithItsCountAndScript: the page draws its heading
+// with the open count, then the tabs — Open first, its feed of cards — the
+// All clear template and the feed's script; nothing around
+// them (no page card, no intro, no "Back to muster"). RED at origin/main: no
+// count, no feed, no script, no toast.
+func TestTheAsksPageIsACardFeedWithItsCountAndScript(t *testing.T) {
 	f := newAttnFixture(t)
 	f.ask(t, f.opTok, "Ship it?")
 	page := f.page(t, "/attention")
-	if !strings.Contains(page, `<section class="flex flex-col gap-3" data-testid="attention-page">`) || !strings.Contains(page, `>Asks</h1>`) {
-		t.Fatalf("no flat page section with its heading:\n%s", page)
+	for _, want := range []string{
+		`<section class="flex flex-col gap-3" data-testid="attention-page">`,
+		`>Asks</h1>` + ui.AsksOpenCountHTML(2) + `</div>`, // the ask and the fixture's waiting window
+		`<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">`,
+		`<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>`,
+		`<template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>`,
+		`data-asks-badge="question">Question</span>`,
+		// The feed's notice (a card refused after a refresh took it away), shut.
+		ui.AsksFeedNoticeHTML,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %q", want)
+		}
 	}
-	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70"} {
+	for _, bad := range []string{"Everything waiting on you", "Back to muster", "rounded-2xl border border-line bg-s1/70", `data-asks-group="`} {
 		if strings.Contains(page, bad) {
 			t.Errorf("the page still draws %q", bad)
 		}
 	}
-	if !strings.Contains(askList(page), `data-asks-group="questions"`) {
-		t.Errorf("the ask is not under a group label:\n%s", askList(page))
+}
+
+// TestTheAsksPageLinksTheFeedScript: the page carries the card feed's static
+// script (internal/ui's ledger test counts this page as the one that links
+// it), once.
+func TestTheAsksPageLinksTheFeedScript(t *testing.T) {
+	f := newAttnFixture(t)
+	page := f.page(t, "/attention")
+	if n := strings.Count(page, ui.AsksFeedScriptHTML()); n != 1 {
+		t.Fatalf("the page carries the feed script %d times, want 1", n)
 	}
 }
 
@@ -67,10 +88,10 @@ func TestAWaitingEpisodeRowSaysWhatItWaitsOn(t *testing.T) {
 	// Subtests: each fixture's episode is cleaned up before the next opens one.
 	t.Run("pending call", func(t *testing.T) {
 		row, page := waitingEpisodeRow(t, &mirror.Pending{Tool: "Bash", Summary: "Bash: npm test", Last: "Running the tests."})
-		// The row is counted on the Waiting group's label (its window is
-		// covered, so the row is the group's one entry).
-		if m := groupLabel.FindAllStringSubmatch(askList(page), -1); len(m) != 1 || m[0][1] != "waiting" || m[0][3] != "1" {
-			t.Errorf("group labels %q, want waiting 1", m)
+		// The row is the feed's one entry (its window is covered), counted in
+		// the open count, inside the feed's Waiting place.
+		if !strings.Contains(page, ui.AsksOpenCountHTML(1)) || !strings.Contains(askList(page), `<li class="min-w-0" data-asks-episodes>`) {
+			t.Errorf("the row is not the feed's one counted entry:\n%s", askList(page))
 		}
 		for _, want := range []string{`data-attention-episode-open>`, `href="/attention/open/episode-`, `data-attention-episode-state>Needs you</span>`,
 			`data-attention-text>Bash: npm test</span>`} {

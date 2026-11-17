@@ -1763,7 +1763,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.officerObsRaw(ctx, a, o, c, arguments), true
 	case officers.ToolTaskList, officers.ToolTaskGet:
 		return officerTaskRead(ctx, c, name, arguments), true // officer_tasks.go
-	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose:
+	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose, officers.ToolRolloutPromotePropose:
 		return s.officerItemAsk(ctx, c, o, a.Name, name, arguments), true // officer_item_asks.go
 	case officers.ToolPRContext:
 		return officerPRContext(ctx, c, arguments), true // officer_pr_context.go
@@ -2171,7 +2171,7 @@ const builtinAskedNote = "asked. Your lease on this item has ENDED: muster set i
 
 // itemAskToolResult is the answer of a tool whose success creates an HQ ask
 // on the item (officer_ask_person, officer_task_ask,
-// officer_flood_block_propose): HQ's JSON with note added on success; on a
+// officer_flood_block_propose, officer_rollout_promote_propose): HQ's JSON with note added on success; on a
 // 4xx (or a 5xx the route calls a decision) HQ's status, code and message,
 // with HQ's body verbatim under refused.hq; officerToolResult's shapes
 // otherwise (outage, retryable, too large).

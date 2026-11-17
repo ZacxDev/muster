@@ -302,7 +302,8 @@ type Server struct {
 	// the route answers PR 7251 and 404 pr_not_visible for any other.
 	PRContextReadOff bool
 	PRContextAbsent  bool
-	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks):
+	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks,
+	// civ-hq#887 rollout-promotions):
 	// verbRefusal[verb], when set, is answered by that route instead
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
 	verbRefusal map[string]*refusal
@@ -712,14 +713,16 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DerivedAsk is one accepted POST …/items/{item}/task-asks or
-// …/flood-blocks: the verb, and the body as HQ decoded it.
+// DerivedAsk is one accepted POST …/items/{item}/task-asks,
+// …/flood-blocks or …/rollout-promotions: the verb, and the body as HQ
+// decoded it.
 type DerivedAsk struct {
 	Verb, Officer, Item string
 	Body                map[string]any
 }
 
-// RefuseVerb makes item route verb ("task-asks", "flood-blocks") answer
+// RefuseVerb makes item route verb ("task-asks", "flood-blocks",
+// "rollout-promotions") answer
 // status {error, code} (status 0: serve normally).
 func (s *Server) RefuseVerb(verb string, status int, code, msg string) {
 	s.mu.Lock()
@@ -741,7 +744,8 @@ func (s *Server) DerivedAsks() []DerivedAsk {
 	return append([]DerivedAsk(nil), s.derivedAsks...)
 }
 
-// derivedAsk serves task-asks and flood-blocks with canned answers: a
+// derivedAsk serves task-asks, flood-blocks and rollout-promotions with
+// canned answers: a
 // forced refusal (RefuseVerb) wins; otherwise the ask is recorded, the item
 // is WAITING with no holder (an ordinary HQ ask) and 201. HQ's own checks
 // (kind, lease, limits) are HQ's and are not re-implemented here.
@@ -756,6 +760,11 @@ func (s *Server) derivedAsk(w http.ResponseWriter, officer string, it *Item, ver
 	ask := map[string]any{"id": n, "state": "open", "to": "fixture-owner"}
 	if verb == "flood-blocks" {
 		s.write(w, http.StatusCreated, map[string]any{"flood_block": map[string]any{"id": n, "state": "pending", "unit_ids": body["unit_ids"]}, "ask": ask, "item": *it})
+		return
+	}
+	if verb == "rollout-promotions" {
+		s.write(w, http.StatusCreated, map[string]any{"rollout_promotion": map[string]any{"id": n, "state": "pending", "repo": body["repo"], "preview_tag": body["preview_tag"]},
+			"asks": []any{ask}, "skipped": []any{}, "item": *it})
 		return
 	}
 	s.write(w, http.StatusCreated, map[string]any{"ask": ask, "task_ask": map[string]any{"ask_id": n, "task_id": "fixture-task-1", "task_rev": 3}, "item": *it})
@@ -1756,7 +1765,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.transcript(w, officer, it, instance, live, body)
 	case "asks":
 		s.ask(w, officer, it, instance, live, body, now)
-	case "task-asks", "flood-blocks":
+	case "task-asks", "flood-blocks", "rollout-promotions":
 		s.derivedAsk(w, officer, it, verb, body, now)
 	case "gap-tasks":
 		s.gapTask(w, officer, it, instance, body)
