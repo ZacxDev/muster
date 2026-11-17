@@ -356,6 +356,7 @@ func TestEveryQueueTargetNamesItsOwner(t *testing.T) {
 		"Server.queueNudgeText":        "a chief nudge, as the nudge's owner (the caller's own)",
 		"Server.injectRoute":           "a routed message, as the route's owner (the caller's own)",
 		"Server.askLogProvenance":      "the ask log's read of the caller's OWN sent bodies",
+		"Server.attachFleetInFlight":   "the fleet reader's read of the caller's OWN windows (Mirror.Hosts; owner 0 = own)",
 	}
 	found := map[string]int{}
 	files, err := filepath.Glob("*.go")

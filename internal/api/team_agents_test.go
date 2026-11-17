@@ -367,7 +367,7 @@ var agentsListCallers = map[string]string{
 	"Server.createPoolJobOnce":      "machine: worker pool jobs, agent and API tokens",
 	"Server.liveSessions":           "machine: sessions_overview, an agent's tool",
 	"Server.consumerUsageInstances": "machine: consumer usage principal",
-	"Server.toolFleetList":          "machine: an agent's tool",
+	"Server.readFleet":              "own: the fleet reader (fleet_list and the digest) keeps a.OwnerID == the owner",
 	"Server.focusSearchHistory":     "machine: an agent's tool",
 	"Server.toolAgentsList":         "machine: an agent's tool; on the mirror door, refused to a team token (teamHostTools: an estate read)",
 	"officerFleet.byName":           "machine: an officer's door",

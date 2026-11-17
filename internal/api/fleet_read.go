@@ -131,12 +131,9 @@ func (s *Server) readFleet(ctx context.Context, f fleetListFilter) (fleetReadRes
 		list = agents.ProvisionedOnly(list)
 		isChief := chiefPredicate(list)
 		idx := s.instanceIndex(ctx)
-		for _, a := range list {
-			// 🔴 THE OWNER'S OWN: a member's list can hold a team's agents
-			// (team sharing), which are the team's chief's to orchestrate.
-			if a.OwnerID != owner {
-				continue
-			}
+		// 🔴 THE OWNER'S OWN (ownedBy): a member's list can hold a team's
+		// agents (team sharing), which are the team's chief's to orchestrate.
+		for _, a := range ownedBy(list, owner) {
 			sub := focus.AgentSubject(a.ID)
 			status := liveStatusIndexed(a, idx)
 			at := a.CreatedAt
