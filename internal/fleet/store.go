@@ -31,8 +31,12 @@ type Store interface {
 	Baseline(ctx context.Context) (time.Time, error)
 	// FleetChat is the principal's Fleet side chat's session id (0: none).
 	FleetChat(ctx context.Context) (int64, error)
-	// SetFleetChat records it.
-	SetFleetChat(ctx context.Context, sessionID int64) error
+	// FleetChatOr is the principal's Fleet side chat: the recorded one while
+	// keep(id) holds, else a new one create makes, recorded. 🔴 ONE CHAT
+	// HOWEVER MANY CALLERS RACE: the owner's marks row is locked (FOR UPDATE)
+	// from the read to the record, so a second caller waits, then reads the
+	// chat the first recorded instead of making another.
+	FleetChatOr(ctx context.Context, keep func(id int64) bool, create func() (int64, error)) (int64, error)
 }
 
 // PG is Store on Postgres.
@@ -82,9 +86,30 @@ func (p *PG) FleetChat(ctx context.Context) (int64, error) {
 	return *id, nil
 }
 
-// SetFleetChat implements Store.
-func (p *PG) SetFleetChat(ctx context.Context, sessionID int64) error {
-	_, err := p.pool.Exec(ctx, `INSERT INTO fleet_owner_marks (fleet_chat_id) VALUES ($1)
-		ON CONFLICT (owner_id) DO UPDATE SET fleet_chat_id = EXCLUDED.fleet_chat_id, updated_at = now()`, sessionID)
-	return err
+// FleetChatOr implements Store.
+func (p *PG) FleetChatOr(ctx context.Context, keep func(id int64) bool, create func() (int64, error)) (int64, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The row first (a first-ever caller has none to lock), then the lock.
+	if _, err := tx.Exec(ctx, `INSERT INTO fleet_owner_marks DEFAULT VALUES ON CONFLICT (owner_id) DO NOTHING`); err != nil {
+		return 0, err
+	}
+	var cur *int64
+	if err := tx.QueryRow(ctx, `SELECT fleet_chat_id FROM fleet_owner_marks FOR UPDATE`).Scan(&cur); err != nil {
+		return 0, err
+	}
+	if cur != nil && *cur > 0 && keep(*cur) {
+		return *cur, tx.Commit(ctx)
+	}
+	id, err := create()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE fleet_owner_marks SET fleet_chat_id = $1, updated_at = now()`, id); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit(ctx)
 }

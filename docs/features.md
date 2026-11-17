@@ -47,7 +47,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
-| [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; the GitHub App for pull requests' states | off | 1 line |
+| [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -448,8 +448,11 @@ side chat to ask the chief about one ([chief.md](chief.md#fleet-digest)). No
 model and no chief turn: muster draws it from what it already knows.
 
 - **Needs:** [session state](#session-state) for the states, and the
-  [chief](#chief). With the [GitHub App](#github-app), each session's pull
-  requests' states (otherwise unknown, and those sessions are Stalled).
+  [chief](#chief). The Waiting on CI and Done groups also need
+  [session routing](#session-routing) and [PR mail routing](#pr-mail-routing) (`MUSTER_SESSION_ROUTING=1`, `MUSTER_PR_MAIL_SENDERS`) for the pull requests each session created, and the [GitHub App](#github-app) for their states. Without the first, sessions have no pull requests;
+  without the App, every state is unknown. Either way those sessions are
+  Stalled. States are read only for an owner the App admits (an admin, or a
+  team `MUSTER_TEAMS_ON_GITHUB_APP` lists). The boot line says which.
 - **Turn it on:** `MUSTER_FLEET_DIGEST=1` in `.env`. It also adds the fleet
   fields to the chief's `fleet_list`.
 - **Turning it off:** unset it. The panel then has no card, its routes answer

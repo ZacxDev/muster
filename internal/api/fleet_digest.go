@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/fleet"
@@ -365,47 +363,59 @@ func (s *Server) handleFleetChat(w http.ResponseWriter, r *http.Request) {
 // fleetChat is chief a's Fleet side chat: the one recorded (fleet_owner_marks)
 // while it is still a's and not archived, else a new side chat named
 // fleetChatTitle, recorded. The primary is elected first, so the new chat can
-// never be taken for it.
+// never be taken for it. 🔴 CREATE-OR-REUSE IS ONE STEP (fleet.Store
+// FleetChatOr, a row lock on the owner's marks): two taps at once open one
+// chat, not two with one orphaned.
 func (s *Server) fleetChat(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
-	if s.ext.Fleet != nil {
-		if id, err := s.ext.Fleet.FleetChat(ctx); err == nil && id > 0 {
-			if cs, err := s.ext.Agents.GetSession(ctx, id); err == nil && cs.AgentID == a.ID && cs.ArchivedAt == nil {
-				return cs, nil
-			} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return agents.ChatSession{}, err
-			}
-		} else if err != nil {
-			return agents.ChatSession{}, err
-		}
-	}
 	if _, err := s.primarySession(ctx, a); err != nil {
 		return agents.ChatSession{}, err
 	}
-	var cs agents.ChatSession
-	var err error
-	runtime := sideChatRuntime(a)
-	if st, ok := s.sessionRuntimeStore(); ok && runtime != agents.SessionRuntimeLegacy {
-		cs, err = st.CreateSessionOn(ctx, a.ID, a.Name, runtime, "")
-	} else {
-		cs, err = s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
+	var kept agents.ChatSession
+	keep := func(id int64) bool {
+		cs, err := s.ext.Agents.GetSession(ctx, id)
+		if err != nil || cs.AgentID != a.ID || cs.ArchivedAt != nil {
+			return false
+		}
+		kept = cs
+		return true
 	}
+	var made agents.ChatSession
+	create := func() (int64, error) {
+		var err error
+		runtime := sideChatRuntime(a)
+		if st, ok := s.sessionRuntimeStore(); ok && runtime != agents.SessionRuntimeLegacy {
+			made, err = st.CreateSessionOn(ctx, a.ID, a.Name, runtime, "")
+		} else {
+			made, err = s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
+		}
+		if err != nil {
+			return 0, err
+		}
+		if ts, ok := s.ext.Agents.(sessionTitleSetter); ok {
+			if err := ts.SetSessionTitle(ctx, made.ID, fleetChatTitle); err != nil {
+				s.logger.Printf("fleet chat %d: title: %v", made.ID, err)
+			} else {
+				made.Title = fleetChatTitle
+			}
+		}
+		s.logger.Printf("fleet chat: %s: side chat %d (runtime %q)", a.Name, made.ID, made.Runtime)
+		return made.ID, nil
+	}
+	if s.ext.Fleet == nil {
+		// No marks store (no database): a chat each time, nothing recorded.
+		if _, err := create(); err != nil {
+			return agents.ChatSession{}, err
+		}
+		return made, nil
+	}
+	id, err := s.ext.Fleet.FleetChatOr(ctx, keep, create)
 	if err != nil {
 		return agents.ChatSession{}, err
 	}
-	if ts, ok := s.ext.Agents.(sessionTitleSetter); ok {
-		if err := ts.SetSessionTitle(ctx, cs.ID, fleetChatTitle); err != nil {
-			s.logger.Printf("fleet chat %d: title: %v", cs.ID, err)
-		} else {
-			cs.Title = fleetChatTitle
-		}
+	if made.ID == id {
+		return made, nil
 	}
-	if s.ext.Fleet != nil {
-		if err := s.ext.Fleet.SetFleetChat(ctx, cs.ID); err != nil {
-			s.logger.Printf("fleet chat %d: record: %v", cs.ID, err)
-		}
-	}
-	s.logger.Printf("fleet chat: %s: side chat %d (runtime %q)", a.Name, cs.ID, cs.Runtime)
-	return cs, nil
+	return kept, nil
 }
 
 // fleetDraft is the box's draft for a question about subject (a fleet id;

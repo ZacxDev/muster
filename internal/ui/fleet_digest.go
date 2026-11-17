@@ -48,7 +48,17 @@ const (
 
 // The card's ids and attributes: what both test tiers read.
 const (
-	fleetDigestSlotID = "fleet-digest"
+	// fleetOpenEvent loads the card: dispatched by chiefPanelScript on a real
+	// open (detail.look true) and once per slot by restore (look false).
+	// Spelled as a literal in fleetDigestSlot's trigger too (the hx-trigger
+	// ledger folds literals); TestTheFleetCardLoadsOnItsOwnEvent pins the two.
+	fleetOpenEvent = "muster:fleet-open"
+	// fleetRequestedAttr marks a slot element whose fetch has started
+	// (htmx:beforeRequest): set by the CLIENT, never rendered, so restore()
+	// asks a fresh element (a boosted navigation's) until it fetches, and
+	// never again after — a failing fetch is not retried on every settle.
+	fleetRequestedAttr = "data-fleet-requested"
+	fleetDigestSlotID  = "fleet-digest"
 	// fleetDigestStateAttr is the card's state: loading (the skeleton), ready,
 	// or unavailable (FleetDigestView.Unavailable).
 	fleetDigestStateAttr = "data-fleet-state"
@@ -121,6 +131,14 @@ type FleetAskView struct {
 // fleetDigestSlot is the card's slot in the panel, holding the skeleton until
 // the panel opens.
 //
+// 🔴 ITS OWN EVENT, NOT THE BODY'S (fleetOpenEvent, audit round 1 🟡2): the
+// body's muster:chief-open is re-dispatched by restore() on EVERY settle while
+// the body has not loaded, and the card's own settle is one — so a card on that
+// event refetched itself (a marks write and a whole fleet read each time) for
+// as long as the body stayed unloaded. fleetOpenEvent is dispatched on a real
+// open (setOpen, with look) and at most ONCE per slot element by restore
+// (without look).
+//
 // 🔴 SPELLED AS LITERALS (the trigger), like the panel body's: a trigger the
 // hx-trigger ledger cannot fold is a subscription it cannot verify. The live
 // refresh is the attention queue's event (an episode opened, pushed or ended;
@@ -134,7 +152,7 @@ func fleetDigestSlot() g.Node {
 		g.Attr("aria-live", "polite"),
 		Class("flex-none border-b border-line px-3 py-2"),
 		hx("hx-get", FleetDigestPath),
-		hx("hx-trigger", "muster:chief-open from:document, sse:attention_queue.changed[!window.musterFleetShown||musterFleetShown()] from:body delay:2s, every 120s[!window.musterFleetShown||musterFleetShown()]"),
+		hx("hx-trigger", "muster:fleet-open from:document, sse:attention_queue.changed[!window.musterFleetShown||musterFleetShown()] from:body delay:2s, every 120s[!window.musterFleetShown||musterFleetShown()]"),
 		hx("hx-swap", "innerHTML"),
 		FleetDigestSkeleton(),
 	)

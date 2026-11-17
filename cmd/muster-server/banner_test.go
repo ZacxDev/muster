@@ -1444,3 +1444,29 @@ func bannerTranscriber(t *testing.T, cfg config) api.Transcriber {
 	}
 	return tr
 }
+
+// The fleet digest's line says when its pull-request groups cannot fill (audit
+// round 1 🟡3): with no session_prs store (session routing + PR mail unwired)
+// it names the two variables that wire it; with the store but no GitHub App,
+// it says every state is unknown; with both it says they are on.
+func TestTheFleetDigestLineSaysWhatThePullRequestGroupsNeed(t *testing.T) {
+	cfg := config{FleetDigest: true, SessionState: true}
+	line := func(ext api.Extensions) string {
+		return lineNaming(renderBannerWithPool(t, cfg, ext, nil), envFleetDigest)
+	}
+	noPRs := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil)})
+	if !strings.Contains(noPRs, "pull-request groups EMPTY") || !strings.Contains(noPRs, envSessionRouting) || !strings.Contains(noPRs, envPRMailSenders) {
+		t.Errorf("no session_prs: the line does not say the PR groups are empty and why:\n%s", noPRs)
+	}
+	noApp := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil)})
+	if !strings.Contains(noApp, "pull-request groups EMPTY: every state is unknown with no GitHub App") {
+		t.Errorf("no GitHub App: the line does not say every state is unknown:\n%s", noApp)
+	}
+	both := line(api.Extensions{FleetDigest: true, Episodes: sessionstate.NewPG(nil), PRSessions: plugins.NewPG(nil), FleetPRStates: bannerPRStates{}})
+	if !strings.Contains(both, "pull-request groups ON") || strings.Contains(both, "EMPTY") {
+		t.Errorf("both wired: the line does not say the PR groups are on:\n%s", both)
+	}
+}
+
+// bannerPRStates is a GitHub pull-request read that is never called.
+type bannerPRStates struct{ api.PRStateReader }

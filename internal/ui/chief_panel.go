@@ -926,6 +926,13 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
   var PANEL_PATH = '/ui/chief/panel';
   var FLEET_ID = '` + fleetDigestSlotID + `';
   var FLEET_PATH = '` + FleetDigestPath + `';
+  var FLEET_OPEN_EVENT = '` + fleetOpenEvent + `';
+  var FLEET_REQUESTED = '` + fleetRequestedAttr + `';
+  // openFleet asks the digest card to load: look is true only for a real
+  // open (the panel tapped open), which records a look.
+  function openFleet(look) {
+    document.dispatchEvent(new CustomEvent(FLEET_OPEN_EVENT, { bubbles: true, detail: { look: !!look } }));
+  }
   var PREFILL_ATTR = '` + ChiefPrefillAttr + `';
 
   // fillInput puts text in #chat-input and focuses it — 🔴 NEVER SENDING, AND
@@ -1102,6 +1109,8 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       // Ask the body to (re)fetch. Dispatched on 'document' so the body's
       // 'from:document' trigger catches it wherever the panel sits.
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
+      // The digest card: a real open, so a look.
+      openFleet(true);
     }
   }
 
@@ -1157,6 +1166,17 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
     // fresh element a boosted navigation builds.
     if (open && !bodyLoaded()) {
       document.dispatchEvent(new CustomEvent(OPEN_EVENT, { bubbles: true }));
+    }
+    // 🔴 THE CARD IS FETCHED ONCE PER SLOT ELEMENT, NOT ON EVERY SETTLE: the
+    // mark is set when its request STARTS (htmx:beforeRequest, below), not
+    // when it lands, so neither the card's own settle nor a fetch that keeps
+    // failing asks again. Until a request has started, a restore asks — the
+    // first restore can run before htmx has bound the slot's trigger. A
+    // boosted navigation's fresh slot carries no mark and is fetched once.
+    // Not a look.
+    var fs = fleetSlot();
+    if (open && fs && !fs.hasAttribute(FLEET_REQUESTED)) {
+      openFleet(false);
     }
   }
 
@@ -1363,7 +1383,13 @@ var chiefPanelScriptSrc = staticJS("chief-panel", `
       var el = evt && evt.target;
       if (!el || el.id !== FLEET_ID || !evt.detail) return;
       var te = evt.detail.triggeringEvent;
-      if (te && te.type === OPEN_EVENT) evt.detail.path = FLEET_PATH + '?look=1';
+      if (te && te.type === FLEET_OPEN_EVENT && te.detail && te.detail.look) evt.detail.path = FLEET_PATH + '?look=1';
+    });
+
+    // The card's request has started: restore() asks no more (see restore).
+    document.addEventListener('htmx:beforeRequest', function (evt) {
+      var el = evt && evt.target;
+      if (el && el.id === FLEET_ID) el.setAttribute(FLEET_REQUESTED, '');
     });
 
     // A drill-in's name toggles it: open (the fetch), or shut when it is open —

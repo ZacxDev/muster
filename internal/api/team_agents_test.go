@@ -367,7 +367,7 @@ var agentsListCallers = map[string]string{
 	"Server.createPoolJobOnce":      "machine: worker pool jobs, agent and API tokens",
 	"Server.liveSessions":           "machine: sessions_overview, an agent's tool",
 	"Server.consumerUsageInstances": "machine: consumer usage principal",
-	"Server.readFleet":              "own: the fleet reader (fleet_list and the digest) keeps a.OwnerID == the owner",
+	"Server.readFleet":              "own with MUSTER_FLEET_DIGEST on (ownedBy); off, fleet_list's agent set is as before the digest (every listed agent)",
 	"Server.focusSearchHistory":     "machine: an agent's tool",
 	"Server.toolAgentsList":         "machine: an agent's tool; on the mirror door, refused to a team token (teamHostTools: an estate read)",
 	"officerFleet.byName":           "machine: an officer's door",

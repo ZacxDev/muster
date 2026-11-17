@@ -1402,10 +1402,15 @@ The states come from [session state](design/session-state.md)
 | **Stalled** | any other stop: no pull request, a message on its way to it, or a pull request GitHub did not answer for. An unknown state is never Done |
 
 A session's pull requests are the ones muster recorded it creating (its host's
-hook, [plugins.md](plugins.md#a-pull-request-review-mail)), newest first. Their
-state is read through the [GitHub App](github-app.md) and reused for up to two
-minutes. Without the App every state is unknown and those sessions are
-Stalled. The chief itself is not listed.
+hook, [plugins.md](plugins.md#a-pull-request-review-mail)), newest first. That
+record exists only with session routing and PR mail routing
+(`MUSTER_SESSION_ROUTING=1`, `MUSTER_PR_MAIL_SENDERS`). Without them no session
+has a pull request, and Waiting on CI and Done stay empty. Their state is read
+through the [GitHub App](github-app.md), and reused for up to two minutes. It
+is read only when you may use the App (an admin, or a team
+`MUSTER_TEAMS_ON_GITHUB_APP` lists). Otherwise, or without the App, every state
+is unknown and those sessions are Stalled. The `fleet digest:` boot line says
+which applies. The chief itself is not listed.
 
 **Since you last looked** counts what moved since your previous look: stops
 that opened, Done sessions whose pull request closed, and new chief questions.

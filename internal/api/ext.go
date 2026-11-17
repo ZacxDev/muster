@@ -374,8 +374,12 @@ type Extensions struct {
 	Fleet fleet.Store
 	// FleetPRStates is the GitHub App's pull-request read the fleet reader
 	// asks for each session's pull requests' state (fleet_read.go), behind its
-	// own two-minute cache. nil — no GitHub App — reads every state as
-	// unknown, and the digest's Waiting on CI and Done groups stay empty.
+	// own two-minute cache — only for an owner the App admits
+	// (githubAppForOwner). nil — no GitHub App — reads every state as unknown.
+	// 🔴 THE PULL REQUESTS THEMSELVES ARE PRSessions' (session_prs), wired only
+	// with session routing and PR mail (MUSTER_SESSION_ROUTING,
+	// MUSTER_PR_MAIL_SENDERS): without that a session has no pull requests, and
+	// the digest's Waiting on CI and Done groups stay empty whatever the App.
 	FleetPRStates PRStateReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration

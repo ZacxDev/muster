@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -113,6 +114,13 @@ func (f *fakeFleetPRs) PullRequestState(_ context.Context, repo string, n int64)
 	return st, nil
 }
 
+// count is how many reads GitHub was asked for.
+func (f *fakeFleetPRs) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
 type fleetFixture struct {
 	*gatedFixture
 	mirror *digestMirror
@@ -132,7 +140,13 @@ func newFleetFixture(t *testing.T) *fleetFixture {
 		ext.PRSessions = g.plugins
 		ext.FleetPRStates = f.prs
 		ext.FleetDigest = true
+		// The App is configured; whether the OWNER may use it is the
+		// principal's (githubAppForOwner), and the owner below is an admin.
+		ext.GitHubApp = stubGitHubApp{}
 	})
+	// The owner is an ADMIN, entitled to the App's reads (githubapp.Admits);
+	// TestPullRequestStatesAreReadOnlyForAnOwnerTheAppAdmits reads as a member.
+	f.asOwner = authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaSession})
 	pool = f.pool
 	f.eps = sessionstate.NewPG(pool)
 	f.queue = sendqueue.NewPG(pool)
@@ -201,8 +215,12 @@ func (f *fleetFixture) digest(t *testing.T, uid int64, look bool) string {
 	if look {
 		path += "?look=1"
 	}
+	ctx := f.as(uid)
+	if uid == f.owner {
+		ctx = f.asOwner
+	}
 	rec := httptest.NewRecorder()
-	f.srv.handleFleetDigest(rec, httptest.NewRequest(http.MethodGet, path, nil).WithContext(f.as(uid)))
+	f.srv.handleFleetDigest(rec, httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("digest: %d %s", rec.Code, rec.Body.String())
 	}
@@ -628,5 +646,101 @@ func TestTheDigestIsOffUnlessTheFlagIsSet(t *testing.T) {
 	var looked int
 	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM fleet_owner_marks`).Scan(&looked); err != nil || looked != 0 {
 		t.Errorf("flag off: ?look=1 wrote %d marks rows (%v); want 0", looked, err)
+	}
+}
+
+// TestPullRequestStatesAreReadOnlyForAnOwnerTheAppAdmits (🟡1, audit round 1):
+// a member's session may report a pull request of ANY repository (POST
+// /api/pr-sessions), and the state read is the GitHub App's own. So the
+// state is read only where the owner may use the App (githubAppForOwner: an
+// admin, or a listed team); a member's prs stay "unknown" and its stall stays
+// Stalled — never Waiting on CI or Done on the App's word. The same fleet read
+// as an admin shows the state (the positive control), and GitHub is not even
+// asked for the member.
+func TestPullRequestStatesAreReadOnlyForAnOwnerTheAppAdmits(t *testing.T) {
+	f := newFleetFixture(t)
+	k, w := f.window(f.owner, mirror.StatusIdle)
+	f.stop(t, f.owner, k, w, sessionstate.StateStalled, false, fleetT0)
+	f.pr(t, f.owner, k, "example-org/private-thing", 404, &githubapp.PRState{State: "closed", Merged: true, HeadSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"})
+
+	member := f.as(f.owner)
+	before := f.prs.count()
+	list := f.srv.toolFleetList(member, `{}`)
+	if !strings.Contains(list, `{"repo":"example-org/private-thing","number":404,"state":"unknown"}`) ||
+		strings.Contains(list, `"merged"`) || strings.Contains(list, "abcdefabcdef") {
+		t.Errorf("a member's fleet_list shows the App's answer:\n%s", list)
+	}
+	rec := httptest.NewRecorder()
+	f.srv.handleFleetDigest(rec, httptest.NewRequest(http.MethodGet, ui.FleetDigestPath, nil).WithContext(member))
+	if got := counts(t, rec.Body.String()); got["done"] != 0 || got["stalled"] != 1 {
+		t.Errorf("a member's card groups by the App's answer: %v", got)
+	}
+	if strings.Contains(rec.Body.String(), "private-thing#404 merged") {
+		t.Errorf("a member's card shows the App's answer")
+	}
+	if n := f.prs.count(); n != before {
+		t.Errorf("GitHub was asked %d times for a member; want 0", n-before)
+	}
+
+	admin := f.srv.toolFleetList(f.asOwner, `{}`)
+	if !strings.Contains(admin, `{"repo":"example-org/private-thing","number":404,"state":"merged","head_sha12":"abcdefabcdef"}`) {
+		t.Errorf("control: an admin owner's fleet_list lacks the state:\n%s", admin)
+	}
+}
+
+// TestTwoTapsAtOnceOpenOneFleetChat (🟢3, audit round 1): concurrent "Ask the
+// chief about this" taps — a double tap, two tabs — all land on ONE Fleet
+// chat, and the chief has exactly one chat titled Fleet: create-or-reuse is
+// one step under a row lock (fleet.Store.FleetChatOr), so no chat is made and
+// then orphaned by a later record.
+func TestTwoTapsAtOnceOpenOneFleetChat(t *testing.T) {
+	f := newFleetFixture(t)
+	// The owner's marks row exists already (a look), holding no chat: the
+	// race is on the READ of an existing row, which only the row lock
+	// serialises (a first-ever insert would serialise on its own key).
+	if _, err := f.srv.ext.Fleet.Look(f.asOwner, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The chief has its primary, as every chief the panel opens on does
+	// (writeChiefPanelBodyWith elects it). Electing a FIRST primary under
+	// concurrent callers is primarySession's own race (its legacy session
+	// key), outside this change: the side-chat route has it too.
+	if _, err := f.srv.primarySession(f.asOwner, f.chief); err != nil {
+		t.Fatal(err)
+	}
+	const taps = 6
+	var logBuf strings.Builder
+	var logMu sync.Mutex
+	f.srv.logger = log.New(writerFunc(func(p []byte) (int, error) { logMu.Lock(); defer logMu.Unlock(); return logBuf.Write(p) }), "", 0)
+	defer func() {
+		if t.Failed() {
+			t.Logf("server log:\n%s", logBuf.String())
+		}
+	}()
+	got := make([]string, taps)
+	var wg sync.WaitGroup
+	for i := 0; i < taps; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, ui.FleetChatPath, strings.NewReader("")).WithContext(f.asOwner)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			f.srv.handleFleetChat(rec, req)
+			got[i] = regexp.MustCompile(`data-chief-active-session="([0-9]+)"`).FindStringSubmatch(rec.Body.String() + `data-chief-active-session="0"`)[1]
+			if got[i] == "0" {
+				t.Logf("tap %d: %d %s", i, rec.Code, rec.Body.String())
+			}
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < taps; i++ {
+		if got[i] != got[0] || got[i] == "0" {
+			t.Fatalf("concurrent taps opened different chats: %v", got)
+		}
+	}
+	var fleetChats int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM chat_sessions WHERE agent_id = $1 AND title = 'Fleet'`, f.chief.ID).Scan(&fleetChats); err != nil || fleetChats != 1 {
+		t.Fatalf("the chief has %d chats titled Fleet (%v); want exactly 1", fleetChats, err)
 	}
 }

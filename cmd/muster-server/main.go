@@ -628,9 +628,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.SessionState {
 			ext.Episodes = sessionstate.NewPG(a.pool)
 		}
-		// The fleet's action log and the digest's marks (migration 0147): the
-		// digest card and fleet_list read it; the episode push writes its one
-		// notify class (internal/api fleet_read.go).
+		// The fleet digest's marks (migration 0147): the "since you last
+		// looked" baseline and the Fleet side chat (internal/api fleet_digest.go).
 		ext.Fleet = fleet.NewPG(a.pool)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
@@ -2119,10 +2118,21 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("session state: OFF — %s is unset", envSessionState)
 	}
+	// 🔴 WHAT THE PULL-REQUEST GROUPS NEED IS SAID ON THE LINE (audit round 1
+	// 🟡3): their pull requests are session_prs' (wired only with session
+	// routing and PR mail) and their states the GitHub App's, so without either
+	// Waiting on CI and Done stay empty however the card looks.
+	fleetPRs := "pull-request groups ON (session_prs and the GitHub App; states read only for an owner the App admits)"
+	switch {
+	case ext.PRSessions == nil:
+		fleetPRs = "pull-request groups EMPTY: they need session routing + PR mail (" + envSessionRouting + "=1, " + envPRMailSenders + ") for session_prs"
+	case ext.FleetPRStates == nil:
+		fleetPRs = "pull-request groups EMPTY: every state is unknown with no GitHub App"
+	}
 	switch {
 	case ext.FleetDigest && ext.Episodes != nil:
 		l.Printf("fleet digest: ON (%s=1) — the chief panel shows the fleet digest card (each of the owner's own sessions grouped by "+
-			"what it needs, no model, no chief turn) and fleet_list carries state, episode, prs and the owner facts", envFleetDigest)
+			"what it needs, no model, no chief turn) and fleet_list carries state, episode, prs and the owner facts; %s", envFleetDigest, fleetPRs)
 	case ext.FleetDigest:
 		l.Printf("fleet digest: ON (%s=1) — but %s is unset, so the card says there are no states and fleet_list carries none", envFleetDigest, envSessionState)
 	case a.cfg.FleetDigest:

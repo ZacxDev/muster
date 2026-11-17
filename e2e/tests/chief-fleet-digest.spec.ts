@@ -249,6 +249,46 @@ for (const vp of [
   test.describe(`on a ${vp.name}`, () => {
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
 
+    // 🔴 AUDIT ROUND 1 🟡2: a panel restored open re-dispatches the body's open
+    // event on every settle while the body has not loaded, and a card on that
+    // event refetched ITSELF (a marks write and a whole fleet read each time)
+    // until the body landed — for ever, if it never did. The body is held back
+    // here so that window is long. The card is fetched once, with no look; a
+    // real open (the panel tapped open) fetches it once more, with one.
+    test('restored open: the card is fetched once, without a look; a real open fetches it once more, with one', async ({ page }) => {
+      test.setTimeout(60_000);
+      await rig.login(page);
+      await page.goto(rig.origin + '/tasks');
+      await page.evaluate(() => localStorage.setItem('muster.chief.v1.open.chief-panel', '1'));
+      const fetches: string[] = [];
+      page.on('request', (r) => {
+        const u = new URL(r.url());
+        if (u.pathname === '/ui/chief/fleet') fetches.push(u.search);
+      });
+      await page.route('**/ui/chief/panel*', async (route) => {
+        await new Promise((r) => setTimeout(r, 3000));
+        await route.continue().catch(() => {});
+      });
+      await page.reload();
+      await expect(page.locator('#fleet-digest [data-fleet-digest]')).toHaveAttribute('data-fleet-state', 'ready', { timeout: 20_000 });
+      await expect(page.locator('#chat-log')).toBeVisible({ timeout: 20_000 });
+      await page.waitForTimeout(1500);
+      expect(fetches, 'one fetch on a restored-open load, and no look').toEqual(['']);
+      await page.unroute('**/ui/chief/panel*');
+      await page.locator('[data-chief-panel-close]').click();
+      await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '0');
+      await page.evaluate(() => {
+        const b = document.createElement('button');
+        b.setAttribute('data-chief-panel-toggle', '');
+        b.style.cssText = 'position:fixed;left:-9999px;top:0';
+        document.body.appendChild(b);
+        b.click();
+      });
+      await expect.poll(() => fetches.length, { timeout: 10_000 }).toBe(2);
+      expect(fetches[1], 'a real open is a look').toBe('?look=1');
+      await page.evaluate(() => localStorage.removeItem('muster.chief.v1.open.chief-panel'));
+    });
+
     test('the card above the chat → a group → a drill-in → the Fleet chat with a draft, nothing sent → Open session', async ({ page }, info) => {
       test.setTimeout(120_000);
       const tap = async (loc: ReturnType<Page['locator']>) => (vp.phone ? loc.tap() : loc.click());

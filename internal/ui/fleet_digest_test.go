@@ -81,3 +81,21 @@ func TestTheCardsStatesAndAnUnavailableCard(t *testing.T) {
 		t.Errorf("a body with no draft carries the mark")
 	}
 }
+
+// TestTheFleetCardLoadsOnItsOwnEvent: the card's slot loads on fleetOpenEvent
+// — never on the body's muster:chief-open, which restore() re-dispatches on
+// every settle while the body is unloaded (audit round 1 🟡2) — and the panel
+// script dispatches exactly that name. The browser fact (one fetch on a
+// restored-open load) is e2e/tests/chief-fleet-digest.spec.ts.
+func TestTheFleetCardLoadsOnItsOwnEvent(t *testing.T) {
+	html := renderString(t, fleetDigestSlot())
+	if !strings.Contains(html, `hx-trigger="`+fleetOpenEvent+` from:document,`) {
+		t.Errorf("the slot does not load on %s:\n%s", fleetOpenEvent, html)
+	}
+	if strings.Contains(html, chiefPanelOpenEvent) {
+		t.Errorf("the slot listens to the body's %s", chiefPanelOpenEvent)
+	}
+	if src := jsSource(t, chiefPanelScript()); !strings.Contains(src, `var FLEET_OPEN_EVENT = '`+fleetOpenEvent+`'`) {
+		t.Errorf("the panel script does not dispatch %s", fleetOpenEvent)
+	}
+}

@@ -286,8 +286,15 @@ func (s *Server) attachFleetPRs(ctx context.Context, subs []fleetSubject) {
 			}
 		}
 	}
+	// 🔴 ONLY WHERE THE OWNER MAY USE THE APP (githubAppForOwner: an admin, or
+	// a team MUSTER_TEAMS_ON_GITHUB_APP lists — THE predicate every other App
+	// reader applies). A member's session reports any repository it likes
+	// (POST /api/pr-sessions), and the read is the App's own token: without
+	// this a member would read, through the digest, the state of a pull
+	// request in any repository the App is installed on. Not entitled: every
+	// state stays unknown.
 	reader := s.ext.FleetPRStates
-	if reader == nil {
+	if reader == nil || s.githubAppForOwner(ctx, requestOwner(ctx)) == nil {
 		return
 	}
 	rctx, cancel := context.WithTimeout(withPRReadBudget(ctx, fleetPRReadsPerCall), fleetPRReadsDeadline)
