@@ -175,7 +175,7 @@ func TestABuiltinInstanceCannotWorkOnAStaleCharter(t *testing.T) {
 }
 
 // TestABuiltinInstanceNeverBriefedIsRefusedItsClaim: an instance with no
-// record — never briefed, or briefed by an image before migration 0139 (the
+// record — never briefed, or briefed by an image before migration 0140 (the
 // live instance) — is briefed version 0, so its first claim is refused until
 // it calls officer_brief.
 func TestABuiltinInstanceNeverBriefedIsRefusedItsClaim(t *testing.T) {

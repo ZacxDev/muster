@@ -138,7 +138,7 @@ func Parse(raw []byte) ([]Block, int, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, 0, invalid("blocks is required: a list of blocks")
 	}
-	if len(raw) > MaxVersionBytes*2 {
+	if len(raw) > MaxBlocksInputBytes {
 		return nil, 0, invalid("the blocks are larger than %d KiB", MaxVersionBytes>>10)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

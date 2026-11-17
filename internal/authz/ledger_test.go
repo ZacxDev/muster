@@ -86,6 +86,10 @@ var (
 		// already do anything — with the team's audit row in the same
 		// transaction; it mints only for an id that names a team.
 		"cmd/muster-server.mirrorCreateTeamToken",
+		// The feature registry's one boolean, at boot (officers O-B round 0):
+		// is any live plugin bound to an officer, deployment-wide. It reads
+		// EXISTS and hands on nothing else.
+		"cmd/muster-server.pluginsBoundAtBoot",
 		"internal/agentkickoff.(*Deliverer).Run",
 		"internal/agentstatus.(*Promoter).Run",
 		"internal/api.(*Server).RunTaskReap",
@@ -358,6 +362,11 @@ var (
 		// A fixture command, never linked into a binary (modulegate's linkage
 		// ledger), and it refuses any database not ending in _e2e.
 		"e2e/mktoken.run",
+		// The ask-log browser spec's fixture (e2e/askfix): it writes and clears
+		// asks through the real store AS the named fixture user, so row-level
+		// security confines it to that user's rows. A fixture command, never
+		// linked into a binary, and it refuses any database not ending in _e2e.
+		"e2e/askfix.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions

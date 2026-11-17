@@ -70,6 +70,9 @@ const (
 	// mirror's user service; its MUSTER_MIRROR_TOKEN_FILE names the token.
 	defaultMirrorEnv = "~/.config/muster-mirror/env"
 	mirrorHostRoute  = "/mirror/host"
+	// showUIPassword prints the sign-in password muster generated (or the
+	// .env's, when it sets one): muster-server's show-secret.
+	showUIPassword = "docker compose exec muster /muster-server show-secret ui-password"
 )
 
 // doctorSample is a 1.7 s spoken phrase ("testing muster dictation"), 16 kHz
@@ -104,7 +107,7 @@ type doctorCheck struct {
 // what --skip takes.
 var doctorChecks = []string{
 	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
-	"mirror-service", "tmux", "sign-in", "push", "dictation", "features",
+	"mirror-service", "tmux", "sign-in", "push", "dictation", "features", "officers",
 	"mcp-endpoint", "mcp-registration", "ask-hook",
 }
 
@@ -187,6 +190,22 @@ type serverReport struct {
 	// Features is the server's feature registry (internal/api.FeatureView):
 	// absent from a server that predates it.
 	Features []serverFeature `json:"features"`
+	// Officers is each of the caller's officers and what is in its way
+	// (internal/api.DoctorOfficer): nil from a server that predates it.
+	Officers *[]serverOfficer `json:"officers"`
+}
+
+// serverOfficer is the part of one officer's doctor entry this client prints.
+type serverOfficer struct {
+	ID       string `json:"id"`
+	Runtime  string `json:"runtime"`
+	RunsOn   string `json:"runs_on"`
+	Host     string `json:"host"`
+	Problems []struct {
+		Problem string `json:"problem"`
+		Fix     string `json:"fix"`
+	} `json:"problems"`
+	Notes []string `json:"notes"`
 }
 
 // serverFeature is the part of one registry entry this client prints.
@@ -272,6 +291,7 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 	d.checkPush(ctx)
 	d.checkDictation(ctx)
 	d.checkFeatures()
+	d.checkOfficers()
 	d.checkMCPEndpoint()
 	d.checkMCPRegistration()
 	d.checkAskHook()
@@ -627,7 +647,7 @@ func (d *doctorRun) checkMirrorHosts() {
 	}
 	if len(online) == 0 && len(offline) == 0 {
 		d.add(name, statusFail, "no machine has a mirror token yet",
-			"mint one per machine: `docker compose exec muster /muster-server mirror token create <host>` (INSTALL.md, step 6)")
+			"mint one per machine: `docker compose exec muster /muster-server mirror token create <host>` (INSTALL.md, \"Another machine\")")
 		return
 	}
 	if len(offline) > 0 {
@@ -690,7 +710,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	path, server := d.mirrorSettings()
 	if path == "" {
 		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected",
-			"connect it: INSTALL.md, step 7")
+			"connect it: INSTALL.md, \"Install muster on this machine\"")
 		return
 	}
 	// 🔴 THE TOKEN GOES ONLY TO THE SERVER IT BELONGS TO: the mirror's own
@@ -698,7 +718,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	// a credential that connects as this host (round-2 audit, Y1).
 	if server == "" {
 		d.add(name, statusSkip, d.mirrorEnv+" names no MUSTER_MIRROR_URL, so it is not known which server this machine's token belongs to",
-			"re-run INSTALL.md step 7 on this machine")
+			"re-run INSTALL.md's \"Install muster on this machine\" here")
 		return
 	}
 	if server != d.base {
@@ -710,7 +730,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	tok := strings.TrimSpace(string(raw))
 	if err != nil || tok == "" {
 		d.add(name, statusFail, "muster-mirror's token file "+path+" is missing or empty",
-			"mint this machine's token on the server and write it there (INSTALL.md, step 7)")
+			"mint this machine's token on the server and write it there (INSTALL.md, \"Another machine\")")
 		return
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server+mirrorHostRoute, nil)
@@ -785,7 +805,7 @@ func (d *doctorRun) checkMirrorService(ctx context.Context) {
 			state = err.Error()
 		}
 		d.add(name, statusFail, fmt.Sprintf("%s is %s", d.unit, state),
-			"`systemctl --user enable --now "+d.unit+"`, then `journalctl --user -u "+d.unit+" -n 50` (INSTALL.md, step 7)")
+			"`systemctl --user enable --now "+d.unit+"`, then `journalctl --user -u "+d.unit+" -n 50` (INSTALL.md, \"Install muster on this machine\")")
 	case "darwin":
 		target := "gui/" + strconv.Itoa(d.sys.uid) + "/" + d.label
 		out, err := d.sys.run(ctx, "launchctl", "print", target)
@@ -798,7 +818,7 @@ func (d *doctorRun) checkMirrorService(ctx context.Context) {
 			why = "loaded but not running"
 		}
 		d.add(name, statusFail, d.label+" is "+why,
-			"`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/"+d.label+".plist`, then read ~/Library/Logs/muster-mirror.log (INSTALL.md, step 7)")
+			"`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/"+d.label+".plist`, then read ~/Library/Logs/muster-mirror.log (INSTALL.md, \"Install muster on this machine\")")
 	default:
 		d.add(name, statusSkip, "no service manager doctor knows on "+d.sys.goos, "")
 	}
@@ -823,7 +843,7 @@ func (d *doctorRun) checkTmux(ctx context.Context) {
 	path, err := d.sys.lookPath("tmux")
 	if err != nil {
 		d.add(name, statusFail, "tmux is not installed on this machine, so muster-mirror has no sessions to show",
-			"install tmux (`sudo apt install tmux`, `brew install tmux`, …) and start your agents inside it (INSTALL.md, step 8)")
+			"install tmux (`sudo apt install tmux`, `brew install tmux`, …) and start your agents inside it (INSTALL.md, \"Run your agents in tmux\")")
 		return
 	}
 	out, err := d.sys.run(ctx, path, "-V")
@@ -860,7 +880,8 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 	}
 	if d.password == "" {
 		d.add(name, statusSkip, "no operator password here, so sign-in, push and dictation cannot be checked from this machine",
-			"on the server machine: muster doctor --deploy-env <dir>/.env")
+			"on the server machine: muster doctor --deploy-env <a file with MUSTER_PUBLIC_URL, MUSTER_HOOK_TOKEN and MUSTER_UI_PASSWORD> "+
+				"(a generated password: `"+showUIPassword+"`; INSTALL.md, \"Check it\")")
 		return
 	}
 	if d.passwordURL == "" || d.passwordURL != d.base {
@@ -892,7 +913,9 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 	case resp.StatusCode == http.StatusSeeOther && len(resp.Cookies()) > 0:
 	case resp.StatusCode == http.StatusUnauthorized:
 		d.add(name, statusFail, "the server refused the password in --deploy-env",
-			"the running server was started with another MUSTER_UI_PASSWORD: `docker compose up -d --wait` to apply the .env")
+			"that file's MUSTER_UI_PASSWORD is not the one the server runs with. If the .env sets it, the server has not been "+
+				"restarted since: `docker compose up -d --wait`. If muster generated it (no MUSTER_UI_PASSWORD in .env), the file "+
+				"must hold the generated one: `"+showUIPassword+"`")
 		return
 	case resp.StatusCode == http.StatusServiceUnavailable:
 		d.add(name, statusFail, "the server has no usable MUSTER_UI_PASSWORD (unset, or under 12 characters)",
@@ -920,8 +943,20 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 					"as http://localhost:8105; on a plain-http LAN port set MUSTER_SECURE_COOKIES=0 in the server's .env")
 			return
 		}
-		d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d)", code),
-			"a proxy in front of muster is dropping the session cookie: use `tailscale serve` with nothing else in between")
+		// Not a Secure cookie over http (above). A redirect AWAY from this
+		// server is something in front of it answering (an auth portal); one
+		// to muster's own sign-in page is muster not seeing the session.
+		if resp != nil {
+			if loc := resp.Header.Get("Location"); loc != "" && !strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, d.base) {
+				d.add(name, statusFail, fmt.Sprintf("signed in, but the board answered %d, a redirect to %s: something in front of muster answered", code, loc),
+					"reach muster with nothing in between (an auth portal or proxy): through `tailscale serve`, or on this machine")
+				return
+			}
+		}
+		d.add(name, statusFail, fmt.Sprintf("signed in, but the session does not open a page (%d): the session cookie did not come back "+
+			"with the next request, or muster did not accept it", code),
+			"`docker compose logs muster` says whether muster refused the session; if a proxy sits between this machine and "+
+				"muster, it is dropping the cookie: use `tailscale serve`, or this machine, with nothing in between")
 		return
 	}
 	d.signedIn = true
@@ -933,8 +968,8 @@ func (d *doctorRun) checkPush(ctx context.Context) {
 	if d.skipped(name) || d.needsServer(name) {
 		return
 	}
-	const fix = "generate keys with `docker run --rm ghcr.io/zacxdev/muster:<version> vapid generate`, put the two lines and " +
-		"MUSTER_VAPID_SUBJECT in the server's .env (INSTALL.md, step 4), then `docker compose up -d --wait`"
+	const fix = "the Compose stack generates the keys on its first start; to set your own, docs/features.md#push, " +
+		"then `docker compose up -d --wait`. Or pass `--skip push` to check the rest without notifications"
 	if d.signedIn {
 		// What the phone's Enable button fetches.
 		resp, body, err := d.get(ctx, pushKeyRoute, false)
@@ -969,9 +1004,17 @@ func (d *doctorRun) checkDictation(ctx context.Context) {
 	if d.skipped(name) || d.needsServer(name) {
 		return
 	}
+	// Dictation is an optional feature (docs/features.md#dictation): off on
+	// the server is a SKIP, never a failure, so an install without it passes.
+	// Asked for but unusable (the registry says misconfigured: a URL and no
+	// token) is a FAIL with the server's reason (#728 round 0).
+	if f, ok := d.reportFeature("dictation"); ok && f.State == "misconfigured" {
+		d.add(name, statusFail, "dictation is misconfigured on this server: "+f.Reason, f.EnableHint)
+		return
+	}
 	if d.report != nil && !d.report.Dictation {
-		d.add(name, statusFail, "dictation is off: MUSTER_STT_TOKEN is unset, so no message box has a microphone",
-			"choose a speech-to-text option and set MUSTER_STT_URL and MUSTER_STT_TOKEN in the server's .env (INSTALL.md, step 4)")
+		d.add(name, statusSkip, "dictation is off on this server (an optional feature): no message box has a microphone",
+			"to turn it on: docs/features.md#dictation")
 		return
 	}
 	if !d.signedIn {
@@ -999,7 +1042,7 @@ func (d *doctorRun) checkDictation(ctx context.Context) {
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		d.add(name, statusFail, "dictation is off on the server (POST /transcribe is 404)",
-			"set MUSTER_STT_URL and MUSTER_STT_TOKEN in the server's .env (INSTALL.md, step 4)")
+			"set MUSTER_STT_URL and MUSTER_STT_TOKEN in the server's .env (docs/features.md#dictation)")
 	case resp.StatusCode == http.StatusOK && text != "":
 		d.add(name, statusPass, fmt.Sprintf("the sample transcribed in %.1fs as %q", time.Since(start).Seconds(), text), "")
 	case resp.StatusCode == http.StatusOK:
@@ -1104,6 +1147,59 @@ func (d *doctorRun) checkFeatures() {
 	d.add(name, statusPass, detail+"; listed below", "")
 }
 
+// checkOfficers is the server's officer report (GET /api/doctor's officers):
+// for each officer the caller owns, whether its runtime can start an instance
+// now — its pods' agent plane, or its host online, starting and closing
+// windows, claude found and logged in, its repository allowed — and the fix
+// for each thing in the way.
+func (d *doctorRun) checkOfficers() {
+	const name = "officers"
+	if d.skipped(name) || d.needsReport(name) {
+		return
+	}
+	if d.report.Officers == nil {
+		d.add(name, statusSkip, "this server does not report its officers (it predates the officer check)", "")
+		return
+	}
+	list := *d.report.Officers
+	if len(list) == 0 {
+		d.add(name, statusSkip, "no officer is declared for you (MUSTER_OFFICERS, or `muster officer` in the database)", "")
+		return
+	}
+	var ok, bad, fixes, notes []string
+	for _, o := range list {
+		where := o.RunsOn
+		if o.Host != "" {
+			where += " on " + o.Host
+		}
+		if where == "" {
+			where = o.Runtime
+		}
+		for _, n := range o.Notes {
+			notes = append(notes, o.ID+": "+n)
+		}
+		if len(o.Problems) == 0 {
+			ok = append(ok, o.ID+" ("+where+")")
+			continue
+		}
+		for _, p := range o.Problems {
+			bad = append(bad, o.ID+": "+p.Problem)
+			if p.Fix != "" {
+				fixes = append(fixes, o.ID+": "+p.Fix)
+			}
+		}
+	}
+	detail := "ready: " + listOrNone(ok)
+	if len(notes) > 0 {
+		detail += "; note: " + strings.Join(notes, "; ")
+	}
+	if len(bad) > 0 {
+		d.add(name, statusFail, strings.Join(bad, "; ")+"; "+detail, strings.Join(fixes, "; "))
+		return
+	}
+	d.add(name, statusPass, detail, "")
+}
+
 // --- this host's session tools ----------------------------------------------
 //
 // What gives a mirrored Claude Code session muster's tools (attention_ask, the
@@ -1196,7 +1292,7 @@ func (d *doctorRun) checkMCPEndpoint() {
 	}
 	_, vals := d.mirrorEnvValues()
 	if vals == nil {
-		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "connect it: INSTALL.md, step 7")
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected", "connect it: INSTALL.md, \"Install muster on this machine\"")
 		return
 	}
 	listen := strings.TrimSpace(vals[envMirrorMCPListen])
@@ -1398,6 +1494,18 @@ func mirrorRestartHint(goos string) string {
 		return "launchctl kickstart -k gui/$(id -u)/" + defaultMirrorLabel
 	}
 	return "systemctl --user restart " + defaultMirrorUnit
+}
+
+// reportFeature is the server's registry entry ID, when it reported one.
+func (d *doctorRun) reportFeature(id string) (serverFeature, bool) {
+	if d.report != nil {
+		for _, f := range d.report.Features {
+			if f.ID == id {
+				return f, true
+			}
+		}
+	}
+	return serverFeature{}, false
 }
 
 // printFeatures lists the server's features below the checks: each one's

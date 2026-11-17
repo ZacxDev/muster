@@ -796,11 +796,15 @@ func (s *Server) pluginDeliverToFormHTML(p plugins.Plugin) string {
 	if !p.Has(plugins.CapMessages) || (s.officerStore == nil && p.DeliverTo == nil) {
 		return ""
 	}
-	cur := ""
+	cur, shown := "", "your chief"
 	if p.DeliverTo != nil {
-		cur = *p.DeliverTo
+		cur, shown = *p.DeliverTo, *p.DeliverTo
 	}
-	return `<form method="POST" action="` + pluginsPath + `/` + strconv.FormatInt(p.ID, 10) + `/deliver-to" class="flex flex-wrap items-center gap-2" data-plugin-deliver-to>
+	// 🔴 THE BINDING IS SAID IN TEXT, not only as the field's value: a
+	// field's value is not the page's text, so after a save the card read
+	// as unbound (the blind probe's "Deliver to looks empty").
+	return `<span class="text-xs text-fg2" data-plugin-delivers-to>Delivers to <span class="font-mono text-fg">` + html.EscapeString(shown) + `</span></span>
+<form method="POST" action="` + pluginsPath + `/` + strconv.FormatInt(p.ID, 10) + `/deliver-to" class="flex flex-wrap items-center gap-2" data-plugin-deliver-to>
 <label class="text-xs text-fg2">Deliver to <input name="deliver_to" maxlength="120" value="` + html.EscapeString(cur) + `" placeholder="your chief" class="` + flowsInputClass + `"></label>
 <button type="submit" class="` + flowsQuietButton + `">Save</button></form>`
 }

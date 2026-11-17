@@ -1,4 +1,4 @@
--- muster 0139 — WHICH CHARTER EACH BUILTIN INSTANCE WAS BRIEFED WITH
+-- muster 0140 — WHICH CHARTER EACH BUILTIN INSTANCE WAS BRIEFED WITH
 -- (internal/officers/builtin backend.go BriefFor / CharterCurrent;
 -- docs/officers-builtin.md "Charter changes").
 --
@@ -26,8 +26,8 @@
 -- Inert without its code: defaulted, and an older image never reads it.
 -- Idempotent (db.RLSOn re-applies 0118, which leaves this column alone).
 --
--- Must apply after its predecessor, 0138 (the contiguity test refuses a gap).
--- 🔴 RENUMBER IT if another migration takes 0139 first.
+-- Must apply after its predecessor, 0139 (the contiguity test refuses a gap).
+-- 🔴 RENUMBER IT if another migration takes 0140 first.
 --
 -- ROLLBACK (after rolling the image back; an older image ignores it):
 --   ALTER TABLE public.officer_defs DROP COLUMN IF EXISTS charter_briefed;

@@ -92,6 +92,11 @@ func (h *hostSide) agentClose(m mirror.Msg) {
 	case err == nil:
 		ans.CloseResult = &r
 		h.c.log.Printf("muster-mirror: CLOSED %s:%s on muster's request (graceful: %t)", req.Session, req.Window, r.Graceful)
+		// The closed agent's scratch directory (and a clean worktree) goes
+		// now, not at the next hourly sweep.
+		if h.c.cfg.AgentSpawn.Enabled {
+			go h.c.sweepOnce(h.ctx)
+		}
 	case errors.As(err, &e):
 		ans.Refusal, ans.Error = e.Code, e.Detail
 		h.c.log.Printf("muster-mirror: close of %s:%s refused (%s): %s", req.Session, req.Window, e.Code, e.Detail)

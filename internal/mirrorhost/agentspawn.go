@@ -60,8 +60,15 @@ import (
 //     word.
 
 // DefaultAgentSpawnRate is -agent-spawn-rate's default: 3 per 10 minutes and
-// 10 per 24 hours (its daily part equals the server's daily cap).
+// 10 per 24 hours (its daily part equals the server's daily cap). It counts
+// the CHIEF's spawns; officer spawns have their own ceiling.
 const DefaultAgentSpawnRate = "3/10m,10/24h"
+
+// DefaultAgentSpawnOfficerRate is -agent-spawn-officer-rate's default: the
+// host's ceiling on every officer spawn together. muster's own per-officer
+// limits (sized from each officer's poll and schedule, internal/officers
+// SpawnBudgetFor) sit under it; this is what holds whatever muster sends.
+const DefaultAgentSpawnOfficerRate = "20/10m,400/24h"
 
 // AgentSpawnDeadline is the host's spawn deadline, from RECEIPT of the request
 // (queue wait included): below the server's 150 s wait by a 30 s margin.
@@ -83,8 +90,15 @@ type AgentSpawnConfig struct {
 	// Repos is the allow-list, <owner>/<repo>, EMPTY BY DEFAULT: an empty list
 	// spawns nothing.
 	Repos []string
-	// Rate is -agent-spawn-rate ("" = DefaultAgentSpawnRate).
+	// Rate is -agent-spawn-rate ("" = DefaultAgentSpawnRate): the limit on
+	// the CHIEF's spawns.
 	Rate string
+	// OfficerRate is -agent-spawn-officer-rate ("" =
+	// DefaultAgentSpawnOfficerRate): the host's own ceiling on every OFFICER
+	// spawn together (a prompt beginning with mirror.OfficerSpawnPreface).
+	// muster sizes each officer's own limit from its poll and schedule; this
+	// is what holds whatever muster sends.
+	OfficerRate string
 	// Log is the append-only audit log (JSON lines, 0600).
 	Log string
 	// Server is the muster URL this mirror connects to, recorded on each
@@ -113,11 +127,13 @@ type AgentSpawnConfig struct {
 	// flag sets it; a test sets it to say "root" without being root.
 	Geteuid func() int
 
+	// ClaudeBin is -claude-path: the claude binary (absolute) a spawn runs
+	// and the readiness checks; "" resolves `claude` on the tmux server's
+	// global PATH. (Set it when the install put claude where that PATH does
+	// not reach, e.g. ~/.local/bin.)
+	ClaudeBin string
 	// --- test seams (no flag sets these) ---
 
-	// ClaudeBin, when set, is the claude binary (absolute); otherwise it is
-	// resolved against the tmux server's global PATH.
-	ClaudeBin string
 	// OpenCodeBin, when set, is the opencode binary (absolute) whose version
 	// is compared with the service's; otherwise `opencode` on the tmux
 	// server's global PATH.
@@ -275,6 +291,11 @@ func spawnArgv(shell, promptFile, bin, sid string, opencode bool, openCodeBin st
 	return append(argv, "--")
 }
 
+// scratchDirName is the directory under the agents directory where a
+// scratch spawn's private directory goes (<dir>/scratch/<dispatch>). It holds
+// no "__", so the worktree sweep never reads it as a repository's.
+const scratchDirName = "scratch"
+
 // spawnNoConfig is the tmux option the spawn's new-session carries: a server it
 // would start loads no configuration (newAgentWindow).
 var spawnNoConfig = [2]string{"-f", "/dev/null"}
@@ -306,19 +327,31 @@ type spawnRate struct {
 // ParseAgentSpawnRate reads -agent-spawn-rate: comma-separated <n>/<duration>,
 // a duration with units m or h ("3/10m,10/24h").
 func ParseAgentSpawnRate(s string) ([]spawnRate, error) {
+	return parseSpawnRate(s, DefaultAgentSpawnRate, "-agent-spawn-rate")
+}
+
+// ParseAgentSpawnOfficerRate reads -agent-spawn-officer-rate, as
+// ParseAgentSpawnRate.
+func ParseAgentSpawnOfficerRate(s string) ([]spawnRate, error) {
+	return parseSpawnRate(s, DefaultAgentSpawnOfficerRate, "-agent-spawn-officer-rate")
+}
+
+// parseSpawnRate is the one rate parser: s, or def when s is blank; flag
+// names the flag in an error.
+func parseSpawnRate(s, def, flag string) ([]spawnRate, error) {
 	if strings.TrimSpace(s) == "" {
-		s = DefaultAgentSpawnRate
+		s = def
 	}
 	var out []spawnRate
 	for _, part := range strings.Split(s, ",") {
 		n, d, ok := strings.Cut(strings.TrimSpace(part), "/")
 		k, err := strconv.Atoi(n)
 		if !ok || err != nil || k <= 0 {
-			return nil, fmt.Errorf("-agent-spawn-rate %q: each part is <count>/<duration>, e.g. 3/10m", s)
+			return nil, fmt.Errorf("%s %q: each part is <count>/<duration>, e.g. 3/10m", flag, s)
 		}
 		dur, err := time.ParseDuration(d)
 		if err != nil || dur <= 0 {
-			return nil, fmt.Errorf("-agent-spawn-rate %q: %q is not a duration", s, d)
+			return nil, fmt.Errorf("%s %q: %q is not a duration", flag, s, d)
 		}
 		out = append(out, spawnRate{n: k, d: dur})
 	}
@@ -367,11 +400,7 @@ func ParseAgentSpawnRepos(s string) ([]string, error) {
 // allow-list: its exact lower-cased name, or the entry "<its owner>/*" — built
 // from repo's own owner and compared for EQUALITY, never as a prefix, so
 // "acme-evil/x" does not match "acme/*".
-func repoAllowed(list []string, repo string) bool {
-	r := strings.ToLower(repo)
-	owner, _, _ := strings.Cut(r, "/")
-	return slices.Contains(list, r) || slices.Contains(list, owner+"/*")
-}
+func repoAllowed(list []string, repo string) bool { return mirror.SpawnRepoAllowed(list, repo) }
 
 // --- the startup and per-spawn preconditions ---------------------------------
 
@@ -410,6 +439,9 @@ func agentSpawnUnavailable(cfg Config) string {
 	}
 	if _, err := ParseAgentSpawnRate(sc.Rate); err != nil {
 		return "the spawn rate does not parse"
+	}
+	if _, err := ParseAgentSpawnOfficerRate(sc.OfficerRate); err != nil {
+		return "the officer spawn rate does not parse"
 	}
 	return ""
 }
@@ -583,7 +615,7 @@ func (h *hostSide) agentSpawnRuntimes() []string {
 	defer cancel()
 	var out []string
 	if _, err := h.c.claudeBinary(ctx); err != nil {
-		h.c.log.Printf("muster-mirror: -agent-spawn: claude is not offered: %v", err)
+		h.c.log.Printf("muster-mirror: -agent-spawn: claude is not offered: %v%s", err, claudePathHint)
 	} else {
 		out = append(out, mirror.SpawnRuntimeClaude)
 	}
@@ -609,6 +641,16 @@ func (c *Client) serverPathBinary(ctx context.Context, name, seam string) (strin
 	if b := seam; b != "" {
 		if !filepath.IsAbs(b) || !hostWordRE.MatchString(b) {
 			return "", fmt.Errorf("the %s binary is not an absolute path tmux would leave alone", name)
+		}
+		// 🔴 A SET PATH IS CHECKED, NOT TRUSTED (O-B round 0): a -claude-path
+		// naming nothing used to read "found" in the readiness and fail only
+		// inside the spawned window. The same test the PATH search applies.
+		fi, err := os.Stat(b)
+		if err != nil {
+			return "", fmt.Errorf("the %s binary %s is not found", name, b)
+		}
+		if !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("the %s binary %s is not an executable file", name, b)
 		}
 		return b, nil
 	}
@@ -660,6 +702,14 @@ type spawnAuditAdmit struct {
 	At       time.Time `json:"at"`
 	Kind     string    `json:"kind"` // "admit"
 	Dispatch int64     `json:"dispatch"`
+	// Officer marks an officer spawn's admission: -agent-spawn-officer-rate
+	// counts those, -agent-spawn-rate the chief's. 🔴 ALWAYS WRITTEN, false
+	// included (O-B round 0): a line with NO officer field is from a build
+	// before the officer ceiling, when an officer's spawn was not told apart,
+	// and counts against NEITHER limit (admittedSince) — counted as the
+	// chief's, a host's officer spawns of the last day could hold the chief
+	// at its limit for up to 24 hours after the upgrade.
+	Officer bool `json:"officer"`
 }
 
 // The audit log's bounds. Every string field is cut to auditFieldMax bytes
@@ -727,11 +777,12 @@ func appendAudit(path string, v any) error {
 }
 
 // admittedSince counts the audit log's admissions ("admit" lines) at or after
-// since. A log that cannot be read is an error (the caller refuses: the limit
-// is never skipped because its record failed); a line that is corrupt or
-// longer than auditLineMax is skipped, so one bad line cannot disable every
-// later check.
-func admittedSince(path string, since time.Time) (int, error) {
+// since whose Officer flag is officer; a line with no flag (an older build's,
+// spawnAuditAdmit.Officer) counts for neither. A log that cannot be read is an error
+// (the caller refuses: the limit is never skipped because its record failed);
+// a line that is corrupt or longer than auditLineMax is skipped, so one bad
+// line cannot disable every later check.
+func admittedSince(path string, since time.Time, officer bool) (int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
@@ -749,8 +800,12 @@ func admittedSince(path string, since time.Time) (int, error) {
 			_, err = r.ReadSlice('\n')
 		}
 		if !long && len(line) > 0 {
-			var a spawnAuditAdmit
-			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && !a.At.Before(since) {
+			var a struct {
+				At      time.Time `json:"at"`
+				Kind    string    `json:"kind"`
+				Officer *bool     `json:"officer"`
+			}
+			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && a.Officer != nil && *a.Officer == officer && !a.At.Before(since) {
 				n++
 			}
 		}
@@ -764,12 +819,16 @@ func admittedSince(path string, since time.Time) (int, error) {
 }
 
 // rateRefusal is the rate limit's refusal, "" when spawn admitted now passes
-// every window of rates.
-func rateRefusal(path string, rates []spawnRate, now time.Time) (string, error) {
+// every window of rates. officer picks which admissions count: the officer
+// spawns' (-agent-spawn-officer-rate) or the chief's (-agent-spawn-rate).
+func rateRefusal(path string, rates []spawnRate, now time.Time, officer bool) (string, error) {
 	for _, r := range rates {
-		n, err := admittedSince(path, now.Add(-r.d))
+		n, err := admittedSince(path, now.Add(-r.d), officer)
 		if err != nil {
 			return "", err
+		}
+		if n >= r.n && officer {
+			return fmt.Sprintf("rate limited: %d officer spawns in the last %s (this host's -agent-spawn-officer-rate)", n, shortDuration(r.d)), nil
 		}
 		if n >= r.n {
 			return fmt.Sprintf("rate limited: %d spawns in the last %s", n, shortDuration(r.d)), nil
@@ -947,6 +1006,9 @@ func newSessionID() string {
 type spawnPlan struct {
 	clone, dir, branch, baseSHA, prompt string
 	worktreeAdded                       bool
+	// scratchMade: this spawn made the scratch directory dir (a scratch
+	// spawn's), which undo removes.
+	scratchMade bool
 	// oc and session: the opencode session this spawn created ("" = none).
 	oc      *openCodeSpawn
 	session string
@@ -962,6 +1024,10 @@ func (p *spawnPlan) undo(git string) {
 	}
 	if p.session != "" && p.oc != nil {
 		p.oc.removeSession(p.session)
+	}
+	if p.scratchMade {
+		_ = os.RemoveAll(p.dir)
+		return
 	}
 	if !p.worktreeAdded {
 		return
@@ -1100,11 +1166,24 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	if !mirror.HasSpawnPreface(req.Prompt) {
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "the prompt does not begin with muster's preface")
 	}
-	if !validRepoName(req.Repo) {
+	officer := strings.HasPrefix(req.Prompt, mirror.OfficerSpawnPreface)
+	switch {
+	case req.Scratch:
+		// 🔴 A SCRATCH SPAWN IS AN OFFICER'S, WITH NO REPOSITORY: nothing of
+		// the owner's is named, so nothing is cloned, fetched or cut. ON with
+		// -agent-spawn itself (O-B round 0, the operator's Q1): an officer with
+		// no repository starts in <agent-spawn-dir>/scratch/<dispatch>, under
+		// every path guard below and trustSpawnedWorktree's.
+		if !officer {
+			return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "only an officer instance starts with no repository")
+		}
+		if req.Repo != "" || req.Base != "" || req.Clone != "" || req.Runtime != mirror.SpawnRuntimeClaude {
+			return w, false, true, refuseSpawn(mirror.SpawnFailed, "a scratch spawn names no repository, base or clone, and runs claude (a muster bug)")
+		}
+	case !validRepoName(req.Repo):
 		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "%q is not <owner>/<repo>", req.Repo)
-	}
 	// 4. THE ALLOW-LIST, before any git call.
-	if !repoAllowed(sc.Repos, req.Repo) {
+	case !repoAllowed(sc.Repos, req.Repo):
 		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "repo %s is not on this host's allow-list", req.Repo)
 	}
 	if err := checkBase(ctx, sc.git(), req.Base); err != nil {
@@ -1120,9 +1199,13 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	if !sc.now().Before(deadline) {
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "deadline passed")
 	}
-	// 6. THE RATE LIMIT, counted from the audit log.
+	// 6. THE RATE LIMIT, counted from the audit log: an officer's spawn
+	// against the officer ceiling, any other against the chief's.
 	rates, _ := ParseAgentSpawnRate(sc.Rate)
-	why, rerr := rateRefusal(sc.Log, rates, sc.now())
+	if officer {
+		rates, _ = ParseAgentSpawnOfficerRate(sc.OfficerRate)
+	}
+	why, rerr := rateRefusal(sc.Log, rates, sc.now(), officer)
 	if rerr != nil {
 		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
@@ -1132,7 +1215,7 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	// 🔴 THE ADMISSION IS RECORDED HERE, UNDER spawner.mu: the next request
 	// waiting on the lock counts it. (The result line is written after the
 	// lock is released, so counting it let concurrent requests past the limit.)
-	if err := appendAudit(sc.Log, spawnAuditAdmit{At: sc.now(), Kind: "admit", Dispatch: m.Dispatch}); err != nil {
+	if err := appendAudit(sc.Log, spawnAuditAdmit{At: sc.now(), Kind: "admit", Dispatch: m.Dispatch, Officer: officer}); err != nil {
 		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
 	admitted = true
@@ -1197,23 +1280,32 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	} else if bin, err = c.claudeBinary(ctx); err != nil {
 		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "claude not found")
 	}
-	clone, err := resolveClone(ctx, git, sc.Roots, req.Repo, req.Clone)
-	if err != nil {
-		return mirror.AgentSpawned{}, err
-	}
-	base := req.Base
-	if base == "" {
-		out, err := exec.CommandContext(ctx, git, "-C", clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
-		if err != nil {
-			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's remote has no default branch here", req.Repo)
+	// A SCRATCH spawn (an officer with no repository, checked in
+	// spawnAgentSteps) has no clone, base or branch: its directory is a fresh,
+	// private one under <agents dir>/scratch, removed once its window is gone
+	// (SweepAgentWorktrees). Everything from the trust entry on is shared.
+	scratch := req.Scratch
+	var clone, base, dir string
+	if scratch {
+		dir = filepath.Join(c.spawnDir(), scratchDirName, strconv.FormatInt(dispatch, 10))
+	} else {
+		if clone, err = resolveClone(ctx, git, sc.Roots, req.Repo, req.Clone); err != nil {
+			return mirror.AgentSpawned{}, err
 		}
-		base = strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
-		if err := checkBase(ctx, git, base); err != nil || base == "" {
-			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's default branch is not usable", req.Repo)
+		base = req.Base
+		if base == "" {
+			out, err := exec.CommandContext(ctx, git, "-C", clone, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+			if err != nil {
+				return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's remote has no default branch here", req.Repo)
+			}
+			base = strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+			if err := checkBase(ctx, git, base); err != nil || base == "" {
+				return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnBadBase, "repo %s's default branch is not usable", req.Repo)
+			}
 		}
+		owner, name, _ := strings.Cut(strings.ToLower(req.Repo), "/")
+		dir = filepath.Join(c.spawnDir(), owner+"__"+name, strconv.FormatInt(dispatch, 10))
 	}
-	owner, name, _ := strings.Cut(strings.ToLower(req.Repo), "/")
-	dir := filepath.Join(c.spawnDir(), owner+"__"+name, strconv.FormatInt(dispatch, 10))
 	slug := mirror.SpawnSlug(req.Name, 40)
 	// On a tenant's server, its namespace leads the branch and the prompt
 	// file (spawnNamespace): the other muster server's dispatch of the same
@@ -1252,49 +1344,66 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 		plan.undo(git)
 		return mirror.AgentSpawned{}, e
 	}
-	// 7. Fetch, then the worktree, from origin/<base>.
-	if out, err := exec.CommandContext(ctx, git, "-C", clone, "fetch", "--no-tags", "origin", base).CombinedOutput(); err != nil {
-		if ctx.Err() != nil {
-			return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+	warning := ""
+	if scratch {
+		// 7'. THE SCRATCH DIRECTORY, fresh and private: made here 0700, never
+		// one that was there before (a leftover is refused, as a leftover
+		// worktree is), and removed by undo on a failure from here on.
+		if _, err := os.Lstat(dir); err == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover scratch directory exists"))
 		}
-		if strings.Contains(string(out), "couldn't find remote ref") {
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the agents directory cannot be made"))
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the scratch directory could not be made"))
+		}
+		plan.scratchMade = true
+		branch = ""
+	} else {
+		// 7. Fetch, then the worktree, from origin/<base>.
+		if out, err := exec.CommandContext(ctx, git, "-C", clone, "fetch", "--no-tags", "origin", base).CombinedOutput(); err != nil {
+			if ctx.Err() != nil {
+				return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+			}
+			if strings.Contains(string(out), "couldn't find remote ref") {
+				return fail(refuseSpawn(mirror.SpawnBadBase, "branch %q does not exist on %s's remote", base, req.Repo))
+			}
+			return fail(refuseSpawn(mirror.SpawnFailed, "the fetch failed"))
+		}
+		shaOut, err := exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+base+"^{commit}").Output()
+		if err != nil {
 			return fail(refuseSpawn(mirror.SpawnBadBase, "branch %q does not exist on %s's remote", base, req.Repo))
 		}
-		return fail(refuseSpawn(mirror.SpawnFailed, "the fetch failed"))
-	}
-	shaOut, err := exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+base+"^{commit}").Output()
-	if err != nil {
-		return fail(refuseSpawn(mirror.SpawnBadBase, "branch %q does not exist on %s's remote", base, req.Repo))
-	}
-	baseSHA := strings.TrimSpace(string(shaOut))
-	if exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil {
-		return fail(refuseSpawn(mirror.SpawnFailed, "a leftover branch %s exists", branch))
-	}
-	if _, err := os.Lstat(dir); err == nil {
-		return fail(refuseSpawn(mirror.SpawnFailed, "a leftover worktree directory exists"))
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return fail(refuseSpawn(mirror.SpawnFailed, "the agents directory cannot be made"))
-	}
-	if err := exec.CommandContext(ctx, git, "-C", clone, "worktree", "add", "--no-track", "-b", branch, dir, "refs/remotes/origin/"+base).Run(); err != nil {
-		if ctx.Err() != nil {
-			return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
+		baseSHA := strings.TrimSpace(string(shaOut))
+		if exec.CommandContext(ctx, git, "-C", clone, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover branch %s exists", branch))
 		}
-		return fail(refuseSpawn(mirror.SpawnFailed, "the worktree could not be made"))
-	}
-	plan.worktreeAdded, plan.baseSHA = true, baseSHA
-	// 8. Submodules, under their own budget: a warning, never a refusal.
-	warning := ""
-	if _, err := os.Stat(filepath.Join(dir, ".gitmodules")); err == nil {
-		budget := time.Until(deadline) - agentSpawnReserve
-		if budget <= 0 {
-			warning = "submodules incomplete"
-		} else {
-			sctx, scancel := context.WithTimeout(ctx, budget)
-			if exec.CommandContext(sctx, git, "-C", dir, "submodule", "update", "--init", "--recursive").Run() != nil {
-				warning = "submodules incomplete"
+		if _, err := os.Lstat(dir); err == nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "a leftover worktree directory exists"))
+		}
+		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the agents directory cannot be made"))
+		}
+		if err := exec.CommandContext(ctx, git, "-C", clone, "worktree", "add", "--no-track", "-b", branch, dir, "refs/remotes/origin/"+base).Run(); err != nil {
+			if ctx.Err() != nil {
+				return fail(refuseSpawn(mirror.SpawnFailed, "deadline passed"))
 			}
-			scancel()
+			return fail(refuseSpawn(mirror.SpawnFailed, "the worktree could not be made"))
+		}
+		plan.worktreeAdded, plan.baseSHA = true, baseSHA
+		// 8. Submodules, under their own budget: a warning, never a refusal.
+		if _, err := os.Stat(filepath.Join(dir, ".gitmodules")); err == nil {
+			budget := time.Until(deadline) - agentSpawnReserve
+			if budget <= 0 {
+				warning = "submodules incomplete"
+			} else {
+				sctx, scancel := context.WithTimeout(ctx, budget)
+				if exec.CommandContext(sctx, git, "-C", dir, "submodule", "update", "--init", "--recursive").Run() != nil {
+					warning = "submodules incomplete"
+				}
+				scancel()
+			}
 		}
 	}
 	// 9. claude: the trust entry, then the prompt file. opencode: its session,
@@ -1535,7 +1644,9 @@ func (c *Client) claudeStateFile() string {
 //  2. dir is EXACTLY <agent-spawn-dir>/<owner>__<repo>/<dispatch>, the dispatch
 //     being this spawn's;
 //  3. the agents directory and the roots do not contain each other (startup);
-//  4. this spawn CREATED dir (created) and the clone's `worktree list` lists it;
+//  4. this spawn CREATED dir (created) and the clone's `worktree list` lists it
+//     — or, for a SCRATCH spawn (clone ""), dir is exactly
+//     <agent-spawn-dir>/scratch/<dispatch>, the directory this spawn made;
 //  5. the runtime is claude (the caller's: only spawnClaude calls this).
 //
 // The write changes ONE value: decoded as raw JSON at two levels, re-encoded
@@ -1554,7 +1665,14 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 	}
 	spawnDir := c.spawnDir()
 	repoDir := filepath.Dir(dir)
-	if filepath.Dir(repoDir) != spawnDir || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) || !strings.Contains(filepath.Base(repoDir), "__") {
+	switch {
+	case clone == "":
+		// A SCRATCH spawn's directory (clone ""): EXACTLY
+		// <agent-spawn-dir>/scratch/<dispatch>, which this spawn made.
+		if repoDir != filepath.Join(spawnDir, scratchDirName) || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) {
+			return bad("not a scratch directory of this spawn under the agents directory")
+		}
+	case filepath.Dir(repoDir) != spawnDir || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) || !strings.Contains(filepath.Base(repoDir), "__"):
 		return bad("not a worktree of this spawn under the agents directory")
 	}
 	for _, r := range sc.Roots {
@@ -1566,69 +1684,100 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 	if !created {
 		return bad("this spawn did not create it")
 	}
-	out, err := exec.CommandContext(ctx, sc.git(), "-C", clone, "worktree", "list", "--porcelain").Output()
-	if err != nil || !slices.Contains(strings.Split(string(out), "\n"), "worktree "+dir) {
-		return bad("the clone does not list it as a worktree")
+	if clone != "" {
+		out, err := exec.CommandContext(ctx, sc.git(), "-C", clone, "worktree", "list", "--porcelain").Output()
+		if err != nil || !slices.Contains(strings.Split(string(out), "\n"), "worktree "+dir) {
+			return bad("the clone does not list it as a worktree")
+		}
 	}
+	why := c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; ok {
+			return false, "an entry for this new directory already exists"
+		}
+		projects[dir] = json.RawMessage(`{"hasTrustDialogAccepted":true}`)
+		return true, ""
+	})
+	if why != "" {
+		return bad(why)
+	}
+	return nil
+}
+
+// editClaudeProjects is THE read-modify-rename of Claude Code's state file's
+// `projects` (the trust entry's write, trustSpawnedWorktree, and its removal,
+// untrustScratchDir): never through a symlink, under Claude Code's own lock,
+// decoded as raw JSON at two levels so nothing but what edit changes moves,
+// re-encoded with HTML escaping off, written to a temporary file in the file's
+// own mode and renamed, then read back and compared semantically. edit reports
+// whether it changed anything (false: nothing is written) or why it refuses.
+// It answers why the file was not edited, "" when it was (or edit changed
+// nothing). 🔴 A read-back mismatch is NEVER RESTORED (restoring could
+// revert a write Claude Code made in between). A missing or unparseable file
+// is refused, never created or repaired.
+func (c *Client) editClaudeProjects(edit func(projects map[string]json.RawMessage) (changed bool, refusal string)) string {
+	sc := c.cfg.AgentSpawn
 	path := c.claudeStateFile()
 	// 🔴 NEVER THROUGH A SYMLINK. That is muster's own choice and fails closed;
 	// Claude Code 2.1.289 itself does write through one (allowSymlink: true).
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return bad("Claude Code's state file cannot be read")
+		return "Claude Code's state file cannot be read"
 	}
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-		return bad("Claude Code's state file is a symlink or not a regular file")
+		return "Claude Code's state file is a symlink or not a regular file"
 	}
 	// 🔴 CLAUDE CODE'S OWN LOCK around the read-modify-rename (lockClaudeState):
 	// without it a write of Claude Code's landing between this read and the
-	// rename is lost. Not had within the bound: no entry, and the window
-	// simply shows the trust dialog (fail closed).
+	// rename is lost. Not had within the bound: no edit (fail closed; for the
+	// trust entry the window simply shows the trust dialog).
 	unlock, err := lockClaudeState(path, sc.trustLockWait())
 	if err != nil {
-		return bad("Claude Code's state file is locked by another writer")
+		return "Claude Code's state file is locked by another writer"
 	}
 	defer unlock()
 	orig, err := os.ReadFile(path)
 	if err != nil {
-		return bad("Claude Code's state file cannot be read")
+		return "Claude Code's state file cannot be read"
 	}
 	var top map[string]json.RawMessage
 	if json.Unmarshal(orig, &top) != nil || top == nil {
-		return bad("Claude Code's state file does not parse")
+		return "Claude Code's state file does not parse"
 	}
 	projects := map[string]json.RawMessage{}
 	if raw, ok := top["projects"]; ok {
 		if json.Unmarshal(raw, &projects) != nil || projects == nil {
-			return bad("Claude Code's projects do not parse")
+			return "Claude Code's projects do not parse"
 		}
 	}
-	if _, ok := projects[dir]; ok {
-		return bad("an entry for this new directory already exists")
+	changed, refusal := edit(projects)
+	if refusal != "" {
+		return refusal
 	}
-	projects[dir] = json.RawMessage(`{"hasTrustDialogAccepted":true}`)
+	if !changed {
+		return ""
+	}
 	pj, err := encodeJSON(projects)
 	if err != nil {
-		return bad("encode")
+		return "encode"
 	}
 	top["projects"] = json.RawMessage(pj)
 	want, err := encodeJSON(top)
 	if err != nil {
-		return bad("encode")
+		return "encode"
 	}
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid()) + "." + hex.EncodeToString(sumShort(want))
 	// The file's own mode, kept, as Claude Code keeps it (Claude Code creates
 	// the file 0600, but an existing file keeps whatever mode it has).
 	if err := os.WriteFile(tmp, want, fi.Mode().Perm()); err != nil {
-		return bad("the temporary file cannot be written")
+		return "the temporary file cannot be written"
 	}
 	if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
 		_ = os.Remove(tmp)
-		return bad("the temporary file cannot be written")
+		return "the temporary file cannot be written"
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return bad("the rename failed")
+		return "the rename failed"
 	}
 	if sc.beforeTrustRead != nil {
 		sc.beforeTrustRead(path)
@@ -1637,9 +1786,31 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 	if err != nil || !sameJSON(got, want) {
 		// 🔴 NEVER RESTORE: a mismatch most likely means Claude Code wrote the
 		// file in between, and restoring would revert that write.
-		return bad("the file read back differs (another writer?)")
+		return "the file read back differs (another writer?)"
 	}
-	return nil
+	return ""
+}
+
+// untrustScratchDir removes the trust entry trustSpawnedWorktree wrote for
+// scratch directory dir, once the sweep has removed the directory (O-B round
+// 0: entries no longer accumulated one per scratch spawn). 🔴 THE EXACT KEY
+// ONLY: projects[dir], never a prefix, a parent or a sibling, and only a dir
+// that is EXACTLY <agent-spawn-dir>/scratch/<n> (the sweep's own); under
+// Claude Code's lock, through editClaudeProjects. No entry: nothing written.
+func (c *Client) untrustScratchDir(dir string) string {
+	if filepath.Dir(dir) != filepath.Join(c.spawnDir(), scratchDirName) {
+		return "not a scratch directory under the agents directory"
+	}
+	if id, err := strconv.ParseInt(filepath.Base(dir), 10, 64); err != nil || id <= 0 {
+		return "not a scratch directory under the agents directory"
+	}
+	return c.editClaudeProjects(func(projects map[string]json.RawMessage) (bool, string) {
+		if _, ok := projects[dir]; !ok {
+			return false, ""
+		}
+		delete(projects, dir)
+		return true, ""
+	})
 }
 
 // Claude Code's state-file lock (proper-lockfile, as Claude Code 2.1.289 uses
@@ -1798,6 +1969,26 @@ func (c *Client) SweepAgentWorktrees(ctx context.Context, live map[int64]bool) {
 			if keep := c.removeWorktree(ctx, git, filepath.Join(rd, d.Name())); keep != "" {
 				c.log.Printf("muster-mirror: spawned worktree %s kept: %s", filepath.Join(rd, d.Name()), keep)
 			}
+		}
+	}
+	// The scratch directories (a scratch spawn's): private to the instance,
+	// holding nothing of the owner's, so one whose dispatch has no live
+	// window is removed whole.
+	sd := filepath.Join(spawnDir, scratchDirName)
+	scratches, _ := os.ReadDir(sd)
+	for _, d := range scratches {
+		id, err := strconv.ParseInt(d.Name(), 10, 64)
+		if !d.IsDir() || err != nil || id <= 0 || live[id] {
+			continue
+		}
+		dir := filepath.Join(sd, d.Name())
+		if err := os.RemoveAll(dir); err != nil {
+			c.log.Printf("muster-mirror: scratch directory %s kept: %v", dir, err)
+			continue
+		}
+		// Its trust entry goes with it (only once the directory is gone).
+		if why := c.untrustScratchDir(dir); why != "" {
+			c.log.Printf("muster-mirror: scratch directory %s removed; its Claude Code trust entry kept: %s", dir, why)
 		}
 	}
 	if sc.RuntimeDir != "" {

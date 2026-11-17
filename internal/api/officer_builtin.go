@@ -153,6 +153,8 @@ func (s *Server) SweepOfficerAttention(ctx context.Context) {
 		return s.officerStore.OpenEscalations(sys, after, officerAttentionBatch)
 	}, func(e builtin.OpenEscalation) int64 { return e.Item }, func(e builtin.OpenEscalation) { s.settleOfficerEscalation(ctx, sys, e) },
 		"escalation asks", s.logger.Printf)
+	// A host instance that never claimed its item (officer_unclaimed.go).
+	s.sweepUnclaimedInstances(ctx)
 }
 
 // officerAttentionPages bounds the pages one sweep reads of each kind

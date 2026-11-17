@@ -45,6 +45,10 @@ type DoctorReport struct {
 	// and how to turn it on — variable NAMES, never values. Empty, not null,
 	// when no registry is installed.
 	Features []FeatureView `json:"features"`
+	// Officers is each of the principal's officers and what keeps its
+	// runtime from starting an instance (doctor_officers.go). Empty, not
+	// null, with none; absent from a server that predates it.
+	Officers []DoctorOfficer `json:"officers"`
 }
 
 // DoctorMirror is the mirror plugin as the viewing principal sees it.
@@ -166,6 +170,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		rep.Mirror.Enabled = true
 		rep.Mirror.Hosts, rep.Mirror.HostsError = s.doctorHosts(ctx)
 	}
+	rep.Officers = s.doctorOfficers(ctx, adminOwner(r))
 	s.writeJSON(w, http.StatusOK, rep)
 }
 

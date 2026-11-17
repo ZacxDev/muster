@@ -234,16 +234,16 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	// A route naming an agent the principal's TEAM owns is decided by the
 	// route's team rule (team_agents.go teamAgentRoutes): one place for every
 	// agent route, so a new one cannot forget it.
-	refused, terminalTeam := s.teamAgentGate(w, r)
+	refused, sock := s.teamAgentGate(w, r)
 	if refused {
 		return
 	}
-	// A member's terminal on a team's agent stays open only while they are an
-	// operator of the team: registered for the membership sweep, then read
-	// again (teamTerminalOpen).
-	if terminalTeam > 0 {
+	// A member's terminal or chat socket on a team's agent stays open only
+	// while they are an operator of the team: registered for the membership
+	// sweep, then read again (teamAgentSocketOpen).
+	if sock.team > 0 {
 		var done func()
-		if r, done = s.teamTerminalOpen(w, r, terminalTeam); r == nil {
+		if r, done = s.teamAgentSocketOpen(w, r, sock); r == nil {
 			return
 		}
 		defer done()

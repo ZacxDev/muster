@@ -203,11 +203,14 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	var rows, idle, superseded []g.Node
 	var teams []navTeam
 	for i, e := range es {
-		// A TEAM host's session (team sharing 2b.3) is drawn in its team's
-		// group, below the viewer's own: two entries named alike — the
-		// viewer's build-01 and the team's — are never one list.
-		if e.mirror != nil && e.mirror.Owner != 0 {
-			teams = navTeamAdd(teams, e.mirror.Owner, e.mirror.Team, navAgentRow(e, items[i], now))
+		// A TEAM's entry — a team host's session (team sharing 2b.3) or a team
+		// agent, its chief included (4.4) — is drawn in its team's ONE group
+		// (listEntry.team), below the viewer's own: two entries named alike —
+		// the viewer's chief and the team's, the viewer's build-01 and the
+		// team's — are never one list. Never in the viewer's Idle or
+		// Superseded groups either: those are the viewer's own.
+		if owner, name := e.team(); owner != 0 {
+			teams = navTeamAdd(teams, owner, name, navAgentRow(e, items[i], now))
 			continue
 		}
 		if e.superseded() && !e.waiting() && !items[i].Current {
@@ -250,8 +253,9 @@ func navTeamAdd(teams []navTeam, owner int64, name string, row g.Node) []navTeam
 	return append(teams, navTeam{owner: owner, name: name, rows: []g.Node{row}})
 }
 
-// navTeamGroups is each team's group: its name as a heading, then its team
-// hosts' sessions. Nothing when the viewer sees no team host.
+// navTeamGroups is each team's group: its name as a heading, then its
+// agents and its hosts' sessions, in the sidebar's order (navOrder: its chief
+// first). Nothing when the viewer sees nothing of a team.
 func navTeamGroups(teams []navTeam) g.Node {
 	var out g.Group
 	for _, t := range teams {
@@ -484,6 +488,12 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 // (navRowTone) — never the accent highlight, which marks the nav entry.
 func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 	label, current := it.Label, it.Current
+	// Under its team's heading a team's row is called without its team
+	// (SwitcherItem.InTeam): the heading says it.
+	shown := label
+	if owner, _ := e.team(); owner != 0 && it.InTeam != "" {
+		shown = it.InTeam
+	}
 	var id, href, kind, color, host, icon string
 	if e.agent != nil {
 		a := e.agent
@@ -514,7 +524,9 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			Href(href),
 			hx("hx-boost", "false"),
 			g.Attr("data-nav-agent", kind),
-			g.If(e.chief(), g.Attr("data-nav-chief", "")),
+			// Only the viewer's own chief is data-nav-chief. A team's chief
+			// is told apart by the group it is drawn in (its team's).
+			g.If(e.chief() && !e.teamChief(), g.Attr("data-nav-chief", "")),
 			g.If(e.waiting(), g.Attr("data-nav-wait", "")),
 			g.If(current, g.Group([]g.Node{g.Attr("aria-current", "true"), g.Attr("data-nav-current", "")})),
 			// A link to a window's Rendered view warms its snapshot, as a
@@ -540,7 +552,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			// names line up.
 			Span(Class("inline-flex w-2 shrink-0 justify-center"), recencyDot(now, e.activeAt())),
 			hostMarkDecorative(host, icon),
-			navRowName(label, it),
+			navRowName(shown, it),
 			g.If(e.mirror != nil && !e.mirror.Online, navOffline()),
 			navChiefChip(e.mirror),
 			navOutcome(e.agent),

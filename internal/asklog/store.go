@@ -32,6 +32,11 @@ type Store interface {
 	Get(ctx context.Context, id int64) (Ask, bool, error)
 	// List is the caller's newest rows, at most limit.
 	List(ctx context.Context, limit int) ([]Ask, error)
+	// Page is the caller's rows matching f, newest first, after the row
+	// before (read.go); next is the following page's before, 0 at the end.
+	Page(ctx context.Context, f Filter, before int64, limit int) (rows []Ask, next int64, err error)
+	// Summarize is the summary of the caller's rows matching f (read.go).
+	Summarize(ctx context.Context, f Filter, top int) (Summary, error)
 	// Purge is the retention sweep, for every owner (the system scope): it
 	// clears the text — every text column and options — of rows asked before
 	// now-textTTL (text_purged_at) and deletes rows asked before now-rowTTL.

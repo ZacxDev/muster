@@ -48,6 +48,14 @@ every decision your chief took about one of your stalled sessions, newest
 first. A live decision to point you at a stalled session is a
 [notice](#notices) on the **Ask** tab ([how](chief-nudges.md#live-mode)).
 
+### The Log tab
+
+The page always has a **Log** tab (`/attention?tab=log`): the [ask
+log](asks.md#reading-the-log) read back — what your agents asked you, how you
+answered and how long it took, with a summary on top and the questions asked
+most often. Its panel is read when you open the tab. With `MUSTER_ASK_LOG`
+off, it says how to turn it on.
+
 ### Notices
 
 A **notice** is an item that points at a session and asks nothing. Today only a
@@ -550,7 +558,7 @@ too, through its host's `muster-mirror`:
    a notification, an empty `tools/list`, muster's own "method not found" for
    anything else (Claude Code's first `server/discover` included), and a
    refused `tools/call`. On a machine with [one `muster-mirror` per muster
-   server](../INSTALL.md#a-second-muster-server-on-this-machine-optional), each
+   server](multi-tenant-hosts.md), each
    session then gets tools from its own tmux server's server only, and the
    others show as connected with no tools rather than as errors. (Measured on
    Claude Code 2.1.289: an HTTP 400 there put the error into the model's

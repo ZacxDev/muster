@@ -241,6 +241,11 @@ type SwitcherItem struct {
 	// (navRowName) and the command palette's row; "" for none, and always for
 	// an agent.
 	TmuxAt, TmuxCode string
+	// InTeam is the Label without the entry's team (sessionSwitcherLabels'
+	// bare): what its sidebar row shows under its team's heading, which
+	// already names the team. The row's data-switcher-name stays the Label,
+	// so the palette still tells the viewer's chief from a team's.
+	InTeam string
 	// Tip is the entry's tooltip: its Label, then — when it is called by a
 	// human name (internal/sessionname) — the technical id that name hides
 	// (an agent's slug; a window's codename, tmux address and host).
@@ -318,21 +323,37 @@ func entryName(e listEntry) sessionname.Name {
 // The pill also draws its host's icon (switcherEntry), but the label does NOT
 // lean on it: the text is disambiguated exactly as it would be without the
 // icon, so the search palette, which draws no icons, reads the same.
-func sessionSwitcherLabels(es []listEntry) []string {
-	out := make([]string, len(es))
+//
+// A TEAM's entry (listEntry.team: a team agent, a team host's session) whose
+// name is shared also says its team, right after the name ("chief · Acme",
+// "build-01 · Acme · hosta"): the viewer's chief and their team's are two
+// entries called "chief", and a window's qualifier is decided within its own
+// owner's list, so it cannot tell them apart. bare is each label WITHOUT the
+// team — what a sidebar row under its team's heading shows (NavAgentsList),
+// where the heading already says it.
+func sessionSwitcherLabels(es []listEntry) (labels, bare []string) {
+	labels, bare = make([]string, len(es)), make([]string, len(es))
 	n := map[string]int{}
 	for i, e := range es {
-		out[i] = switcherName(e)
-		n[out[i]]++
+		labels[i] = switcherName(e)
+		n[labels[i]]++
 	}
 	for i, e := range es {
+		name := labels[i]
+		shared := n[name] > 1
 		// A human name is never qualified with the window's address or host:
 		// those are what it hides (its tooltip and the detail page show them).
-		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" && !e.mirror.SessionName.Human() {
-			out[i] = mirrorQualified(out[i], e.mirror.Qualifier)
+		q := ""
+		if shared && e.mirror != nil && !e.mirror.SessionName.Human() {
+			q = e.mirror.Qualifier
 		}
+		bare[i] = mirrorQualified(name, q)
+		if _, team := e.team(); shared && strings.TrimSpace(team) != "" {
+			name = mirrorQualified(name, team)
+		}
+		labels[i] = mirrorQualified(name, q)
 	}
-	return out
+	return labels, bare
 }
 
 // labelNamesHost is whether a window's label already spells its host: the
@@ -420,10 +441,11 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 // switcherItems is es as one view's items, labelled against each other, with
 // each focus title's age at now.
 func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []SwitcherItem {
-	labels := sessionSwitcherLabels(es)
+	labels, bare := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
 	for i, e := range es {
-		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i]), Named: entryName(e).Human()}
+		_, team := e.team()
+		it := SwitcherItem{Label: labels[i], InTeam: bare[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i]), Named: entryName(e).Human()}
 		if e.agent != nil {
 			a := e.agent
 			it.Attention = a.Attention
@@ -433,7 +455,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.Title = switcherSearchTitle(a.Name, sessionTitle(a.SessionName, a.DisplayName, ""), plainOr(a.DisplayName, ""), focusTitle(a.Focus))
 			// The host is a word too (the retired Agents list's host tabs): a
 			// dispatched agent's is the cluster.
-			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost, sessionTagWords(a.Tags))
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost, team, sessionTagWords(a.Tags))
 			it.Prev = switcherPrevTitles(a.PrevFocus)
 			it.Focus = focusTitle(a.Focus)
 			it.FocusAge = focusAgeOf(a.Focus, now)
@@ -447,7 +469,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			// called (its human name is the Title, after it).
 			it.Code = mirrorCodeName(*m)
 			it.Title = switcherSearchTitle(it.Code, nameIfHuman(m.SessionName), focusTitle(m.Focus))
-			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host, sessionTagWords(m.Tags))
+			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host, team, sessionTagWords(m.Tags))
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
 			it.FocusAge = focusAgeOf(m.Focus, now)

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -42,9 +44,9 @@ const (
 // @1 (focusSID, waiting) and @3 (secondSID, with splitSID in its other pane). Tokens: ws's, user 1's OTHER
 // host's ("laptop", which lists nothing), and the member's token for a host
 // also named "ws".
-func newMirrorMCPFixture(t *testing.T) (*attnFixture, string, string, string) {
+func newMirrorMCPFixture(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) (*attnFixture, string, string, string) {
 	t.Helper()
-	f := newAttnFixture(t)
+	f := newAttnFixture(t, more...)
 	f.mirror.mu.Lock()
 	f.mirror.windows = append(attnWindows(mirror.StatusWaiting),
 		mirror.Window{Session: "side", ID: "@3", Index: 0, Active: true, Claude: true, ClaudeSession: secondSID, Status: mirror.StatusBusy, StatusSince: attnSince, Activity: 1_700_000_000,

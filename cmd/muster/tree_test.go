@@ -65,7 +65,10 @@ import (
 // — an officer's model spend per UTC day.
 // 47 → 52: `officer ls|create|pause|resume|delete` (officer.go) — officers
 // declared in the database (migration 0136), with no restart.
-const wantVerbCount = 52
+//
+// 52 → 54: `asks log` and `asks summary` (asks.go), GET /api/asks/log and
+// /api/asks/summary — reading the ask log (docs/asks.md).
+const wantVerbCount = 54
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -159,6 +162,9 @@ var wiring = []struct {
 	{"nudge next", []string{"nudge", "next", "--host", "alpha"}, "GET /api/attention/summary"},
 	// Which session created a pull request (pr_session.go), read from session_prs.
 	{"pr-session", []string{"pr-session", "acme/widget#12"}, "GET /api/pr-sessions"},
+	// Reading the ask log (asks.go): your asks, and their summary.
+	{"asks log", []string{"asks", "log", "--kind", "plain_text", "--since", "7d"}, "GET /api/asks/log"},
+	{"asks summary", []string{"asks", "summary"}, "GET /api/asks/summary"},
 }
 
 // tenantWiring is the `tenant …` half of the ledger. These verbs manage files
@@ -338,6 +344,8 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/officers/declared/scout:main/resume", http.StatusOK, `{"id":"scout:main","paused":false}`)
 			h.json("DELETE /api/officers/declared/scout:main", http.StatusOK, `{"deleted":"scout:main"}`)
 			h.json("GET /api/pr-sessions", http.StatusOK, `{"repo":"acme/widget","pr":12,"sessions":[{"claude_session":"00000000-0000-4000-8000-000000000012","host":"alpha","kind":"gh-pr-create","first_seen":"2000-01-02T12:00:00Z"}]}`)
+			h.json("GET /api/asks/log", http.StatusOK, `{"asks":[{"id":3,"kind":"plain_text","question":"Shall I continue?","nested":{"a":1}}],"next":null}`)
+			h.json("GET /api/asks/summary", http.StatusOK, `{"total":1,"by_kind":{"plain_text":1},"top_questions":[]}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)

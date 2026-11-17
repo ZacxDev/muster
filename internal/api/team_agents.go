@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -146,18 +148,35 @@ func (s *Server) refuseTeamAgentRoute(w http.ResponseWriter, r *http.Request) bo
 	return refused
 }
 
-// teamAgentGate is refuseTeamAgentRoute, and the team whose agent's terminal
-// it let a member through to (0 for anything else): admit registers that
-// socket for the membership sweep (teamTerminalOpen).
-func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, int64) {
+// teamAgentChatSocket is the team agent's chat socket: the one teamAgentChat
+// route a member holds OPEN, so admit registers it for the membership sweep
+// (the composer's POST and mark-read end with their response).
+const teamAgentChatSocket = "GET /agents/{name}/ws"
+
+// teamAgentSocket is a member's socket on a team's agent that the door let
+// through and admit registers for the membership sweep (teamAgentSocketOpen):
+// the team, the cause it is ended with, and the refusal for a member whose
+// fresh role no longer reaches it. team 0: nothing to register.
+type teamAgentSocket struct {
+	team    int64
+	cause   error
+	refusal string
+}
+
+// teamAgentGate is refuseTeamAgentRoute, and the member's socket on a team
+// agent it let through — its terminal, or (Issue #724 round 1, F1) its chat
+// socket — for admit to register (teamAgentSocketOpen); zero for anything
+// else.
+func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, teamAgentSocket) {
+	none := teamAgentSocket{}
 	rule, ok := teamAgentRoutes[r.Pattern]
 	if !ok || rule == teamAgentRead || s.ext.Agents == nil {
-		return false, 0
+		return false, none
 	}
 	ctx := r.Context()
 	p, ok := authz.From(ctx)
 	if !ok || p.All() || p.TeamScope() == "" {
-		return false, 0
+		return false, none
 	}
 	var a agents.Agent
 	var err error
@@ -172,30 +191,33 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 			a, err = s.ext.Agents.Get(ctx, sess.AgentID)
 		}
 	} else {
-		return false, 0
+		return false, none
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false, 0
+		return false, none
 	case err != nil:
 		s.logger.Printf("team agents: %s: read the agent: %v", r.Pattern, err)
 		http.Error(w, "could not load the agent", http.StatusInternalServerError)
-		return true, 0
+		return true, none
 	}
 	if a.OwnerID <= 0 || a.OwnerID == p.UserID {
-		return false, 0
+		return false, none
 	}
 	role, in := p.TeamScope().RoleIn(a.OwnerID)
 	if !in {
-		return false, 0 // not a team agent of theirs: row-level security decided
+		return false, none // not a team agent of theirs: row-level security decided
 	}
 	switch {
 	case rule == teamAgentChat && role.AtLeast(authz.TeamOperator):
-		return false, 0
+		if r.Pattern == teamAgentChatSocket {
+			return false, teamAgentSocket{team: a.OwnerID, cause: errTeamChatClosed, refusal: TeamAgentViewerRefusal}
+		}
+		return false, none
 	case rule == teamAgentManage && role == authz.TeamManager:
-		return false, 0
+		return false, none
 	case rule == teamAgentTerminal && role.AtLeast(authz.TeamOperator) && stepup.Fresh(ctx, s.stepUpNow()):
-		return false, a.OwnerID
+		return false, teamAgentSocket{team: a.OwnerID, cause: errTeamTerminalClosed, refusal: TeamAgentTerminalOperator}
 	}
 	msg := TeamAgentRouteRefusal
 	switch rule {
@@ -212,7 +234,7 @@ func (s *Server) teamAgentGate(w http.ResponseWriter, r *http.Request) (bool, in
 		}
 	}
 	http.Error(w, msg, http.StatusForbidden)
-	return true, 0
+	return true, none
 }
 
 // TeamAgentTerminalWhy is the confirm dialog's sentence on a team agent's
@@ -236,6 +258,34 @@ func TeamAgentTerminalWhy() string {
 func memberOnTeamAgent(ctx context.Context, a agents.Agent) bool {
 	p, ok := authz.From(ctx)
 	return ok && !p.All() && !p.Team && a.OwnerID > 0 && p.UserID != a.OwnerID
+}
+
+// withAgentTeams marks each TEAM agent's card (cards[i] is list[i]'s) with
+// its team: TeamOwner, the team's id, and Team, its display name — the
+// sidebar draws the row in that team's group, the one its hosts' sessions are
+// drawn in (ui's listEntry.team), and the switcher and the palette label it
+// with its team. A team agent is one memberOnTeamAgent holds for, the one
+// rule; a person's own agent is left unmarked.
+func (s *Server) withAgentTeams(ctx context.Context, list []agents.Agent, cards []ui.AgentCardView) {
+	var teams []int64
+	for i, a := range list {
+		if !memberOnTeamAgent(ctx, a) {
+			continue
+		}
+		cards[i].TeamOwner = a.OwnerID
+		if !slices.Contains(teams, a.OwnerID) {
+			teams = append(teams, a.OwnerID)
+		}
+	}
+	if len(teams) == 0 {
+		return
+	}
+	names := s.teamNames(ctx, teams)
+	for i := range cards {
+		if o := cards[i].TeamOwner; o != 0 {
+			cards[i].Team = names[o]
+		}
+	}
 }
 
 // ErrNotTheTeamRoom answers a member's message to a team agent that names a
@@ -335,6 +385,28 @@ var ErrNoLongerTeamOperator = errors.New("not sent: you are no longer an operato
 // a busy turn is re-checked when its turn comes: a member removed from the
 // team — or made a viewer — while it waited gets ErrNoLongerTeamOperator and
 // the message is not sent (plan §6). An unreadable account fails closed.
+//
+// 🔴 AND AGAIN AT THE MOMENT OF SENDING, UNDER A LOCK (the send fence). The
+// read above happens BEFORE the turn's preparation (its usage row, its tools,
+// its credential), and a removal that committed in between used to let the
+// text through: a check-then-act, seen as TestARemovedMembersQueuedMessageIsDropped
+// failing about 1 run in 40 under load (since #673). So the returned ctx also
+// carries an agents.SendFence: immediately before each request of the turn
+// opens, the role is read again inside users.Store.HoldTeamRole, which holds
+// the team's row until the runtime accepts the text (ccd's 103) or gives its
+// verdict — but at most agents.SendFenceHoldCap after the request was
+// written, and at most agents.SendFenceHoldMax after the hold was taken
+// (operator decisions, #731 rounds 0 and 1: a membership change must not
+// stall behind a member's turn, nor reach the statement timeout). Every
+// membership change waits for the hold (lockTeam). A removal is therefore
+// ordered wholly before the read (refused: ErrNoLongerTeamOperator), or after
+// the runtime accepted the text, or — ⚠ the accepted residual — after a bound
+// on any runtime whose 103 does not arrive within the cap (one that never
+// sends it, or a ccd whose submit takes longer), when text already
+// transmitted before the removal may still be delivered. TestARemovalBetweenTheRoleCheckAndTheSendDropsTheMessage,
+// TestARemovalWaitsForAMembersSendInFlight and
+// TestARemovalIsNotStalledByARuntimeThatSendsNo103 pin the three. The read
+// above stays: it refuses before anything runs as the team.
 func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context.Context, error) {
 	if !memberOnTeamAgent(ctx, a) {
 		return ctx, nil
@@ -344,15 +416,38 @@ func (s *Server) turnActingContext(ctx context.Context, a agents.Agent) (context
 	if err != nil {
 		return ctx, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
 	}
-	role, in := acct.Teams.RoleIn(a.OwnerID)
-	if !in || !role.AtLeast(authz.TeamOperator) {
+	if !operatesTeam(acct.Teams.RoleIn(a.OwnerID)) {
 		return ctx, ErrNoLongerTeamOperator
 	}
 	tp, ok := s.agentPrincipal(ctx, a, authz.ViaAgent)
 	if !ok || !tp.Team || tp.RoleUncertain {
 		return ctx, fmt.Errorf("not sent: agent %q is not a team's (owner %d)", a.Name, a.OwnerID)
 	}
-	return authz.WithPrincipal(ctx, tp), nil
+	ctx = authz.WithPrincipal(ctx, tp)
+	// UNCONDITIONAL: HoldTeamRole is on users.Store, so every store fences (a
+	// nil store never gets here — accountOfChecked gives it no memberships).
+	store, team, person := s.ext.Users, a.OwnerID, p.UserID
+	ctx = agents.WithSendFence(ctx, func(fctx context.Context) (func(), error) {
+		role, in, release, err := store.HoldTeamRole(fctx, team, person)
+		if err != nil {
+			return nil, fmt.Errorf("not sent: your team role could not be read just now: %w", err)
+		}
+		if !operatesTeam(role, in) {
+			release()
+			return nil, ErrNoLongerTeamOperator
+		}
+		return release, nil
+	})
+	if s.turnRoleChecked != nil {
+		s.turnRoleChecked(a)
+	}
+	return ctx, nil
+}
+
+// operatesTeam is THE rule a member's turn on a team agent is sent under: an
+// operator or above of the team (turnActingContext's two reads).
+func operatesTeam(role authz.TeamRole, in bool) bool {
+	return in && role.AtLeast(authz.TeamOperator)
 }
 
 // teamGatewayToolless reports whether a's turn must go out WITHOUT tools: a

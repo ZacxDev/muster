@@ -173,6 +173,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention",
 		"GET /attention/items",
 		"GET /attention/drafts",
+		// The Asks page's Log tab (ask_log_read.go): the caller's own asks.
+		"GET /attention/log",
 		// A session page's asks block (attention_asker.go).
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
@@ -589,6 +591,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/flows/jobs/{id}/cancel",
 		// The attention summary (attention_summary.go): a personal token ONLY.
 		"GET /api/attention/summary",
+		// Reading the ask log (ask_log_read.go): a personal token ONLY.
+		"GET /api/asks/log",
+		"GET /api/asks/summary",
 		// Claude account usage (cc_usage.go): a full or account-usage token.
 		"GET /api/cc-accounts/usage",
 	},

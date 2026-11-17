@@ -2,16 +2,50 @@
 
 Start with the [project README](../README.md) for the pitch and the two ways to install.
 [comparison.md](comparison.md) sets muster beside other ways to reach coding agents from a phone.
+Words muster uses (hub, mirrored session, Rendered view, step-up, chief, officer, …): [glossary.md](glossary.md).
+
+## Set it up: the core first, then one feature at a time
+
+**Core (no external dependencies).** Docker Compose on one machine (muster and
+its own Postgres, every secret generated) and, on each machine, tmux and
+`muster-mirror`. It runs at a `http://localhost` address with nothing to fill
+in. What each machine needs is checked by
+[INSTALL.md, "Preflight (every machine)"](../INSTALL.md#step-0-preflight-every-machine), the one
+place that lists it. Start with one prompt to your coding agent
+([onboarding.md](onboarding.md)) or one line by hand
+([quickstart-local.md](quickstart-local.md)).
+
+**Optional (one guide each).** Add them one at a time, in any order, once the
+core passes `muster doctor`. Each guide says what the feature adds, what it
+needs, the settings to make, how `muster doctor` confirms it, and how to turn
+it off. The full list of features, with every `.env` line, is
+[features.md](features.md).
+
+| dependency | what it adds | guide |
+|---|---|---|
+| Tailscale | your phone (the app, notifications, the microphone) and your other machines | [guides/tailscale.md](guides/tailscale.md) |
+| VAPID keys (generated) | push notifications | [guides/push.md](guides/push.md) |
+| a speech-to-text service | dictation on every message box | [guides/speech-to-text.md](guides/speech-to-text.md) |
+| an S3 store (bundled, or MinIO / S3) | file attachments | [guides/s3.md](guides/s3.md) |
+| an OpenRouter key | suggested replies, focus, the chief on OpenRouter | [guides/openrouter.md](guides/openrouter.md) |
+| an encryption key (and a connect URL) | members' own credentials; connectors for agents | [guides/connectors.md](guides/connectors.md) |
+| a GoTrue server | per-user sign-in, passkeys, invites, teams | [guides/gotrue.md](guides/gotrue.md) |
+| a GitHub App | one-repository GitHub tokens for agents | [guides/github-app.md](guides/github-app.md) |
+| the preview gateway | an agent's dev server, served to you | [guides/previews.md](guides/previews.md) |
+| Kubernetes | dispatched agents, the agent plane (the Helm chart) | [guides/kubernetes.md](guides/kubernetes.md) |
+
+## Every document
 
 **Using it**
 
 - [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
+- [glossary.md](glossary.md) — the words these documents use, each linked to its page
 
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
 - [suggested-replies.md](suggested-replies.md) — AI-suggested replies for a mirrored session's composer: when they appear, what is sent, and how they stay grounded
-- [asks.md](asks.md) — the ask log: every question an agent puts to you, its answer and how long it took, recorded for review (phase 1 of ask auto-approval)
+- [asks.md](asks.md) — the ask log: every question an agent puts to you, its answer and how long it took, recorded for review and read back on the Asks page's Log tab, the API and `muster asks` (phase 1 of ask auto-approval)
 - [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) destroying an agent (`agent_destroy`) or listing your agents (`agents_list`), restarting your chief (`chief_restart`) or starting an agent (`dispatch_request` + `dispatch_approve`) from your own mirrored session
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
@@ -38,6 +72,8 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 **Running it**
 
 - [architecture.md](architecture.md) — binaries, listeners, packages, trust
+- [quickstart-local.md](quickstart-local.md) — the one-line install on one machine, by hand, and adding your phone
+- [multi-tenant-hosts.md](multi-tenant-hosts.md) — one machine's sessions in a second muster server (tenants)
 - [kubernetes.md](kubernetes.md) — the Helm chart: installing muster on Kubernetes, the values per feature, RBAC, upgrades
 - [features.md](features.md) — every optional feature: what it needs, the `.env` lines that turn it on, and how to check it is on
 - [configuration.md](configuration.md) — every environment variable, checked by a test
@@ -61,6 +97,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [design/web-server-switcher.md](design/web-server-switcher.md) — implemented: the web app's server switcher (a per-origin list, switching by navigation), and what it can and cannot match of the Android app's
 - [design/managed-network.md](design/managed-network.md) — proposed: a managed muster network as an alternative to Tailscale — a blind SNI relay, the server's own certificate, one name per server, Link device by a code the phone shows and the owner's screen's nonce, one free device and a paid tier
+- [design/managed-network-phase0.md](design/managed-network-phase0.md) — results: the managed network's phase-0 documentation spikes (DNS provider limits and credential scoping, the CT aggregator's terms, the GeoIP database's licence)
 - [design/team-sharing.md](design/team-sharing.md) — proposed: teams on one server sharing sessions, officers, tasks and a chief, private by default under row-level security
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"

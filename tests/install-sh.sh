@@ -26,7 +26,12 @@
 #   * REFUSALS, each changing nothing: a second install under the same compose
 #     project from another directory; a ~/muster this script did not make (a
 #     second fresh user with an INSTALL.md-style directory); and this
-#     machine's muster-mirror settings written by someone else.
+#     machine's muster-mirror settings written by someone else;
+#   * JOIN (MUSTER_JOIN_URL, a third fresh user): refused over settings it did
+#     not write, then with MUSTER_MIRROR_ADOPT=1 they are MERGED (a hand line
+#     kept, owned lines once), the machine connects and this-host passes;
+#   * a crash-looping muster-mirror (a setting it rejects) is named with its
+#     own reason line, and the run exits non-zero without waiting 30s.
 set -euo pipefail
 
 [ $# -eq 2 ] || { echo "usage: $0 <dist-dir> <image-repo>" >&2; exit 2; }
@@ -86,7 +91,7 @@ curl -fsS -H "Authorization: Bearer $tok" http://127.0.0.1:8105/mirror/host | gr
 grep -q 'PASS  this-host' /tmp/install-1.log || fail "the doctor did not PASS this-host"
 grep -q 'PASS  sign-in' /tmp/install-1.log || fail "the doctor did not PASS sign-in"
 pw1="$(as "$U" 'docker compose -f ~/muster/docker-compose.yml -p muster exec -T muster /muster-server show-secret ui-password')"
-grep -qF "$pw1" /tmp/install-1.log || fail "the first run did not print the sign-in password"
+grep -qF -- "$pw1" /tmp/install-1.log || fail "the first run did not print the sign-in password"
 echo "ok   first run: exit 0, doctor passed, muster-mirror.service active and connected, password shown"
 
 # --- the second run: idempotent --------------------------------------------------
@@ -128,4 +133,51 @@ as "$U2" 'test ! -e ~/muster' || fail "the refused run created ~/muster"
 [ "$(docker ps -a --format '{{.ID}} {{.Names}} {{.State}} {{.CreatedAt}}' | sort)" = "$before" ] ||
   fail "a refused run changed the containers"
 echo "ok   refused: a ~/muster and muster-mirror settings it did not make, nothing changed"
+
+# --- joining: another machine's muster-mirror (a fresh user) --------------------
+# MUSTER_JOIN_URL: no stack, the hub's release, the token minted on the hub.
+# Its muster-mirror settings were written by someone else (an earlier
+# INSTALL.md): refused until MUSTER_MIRROR_ADOPT=1, then MERGED, the hand line kept.
+U3=muster-install-join
+fresh_user "$U3"
+as "$U3" 'tmux new-session -d -s join-session "sleep 3600"'
+jtok="$(as "$U" 'docker compose -f ~/muster/docker-compose.yml -p muster exec -T muster /muster-server mirror token create joiner')"
+[ -n "$jtok" ] || fail "could not mint the joining machine's token"
+printf '%s\n' "$jtok" | as "$U3" 'mkdir -p ~/.config/muster-mirror && chmod 700 ~/.config/muster-mirror && umask 077 && cat > ~/.config/muster-mirror/token'
+as "$U3" 'printf "MUSTER_MIRROR_URL=https://old-hub.example\nMUSTER_MIRROR_INTERACTIVE=0\nMY_HAND_ADDED_LINE=kept\n" > ~/.config/muster-mirror/env'
+join="MUSTER_JOIN_URL=http://localhost:8105 MUSTER_MIRROR_HOST=joiner MUSTER_MIRROR_INTERACTIVE=1"
+if one_liner "$U3" "$join" > /tmp/install-6.log 2>&1; then cat /tmp/install-6.log; fail "joining over settings it did not write was NOT refused"; fi
+grep -q 'MUSTER_MIRROR_ADOPT=1' /tmp/install-6.log || { cat /tmp/install-6.log; fail "the refusal does not say how to allow it"; }
+as "$U3" 'grep -qx MUSTER_MIRROR_URL=https://old-hub.example ~/.config/muster-mirror/env' || fail "the refused join changed the settings"
+one_liner "$U3" "$join MUSTER_MIRROR_ADOPT=1" > /tmp/install-7.log 2>&1 || { cat /tmp/install-7.log; fail "the join exited non-zero"; }
+cat /tmp/install-7.log
+[ "$(as "$U3" 'systemctl --user is-active muster-mirror.service')" = active ] || fail "the joining machine's muster-mirror.service is not active"
+curl -fsS -H "Authorization: Bearer $jtok" http://127.0.0.1:8105/mirror/host | grep -q '"online":true' || fail "the joining machine is not connected"
+grep -q 'PASS  this-host' /tmp/install-7.log || fail "the joining machine's doctor did not PASS this-host"
+for want in MY_HAND_ADDED_LINE=kept MUSTER_MIRROR_INTERACTIVE=1 MUSTER_MIRROR_URL=http://localhost:8105; do
+  [ "$(as "$U3" "grep -cx '$want' ~/.config/muster-mirror/env")" = 1 ] || fail "after the join the settings do not hold $want exactly once"
+done
+if as "$U3" 'grep -q old-hub ~/.config/muster-mirror/env'; then fail "the join kept the old hub's URL"; fi
+echo "ok   joined: refused unasked, then merged (the hand line kept), connected, this-host passed"
+
+# --- a crash-looping muster-mirror is named, with its own reason ------------------
+# A setting muster-mirror rejects makes it exit at start; systemd restarts it
+# and it reads `activating`. The installer must say so, with the line
+# muster-mirror printed, and exit non-zero — not wait out its 30 seconds.
+journal_lines="$(as "$U3" 'journalctl --user -u muster-mirror.service -o cat --no-pager 2>/dev/null; journalctl --user-unit muster-mirror.service -o cat --no-pager 2>/dev/null' | grep -c . || true)"
+as "$U3" 'echo MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=maybe >> ~/.config/muster-mirror/env'
+start=$(date +%s)
+if one_liner "$U3" "$join" > /tmp/install-8.log 2>&1; then cat /tmp/install-8.log; fail "a crash-looping muster-mirror exited 0"; fi
+took=$(( $(date +%s) - start ))
+cat /tmp/install-8.log
+grep -q 'exits as it starts' /tmp/install-8.log || fail "the crash loop was not named"
+if grep -q 'has not connected after 30s' /tmp/install-8.log; then fail "it waited out 30s on a crash loop (${took}s)"; fi
+if [ "$journal_lines" -gt 0 ]; then
+  grep -q 'muster-mirror: MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="maybe" is not a bool' /tmp/install-8.log ||
+    fail "the crash loop's reason line was not printed (the journal holds $journal_lines line(s) for the unit)"
+  echo "ok   crash loop: named with muster-mirror's own reason line, in ${took}s"
+else
+  echo "SKIP crash-loop reason line: this runner keeps no journal for user units (positive control found 0 lines); named in ${took}s"
+fi
+as "$U3" 'systemctl --user disable --now muster-mirror.service' >/dev/null 2>&1 || true
 echo "install-sh: PASS"

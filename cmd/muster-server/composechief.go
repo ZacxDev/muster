@@ -44,7 +44,8 @@ import (
 //     its owner's OpenRouter key through muster's LLM proxy (the LLM route).
 //
 // What it refuses beside it, each by name: every agent-plane variable above,
-// officers (they dispatch agents), the chief's dispatch owners (agent_dispatch
+// POD officers (they dispatch agents; host officers run beside it), the
+// chief's dispatch owners (agent_dispatch
 // has no target here), chief session runtimes (not part of this runtime yet),
 // and tag auto-dispatch.
 // ---------------------------------------------------------------------------
@@ -158,7 +159,6 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 		{envAgentCCAccounts, len(c.AgentCCAccountNames) > 0},
 		{envAgentNSShared, c.AgentNamespaceShared},
 		{envAgentNSClusterRole, c.AgentNamespaceClusterRole != ""},
-		{envOfficers, len(c.Officers) > 0},
 		{envChiefDispatchOwners, len(c.ChiefDispatchOwners) > 0},
 		// A team chief is Kubernetes only (team sharing decision 9).
 		{envTeamsOnServerPool, len(c.TeamsOnServerPool) > 0},
@@ -174,6 +174,25 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 		if v.on {
 			set = append(set, v.env)
 		}
+	}
+	// 🔴 OFFICERS ON HOSTS ARE NOT THE AGENT PLANE (officers redesign O-B,
+	// B2). A "runtime": "host" officer's instances are windows on a mirrored
+	// machine, started through its muster-mirror: nothing the compose driver
+	// is asked to run. Only a POD officer dispatches agents, which this
+	// install cannot — so only those are refused, by name. (An officer
+	// declared in the database is resolved per roster load: a pod one there
+	// is reported as not running, and "auto" picks a host.)
+	var pods []string
+	for _, o := range c.Officers {
+		if !o.OnHost() {
+			pods = append(pods, o.ID)
+		}
+	}
+	if len(pods) > 0 {
+		return fmt.Errorf("%s=%s runs the chief in its Compose container, and %s declares officers that run in pods (%s): "+
+			"a pod officer's instances are agents muster dispatches on Kubernetes, which this install does not do. "+
+			"Run them on a host instead (\"runtime\": \"host\" with \"host\": the mirror host's name; docs/officers-builtin.md), or remove them",
+			envChiefRuntime, chiefRuntimeCompose, envOfficers, strings.Join(pods, ", "))
 	}
 	if len(set) > 0 {
 		return fmt.Errorf("%s=%s runs the chief in its Compose container and sets the agent plane itself, "+

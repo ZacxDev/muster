@@ -343,10 +343,13 @@ e2e:
 # Each animation is <name>: frames in e2e/.state/<name>/frames.txt, the GIF at
 # docs/img/<name>.gif.
 FLOWS := phone-flow ask-flow
+# README images shot outside this repository (docs/testing.md): never
+# re-quantized here, so a screenshots run leaves them byte for byte.
+NOT_SHOT_HERE := docs/img/queue-next.png docs/img/officer-ask.png
 screenshots:
 	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles the docs/img/*.gif animations (nix-shell -p ffmpeg)"; exit 1; }
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
-	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
+	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 $(filter-out $(NOT_SHOT_HERE),$(wildcard docs/img/*.png)); \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
 	@for n in $(FLOWS); do \
 	  ffmpeg -loglevel error -y -f concat -safe 0 -i e2e/.state/$$n/frames.txt \
@@ -375,9 +378,11 @@ install-guide-test:
 	python3 tests/install_guide_test.py
 
 # docs/features.md's anchors, and deploy/.env.example, the compose file and the
-# server's variables agreeing (tests/features_config_test.py). Static.
+# server's variables agreeing (tests/features_config_test.py); the guides, their
+# index and docs/features.md agreeing (tests/docs_guides_test.py). Static.
 features-config-test:
 	python3 tests/features_config_test.py
+	python3 tests/docs_guides_test.py
 
 check: vet test leakscan css-check verb-ledger install-guide-test features-config-test
 

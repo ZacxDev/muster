@@ -122,7 +122,7 @@ func refuse(status int, code, msg string, extra map[string]any) error {
 		body[k] = v
 	}
 	raw, _ := json.Marshal(body)
-	return &officers.HQError{Status: status, Body: raw}
+	return &officers.HQError{Status: status, Body: raw, Builtin: true}
 }
 
 // outage is a database failure as the contract's retryable outage.
@@ -472,7 +472,7 @@ const briefRecent = 10
 func (b *Backend) Brief(ctx context.Context) ([]byte, error) { return b.brief(ctx, "") }
 
 // BriefFor implements officers.CharterGated: Brief for instance, recording in
-// officer_defs.charter_briefed (migration 0139) that instance was handed the
+// officer_defs.charter_briefed (migration 0140) that instance was handed the
 // charter_version this answer carries — in the ONE statement that reads the
 // charter, so the version recorded is the version answered.
 func (b *Backend) BriefFor(ctx context.Context, instance string) ([]byte, error) {
@@ -549,7 +549,7 @@ const CharterChanged = "charter_changed"
 // CharterCurrent implements officers.CharterGated: nil when instance was last
 // briefed (BriefFor) with its type's current charter_version; otherwise 409
 // charter_changed, naming both versions — an instance never briefed, or
-// briefed before migration 0139, is briefed version 0. An officer the store
+// briefed before migration 0140, is briefed version 0. An officer the store
 // does not declare is nil: the verb it gates answers that itself.
 func (b *Backend) CharterCurrent(ctx context.Context, instance string) error {
 	var current, briefed int

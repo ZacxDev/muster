@@ -86,7 +86,7 @@ import (
 //     answer arriving mid-turn took the claim and waited for the CLI, and
 //     every owner_asked call left in the owner's own turn was refused. No
 //     delivery WAITS under the claim either: a route's answers and hand-back
-//     (startRouteAnswerTurn), a plugin message, an answer to an ask and a nudge
+//     (startRouteTurn), a plugin message, an answer to an ask and a nudge
 //     each take the runtime's busy refusal at once and let the claim go.
 //  4. THE CALL CAME OVER MCP. A gateway-runtime session's tool calls run in
 //     muster's own process (AgentToolDispatch), from a session that is no CLI
@@ -306,7 +306,7 @@ func (s *Server) typerSpeaksForOwner(ctx context.Context, a agents.Agent, typedB
 // the card answerer's (teamCardRefusal at the answer, teamCardAnswerer when
 // the start completes). The terminal's DOOR is the request principal's role
 // (refuseTeamAgentRoute); this is its re-read once the socket is registered
-// for the membership sweep (teamTerminalOpen), closing a change that lands
+// for the membership sweep (teamAgentSocketOpen), closing a change that lands
 // between the two.
 func (s *Server) teamOperatorNow(ctx context.Context, person, team int64) bool {
 	if person <= 0 || team <= 0 || person == team {

@@ -354,7 +354,7 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	}
 	if newUIPassword != "" {
 		say("generated muster's sign-in password (shown this once):")
-		say("    %s", newUIPassword)
+		say("%s     %s", secretLineMarker, newUIPassword)
 		say("show it again any time: %s ui-password", showSecretHint)
 	}
 	if len(made) > 0 {
@@ -363,6 +363,16 @@ func runComposeInit(args []string, getenv func(string) string, stdout, stderr io
 	say("configuration OK")
 	return 0
 }
+
+// secretLineMarker is on the one line muster-init prints a secret on (the
+// generated sign-in password, for the person, once). 🔴 EVERY HELPER THAT
+// SHOWS muster-init's LOGS TO AN AGENT DROPS THE LINE CARRYING IT:
+// deploy/install.sh on a failed start and INSTALL.md's mi_logs (`grep -vF`),
+// so the password never reaches an agent's transcript, which its provider
+// reads (#728 round 0). Changing it changes those helpers' filter:
+// TestComposeInitMarksTheOneLineThatHoldsThePassword and
+// tests/install_guide_test.py read it from here.
+const secretLineMarker = "[muster-secret]"
 
 // databaseExists reports whether dir is an initialised Postgres data
 // directory (it holds PG_VERSION). An empty dir argument is "not checked".

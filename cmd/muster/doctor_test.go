@@ -121,6 +121,10 @@ type fakeMuster struct {
 	password      string
 	loginStatus   int // 0 = check the password
 	dropCookie    bool
+	// boardRedirect: GET /tasks answers 302 to this location, signed in or
+	// not (something in front of muster); "self" is muster's own absolute
+	// <scheme>://<host>/login.
+	boardRedirect string
 	// secureCookie: the session cookie is set Secure (MUSTER_SECURE_COOKIES
 	// on a server older than the loopback exception, or a LAN port).
 	secureCookie bool
@@ -174,6 +178,9 @@ func healthyMuster() *fakeMuster {
 				map[string]any{"id": "dictation", "name": "Dictation", "state": "on"},
 				map[string]any{"id": "attachments", "name": "File attachments", "state": "off", "reason": "none of the required variables is set",
 					"enable_hint": "set MUSTER_S3_ENDPOINT and MUSTER_S3_BUCKET in .env and restart (docs/features.md#attachments)"},
+			},
+			"officers": []any{
+				map[string]any{"id": "sentinel:sessions", "managed_by": "db", "runtime": "auto", "runs_on": "host", "host": "alpha", "problems": []any{}},
 			},
 		},
 		transcribeCode: http.StatusOK,
@@ -260,6 +267,19 @@ func (f *fakeMuster) handler() http.Handler {
 		return err == nil && c.Value == "signed"
 	}
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch f.boardRedirect {
+		case "":
+		case "self":
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			http.Redirect(w, r, scheme+"://"+r.Host+"/login", http.StatusFound)
+			return
+		default:
+			http.Redirect(w, r, f.boardRedirect, http.StatusFound)
+			return
+		}
 		if !signed(r) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
@@ -537,7 +557,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "14 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "15 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -600,12 +620,15 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 		{check: "sign-in", why: "cookie dropped", breakM: func(m *fakeMuster) { m.dropCookie = true }, detail: "does not open a page"},
 		{check: "push", why: "no keys (signed in)", breakM: func(m *fakeMuster) { m.pushKey = "" }, detail: "no push keys"},
 		{check: "push", why: "no keys (report only)", opts: doctorOpts{noPassword: true}, breakM: func(m *fakeMuster) { m.report["push"] = false }, detail: "MUSTER_VAPID_"},
-		{check: "dictation", why: "off", breakM: func(m *fakeMuster) { m.report["dictation"] = false }, detail: "MUSTER_STT_TOKEN is unset"},
 		{check: "dictation", why: "route 404", breakM: func(m *fakeMuster) { m.transcribeCode = http.StatusNotFound }, detail: "404"},
 		{check: "dictation", why: "service refused", breakM: func(m *fakeMuster) {
 			m.transcribeCode, m.transcribeText = http.StatusBadGateway, "The transcription service refused this server's credential"
 		}, detail: "502"},
 		{check: "dictation", why: "heard nothing", breakM: func(m *fakeMuster) { m.transcribeText = "  " }, detail: "heard nothing"},
+		{check: "officers", why: "claude not logged in on its host", breakM: func(m *fakeMuster) {
+			m.report["officers"] = []any{map[string]any{"id": "sentinel:sessions", "runtime": "host", "runs_on": "host", "host": "alpha",
+				"problems": []any{map[string]any{"problem": "host alpha: Claude Code is not logged in there", "fix": "on alpha, run `claude` once"}}}}
+		}, detail: "sentinel:sessions: host alpha: Claude Code is not logged in there"},
 	}
 	for _, c := range cases {
 		t.Run(c.check+"/"+c.why, func(t *testing.T) {
@@ -881,7 +904,7 @@ func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
 // TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams pins the CLI's contract
 // on REAL files: stdout carries the one JSON document and stderr the report,
 // also when both are the SAME open file (a terminal, `>out 2>&1`). An agent
-// that wants only the report sends stdout to /dev/null (INSTALL.md, Step 10)
+// that wants only the report sends stdout to /dev/null (INSTALL.md, "Check it")
 // rather than the CLI guessing from the streams.
 func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 	read := func(f *os.File) string {
@@ -899,7 +922,7 @@ func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 		t.Cleanup(func() { f.Close() })
 		return f
 	}
-	const report, doc = "14 passed, 0 failed, 0 skipped", `"checks": [`
+	const report, doc = "15 passed, 0 failed, 0 skipped", `"checks": [`
 
 	both := open("both")
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})

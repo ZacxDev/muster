@@ -83,7 +83,13 @@ func TestABuiltinOfficersKickoffNamesOnlyWhatItsBackendServes(t *testing.T) {
 				t.Errorf("%s pool: a builtin officer's kickoff names %q, which its backend does not serve:\n%s", pool, absent, b)
 			}
 		}
-		for _, present := range []string{"queued in muster", "versioned in muster", "no token to hold", "this officer has no HQ",
+		// 🔴 NO "HQ" AT ALL (O-B, F4): the old patch line ("wherever a tool's
+		// description says HQ, read muster") is gone with the HQ wording of
+		// the tools it excused.
+		if strings.Contains(b, "HQ") {
+			t.Errorf("%s pool: a builtin officer's kickoff says HQ:\n%s", pool, b)
+		}
+		for _, present := range []string{"queued in muster", "versioned in muster", "no token to hold",
 			officers.ToolAskPerson + `{item_id, to: "owner"`, "muster re-opens it with the answer"} {
 			if !strings.Contains(b, present) {
 				t.Errorf("%s pool: a builtin officer's kickoff lacks %q:\n%s", pool, present, b)

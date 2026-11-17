@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -202,6 +203,9 @@ var isolationClasses = map[string]routeClass{
 	"DELETE /api/tokens/{id}": classAPIToken,
 	// The attention summary: the token owner's own queue and hosts.
 	"GET /api/attention/summary": classAPIToken,
+	// Reading the ask log (ask_log_read.go): the token owner's own asks.
+	"GET /api/asks/log":     classAPIToken,
+	"GET /api/asks/summary": classAPIToken,
 	// Creating an agent (agent_create_api.go): an agent-create token only. Its
 	// note_id is read under the caller's row-level security, so B naming A's
 	// task is "no such task" (TestAnAgentCreateNamingAnotherUsersTaskIsNotFound).
@@ -667,6 +671,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention":        classList,
 	"GET /attention/items":  classList,
 	"GET /attention/drafts": classList,
+	// The Log tab's panel reads the caller's own asks (row-level security;
+	// TestTheAskLogReadsAreTheCallersOwn drives B against A's rows).
+	"GET /attention/log": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":      classParam,
@@ -1275,8 +1282,14 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a host spawn")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
+	// The invite token is random: one byte repeated 32 times has only 256
+	// values, so two worlds alive at once in one package database (test
+	// processes sharing it) collided on invites_token_hash_key.
+	opToken := make([]byte, 32)
+	_, err = rand.Read(opToken)
+	must(err, "op invite token")
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
-		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
+		opToken, "", time.Now().Add(time.Hour))
 	must(err, "op invite")
 	w.objA = isoObjs{ccAccount: w.objA.ccAccount, user: w.a.uid, invite: w.opInvite.ID, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,

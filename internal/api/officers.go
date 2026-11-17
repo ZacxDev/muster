@@ -146,7 +146,9 @@ type officerRuntime struct {
 	// hostSpawns is OfficersConfig.HostSpawns; host is the host fleet's
 	// in-process state (officer_host.go).
 	hostSpawns officers.HostSpawnStore
-	host       officerHostState
+	// unclaimedAfter is OfficersConfig.UnclaimedAfter (0: the default).
+	unclaimedAfter time.Duration
+	host           officerHostState
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -313,6 +315,10 @@ type OfficersConfig struct {
 	// (officers.PGHostSpawnStore, migration 0125); REQUIRED when an officer
 	// declares "runtime": "host" (docs/design/officers-on-hosts.md).
 	HostSpawns officers.HostSpawnStore
+	// UnclaimedAfter is how long a host instance may run without claiming an
+	// item before its owner is told (officer_unclaimed.go); 0 is
+	// DefaultOfficerUnclaimedAfter.
+	UnclaimedAfter time.Duration
 	// RefreshEvery is how often the wake loop re-reads the DB-declared
 	// officers (officers.Config.RefreshEvery); 0 is the default. For tests.
 	RefreshEvery time.Duration
@@ -470,8 +476,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	// 🔴 AN OWNER IS A PERSON OR A TEAM, AND IT EXISTS (team sharing phase 3,
 	// officers.CheckOwners): a team owns a TEAM OFFICER, whose runtime acts as
-	// the team; an owner naming nobody, or a team owning a host officer (team
-	// hosts are phase 2b), is refused here rather than on its first pass.
+	// the team — in pods, or on a team host (2b.5); an owner naming nobody, or
+	// a team's host officer that declares connectors (G3), is refused here
+	// rather than on its first pass.
 	if err := officers.CheckOwners(cfg.Officers, s.officerOwnerKind); err != nil {
 		return nil, err
 	}
@@ -523,7 +530,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery}
+		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff}
 	if cfg.Builtin != nil {
 		// The DB-declared officers (migration 0136) reach every replica's
 		// loop on its refresh, whoever wrote them.
@@ -555,6 +562,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		hq:               hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
 		hostSpawns:      cfg.HostSpawns,
+		unclaimedAfter:  cfg.UnclaimedAfter,
 		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
 		imagePullSecret: cfg.ImagePullSecret}
 	if err := s.enableShips(cfg); err != nil {
@@ -927,10 +935,18 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	for n := 1; n <= o.MaxInstances; n++ {
 		name := o.InstanceName(n)
 		a, ok := rows[name]
-		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
+		in := officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
 			PromptPending: ok && promptPending(a),
-			Spent:         f.s.officerRT.spent(o, name)})
+			Spent:         f.s.officerRT.spent(o, name)}
+		switch {
+		case in.Up:
+		case !ok:
+			in.Down = "first start (it has no agent yet)"
+		default:
+			in.Down = "restart: its agent is " + string(liveStatusIndexed(a, idx))
+		}
+		out = append(out, in)
 	}
 	return out, nil
 }
@@ -1621,6 +1637,10 @@ func completeHandoff(raw json.RawMessage, outcome string, shepherd bool) (*offic
 // offered it: officer_complete's per-pool definition, every other tool as
 // the registry declares it.
 func officerToolDefFor(o officers.Officer, d agents.ToolDef) agents.ToolDef {
+	if o.IsBuiltin() {
+		// muster's own queue, worded as such (officer_builtin_tools.go).
+		return builtinToolDef(o, d)
+	}
 	if d.Name == officers.ToolComplete {
 		return completeToolDef(o)
 	}
@@ -1856,6 +1876,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			if err == nil && claimed != "" {
 				s.llmClaimed(o, instance, claimed, body)
 				s.officerRT.claimedInConversation(o, instance, claimed)
+				s.hostInstanceClaimed(ctx, o, instance)
 			}
 			break
 		}
@@ -1882,6 +1903,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if err == nil {
 			s.llmClaimed(o, instance, in.ItemID, body)
 			s.officerRT.claimedInConversation(o, instance, in.ItemID)
+			s.hostInstanceClaimed(ctx, o, instance)
 		}
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
@@ -1985,7 +2007,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// An item's payload (payload.claims included) is HQ's data, handed on as
 	// HQ wrote it: officerToolResult returns HQ's body byte for byte. HQ
 	// bounds it (claims at 16 KiB); muster applies no second cap.
-	return officerToolResult(name, body, err), true
+	return officerToolResultFor(o, name, body, err), true
 }
 
 // askedNote is what a successful officer_ask_person adds to HQ's answer.
@@ -2010,7 +2032,7 @@ func (s *Server) officerAskPerson(ctx context.Context, c officers.Backend, o off
 	if err == nil {
 		s.officerItemEnded(o, instance, item)
 	}
-	return askToolResult(body, err)
+	return askToolResult(o, body, err)
 }
 
 // officerItemEnded is THE end of an instance's hold on item, by its own tool
@@ -2057,9 +2079,19 @@ func (s *Server) freshClaimRefusal(o officers.Officer, instance string, item off
 // success; HQ's status, code and message on a 4xx (refused.code beside HQ's
 // body, so an instance can branch on lease_lost / unknown_recipient /
 // rate_limited without parsing it); officerToolResult's shapes otherwise.
-func askToolResult(body []byte, err error) string {
-	return itemAskToolResult(officers.ToolAskPerson, askedNote, body, err)
+func askToolResult(o officers.Officer, body []byte, err error) string {
+	note := askedNote
+	if o.IsBuiltin() {
+		note = builtinAskedNote
+	}
+	return itemAskToolResultFrom(toolSource(o), officers.ToolAskPerson, note, body, err)
 }
+
+// builtinAskedNote is askedNote for a builtin officer: muster holds its queue.
+const builtinAskedNote = "asked. Your lease on this item has ENDED: muster set it to waiting with no holder. Stop working it now — do not heartbeat, complete or release it. " +
+	"muster re-opens it (open, claimable) with the answer on it (asks[] in officer_items, the claim response and officer_brief's open_items) once every open ask on it is answered or withdrawn, " +
+	"and wakes an instance for it: claim it then and carry on with the answer. If the deadline passes unanswered, muster escalates the item to its owner. " +
+	"To ask another question on it meanwhile, call officer_ask_person again with the same item_id."
 
 // itemAskToolResult is the answer of a tool whose success creates an HQ ask
 // on the item (officer_ask_person, officer_task_ask,
@@ -2068,10 +2100,15 @@ func askToolResult(body []byte, err error) string {
 // with HQ's body verbatim under refused.hq; officerToolResult's shapes
 // otherwise (outage, retryable, too large).
 func itemAskToolResult(tool, note string, body []byte, err error) string {
+	return itemAskToolResultFrom(srcHQ, tool, note, body, err)
+}
+
+// itemAskToolResultFrom is itemAskToolResult with src naming the backend.
+func itemAskToolResultFrom(src, tool, note string, body []byte, err error) string {
 	if err == nil {
 		var out map[string]json.RawMessage
 		if json.Unmarshal(body, &out) != nil || out == nil {
-			return officerToolResult(tool, body, nil)
+			return toolResultFrom(src, tool, body, nil)
 		}
 		n, _ := json.Marshal(note)
 		out["note"] = n
@@ -2079,13 +2116,13 @@ func itemAskToolResult(tool, note string, body []byte, err error) string {
 	}
 	status, msg, code, ok := officers.Refusal(err)
 	if !ok {
-		return officerToolResult(tool, nil, err)
+		return toolResultFrom(src, tool, nil, err)
 	}
 	head := strconv.Itoa(status)
 	if code != "" {
 		head += " " + code
 	}
-	text := fmt.Sprintf("HQ refused %s (%s)", tool, head)
+	text := fmt.Sprintf("%s refused %s (%s)", src, tool, head)
 	if msg != "" {
 		text += ": " + msg
 	}
@@ -2371,6 +2408,31 @@ func (s *Server) officerToolServed(o officers.Officer, tool string) bool {
 // an outage. A claim on a blocked item is the one 4xx that is not a refusal
 // (claimBlockedError).
 func officerToolResult(name string, body []byte, err error) string {
+	return toolResultFrom(srcHQ, name, body, err)
+}
+
+// The words a tool result names the officer's backend with (toolSource).
+const (
+	srcHQ      = "HQ"
+	srcBuiltin = "muster"
+)
+
+// toolSource is how a tool result names officer o's backend: HQ, or muster
+// for a builtin officer — whose instances never read "HQ" (F4).
+func toolSource(o officers.Officer) string {
+	if o.IsBuiltin() {
+		return srcBuiltin
+	}
+	return srcHQ
+}
+
+// officerToolResultFor is officerToolResult worded for officer o's backend.
+func officerToolResultFor(o officers.Officer, name string, body []byte, err error) string {
+	return toolResultFrom(toolSource(o), name, body, err)
+}
+
+// toolResultFrom is officerToolResult with src naming the backend.
+func toolResultFrom(src, name string, body []byte, err error) string {
 	var hqErr *officers.HQError
 	var blocked *claimBlockedError
 	var retry *officers.RetryableError
@@ -2381,13 +2443,13 @@ func officerToolResult(name string, body []byte, err error) string {
 		if json.Valid(retry.Body) {
 			again["hq"] = json.RawMessage(retry.Body)
 		}
-		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ answered %d %s to %s: a transient failure — retry it in a minute", retry.Status, retry.Code(), name),
+		return toolJSON(map[string]any{"error": fmt.Sprintf("%s answered %d %s to %s: a transient failure — retry it in a minute", src, retry.Status, retry.Code(), name),
 			"retryable": again})
 	case errors.As(err, &blocked):
 		return blocked.result()
 	case err == nil:
 		if !json.Valid(body) {
-			return toolErr("HQ answered %s with something that is not JSON", name)
+			return toolErr("%s answered %s with something that is not JSON", src, name)
 		}
 		return string(body)
 	case errors.As(err, &hqErr):
@@ -2395,11 +2457,11 @@ func officerToolResult(name string, body []byte, err error) string {
 		if json.Valid(hqErr.Body) {
 			refused["hq"] = json.RawMessage(hqErr.Body)
 		}
-		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ refused %s (%d)", name, hqErr.Status), "refused": refused})
+		return toolJSON(map[string]any{"error": fmt.Sprintf("%s refused %s (%d)", src, name, hqErr.Status), "refused": refused})
 	case errors.Is(err, officers.ErrHQAnswerTooLarge):
-		return toolErr("HQ's answer to %s is over muster's 1 MiB cap, so none of it is passed on: ask for less (a smaller limit or page, a narrower filter) — the same call will fail again", name)
+		return toolErr("%s's answer to %s is over muster's 1 MiB cap, so none of it is passed on: ask for less (a smaller limit or page, a narrower filter) — the same call will fail again", src, name)
 	case errors.Is(err, officers.ErrHQUnavailable):
-		return toolErr("HQ is unavailable right now; try %s again in a minute", name)
+		return toolErr("%s is unavailable right now; try %s again in a minute", src, name)
 	case errors.Is(err, officers.ErrNotServed):
 		return notServedResult(name, err)
 	default:

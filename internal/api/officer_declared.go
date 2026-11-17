@@ -34,8 +34,9 @@ import (
 //	GET    /api/officers/runtime-options             where the caller's officer could run, and why not
 //
 // A TEAM's officers are the store's and the loader's already (a row a team
-// owns runs, under the team rule officers.CheckOwners), but no door writes
-// them yet: the team door is O-C's, with the UI that is its first consumer
+// owns runs, under the team rule officers.CheckOwners — a team host officer
+// included since team sharing 2b.5, unless it declares connectors), but no
+// door writes them yet: the team door is O-C's, with the UI that is its first consumer
 // (round 0's D1).
 //
 // 🔴 NO RESTART. Every write swaps the registry (reloadDeclaredOfficers), and
@@ -222,8 +223,9 @@ func (s *Server) logDeclaredChanges(prev, now map[string]declaredState) {
 
 // resolveDeclared is row r as the officer that runs, or why it does not:
 // shadowed by an env declaration, no runtime available (auto resolved to
-// nothing), a team owning a host officer (officers.CheckOwners, the one
-// rule), or a slug an env officer holds.
+// nothing), the team rule (officers.CheckOwners, the one rule: an owner that
+// names nobody, or a team's host officer that declares connectors — G3), or
+// a slug an env officer holds.
 func (s *Server) resolveDeclared(ctx context.Context, r builtin.DeclaredRow, envSlugs map[string]string) (officers.Officer, string) {
 	rt := s.officerRT
 	if _, ok := rt.envOfficer(r.Owner, r.Officer); ok {
@@ -468,31 +470,52 @@ type hostOption struct {
 	Spawnable bool `json:"spawnable"`
 	// Closable: it ends an agent window on muster's request (AgentClose), so
 	// muster can scale the officer to zero.
-	Closable  bool   `json:"closable"`
+	Closable bool `json:"closable"`
+	// RepoAllowed: the repo asked about is on the host's -agent-spawn-repos
+	// (its readiness, mirror.SpawnReadiness); absent when that cannot be told
+	// (an older muster-mirror) or no repo was asked about.
+	RepoAllowed *bool `json:"repo_allowed,omitempty"`
+	// Scratch: the host starts an officer with no repository (any current
+	// muster-mirror with -agent-spawn). Claude is "found" or "missing", Login "yes",
+	// "no" or "unknown": what the host reported, absent from an older one.
+	Scratch   bool   `json:"scratch"`
+	Claude    string `json:"claude,omitempty"`
+	Login     string `json:"login,omitempty"`
 	Qualifies bool   `json:"qualifies"`
 	Reason    string `json:"reason,omitempty"`
 }
 
 // ownerHostOptions is owner's hosts, sorted, each with whether a host officer
-// of repo could run there and why not. The signals are the ones the host
-// fleet itself refuses a start on (officerFleet.hostStart): online,
-// spawnable, closable.
+// of repo ("" for none: a scratch directory) could run there and why not.
+// The signals are the ones the host fleet itself refuses a start on
+// (officerFleet.hostStart: online, spawnable, closable), and the host's spawn
+// readiness (hostReadyRefusal: the allow-list, scratch spawns, claude found
+// and logged in) — so auto placement never picks a host whose window would
+// sit at Claude Code's login screen.
 func (s *Server) ownerHostOptions(ctx context.Context, owner int64, repo string) []hostOption {
 	if s.ext.Mirror == nil {
 		return nil
 	}
+	repo = strings.TrimSpace(repo)
 	var out []hostOption
 	for _, v := range s.ext.Mirror.Hosts(s.officerPrincipal(ctx, owner)) {
-		h := hostOption{Host: v.Host, Online: v.Online, Spawnable: hostSpawnable(v, mirror.SpawnRuntimeClaude), Closable: v.AgentClose}
+		h := hostOption{Host: v.Host, Online: v.Online, Spawnable: hostSpawnable(v, mirror.SpawnRuntimeClaude), Closable: v.AgentClose,
+			RepoAllowed: hostRepoAllowed(v, repo)}
+		if r := v.SpawnReady; r != nil {
+			h.Scratch, h.Claude, h.Login = r.Scratch, r.Claude, r.Login
+		}
+		ready := hostReadyRefusal(v, repo, true)
 		switch {
 		case !v.Online:
 			h.Reason = "not connected"
+		case !h.Spawnable && ready != "":
+			h.Reason = ready
 		case !h.Spawnable:
 			h.Reason = "it does not start Claude Code agents (it needs a current muster-mirror with -interactive and -agent-spawn)"
 		case !h.Closable:
 			h.Reason = "it does not close windows (an older muster-mirror), so muster could never scale an officer there to zero"
-		case strings.TrimSpace(repo) == "":
-			h.Reason = "a host officer needs a repo (the host cuts each instance's worktree from its clone of it)"
+		case ready != "":
+			h.Reason = ready
 		default:
 			h.Qualifies = true
 		}
@@ -856,8 +879,12 @@ func (s *Server) escalationRefusal(ctx context.Context, owner int64, team bool, 
 
 // checkDeclaredOwner is the team rule for d, through THE one check
 // (officers.CheckOwners): a declaration that names a host runs as a host
-// officer, and an owner that is a team is refused one there — so when team
-// sharing lets a team own a host officer, it changes in that one place.
+// officer, so the rule is checked as one — at the create or replace door and
+// at the roster load (resolveDeclared). A team's host officer that declares
+// connectors is refused (G3, team sharing 2b.5). No door accepts a team
+// owner yet: O-C's team door is the first to reach the team arm here, and
+// must refuse that declaration there (and an "auto" one that lands on a host
+// is refused at the load, after its runtime resolves).
 func (s *Server) checkDeclaredOwner(d officers.Declaration) error {
 	if d.Runtime != officers.RuntimeHost {
 		return nil

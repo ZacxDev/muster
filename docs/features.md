@@ -7,9 +7,10 @@ it, and each one names exactly what it needs.
 
 **Turning a feature on** is the same every time, on the server (the hub):
 
-1. add the lines its section gives to `~/muster/.env` (the file
-   [INSTALL.md](../INSTALL.md) made from `deploy/.env.example`, which already
-   holds every optional line, commented out, grouped as below);
+1. add the lines its section gives to `~/muster/.env`, beside
+   `docker-compose.yml` (create it if it is not there: a stack that generated
+   its secrets needs none; `deploy/.env.example` holds every optional line,
+   commented out, grouped as below);
 2. if the section names a **profile**, add it to `COMPOSE_PROFILES` in the same
    file (`COMPOSE_PROFILES=stt,s3` for two), or pass `--profile <name>`;
 3. run `docker compose up -d --wait` in `~/muster`.
@@ -36,9 +37,9 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 
 | feature | what it gives you | needs | default | how to enable |
 |---|---|---|---|---|
-| [Core](#core) | mirrored sessions, chat and Terminal views, typing into sessions, tasks, the Asks page, search, the installable app, the CLI and `muster doctor` | the Compose stack, tmux and `muster-mirror` on each machine, an HTTPS address (Tailscale) | on | [INSTALL.md](../INSTALL.md) |
+| [Core](#core) | mirrored sessions, chat and Terminal views, typing into sessions, tasks, the Asks page, search, the installable app, the CLI and `muster doctor` | the Compose stack, tmux and `muster-mirror` on each machine; an HTTPS address ([Tailscale](guides/tailscale.md)) only for your phone and other machines | on | [INSTALL.md](../INSTALL.md) |
 | ↳ [Database](#database), [Mirror](#mirror), [Password sign-in](#password-sign-in), [Machine token](#machine-token) | the core's own parts | set up by INSTALL.md | on | INSTALL.md |
-| [Push](#push) | phone notifications | VAPID keys (generated), HTTPS | on in INSTALL.md | 3 `.env` lines |
+| [Push](#push) | phone notifications | VAPID keys (the Compose stack generates them), HTTPS for the phone | on | nothing |
 | [Dictation](#dictation) | a microphone on every message box | a speech-to-text service: bundled (CPU or GPU) or your API key | off (INSTALL.md asks) | `--profile stt` + 1 line |
 | [Attachments](#attachments) | attach files in the message box; agents get signed links | an S3 store: bundled or your own | off | `--profile s3` + 2 lines |
 | [Suggested replies](#suggested-replies) | reply chips when a session hands back to you | an OpenRouter key | off until the key is set, then off for each user until they turn them on (no database: until `MUSTER_SUGGEST=on`) | 1 line |
@@ -46,11 +47,14 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
-| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
+| [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
+| [Teams](#teams) | people on one server sharing sessions, officers, tasks and a chief | accounts | off | an admin creates one |
+| [Branding](#branding) | the server's own logo and name | the core's database | muster's own | the Account page |
+| [Usage page](#usage-page) | what the chief costs, and who handled each plugin message | the core's database | on | nothing |
 | [Browser flows](#browser-flows) | a queue of scripted browser jobs | **a runner you host** | the queue is on | nothing in `.env` |
 | [Telemetry](#telemetry) | front-end monitoring, OpenTelemetry traces | a Faro collector or an OTLP endpoint | off | 1 line each |
 | [Android](#android) | the native app's passkeys and push | the app (early: does little yet) | off | 2–3 lines |
@@ -62,11 +66,12 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | ↳ [Agent gateway](#agent-gateway), [Claude Code agents](#claude-code-agents) | chat with agents; the `claude-code` agent kind | dispatch, an agent image | off | not in the Compose stack |
 | [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief on Kubernetes | off | not in the Compose stack |
 | [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief on Kubernetes, an OpenRouter key | off | not in the Compose stack |
-| [Plugins](#plugins) | external systems (an inbox) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
+| [Plugins](#plugins) | external systems (an inbox, [ClankMail](clankmail.md)) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
 | ↳ [Plugin viewers](#plugin-viewers), [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
+| [Previews](#previews) | an agent's dev server on a host, served to you | **the preview gateway you run**, a wildcard zone, plugin viewers | off | [a guide](guides/previews.md) |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
 | [Approval router](#approval-router) | transcript links, router notifications, agent permission cards | **an external permission router you run** | off (standalone) | 3 lines |
-| [Officers](#officers) | standing agents fed by an HQ queue | **HQ**, dispatch | off | not in the Compose stack |
+| [Officers](#officers) | standing agents with a job and a queue (HQ or muster's own) | pods: **Kubernetes**; in the Compose stack: [host sessions](officers-builtin.md#officers-in-the-compose-stack-host-sessions) | off | [officers-builtin.md](officers-builtin.md) |
 
 ## Core
 
@@ -104,7 +109,7 @@ muster refuses to start without `DATABASE_URL`, which the compose file sets.
 
 Mirrored sessions: every tmux window on every machine whose `muster-mirror`
 holds a mirror token ([mirroring.md](mirroring.md)). The compose file sets
-`MUSTER_MIRROR=1`; each machine is connected in INSTALL.md Step 7.
+`MUSTER_MIRROR=1`; each machine is connected by INSTALL.md's "Install muster on this machine".
 **Check:** `mirrored sessions: ENABLED (…)`, and `muster doctor`'s
 `mirror-hosts` and `this-host`.
 
@@ -128,19 +133,22 @@ refuses the `.env.example` placeholder. **Check:** `machine hook tier: ENFORCED 
 Web Push notifications to your phone and browsers: a session waiting on you, an
 ask, a task ready for review. [push.md](push.md).
 
-- **Needs:** a VAPID key pair (muster generates it) and an HTTPS address (a
-  service worker needs one). [INSTALL.md](../INSTALL.md) sets this up.
-- **`.env`:** all three or none.
+- **Needs:** a VAPID key pair, which the Compose stack generates on its first
+  start, and an HTTPS address for any device but this machine's own browser (a
+  service worker needs one): [the Tailscale guide](guides/tailscale.md).
+- **`.env`:** nothing. To use your own key pair instead:
 
   ```sh
   docker compose run --rm --no-deps muster vapid generate >> .env   # appends the two keys
   ```
 
-  then add `MUSTER_VAPID_SUBJECT=mailto:you@example.com`.
-  `MUSTER_PUSH_EXTRA_HOSTS` adds your own push hosts (a self-hosted ntfy).
+  `MUSTER_VAPID_SUBJECT` (the contact address push services are given) and
+  `MUSTER_PUSH_EXTRA_HOSTS` (your own push hosts, such as a self-hosted ntfy)
+  are optional ([configuration.md](configuration.md#muster-server-optional-features)).
 - **Profile:** none.
 - **Check:** `web push: ENABLED`. Then **Account → Notifications → Send a
   test notification**.
+- **Guide:** [guides/push.md](guides/push.md).
 
 ### Dictation
 
@@ -187,6 +195,7 @@ protocol and limits.
 - **Check:** `dictation: ON — MUSTER_STT_TOKEN is set; …`, which names the URL
   and model. `muster doctor`'s `dictation` check transcribes a bundled voice
   sample through muster. Off, no microphone is drawn.
+- **Guide:** [guides/speech-to-text.md](guides/speech-to-text.md).
 
 ### Attachments
 
@@ -226,6 +235,7 @@ a short-lived link signed by muster, on muster's own address.
   partial set says `OFF (MISCONFIGURED)` and names what is missing; it never
   stops muster. A line starting `uploads: the bucket answered at boot` means
   muster reached the bucket.
+- **Guide:** [guides/s3.md](guides/s3.md).
 
 ### Suggested replies
 
@@ -251,6 +261,7 @@ a tap fills the box, never sends. [suggested-replies.md](suggested-replies.md).
   **Account → Suggested replies** (the per-user switch: on, and off again),
   and chips appear above the box when a session finishes a turn with its
   Rendered view open.
+- **Guide:** [guides/openrouter.md](guides/openrouter.md).
 
 ### Focus
 
@@ -268,6 +279,7 @@ can change with **Rename…**. [focus.md](focus.md).
   that keeps to the two-line `Title:` / `Description:` format).
 - **Check:** `muster doctor` or the Features page; after a pass (every 15
   minutes), search (`/`) finds a session by its focus title.
+- **Guide:** [guides/openrouter.md](guides/openrouter.md).
 
 ### Agent ask tool
 
@@ -277,11 +289,12 @@ page and your phone. [attention.md](attention.md#mirrored-claude-code-sessions).
 
 - **Needs, on each machine:** `muster-mirror` serving its local MCP endpoint,
   and Claude Code configured to use it. Nothing on the server.
-- **Steps, on each machine** (INSTALL.md Step 11 does these when you ask for it):
+- **Steps, on each machine** (INSTALL.md's "Optional features" points here when you ask for it):
   1. Turn on the endpoint: add `MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823` to
-     `~/.config/muster-mirror/env` (INSTALL.md: `mi_save ASK_TOOLS yes`, then
-     re-run Step 7's last block) and restart `muster-mirror`. On its first start
-     it writes a secret to `~/.config/muster-mirror/mcp-secret` (mode 600).
+     `~/.config/muster-mirror/env` and restart `muster-mirror`. The line is
+     yours: install.sh keeps it every time it runs again (INSTALL.md, "Install
+     muster on this machine"). On its first start muster-mirror writes a secret
+     to `~/.config/muster-mirror/mcp-secret` (mode 600).
   2. Register it with Claude Code, for this user:
 
      ```sh
@@ -332,7 +345,8 @@ your phone. [mirroring.md](mirroring.md#answering-claudes-questions).
 Your fleet agent. Ask it what every session and agent is working on and who is
 on what, and have it route a task, a request or an idea to the session already
 on it. Plugin messages and your sessions' `chief_ask` questions go to it, and
-home opens its chat. [chief.md](chief.md).
+home opens its chat. [chief.md](chief.md); what to ask it, with real replies:
+[chief-cookbook.md](chief-cookbook.md).
 
 - **Needs:** the `chief` profile (a [claude-code-agent](provisioner.md#agent-kinds)
   container that muster configures through a shared volume, with no Docker
@@ -423,6 +437,10 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
   `MUSTER_ASK_LOG_CLASSIFY=1` also stores the stall classifier's scores (it
   needs [chief nudges](#chief-nudges)' classifier).
 - **Privacy:** redacted on the way in, yours only, text cleared after the TTL.
+- **Reading it:** the Asks page's **Log** tab, `GET /api/asks/log` and
+  `/api/asks/summary` (a personal token), and `muster asks log` / `muster asks
+  summary` ([reading the log](asks.md#reading-the-log)). Off, the tab says how
+  to turn it on and the routes answer the typed `feature_disabled` 404.
 - **Check:** `ask log: ON (MUSTER_ASK_LOG=1) — …`; off, the line reads
   `ask log: OFF — MUSTER_ASK_LOG is unset; …`.
 
@@ -446,6 +464,30 @@ data, and you are notified. [pages.md](pages.md).
 - **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
   `shareable pages: OFF — MUSTER_PAGES is unset`.
 
+### Branding
+
+The server's own logo and display name, drawn in the header, on the sign-in
+page, as the app and notification icon, and published at `GET /api/instance`
+for the apps. [branding.md](branding.md).
+
+- **Needs:** the core's database. There is no environment variable: an admin
+  sets it in the UI.
+- **Turn it on:** **Account** page, as an admin
+  ([branding.md](branding.md#setting-it)).
+- **Check:** the header shows the logo; `GET /api/instance` names it.
+
+### Usage page
+
+What the chief costs: every chief turn's tokens, who handled each plugin
+message (a routing rule, muster's own paths, or the chief), on `/usage`.
+[usage.md](usage.md).
+
+- **Needs:** the core's database. It is on whenever there is one; it has
+  something to show once the [chief](#chief) handles [plugin](#plugins)
+  messages.
+- **Turn it on:** nothing to set.
+- **Check:** open `/usage` (linked from `/plugins` and `/rules`).
+
 ### Connectors
 
 A sealed store of HTTP credentials (and read-only Postgres connectors) that
@@ -464,6 +506,7 @@ member's own Claude token and OpenRouter key. [connectors.md](connectors.md).
 - **Check:** with the key alone, `connector store: MEMBERS' CREDENTIALS ONLY — …`
   and Account → Credentials takes keys; with the agent connect URL too,
   `connector store: ENABLED — …` and the Connectors tab appears.
+- **Guide:** [guides/connectors.md](guides/connectors.md).
 
 ### GitHub App
 
@@ -477,6 +520,7 @@ repository for an hour. [github-app.md](github-app.md).
   `MUSTER_GITHUB_APP_ACCOUNTS` (`<login>:<id>,…`), and optionally
   `MUSTER_GITHUB_APP_ACCESS=read`.
 - **Check:** `github app: ON — …`.
+- **Guide:** [guides/github-app.md](guides/github-app.md).
 
 ### Accounts
 
@@ -513,6 +557,25 @@ member roles, kept apart by row-level security. [auth.md](auth.md).
 - **Check:** `human web tier: GOTRUE (MUSTER_AUTH_MODE=gotrue) — …` and
   `gotrue: CONFIGURED`. This mode is not exercised by the Compose stack's own
   tests.
+- **Guide:** [guides/gotrue.md](guides/gotrue.md).
+
+### Teams
+
+A group of people on one server sharing sessions, officers, tasks and a chief,
+each person's role deciding what they may do; everything else stays private.
+[auth.md](auth.md#teams); the design, [design/team-sharing.md](design/team-sharing.md).
+
+- **Needs:** per-user [accounts](#accounts): a team is people, and the one
+  shared password is one person. A team's chief and agents are
+  [dispatched](#dispatch) ([chief.md](chief.md#a-teams-chief)); a team's
+  machines are [team hosts](mirroring.md#team-hosts).
+- **Turn it on:** an admin creates a team on **Admin → Teams**
+  (`/admin/teams`), naming its first manager. Lending a team the server's
+  Claude pool or the GitHub App is one setting each
+  (`MUSTER_TEAMS_ON_SERVER_POOL`, `MUSTER_TEAMS_ON_GITHUB_APP`;
+  [configuration.md](configuration.md#muster-server-optional-features)).
+- **Check:** the team's page, `/teams/<id>`, lists its members; the boot log
+  names each team a setting lends something to.
 
 ### Browser flows
 
@@ -600,6 +663,7 @@ deletes it. [provisioner.md](provisioner.md).
   chief's `agent_dispatch` or by
   [`muster agent create`](provisioner.md#creating-an-agent-without-the-chief).
 - **Check:** `agent provisioning: LIFECYCLE …` instead of `UNWIRED`.
+- **Guide:** [guides/kubernetes.md](guides/kubernetes.md).
 
 ### Agent gateway
 
@@ -648,8 +712,11 @@ Out-of-process plugins bring another system's messages (an inbox, ClankMail)
 to your chief and send the replies you approve. [plugins.md](plugins.md).
 
 - **Needs a plugin process you run** (this repository has the ClankMail one,
-  `muster-clankmail`), and the [chief](#chief) to act on what arrives: without
-  an agent gateway, messages queue and the log warns.
+  `muster-clankmail`), and something to deliver its messages to: the
+  [chief](#chief) through an agent gateway, or an officer the plugin is bound
+  to (**Deliver to** `officer:<id>` on `/plugins`), which needs no chief. With
+  neither, nothing can deliver: messages queue, and the feature reads
+  misconfigured. Whether a plugin is bound is read at startup.
 - **`.env`:** `MUSTER_PLUGINS=1`. The features below build on it; their
   grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu
@@ -716,6 +783,20 @@ Mail for a session that has ended resumes it in a new tmux window
 `MUSTER_MAIL_RESUME_ALLOW`, with session routing on and a host running
 `muster-mirror -resume-spawn`; `MUSTER_MAIL_RESUME_OFF=1` is the kill switch.
 **Check:** `mail resume: ON (…)`.
+
+### Previews
+
+A web server an agent runs on one of your machines, served to you inside
+muster through a tunnel, never public. [previews.md](previews.md).
+
+- **Needs:** the preview gateway (`muster-preview`), which you run (neither the
+  Compose file nor the Helm chart does), a wildcard DNS zone and certificate,
+  [plugin viewers](#plugin-viewers), and `muster-mirror -preview` on each
+  machine.
+- **Turn it on:** [previews.md](previews.md#setting-it-up), in order.
+- **Check:** `plugin origins: ON …`; a mirrored window running an allowlisted
+  server shows a **Preview** button.
+- **Guide:** [guides/previews.md](guides/previews.md).
 
 ### Memo relay
 

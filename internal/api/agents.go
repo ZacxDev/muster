@@ -262,6 +262,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 		v.DeleteProtected = protected(a)
 		cards = append(cards, v)
 	}
+	// Each TEAM agent's team (withAgentTeams): its sidebar group, and the
+	// switcher's and palette's label.
+	s.withAgentTeams(ctx, list, cards)
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
 	// in-memory hub, scoped to this request's principal. ui's orderList
 	// interleaves them with the agents by activity.
@@ -2088,6 +2091,20 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	// The page judges the socket alive by hearing from it (ui/live.go); an
 	// idle chat says nothing, so it beats.
 	defer socketHeartbeat(ctx, s.logger, c)()
+	// 🔴 THE SOCKET ENDS WITH ITS REQUEST'S CONTEXT, EVEN MID-TURN (Issue #724
+	// round 1, F1). A member's socket on a team agent is registered for the
+	// membership sweep (admit → teamAgentSocketOpen), which cancels this
+	// context with errTeamChatClosed on a removal; while a turn runs the loop
+	// is not in c.Read, and nothing else closed the connection, so the turn
+	// kept streaming to the removed member until it ended. The turn runs on
+	// its own context (below) and is still stored; only this socket ends.
+	defer context.AfterFunc(ctx, func() {
+		why := "closed"
+		if cause := context.Cause(ctx); cause != nil {
+			why = cause.Error()
+		}
+		_ = c.Close(websocket.StatusPolicyViolation, truncate(why, 120))
+	})()
 
 	for {
 		_, data, err := c.Read(ctx)

@@ -54,6 +54,19 @@ func (u tsUsers) Account(_ context.Context, id int64) (users.Account, error) {
 	return users.Account{}, users.ErrNotFound
 }
 
+// HoldTeamRole is tsUsers' send fence read: the account's role in team, from
+// the fixed map. 🔴 A FAKE: it LOCKS NOTHING (there is no database), so a
+// test through tsUsers exercises the fence's read, never its lock — the lock
+// is users.PGStore's, walked by team_agents_pg_test.go.
+func (u tsUsers) HoldTeamRole(_ context.Context, team, person int64) (authz.TeamRole, bool, func(), error) {
+	a, ok := u[person]
+	if !ok {
+		return "", false, func() {}, nil
+	}
+	role, in := a.Teams.RoleIn(team)
+	return role, in, func() {}, nil
+}
+
 func newTSUsers() tsUsers {
 	return tsUsers{
 		tsTeam:     {Role: authz.RoleMember, Team: true},
@@ -161,10 +174,9 @@ func TestAMemberWithNoChiefIsNotHandedTheTeamsChief(t *testing.T) {
 // member's OWN chief — newer than the team's — never the team's, which their
 // list holds since 0131.
 //
-// ⚠ With NO chief of their own, home falls through to the most recent
-// session, which may be the team chief's page: that is a visible team agent
-// opened as a session, not handed over as the member's chief, and is left
-// as it is (plan §3.1's "home" fallback is a later slice).
+// With NO chief of their own, home falls through to the member's own
+// sessions only (TestHomeWithNoChiefOpensNoTeamAgent); falling back to a team
+// chief is a later slice (plan §3.1's "home" fallback).
 //
 // 🔴 RED at origin/main 006bbe5c: home opened the team chief (lowest id).
 func TestHomeDoesNotOpenTheTeamsChief(t *testing.T) {
