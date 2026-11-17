@@ -40,7 +40,7 @@ var sessionNameCallers = []string{
 	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
 	"fleet_report.go Server.collectFleet",                        // the fleet report
-	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
+	"fleet_read.go Server.readFleet",                             // the fleet reader: the chief's fleet_list and the digest card
 	"focus_tools.go Server.toolFocusSearch",                      // the chief's focus_search hits
 	"mirror.go Server.mirrorNameUnlessTeam",                      // a mirrored terminal page's, and the Rendered view's, header and <title> (none on a team host's session, G4)
 	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
@@ -99,7 +99,7 @@ var noTmuxAddress = map[string]string{
 	"chief_nudge.go Server.stallFacts":                           "the chief's prompt (it is given the place itself)",
 	"connector_decide_tools.go Server.toolConnectorRequestsList": "a chief tool",
 	"fleet_report.go Server.collectFleet":                        "a report, not a notification",
-	"focus_tools.go Server.toolFleetList":                        "a chief tool",
+	"fleet_read.go Server.readFleet":                             "a chief tool and the digest card's rows",
 	"focus_tools.go Server.toolFocusSearch":                      "a chief tool",
 	"mirror.go Server.mirrorNameUnlessTeam":                      "a page header, not a notification",
 	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",

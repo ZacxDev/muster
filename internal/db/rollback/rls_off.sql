@@ -311,7 +311,13 @@ BEGIN
         ALTER TABLE public.chief_session_llm_reservations DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.chief_session_llm_reservations ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0147 (officer_connector_blocks), when this schema has it; same reason as 0011.
+    -- 0147 (fleet_owner_marks), when this schema has it; same reason as 0011.
+    IF to_regclass('public.fleet_owner_marks') IS NOT NULL THEN
+        ALTER TABLE public.fleet_owner_marks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_owner_marks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.fleet_owner_marks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0148 (officer_connector_blocks), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_connector_blocks') IS NOT NULL THEN
         ALTER TABLE public.officer_connector_blocks NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_connector_blocks DISABLE ROW LEVEL SECURITY;

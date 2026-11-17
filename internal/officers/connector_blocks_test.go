@@ -14,7 +14,7 @@ import (
 )
 
 // The connector-block record (connector_blocks.go): one contract, asserted on
-// the memory store and on officer_connector_blocks (migration 0147) with a
+// the memory store and on officer_connector_blocks (migration 0148) with a
 // database — where the record also survives a new store on its own pool (a
 // restarted server, or the other replica). Ids are made up.
 

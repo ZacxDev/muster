@@ -36,7 +36,7 @@ import (
 var featureIDs = []string{
 	"mirror", "password-sign-in", "push", "dictation", "attachments",
 	"suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",
-	"claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "ask-log", "pages", "plugins",
+	"claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "fleet-digest", "ask-log", "pages", "plugins",
 	"plugin-viewers", "plugin-tasks", "session-routing", "task-routing", "pr-mail-routing", "fleet-reports", "mail-resume",
 	"memo-relay", "approval-router", "browser-flows", "agent-ask-tool", "service-token", "android",
 	"telemetry", "officers",
@@ -391,7 +391,7 @@ func TestTheBootLogHasOneRegistrySummaryLine(t *testing.T) {
 		}
 	}
 	want := "features: 0 on; off: mirror, push, dictation, attachments, suggested-replies, focus, accounts, connectors, github-app, " +
-		"dispatch, agent-gateway, claude-code-agents, chief, chief-session-runtimes, chief-nudges, session-state, ask-log, pages, plugins, plugin-viewers, plugin-tasks, " +
+		"dispatch, agent-gateway, claude-code-agents, chief, chief-session-runtimes, chief-nudges, session-state, fleet-digest, ask-log, pages, plugins, plugin-viewers, plugin-tasks, " +
 		"session-routing, task-routing, pr-mail-routing, fleet-reports, mail-resume, memo-relay, approval-router, browser-flows, " +
 		"agent-ask-tool, service-token, android, telemetry, officers; misconfigured: password-sign-in — see /account/features"
 	if len(lines) != 1 || lines[0] != want {
