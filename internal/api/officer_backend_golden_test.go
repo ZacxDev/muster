@@ -19,7 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// officerBackendGolden is what ten HQ officer pools are told and offered (it pins 21 of the 24 officer tools: no kube, ci_logs or shepherd shape — those three are held neutral by the capability ledger instead):
+// officerBackendGolden is what twelve HQ officer pools are told and offered (it pins 22 of the 31 officer tools: no kube, ci_logs, shepherd or public-branch shape and no builtin-only tool — those nine are held neutral by the capability ledger instead):
 // for each pool of each officer, the kickoff its first instance is given, the
 // MCP tools its session pre-allows, and the officer tools it is offered over
 // MCP, definitions included. It was RECORDED BEFORE the officer-backend
@@ -33,14 +33,14 @@ import (
 const officerBackendGolden = "testdata/officer_backend.golden"
 
 // goldenOfficers are the officer shapes the golden covers: every officer-type
-// tool pack (release, task-reconciler, datastore, web-performance), both
+// tool pack (release, task-reconciler, datastore, web-performance, rollout), both
 // pools of a tiered officer (fresh-session routine, capped judgement), a
 // read-only officer with read_repos and connectors, and a merge-stage
 // shipping officer.
 func goldenOfficers(t *testing.T, hqURL string) ([]officers.Officer, map[string]string) {
 	t.Helper()
 	ids := []string{"triage:example-web", "release:example-web", "gpu-health:gamma", "web-performance:example",
-		"task-reconciler:example", "datastore:example"}
+		"task-reconciler:example", "datastore:example", "rollout:example"}
 	tokens := map[string]string{}
 	env := map[string]string{}
 	for _, id := range ids {
@@ -55,7 +55,8 @@ func goldenOfficers(t *testing.T, hqURL string) ([]officers.Officer, map[string]
 		`{"id":"gpu-health:gamma","hq_url":"` + hqURL + `",` + tiers + `},` +
 		`{"id":"web-performance:example","hq_url":"` + hqURL + `",` + tiers + `},` +
 		`{"id":"task-reconciler:example","hq_url":"` + hqURL + `"},` +
-		`{"id":"datastore:example","hq_url":"` + hqURL + `",` + tiers + `}]`
+		`{"id":"datastore:example","hq_url":"` + hqURL + `",` + tiers + `},` +
+		`{"id":"rollout:example","hq_url":"` + hqURL + `",` + tiers + `}]`
 	list, err := officers.Parse(raw, func(k string) string { return env[k] }, "muster-agent-")
 	if err != nil {
 		t.Fatalf("parse the golden officers: %v", err)

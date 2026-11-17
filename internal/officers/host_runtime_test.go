@@ -100,7 +100,7 @@ func TestAHostOfficerIsOfferedTheQueueToolsAndAskOnly(t *testing.T) {
 		officers.ToolContactGet: true, officers.ToolContactsList: true, officers.ToolContactNote: true}
 	all := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
 		officers.ToolAskPerson, officers.ToolPostDraft, officers.ToolContactGet, officers.ToolContactsList, officers.ToolContactNote, officers.ToolObsQueries, officers.ToolObsQuery, officers.ToolObsRaw, officers.ToolKubeRead,
-		officers.ToolMergePR, officers.ToolTaskList, officers.ToolGapTask, officers.ToolReleaseEvaluation}
+		officers.ToolMergePR, officers.ToolTaskList, officers.ToolGapTask, officers.ToolRolloutPromotePropose, officers.ToolReleaseEvaluation}
 	for _, tool := range all {
 		if got := officers.ToolOffered(host, tool); got != want[tool] {
 			t.Errorf("host officer: ToolOffered(%s) = %v, want %v", tool, got, want[tool])
