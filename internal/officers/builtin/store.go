@@ -22,7 +22,11 @@ import (
 
 // Store is the built-in backend's tables. Every call runs under row-level
 // security, so ctx must act as the officer's owner (or the operator).
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// routine is SetRoutinePolicy's policy (nil: nothing is deferred).
+	routine routinePolicyHolder
+}
 
 // NewStore is the store over pool.
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
@@ -96,6 +100,10 @@ type NewItem struct {
 	// normal or low ("" is normal).
 	Tier, Priority string
 	NotBefore      *time.Time
+	// Origin is officers.OriginOwner when the officer's owner enqueued it
+	// (the admin API behind `muster officer item enqueue`, "Run now", their rejection of a
+	// draft); "" otherwise. Only an owner item bypasses a spent daily budget.
+	Origin string
 }
 
 // Enqueue adds an open item, or — when the officer already has a LIVE item
@@ -106,6 +114,7 @@ func (s *Store) Enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 }
 
 func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Time, retried bool) (id int64, created bool, err error) {
+	n = s.deferRoutine(owner, n, now)
 	payload := n.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -117,10 +126,10 @@ func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 	if prio == "" {
 		prio = "normal"
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+	err = s.pool.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at, origin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
 		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
-		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now, n.Origin).Scan(&id)
 	if err == nil {
 		return id, true, nil
 	}
@@ -165,6 +174,7 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 	if !defined {
 		return 0, fmt.Errorf("%w: officer %s", ErrNotFound, n.Officer)
 	}
+	n = s.deferRoutine(owner, n, now)
 	payload := n.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -177,10 +187,10 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 		prio = "normal"
 	}
 	var id int64
-	err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+	err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at, origin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
 		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
-		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now, n.Origin).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
 			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&id)

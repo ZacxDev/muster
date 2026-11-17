@@ -126,6 +126,24 @@ type Item struct {
 	// when the officer's type has no shadow policy for items: the officer
 	// row's `shadow` decides (Client.Shadow).
 	Shadow *bool `json:"shadow,omitempty"`
+	// NotBefore is the item's `not_before`: it is not claimable before then
+	// (the claim answers 409 not_due), so it is not work before then either
+	// (Due). Absent: due now.
+	NotBefore *time.Time `json:"not_before,omitempty"`
+	// Origin is who put the item in the queue, as the built-in backend
+	// records it: OriginOwner for an item the officer's owner enqueued (the
+	// admin API behind `muster officer item enqueue`, "Run now", the owner's rejection of a
+	// draft), "" for everything else. Only OriginOwner bypasses the daily
+	// budget (Officer.BypassesBudget). HQ sends none: "".
+	Origin string `json:"origin,omitempty"`
+}
+
+// Due reports whether item it may be claimed at now: it has no not_before,
+// or not_before has passed. THE wake loop's rule for an item that is not yet
+// work (Decide); the built-in backend's claim refuses the same items (409
+// not_due, and claim-next's `claimable`).
+func (it Item) Due(now time.Time) bool {
+	return it.NotBefore == nil || !it.NotBefore.After(now)
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with

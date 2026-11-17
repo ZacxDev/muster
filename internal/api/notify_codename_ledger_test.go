@@ -40,6 +40,7 @@ var noCodenameFirst = map[string]string{
 	"team_dispatch.go Server.pushTeamDispatch":             "a team's agent start: names a person, a team and an agent; an agent has no tmux window",
 	"connectors.go Server.onConnectorRequested":            "a connector request: names a connector",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "an officer's pool: names an officer",
+	"officer_cap_hold.go Server.officerBudgetNotice":       "an officer's daily budget: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
 	"page_tools.go Server.pagePublished":                   "an agent published a page: names the page",
 	"page_tools.go Server.pageShareAuto":                   "an agent shared a page without asking: names the page",

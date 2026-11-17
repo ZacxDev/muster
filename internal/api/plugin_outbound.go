@@ -645,6 +645,11 @@ func draftEndFor(d plugins.Draft, officer string, how plugins.OutboundEnd, by, d
 	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
 		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
 	e.FollowUp = &builtin.NewItem{Officer: officer, Kind: draftRefusedKind, SubjectKey: "draft:" + id, Payload: payload}
+	if by == settledByOwner {
+		// The owner rejected it: their redraft request is their own item, so it
+		// bypasses a spent daily budget (officers.OriginOwner).
+		e.FollowUp.Origin = officers.OriginOwner
+	}
 	return e
 }
 

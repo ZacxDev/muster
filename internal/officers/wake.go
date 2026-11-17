@@ -267,6 +267,15 @@ type Observation struct {
 	// Used is how many judgement sessions the pool has used today
 	// (JudgementLedger.Usage); 0 for an uncapped pool or an unreadable ledger.
 	Used int
+	// OverBudget: the officer has a daily budget (daily_budget_usd) and it is
+	// spent, or its spend could not be read (fail closed); then only items
+	// that bypass the budget (Officer.BypassesBudget) are work for it.
+	OverBudget bool
+	// BudgetRead: the spend was read (Spent is it), as opposed to an
+	// unreadable spend that reads as OverBudget. Always false with no budget.
+	BudgetRead bool
+	// Spent is the officer's spend today in USD, when BudgetRead.
+	Spent float64
 }
 
 // Overrun is a live claim past its pool's wall-time cap (Officer.ItemCap).
@@ -307,6 +316,10 @@ type Decision struct {
 	// CapWaiting is how many items would be Claimable but for the day's
 	// judgement session cap (obs.Capped): work held back by the cap.
 	CapWaiting int
+	// BudgetWaiting is how many items would be Claimable but for the
+	// officer's spent daily budget (obs.OverBudget). An item held back by
+	// both caps counts here, not in CapWaiting.
+	BudgetWaiting int
 	// Held is how many live claims its instances hold.
 	Held int
 }
@@ -369,15 +382,24 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// claimable: the pool could claim it now. A capped judgement pool may
 	// claim only the items it already counted today (officer_claim refuses
 	// any other), so no other item is work for it.
-	workable := func(it Item) bool { return !it.Blocked && o.worksItem(it) }
+	// An item not yet due (not_before ahead: a batched routine item) is not
+	// work at all: its claim is refused 409 not_due, so waking an instance
+	// for it would claim nothing.
+	workable := func(it Item) bool { return !it.Blocked && o.worksItem(it) && it.Due(now) }
+	// Over its daily budget, the officer may claim only what bypasses it
+	// (its owner's own, non-routine items): the claim refuses any other.
+	inBudget := func(it Item) bool { return !obs.OverBudget || o.BypassesBudget(it) }
 	claimable := func(it Item) bool {
-		return workable(it) && (!obs.Capped || obs.Counted[it.ID])
+		return workable(it) && (!obs.Capped || obs.Counted[it.ID]) && inBudget(it)
 	}
 	count := func(it Item) {
 		switch {
 		case claimable(it):
 			d.Claimable++
-		case workable(it):
+		case !workable(it):
+		case !inBudget(it):
+			d.BudgetWaiting++
+		default:
 			d.CapWaiting++
 		}
 	}
@@ -594,6 +616,10 @@ type officerState struct {
 	// switchedOff: the last pass found the officer's backend switch off
 	// (SwitchGated): logged when it turns off and when it turns on again.
 	switchedOff bool
+	// budgetAlertDay is the UTC day the owner was last told the daily budget
+	// is reached (Config.BudgetAlert): told once per (officer, UTC day) per
+	// process — a restarted muster tells them once more that day.
+	budgetAlertDay string
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -634,6 +660,8 @@ type Reconciler struct {
 	judgement *JudgementLedger
 	// capHold is Config.CapHold (nil: none).
 	capHold func(o Officer, h CapHold)
+	// budgetAlert is Config.BudgetAlert (nil: none).
+	budgetAlert func(o Officer, a BudgetAlert)
 	// kickoff is Config.Kickoff (never nil: KickoffText by default).
 	kickoff func(ctx context.Context, o Officer, n int) string
 	// refresh, refreshEvery and refreshedAt are Config.Refresh: Run calls it
@@ -675,6 +703,11 @@ type Config struct {
 	// lock, from the pass; it must not block. A restarted muster begins a
 	// new episode for a refusal still in force.
 	CapHold func(o Officer, h CapHold)
+	// BudgetAlert, when set, is told once per UTC day (per process) when an
+	// officer's spend read on a pass has reached its daily_budget_usd. It is
+	// how the owner learns the officer stopped being woken. Called outside
+	// the loop's lock, from the pass; it must not block.
+	BudgetAlert func(o Officer, a BudgetAlert)
 	// Kickoff is the first message instance n of officer o starts with: nil
 	// is KickoffText. internal/api reads a builtin officer's type grants into
 	// it (KickoffTextWith), so a granted tool is listed.
@@ -712,7 +745,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Kickoff = func(_ context.Context, o Officer, n int) string { return KickoffText(o, n) }
 	}
 	return &Reconciler{kickoff: cfg.Kickoff, reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now, observed: cfg.Observed,
-		judgement: cfg.Judgement, capHold: cfg.CapHold, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery,
+		judgement: cfg.Judgement, capHold: cfg.CapHold, budgetAlert: cfg.BudgetAlert, refresh: cfg.Refresh, refreshEvery: cfg.RefreshEvery,
 		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
@@ -910,6 +943,20 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 				"(tiers.judgement.max_sessions_per_day; logged once per UTC day)", p.label(), CapReason(obs[i].Used, limit, reset), ds[i].CapWaiting, reset.Format(time.RFC3339)))
 		}
 	}
+	// The daily budget: told once per UTC day, on a pass that READ the spend
+	// at or over the cap (an unreadable spend holds work back, fail closed,
+	// but is not "the budget is reached").
+	var alert *BudgetAlert
+	if obs[0].BudgetRead && obs[0].OverBudget {
+		if day := utcDay(now); s.budgetAlertDay != day {
+			s.budgetAlertDay = day
+			waiting := 0
+			for _, d := range ds {
+				waiting += d.BudgetWaiting
+			}
+			alert = &BudgetAlert{Spent: obs[0].Spent, Budget: o.Budget.DailyUSD, Waiting: waiting, ResetAt: CapResetAt(now)}
+		}
+	}
 	var ended []refusedCap
 	for id, c := range s.capRefused {
 		if !over[id] {
@@ -934,6 +981,13 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	r.publish()
 	for _, l := range capLines {
 		r.log.Print(l)
+	}
+	if alert != nil {
+		r.log.Printf("officers: %s: daily budget reached: $%.2f spent of $%.2f (daily_budget_usd); not woken for new work until %s except for its owner's own non-routine items; %d item(s) held back (logged once per UTC day)",
+			o.ID, alert.Spent, alert.Budget, alert.ResetAt.Format(time.RFC3339), alert.Waiting)
+		if r.budgetAlert != nil {
+			r.budgetAlert(o, *alert)
+		}
 	}
 	for _, c := range ended {
 		r.endCapHold(c)
@@ -1096,6 +1150,23 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 	if err != nil {
 		return nil, err
 	}
+	// The daily budget is the OFFICER's, every pool's spend together: read
+	// once. An unreadable spend holds new work back for the pass (fail
+	// closed), as an unreadable session ledger does.
+	var over, read bool
+	var spent float64
+	if o.Budget.DailyUSD > 0 {
+		if sr, ok := r.hq.(spendReader); ok {
+			v, served, err := sr.SpentToday(ctx, o, r.now())
+			switch {
+			case err != nil:
+				r.log.Printf("officers: %s: reading its spend for daily_budget_usd: %v — not waking it for new work this pass", o.ID, err)
+				over = true
+			case served:
+				spent, read, over = v, true, o.OverBudget(v)
+			}
+		}
+	}
 	claimed, err := r.hq.AllItems(ctx, o, StatusClaimed)
 	if err != nil {
 		return nil, err
@@ -1115,7 +1186,8 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 			r.log.Printf("officers: %s: %v — not waking it for new work this pass", p.label(), err)
 			used, capped, counted = 0, true, nil
 		}
-		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used}
+		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used,
+			OverBudget: over, BudgetRead: read, Spent: spent}
 	}
 	return out, nil
 }

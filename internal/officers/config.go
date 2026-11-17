@@ -182,6 +182,10 @@ type Officer struct {
 	// created, changed and deleted through the admin API with no restart).
 	// "" reads as ManagedByEnv.
 	ManagedBy string `json:"managed_by,omitempty"`
+	// Budget is a builtin officer's daily spend cap and routine batching
+	// (`daily_budget_usd`, `routine_kinds`, `routine_wake_at`; budget.go).
+	// The zero value caps nothing and batches nothing.
+	Budget Budget `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -300,6 +304,11 @@ type declared struct {
 	// parseRuntime.
 	Runtime string `json:"runtime"`
 	Host    string `json:"host"`
+	// DailyBudgetUSD, RoutineKinds and RoutineWakeAt are a builtin officer's
+	// spend cap and routine batching: parseBudget (budget.go).
+	DailyBudgetUSD float64  `json:"daily_budget_usd"`
+	RoutineKinds   []string `json:"routine_kinds"`
+	RoutineWakeAt  string   `json:"routine_wake_at"`
 	// InstanceSlug is never in MUSTER_OFFICERS: a DB-declared officer's
 	// server-allocated slug (Declaration.Officer), so the instance-name
 	// length check measures the names it will really have.
@@ -967,6 +976,11 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		}
 		o.Tiers.Judgement.LLM, o.Tiers.Judgement.llmRaw = l, nil
 	}
+	b, err := parseBudget(o, d)
+	if err != nil {
+		return Officer{}, err
+	}
+	o.Budget = b
 	if o.IsBuiltin() {
 		return o, nil
 	}

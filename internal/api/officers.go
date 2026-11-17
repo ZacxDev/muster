@@ -530,8 +530,11 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
-		CapHold: s.officerCapHoldNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff}
+		CapHold: s.officerCapHoldNotice, BudgetAlert: s.officerBudgetNotice, RefreshEvery: cfg.RefreshEvery, Kickoff: s.officerKickoff}
 	if cfg.Builtin != nil {
+		// routine_kinds: the store defers a routine item to its officer's next
+		// routine_wake_at, reading the LIVE roster (officers.Registry.ForOwner).
+		cfg.Builtin.SetRoutinePolicy(reg.ForOwner)
 		// The DB-declared officers (migration 0136) reach every replica's
 		// loop on its refresh, whoever wrote them.
 		rcfg.Refresh = s.refreshDeclaredOfficers

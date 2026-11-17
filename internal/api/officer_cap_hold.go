@@ -41,6 +41,27 @@ func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 		Body:  capHoldBody(o, h)}, nil)
 }
 
+// officerBudgetNotice is the wake loop's officers.Config.BudgetAlert: it tells
+// the officer's owner, once per UTC day, that the officer's spend reached its
+// daily_budget_usd, so it is not woken for new work until the next UTC
+// midnight except for the owner's own non-routine items. Through goNotify on
+// the attention channel, like the cap hold; it must not block, and goNotify
+// does not. The tag names the day, so the next day's notice is a new one.
+func (s *Server) officerBudgetNotice(o officers.Officer, a officers.BudgetAlert) {
+	tag := "officer-budget-" + o.ID + "-" + a.ResetAt.UTC().Format("2006-01-02")
+	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
+		Title: fmt.Sprintf("Officer %s: daily budget reached", o.ID),
+		Body:  budgetBody(a)}, nil)
+}
+
+// budgetBody is the daily budget notice's body: the spend, the cap, what is
+// held back and until when.
+func budgetBody(a officers.BudgetAlert) string {
+	return fmt.Sprintf("It has spent $%.2f of its $%.2f daily budget, so muster stops waking it until %s. "+
+		"%d item(s) are held back meanwhile; an item you enqueue yourself still wakes it, unless its kind is routine.",
+		a.Spent, a.Budget, a.ResetAt.UTC().Format("2006-01-02 15:04 UTC"), a.Waiting)
+}
+
 // capHoldBody is a CapHold episode's notification body: the item, HQ's
 // refusal, and what the pool is doing meanwhile.
 func capHoldBody(o officers.Officer, h officers.CapHold) string {
