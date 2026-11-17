@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"slices"
 	"strconv"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -64,11 +64,6 @@ func (s *Server) approvalItems(ctx context.Context, items []attentionItem) []att
 	if s.ext.Agents == nil {
 		return nil
 	}
-	list, err := s.ext.Agents.List(ctx)
-	if err != nil {
-		s.logger.Printf("asks: approval-blocked agents: %v", err)
-		return nil
-	}
 	asked := map[int64]bool{}
 	for _, it := range items {
 		if it.Kind == attentionKindAsk && it.card.agentID > 0 {
@@ -76,8 +71,15 @@ func (s *Server) approvalItems(ctx context.Context, items []attentionItem) []att
 		}
 	}
 	var out []attentionItem
-	for _, a := range agents.ProvisionedOnly(list) {
-		if asked[a.ID] || !s.AwaitingApproval(a.ID) {
+	// Only the agents the approval ledger holds as blocked (a handful at
+	// most), each read as ctx's principal: one that is not the reader's is
+	// not found and is skipped. No list of every agent on each count.
+	for _, id := range s.awaitingApprovalIDs() {
+		if asked[id] {
+			continue
+		}
+		a, err := s.ext.Agents.Get(ctx, id)
+		if err != nil || !a.Provisioned() {
 			continue
 		}
 		it := attentionItem{Key: approvalKey(a.ID), Kind: attentionKindSession, Source: firstNonBlank(a.DisplayName, a.Name),
@@ -102,4 +104,27 @@ func (s *Server) menuCount(ctx context.Context) (int, bool) {
 		s.logger.Printf("nav waiting: asks: %v", err)
 	}
 	return n, true
+}
+
+// awaitingApprovalIDs is every agent id AwaitingApproval holds true for now
+// (the same ledger, pruned the same way), in id order.
+func (s *Server) awaitingApprovalIDs() []int64 {
+	l := &s.approvals
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.init()
+	l.pruneLocked(s.now())
+	seen := map[int64]bool{}
+	for id := range l.blocked {
+		seen[id] = true
+	}
+	for _, o := range l.owners {
+		seen[o.agentID] = true
+	}
+	ids := make([]int64, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
