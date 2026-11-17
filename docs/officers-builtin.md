@@ -446,7 +446,9 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
 ## 4c. Daily budget and routine batching
 
 Two optional fields on the officer's `MUSTER_OFFICERS` entry (builtin only;
-on an HQ officer they are refused at boot):
+on an HQ officer they are refused at boot, and `daily_budget_usd` is refused
+on a `"runtime": "host"` officer, whose spend is not booked and whose windows
+hold the hook token that enqueues as the owner):
 
 ```json
 {"id": "marketing:example", "backend": "builtin", "max_instances": 1,
@@ -466,8 +468,13 @@ on an HQ officer they are refused at boot):
   owner rejected (`officer_items.origin = 'owner'`). Items from plugins,
   schedules and muster's own follow-ups wait for the next day. The owner is
   told once per UTC day, on the attention channel, when the cap is reached (a
-  restarted muster tells them once more that day). An unreadable spend holds
-  new work back for that pass and tells nobody.
+  restarted muster tells them once more that day). An unreadable spend is
+  treated like a spent one for that pass — the cap's work waits, the owner's
+  own non-routine items are still woken for and claimed — and the owner is
+  told once per UTC day that the spend cannot be read.
+- An owner enqueue that matches a live item of the same kind and subject
+  (say, one a plugin filed) returns that item, as always, and makes it the
+  owner's, so it is not held back.
 - The cap stops **wakes**; it does not end a turn. An instance holding a claim
   when the cap is reached finishes it, and the spend is only as fresh as the
   usage collector's last push (every 10 minutes), so the day's total can end up
@@ -479,6 +486,10 @@ on an HQ officer they are refused at boot):
   before then, and every routine item queued during the day comes due at the
   same minute, so one wake works them all. **A routine kind never bypasses the
   budget**, whoever enqueued it.
+- **Rolling back:** an older muster refuses these fields as unknown at boot.
+  Remove `daily_budget_usd`, `routine_kinds` and `routine_wake_at` from
+  `MUSTER_OFFICERS` **before** rolling the image back to a version without
+  them; rolling forward, deploy the image first, then add them.
 - Separately from these fields, the wake loop no longer wakes an officer for an
   item whose `not_before` is still ahead (`--not-before` included): the claim
   refuses such an item, so the wake claimed nothing.

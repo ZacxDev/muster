@@ -32,6 +32,9 @@ type Backend struct {
 	// faultDoubleClaim is the conformance suite's fault (export_test.go):
 	// a claim of an item another instance holds under a live lease succeeds.
 	faultDoubleClaim bool
+	// faultSpendRead is a test fault (export_test.go): the daily budget's
+	// spend read fails.
+	faultSpendRead bool
 }
 
 // NewBackend is officer o's backend over store. now is the clock every lease
@@ -195,6 +198,7 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 	if tier != "" && !validTier(tier) {
 		return nil, refuse(http.StatusBadRequest, "bad_request", "tier must be routine or judgement", nil)
 	}
+	held, unreadable, spent := b.budgetGate(ctx, b.now())
 	return b.tx(ctx, "claim", func(tx pgx.Tx) ([]byte, error) {
 		it, err := b.lockItem(ctx, tx, item)
 		if err != nil {
@@ -218,14 +222,8 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		case it.Status == "waiting":
 			return nil, refuse(http.StatusConflict, "waiting", waitingWhy(it), nil)
 		}
-		if !b.officer.BypassesBudget(it.asItem()) {
-			over, spent, err := b.overBudget(ctx, tx, now)
-			if err != nil {
-				return nil, err
-			}
-			if over {
-				return nil, overBudgetRefusal(b.officer, spent, now)
-			}
+		if held && !b.officer.BypassesBudget(it.asItem()) {
+			return nil, overBudgetRefusal(b.officer, unreadable, spent, now)
 		}
 		exp := now.Add(time.Duration(officers.ClampLease(leaseSeconds)) * time.Second)
 		it, err = scanItem(tx.QueryRow(ctx, `UPDATE officer_items SET status = 'claimed', claimed_by = $2, claimed_at = $3, lease_expires_at = $4,
@@ -260,15 +258,12 @@ func (b *Backend) ClaimNext(ctx context.Context, instance string, leaseSeconds i
 	// ONE transaction: the claim and the person rendered into the officer's
 	// copy (withPersonTx) — a read that fails rolls the claim back as an
 	// outage, never hands over an item without its person.
+	// Over its daily budget, or with its spend unreadable, claim-next takes
+	// only an item that bypasses the budget (overBudgetClaimable).
+	held, _, _ := b.budgetGate(ctx, now)
 	return b.tx(ctx, "claim-next", func(tx pgx.Tx) ([]byte, error) {
-		// Over its daily budget, claim-next takes only an item that bypasses
-		// it (overBudgetClaimable); nothing else is claimable today.
 		where, args := claimable, []any{b.officer.Owner, b.officer.ID, now, tier, instance, exp}
-		over, _, err := b.overBudget(b.scope(ctx), tx, now)
-		if err != nil {
-			return nil, err
-		}
-		if over {
+		if held {
 			kinds := b.officer.Budget.RoutineKinds
 			if kinds == nil {
 				kinds = []string{}

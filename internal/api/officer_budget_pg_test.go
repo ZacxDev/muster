@@ -137,3 +137,12 @@ func TestTheBudgetNoticeSaysWhatWasSpentAndWhenItResets(t *testing.T) {
 		t.Fatalf("budget notice body:\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestTheUnreadableSpendNoticeSaysOnlyTheOwnersItemsWakeIt(t *testing.T) {
+	got := budgetBody(officers.BudgetAlert{Unreadable: true, Budget: 10, Waiting: 2})
+	want := "muster cannot read its spend for the $10.00 daily budget, so only items you enqueue yourself (and not of a routine kind) wake it until it can. " +
+		"2 item(s) are held back meanwhile; muster's log says why the read fails."
+	if got != want {
+		t.Fatalf("unreadable notice body:\n got %q\nwant %q", got, want)
+	}
+}

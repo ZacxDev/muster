@@ -52,17 +52,29 @@ func (b *Backend) SpentToday(ctx context.Context, now time.Time) (float64, error
 	return spent, nil
 }
 
-// overBudget reports whether the officer has a daily budget and has spent it
-// (read in tx). An officer with no budget reads nothing.
-func (b *Backend) overBudget(ctx context.Context, tx pgx.Tx, now time.Time) (bool, float64, error) {
+// budgetGate is what a claim at now may take under the officer's daily
+// budget: held is true when the budget is spent OR the spend cannot be read
+// (unreadable) — then only an item that bypasses the budget (its owner's,
+// non-routine) is claimable, so an instance woken for its owner's item can
+// still take it while nothing else is handed out (fail closed for everything
+// the cap holds back, never for the owner). An officer with no budget reads
+// nothing and holds nothing.
+//
+// 🔴 READ BEFORE THE CLAIM'S TRANSACTION, NEVER IN IT: a failed statement
+// aborts a Postgres transaction, so a spend read that failed inside it would
+// fail the claim itself instead of narrowing it.
+func (b *Backend) budgetGate(ctx context.Context, now time.Time) (held, unreadable bool, spent float64) {
 	if b.officer.Budget.DailyUSD <= 0 {
-		return false, 0, nil
+		return false, false, 0
 	}
-	spent, err := b.spentToday(ctx, tx, now)
+	if b.faultSpendRead {
+		return true, true, 0
+	}
+	spent, err := b.spentToday(b.scope(ctx), b.store.pool, now)
 	if err != nil {
-		return false, 0, err
+		return true, true, 0
 	}
-	return b.officer.OverBudget(spent), spent, nil
+	return b.officer.OverBudget(spent), false, spent
 }
 
 // overBudgetClaimable narrows claim-next's `claimable` for an officer over
@@ -70,8 +82,13 @@ func (b *Backend) overBudget(ctx context.Context, tx pgx.Tx, now time.Time) (boo
 // and its kind is not one of $7 (the officer's routine_kinds).
 const overBudgetClaimable = ` AND origin = '` + officers.OriginOwner + `' AND NOT (kind = ANY($7::text[]))`
 
-// overBudgetRefusal is the claim's 409 for an item a spent budget holds back.
-func overBudgetRefusal(o officers.Officer, spent float64, now time.Time) error {
+// overBudgetRefusal is the claim's 409 for an item a spent (or unreadable)
+// budget holds back.
+func overBudgetRefusal(o officers.Officer, unreadable bool, spent float64, now time.Time) error {
+	if unreadable {
+		return refuse(409, "over_budget", "the officer's spend for its daily budget cannot be read: only its owner's own non-routine items are claimable until it can",
+			map[string]any{"daily_budget_usd": o.Budget.DailyUSD, "spend_unreadable": true})
+	}
 	return refuse(409, "over_budget", "the officer's daily budget is spent: only its owner's own non-routine items are claimable until it resets",
 		map[string]any{"spent_usd": spent, "daily_budget_usd": o.Budget.DailyUSD, "resets_at": officers.CapResetAt(now)})
 }

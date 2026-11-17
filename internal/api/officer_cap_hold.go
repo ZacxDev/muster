@@ -49,14 +49,22 @@ func (s *Server) officerCapHoldNotice(o officers.Officer, h officers.CapHold) {
 // does not. The tag names the day, so the next day's notice is a new one.
 func (s *Server) officerBudgetNotice(o officers.Officer, a officers.BudgetAlert) {
 	tag := "officer-budget-" + o.ID + "-" + a.ResetAt.UTC().Format("2006-01-02")
+	title := fmt.Sprintf("Officer %s: daily budget reached", o.ID)
+	if a.Unreadable {
+		tag = "officer-budget-unreadable-" + o.ID + "-" + s.officerNow().UTC().Format("2006-01-02")
+		title = fmt.Sprintf("Officer %s: spend unreadable", o.ID)
+	}
 	s.goNotify(o.Owner, push.EventAttention, RouterNotification{Type: "notify", ID: tag, Tag: tag,
-		Title: fmt.Sprintf("Officer %s: daily budget reached", o.ID),
-		Body:  budgetBody(a)}, nil)
+		Title: title, Body: budgetBody(a)}, nil)
 }
 
 // budgetBody is the daily budget notice's body: the spend, the cap, what is
 // held back and until when.
 func budgetBody(a officers.BudgetAlert) string {
+	if a.Unreadable {
+		return fmt.Sprintf("muster cannot read its spend for the $%.2f daily budget, so only items you enqueue yourself (and not of a routine kind) wake it until it can. "+
+			"%d item(s) are held back meanwhile; muster's log says why the read fails.", a.Budget, a.Waiting)
+	}
 	return fmt.Sprintf("It has spent $%.2f of its $%.2f daily budget, so muster stops waking it until %s. "+
 		"%d item(s) are held back meanwhile; an item you enqueue yourself still wakes it, unless its kind is routine.",
 		a.Spent, a.Budget, a.ResetAt.UTC().Format("2006-01-02 15:04 UTC"), a.Waiting)

@@ -69,6 +69,8 @@ func TestBadBudgetSettingsAreRefusedAtBoot(t *testing.T) {
 			`routine_wake_at "25:00" is not`},
 		"spaced kind": {`[{"id": "marketing:demo", "backend": "builtin", "routine_kinds": ["plugin note"], "routine_wake_at": "09:00"}]`,
 			`routine_kinds entry "plugin note" is not an item kind`},
+		"host officer": {`[{"id": "marketing:demo", "backend": "builtin", "runtime": "host", "host": "host-alpha", "repo": "example-org/example-site", "daily_budget_usd": 10}]`,
+			`daily_budget_usd is refused on a "runtime": "host" officer`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := officers.Parse(tc.decl, func(string) string { return "" }, "")
@@ -83,6 +85,16 @@ func TestBadBudgetSettingsAreRefusedAtBoot(t *testing.T) {
 // between two wakes gets the same not_before (the next 09:00 UTC); one
 // enqueued at or after the wake waits for tomorrow's; a kind not listed, or
 // one that merely starts like a listed one, is not deferred at all.
+// TestAHostOfficerWithoutABudgetStillParses is the host refusal's control:
+// the same host declaration, no daily_budget_usd, parses — so the refusal
+// above is the budget's, not something else about the declaration.
+func TestAHostOfficerWithoutABudgetStillParses(t *testing.T) {
+	o := parseBudgetOfficer(t, `[{"id": "marketing:demo", "backend": "builtin", "runtime": "host", "host": "host-alpha", "repo": "example-org/example-site"}]`)
+	if !o.OnHost() || o.Budget.DailyUSD != 0 {
+		t.Fatalf("host officer without a budget: OnHost %v, budget %v", o.OnHost(), o.Budget.DailyUSD)
+	}
+}
+
 func TestRoutineItemsOfOneDayComeDueTogether(t *testing.T) {
 	o := parseBudgetOfficer(t, budgetDecl)
 	day := time.Date(2000, 3, 4, 0, 0, 0, 0, time.UTC)
@@ -179,6 +191,13 @@ func TestAnItemNotYetDueDoesNotWakeTheOfficer(t *testing.T) {
 	d = officers.Decide(o, officers.Observation{Open: items, Instances: insts}, time.Time{}, now.Add(21*time.Hour), nil)
 	if len(d.Start) != 1 || d.Claimable != 1 {
 		t.Fatalf("the item at its not_before did not wake the officer: %+v", d)
+	}
+	// Over budget as well, an item not yet due is still not work at all:
+	// it is not counted as held back by the budget either (it would not be
+	// claimable with the budget fresh).
+	d = officers.Decide(o, officers.Observation{Open: items, Instances: insts, OverBudget: true}, time.Time{}, now, nil)
+	if d.BudgetWaiting != 0 || d.Claimable != 0 || len(d.Start) != 0 {
+		t.Fatalf("an item due tomorrow, over budget: %+v, want neither claimable nor held back by the budget", d)
 	}
 }
 
@@ -364,7 +383,7 @@ func TestASpentBudgetStopsWakesAlertsOnceAndLetsOnlyTheOwnersItemsThrough(t *tes
 // — fail closed for the pass (a plugin item does not wake it), but nobody is
 // told "the budget is reached", which nobody measured. The owner's item still
 // wakes it.
-func TestAnUnreadableSpendHoldsWorkBackWithoutAlerting(t *testing.T) {
+func TestAnUnreadableSpendHoldsWorkBackAndTellsTheOwnerOnceADay(t *testing.T) {
 	r := newBudgetRig(t)
 	r.hq.spendErr = errors.New("usage table unreachable")
 	r.hq.add("1", "plugin.reply", "")
@@ -372,12 +391,25 @@ func TestAnUnreadableSpendHoldsWorkBackWithoutAlerting(t *testing.T) {
 	if len(res.Decision.Start) != 0 || res.Decision.BudgetWaiting != 1 {
 		t.Fatalf("an unreadable spend let a plugin item wake the officer: %+v", res.Decision)
 	}
-	if n := r.alertCount(); n != 0 {
-		t.Fatalf("an unreadable spend alerted %d time(s)", n)
+	for i := 0; i < 3; i++ {
+		r.clk.Advance(time.Minute)
+		r.check(t)
+	}
+	if n := r.alertCount(); n != 1 {
+		t.Fatalf("an unreadable spend over 4 passes alerted %d time(s), want 1", n)
+	}
+	if a := r.alerts[0]; !a.Unreadable || a.Budget != 10 || a.Waiting != 1 || a.Spent != 0 {
+		t.Fatalf("unreadable alert = %+v, want Unreadable, budget 10, 1 waiting, nothing spent", a)
 	}
 	r.hq.add("2", "draft.refused", officers.OriginOwner)
 	if res := r.check(t); len(res.Decision.Start) != 1 {
 		t.Fatalf("an unreadable spend held back the owner's own item: %+v", res.Decision)
+	}
+	// The next UTC day, still unreadable: told once more.
+	r.clk.Advance(24 * time.Hour)
+	r.check(t)
+	if n := r.alertCount(); n != 2 {
+		t.Fatalf("an unreadable spend the next day: %d alerts, want 2", n)
 	}
 	if !strings.Contains(r.logs.String(), "usage table unreachable") {
 		t.Fatalf("the unreadable spend was not logged:\n%s", r.logs)

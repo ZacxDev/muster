@@ -71,6 +71,13 @@ func parseBudget(o Officer, d declared) (Budget, error) {
 	if !o.IsBuiltin() && (d.DailyBudgetUSD != 0 || len(d.RoutineKinds) > 0 || wake != "") {
 		return b, fieldErr("backend", fmt.Errorf(`officer %s: daily_budget_usd, routine_kinds and routine_wake_at need "backend": "builtin" (the spend and the queue they read are the built-in store's)`, o.ID))
 	}
+	// 🔴 NOT ON A HOST OFFICER. Its instances are host-spawned windows: no pod,
+	// so the usage collector books nothing and the spend reads $0 for ever;
+	// and the window holds the host's shared hook token, with which it could
+	// enqueue an owner item to itself past its own cap.
+	if o.OnHost() && d.DailyBudgetUSD != 0 {
+		return b, fieldErr("daily_budget_usd", fmt.Errorf(`officer %s: daily_budget_usd is refused on a "runtime": "host" officer (its spend is not booked, so a cap would never be reached, and its instances hold the hook token that enqueues as the owner)`, o.ID))
+	}
 	if v := d.DailyBudgetUSD; math.IsNaN(v) || v < 0 || v > MaxLLMDailyBudgetUSD {
 		return b, fieldErr("daily_budget_usd", fmt.Errorf("officer %s: daily_budget_usd %v is not in [0, %v] (0 is no cap)", o.ID, v, MaxLLMDailyBudgetUSD))
 	}
@@ -168,6 +175,11 @@ func (h *Backends) SpentToday(ctx context.Context, o Officer, now time.Time) (sp
 // BudgetAlert is the once-per-UTC-day notice that an officer reached its
 // daily budget (Config.BudgetAlert).
 type BudgetAlert struct {
+	// Unreadable: not "the budget is reached" but "the spend could not be
+	// read" — the cap's work is held back (fail closed) until it can be;
+	// Spent and ResetAt are then zero. Told once per UTC day, apart from the
+	// reached notice.
+	Unreadable bool
 	// Spent and Budget are the day's spend as read and the cap, in USD.
 	Spent, Budget float64
 	// Waiting is the items held back by the cap when it was reached.

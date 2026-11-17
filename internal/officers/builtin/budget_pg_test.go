@@ -202,6 +202,108 @@ func TestASpentBudgetRefusesEveryClaimButTheOwnersOwn(t *testing.T) {
 	}
 }
 
+func originOf(t *testing.T, s *builtin.Store, id int64) string {
+	t.Helper()
+	var o string
+	if err := s.Pool().QueryRow(ctxOp(), `SELECT origin FROM officer_items WHERE id = $1`, id).Scan(&o); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// TestAnOwnerEnqueueMatchingAPluginItemMakesItTheOwners: a plugin files an
+// item (origin ”); the owner enqueues the same kind and subject — the
+// dedupe returns that live item, not created, and it is now the owner's (so
+// a spent budget no longer holds it). A later plugin enqueue of it returns it
+// and leaves it the owner's; an owner enqueue of an item already the owner's
+// is not "created" either. The transaction path (EnqueueTx, what a draft's
+// follow-up uses) upgrades the same way.
+func TestAnOwnerEnqueueMatchingAPluginItemMakesItTheOwners(t *testing.T) {
+	s := budgetStore(t)
+	now := time.Date(2000, 3, 4, 12, 0, 0, 0, time.UTC)
+	plugin, created, err := s.Enqueue(ctxOp(), 1, builtin.NewItem{Officer: budgetOfficer, Kind: "plugin.reply", SubjectKey: "r1"}, now)
+	if err != nil || !created {
+		t.Fatalf("plugin enqueue: created %v, %v", created, err)
+	}
+	if o := originOf(t, s, plugin); o != "" {
+		t.Fatalf("a plugin's item has origin %q, want none", o)
+	}
+	owner, created, err := s.Enqueue(ctxOp(), 1, builtin.NewItem{Officer: budgetOfficer, Kind: "plugin.reply", SubjectKey: "r1", Origin: officers.OriginOwner}, now)
+	if err != nil || created || owner != plugin {
+		t.Fatalf("the owner's enqueue of the live subject: id %d created %v (%v), want the plugin's item %d, not created", owner, created, err, plugin)
+	}
+	if o := originOf(t, s, plugin); o != officers.OriginOwner {
+		t.Fatalf("after the owner's enqueue the live item has origin %q, want owner", o)
+	}
+	again, created, err := s.Enqueue(ctxOp(), 1, builtin.NewItem{Officer: budgetOfficer, Kind: "plugin.reply", SubjectKey: "r1"}, now)
+	if err != nil || created || again != plugin || originOf(t, s, plugin) != officers.OriginOwner {
+		t.Fatalf("a plugin re-enqueue: id %d created %v (%v), origin %q; want the same item, not created, still the owner's", again, created, err, originOf(t, s, plugin))
+	}
+	twice, created, err := s.Enqueue(ctxOp(), 1, builtin.NewItem{Officer: budgetOfficer, Kind: "plugin.reply", SubjectKey: "r1", Origin: officers.OriginOwner}, now)
+	if err != nil || created || twice != plugin {
+		t.Fatalf("a second owner enqueue: id %d created %v (%v), want the same item, not created", twice, created, err)
+	}
+
+	tx, err := s.Pool().Begin(ctxOp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	pid, err := s.EnqueueTx(ctxOp(), tx, 1, builtin.NewItem{Officer: budgetOfficer, Kind: "draft.refused", SubjectKey: "draft:9"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, err := s.EnqueueTx(ctxOp(), tx, 1, builtin.NewItem{Officer: budgetOfficer, Kind: "draft.refused", SubjectKey: "draft:9", Origin: officers.OriginOwner}, now)
+	if err != nil || oid != pid {
+		t.Fatalf("EnqueueTx of the live subject by the owner: id %d (%v), want %d", oid, err, pid)
+	}
+	if err := tx.Commit(ctxOp()); err != nil {
+		t.Fatal(err)
+	}
+	if o := originOf(t, s, pid); o != officers.OriginOwner {
+		t.Fatalf("EnqueueTx by the owner left the live item's origin %q, want owner", o)
+	}
+}
+
+// TestAnUnreadableSpendStillLetsTheOwnersItemBeClaimed: the spend read fails
+// (FaultSpendRead). Claim-next does not fail: it takes the owner's
+// draft.refused and skips the older plugin item; a claim of the plugin item
+// by id is refused 409 over_budget saying the spend is unreadable. Control:
+// the same backend without the fault, the spend booked at $0, claims the
+// plugin item.
+func TestAnUnreadableSpendStillLetsTheOwnersItemBeClaimed(t *testing.T) {
+	s := budgetStore(t)
+	now := time.Date(2000, 3, 4, 12, 0, 0, 0, time.UTC)
+	o := budgetOfficerDecl(t)
+	b := builtin.NewBackend(s, o, func() time.Time { return now }, dbtest.AsOperator)
+	b.FaultSpendRead()
+
+	plugin := enqueueAs(t, s, "plugin.reply", "p1", "", now)
+	owner := enqueueAs(t, s, "draft.refused", "d1", officers.OriginOwner, now)
+
+	raw, err := b.ClaimNext(context.Background(), "officer-budgetdemo-main-1", 300, "")
+	if err != nil {
+		t.Fatalf("claim-next with the spend unreadable failed: %v", err)
+	}
+	if got := claimedID(t, raw); got != owner {
+		t.Fatalf("spend unreadable, claim-next took %q, want the owner's item %q", got, owner)
+	}
+	_, err = b.Claim(context.Background(), plugin, "officer-budgetdemo-main-1", 300, "")
+	var he *officers.HQError
+	if !errors.As(err, &he) || he.Status != 409 || !strings.Contains(string(he.Body), `"code":"over_budget"`) || !strings.Contains(string(he.Body), `"spend_unreadable":true`) {
+		t.Fatalf("spend unreadable, a claim of the plugin item by id: %v, want 409 over_budget, spend_unreadable", err)
+	}
+
+	ok := builtin.NewBackend(s, o, func() time.Time { return now }, dbtest.AsOperator)
+	raw, err = ok.ClaimNext(context.Background(), "officer-budgetdemo-main-2", 300, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := claimedID(t, raw); got != plugin {
+		t.Fatalf("control: spend readable ($0), claim-next took %q, want the plugin item %q", got, plugin)
+	}
+}
+
 // claimedID is the id of the item a claim answer hands over, "" for none.
 func claimedID(t *testing.T, raw []byte) officers.ItemID {
 	t.Helper()
