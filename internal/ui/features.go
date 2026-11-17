@@ -56,6 +56,10 @@ type Features struct {
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
 	SnapUser  int64
 	SnapBuild string
+	// FleetDigest is true when the fleet digest is on (MUSTER_FLEET_DIGEST=1,
+	// internal/api fleet_digest.go). It draws the digest card's slot in the
+	// chief panel; false draws none, since its route would only answer 404.
+	FleetDigest bool
 	// Brand is the instance's logo and name (brand.go): the header's and the
 	// sidebar's brand, and the shell's favicon. The zero value draws the
 	// wordmark and muster's own icons.

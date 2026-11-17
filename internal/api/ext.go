@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
@@ -360,6 +361,26 @@ type Extensions struct {
 	// sessions. nil (no database): no state pass runs. It does NOT depend on
 	// ChiefNudge — the state, and the episodes, are code-only.
 	Episodes sessionstate.Store
+
+	// FleetDigest turns on the fleet digest (MUSTER_FLEET_DIGEST=1;
+	// fleet_digest.go): the chief panel's digest card, its routes, and
+	// fleet_list's fleet fields (state, episode, prs and the owner facts).
+	// False, the default, is exactly the build before it: no card slot, the
+	// routes answer 404, fleet_list's rows are as they were.
+	FleetDigest bool
+	// Fleet is the digest's marks (internal/fleet, migration 0147). nil (no
+	// database): the digest keeps no "since you last looked" baseline and no
+	// Fleet chat.
+	Fleet fleet.Store
+	// FleetPRStates is the GitHub App's pull-request read the fleet reader
+	// asks for each session's pull requests' state (fleet_read.go), behind its
+	// own two-minute cache — only for an owner the App admits
+	// (githubAppForOwner). nil — no GitHub App — reads every state as unknown.
+	// 🔴 THE PULL REQUESTS THEMSELVES ARE PRSessions' (session_prs), wired only
+	// with session routing and PR mail (MUSTER_SESSION_ROUTING,
+	// MUSTER_PR_MAIL_SENDERS): without that a session has no pull requests, and
+	// the digest's Waiting on CI and Done groups stay empty whatever the App.
+	FleetPRStates PRStateReader
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

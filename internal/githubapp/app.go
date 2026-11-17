@@ -800,10 +800,14 @@ func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 }
 
 // PRState is a pull request's state as GitHub reports it: State "open" or
-// "closed", and Merged when a closed one was merged.
+// "closed", and Merged when a closed one was merged. HeadSHA is its head
+// commit ("" when GitHub names none), ClosedAt when it was closed (merged or
+// not; zero while open, or when GitHub names no time).
 type PRState struct {
-	State  string
-	Merged bool
+	State    string
+	Merged   bool
+	HeadSHA  string
+	ClosedAt time.Time
 }
 
 // prReadMintRequest is the body of the token muster itself uses to read one
@@ -866,6 +870,10 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 	var r struct {
 		State  string `json:"state"`
 		Merged bool   `json:"merged"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		ClosedAt *time.Time `json:"closed_at"`
 	}
 	if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
 		strconv.FormatInt(n, 10), "token "+tok, nil, &r, "reading "+repo+" pull request #"+strconv.FormatInt(n, 10), owner); err != nil {
@@ -874,7 +882,28 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 	if r.State != "open" && r.State != "closed" {
 		return PRState{}, fmt.Errorf("GitHub's answer for %s pull request #%d has state %q", repo, n, r.State)
 	}
-	return PRState{State: r.State, Merged: r.Merged}, nil
+	st := PRState{State: r.State, Merged: r.Merged}
+	if validCommitSHA(r.Head.SHA) {
+		st.HeadSHA = r.Head.SHA
+	}
+	if r.ClosedAt != nil && r.State == "closed" {
+		st.ClosedAt = r.ClosedAt.UTC()
+	}
+	return st, nil
+}
+
+// validCommitSHA reports whether s is a full hex commit id (40 for SHA-1, 64
+// for SHA-256): the only head PRState passes on.
+func validCommitSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // prCommitPages bounds PullRequestCommits: GitHub lists at most 250 commits of
