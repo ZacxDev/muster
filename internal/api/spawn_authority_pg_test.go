@@ -15,7 +15,9 @@ package api
 //
 // Each must end refused or as a phone confirmation card, with the decision
 // NOT taken; and an owner's call from a machine that starts no agents still
-// runs at once.
+// runs at once. "Starts agents" is the host TOKEN's mark
+// (mirror_tokens.spawned_at), read through the real token store, or the
+// host's hello now; the mark ends only when the token is rotated.
 //
 // ⚠ These tests name only identifiers that exist before the change (the
 // refusal and the card are string literals), so the file also compiles
@@ -25,8 +27,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -78,20 +82,52 @@ func (m *spawnHostMirror) Hosts(ctx context.Context) []mirror.HostView {
 // the host-dispatch store, and ws listing the spawned window @9.
 type spawnFixture struct {
 	*decideFixture
-	hub *spawnHostMirror
+	hub    *spawnHostMirror
+	tokens *mirror.PGStore
+	tokID  int64
 }
 
-func newSpawnFixture(t *testing.T, advertises bool) *spawnFixture {
+// newSpawnFixture: ws advertises -agent-spawn now (advertises), and its host
+// token — a real one, from the real token store the door authenticates with
+// — is marked as a spawning host's (marked).
+func newSpawnFixture(t *testing.T, advertises, marked bool) *spawnFixture {
 	t.Helper()
 	f := &spawnFixture{decideFixture: newDecideFixture(t)}
 	f.hub = &spawnHostMirror{fakeMirror: f.mirror, spawn: advertises}
 	f.srv.ext.Mirror = f.hub
 	f.srv.ext.ChiefDispatch = f.plugins
+	f.tokens = mirror.NewPG(f.pool)
+	f.srv.ext.MirrorTokens = f.tokens
+	f.ws, f.tokID = f.mintWS(t)
+	if marked {
+		f.markWS(t)
+	}
 	f.setSpawnTag(42)
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM host_dispatches WHERE owner_id = 1 AND host = 'ws'`)
+		sys := authz.System(context.Background())
+		_, _ = f.pool.Exec(sys, `DELETE FROM host_dispatches WHERE owner_id = 1 AND host = 'ws'`)
+		_, _ = f.pool.Exec(sys, `UPDATE mirror_tokens SET revoked_at = now() WHERE owner_id = 1 AND host = 'ws' AND revoked_at IS NULL`)
 	})
 	return f
+}
+
+// mintWS mints a real host token for user 1's "ws".
+func (f *spawnFixture) mintWS(t *testing.T) (string, int64) {
+	t.Helper()
+	tok, rec, err := f.tokens.CreateToken(asUser(1), "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok, rec.ID
+}
+
+// markWS marks ws's current token as one whose host has started agents, as
+// a hello advertising -agent-spawn does (mirror.Service.markSpawned).
+func (f *spawnFixture) markWS(t *testing.T) {
+	t.Helper()
+	if err := f.tokens.MarkSpawned(authz.System(context.Background()), f.tokID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // setSpawnTag lists @9 (spawnSID) on the server's copy of ws with tag d (0:
@@ -220,16 +256,16 @@ func (f *spawnFixture) notTaken(t *testing.T, leg string, id int64, text string,
 // front of this package's real /mirror/mcp. The honest call from the spawned
 // pane is refused outright (no card is filed for a call the tool refuses);
 // naming the owner's pane (A) files a card; clearing the window's tag (B) is
-// refused by the server's own record — first on a host that advertises
-// -agent-spawn, then on one that restarted its mirror without it.
+// refused by the server's own record — on a host that advertises
+// -agent-spawn, and on one whose mirror no longer does but whose token is
+// marked.
 func TestASpawnedAgentCannotActAsTheOwnerThroughTheHostProxy(t *testing.T) {
-	for _, advertises := range []bool{true, false} {
-		name := "advertises -agent-spawn"
-		if !advertises {
-			name = "no longer advertises -agent-spawn"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := newSpawnFixture(t, advertises)
+	for _, c := range []struct {
+		name               string
+		advertises, marked bool
+	}{{"advertises -agent-spawn", true, false}, {"no longer advertises, token marked", false, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSpawnFixture(t, c.advertises, c.marked)
 			f.recordDispatch(t, spawnSID, "@9", "running", 0)
 			upstream := httptest.NewServer(f.h)
 			defer upstream.Close()
@@ -263,15 +299,42 @@ func TestASpawnedAgentCannotActAsTheOwnerThroughTheHostProxy(t *testing.T) {
 	}
 }
 
-// TestAHostsTokenNamingTheOwnersSessionIsStepUpGated: route C — the host's
-// mirror token used directly against /mirror/mcp, naming the owner's own
-// session — on a machine that starts agents for the chief files a card. It
-// stays gated after the spawned window is gone and the host stops advertising
-// -agent-spawn, while the server holds a dispatch of that host that ended
-// within the window; one that ended before the window does not gate.
-func TestAHostsTokenNamingTheOwnersSessionIsStepUpGated(t *testing.T) {
+// decideOn is connector_request_decide for request id through h's
+// /mirror/mcp, as token's host and session sid.
+func decideOn(t *testing.T, h http.Handler, token, sid string, id int64) (int, string, bool) {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/mirror/mcp", strings.NewReader(mcpToolCall("connector_request_decide", map[string]any{"id": id, "decision": "approve"})))
+	for k, v := range mirrorAs(token, sid) {
+		r.Header.Set(k, v)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		return w.Code, w.Body.String(), true
+	}
+	var rep mcpReply
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil || rep.Error != nil {
+		t.Fatalf("not a tool answer: %s", w.Body)
+	}
+	text, isErr := toolText(t, &rep)
+	return w.Code, text, isErr
+}
+
+// TestAMarkedHostTokenIsStepUpGatedUntilRotated: route C — the host's token
+// used directly against /mirror/mcp, naming the owner's own session.
+//   - On a host that advertises -agent-spawn it files a card, and the phone's
+//     Confirm runs the decision once.
+//   - With the token marked, the host no longer advertising, and the server
+//     RESTARTED (a new Server over the same stores, no memory of the hello),
+//     it still files a card.
+//   - So does a REPLACED connection with the same token: a listing that no
+//     longer advertises spawning, naming a fresh session in a fresh window.
+//   - Rotation (a new token for ws, the old revoked) ends it: the new token's
+//     owner call runs at once, and the old token opens nothing.
+func TestAMarkedHostTokenIsStepUpGatedUntilRotated(t *testing.T) {
 	t.Run("advertises -agent-spawn", func(t *testing.T) {
-		f := newSpawnFixture(t, true)
+		f := newSpawnFixture(t, true, false)
 		id := f.newConnectorRequest(t, "svc-c1")
 		text, isErr := f.decide(t, f.ws, focusSID, id, "approve")
 		f.notTaken(t, "route C, spawn-capable host", id, text, isErr)
@@ -281,7 +344,6 @@ func TestAHostsTokenNamingTheOwnersSessionIsStepUpGated(t *testing.T) {
 		if err := json.Unmarshal([]byte(text), &card); err != nil || !strings.Contains(text, spawnPending) || card.Card == 0 {
 			t.Fatalf("route C: %s, want a confirmation card", text)
 		}
-		// The owner's paired phone confirms: the decision runs once, as asked.
 		if _, err := f.srv.answerAskFrom(asDevice(1), card.Card, "Confirm", attention.AnswerSource{}); err != nil {
 			t.Fatalf("the phone's confirm: %v", err)
 		}
@@ -289,36 +351,62 @@ func TestAHostsTokenNamingTheOwnersSessionIsStepUpGated(t *testing.T) {
 			t.Fatalf("after the phone's confirm: grant %+v, want approved as %s", g, focusSID)
 		}
 	})
-	t.Run("relaunched without -agent-spawn, recent dispatch", func(t *testing.T) {
-		f := newSpawnFixture(t, false)
+	t.Run("marked token, after a restart, no longer advertising", func(t *testing.T) {
+		f := newSpawnFixture(t, false, true)
 		f.dropSpawnWindow()
-		f.recordDispatch(t, spawnSID, "@9", "ended", 2*24*time.Hour)
+		restarted := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword},
+			log.New(io.Discard, "", 0))
+		restarted.UseExtensions(f.srv.ext)
 		id := f.newConnectorRequest(t, "svc-c2")
-		text, isErr := f.decide(t, f.ws, focusSID, id, "approve")
-		f.notTaken(t, "route C, dispatch ended 2 days ago", id, text, isErr)
+		_, text, isErr := decideOn(t, restarted.Handler(), f.ws, focusSID, id)
+		f.notTaken(t, "route C after a restart", id, text, isErr)
 		if !strings.Contains(text, spawnPending) {
-			t.Fatalf("route C after a relaunch: %s, want a confirmation card", text)
+			t.Fatalf("route C after a restart: %s, want a confirmation card", text)
 		}
 	})
-	t.Run("dispatch ended before the window", func(t *testing.T) {
-		f := newSpawnFixture(t, false)
+	t.Run("marked token, a replaced connection", func(t *testing.T) {
+		f := newSpawnFixture(t, false, true)
 		f.dropSpawnWindow()
-		f.recordDispatch(t, spawnSID, "@9", "ended", 8*24*time.Hour)
+		// The new connection's listing: a fresh window running a session no
+		// dispatch is recorded for, no tag, no -agent-spawn.
+		const freshSID = "4f6a7b8c-9d0e-4f1a-8b2c-3d4e5f6a7b8c"
+		f.mirror.mu.Lock()
+		f.mirror.windows = append(f.mirror.windows, mirror.Window{Session: "main", ID: "@7", Index: 7, Claude: true,
+			ClaudeSession: freshSID, Status: mirror.StatusIdle, StatusSince: attnSince, Activity: 1_700_000_000})
+		f.mirror.mu.Unlock()
 		id := f.newConnectorRequest(t, "svc-c3")
+		text, isErr := f.decide(t, f.ws, freshSID, id, "approve")
+		f.notTaken(t, "route C through a replaced connection", id, text, isErr)
+		if !strings.Contains(text, spawnPending) {
+			t.Fatalf("route C through a replaced connection: %s, want a confirmation card", text)
+		}
+	})
+	t.Run("rotation clears it", func(t *testing.T) {
+		f := newSpawnFixture(t, false, true)
+		f.dropSpawnWindow()
+		old := f.ws
+		f.ws, f.tokID = f.mintWS(t)
+		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE mirror_tokens SET revoked_at = now() WHERE token_hash = $1`, mirror.HashToken(old)); err != nil {
+			t.Fatal(err)
+		}
+		id := f.newConnectorRequest(t, "svc-c4")
+		if code, text, _ := decideOn(t, f.h, old, focusSID, id); code == http.StatusOK {
+			t.Fatalf("the rotated-out token still opens the door: %s", text)
+		}
 		text, isErr := f.decide(t, f.ws, focusSID, id, "approve")
-		if isErr || strings.Contains(text, spawnPending) || f.grantRow(t, id).status != "approved" {
-			t.Fatalf("a dispatch that ended 8 days ago: %s (grant %+v), want the owner's decision to run at once", text, f.grantRow(t, id))
+		if g := f.grantRow(t, id); isErr || strings.Contains(text, spawnPending) || g.status != "approved" {
+			t.Fatalf("after rotation the owner's call: %s (grant %+v), want it approved at once", text, g)
 		}
 	})
 }
 
 // TestTheOwnersCallFromAMachineThatStartsNoAgentsRunsAtOnce: no regression —
-// on a host that does not advertise -agent-spawn and has no dispatch on
-// record, the owner's own session decides at once, as before, and its
+// with a host token never marked, on a host that does not advertise
+// -agent-spawn, the owner's own session decides at once, as before, and its
 // provenance names that session. ⚠ An INVARIANT guard: it was green before
 // the change too; it pins that the gate did not widen to every host.
 func TestTheOwnersCallFromAMachineThatStartsNoAgentsRunsAtOnce(t *testing.T) {
-	f := newSpawnFixture(t, false)
+	f := newSpawnFixture(t, false, false)
 	f.dropSpawnWindow()
 	id := f.newConnectorRequest(t, "svc-honest")
 	text, isErr := f.decide(t, f.ws, focusSID, id, "approve")
@@ -328,39 +416,101 @@ func TestTheOwnersCallFromAMachineThatStartsNoAgentsRunsAtOnce(t *testing.T) {
 	}
 }
 
+// spawnRefusedTools is every owner-authority tool — every caller of
+// ownersOwnSession (ownerAuthorityCallers), reads of third-party content
+// included — called as c.
+func spawnRefusedTools(s *Server, ctx context.Context, c toolCaller) map[string]func() string {
+	m := ownerTools(s, ctx, c)
+	m[pluginRequestsListTool] = func() string { return s.toolPluginRequestsList(ctx, c) }
+	m[pluginRequestDecideTool] = func() string { return s.toolPluginRequestDecide(ctx, c, `{"id": 1, "decision": "deny"}`) }
+	m[pluginOutboundBatchGetTool] = func() string { return s.toolOutboundBatchGet(ctx, c, `{"batch_id": 1}`) }
+	m[pluginOutboundBatchDecideTool] = func() string { return s.toolOutboundBatchDecide(ctx, c, `{"batch_id": 1}`) }
+	return m
+}
+
 // TestEveryOwnerToolRefusesASessionTheServerRecordedAsADispatch: each
-// owner-authority tool, called directly (past the door's gate) from the
-// spawned agent's window AFTER it cleared its tag, is refused by the server's
-// own record: by its session, and — for a different session in that window —
-// by the open dispatch's window. A window id an ENDED dispatch once held,
-// now running the owner's own session, is not refused.
+// owner-authority tool — the decisions AND the reads of the owner's estate
+// (third-party message text among them) — called directly from the spawned
+// agent's window AFTER it cleared its tag, is refused by the server's own
+// record: by its session, and — for a different session in that window — by
+// the open dispatch's window. The set is the ledger's (it must equal
+// ownerAuthoritySpawnRefused). The owner's own session is not refused, and a
+// window id an ENDED dispatch once held, now the owner's, is not either.
 func TestEveryOwnerToolRefusesASessionTheServerRecordedAsADispatch(t *testing.T) {
-	f := newSpawnFixture(t, false)
+	f := newSpawnFixture(t, false, false)
 	f.setSpawnTag(0)
 	f.recordDispatch(t, spawnSID, "@9", "running", 0)
 	ownerCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
 	spawned := toolCaller{asker: attention.Asker{MirrorHost: "ws", MirrorSession: spawnSID, Label: "s"}, mirrorWindow: "@9"}
-	for name, call := range ownerTools(f.srv, ownerCtx, spawned) {
+	tools := spawnRefusedTools(f.srv, ownerCtx, spawned)
+	var names []string
+	for name := range tools {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	if want := ownerAuthoritySpawnRefused(); !slices.Equal(names, want) {
+		t.Fatalf("this test calls %v\nthe ledger's refused-to-spawned set is %v", names, want)
+	}
+	for name, call := range tools {
 		if got := call(); !strings.Contains(got, spawnRefused) {
 			t.Errorf("%s from the spawned window, tag cleared: %s", name, got)
 		}
 	}
-	// Another session in the open dispatch's window (a /clear there).
 	cleared := spawned
 	cleared.asker.MirrorSession = secondSID
 	if got := f.srv.toolConnectorRequestDecide(ownerCtx, cleared, `{"id": 1, "decision": "deny"}`); !strings.Contains(got, spawnRefused) {
 		t.Errorf("another session in the open dispatch's window: %s", got)
 	}
-	// Control: the owner's own window is not refused.
 	own := toolCaller{asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "s"}, mirrorWindow: "@1"}
-	if got := f.srv.toolConnectorRequestDecide(ownerCtx, own, `{"id": 1, "decision": "deny"}`); strings.Contains(got, "this tool acts with your owner's authority") {
-		t.Errorf("the owner's own window: %s", got)
+	for name, call := range spawnRefusedTools(f.srv, ownerCtx, own) {
+		if got := call(); strings.Contains(got, "this tool acts with your owner's authority") {
+			t.Errorf("%s from the owner's own window: %s", name, got)
+		}
 	}
-	// An ENDED dispatch's window id, reissued to the owner's own session.
-	g := newSpawnFixture(t, false)
+	g := newSpawnFixture(t, false, false)
 	g.dropSpawnWindow()
 	g.recordDispatch(t, spawnSID, "@1", "ended", time.Hour)
 	if got := g.srv.toolConnectorRequestDecide(ownerCtx, own, `{"id": 1, "decision": "deny"}`); strings.Contains(got, "this tool acts with your owner's authority") {
 		t.Errorf("an ended dispatch's window, now the owner's: %s", got)
+	}
+}
+
+// TestTheOwnersReadsOnAMarkedHostFileNoCard: the owner's own session reading
+// its estate through the door of a marked host is answered at once — a read
+// is refused to a spawned agent's session, never carded for the owner's.
+func TestTheOwnersReadsOnAMarkedHostFileNoCard(t *testing.T) {
+	f := newSpawnFixture(t, true, true)
+	f.newConnectorRequest(t, "svc-read")
+	text, isErr := f.mirrorTool(t, f.ws, focusSID, connectorRequestsListTool, map[string]any{})
+	if isErr || strings.Contains(text, spawnPending) || !strings.Contains(text, "svc-read") {
+		t.Fatalf("the owner's read on a marked host: %s, want the list at once", text)
+	}
+}
+
+// TestAHostDispatchMarksTheHostsToken: a host dispatch reserved on a host
+// marks that host's live tokens in the same transaction
+// (plugins.ReserveHostDispatch), whatever its hello says later.
+func TestAHostDispatchMarksTheHostsToken(t *testing.T) {
+	f := newHostFixture(t)
+	store := mirror.NewPG(f.pool)
+	tok, _, err := store.CreateToken(f.asOwner, "host-bravo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := store.CreateToken(f.asOwner, "host-charlie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := authz.System(context.Background())
+	if rec, _ := store.Authenticate(sys, tok); rec.SpawnedAt != nil {
+		t.Fatalf("control: a fresh token is marked at %v", rec.SpawnedAt)
+	}
+	f.ownerTurn(t, f.chief, f.owner, "Do it mirrored on host-bravo.")
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "mark-the-token", true)))
+	if rec, err := store.Authenticate(sys, tok); err != nil || rec.SpawnedAt == nil {
+		t.Fatalf("after a host dispatch on host-bravo its token is %+v (%v), want it marked", rec, err)
+	}
+	if rec, _ := store.Authenticate(sys, other); rec.SpawnedAt != nil {
+		t.Fatalf("another host's token was marked at %v", rec.SpawnedAt)
 	}
 }

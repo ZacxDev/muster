@@ -99,8 +99,40 @@ func NewService(store Store, logger *log.Logger) *Service {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Service{store: store, logger: logger, recheck: TokenRecheck, hub: NewHub(logger),
+	s := &Service{store: store, logger: logger, recheck: TokenRecheck, hub: NewHub(logger),
 		limiter: newFailLimiter(authFailLimit, authFailWindow)}
+	s.hub.SetSpawnedNotify(s.markSpawned)
+	return s
+}
+
+// spawnMarker is the store's half that persists "this token's host has
+// started agents" (PGStore.MarkSpawned, mirror_tokens.spawned_at).
+type spawnMarker interface {
+	MarkSpawned(ctx context.Context, id int64) error
+}
+
+// markSpawned marks the token the (owner, host) connection was made with
+// (connTok) as one whose host starts agents for the chief: the hub's hook
+// for a hello that advertises -agent-spawn. 🔴 THE MARK IS THE TOKEN'S, and
+// nothing but rotating the token clears it (internal/api host_stepup.go):
+// a spawned agent can read the token, so the host stopping to advertise
+// -agent-spawn proves nothing about who holds it.
+func (s *Service) markSpawned(owner int64, host string) {
+	m, ok := s.store.(spawnMarker)
+	if !ok {
+		return
+	}
+	s.connMu.Lock()
+	c, ok := s.connTok[hostKey{owner, host}]
+	s.connMu.Unlock()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(authz.System(context.Background()), 30*time.Second)
+	defer cancel()
+	if err := m.MarkSpawned(ctx, c.id); err != nil {
+		s.logger.Printf("mirror: mark host %s's token %d as one that starts agents: %v", host, c.id, err)
+	}
 }
 
 // SetNotify installs the Agents-view refresh nudge (internal/api's

@@ -34,20 +34,36 @@ var ownerAuthorityCallers = map[string][]string{
 }
 
 // ownerAuthorityNotGated is the owner-authority tools the step-up gate does
-// NOT gate, each a decision: the reads of the owner's estate, and
-// dispatch_request, which files a hold that starts nothing (dispatch_approve,
-// gated, is the decision).
+// NOT gate, each a decision: the reads of the owner's estate (refused to a
+// spawned agent's session outright, answered at once for the owner's own),
+// and dispatch_request, which files a hold that starts nothing
+// (dispatch_approve, gated, is the decision; its card shows the hold).
 var ownerAuthorityNotGated = []string{agentsListTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
 	pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
 
+// ownerAuthoritySpawnRefused is the set every caller of ownersOwnSession
+// serves: each refuses a session the server recorded as a host dispatch's
+// (TestEveryOwnerToolRefusesASessionTheServerRecordedAsADispatch calls them).
+func ownerAuthoritySpawnRefused() []string {
+	var out []string
+	for _, tools := range ownerAuthorityCallers {
+		out = append(out, tools...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // TestEveryOwnerAuthorityToolIsStepUpGated pins the RELATIONSHIP between the
-// two rules, both ways: every function that calls ownersOwnSession is in
-// ownerAuthorityCallers (the set read from the source must equal it: it fails
-// when it grows or shrinks); every tool those functions serve is either in
-// hostStepUpTools — so a call from a machine that starts agents for the chief
-// is a phone card, whichever window it names — or in ownerAuthorityNotGated
-// and exempt (hostStepUpExempt); and every gated tool is served by one of
-// them. The gated set itself is pinned literally.
+// rules, both ways, and the three sets literally:
+//   - every function that calls ownersOwnSession is in ownerAuthorityCallers
+//     (the set read from the source must equal it: it fails when it grows or
+//     shrinks);
+//   - REFUSED TO A SPAWNED AGENT: every tool those functions serve;
+//   - GATED (a phone card from a host that starts agents): hostStepUpTools;
+//   - NOT GATED: ownerAuthorityNotGated, each exempt with a reason
+//     (hostStepUpExempt);
+//   - refused = gated ∪ not gated, disjointly, and every gated tool is served
+//     by one of them.
 func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	got := callersIn(t, ".", "ownersOwnSession")
 	got = slices.Compact(got)
@@ -58,24 +74,34 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("ownersOwnSession is called from %v\nthe ledger names %v\nlist the new site with its tools, and classify them for the step-up gate", got, want)
 	}
-	served := map[string]bool{}
-	for site, tools := range ownerAuthorityCallers {
-		for _, n := range tools {
-			served[n] = true
-			_, gated := hostStepUpTools[n]
-			_, exempt := hostStepUpExempt[n]
-			notGated := slices.Contains(ownerAuthorityNotGated, n)
-			switch {
-			case gated && (exempt || notGated):
-				t.Errorf("%s (%s) is both gated and exempt", n, site)
-			case !gated && !(exempt && notGated):
-				t.Errorf("owner-authority tool %s (%s) is not step-up gated: add it to hostStepUpTools, or to ownerAuthorityNotGated and hostStepUpExempt with the reason", n, site)
-			}
+	refused := ownerAuthoritySpawnRefused()
+	refusedWant := []string{agentDestroyTool, agentsListTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool,
+		connectorRequestsListTool, dispatchApproveTool, dispatchRequestTool, pluginDraftDecideTool, pluginDraftsListTool,
+		pluginMessageRouteTool, pluginMessagesListTool, pluginOutboundBatchDecideTool, pluginOutboundBatchGetTool,
+		pluginRequestDecideTool, pluginRequestsListTool, routeReplyToolName}
+	slices.Sort(refusedWant)
+	if !slices.Equal(refused, refusedWant) {
+		t.Errorf("the refused-to-spawned set = %v\nwant %v", refused, refusedWant)
+	}
+	for _, n := range refused {
+		_, gated := hostStepUpTools[n]
+		_, exempt := hostStepUpExempt[n]
+		notGated := slices.Contains(ownerAuthorityNotGated, n)
+		switch {
+		case gated && (exempt || notGated):
+			t.Errorf("%s is both gated and exempt", n)
+		case !gated && !(exempt && notGated):
+			t.Errorf("owner-authority tool %s is not step-up gated: add it to hostStepUpTools, or to ownerAuthorityNotGated and hostStepUpExempt with the reason", n)
 		}
 	}
 	for n := range hostStepUpTools {
-		if !served[n] {
+		if !slices.Contains(refused, n) {
 			t.Errorf("gated tool %s is served by no function that checks ownersOwnSession", n)
+		}
+	}
+	for _, n := range ownerAuthorityNotGated {
+		if !slices.Contains(refused, n) {
+			t.Errorf("not-gated tool %s is served by no function that checks ownersOwnSession", n)
 		}
 	}
 	gatedWant := []string{agentDestroyTool, attentionAnswerTool, chiefRestartTool, connectorRequestDecideTool, dispatchApproveTool,
@@ -83,5 +109,10 @@ func TestEveryOwnerAuthorityToolIsStepUpGated(t *testing.T) {
 	slices.Sort(gatedWant)
 	if g := hostStepUpToolNames(); !slices.Equal(g, gatedWant) {
 		t.Errorf("the gated set = %v, want %v", g, gatedWant)
+	}
+	notGatedWant := []string{agentsListTool, connectorRequestsListTool, dispatchRequestTool, pluginDraftsListTool,
+		pluginMessagesListTool, pluginOutboundBatchGetTool, pluginRequestsListTool}
+	if !slices.Equal(slices.Sorted(slices.Values(ownerAuthorityNotGated)), slices.Sorted(slices.Values(notGatedWant))) {
+		t.Errorf("the not-gated set = %v, want %v", ownerAuthorityNotGated, notGatedWant)
 	}
 }

@@ -136,7 +136,9 @@ func TestTheStepUpGateIsALedger(t *testing.T) {
 // machine with no host officer of the caller's owner, that does not start
 // agents for the chief, is not the gate's — it runs as before; a non-gated
 // tool is never the gate's. The same machine advertising -agent-spawn IS
-// gated, and stays gated after it stops advertising it (spawnHosts).
+// gated; once it stops, a call with an unmarked token is not, and a call
+// whose host token is marked (mirror.Token.SpawnedAt) is — whatever the host
+// advertises — until the token is rotated.
 func TestTheStepUpGateSparesAMachineWithNoHostOfficer(t *testing.T) {
 	r := newHostOfficerRig(t, false)
 	setSpawn := func(on bool) {
@@ -162,8 +164,18 @@ func TestTheStepUpGateSparesAMachineWithNoHostOfficer(t *testing.T) {
 		t.Fatalf("a machine that advertises -agent-spawn: %v %s, want the gate's refusal naming it", ok, out)
 	}
 	setSpawn(false)
-	if out, ok := r.s.hostStepUpGate(ctx, hostOffOther, c, pluginDraftDecideTool, `{}`); !ok || !strings.Contains(out, "since muster last restarted") {
-		t.Fatalf("a machine that stopped advertising -agent-spawn: %v %s, want it still gated", ok, out)
+	if out, ok := r.s.hostStepUpGate(ctx, hostOffOther, c, pluginDraftDecideTool, `{}`); ok {
+		t.Fatalf("a machine that stopped advertising -agent-spawn, with an unmarked token: gated %s", out)
+	}
+	marked := time.Now()
+	withTok := func(tok mirror.Token) context.Context { return context.WithValue(ctx, mirrorHostCtxKey{}, tok) }
+	if out, ok := r.s.hostStepUpGate(withTok(mirror.Token{ID: 5, OwnerID: hostOffOwner, Host: hostOffOther, SpawnedAt: &marked}),
+		hostOffOther, c, pluginDraftDecideTool, `{}`); !ok || !strings.Contains(out, "until the token is rotated") {
+		t.Fatalf("a marked host token: %v %s, want it gated", ok, out)
+	}
+	if out, ok := r.s.hostStepUpGate(withTok(mirror.Token{ID: 6, OwnerID: hostOffOwner, Host: hostOffOther}),
+		hostOffOther, c, pluginDraftDecideTool, `{}`); ok {
+		t.Fatalf("the rotated (unmarked) token: gated %s", out)
 	}
 	other := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 7, Role: authz.RoleMember, Via: authz.ViaMirrorHost})
 	if _, ok := r.s.hostStepUpGate(other, hostOffHost, c, pluginDraftDecideTool, `{}`); ok {

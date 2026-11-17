@@ -1678,25 +1678,48 @@ machine that **starts agents for the chief**, each of them is a **confirmation
 card on your paired phone**, whichever of your sessions the call names, and
 nothing runs until you answer Confirm there (a signed action; a browser answer
 is refused). It is the same gate a machine running a
-[host officer](design/officers-on-hosts.md) has. A machine counts as one when:
+[host officer](design/officers-on-hosts.md) has. A call counts as coming from
+such a machine when:
 
-- its mirror advertises `-agent-spawn` now, or has since muster last
-  restarted; or
-- muster has a host dispatch on it that is open, or ended within the last 7
-  days.
+- the **host token** it came with is marked as a spawning host's: muster marks
+  a token, in its database, the first time its host's mirror advertises
+  `-agent-spawn`, or a host dispatch is started on that host; or
+- the host's mirror advertises `-agent-spawn` now.
 
-Neither is anything a window can set, so an agent that names your pane,
-clears its own window's tag, or calls muster with this host's token directly
-is gated all the same, and so is one that opens a fresh window or restarts the
-mirror without `-agent-spawn`. What it costs: on such a machine your own
-sessions' owner-authority calls are cards too. Deciding in muster's web UI
-(Attention, Connectors, the Reply drafts tab) is never gated.
+🔴 **The mark belongs to the token and is cleared only by rotating it.** A
+spawned agent runs as your user and can read that token, so neither a muster
+restart, nor the host no longer advertising `-agent-spawn`, nor a new
+connection made with the same token clears it. **When you turn `-agent-spawn`
+off on a machine, rotate its host token** (mint a new one for the host, put it
+in the mirror's config, revoke the old one): the new token is unmarked, and the
+old one opens nothing.
 
-Separately, every owner-authority tool refuses a session muster started for
-the chief outright ("a session muster started for the chief cannot use it"),
-read from muster's own record of the host's dispatches (the session and window
-the host's spawn reply named), not from the window's tag. No card is filed for
-such a call.
+Neither trigger is anything a window can set, so an agent that names your
+pane, clears its own window's tag, or calls muster with this host's token
+directly — from that machine or from anywhere — is gated all the same.
+
+- **Replies to routed messages are not carded.** `route_reply` from the very
+  session the chief routed a message to (muster's own record of the route)
+  runs at once. A reply naming a route sent to another session is carded.
+- **A held start's card shows the start.** `dispatch_approve`'s card names
+  the target, the runtime and model, the task, the pool, the Claude account
+  and the instructions the hold carries, not only its id; a hold that cannot
+  be read files no card.
+- **Reads are not carded.** The owner-authority reads (`agents_list`,
+  `connector_requests_list`, `plugin_drafts_list`, `plugin_messages_list`,
+  `plugin_requests_list`, `plugin_outbound_batch_get`) answer your own
+  sessions at once.
+
+What it costs: on such a machine your own sessions' other owner-authority
+calls are cards too. Deciding in muster's web UI (Attention, Connectors, the
+Reply drafts tab) is never gated.
+
+Separately, every owner-authority tool — the decisions **and the reads above**,
+whose answers carry outside parties' messages — refuses a session muster
+started for the chief outright ("a session muster started for the chief
+cannot use it"), read from muster's own record of the host's dispatches (the
+session and window the host's spawn reply named), not from the window's tag.
+No card is filed for such a call.
 
 ### Starting agents on a tenant's tmux server
 

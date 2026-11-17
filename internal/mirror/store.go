@@ -37,6 +37,11 @@ type Token struct {
 	// dropped to viewer or was disabled. Nil for a personal token, and for a
 	// team token nobody has left since it was minted.
 	RotateAt *time.Time `json:"rotateAt,omitempty"`
+	// SpawnedAt is when this token's host first advertised -agent-spawn or had
+	// a host dispatch reserved on it (mirror_tokens.spawned_at, 0148). Nothing
+	// clears it: a host-spawned agent can read the token, so the mark ends
+	// only with the token (rotate it). Nil for a token whose host never did.
+	SpawnedAt *time.Time `json:"spawnedAt,omitempty"`
 	// Team: the owner is a TEAM (users.kind = 'team'), so the host is a team
 	// host: its connection is pinned (Hub: a second connection waits for a
 	// manager). Set by Authenticate only.
@@ -98,11 +103,11 @@ type PGStore struct{ pool *pgxpool.Pool }
 // NewPG builds the Postgres store.
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
-const tokenCols = `id, owner_id, host, created_at, revoked_at, last_used_at, rotate_at`
+const tokenCols = `id, owner_id, host, created_at, revoked_at, last_used_at, rotate_at, spawned_at`
 
 func scanToken(row pgx.Row) (Token, error) {
 	var t Token
-	err := row.Scan(&t.ID, &t.OwnerID, &t.Host, &t.CreatedAt, &t.RevokedAt, &t.LastUsed, &t.RotateAt)
+	err := row.Scan(&t.ID, &t.OwnerID, &t.Host, &t.CreatedAt, &t.RevokedAt, &t.LastUsed, &t.RotateAt, &t.SpawnedAt)
 	return t, err
 }
 
@@ -136,7 +141,7 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Token, error)
 		WHERE token_hash = $1 AND revoked_at IS NULL
 			AND owner_id IN (`+users.EnabledPersonOrTeamIDs+`)
 		RETURNING `+tokenCols+`, EXISTS (SELECT 1 FROM users u WHERE u.id = mirror_tokens.owner_id AND u.kind = 'team')`, HashToken(token)).
-		Scan(&t.ID, &t.OwnerID, &t.Host, &t.CreatedAt, &t.RevokedAt, &t.LastUsed, &t.RotateAt, &t.Team)
+		Scan(&t.ID, &t.OwnerID, &t.Host, &t.CreatedAt, &t.RevokedAt, &t.LastUsed, &t.RotateAt, &t.SpawnedAt, &t.Team)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Token{}, ErrBadToken
 	}
@@ -241,4 +246,13 @@ func (s *PGStore) RevokeToken(ctx context.Context, id int64) (bool, error) {
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// MarkSpawned records that live token id's host has started agents
+// (mirror_tokens.spawned_at, 0148): once, keeping the first time. A revoked
+// token is left alone. Service calls it under authz.System when the host's
+// hello advertises -agent-spawn (Service.markSpawned).
+func (s *PGStore) MarkSpawned(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now() WHERE id = $1 AND revoked_at IS NULL AND spawned_at IS NULL`, id)
+	return err
 }

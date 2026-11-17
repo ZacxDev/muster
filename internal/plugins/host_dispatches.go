@@ -161,8 +161,18 @@ func (s *PGStore) ReserveHostDispatch(ctx context.Context, object string, detail
 		hd, err = scanHostDispatch(tx.QueryRow(ctx, `INSERT INTO host_dispatches (owner_id, host, runtime, model, held_id, repo, base, task_id, reservation_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+hostDispatchCols,
 			owner, row.Host, row.Runtime, model, held, row.Repo, row.Base, task, reservationID))
-		if err != nil || row.Succession <= 0 {
+		if err != nil {
 			return err
+		}
+		// The host's live tokens are now tokens of a host that starts agents
+		// (mirror_tokens.spawned_at, 0148): the owner-authority step-up holds
+		// for them until they are rotated, whatever the host advertises later.
+		if _, err := tx.Exec(ctx, `UPDATE mirror_tokens SET spawned_at = now()
+			WHERE owner_id = $1 AND host = $2 AND revoked_at IS NULL AND spawned_at IS NULL`, owner, row.Host); err != nil {
+			return err
+		}
+		if row.Succession <= 0 {
+			return nil
 		}
 		// The succession's link, in this transaction: a row already decided
 		// rolls the whole reservation back, so a second tap inserts nothing.

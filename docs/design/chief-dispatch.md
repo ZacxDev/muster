@@ -3077,8 +3077,8 @@ closed direction.
   `agent_session` (ended or not), or whose window is an open dispatch's
   window, is refused — so clearing the tag does not admit the agent; an
   unreadable record refuses. And on a host that starts agents for the chief
-  every owner-authority tool is a phone confirmation card whichever window it
-  names (see "Re-decided" below).
+  every owner-authority decision is a phone confirmation card whichever
+  window it names (see "Re-decided" below).
 - The refusal is: `"this tool acts with your owner's authority, and a session
   muster started for the chief cannot use it; ask your owner"`.
 - A spawned agent keeps the tools that do not act for the owner, such as
@@ -3137,24 +3137,42 @@ permission mode**, not an isolation boundary:
     window — the values the host's own spawn reply named, never the window's
     tag — before it reads the tag. Clearing the tag no longer helps.
   - **A machine that starts agents is step-up gated**, as a host officer's
-    machine already is (`hostStepUpGate`): every owner-authority tool — the
-    step-up ledger `hostStepUpTools`, pinned together with every caller of
-    `ownersOwnSession` by a test — from a host that advertises
-    `-agent-spawn` (now, or in any hello since the server started) or has a
-    host dispatch open or ended within 7 days is a confirmation card that runs
-    only when the owner confirms it from their paired phone, **whichever pane
-    or session the call names**. Neither trigger is anything a window can
-    set, and both outlast the spawned window, so naming another pane, a
-    cleared tag, the token used directly, a fresh untagged window, and a
-    mirror restarted without `-agent-spawn` are all gated.
+    machine already is (`hostStepUpGate`): every owner-authority decision —
+    the step-up ledger `hostStepUpTools`, pinned together with every caller
+    of `ownersOwnSession` by a test — called with a **host token marked as a
+    spawning host's**, or from a host that advertises `-agent-spawn` now, is
+    a confirmation card that runs only when the owner confirms it from their
+    paired phone, **whichever pane or session the call names**.
+  - **The mark is the TOKEN's, persisted, and cleared only by rotating it**
+    (`mirror_tokens.spawned_at`): set the first time the token's host
+    advertises `-agent-spawn` in a hello, or a host dispatch is reserved on
+    that host. The agent can read the token, so the credential is what stays
+    tainted: a muster restart, the host no longer advertising
+    `-agent-spawn`, and a new connection with the same token (naming a
+    fresh, untagged window and session) are all still gated. Turning
+    `-agent-spawn` off is not enough: rotate the host's token.
+  - **Three refinements.** A `route_reply` from the session the route was
+    sent to (`Route.SentToMirrorSession`, the server-side binding) is not
+    carded; any other `route_reply`, and every other decision, is. A
+    `dispatch_approve` card shows the held start (target, runtime and model,
+    task, pool, Claude account, instructions), not only its id, and a hold
+    that cannot be read files no card. The owner-authority **reads** — the
+    lists that return outside parties' message text and the owner's estate
+    (`plugin_drafts_list`, `plugin_messages_list`, `plugin_outbound_batch_get`,
+    `plugin_requests_list`, `connector_requests_list`, `agents_list`) — are
+    refused to a session the server recorded as a dispatch's and answered at
+    once, with no card, for the owner's own.
   - **Scope, stated plainly.** The gate covers the owner's authority **on
     muster** reached through the mirror door. It does not confine the agent
     on its host: a spawned agent still runs as the machine's user and can do
     on that machine what the user can (with prompts skipped, without asking).
-    Its cost is that the owner's own sessions on such a machine also get a
-    card for each owner-authority call; deciding in muster's web UI is never
-    gated. `dispatch_request` stays ungated: it files a hold that starts
-    nothing, and `dispatch_approve` is the decision.
+    A spawned agent that names the OWNER's pane can still read those lists
+    (the server cannot tell it from the owner there) and can answer a route
+    sent to that pane's session. The cost is that the owner's own sessions
+    on such a machine get a card for each other owner-authority decision;
+    deciding in muster's web UI is never gated. `dispatch_request` stays
+    ungated: it files a hold that starts nothing, and `dispatch_approve`,
+    whose card shows the hold, is the decision.
 - **What the tag check still does** is the plain case before the spawn
   reply is recorded: an agent that simply calls `attention_answer`, or
   `agent_destroy` on its own dispatch, as itself.

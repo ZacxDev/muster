@@ -229,6 +229,10 @@ type Hub struct {
 	// inputs (agentspawn.go).
 	spawnReplyNotify func(owner int64, host string, m Msg)
 	listingNotify    func(owner int64, host string, windows []Window)
+	// spawnedNotify is called (on its own goroutine) with the owner and host
+	// of a connection whose hello advertises -agent-spawn (SetSpawnedNotify):
+	// Service marks the connection's token (Service.markSpawned).
+	spawnedNotify func(owner int64, host string)
 	// outcomesNotify is the host-dispatch outcome reconciler's input
 	// (outcomes.go).
 	outcomesNotify func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)
@@ -927,6 +931,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s) (per session: its muster-mirror predates per-window registration)", host, owner, mode, hc.version, len(hc.sessions))
 	}
 	h.changed(owner)
+	if len(hc.agentSpawn) > 0 {
+		h.spawnAdvertised(owner, host)
+	}
 	// The hello's listing is the reconciler's first input from this host.
 	h.listingApplied(hc)
 	h.outcomesApplied(hc)
@@ -1592,5 +1599,24 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 				return fmt.Errorf("mirror: resize: %w", err)
 			}
 		}
+	}
+}
+
+// SetSpawnedNotify installs the hook called (on its own goroutine) with the
+// owner and host of every connection whose hello advertises that it starts
+// agents for the chief (a non-empty AgentSpawn): the persisted mark on the
+// connection's token (Service.markSpawned).
+func (h *Hub) SetSpawnedNotify(fn func(owner int64, host string)) {
+	h.mu.Lock()
+	h.spawnedNotify = fn
+	h.mu.Unlock()
+}
+
+func (h *Hub) spawnAdvertised(owner int64, host string) {
+	h.mu.Lock()
+	fn := h.spawnedNotify
+	h.mu.Unlock()
+	if fn != nil {
+		go fn(owner, host)
 	}
 }
