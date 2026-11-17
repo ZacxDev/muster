@@ -408,6 +408,16 @@ test.describe('the Officers group', () => {
     await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
     await expectGroup(page);
     await shot(page, 'desktop-officers-group');
+    // A page with no switcher: the palette reads the sidebar's rows, the
+    // Officers rows among them, and opens what the officer's row opens.
+    await page.locator('#sidebar-search').click();
+    await expect(page.locator('#switcher-search')).toBeVisible();
+    await page.locator('#switcher-search-input').pressSequentially('e2e-sleeper');
+    const opts = page.locator('#switcher-search-results [role="option"]');
+    await expect(opts).toHaveCount(1);
+    await expect(opts.first()).toHaveAttribute('data-kind', 'officer');
+    await expect(opts.first()).toHaveAttribute('data-href', `/officers/${SLEEPER}`);
+    await page.keyboard.press('Escape');
     await officerRow(page, SLEEPER).click();
     await expect(page).toHaveURL(`${origin}/officers/${SLEEPER}`);
   });

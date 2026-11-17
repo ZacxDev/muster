@@ -242,7 +242,9 @@ func TestAnOfficerRowShowsItsTeamQueueSpendAndHold(t *testing.T) {
 		}
 		return ccText(s[0]), true
 	}
-	held := func(k string) bool { return len(ccWithAttr(navOfficerRowOf(t, by, k), "data-nav-officer-held", "")) == 1 }
+	held := func(k string) bool {
+		return len(ccWithAttr(navOfficerRowOf(t, by, k), "data-nav-officer-held", "")) == 1
+	}
 
 	cases := []struct {
 		key, facts, spend string
@@ -335,5 +337,106 @@ func TestOfficersWithNoAgentsStillDrawTheGroup(t *testing.T) {
 	root, _ := navOfficersRender(t, nil, offs, "")
 	if keys, _ := navOfficerRows(root); len(keys) != len(offs) {
 		t.Errorf("%d officer rows with no agents, want %d", len(keys), len(offs))
+	}
+}
+
+// TestATeamOfficersWaitingInstanceIsInItsTeamsGroup: a team officer's
+// instance that waits is drawn where any waiting team session is — in its
+// team's group, first after the team's chief — never in the viewer's own list
+// or the Officers group; its officer's row is marked "↑ waiting".
+func TestATeamOfficersWaitingInstanceIsInItsTeamsGroup(t *testing.T) {
+	list, offs := navOfficerFixture()
+	ago := func(d time.Duration) time.Time { return navNow.Add(-d) }
+	list = append(list,
+		AgentCardView{ID: 61, Name: "chief-900", DisplayName: "chief", IsChief: true, TeamOwner: navOffTeam, Team: navOffTName, LastActiveAt: ago(time.Hour)},
+		AgentCardView{ID: 62, Name: "team-helper", DisplayName: "team-helper", TeamOwner: navOffTeam, Team: navOffTName, LastActiveAt: ago(2 * time.Minute)},
+		AgentCardView{ID: 63, Name: "officer-ops-watch-1", DisplayName: "ops watch", Status: "running", Officer: navOffOps, SessionID: 640,
+			AwaitingApproval: true, TeamOwner: navOffTeam, Team: navOffTName, LastActiveAt: ago(9 * time.Hour)},
+	)
+	root, _ := navOfficersRender(t, list, offs, "")
+	var team []string
+	for _, a := range ccWithAttr(root, "data-nav-agent", "") {
+		id, _ := ccAttr(a, "id")
+		inTeam := false
+		for p := a.Parent; p != nil; p = p.Parent {
+			if v, ok := ccAttr(p, "data-nav-team"); ok && v == "900" {
+				inTeam = true
+			}
+		}
+		if id == "nav-agent-63" && (!inTeam || navInGroup(a, NavOfficersGroupID)) {
+			t.Errorf("the team officer's waiting instance is not in its team's group")
+		}
+		if inTeam {
+			team = append(team, id)
+		}
+	}
+	if want := []string{"nav-agent-61", "nav-agent-63", "nav-agent-62"}; !slices.Equal(team, want) {
+		t.Errorf("the team's rows are %v, want %v (its chief, the waiting instance, the rest)", team, want)
+	}
+	_, by := navOfficerRows(root)
+	ops := navOfficerRowOf(t, by, navOffOps)
+	if w := ccWithAttr(ops, "data-nav-officer-waiting", ""); len(w) != 1 || ccText(w[0]) != "↑ waiting" {
+		t.Errorf("the team officer's row is not marked waiting")
+	}
+	if s, _ := ccAttr(ops, "data-nav-officer-state"); s != "running" {
+		t.Errorf("the team officer reads %q, want running", s)
+	}
+}
+
+// TestTheLiveInstanceIsTheMostRecentlyActive: of two running instances the
+// row opens the one active last — not the lexically first name (-10 < -2).
+func TestTheLiveInstanceIsTheMostRecentlyActive(t *testing.T) {
+	ago := func(d time.Duration) time.Time { return navNow.Add(-d) }
+	list := []AgentCardView{
+		{ID: 71, Name: "officer-scout-k1-10", Status: "running", Officer: navOffDocs, SessionID: 710, LastActiveAt: ago(3 * time.Hour)},
+		{ID: 72, Name: "officer-scout-k1-2", Status: "running", Officer: navOffDocs, SessionID: 720, LastActiveAt: ago(4 * time.Minute)},
+	}
+	offs := []NavOfficer{{Key: navOffDocs, ID: "scout:docs", Name: "Docs scout", Href: "/officers/scout:docs"}}
+	root, _ := navOfficersRender(t, list, offs, "")
+	_, by := navOfficerRows(root)
+	if h, _ := ccAttr(navOfficerRowOf(t, by, navOffDocs), "href"); h != AgentListHref("officer-scout-k1-2", 720) {
+		t.Errorf("the row opens %q, want the instance active last", h)
+	}
+}
+
+// TestAnOfficerRowIsFoundByThePalette: the row carries what the palette's
+// sidebar fallback reads (its name, its id as a word), and that fallback
+// collects Officers rows.
+func TestAnOfficerRowIsFoundByThePalette(t *testing.T) {
+	list, offs := navOfficerFixture()
+	root, _ := navOfficersRender(t, list, offs, "")
+	_, by := navOfficerRows(root)
+	a := navOfficerRowOf(t, by, navOffWeb)
+	if v, _ := ccAttr(a, "data-switcher-name"); v != "Web triage" {
+		t.Errorf("data-switcher-name %q", v)
+	}
+	if v, _ := ccAttr(a, "data-switcher-words"); v != "triage:web" {
+		t.Errorf("data-switcher-words %q", v)
+	}
+	if !strings.Contains(paletteJS, NavAgentsListID+` a[data-nav-officer]:not([data-nav-current])`) {
+		t.Error("the palette's sidebar fallback does not collect the Officers rows")
+	}
+}
+
+// TestHomePassesOverAnInstanceItsOfficersRowStandsFor: with no chief and no
+// recent session, home opens the sidebar's first SESSION row — not a
+// non-waiting officer instance (drawn only through its officer's row) that is
+// the most recently active entry; a WAITING instance is a session row and is
+// opened.
+func TestHomePassesOverAnInstanceItsOfficersRowStandsFor(t *testing.T) {
+	ago := func(d time.Duration) time.Time { return navNow.Add(-d) }
+	inst := AgentCardView{ID: 81, Name: "officer-scout-k1-1", Status: "running", Officer: navOffDocs, SessionID: 810, LastActiveAt: ago(time.Minute)}
+	plain := AgentCardView{ID: 82, Name: "plain-worker", SessionID: 820, LastActiveAt: ago(time.Hour)}
+	if got, want := HomeHref([]AgentCardView{inst, plain}, nil, nil), plain.PageHref(); got != want {
+		t.Errorf("home = %q, want the first session row %q", got, want)
+	}
+	inst.AwaitingApproval = true
+	if got, want := HomeHref([]AgentCardView{inst, plain}, nil, nil), inst.PageHref(); got != want {
+		t.Errorf("home = %q, want the waiting instance %q", got, want)
+	}
+	// CONTROL: the same instance with no Officer (the group off) is a row.
+	inst.AwaitingApproval, inst.Officer = false, ""
+	if got, want := HomeHref([]AgentCardView{inst, plain}, nil, nil), inst.PageHref(); got != want {
+		t.Errorf("home = %q, want %q with no officer group", got, want)
 	}
 }

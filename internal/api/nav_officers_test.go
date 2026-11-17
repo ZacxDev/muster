@@ -90,8 +90,9 @@ const navTeam int64 = 900
 
 // navRosterServer is a server whose officer runtime holds n builtin env
 // officers of user 1 (every second one with a daily budget), one of team
-// navTeam, one of user 77 (whom the viewer cannot see), and one DB-declared
-// officer of user 1 that does not run.
+// navTeam, one of user 77 (whom the viewer cannot see), one DB-declared
+// officer of user 1 that does not run, and two DB-declared officers the viewer
+// cannot see (user 77's, and team 555's, a team they are not in).
 func navRosterServer(t *testing.T, n int) *Server {
 	t.Helper()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
@@ -111,6 +112,12 @@ func navRosterServer(t *testing.T, n int) *Server {
 		loaded: true, declared: map[string]declaredState{
 			declKey(1, "draft:desk"): {row: builtin.DeclaredRow{Owner: 1, DefInfo: builtin.DefInfo{Officer: "draft:desk"}, TypeName: "Draft desk",
 				Fields: officers.Declaration{InstanceSlug: "o-draftdesk"}}, reason: "fixture: it does not run"},
+			// Another user's declared officer, and one of a team the viewer
+			// is NOT in: neither is the viewer's to see.
+			declKey(77, "other:desk"): {row: builtin.DeclaredRow{Owner: 77, DefInfo: builtin.DefInfo{Officer: "other:desk"}, TypeName: "Other desk",
+				Fields: officers.Declaration{InstanceSlug: "o-otherdesk"}}, reason: "fixture"},
+			declKey(555, "strange:team"): {row: builtin.DeclaredRow{Owner: 555, DefInfo: builtin.DefInfo{Officer: "strange:team"}, TypeName: "Strange team",
+				Fields: officers.Declaration{InstanceSlug: "o-strangeteam"}}, reason: "fixture"},
 		}}
 	return s
 }
@@ -140,8 +147,9 @@ func TestTheOfficerRosterReadsInBatches(t *testing.T) {
 			t.Errorf("%d officers: roster of %d, want %d (own, the team's, the declared one)", n, len(got), want)
 		}
 		for _, o := range got {
-			if o.ID == "hidden:other" {
-				t.Errorf("another user's officer is in the roster")
+			switch o.ID {
+			case "hidden:other", "other:desk", "strange:team":
+				t.Errorf("officer %s (not the viewer's, nor a team of theirs) is in the roster", o.ID)
 			}
 		}
 	}

@@ -230,7 +230,7 @@ func NavAgentsWithOfficers(list []AgentCardView, mirrors []MirrorCardView, offic
 		// row is moved: with the group off, nothing changes.
 		if k := e.officer(); k != "" && drawn[k] && !e.chief() {
 			instances = append(instances, navOfficerInstance{e: e, it: items[i]})
-			if !navOfficerInstanceDrawnHere(e) {
+			if navOfficerRowStandsIn(e) {
 				continue
 			}
 		}

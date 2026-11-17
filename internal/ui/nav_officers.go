@@ -99,6 +99,16 @@ func navOfficerKeys(officers []NavOfficer) map[string]bool {
 // every other waiting session (navOrder) and its officer's row marks it.
 func navOfficerInstanceDrawnHere(e listEntry) bool { return e.waiting() }
 
+// navOfficerRowStandsIn reports whether entry e has no session row of its own
+// because its officer's row in the Officers group stands in for it: it is an
+// officer's instance (AgentCardView.Officer), not the chief, and it does not
+// wait on the operator. 🔴 ONE PREDICATE for the sidebar (NavAgentsWithOfficers,
+// which also needs the officer to HAVE a row) and home's first-row fallback
+// (HomeHref), so `/` never opens a row the sidebar does not draw.
+func navOfficerRowStandsIn(e listEntry) bool {
+	return e.officer() != "" && !e.chief() && !navOfficerInstanceDrawnHere(e)
+}
+
 // navOfficerAwake reports whether an instance's stored status is one of a
 // running agent's (started, or starting).
 func navOfficerAwake(status string) bool {
@@ -169,8 +179,9 @@ func navOfficersGroup(officers []NavOfficer, instances []navOfficerInstance) g.N
 // navOfficerRow is one officer's row: a real-load link, 44px tall, like a
 // session row (navAgentRow).
 //
-//   - Its link: the live instance's chat (the awake instance with the lowest
-//     name, a stable pick) while one runs, else Href, the officer's page.
+//   - Its link: the live instance's chat (the most recently active awake
+//     instance, its name breaking a tie) while one runs, else Href, the
+//     officer's page.
 //   - Its second line: the team's name (a team's officer), running or asleep
 //     (not for a host officer), and the queued count when known.
 //   - At its end: the spend against the budget, "held", and "↑ waiting" when
@@ -178,7 +189,14 @@ func navOfficersGroup(officers []NavOfficer, instances []navOfficerInstance) g.N
 //   - It is the page's own (aria-current="true", as a session row) when the
 //     page is an instance that is not drawn as a row of its own.
 func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
-	sort.SliceStable(instances, func(i, j int) bool { return instances[i].e.agent.Name < instances[j].e.agent.Name })
+	// The most recently active first (the live pick), the name breaking a tie.
+	sort.SliceStable(instances, func(i, j int) bool {
+		a, b := instances[i].e.agent, instances[j].e.agent
+		if ta, tb := a.lastActive(), b.lastActive(); !ta.Equal(tb) {
+			return ta.After(tb)
+		}
+		return a.Name < b.Name
+	})
 	var live *AgentCardView
 	waiting, current := false, false
 	for _, in := range instances {
@@ -223,6 +241,11 @@ func navOfficerRow(o NavOfficer, instances []navOfficerInstance) g.Node {
 			g.If(o.TeamOwner != 0, g.Attr("data-nav-officer-team", strconv.FormatInt(o.TeamOwner, 10))),
 			g.If(current, g.Group([]g.Node{g.Attr("aria-current", "true"), g.Attr("data-nav-current", "")})),
 			g.Attr("title", tip),
+			// What the command palette finds it by on a page with no switcher
+			// (palette.go's fallback reads a[data-nav-officer] too): its name,
+			// and its id and team as words.
+			g.Attr("data-switcher-name", name),
+			g.Attr("data-switcher-words", strings.TrimSpace(o.ID+" "+o.Team)),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition border-l-transparent "+navRowTone(current)),
 			Span(
 				Class("flex min-w-0 flex-1 flex-col leading-tight"),

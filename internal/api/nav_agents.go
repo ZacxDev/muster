@@ -154,6 +154,12 @@ func (s *Server) homeTarget(r *http.Request, except homeExcept) (string, error) 
 	// are listed in their team's group, and never where `/` lands.
 	kept := cards[:0]
 	for _, c := range cards {
+		// With no Officers group (navOfficers: no officer store) an officer's
+		// instance is an ordinary sidebar row, so home may open it: ui's
+		// HomeHref passes over an instance only when its Officer is set.
+		if !s.officersOn() {
+			c.Officer = ""
+		}
 		if c.ID != except.agent && c.TeamOwner == 0 {
 			kept = append(kept, c)
 		}
