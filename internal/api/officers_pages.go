@@ -1170,7 +1170,8 @@ func (s *Server) renderOfficerForm(w http.ResponseWriter, r *http.Request, code 
 }
 
 // hostRiskLine is what a host officer is, in one sentence (docs/officers-builtin.md
-// "On a host"): drawn on the permissions step and on a host officer's page.
+// "Officers in the Compose stack (host sessions)"): drawn on the permissions
+// step and on a host officer's page.
 const hostRiskLine = "On one of your machines it runs as that machine's user, with that user's files, credentials and network: muster's approvals are the path it is told to take, not a wall. Run it only where you would let its instructions run unattended."
 
 // runtimeChoices is the "where it runs" step: auto (what it picks now, and

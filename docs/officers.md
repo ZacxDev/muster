@@ -1,11 +1,15 @@
-# Officers
+# Officers: the HQ backend and the runtime (reference)
+
+**New to officers? Start with [the Officers page](officers-builtin.md#the-officers-page).**
+This file is the reference for the HQ backend and for what every officer's
+instances get: pods, network, runner image, repositories, tools, tiers.
 
 An **officer** is a standing agent with a job description instead of a task: a
-release captain for one service, a triage officer for one repository. Its
-durable identity, its work queue, its charter and the lock on each item live in
-**HQ** (an external server that speaks the officers API below). muster runs the
-officer's **instances**: Claude Code pods it wakes when HQ has work, gives the
-officer's tools, and scales to zero when the queue is quiet.
+release captain for one service, a triage officer for one repository. On the
+HQ backend its durable identity, work queue, charter and the lock on each item
+live in **HQ** (an external server that speaks the officers API below). muster
+runs the officer's **instances**: Claude Code pods it wakes when HQ has work,
+gives the officer's tools, and scales to zero when the queue is quiet.
 
 | | lives in |
 |---|---|
@@ -50,8 +54,8 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 |---|---|---|
 | `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses, at boot, an id whose highest instance agent name (`officer-<type>-<slug>-<max>`) would not fit a namespace under the deployment's `MUSTER_AGENT_NAMESPACE_PREFIX` (63 minus the prefix: 50 under `muster-agent-`). |
 | `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
-| `backend` | `hq` | Which officer backend serves the officer: `hq` (the officer API above, with the officer's token) or `builtin` (muster's own Postgres — [officers-builtin.md](officers-builtin.md)). A `builtin` officer needs no `hq_url` and no token; its type, charter, switch and queue live in muster's database, so it needs `DATABASE_URL` (a boot refusal without it), and its instances are offered only the tools that backend serves (the six queue tools and `officer_ask_person`, plus any tool muster serves itself such as `officer_kube_read`) and told so in their first message. It is a boot refusal, naming each field, if it declares `hq_url`, a `MUSTER_OFFICER_TOKEN_<NAME>`, `ship`, `ci_logs` or `transcript`. The wake loop honours a builtin officer's switch: switched off, its instances are stopped and none starts. Its asks and escalations go through muster's Attention view, and it is defined with `muster officer`: see [officers-builtin.md](officers-builtin.md). Any other value is a boot refusal. |
-| `runtime` | `pod` | Where the instances run: `pod` (a pod per instance, through the provisioner) or `host` (a host-spawned Claude Code window per instance on the mirror host `host`, for a `builtin` officer only — [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions), [design](design/officers-on-hosts.md)). A `host` officer needs `repo` (on a host, a pushable worktree with that machine user's credentials), may declare `connectors` (not `github`), is offered `officer_post_draft`, and refuses `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos`, `llm` and `kube`, each named at boot. Each instance has an agent row nothing provisions (migration 0125). |
+| `backend` | `hq` | Which officer backend serves the officer: `hq` (the officer API above, with the officer's token) or `builtin` (muster's own Postgres; needs `DATABASE_URL`, and is refused at boot, naming each field, with `hq_url`, a `MUSTER_OFFICER_TOKEN_<NAME>`, `ship`, `ci_logs` or `transcript` — [officers-builtin.md](officers-builtin.md)). A builtin officer's instances are offered only the tools that backend serves (plus muster's own, such as `officer_kube_read`) and told so in their first message; its switch, asks and escalations are muster's. Any other value is a boot refusal. |
+| `runtime` | `pod` | Where the instances run: `pod` (a pod per instance, through the provisioner) or `host` (a host-spawned Claude Code window per instance on the mirror host `host`, for a `builtin` officer only — [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions), [design](design/officers-on-hosts.md)). A `host` officer's `repo` is optional (without one each instance starts in a scratch directory; with one, a pushable worktree with that machine user's credentials); it may declare `connectors` (not `github`), is offered `officer_post_draft`, and refuses `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos`, `llm` and `kube`, each named at boot. Each instance has an agent row nothing provisions (migration 0125). `auto` is for a [database-declared](officers-builtin.md#declared-in-the-database-no-restart) officer only. |
 | `host` | none | With `"runtime": "host"`: the mirror host (its token's name) the instances start on. Refused beside a pod officer. |
 | `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account (which the [account failover](#account-failover) may change) — or, on a host, one window in that host's `agents` session. |
 | `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
@@ -3646,11 +3650,11 @@ What a deployment needs beyond muster's usual claude-code setup:
    it). No approval gate is needed: an officer instance runs with every tool
    allowed (above). Its `github` requests still need the owner's explicit
    decision.
-6. A `claude-code-agent` image built from this version or later (its `ccd`
+5. A `claude-code-agent` image built from this version or later (its `ccd`
    applies `CCD_PERMISSION_MODE`; an older one ignores it and the officer
    prompts).
-7. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
-8. A cluster-side policy for the officer instance pods allowing name-filtered
+6. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
+7. A cluster-side policy for the officer instance pods allowing name-filtered
    DNS and `api.anthropic.com:443` by FQDN
    ([The instance's network](#the-instances-network)). Without it an
    instance's turns all fail.
