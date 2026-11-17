@@ -171,6 +171,21 @@ func TestARefusedAttachmentFailsTheCallAndNothingIsForwarded(t *testing.T) {
 	}
 }
 
+// An opencode session's attachments are a follow-up: refused, saying they are
+// not supported yet, and nothing is uploaded.
+func TestAnOpenCodeSessionsAttachmentsAreRefusedAsNotSupportedYet(t *testing.T) {
+	f, srv := newFakeMusterForAsk(t)
+	p := attachProxy(srv.URL, t.TempDir())
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	body, refused := p.uploadAskAttachments(r, []byte(askCall(map[string]any{"question": "q", "attachments": []string{"a.png"}})), "", true)
+	if body != nil || refused != "attachments from an opencode session are not supported yet (only a Claude Code session's are uploaded); ask without them" {
+		t.Fatalf("refused %q", refused)
+	}
+	if len(f.files) != 0 {
+		t.Fatalf("%d file(s) uploaded", len(f.files))
+	}
+}
+
 func TestACallWithoutAttachmentsIsForwardedAsItWas(t *testing.T) {
 	f, srv := newFakeMusterForAsk(t)
 	body := askCall(map[string]any{"question": "q?", "context": "why"})

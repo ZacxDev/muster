@@ -636,8 +636,8 @@ ask carries the upload's id:
   file, a fifth file, one over 10 MiB or of a type an ask cannot carry is the
   call's tool error, and **no ask is filed**. An older `muster-mirror` forwards
   the paths unchanged, and muster refuses them saying to update it. A mirrored
-  opencode session's attachments are refused (it has no pane to read a working
-  directory from).
+  opencode session's attachments are **not supported yet** (refused, saying
+  so: it has no pane to read a working directory from); that is a follow-up.
 - **A dispatched agent** runs `ccd ask-attach <path>` in its pod (the same
   confinement, against its workspace), which sends the file to
   `POST /agent/ask-attachments` with the agent's own token and prints
@@ -677,7 +677,11 @@ Claude's last words, and the fallback is exactly that, so neither the why nor
 the attachments are added to it.
 
 Claude Code's own question tool (`AskUserQuestion`, [held questions](#mirrored-claude-code-sessions))
-has no field for files or a why; a question held from it is unchanged.
+has no field for files or a why. A held question's card gets the same
+fallback line when it is drawn: the session's focus title and the last thing
+its Claude said before the question (as its host read it while the picker
+shows), redacted and bounded as above. Not in `attention_list`, and not in the
+summary API.
 
 ## Mirrored Claude Code sessions
 

@@ -367,6 +367,23 @@ func askWhyView(w *attention.AskWhy) ui.AskWhy {
 	return ui.AskWhy{Text: w.Text, Focus: w.Focus, Last: w.Last}
 }
 
+// heldWhy is a held AskUserQuestion's why, drawn at render time (operator
+// decision on #767: "Context now"): the same fallback an attention_ask without
+// context stores — the session's focus title and its last words before the
+// question (attentionItem.heldLast) — redacted and bounded the same way
+// (redact.Secrets, attention.CleanWhy). The zero value for any other item and
+// for a held question with neither.
+func heldWhy(it attentionItem) ui.AskWhy {
+	if it.Kind != attentionKindQuestion || it.openCode != nil {
+		return ui.AskWhy{}
+	}
+	w, err := attention.CleanWhy(&attention.AskWhy{Focus: redact.Secrets(it.Focus), Last: redact.Secrets(it.heldLast)})
+	if err != nil {
+		return ui.AskWhy{}
+	}
+	return askWhyView(w)
+}
+
 // askMediaHTML is an ask's why line and media strip, "" for neither: what the
 // Asks card and the ask page draw under the question.
 func askMediaHTML(askID int64, why *attention.AskWhy, files []attention.Attachment) string {

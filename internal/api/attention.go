@@ -289,6 +289,12 @@ type attentionItem struct {
 	// escaped under the question (ask_media.go), and in attention_list.
 	Why         *attention.AskWhy      `json:"why,omitempty"`
 	Attachments []attention.Attachment `json:"attachments,omitempty"`
+	// heldLast is a held AskUserQuestion's session's last words before the
+	// question (its window's Pending.Last, as its host read them), "" for
+	// none and for every other item: the fallback why its card draws at
+	// render time (heldWhy). Not serialised — never in attention_list or the
+	// summary API.
+	heldLast string
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
 	choices []string
@@ -571,7 +577,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 				continue
 			}
 			if e, ok := held[h.Host+"\x00"+w.ClaudeSession]; ok && w.ClaudeSession != "" {
-				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, offline: !h.Online}
+				// Its Pending (when the host reads one while the picker shows) is
+				// kept for the card's why: the last words before the question.
+				waiting[k] = wait{since: e.Created.UnixMilli(), q: &e, pending: w.Pending, offline: !h.Online}
 			} else if w.Status == mirror.StatusWaiting {
 				waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online}
 			}
@@ -601,6 +609,9 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		switch {
 		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
+			if wt.pending != nil {
+				it.heldLast = wt.pending.Last
+			}
 			// One question's choices are named in its PUSH (choices, not Options:
 			// attention_list serialises Options as answers attention_answer takes,
 			// and a held question is answered on its question card, not there);
@@ -1826,7 +1837,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		// A HELD QUESTION is answered in its session, never here: the row
 		// says so in one muted line under the question (an operator
 		// decision), inside the row link, so the card stays one link.
-		return row(attentionWaitLineHTML(it) + attentionHeldCueHTML)
+		return row(attentionWaitLineHTML(it) + ui.AskContextInline(heldWhy(it)) + attentionHeldCueHTML)
 	case it.Kind == attentionKindTask:
 		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
 	}

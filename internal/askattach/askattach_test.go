@@ -145,3 +145,24 @@ func TestMustersRefusalIsSaidInItsOwnWords(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestTheUploadCapHoldsWhileStreaming: the shared client's capReader passes
+// exactly the cap and fails on the byte after it, so a file that grows after
+// its Stat cannot send more than the cap (moved here from internal/podagent
+// with the client it guards).
+func TestTheUploadCapHoldsWhileStreaming(t *testing.T) {
+	const capBytes = 5 << 20
+	for _, tc := range []struct {
+		size     int
+		tooLarge bool
+	}{{capBytes, false}, {capBytes + 1, true}, {capBytes + 4096, true}} {
+		r := &capReader{r: bytes.NewReader(make([]byte, tc.size)), left: capBytes}
+		n, err := io.Copy(io.Discard, r)
+		if tc.tooLarge != errors.Is(err, errCapped) {
+			t.Errorf("%d bytes: copied %d, err %v; want too-large %v", tc.size, n, err, tc.tooLarge)
+		}
+		if n > capBytes+1 {
+			t.Errorf("%d bytes: %d passed the cap", tc.size, n)
+		}
+	}
+}

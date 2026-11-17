@@ -30,8 +30,9 @@ import (
 // TOOL error, and the call is NOT forwarded: no ask is filed without the files
 // it named.
 //
-// An opencode caller has no pane, so no process to read a working directory
-// from: its attachments are refused, with the reason.
+// An opencode caller's attachments are not supported yet (it has no pane, so
+// no process to read a working directory from): refused, saying so. A
+// follow-up, by operator decision on #767.
 
 // askToolName is the one call whose attachments the proxy uploads.
 const askToolName = "attention_ask"
@@ -70,7 +71,7 @@ func (p *MCPProxy) uploadAskAttachments(r *http.Request, body []byte, sid string
 		return nil, fmt.Sprintf("at most %d attachments (%d named)", askattach.MaxCount, len(paths)+len(ids))
 	}
 	if openCode {
-		return nil, "attachments are uploaded for a Claude Code session only (an opencode session has no pane to read its working directory from); ask without them"
+		return nil, "attachments from an opencode session are not supported yet (only a Claude Code session's are uploaded); ask without them"
 	}
 	c, _, err := p.callerClaude(r.Context(), r)
 	if err != nil {

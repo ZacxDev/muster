@@ -72,13 +72,19 @@ func AskMediaStrip(files []AskFile) string {
 // AskContextLine is why an ask is here, one muted line: the agent's own words
 // ("Why: …", data-ask-why="agent"), or muster's fallback — the session's focus
 // and what it last said (data-ask-why="session"). "" for none.
-func AskContextLine(w AskWhy) string {
+func AskContextLine(w AskWhy) string { return askContext(w, "p", AskWhyClass) }
+
+// AskContextInline is AskContextLine as a block <span>, for a card that is one
+// link whose lines are spans (a held question's row).
+func AskContextInline(w AskWhy) string { return askContext(w, "span", "block "+AskWhyClass) }
+
+func askContext(w AskWhy, tag, class string) string {
 	esc := html.EscapeString
 	switch {
 	case w.Text != "":
-		return `<p class="` + AskWhyClass + `" data-ask-why="agent"><span class="font-semibold">Why:</span> ` + esc(w.Text) + `</p>`
+		return `<` + tag + ` class="` + class + `" data-ask-why="agent"><span class="font-semibold">Why:</span> ` + esc(w.Text) + `</` + tag + `>`
 	case w.Focus != "" || w.Last != "":
-		out := `<p class="` + AskWhyClass + `" data-ask-why="session">`
+		out := `<` + tag + ` class="` + class + `" data-ask-why="session">`
 		if w.Focus != "" {
 			out += `<span class="font-semibold">Working on:</span> ` + esc(w.Focus)
 		}
@@ -88,7 +94,7 @@ func AskContextLine(w AskWhy) string {
 			}
 			out += `<span class="font-semibold">Last said:</span> ` + esc(w.Last)
 		}
-		return out + `</p>`
+		return out + `</` + tag + `>`
 	}
 	return ""
 }

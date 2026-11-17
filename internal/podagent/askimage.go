@@ -1,18 +1,13 @@
 package podagent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
 
+	"github.com/ZacxDev/muster/internal/askattach"
 	"github.com/ZacxDev/muster/internal/askimage"
 	"github.com/ZacxDev/muster/internal/workspacefile"
 )
@@ -32,6 +27,10 @@ import (
 // inside the resolved root. `..`, an absolute path elsewhere and a symlink out
 // are all refused, before the file is opened. The bytes are the other half:
 // muster-server sniffs and caps them again, whatever sent them.
+//
+// The upload itself is the ONE workspace-upload client (askattach.Send), which
+// an ask's attachment (`ccd ask-attach`) uses too: only the route, the cap and
+// the type rule are this file's.
 
 // AskImagePath is muster's route an officer instance uploads an ask image to.
 const AskImagePath = "/agent/officer/ask-images"
@@ -46,31 +45,8 @@ var ErrOutsideWorkspace = workspacefile.ErrOutside
 // regular file.
 func ResolveWorkspaceFile(root, p string) (string, error) { return workspacefile.Resolve(root, p) }
 
-// errTooLarge is an image over askimage.MaxBytes, found while streaming it.
+// errTooLarge is an image over askimage.MaxBytes.
 var errTooLarge = fmt.Errorf("the image is over %d MiB", askimage.MaxBytes>>20)
-
-// capReader passes at most left bytes and fails on the next one: the cap is
-// held WHILE the file streams, so a file that grows after its Stat cannot
-// send more.
-type capReader struct {
-	r    io.Reader
-	left int64
-}
-
-func (c *capReader) Read(p []byte) (int, error) {
-	if c.left < 0 {
-		return 0, errTooLarge
-	}
-	if int64(len(p)) > c.left+1 {
-		p = p[:c.left+1]
-	}
-	n, err := c.r.Read(p)
-	c.left -= int64(n)
-	if c.left < 0 {
-		return n, errTooLarge
-	}
-	return n, err
-}
 
 // UploadAskImage sends workspace file p (ResolveWorkspaceFile against root) to
 // muster at base as an ask image, with the agent's own token, and returns
@@ -84,58 +60,19 @@ func UploadAskImage(ctx context.Context, client *http.Client, base, token, root,
 	if base == "" || token == "" {
 		return askimage.Record{}, fmt.Errorf("%s and %s must be set (this pod reaches muster with them)", EnvConnectURL, EnvAgentToken)
 	}
-	real, err := ResolveWorkspaceFile(root, p)
+	raw, err := askattach.Send(ctx, client, askattach.Spec{
+		Target:   askattach.Target{Base: base, Path: AskImagePath, Header: http.Header{"X-Muster-Token": {token}}},
+		MaxBytes: askimage.MaxBytes, Noun: "the image",
+		TooLarge: func(string) error { return errTooLarge },
+		Type: func(p string, _ int64, head []byte) (string, error) {
+			ct, ok := askimage.Sniff(head)
+			if !ok {
+				return "", fmt.Errorf("%s is %s, not a PNG, JPEG or WebP image", p, ct)
+			}
+			return ct, nil
+		}}, root, p)
 	if err != nil {
 		return askimage.Record{}, err
-	}
-	f, err := os.Open(real)
-	if err != nil {
-		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
-	}
-	if st.Size() > askimage.MaxBytes {
-		return askimage.Record{}, errTooLarge
-	}
-	head := make([]byte, askimage.SniffLen)
-	n, err := io.ReadFull(f, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return askimage.Record{}, fmt.Errorf("cannot read %s: %v", p, err)
-	}
-	head = head[:n]
-	ct, ok := askimage.Sniff(head)
-	if !ok {
-		return askimage.Record{}, fmt.Errorf("%s is %s, not a PNG, JPEG or WebP image", p, ct)
-	}
-	body := &capReader{r: io.MultiReader(bytes.NewReader(head), f), left: askimage.MaxBytes}
-	u := strings.TrimRight(base, "/") + AskImagePath + "?filename=" + url.QueryEscape(filepath.Base(real))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
-	if err != nil {
-		return askimage.Record{}, err
-	}
-	req.ContentLength = st.Size()
-	req.Header.Set("X-Muster-Token", token)
-	req.Header.Set("Content-Type", ct)
-	resp, err := client.Do(req)
-	if errors.Is(err, errTooLarge) {
-		return askimage.Record{}, errTooLarge
-	}
-	if err != nil {
-		return askimage.Record{}, fmt.Errorf("reaching muster: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			return askimage.Record{}, fmt.Errorf("muster refused the image (%d): %s", resp.StatusCode, e.Error)
-		}
-		return askimage.Record{}, fmt.Errorf("muster refused the image (%d)", resp.StatusCode)
 	}
 	var up askimage.Record
 	if err := json.Unmarshal(raw, &up); err != nil || up.ID == "" {

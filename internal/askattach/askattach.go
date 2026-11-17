@@ -115,53 +115,100 @@ type Target struct {
 // the upload (Stat) and while it streams. client nil is a client that follows
 // no redirect (the request carries a credential).
 func Upload(ctx context.Context, client *http.Client, t Target, root, p string) (Record, error) {
-	real, err := workspacefile.Resolve(root, p)
+	raw, err := Send(ctx, noredirect.Client(client), Spec{Target: t, MaxBytes: MaxBytes, Noun: filepath.Base(p),
+		TooLarge: func(p string) error { return fmt.Errorf("%s: %w", p, ErrTooLarge) },
+		Type: func(p string, size int64, head []byte) (string, error) {
+			if size == 0 {
+				return "", fmt.Errorf("%s is empty", p)
+			}
+			if ct := Sniff(head); !Allowed(ct) {
+				return "", errors.New(Refused(p, ct))
+			}
+			return "application/octet-stream", nil
+		}}, root, p)
 	if err != nil {
 		return Record{}, err
 	}
+	var rec Record
+	if err := json.Unmarshal(raw, &rec); err != nil || rec.ID == "" {
+		return Record{}, errors.New("muster's answer carries no upload id")
+	}
+	return rec, nil
+}
+
+// THE ONE WORKSPACE-FILE UPLOAD CLIENT (Send): an ask's attachment (Upload,
+// `ccd ask-attach`, muster-mirror's MCP proxy) and an officer's ask image
+// (podagent.UploadAskImage, `ccd ask-image`) are each a Spec over it — the
+// route, the size cap and the type rule — so the resolve, the Stat cap, the
+// sniff, the streaming cap, the POST and the refusal's parsing are one code.
+
+// Spec is one kind of workspace upload.
+type Spec struct {
+	Target
+	// MaxBytes caps the file, before the upload (Stat) and while it streams;
+	// TooLarge is the error for file p over it.
+	MaxBytes int64
+	TooLarge func(p string) error
+	// Type checks file p (its size, its first SniffLen bytes) and answers the
+	// Content-Type to send, or the refusal.
+	Type func(p string, size int64, head []byte) (string, error)
+	// Noun names the file in muster's refusal: "muster refused <Noun> (413): …".
+	Noun string
+}
+
+// errCapped is the streaming cap's failure, which Send reports as TooLarge.
+var errCapped = errors.New("the file grew past its cap while it was sent")
+
+// Send sends file p — resolved inside root (workspacefile.Resolve) — as s
+// says, with client as given (the caller decides the redirect rule), and
+// returns muster's 2xx answer body; a non-2xx is muster's refusal, in its own
+// words when it gave some.
+func Send(ctx context.Context, client *http.Client, s Spec, root, p string) ([]byte, error) {
+	real, err := workspacefile.Resolve(root, p)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(real)
 	if err != nil {
-		return Record{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return nil, fmt.Errorf("cannot read %s: %v", p, err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return Record{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return nil, fmt.Errorf("cannot read %s: %v", p, err)
 	}
-	if st.Size() > MaxBytes {
-		return Record{}, fmt.Errorf("%s: %w", p, ErrTooLarge)
-	}
-	if st.Size() == 0 {
-		return Record{}, fmt.Errorf("%s is empty", p)
+	if st.Size() > s.MaxBytes {
+		return nil, s.TooLarge(p)
 	}
 	head := make([]byte, SniffLen)
 	n, err := io.ReadFull(f, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return Record{}, fmt.Errorf("cannot read %s: %v", p, err)
+		return nil, fmt.Errorf("cannot read %s: %v", p, err)
 	}
 	head = head[:n]
-	if ct := Sniff(head); !Allowed(ct) {
-		return Record{}, errors.New(Refused(p, ct))
+	ct, err := s.Type(p, st.Size(), head)
+	if err != nil {
+		return nil, err
 	}
-	body := &capReader{r: io.MultiReader(bytes.NewReader(head), f), left: MaxBytes}
-	u := strings.TrimRight(t.Base, "/") + t.Path + "?filename=" + url.QueryEscape(filepath.Base(real))
+	body := &capReader{r: io.MultiReader(bytes.NewReader(head), f), left: s.MaxBytes}
+	u := strings.TrimRight(s.Base, "/") + s.Path + "?filename=" + url.QueryEscape(filepath.Base(real))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
 	if err != nil {
-		return Record{}, err
+		return nil, err
 	}
 	req.ContentLength = st.Size()
-	for k, vs := range t.Header {
+	for k, vs := range s.Header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-	resp, err := noredirect.Client(client).Do(req)
-	if errors.Is(err, ErrTooLarge) {
-		return Record{}, fmt.Errorf("%s: %w", p, ErrTooLarge)
+	req.Header.Set("Content-Type", ct)
+	resp, err := client.Do(req)
+	if errors.Is(err, errCapped) {
+		return nil, s.TooLarge(p)
 	}
 	if err != nil {
-		return Record{}, fmt.Errorf("reaching muster: %w", err)
+		return nil, fmt.Errorf("reaching muster: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -170,15 +217,11 @@ func Upload(ctx context.Context, client *http.Client, t Target, root, p string) 
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-			return Record{}, fmt.Errorf("muster refused %s (%d): %s", filepath.Base(p), resp.StatusCode, e.Error)
+			return nil, fmt.Errorf("muster refused %s (%d): %s", s.Noun, resp.StatusCode, e.Error)
 		}
-		return Record{}, fmt.Errorf("muster refused %s (%d)", filepath.Base(p), resp.StatusCode)
+		return nil, fmt.Errorf("muster refused %s (%d)", s.Noun, resp.StatusCode)
 	}
-	var rec Record
-	if err := json.Unmarshal(raw, &rec); err != nil || rec.ID == "" {
-		return Record{}, errors.New("muster's answer carries no upload id")
-	}
-	return rec, nil
+	return raw, nil
 }
 
 // capReader passes at most left bytes and fails on the next one: the cap is
@@ -191,7 +234,7 @@ type capReader struct {
 
 func (c *capReader) Read(p []byte) (int, error) {
 	if c.left < 0 {
-		return 0, ErrTooLarge
+		return 0, errCapped
 	}
 	if int64(len(p)) > c.left+1 {
 		p = p[:c.left+1]
@@ -199,7 +242,7 @@ func (c *capReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.left -= int64(n)
 	if c.left < 0 {
-		return n, ErrTooLarge
+		return n, errCapped
 	}
 	return n, err
 }
