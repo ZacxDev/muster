@@ -86,8 +86,8 @@ func TestTheAnswerFormsTwoPostsAreUnchanged(t *testing.T) {
 			t.Errorf("%s: Dismiss in the answer row = %v, want %v:\n%s", c.name, got, c.inRow, out)
 		}
 		footer := regexp.MustCompile(`(?s)<div class="[^"]*" data-asks-footer>.*?</div>`).FindString(out)
-		if c.returnTo == "" && strings.Contains(footer, `form="ask-9-dismiss"`) == c.inRow {
-			t.Errorf("%s: Dismiss in the footer = %v, want %v:\n%s", c.name, !c.inRow, !c.inRow, out)
+		if inFooter := strings.Contains(footer, `form="ask-9-dismiss"`); c.returnTo == "" && inFooter == c.inRow {
+			t.Errorf("%s: Dismiss in the footer = %v, want %v:\n%s", c.name, inFooter, !c.inRow, out)
 		}
 		if c.returnTo == "" && !c.inRow && footer == "" {
 			t.Errorf("%s: no footer", c.name)
