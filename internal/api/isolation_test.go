@@ -589,7 +589,6 @@ var isolationClasses = map[string]routeClass{
 	// A plugin's chief instructions (0141): it names nothing — the token's
 	// own plugin's one section (TestAnotherOwnersChiefSectionNeverRenders).
 	"PUT /plugin/v1/chief/instructions": classPlugin,
-	"GET /plugin/v1/chief/instructions": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,

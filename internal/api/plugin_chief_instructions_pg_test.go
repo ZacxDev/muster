@@ -69,11 +69,9 @@ func (f *draftToolFixture) guide(t *testing.T, name string) (string, plugins.Plu
 // /plugins card and the SAME token is then served (200, pending).
 func TestATokenWithoutChiefExtensionIsRefusedItsChiefInstructions(t *testing.T) {
 	f := newDraftToolFixture(t)
-	for _, m := range []string{http.MethodPut, http.MethodGet} {
-		code, out := f.chiefInstr(t, f.plugTok, m, markdownBody("Wren notes belong on the wren board."))
-		if code != http.StatusForbidden || out["error"] != PluginCapabilityRefusal(plugins.CapChiefExtension) {
-			t.Fatalf("%s without chief_extension: %d %v; want 403 naming the capability", m, code, out)
-		}
+	code, out := f.chiefInstr(t, f.plugTok, http.MethodPut, markdownBody("Wren notes belong on the wren board."))
+	if code != http.StatusForbidden || out["error"] != PluginCapabilityRefusal(plugins.CapChiefExtension) {
+		t.Fatalf("PUT without chief_extension: %d %v; want 403 naming the capability", code, out)
 	}
 	if _, ok, err := f.plugins.ChiefInstructionsOf(f.asOwner, f.plugin.ID); ok || err != nil {
 		t.Fatalf("a refused PUT stored something: %v %v", ok, err)
@@ -81,7 +79,7 @@ func TestATokenWithoutChiefExtensionIsRefusedItsChiefInstructions(t *testing.T) 
 	if w := f.ownerForm(t, pluginsPath+"/"+strconv.FormatInt(f.plugin.ID, 10)+"/chief-extension", url.Values{"on": {"1"}}, sessionCookieFor(f.srv)); w.Code != http.StatusSeeOther {
 		t.Fatalf("the owner turning Chief instructions on: %d %s", w.Code, w.Body)
 	}
-	code, out := f.chiefInstr(t, f.plugTok, http.MethodPut, markdownBody("Wren notes belong on the wren board."))
+	code, out = f.chiefInstr(t, f.plugTok, http.MethodPut, markdownBody("Wren notes belong on the wren board."))
 	if code != http.StatusOK || out["state"] != "pending" || out["changed"] != true {
 		t.Fatalf("after the grant the SAME token's PUT: %d %v; want 200 pending", code, out)
 	}
@@ -135,8 +133,8 @@ func TestTheOwnerApprovesTheExactChiefInstructionsTheCardShows(t *testing.T) {
 	if w := f.ownerForm(t, approvePath, url.Values{"sha": {shaFirst}}, staleCookieFor(f.srv)); w.Code != http.StatusForbidden || w.Header().Get("X-Muster-Step-Up") != "required" {
 		t.Fatalf("approve with a stale sign-in: %d; want 403 asking for a step-up", w.Code)
 	}
-	if _, out := f.chiefInstr(t, tok, http.MethodGet, ""); out["state"] != "pending" {
-		t.Fatalf("after a stale-sign-in approve: %v; want still pending", out)
+	if c, _, _ := f.plugins.ChiefInstructionsOf(f.asOwner, p.ID); c.Approved() {
+		t.Fatal("after a stale-sign-in approve the section is approved; want still pending")
 	}
 
 	// The plugin changes its text after the page was drawn: the page's sha is stale.
@@ -148,17 +146,18 @@ func TestTheOwnerApprovesTheExactChiefInstructionsTheCardShows(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), html.EscapeString(ChiefInstructionsStaleRefusal)) {
 		t.Fatalf("approving the old sha after a change: %d; want 409 saying it changed", w.Code)
 	}
-	if _, out := f.chiefInstr(t, tok, http.MethodGet, ""); out["state"] != "pending" || out["approved_sha"] != nil {
-		t.Fatalf("after a stale approve: %v; want the new text still pending, nothing approved", out)
+	if c, _, _ := f.plugins.ChiefInstructionsOf(f.asOwner, p.ID); c.Approved() || c.ApprovedSHA != nil || c.Text != second {
+		t.Fatalf("after a stale approve: %+v; want the new text still pending, nothing approved", c)
 	}
 
 	// The current sha, fresh: approved.
 	if w := f.ownerForm(t, approvePath, url.Values{"sha": {sha(second)}}, sessionCookieFor(f.srv)); w.Code != http.StatusSeeOther {
 		t.Fatalf("approve the current sha: %d %s", w.Code, w.Body)
 	}
-	code, out := f.chiefInstr(t, tok, http.MethodGet, "")
-	if code != http.StatusOK || out["state"] != "approved" || out["approved_sha"] != sha(second) || out["approved_at"] == nil || out["markdown"] != second {
-		t.Fatalf("the plugin's GET after approval: %d %v", code, out)
+	// The plugin's PUT of the same text answers its state and changes nothing.
+	code, out := f.chiefInstr(t, tok, http.MethodPut, markdownBody(second))
+	if code != http.StatusOK || out["changed"] != false || out["state"] != "approved" || out["approved_sha"] != sha(second) || out["approved_at"] == nil || out["markdown"] != second {
+		t.Fatalf("the plugin's PUT of the same text after approval: %d %v", code, out)
 	}
 	secs, err := f.plugins.ApprovedChiefSections(context.Background(), f.owner)
 	if err != nil || len(secs) != 1 || secs[0].Text != second || secs[0].Plugin != "example-alder" {
@@ -212,7 +211,7 @@ func TestARevokedPluginsChiefInstructionsAreGone(t *testing.T) {
 	if secs, err := f.plugins.ApprovedChiefSections(context.Background(), f.owner); err != nil || len(secs) != 0 {
 		t.Fatalf("after the revoke the owner's chief renders %+v (%v); want none", secs, err)
 	}
-	if code, _ := f.chiefInstr(t, tok, http.MethodGet, ""); code != http.StatusUnauthorized {
-		t.Fatalf("the revoked token's GET: %d; want 401", code)
+	if code, _ := f.chiefInstr(t, tok, http.MethodPut, markdownBody(text)); code != http.StatusUnauthorized {
+		t.Fatalf("the revoked token's PUT: %d; want 401", code)
 	}
 }

@@ -155,7 +155,6 @@ GET /pages/{id}
 GET /pages/{id}/card
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
-GET /plugin/v1/chief/instructions
 GET /plugin/v1/drafts/checks
 GET /plugin/v1/pair/{request_id}
 GET /plugin/v1/self

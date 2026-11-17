@@ -56,7 +56,7 @@ A plugin token opens only the routes its **capabilities** allow:
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
-| `chief_extension` | [chief instructions](#chief-instructions): `PUT` and `GET /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
+| `chief_extension` | [chief instructions](#chief-instructions): `PUT /plugin/v1/chief/instructions`, one section of guidance for your chief that reaches it only once you approve its exact text. It grants the chief nothing (migration `0141`) |
 | `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
@@ -1096,14 +1096,19 @@ permission or approval.
   cleared in the same write, so a changed section never reaches the chief
   until you approve it again. Text A, then B, then A again is pending too.
   The same text again changes nothing and keeps its approval, so a plugin may
-  PUT on every start.
-- **`GET /plugin/v1/chief/instructions`** is the same object (without
-  `changed`), or `404` when the plugin has stored none.
+  PUT on every start. That is also how a plugin learns whether its section
+  is approved: there is no GET.
 
-Both need `chief_extension` (`403` naming it otherwise). They act as the
-token's owner, on the token's own plugin only. A team's plugin token is not
-served them yet: a team's plugins are viewer tokens, and the team door serves
-them the hand-off redeem and `/self` alone.
+The route needs `chief_extension` (`403` naming it otherwise). It acts as the
+token's owner, on the token's own plugin only.
+
+**Known limit: a team's chief gets no plugin sections today.** A team's plugin
+tokens are viewer tokens, and the team door serves them the hand-off redeem
+and `/self` alone, so a team's plugins cannot propose a section. The rendering
+already scopes a team's chief to the team's OWN plugins, never a member's
+personal one. Letting team tokens propose sections, a `chief_extension`
+option at mint on `/teams/{id}/plugins` and a manager's approval there are a
+later follow-up.
 
 **Approving it.** On `/plugins`, a plugin with `chief_extension` shows its
 section on its card **as text** (escaped, never rendered as markdown or HTML),
@@ -1132,8 +1137,10 @@ revoke it instead. **Revoking** a plugin deletes its section too.
 rule of muster's own, quoted line by line under a fixed line naming the plugin
 and the day you approved it. It takes effect at the chief's **next provision
 or restart**, as a connector does: approving, changing or revoking a section
-does not touch a running chief. Only the claude-code chief on Kubernetes reads
-plugin sections. The Docker Compose chief, the gateway chief and every worker
+does not touch a running chief. **If the sections cannot be read when the
+chief starts, that start is refused and retried**, rather than starting the
+chief without guidance you approved. Only the claude-code chief on Kubernetes
+reads plugin sections. The Docker Compose chief, the gateway chief and every worker
 read none.
 
 ### Pairing a plugin without handling its token

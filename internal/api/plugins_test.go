@@ -265,7 +265,6 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// chief_extension: this fixture's messages token is refused at the
 	// capability check.
 	{"/plugin/v1/chief/instructions", `{"markdown":"x"}`, "", http.StatusForbidden, http.MethodPut},
-	{"/plugin/v1/chief/instructions", "", "", http.StatusForbidden, http.MethodGet},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.

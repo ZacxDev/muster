@@ -31,7 +31,6 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
 	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
 	"PUT /plugin/v1/chief/instructions":            "chief_extension",
-	"GET /plugin/v1/chief/instructions":            "chief_extension",
 	// Pairing (plugin_pairing.go): NO plugin token at all — the request
 	// carries none, the poll carries its poll secret.
 	"POST /plugin/v1/pair":             "none",

@@ -745,8 +745,9 @@ retried, rather than starting it without guidance you approved.
 
 **Whose sections.** A person's chief gets that person's plugins' sections. A
 [team's chief](#a-teams-chief) gets the TEAM's own plugins' sections and never
-a member's personal plugin's (a team's plugins cannot propose sections yet, so
-today it gets none). The [Docker Compose chief](#on-the-docker-compose-install),
+a member's personal plugin's. **Known limit: today a team's chief gets
+none**, because a team's plugins cannot propose sections yet; that is a later
+follow-up ([plugins.md](plugins.md#chief-instructions)). The [Docker Compose chief](#on-the-docker-compose-install),
 whose tools are fixed, and the gateway chief get none.
 
 ### The chief runs without permission prompts

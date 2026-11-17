@@ -160,7 +160,7 @@ const (
 	CapDraftChecks Capability = "draft_checks"
 	// CapChiefExtension is a plugin that may store ONE instruction section
 	// for its owner's chief (migration 0141, chief_instructions.go): it opens
-	// PUT and GET /plugin/v1/chief/instructions. The section is rendered only
+	// PUT /plugin/v1/chief/instructions. The section is rendered only
 	// once the owner approves that exact text on /plugins, and grants the
 	// chief nothing. Chosen at mint, and toggled on the plugin's card, as
 	// CapDraftChecks is.

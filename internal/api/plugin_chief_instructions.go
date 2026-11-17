@@ -17,8 +17,9 @@ import (
 // internal/plugins chief_instructions.go, docs/plugins.md#chief-instructions).
 //
 //   - The plugin, with chief_extension: PUT /plugin/v1/chief/instructions
-//     {markdown} stores its one section (pending), GET reads it back with its
-//     sha, approved_sha and approved_at.
+//     {markdown} stores its one section and answers it back with its state,
+//     sha, approved_sha and approved_at. There is no GET: a plugin that wants
+//     its state PUTs the same text again, which changes nothing.
 //   - The owner, on /plugins: the plugin's card shows the pending text AS TEXT
 //     (escaped, never HTML) and an Approve that names the sha the page showed.
 //     It needs a fresh sign-in (step-up), as approving a pairing does: the
@@ -56,19 +57,18 @@ func (s *Server) chiefInstructions() chiefInstructionsStore {
 
 func (s *Server) registerPluginChiefInstructionRoutes(mux Mux) {
 	mux.HandleFunc("PUT "+pluginChiefInstructionsPath, s.requirePluginToken(s.handlePluginChiefInstructionsPut, plugins.CapChiefExtension))
-	mux.HandleFunc("GET "+pluginChiefInstructionsPath, s.requirePluginToken(s.handlePluginChiefInstructionsGet, plugins.CapChiefExtension))
 	// The owner's card: chief_extension on or off (draft-checks' gate), and
 	// the approval of one exact text (a fresh sign-in, checked in the handler).
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/chief-extension", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginChiefExtensionToggle)))
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/approve-chief-instructions", s.requirePluginsOn(s.requireOperatorWrite(s.handleChiefInstructionsApprove)))
 }
 
-// pluginChiefInstructionsView is the plugin door's answer: its own section.
+// pluginChiefInstructionsView is the PUT's answer: the plugin's own section.
 type pluginChiefInstructionsView struct {
 	plugins.ChiefInstructions
 	// State is "approved" when the owner approved THIS text, else "pending".
 	State string `json:"state"`
-	// Changed (PUT only) is whether this PUT stored new text.
+	// Changed is whether this PUT stored new text.
 	Changed *bool `json:"changed,omitempty"`
 }
 
@@ -120,27 +120,6 @@ func (s *Server) handlePluginChiefInstructionsPut(w http.ResponseWriter, r *http
 	v := chiefInstructionsView(c)
 	v.Changed = &changed
 	s.writeJSON(w, http.StatusOK, v)
-}
-
-// handlePluginChiefInstructionsGet is GET /plugin/v1/chief/instructions: the
-// plugin's own section, its sha, approved_sha and approved_at (404 for none).
-func (s *Server) handlePluginChiefInstructionsGet(w http.ResponseWriter, r *http.Request) {
-	cs := s.chiefInstructions()
-	if cs == nil {
-		http.NotFound(w, r)
-		return
-	}
-	p := pluginFromContext(r.Context())
-	c, ok, err := cs.ChiefInstructionsOf(r.Context(), p.ID)
-	switch {
-	case err != nil:
-		s.logger.Printf("plugins: plugin %d chief instructions read: %v", p.ID, err)
-		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the instructions could not be read"})
-	case !ok:
-		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "this plugin has stored no chief instructions"})
-	default:
-		s.writeJSON(w, http.StatusOK, chiefInstructionsView(c))
-	}
 }
 
 // handlePluginChiefExtensionToggle is POST /plugins/{id}/chief-extension

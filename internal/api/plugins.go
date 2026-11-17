@@ -243,7 +243,6 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 var teamPluginRoutes = map[string]bool{
 	"POST /plugin/v1/handoffs/redeem":              true,
 	"GET /plugin/v1/self":                          true,
-	"GET /plugin/v1/chief/instructions":            false,
 	"PUT /plugin/v1/chief/instructions":            false,
 	"GET /plugin/v1/drafts/checks":                 false,
 	"GET /plugin/v1/tasks":                         false,
