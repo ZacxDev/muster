@@ -9,7 +9,8 @@ need a domain, a phone, node access or an outward filing are listed at the end
 ([spikes not run here](#spikes-not-run-here)).
 
 **Scope.** Every number below was **read** from the vendor's own documentation
-on **2026-11-16**. Nothing was measured, no account was created, nothing was
+on **2026-11-16**; §1's UNVERIFIED cells were re-checked on **2026-11-17**,
+against the docs and, for deSEC, its source. Nothing was measured, no account was created, nothing was
 filed. Vendors change limits without notice; re-read a row before acting on it.
 Anything not confirmed from a primary source is marked **UNVERIFIED**.
 `example-muster.net` is the design's placeholder zone.
@@ -33,11 +34,11 @@ fit in one zone, at 4 records per server and at 8 with Pages.
 
 | | Cloudflare | AWS Route 53 | Hetzner DNS (Console / Cloud API) | deSEC | Google Cloud DNS |
 |---|---|---|---|---|---|
-| **records per zone** | Free: **200** (zones created on or after 2024-09-01; older Free zones 1,000). Pro and Business: **3,500**. Enterprise: one quota per account, default **1,000,000** (from 2026-06-10) | **10,000** per hosted zone. Can be raised, at extra charge | **500**. Can be raised "if there is a justified demand". 50 per RRset | No per-domain cap documented (**UNVERIFIED**). 4,091 records per RRset. **New accounts get 1 domain** (`limit_domains`; community reports, **UNVERIFIED** from the docs) | A quota ("ResourceRecordSets per zone"), adjustable. **The default number is not printed in the docs** (**UNVERIFIED**) |
-| **API write limits** | **1,200 requests / 5 min per user**, all endpoints. Going over blocks every call for 5 min (429) | Account bucket: **10 req/s sustained, burst 50**. Change bucket: **100 changes/s, burst 1,500** (UPSERT counts 2). One in-flight change per zone (`PriorRequestNotComplete`) | **3,600 requests/hour per project**, refilled 1/s | RRset writes **per domain: 2/s, 15/min, 100/h, 300/day** | "DNS writes per region per minute" quota, adjustable. **The default number is not printed** (**UNVERIFIED**) |
+| **records per zone** | Free: **200** (zones created on or after 2024-09-01; older Free zones 1,000). Pro and Business: **3,500**. Enterprise: one quota per account, default **1,000,000** (from 2026-06-10) | **10,000** per hosted zone. Can be raised, at extra charge | **500**. Can be raised "if there is a justified demand". 50 per RRset | No per-domain cap in the docs or in the API source (**UNVERIFIED**: an absence, not a statement). 4,091 records per RRset. **Domains per account are computed**, not fixed: `limit_domains` "grows with the domains you have delegated to us securely (with DNSSEC enabled)"; the source's floor for an account with none secured is **1** (deployed value not public). One is enough for this product | A quota on **RRsets**, "Resource record sets per managed zone", adjustable. **The default number is not printed in the docs** (**UNVERIFIED**: the page's sample `gcloud dns project-info describe` output shows `rrsetsPerManagedZone: 10000`, but it is an example, and its `rrsetAdditionsPerChange: 3000` disagrees with the page's own 1,000 limit) |
+| **API write limits** | **1,200 requests / 5 min per user**, all endpoints. Going over blocks every call for 5 min (429) | Account bucket: **10 req/s sustained, burst 50**. Change bucket: **100 changes/s, burst 1,500** (UPSERT counts 2). One in-flight change per zone (`PriorRequestNotComplete`) | **3,600 requests/hour per project**, refilled 1/s | RRset write **requests** per domain: **2/s, 15/min, 100/h, 300/day**. A bulk request is **one** request ("If you require more requests, consider using bulk requests") | "DNS writes per region per minute" quota, adjustable. **The default number is not printed** (**UNVERIFIED**: no figure anywhere on the quotas page; `gcloud dns project-info describe` on a real project would show it) |
 | **token scoped to one zone** | **yes** (zone resources) | **yes** (IAM `Resource` = the hosted zone) | **no**: a token belongs to a **project** and reaches everything in it, servers included. A project holding only the zone gets the same effect | **yes** (token policy `domain`) | **yes** (IAM on the managed zone) |
 | **to one record name / type** | **no**: "DNS Write" covers the whole zone | **yes**: `route53:ChangeResourceRecordSetsNormalizedRecordNames`, `…RecordTypes`, `…Actions` (wildcards with `StringLike`) | **no**: Read or Read & Write only | **yes**: policy on (`domain`, `subname`, `type`) with `perm_write`, longest-prefix match | **yes**: IAM Conditions on `resource.name` ending `/rrsets/<name>./<TYPE>` |
-| **CAA** | supported (tag + value). 🔴 **Universal SSL serves its own permissive CAA RRset in place of yours**, so `accounturi` is not enforced unless Universal SSL is off | supported. Parameters go in the value, separated by `;` (the docs' example: `0 issue "ca.example.net; account=123456"`) | listed as supported. Whether the value can carry parameters is not stated (**UNVERIFIED**) | listed as supported. Parameters not stated (**UNVERIFIED**) | supported. Parameters not stated (**UNVERIFIED**) |
+| **CAA** | supported (tag + value). 🔴 **Universal SSL serves its own permissive CAA RRset in place of yours**, so `accounturi` is not enforced unless Universal SSL is off | supported. Parameters go in the value, separated by `;` (the docs' example: `0 issue "ca.example.net; account=123456"`) | listed as supported. Whether the value can carry parameters is not stated (**UNVERIFIED**: the record-types page shows only `letsencrypt.org`; the API spec only lists the type) | listed as supported. Parameters not stated (**UNVERIFIED**: no parameterised value in the docs or the API's test fixtures) | supported. Parameters not stated (**UNVERIFIED**: the record-types page's only example is `ca.example.net`) |
 | **price** | Free / paid plans | per zone + per query | free ("we do not charge for our DNS zones") | free (non-profit) | per zone + per query |
 
 `accounturi` and `validationmethods` are text inside the CAA value (RFC 8657),
@@ -65,10 +66,14 @@ own NS/SOA) and **2 transient TXT** per in-flight order. Floor of
 | Cloudflare Enterprise, 1,000,000 per account | **249,998** | **124,999** |
 
 **Records or RRsets?** Hetzner and Cloudflare count individual records.
-Route 53's quota says "Records", and whether it counts record sets or
-individual values is **UNVERIFIED**. If it counts RRsets, a server is 3
-(`A`, `AAAA`, one two-value `CAA` RRset) and 6 with Pages, and the zone holds
-about a third more.
+Google Cloud DNS counts **RRsets** (its quota is "Resource record sets per
+managed zone", with a separate per-RRset records quota). Route 53's quota
+says "Records", and whether it counts record sets or individual values is
+**UNVERIFIED**: the API's limit type is named `MAX_RRSETS_BY_ZONE` but
+described as "the maximum number of records"; `GetHostedZoneLimit`'s `Count`
+on a zone holding one two-value RRset would answer it. Counted per RRset, a
+server is 3 (`A`, `AAAA`, one two-value `CAA` RRset) and 6 with Pages, and
+the zone holds about a third more.
 
 #### Write rates per server
 
@@ -81,16 +86,26 @@ So each renewal costs 2 TXT writes (set, then delete), per name.
 Renewing at a third of 45 days left means every 30 days. A server with Pages
 is then **about 4 writes a month**, before retries and claims.
 
-- **deSEC's per-domain limit is the binding one.** The whole product is one
-  domain, so **300 RRset writes a day** covers about 150 orders a day, about
-  4,500 names on a 30-day cycle. That is ~2,250 servers with Pages, and that
-  is before retries, claims and tombstones. A burst, such as re-issuing
-  everything after a CA incident, runs at 50 orders an hour (100/h) only for
-  the first 3 hours; then 300/day binds, so re-issuing all ~4,500 names takes
-  about **30 days**. A CA's revocation deadline after an incident is measured
-  in **days**, so on deSEC a mass re-issue would miss it. Whether one
-  bulk request counts as one write is **UNVERIFIED**: the docs say only that a
-  bulk request is signed once.
+- **deSEC's per-domain limit is the binding one, and it counts requests, not
+  RRsets.** A bulk request is **one** write: the throttle records one hit per
+  HTTP request, and the bulk endpoint (`rrsets/`) shares the per-domain
+  scope (source, `desecapi/throttling.py`, `views/records.py`); the docs say
+  "If you require more requests, consider using bulk requests". This
+  corrects the 2026-11-16 reading, which took one write per RRset.
+  - **One request per TXT write**: the whole product is one domain, so
+    **300 a day** covers about 150 orders a day, about 4,500 names on a
+    30-day cycle, ~2,250 servers with Pages, before retries, claims and
+    tombstones. A mass re-issue after a CA incident runs at 50 orders an hour
+    (100/h) for 3 hours, then 300/day binds: all ~4,500 names take about
+    **30 days**, and a CA's revocation deadline is measured in **days**.
+  - **Batched**: 300/day is one flush about every **5 minutes**, each
+    carrying every pending set and delete. The rate then no longer caps
+    servers or a mass re-issue; request size does (an RRset at most 64,000
+    bytes of JSON; the API forwards at most 32 MiB to its backend), and that is
+    not quantified here. The cost: the challenge endpoint must queue its
+    writes and flush them, and an order waits up to one flush for its TXT
+    and one for its removal, so the DNS table's "≤ 10 min per order" holds
+    only at about 5-minute flushes.
 - **Hetzner's 3,600/h is per project**, shared with anything else in that
   project.
 - **Cloudflare's 1,200 / 5 min** and **Route 53's 10 req/s** are far above
@@ -109,7 +124,7 @@ is then **about 4 writes a month**, before retries and claims.
   credentials:
   - a **TXT credential** for the challenge endpoint: names
     `ForAllValues:StringLike` `_acme-challenge.*.example-muster.net`, types
-    `TXT`, actions `UPSERT`/`DELETE`;
+    `TXT`, actions `UPSERT`/`DELETE`, each key also `Null` = `false`;
   - a **records credential** for claim and tombstone (`A`, `AAAA`, `CAA` at
     `<id>`, `<pid>`).
 
@@ -121,10 +136,15 @@ is then **about 4 writes a month**, before retries and claims.
   narrows only if the records credential is kept off the node (used by a
   separate claim worker). That is a design choice for the operator, not
   something this spike decides.
-  - **UNVERIFIED:** IAM's `ForAllValues` evaluates true when a request has
-    **no** values for the key. A phase-1 test should run the policy simulator
-    against a CAA change, an `A` change and an empty change. The IAM `*`
-    also matches across dots, so `_acme-challenge.a.b.example-muster.net`
+  - 🔴 **Confirmed (IAM docs):** `ForAllValues` "also returns `true` if
+    there are no context keys in the request", and IAM says to "always
+    include the `Null` condition operator in your policy with a `false`
+    value". So the TXT credential needs `"Null": {key: "false"}` for **each**
+    of the three keys; Route 53's own example policies leave it out. A
+    phase-1 test should still run the policy simulator against a CAA
+    change, an `A` change and an empty change. Also confirmed: `StringLike`'s
+    `*` is a "multi-character match wildcard" in "patternless matching", so
+    it matches across dots and `_acme-challenge.a.b.example-muster.net`
     would be writable. That name authorises nothing the design uses, but a
     test should pin it.
 - 🔴 **If Cloudflare is chosen, Universal SSL must be off on the zone**, or the
@@ -145,8 +165,10 @@ is then **about 4 writes a month**, before retries and claims.
   a published per-zone cap in the thousands, published write limits far above
   the load, per-name and per-type credentials, and a documented
   parameterised-CAA example. deSEC is the free alternative with the same
-  credential model, but its 300 writes/day per domain caps the product at
-  about 2,250 servers with Pages, before retries and claims. Google Cloud DNS has the credential model
+  credential model, but its 300 write requests/day per domain means the
+  challenge endpoint must batch its writes (a flush about every 5 minutes);
+  unbatched, it caps the product at about 2,250 servers with Pages, before
+  retries and claims. Google Cloud DNS has the credential model
   but does not print its defaults. Phase 0's DNS-01 + CAA negative-control
   spike should run on the provider actually chosen.
 
@@ -165,6 +187,15 @@ is then **about 4 writes a month**, before retries and claims.
 - deSEC token policies: <https://desec.readthedocs.io/en/latest/auth/tokens.html>; rate limits: <https://desec.readthedocs.io/en/latest/rate-limits.html>; RRsets and CAA: <https://desec.readthedocs.io/en/latest/dns/rrsets.html>
 - Google Cloud DNS quotas (page last updated 2026-11-10): <https://docs.cloud.google.com/dns/quotas>; per-RRset IAM conditions: <https://docs.cloud.google.com/dns/docs/zones/iam-per-resource-zones>
 - Let's Encrypt CAA parameters: <https://letsencrypt.org/docs/caa/>; lifetime schedule: <https://letsencrypt.org/2025/12/02/from-90-to-45>
+
+Added for the UNVERIFIED cells (read 2026-11-17):
+
+- deSEC source, `desec-stack` at `991b91ab` (2026-11-04): throttle rates `api/api/settings.py`, one hit per request `api/desecapi/throttling.py`, bulk endpoint's scope `api/desecapi/views/records.py`, domain limit `api/desecapi/models/users.py` (`effective_limit_domains`); <https://github.com/desec-io/desec-stack>
+- deSEC `limit_domains`: <https://desec.readthedocs.io/en/latest/auth/account.html>; domain limit 403: <https://desec.readthedocs.io/en/latest/dns/domains.html>
+- Google Cloud DNS record types (CAA example): <https://docs.cloud.google.com/dns/docs/records-overview>; quotas re-read (page last updated 2026-11-10): <https://docs.cloud.google.com/dns/quotas>
+- Route 53 `GetHostedZoneLimit` (`MAX_RRSETS_BY_ZONE`): <https://docs.aws.amazon.com/Route53/latest/APIReference/API_GetHostedZoneLimit.html>
+- IAM `ForAllValues` and `Null`: <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html>; `StringLike` wildcards: <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html>
+- Hetzner record types (CAA): <https://docs.hetzner.com/networking/dns/record-types/overview/>
 
 ## 2. CT aggregator
 
