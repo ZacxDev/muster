@@ -921,8 +921,37 @@ waits on the primary's turn (no `409 busy`), and the primary never waits on a
 chat. The lane is the officer's own CLI in the officer's own pod: it has the
 officer's tools, its connectors and grants, and its permissions — **full
 powers**, by operator decision — and loads its charter with `officer_brief` on
-its first turn. A chat shows as an ordinary session on the instance's agent
-page (its title `Chat <chat_id>`): every turn muster sent and every reply.
+its first turn.
+
+**muster keeps its own copy of every chat.** Each chat shows as an ordinary
+session on its instance's agent page (titled `Chat <chat_id>`), holding every
+turn muster sent the lane and every reply the lane gave. The HQ server holds
+the chat itself; this copy is so an operator can read what the officer was
+told and said from muster too, with no UI of its own.
+
+**A chat lane's own tool calls are the chat's.** Every CLI in the pod calls
+muster's MCP server with the agent's one token, so muster asks `ccd` (with
+`X-Muster-CC-MCP-Session: 1` on the lane's turns) to start a chat lane's CLI
+with an MCP config of its own: the servers `ccd seed` registered, muster's
+carrying `X-Muster-CC-Session: officer-chat:<chat_id>` on every request
+(`--mcp-config <file> --strict-mcp-config`). A call carrying an officer chat's
+key is that lane's:
+
+- it acts as the chat's holder, `<instance>/chat`: a counted read
+  (`officer_kube_read`, `officer_obs_raw`, a judgement instance's
+  `officer_obs_query`) is charged to the chat's item and sent to HQ for it —
+  never refused for want of a queue claim, never charged to an item the
+  primary holds;
+- it takes no queue work: `officer_claim` (claim-next and by id),
+  `officer_heartbeat`, `officer_complete`, `officer_release`, and the tools
+  that end their holder's lease (`officer_ask_person`, `officer_task_ask`,
+  `officer_flood_block_propose`, `officer_rollout_promote_propose`) are
+  refused, naming the chat. muster holds and ends the chat's item.
+
+A call without the header (the primary's, and a lane on a `ccd` older than
+this version, which ignores the ask) is the instance's own, as before. The
+header is the agent's own word about its own calls, like everything that
+arrives with its token: it can only ever reach that instance's own chat claims.
 
 **One turn**, run by muster-server (`officers.ChatRunner`):
 
@@ -938,12 +967,13 @@ page (its title `Chat <chat_id>`): every turn muster sent and every reply.
    (@login) wrote:`). The claim is heartbeated every minute while the turn
    runs (a 5-minute lease);
 4. **reply** with the lane's final assistant text
-   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`, cut at 64
-   KiB; a turn that ended with no text replies "(The officer's turn ended
-   without a text reply.)"). HQ completes the item.
+   (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`; the HQ
+   server caps its length, muster does not; a turn that ended with no text
+   replies "(The officer's turn ended without a text reply.)"). HQ completes
+   the item.
 
 **Never re-sent, never skipped.** The lane's row keeps two marks (migration
-0147): the highest chat seq the lane has seen, and the last one HQ took a
+0148): the highest chat seq the lane has seen, and the last one HQ took a
 reply for. A message is marked seen *before* it is sent, and the mark is put
 back when `ccd` refuses the turn before typing anything. So a muster that
 restarts mid-turn, or a reply HQ never took, leaves seen past answered: the
@@ -3668,9 +3698,8 @@ uses `POST /officers/{id}/items/{item}/transcript`
 officer may use `GET /officers/{id}/obs/queries` and `POST
 /officers/{id}/obs/query` ([Observability queries](#observability-queries)). An HQ
 officer's [chat sessions](#chat-sessions) use `GET
-/officers/{id}/chats/{chat}/messages?after=<seq>` (muster reads `{messages:
-[{seq, role, author_login, author_name, text}], chat?: {name}}`, a bare array
-of messages too, and `author_display_name` where `author_name` is absent) and
+/officers/{id}/chats/{chat}/messages?after=<seq>` (answered `{messages:
+[{seq, role, author_login, author_name, text}], chat: {name}}`) and
 `POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}` (answered
 `{seq}`). Where the contract leaves a shape open, muster accepts:
 

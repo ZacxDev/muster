@@ -164,9 +164,15 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	disabled, off := s.mcpFeatureHooks(agentDoor)
 	compose := s.isComposeChief(r.Context(), a)
+	// The session the call says it comes from (agents.HeaderCCSession): only
+	// an officer CHAT lane's key means anything here (withChatLaneCall,
+	// officer_chat.go) — its ccd starts it with an MCP config that sends it.
+	session := r.Header.Get(agents.HeaderCCSession)
 	s.serveMCP(w, r, mcpSurface{
-		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
-		call:         func(ctx context.Context, name, args string) string { return s.dispatchAgentTool(ctx, a, name, args) },
+		tools: func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
+		call: func(ctx context.Context, name, args string) string {
+			return s.dispatchAgentTool(withChatLaneCall(ctx, session), a, name, args)
+		},
 		instructions: s.mcpInstructionsFor(r.Context(), a),
 		disabled:     disabled,
 		offFeatures:  off,

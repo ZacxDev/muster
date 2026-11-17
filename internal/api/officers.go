@@ -1781,6 +1781,18 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return toolErr("you act for officer %s only; %s cannot name another officer", o.ID, name), true
 		}
 	}
+	// 🔴 A CHAT LANE'S CALL (officer_chat.go): it acts as its chat claim's
+	// holder (officerCallerName), so its reads are its chat item's and its
+	// item verbs reach that item only; and it takes no queue work.
+	caller := officerCallerName(ctx, a)
+	if chat, lane := chatLaneCall(ctx); lane {
+		switch name {
+		case officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
+			// these end the holder's lease: the chat's item is the runner's
+			officers.ToolAskPerson, officers.ToolTaskAsk, officers.ToolFloodBlockPropose, officers.ToolRolloutPromotePropose:
+			return chatLaneQueueRefusal(name, chat), true
+		}
+	}
 	if isShipTool(name) {
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
@@ -1793,11 +1805,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	case officers.ToolTaskList, officers.ToolTaskGet:
 		return officerTaskRead(ctx, c, name, arguments), true // officer_tasks.go
 	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose, officers.ToolRolloutPromotePropose:
-		return s.officerItemAsk(ctx, c, o, a.Name, name, arguments), true // officer_item_asks.go
+		return s.officerItemAsk(ctx, c, o, caller, name, arguments), true // officer_item_asks.go
 	case officers.ToolPRContext:
 		return officerPRContext(ctx, c, arguments), true // officer_pr_context.go
 	case officers.ToolGapTask:
-		return officerGapTask(ctx, c, a.Name, arguments), true // officer_gap_tasks.go
+		return officerGapTask(ctx, c, caller, arguments), true // officer_gap_tasks.go
 	case officers.ToolPostDraft:
 		return s.officerPostDraft(ctx, a, o, c, arguments), true // plugin_outbound.go
 	case officers.ToolContactGet, officers.ToolContactsList, officers.ToolContactNote:
@@ -1836,7 +1848,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			if present {
 				args = rest
 			}
-			item, err := s.heldItem(ctx, c, a.Name, named, false)
+			item, err := s.heldItem(ctx, c, caller, named, false)
 			if err != nil {
 				return heldItemRefusal(name, err), true
 			}
@@ -1854,7 +1866,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err := ob.ObsQuery(ctx, args)
 		return officerToolResult(name, body, err), true
 	}
-	instance := a.Name
+	instance := caller
 	var in struct {
 		ItemID       officers.ItemID `json:"item_id"`
 		LeaseSeconds int             `json:"lease_seconds"`

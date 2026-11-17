@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,7 +35,7 @@ type officerChatLanes struct{ s *Server }
 
 var _ officers.ChatLanes = officerChatLanes{}
 
-// errNoChatStore is a chat on a deployment whose agents store has no 0147
+// errNoChatStore is a chat on a deployment whose agents store has no 0148
 // half (no database).
 var errNoChatStore = errors.New("officers: this deployment's agents store cannot keep a chat's session (it needs the database)")
 
@@ -157,9 +159,63 @@ func (l officerChatLanes) Turn(ctx context.Context, o officers.Officer, n int, c
 }
 
 // officerChatTurnContext is the context a chat turn on agent a's session sess
-// is sent under: the session's own route (withSessionRoute) and nothing else.
+// is sent under: the session's own route (withSessionRoute), plus
+// agents.HeaderCCMCPSession — ccd starts the chat's CLI with an MCP config
+// naming its session, so the lane's own tool calls reach dispatchOfficerTool
+// as the chat's (chatLaneCall), never as the primary's. withRoute, the
+// route every other session (the chief's) takes, is unchanged.
 func officerChatTurnContext(ctx context.Context, a agents.Agent, sess agents.ChatSession) context.Context {
-	return withSessionRoute(ctx, a, sess)
+	ctx = withSessionRoute(ctx, a, sess)
+	r, _ := agents.TurnRouteFrom(ctx)
+	h := r.Header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	h.Set(agents.HeaderCCMCPSession, "1")
+	r.Header = h
+	return agents.WithTurnRoute(ctx, r)
+}
+
+// chatLaneKey is the context key of a chat lane's tool call (withChatLaneCall).
+type chatLaneKey struct{}
+
+// withChatLaneCall marks ctx as a tool call from the chat lane whose session
+// key is sessionKey — POST /mcp's agents.HeaderCCSession — when that is an
+// officer chat's key (officers.ChatSessionKeyPrefix and a valid chat id);
+// any other value leaves ctx as it is, so no other session's call changes.
+func withChatLaneCall(ctx context.Context, sessionKey string) context.Context {
+	chat, ok := strings.CutPrefix(sessionKey, officers.ChatSessionKeyPrefix)
+	if !ok || officers.ChatSessionKey(chat) != sessionKey || !officers.ValidChatID(chat) {
+		return ctx
+	}
+	return context.WithValue(ctx, chatLaneKey{}, chat)
+}
+
+// chatLaneCall is the chat id of the lane ctx's tool call comes from; false
+// for every other call (the primary's, any non-officer agent's).
+func chatLaneCall(ctx context.Context) (string, bool) {
+	chat, ok := ctx.Value(chatLaneKey{}).(string)
+	return chat, ok && chat != ""
+}
+
+// officerCallerName is the `instance` agent a's officer tool call acts as with
+// the backend: a chat lane's is its chat claim's holder (officers.ChatHolder),
+// so its item verbs reach its chat item and never the primary's claims; every
+// other call is the agent's own name, as before.
+func officerCallerName(ctx context.Context, a agents.Agent) string {
+	if _, ok := chatLaneCall(ctx); ok {
+		return officers.ChatHolder(a.Name)
+	}
+	return a.Name
+}
+
+// chatLaneQueueRefusal is the refusal of a queue verb (claim, heartbeat,
+// complete, release) or a verb that ends its holder's lease (an ask) from a
+// chat lane: a chat session works its chat, and muster holds and ends its
+// chat's item.
+func chatLaneQueueRefusal(tool, chat string) string {
+	return toolErr("%s is not offered to a chat session: this session is chat %s, which muster claims, keeps and answers for you. "+
+		"Reply to the team member in plain text; queue work is your instance's primary session's", tool, chat)
 }
 
 // chatItemRefusal is officer_claim's answer when the item it claimed is a chat

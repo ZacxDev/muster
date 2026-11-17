@@ -88,6 +88,17 @@ import (
 //
 // Its transcript stays on disk (a few KiB a check); nothing deletes it.
 //
+// 🔴 A CHAT LANE SAYS WHO IT IS (X-Muster-CC-MCP-Session: 1 — muster sets it
+// on an officer's chat lane only, internal/api officerChatTurnContext). Every
+// CLI in the pod calls muster's MCP server with the agent's one token, so a
+// lane's call is otherwise indistinguishable from the primary's — and muster
+// must charge a chat lane's reads to its chat, and refuse it queue work. Such a
+// lane's CLI starts with `--mcp-config <file> --strict-mcp-config`: the file
+// (laneMCPConfig, written on every start) is the user-scope mcpServers `ccd
+// seed` registered, with muster's entry carrying X-Muster-CC-Session: <the
+// lane's key> on every request. Fixed for the lane's life. Every other lane
+// (the chief's, a job's) starts exactly as before.
+//
 // 🔴 A CHECK LANE HAS NO TOOLS (X-Muster-CC-Toolless: 1 — muster sets it on the
 // same route as ephemeral, internal/api withRoute). A check's prompt quotes
 // OTHER sessions' transcripts; fencing them as "data, not instructions" is
@@ -148,6 +159,10 @@ const (
 	// LANE HAS NO TOOLS" above). Read only on a turn that names a session; any
 	// other value is a lane with the CLI's usual tools.
 	headerCCToolless = "X-Muster-CC-Toolless"
+	// headerCCMCPSession: "1" starts the lane's CLI with an MCP config of its
+	// own naming its session (see "A CHAT LANE SAYS WHO IT IS" above). Read
+	// only on a turn that names a session; any other value changes nothing.
+	headerCCMCPSession = "X-Muster-CC-MCP-Session"
 	// headerCCPinned: "1" pins the lane — the chief's PRIMARY chat (see "THE
 	// PINNED LANE" above). Read only on a turn that names a session.
 	headerCCPinned = "X-Muster-CC-Pinned"
@@ -196,6 +211,8 @@ type laneMode struct {
 	ephemeral bool
 	// toolless: headerCCToolless — the CLI starts with toollessArgs.
 	toolless bool
+	// mcpSession: headerCCMCPSession — the CLI starts with laneMCPConfig.
+	mcpSession bool
 	// pinned: headerCCPinned — the chief's primary (see "THE PINNED LANE").
 	// Unlike the two above it is the latest turn's word (setPinnedLocked).
 	pinned bool
@@ -489,6 +506,10 @@ type lane struct {
 	// toolless: the CLI starts with toollessArgs (headerCCToolless). Fixed for
 	// the lane's life; set before its supervisor first builds argv.
 	toolless bool
+	// mcpSession: the CLI starts with an MCP config naming its session
+	// (headerCCMCPSession, laneMCPConfig). Fixed for the lane's life, like
+	// toolless.
+	mcpSession bool
 	// pinned: the chief's primary (headerCCPinned): never evicted, not counted
 	// against the cap. Guarded by lanes.mu; set by setPinnedLocked.
 	pinned   bool
@@ -610,6 +631,11 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q is toolless=%v, not %v: whether a session's CLI has tools is fixed", key, ln.toolless, mode.toolless)}
 		}
+		if ln.mcpSession != mode.mcpSession {
+			l.mu.Unlock()
+			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
+				Message: fmt.Sprintf("session %q is mcp_session=%v, not %v: whether a session's MCP calls name it is fixed", key, ln.mcpSession, mode.mcpSession)}
+		}
 		ln.reserved++
 		l.setPinnedLocked(ln, mode.pinned)
 		l.mu.Unlock()
@@ -633,7 +659,7 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 		delete(l.set, evict.id)
 	}
 	ln := l.newLane(id, key, model, workdir)
-	ln.ephemeral, ln.toolless = ephemeral, mode.toolless
+	ln.ephemeral, ln.toolless, ln.mcpSession = ephemeral, mode.toolless, mode.mcpSession
 	l.setPinnedLocked(ln, mode.pinned)
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -822,6 +848,17 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		// Read on every start, so a restart or a resume is tool-less too.
 		if ln.toolless {
 			argv = append(argv, toollessArgs...)
+		} else if ln.mcpSession {
+			// 🔴 A CHAT LANE SAYS WHO IT IS. Fail CLOSED: a config that cannot
+			// be written starts the lane with no MCP server at all, never with
+			// the user-scope one, whose calls would read as the primary's.
+			path, err := writeLaneMCPConfig(l.configDir, id, key)
+			if err != nil {
+				log.Printf("ccd: lane %s: its MCP config: %v; starting it with no MCP server", id, err)
+				argv = append(argv, "--strict-mcp-config")
+			} else {
+				argv = append(argv, "--mcp-config", path, "--strict-mcp-config")
+			}
 		}
 		if transcriptExists(l.configDir, dir, uuid) {
 			return append(argv, "--resume", uuid), modeContinue
@@ -1030,4 +1067,56 @@ func (l *lanes) health() []laneHealth {
 		out = append(out, h)
 	}
 	return out
+}
+
+// laneMCPDir is where a chat lane's MCP config is written, under ccd's
+// config dir.
+const laneMCPDir = "ccd-lanes"
+
+// writeLaneMCPConfig writes the MCP config a chat lane id (session key) starts
+// with — `{"mcpServers": …}`: every user-scope server in <configDir>/.claude.json,
+// muster's (mcpServerName) with headerCCSession: key added to its headers —
+// and answers its path. The file holds the agent's muster token, as
+// .claude.json does, and is written 0600. An absent muster entry is an error
+// (the lane would have no muster tools, and nothing to name its session to).
+func writeLaneMCPConfig(configDir, id, key string) (string, error) {
+	st, err := readJSONObject(filepath.Join(configDir, ".claude.json"), nil)
+	if err != nil {
+		return "", err
+	}
+	servers, _ := st["mcpServers"].(map[string]any)
+	m, ok := servers[mcpServerName].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("no %q server in .claude.json's mcpServers", mcpServerName)
+	}
+	out := map[string]any{}
+	for name, v := range servers {
+		out[name] = v
+	}
+	entry := map[string]any{}
+	for k, v := range m {
+		entry[k] = v
+	}
+	headers := map[string]any{}
+	if h, ok := m["headers"].(map[string]any); ok {
+		for k, v := range h {
+			headers[k] = v
+		}
+	}
+	headers[headerCCSession] = key
+	entry["headers"] = headers
+	out[mcpServerName] = entry
+	b, err := json.Marshal(map[string]any{"mcpServers": out})
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, laneMCPDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, id+".mcp.json")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }

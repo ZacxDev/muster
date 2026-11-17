@@ -54,6 +54,14 @@ const (
 	// for the session's life. A ccd that predates it IGNORES it and starts the
 	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
+	// HeaderCCMCPSession, "1", asks ccd to start an explicit session's CLI
+	// with an MCP config of its own, in which muster's server carries
+	// HeaderCCSession (the session's key) on every request: so muster knows
+	// which session an MCP call comes from. Set on an officer's CHAT lane only
+	// (internal/api officerChatTurnContext); fixed for the session's life. A
+	// ccd that predates it ignores it, and the lane's calls then read as the
+	// primary's (no session).
+	HeaderCCMCPSession = "X-Muster-CC-MCP-Session"
 	// HeaderCCPinned, "1", marks an explicit session (HeaderCCSession) as the
 	// chief's PRIMARY chat (internal/api withRoute, chief_chats.go): ccd never
 	// stops its CLI to make room for another session, and does not count it

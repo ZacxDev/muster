@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -71,19 +70,19 @@ func ChatOf(it Item) (chatID string, seq int64, ok bool) {
 	}
 	if len(it.Payload) > 0 && json.Unmarshal(it.Payload, &p) == nil && len(p.ChatID) > 0 {
 		var id ItemID // a chat id as HQ spells it: a string or a number
-		if id.UnmarshalJSON(p.ChatID) == nil && validChatID(string(id)) {
+		if id.UnmarshalJSON(p.ChatID) == nil && ValidChatID(string(id)) {
 			return string(id), p.Seq, true
 		}
 	}
-	if id, found := strings.CutPrefix(it.SubjectKey, chatSubjectPrefix); found && validChatID(id) {
+	if id, found := strings.CutPrefix(it.SubjectKey, chatSubjectPrefix); found && ValidChatID(id) {
 		return id, 0, true
 	}
 	return "", 0, false
 }
 
-// validChatID is a chat id muster will put in a URL path segment, a session
+// ValidChatID is a chat id muster will put in a URL path segment, a session
 // key and a log line: 1..128 bytes of letters, digits and "._-".
-func validChatID(id string) bool {
+func ValidChatID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
 	}
@@ -194,11 +193,9 @@ func (c *Client) chatPath(chat string) string {
 	return c.officerPath() + "/chats/" + url.PathEscape(chat)
 }
 
-// ChatMessages is GET /officers/{id}/chats/{chat}/messages?after=<seq>.
-//
-// The body is {messages: [{seq, role, author_login, author_name, text}],
-// chat?: {name}}; a bare array of messages is read too. A member turn's
-// display name is read from author_name, or author_display_name.
+// ChatMessages is GET /officers/{id}/chats/{chat}/messages?after=<seq>,
+// answered {messages: [{seq, role, author_login, author_name, text}],
+// chat: {name}}.
 func (c *Client) ChatMessages(ctx context.Context, chat string, after int64) (ChatPage, error) {
 	raw, err := c.Do(ctx, http.MethodGet, c.chatPath(chat)+"/messages?after="+strconv.FormatInt(after, 10), nil)
 	if err != nil {
@@ -207,38 +204,19 @@ func (c *Client) ChatMessages(ctx context.Context, chat string, after int64) (Ch
 	return decodeChatPage(raw)
 }
 
-// wireChatMessage is a message as HQ may spell it: author_display_name is
-// read where author_name is absent.
-type wireChatMessage struct {
-	ChatMessage
-	AuthorDisplayName string `json:"author_display_name"`
-}
-
 func decodeChatPage(raw []byte) (ChatPage, error) {
 	var env struct {
-		Messages []wireChatMessage `json:"messages"`
+		Messages []ChatMessage `json:"messages"`
 		Chat     *struct {
 			Name string `json:"name"`
 		} `json:"chat"`
 	}
-	trimmed := strings.TrimSpace(string(raw))
-	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal(raw, &env.Messages); err != nil {
-			return ChatPage{}, fmt.Errorf("%w: chat messages: %v", ErrHQUnavailable, err)
-		}
-	} else if err := json.Unmarshal(raw, &env); err != nil {
+	if err := json.Unmarshal(raw, &env); err != nil {
 		return ChatPage{}, fmt.Errorf("%w: chat messages: %v", ErrHQUnavailable, err)
 	}
-	page := ChatPage{}
+	page := ChatPage{Messages: env.Messages}
 	if env.Chat != nil {
 		page.Name = env.Chat.Name
-	}
-	for _, m := range env.Messages {
-		msg := m.ChatMessage
-		if msg.AuthorName == "" {
-			msg.AuthorName = m.AuthorDisplayName
-		}
-		page.Messages = append(page.Messages, msg)
 	}
 	sort.SliceStable(page.Messages, func(i, j int) bool { return page.Messages[i].Seq < page.Messages[j].Seq })
 	return page, nil
@@ -262,30 +240,9 @@ func (c *Client) ChatReply(ctx context.Context, chat, text string, inReplyTo int
 
 // --- the turn ---------------------------------------------------------------
 
-// MaxChatReplyBytes bounds the reply muster posts (HQ's own cap on an officer
-// reply): a longer one is cut, with ChatReplyCutMarker.
-const MaxChatReplyBytes = 64 << 10
-
-// ChatReplyCutMarker ends a reply cut to MaxChatReplyBytes.
-const ChatReplyCutMarker = "\n\n[reply cut by muster at 64 KiB]"
-
 // ChatNoTextReply is the reply posted for a lane turn that ended with no text.
+// Any other reply is posted as the lane wrote it: the HQ server caps it.
 const ChatNoTextReply = "(The officer's turn ended without a text reply.)"
-
-// capChatReply is text within MaxChatReplyBytes, cut on a rune boundary.
-func capChatReply(text string) string {
-	if strings.TrimSpace(text) == "" {
-		return ChatNoTextReply
-	}
-	if len(text) <= MaxChatReplyBytes {
-		return text
-	}
-	cut := MaxChatReplyBytes - len(ChatReplyCutMarker)
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + ChatReplyCutMarker
-}
 
 // ChatTurnText is the one user turn a chat lane is sent: the frame line, then
 // each message muster has not given the lane yet, each under who wrote it.
@@ -744,7 +701,10 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 	} else {
 		reply = ChatNoTextReply
 	}
-	text := capChatReply(reply)
+	text := reply
+	if strings.TrimSpace(text) == "" {
+		text = ChatNoTextReply
+	}
 	var seq int64
 	for attempt := 0; ; attempt++ {
 		seq, err = cb.ChatReply(ctx, chat, text, inReplyTo)
