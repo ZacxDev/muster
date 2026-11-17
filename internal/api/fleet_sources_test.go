@@ -25,7 +25,9 @@ func TestTheFleetReadersSubjectSources(t *testing.T) {
 	want := map[string][]string{
 		// The sessions: the owner's agents (filtered to their own rows), the
 		// windows of the owner's own hosts, and each window's state.
-		"readFleet":          {"Agents.List", "Mirror.AgentState"},
+		// (FleetDigest is the MUSTER_FLEET_DIGEST flag, not a source: off, the
+		// reader is fleet_list as it was.)
+		"readFleet":          {"Agents.List", "FleetDigest", "Mirror.AgentState"},
 		"mirrorFocusEntries": {"Mirror.Hosts"},
 		// The digest's asks: the chief's own open cards.
 		"chiefOpenCards": {"Attention.Open"},
