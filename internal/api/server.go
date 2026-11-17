@@ -861,6 +861,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	s.registerAskMediaRoutes(mux)
 	// Shareable pages (pages.go): the share links a viewer opens, and the
 	// owner's Pages screen.
 	s.registerPageRoutes(mux)

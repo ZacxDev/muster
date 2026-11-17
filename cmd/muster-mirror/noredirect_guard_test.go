@@ -73,6 +73,7 @@ const (
 var wantNoRedirectSites = map[string]int{
 	"cmd/muster-mirror/ask.go":          1, // the AskUserQuestion hook → muster /mirror/ask (mirror token)
 	"internal/askq/hook.go":             1, // the hook's request, whatever client it was given
+	"internal/askattach/askattach.go":   1, // an ask's file → muster /mirror/ask-attachments (mirror token)
 	"internal/mirrorhost/client.go":     1, // the tunnel's WebSocket connect (mirror token)
 	"internal/mirrorhost/mcpproxy.go":   1, // the MCP proxy's forward (mirror token)
 	"internal/opencodehost/client.go":   1, // the opencode server client (pair token / password)

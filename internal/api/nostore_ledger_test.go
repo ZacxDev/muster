@@ -96,6 +96,7 @@ var noStoreLiterals = map[string]string{
 	"handleTranscribe":          "a dictation's transcript",
 	"handleUpload":              "an upload's answer",
 	"handleUploadLink":          "an upload's signed link",
+	"handleAskAttachment":       "an ask's attachment, to who may read the ask",
 	"handleViewChiefLog":        "the view's chief strip (the chief's chat, as handleAgentChatLog)",
 	"handleProposalRead":        "a proposal read by id (an ended session's view): live state",
 	"handlePluginHandoffMint":   "a one-time hand-off code in the entry URL it answers",

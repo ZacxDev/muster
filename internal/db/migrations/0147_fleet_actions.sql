@@ -32,9 +32,9 @@
 -- rollback/rls_off.sql turns it off with the rest, and --rls-on re-applies this
 -- file (db.RLSOn), so every statement is idempotent.
 --
--- 🔴 NUMBERED 0147, NOT 0145: 0145 and 0146 are held by two open pull requests
--- (the asks' attachments, and the fleet plan's Phase 0). The contiguity test
--- refuses the gap until both land. RENUMBER IT (and
+-- 🔴 NUMBERED 0147, NOT 0146: 0146 is held by an open pull request (the fleet
+-- plan's Phase 0), after 0145 (the asks' attachments). The contiguity test
+-- refuses the gap until it lands. RENUMBER IT (and
 -- db.fleetActionsMigrationVersion) at merge if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the

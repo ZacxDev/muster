@@ -120,7 +120,7 @@ it could not tell.
 A file someone uploaded is served from muster's own origin, so a file that a
 browser renders as a page (HTML, SVG, XHTML, or anything it sniffs as one)
 would run its script **as muster**, with the signed-in operator's session:
-stored XSS. Three routes serve uploaded bytes, and all three answer through one
+stored XSS. Four routes serve uploaded bytes, and all four answer through one
 function, `uploads.SetServeHeaders`:
 
 | Route | Who | Bytes |
@@ -128,6 +128,7 @@ function, `uploads.SetServeHeaders`:
 | `GET /f/{id}?exp=…&sig=…` | anyone with the signed link (an agent) | an upload, from the object store |
 | `GET /uploads/{id}/file` | the owner's session (thumbnails, Open) | an upload, from the object store |
 | `GET /tasks/{id}/attachments/{aid}` | a session | a task's attachment, from Postgres |
+| `GET /attention/asks/{id}/attachments/{upload id}` | a session that may read the ask | an ask's attachment, from the object store ([below](#an-asks-attachments)) |
 
 Each response is decided from the type **sniffed from the bytes** at serve
 time, never from what the uploader claimed (a task attachment's stored type is
@@ -165,6 +166,41 @@ watches it not run). A separate download origin (a different registrable
 domain, so a script that did run would hold no muster cookie) would be a
 further layer; it is recommended if muster ever needs to show an uploaded
 document inline, which today it does not.
+
+## An ask's attachments
+
+An agent's [attention ask](attention.md#attachments-and-context) can carry up
+to 4 files, stored in this same upload store as the asker's owner's uploads (no
+second store). They arrive from where the agent is, never from a browser:
+
+| Route | Who sends | Credential |
+|---|---|---|
+| `POST /mirror/ask-attachments?filename=<name>` | a mirror host's `muster-mirror`, for one of its sessions' `attention_ask` | the host's mirror token, and the calling session (`X-Muster-Claude-Session`), which the host must list running now |
+| `POST /agent/ask-attachments?filename=<name>` | `ccd ask-attach <path>` in a dispatched claude-code agent's pod | the agent's own token (`X-Muster-Token`) |
+| `DELETE /mirror/ask-attachments/{id}` | a mirror host taking back an upload whose ask was not filed | as the POST: the upload is revoked and its object deleted; only its owner's uploads (another id is 404) |
+
+The body is the file itself. Each answers `201 {"id", "name", "type", "size"}`.
+On top of the rules above, an ask's file is held to **10 MiB** (or the store's
+own cap, if smaller), and its **sniffed** type must be PNG, JPEG, GIF, WebP,
+PDF, plain text, XML (SVG) or ZIP: anything else is a 415, before a byte is
+stored. The routes share the composer's in-flight limits. All three are 404
+while attachments are off. The senders never send a hidden file (a path whose
+resolved location below the working directory has a part starting with `.`),
+and open the file without following a link or blocking, refusing it unless it
+is still the file they checked. An ask's upload's row lives **7 days** (the
+longest an ask can stay open), not `MUSTER_UPLOAD_LINK_TTL`; no signed link is
+ever minted for it.
+
+They are served to people through the ask, never through a signed link:
+
+| Route | Who | Bytes |
+|---|---|---|
+| `GET /attention/asks/{id}/attachments/{upload id}` | a session that may read the ask (its owner, or a member of the team that owns it) | an upload the ask names, from the object store |
+
+with the same headers as every other route here. The route reads the upload's
+row on every request: revoked or past its 7 days is 404, whether or not the
+object is still in the bucket. The object itself lives as long as the
+`uploads/` lifecycle rule keeps it (8 days in the example above).
 
 ## Not done
 

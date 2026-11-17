@@ -27,6 +27,10 @@ type Store interface {
 	// LinkTarget is the upload a signed link names, read with NO principal:
 	// the link's signature has already been checked, and it is how the
 	// request learns anything at all. Only what serving needs is handed on.
+	// Its one other caller is an ask's attachment route (internal/api
+	// ask_media.go), AFTER the ask itself was read under the viewer's
+	// principal and found to name this upload: there, a team member must see
+	// whether the owner's row is revoked or expired, and cannot read it.
 	LinkTarget(ctx context.Context, publicID string) (Upload, error)
 }
 
