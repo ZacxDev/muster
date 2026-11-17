@@ -231,8 +231,10 @@ func TestDismissIsASmallIconButtonWithAnAccessibleName(t *testing.T) {
 
 // TestDismissIsInTheCardsFooterNeverItsHead (Round 0 of #620): the ✕ never
 // sits in the head — a thumb aimed at the head (now: expand) must not cancel
-// the ask. It is in the footer, after the question, at the footer's end. And a
-// session page's block (the old compact card) keeps the same rule.
+// the ask. It is after the question: at the footer's end when the footer has
+// links (ask-1: View in session), else at the answer row's end (ask-2: no
+// footer of a lone ✕, the design review). A session page's block keeps the
+// same rule.
 func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 	out := attentionItemsHTML(designItems(), designNow)
 	for _, key := range []string{"ask-1", "ask-2", "ask-5"} {
@@ -242,8 +244,16 @@ func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 			t.Errorf("%s: Dismiss is in the head:\n%s", key, head)
 		}
 		footer := regexp.MustCompile(`(?s)<div class="` + regexp.QuoteMeta(ui.AsksCardFooterClass) + `" data-asks-footer>(.*?)</div>`).FindStringSubmatch(li)
-		if footer == nil || !strings.HasSuffix(footer[1], `</svg></button>`) || !strings.Contains(footer[1], "data-attention-dismiss") {
-			t.Errorf("%s: Dismiss does not end the footer:\n%s", key, li)
+		row := regexp.MustCompile(`(?s)data-asks-answer-row>(.*?)</div>`).FindStringSubmatch(li)
+		switch {
+		case footer != nil && strings.Contains(footer[1], "<a "):
+			if !strings.HasSuffix(footer[1], `</svg></button>`) || !strings.Contains(footer[1], "data-attention-dismiss") {
+				t.Errorf("%s: Dismiss does not end the footer:\n%s", key, li)
+			}
+		case footer != nil:
+			t.Errorf("%s: a footer with no links (a lone ✕):\n%s", key, li)
+		case row == nil || !strings.HasSuffix(row[1], `</svg></button>`) || !strings.Contains(row[1], "data-attention-dismiss"):
+			t.Errorf("%s: no footer, and Dismiss does not end the answer row:\n%s", key, li)
 		}
 		if d, txt := strings.Index(li, "data-attention-dismiss"), strings.Index(li, "data-attention-text"); d < txt {
 			t.Errorf("%s: Dismiss comes before the question", key)
@@ -264,7 +274,9 @@ func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 // card: the feed's toggle, badge and footer are the Asks page's alone.
 func TestASessionPageBlockKeepsItsCompactCard(t *testing.T) {
 	li := itemLi(t, attentionItemsHTMLTo(designItems(), designNow, "/agents/deploy-bot"), "ask-1")
-	for _, want := range []string{`<textarea id="answer-1"`, `<input type="hidden" name="return" value="/agents/deploy-bot">`, ` hx-boost="false"`, `class="` + ui.AskFormOptionClass + `" data-attention-option>Deploy now</button>`} {
+	// The form is THE answer form (askAnswerFormHTML, the design review): its
+	// options are the Asks card's.
+	for _, want := range []string{`<textarea id="answer-1"`, `<input type="hidden" name="return" value="/agents/deploy-bot">`, ` hx-boost="false"`, `class="` + ui.AsksOptionClass + `" data-attention-option>Deploy now</button>`} {
 		if !strings.Contains(li, want) {
 			t.Errorf("the block's card lacks %q:\n%s", want, li)
 		}
