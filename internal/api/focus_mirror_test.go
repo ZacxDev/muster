@@ -175,7 +175,7 @@ func focusMirrorServer(t *testing.T, fm *fakeMirror, store *memFocus, summ focus
 // still panics, as stubNotesStore's do.
 type noLinkNotes struct{ stubNotesStore }
 
-func (noLinkNotes) TasksForSessions(context.Context, []string, int) (map[string][]notes.TaskLink, error) {
+func (noLinkNotes) TasksForSessions(context.Context, []string, int, ...string) (map[string][]notes.TaskLink, error) {
 	return map[string][]notes.TaskLink{}, nil
 }
 

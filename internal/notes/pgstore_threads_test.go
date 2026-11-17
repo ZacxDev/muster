@@ -725,6 +725,19 @@ func TestPGTasksForSessionsIsTheBatchedReverseLookup(t *testing.T) {
 	if err != nil || len(all[a]) != 3 {
 		t.Fatalf("perSession 0 = %d rows, err %v; want all 3", len(all[a]), err)
 	}
+	// A role filter applies BEFORE the cut: b's newer read link neither shows
+	// nor takes b's one slot; with no filter it does.
+	bRead := seedTask(t, ctx, s, Note{Title: "b read"})
+	if _, _, err := s.LinkSession(ctx, bRead.ID, SessionLink{SessionID: b, Role: RoleRead}, false); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.TasksForSessions(ctx, []string{b}, 1, RoleWorked, RoleCreated)
+	if g := ids(work[b]); err != nil || len(g) != 1 || g[0] != b1.ID {
+		t.Fatalf("session b, worked/created, cap 1 = %v, %v; want [%d] (the read %d left out before the cut)", g, err, b1.ID, bRead.ID)
+	}
+	if g := ids(func() []TaskLink { m, _ := s.TasksForSessions(ctx, []string{b}, 1); return m[b] }()); len(g) != 1 || g[0] != bRead.ID {
+		t.Fatalf("session b, every role, cap 1 = %v; want the newer read [%d]", g, bRead.ID)
+	}
 	if none, err := s.TasksForSessions(ctx, nil, 2); err != nil || len(none) != 0 {
 		t.Fatalf("no sessions = %+v, %v; want an empty map", none, err)
 	}

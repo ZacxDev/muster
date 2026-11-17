@@ -396,7 +396,9 @@ func (s *PGStore) TasksForSession(ctx context.Context, sessionID string) ([]Task
 // recent (0: all). A session with no live link has no entry. The read runs
 // as ctx's principal, so row-level security decides which task_sessions rows
 // and tasks are seen: another owner's link naming the same session id is not.
-func (s *PGStore) TasksForSessions(ctx context.Context, sessionIDs []string, perSession int) (map[string][]TaskLink, error) {
+// roles, when given, keeps only links of those roles — BEFORE the cut, so a
+// left-out role never crowds the cap; none given keeps every role.
+func (s *PGStore) TasksForSessions(ctx context.Context, sessionIDs []string, perSession int, roles ...string) (map[string][]TaskLink, error) {
 	out := map[string][]TaskLink{}
 	if len(sessionIDs) == 0 {
 		return out, nil
@@ -411,9 +413,10 @@ func (s *PGStore) TasksForSessions(ctx context.Context, sessionIDs []string, per
 		         row_number() OVER (PARTITION BY ts.session_id ORDER BY ts.last_seen_at DESC, n.id DESC) AS rn
 		    FROM task_sessions ts
 		    JOIN notes n ON n.id = ts.note_id
-		   WHERE ts.session_id = ANY($1) AND n.`+liveOnly+`) l
+		   WHERE ts.session_id = ANY($1) AND n.`+liveOnly+`
+		     AND (cardinality($3::text[]) = 0 OR ts.role = ANY($3::text[]))) l
 		 WHERE $2 = 0 OR rn <= $2
-		 ORDER BY session_id, rn`, sessionIDs, perSession)
+		 ORDER BY session_id, rn`, sessionIDs, perSession, append([]string{}, roles...))
 	if err != nil {
 		return nil, err
 	}

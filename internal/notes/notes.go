@@ -494,8 +494,9 @@ type Store interface {
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
 	// TasksForSessions is TasksForSession for many sessions in ONE read, by
 	// session id, each list cut to its perSession most recent (0: all); a
-	// session with no link has no entry. It backs fleet_list's linked_tasks.
-	TasksForSessions(ctx context.Context, sessionIDs []string, perSession int) (map[string][]TaskLink, error)
+	// session with no link has no entry; roles, when given, keeps only links of
+	// those roles, before the cut. It backs fleet_list's linked_tasks.
+	TasksForSessions(ctx context.Context, sessionIDs []string, perSession int, roles ...string) (map[string][]TaskLink, error)
 	// AddComment appends a comment to a task's thread.
 	AddComment(ctx context.Context, c Comment) (Comment, error)
 	// CreateOnceByTag creates n unless an OPEN task the caller can see already

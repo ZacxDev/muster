@@ -80,11 +80,11 @@ func (c *countingLinks) TasksForSession(ctx context.Context, sid string) ([]note
 	return c.Store.TasksForSession(ctx, sid)
 }
 
-func (c *countingLinks) TasksForSessions(ctx context.Context, sids []string, per int) (map[string][]notes.TaskLink, error) {
+func (c *countingLinks) TasksForSessions(ctx context.Context, sids []string, per int, roles ...string) (map[string][]notes.TaskLink, error) {
 	c.mu.Lock()
 	c.batched++
 	c.mu.Unlock()
-	return c.Store.TasksForSessions(ctx, sids, per)
+	return c.Store.TasksForSessions(ctx, sids, per, roles...)
 }
 
 type ltTask struct {
@@ -92,6 +92,7 @@ type ltTask struct {
 	Key    string `json:"key"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
+	Role   string `json:"role"`
 }
 
 type ltRow struct {
@@ -124,14 +125,21 @@ func ltIDs(ts []ltTask) []int64 {
 	return out
 }
 
-// ltCreate files an ordinary task as ctx's principal and links it to sid.
-func ltCreate(t *testing.T, s *Server, ctx context.Context, title, status, sid string) int64 {
+// ltCreate files an ordinary task as ctx's principal and links it to sid as
+// worked.
+func ltCreate(t *testing.T, s *Server, ctx context.Context, title, sid string) int64 {
 	t.Helper()
-	n, err := s.ext.Notes.Create(ctx, notes.Note{Title: title, Body: "linked-tasks fixture", Status: status})
+	return ltCreateAs(t, s, ctx, title, sid, notes.RoleWorked)
+}
+
+// ltCreateAs is ltCreate with the link's role.
+func ltCreateAs(t *testing.T, s *Server, ctx context.Context, title, sid, role string) int64 {
+	t.Helper()
+	n, err := s.ext.Notes.Create(ctx, notes.Note{Title: title, Body: "linked-tasks fixture", Status: notes.StatusOpen})
 	if err != nil {
 		t.Fatalf("create %q: %v", title, err)
 	}
-	if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: sid, Role: notes.RoleWorked}, false); err != nil {
+	if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: sid, Role: role}, false); err != nil {
 		t.Fatalf("link %q to %s: %v", title, sid, err)
 	}
 	return n.ID
@@ -155,16 +163,16 @@ func TestFleetListCarriesEachSessionsLinkedTasks(t *testing.T) {
 		"claimants": []map[string]any{{"agent": "ag_lathe01", "agent_session": routeSID}}}))
 
 	// The owner's task linked to a session no host lists.
-	elsewhere := ltCreate(t, f.srv, f.asOwner, "Sweep the loading dock", "open", ltSIDUnlisted)
+	elsewhere := ltCreate(t, f.srv, f.asOwner, "Sweep the loading dock", ltSIDUnlisted)
 	// More links than the cap on the third session: the newest are kept.
 	var capped []int64
 	for i := 0; i < ltCap+2; i++ {
-		capped = append(capped, ltCreate(t, f.srv, f.asOwner, "Stack crate "+string(rune('A'+i)), "open", ltSIDCap))
+		capped = append(capped, ltCreate(t, f.srv, f.asOwner, "Stack crate "+string(rune('A'+i)), ltSIDCap))
 	}
 	// The stranger's task linked to the OWNER's session id, and one linked to
 	// the stranger's own session.
-	strangerOnS := ltCreate(t, f.srv, asStranger, "Repaint the stranger's fence", "ready_for_review", routeSID)
-	strangerOwn := ltCreate(t, f.srv, asStranger, "Tune the stranger's piano", "in_progress", ltSIDStranger)
+	strangerOnS := ltCreate(t, f.srv, asStranger, "Repaint the stranger's fence", routeSID)
+	strangerOwn := ltCreate(t, f.srv, asStranger, "Tune the stranger's piano", ltSIDStranger)
 
 	// Positive controls: the stranger's links exist and are readable by the
 	// stranger, so their absence below is RLS, not an empty fixture.
@@ -195,7 +203,7 @@ func TestFleetListCarriesEachSessionsLinkedTasks(t *testing.T) {
 			mine = append(mine, x)
 		}
 	}
-	if want := []ltTask{{ID: refID, Key: key, Title: "Recalibrate the lathe sensor", Status: "in_progress"}}; !slices.Equal(mine, want) {
+	if want := []ltTask{{ID: refID, Key: key, Title: "Recalibrate the lathe sensor", Status: "in_progress", Role: "worked"}}; !slices.Equal(mine, want) {
 		t.Errorf("CLAIMANT: S's linked_tasks = %+v; want %+v", mine, want)
 	}
 
@@ -243,6 +251,68 @@ func TestFleetListCarriesEachSessionsLinkedTasks(t *testing.T) {
 	if sr := ltFleet(t, f.srv, asStranger)[focus.MirrorSubject(ltSIDStranger).String()]; sr.LinkedTasks == nil ||
 		!slices.Equal(ltIDs(*sr.LinkedTasks), []int64{strangerOwn}) {
 		t.Errorf("CONTROL: the stranger's own fleet_list row = %+v; want its task %d", sr, strangerOwn)
+	}
+}
+
+// TestFleetListLinkedTasksLeaveOutReadLinks: a session that only READ a task
+// (a task read with a session header links it as read) is not working it, so
+// the read link is not in linked_tasks, and read links never crowd the cap.
+// worked and created both are, each with its role. Every link below is
+// written after the ones it must outrank, so a list that kept reads would put
+// them first.
+func TestFleetListLinkedTasksLeaveOutReadLinks(t *testing.T) {
+	f := newTriageFixture(t, false)
+	f.srv.ext.Mirror = &ownerMirror{routeMirror: f.mirror, owner: f.owner, stranger: -1}
+
+	worked := ltCreateAs(t, f.srv, f.asOwner, "Oil the conveyor", routeSID, notes.RoleWorked)
+	created := ltCreateAs(t, f.srv, f.asOwner, "Order new belts", routeSID, notes.RoleCreated)
+	read := ltCreateAs(t, f.srv, f.asOwner, "Read the shift log", routeSID, notes.RoleRead)
+
+	var capWorked []int64
+	for i := 0; i < ltCap; i++ {
+		capWorked = append(capWorked, ltCreateAs(t, f.srv, f.asOwner, "Weld bracket "+string(rune('A'+i)), ltSIDCap, notes.RoleWorked))
+	}
+	var capRead []int64
+	for i := 0; i < 3; i++ {
+		capRead = append(capRead, ltCreateAs(t, f.srv, f.asOwner, "Skim manual "+string(rune('A'+i)), ltSIDCap, notes.RoleRead))
+	}
+	// Positive control: the read links exist, and are the newest of each
+	// session's links.
+	if all, err := f.srv.ext.Notes.TasksForSession(f.asOwner, routeSID); err != nil || len(all) != 3 || all[0].NoteID != read || all[0].Role != notes.RoleRead {
+		t.Fatalf("fixture: S's links = %+v, %v; want the read link %d newest of 3", all, err, read)
+	}
+
+	rows := ltFleet(t, f.srv, f.asOwner)
+	var sTasks []ltTask
+	if r := rows[focus.MirrorSubject(routeSID).String()]; r.LinkedTasks != nil {
+		sTasks = *r.LinkedTasks
+	}
+	if slices.Contains(ltIDs(sTasks), read) {
+		t.Errorf("READ: a task S only read is in its linked_tasks: %+v", sTasks)
+	}
+	want := []ltTask{
+		{ID: created, Title: "Order new belts", Status: "open", Role: "created"},
+		{ID: worked, Title: "Oil the conveyor", Status: "open", Role: "worked"},
+	}
+	var noRead []ltTask
+	for _, x := range sTasks {
+		if x.ID != read {
+			noRead = append(noRead, x)
+		}
+	}
+	if !slices.Equal(noRead, want) {
+		t.Errorf("ROLE: S's worked and created links = %+v; want %+v", noRead, want)
+	}
+
+	var capTasks []ltTask
+	if r := rows[focus.MirrorSubject(ltSIDCap).String()]; r.LinkedTasks != nil {
+		capTasks = *r.LinkedTasks
+	}
+	wantCap := slices.Clone(capWorked)
+	slices.Reverse(wantCap)
+	if got := ltIDs(capTasks); !slices.Equal(got, wantCap) {
+		t.Errorf("READCAP: the session with %d worked and %d newer read links lists %v; want all %d worked, newest first: %v (reads %v)",
+			len(capWorked), len(capRead), got, ltCap, wantCap, capRead)
 	}
 }
 
