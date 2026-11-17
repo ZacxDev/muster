@@ -27,7 +27,7 @@ func TestThePageCardIsDrawnInTheAgentChat(t *testing.T) {
 	}}))
 	for _, want := range []string{
 		`id="` + PageCardID("t1") + `"`, `data-page-card=""`, `data-page-card-kind="published"`, `>Launch plan<`,
-		`href="/pages/42/preview"`, `aria-label="Open “Launch plan”"`,
+		`href="/pages/42/view"`, `aria-label="Open “Launch plan”"`,
 		`action="/pages/42/share"`, `data-page-share=""`, `aria-label="Share “Launch plan”"`,
 		`action="/pages/42/share/revoke"`, `action="/pages/42/share/rotate"`, `aria-label="More for “Launch plan”"`,
 		`data-tool-row`,

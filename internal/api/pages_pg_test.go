@@ -262,7 +262,8 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 
 	// Private: page_get shows no link; no token serves it.
 	got := f.tool(t, f.agent, pageGetTool, map[string]any{"page_id": id})
-	if links, _ := got["links"].([]any); len(links) != 0 || got["preview_url"] != pagesPublicURL+"/pages/"+strconv.FormatInt(id, 10)+"/preview" {
+	if links, _ := got["links"].([]any); len(links) != 0 || got["preview_url"] != pagesPublicURL+"/pages/"+strconv.FormatInt(id, 10)+"/view" ||
+		got["url"] != pagesPublicURL+"/pages/"+strconv.FormatInt(id, 10)+"/view" {
 		t.Fatalf("a new page: %v", got)
 	}
 
@@ -274,7 +275,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	}
 	ask, err := f.srv.ext.Attention.Get(f.as(f.owner, authz.ViaSession), askID)
 	if err != nil || !ask.OwnerCard || ask.Asker.AgentID != f.agent.ID || strings.Join(ask.Options, "|") != pageShareApproveLabel+"|"+pageShareDenyLabel ||
-		!strings.Contains(ask.Question, "/pages/"+strconv.FormatInt(id, 10)+"/preview") ||
+		!strings.Contains(ask.Question, "/pages/"+strconv.FormatInt(id, 10)+"/view.") ||
 		// Y4: the approval is for the page, whatever is published later.
 		!strings.Contains(ask.Question, "always shows the page's latest published version") || strings.Contains(ask.Question, "(version") {
 		t.Fatalf("the card: %+v %v", ask, err)
@@ -327,7 +328,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	}
 	shell := w.Body.String()
 	for _, want := range []string{`src="` + pages.LinkPath(token) + `/content" sandbox="allow-scripts allow-forms"`, `<script nonce="` + m[1] + `">`,
-		`data-page-title>Launch date</span>`} {
+		`data-page-title title="Launch date">Launch date</span>`} {
 		if !strings.Contains(shell, want) {
 			t.Errorf("the shell lacks %q", want)
 		}
@@ -339,7 +340,7 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	// The content: sandboxed by header, whoever asks.
 	w = f.get(t, pages.LinkPath(token)+"/content", nil)
 	assertContentHeaders(t, w, "the link's content")
-	if !strings.Contains(w.Body.String(), `<p id="custom">custom</p>`) || !strings.Contains(w.Body.String(), "var PREVIEW=false") {
+	if !strings.Contains(w.Body.String(), `<p id="custom">custom</p>`) || strings.Contains(strings.ToLower(w.Body.String()), "preview") {
 		t.Fatalf("content: %s", w.Body.String())
 	}
 
@@ -577,7 +578,7 @@ func TestAPageIsItsCreatorsAndItsOwners(t *testing.T) {
 	if w := f.get(t, "/pages", f.ownerHdr()); strings.Contains(w.Body.String(), "Agent A") {
 		t.Fatal("another member's Pages screen shows the owner's page")
 	}
-	for _, p := range []string{"/pages/" + sid, "/pages/" + sid + "/preview", "/pages/" + sid + "/versions/1/content"} {
+	for _, p := range []string{"/pages/" + sid, "/pages/" + sid + "/view", "/pages/" + sid + "/versions/1/content"} {
 		if w := f.get(t, p, f.ownerHdr()); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "canary-question") {
 			t.Errorf("another member's %s: %d", p, w.Code)
 		}
@@ -724,7 +725,7 @@ func TestAnUploadedFileIsNeverServedAsAPage(t *testing.T) {
 // (this fixture's default), the owner's Share without the page script (a plain
 // form post) makes a one-off hash-only link and shows it ONCE; the page's
 // screen then shows its state and label, never the token; Revoke 404s it. And
-// the owner previews any version, sandboxed exactly as a link's content. (The
+// the owner views any version, sandboxed exactly as a link's content. (The
 // keyed, reusable path: TestTheOwnersShareButtonGivesOneReusableLink.)
 func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 	f := newPageFixture(t)
@@ -762,14 +763,11 @@ func TestTheOwnersScreenSharesShowsAndRevokesLinks(t *testing.T) {
 		t.Errorf("the detail page (it shows a bearer link) is cacheable: %v", detail.Header())
 	}
 	w := f.get(t, "/pages/"+sid+"/versions/1/content", f.ownerHdr())
-	assertContentHeaders(t, w, "the owner's preview content")
-	if !strings.Contains(w.Body.String(), "var PREVIEW=true") || !strings.Contains(w.Body.String(), "data-muster-preview") {
-		t.Fatal("the preview content is not in preview mode")
-	}
-	pv := f.get(t, "/pages/"+sid+"/preview", f.ownerHdr())
+	assertContentHeaders(t, w, "the owner's view's content")
+	pv := f.get(t, "/pages/"+sid+"/view", f.ownerHdr())
 	if pv.Code != http.StatusOK || !strings.Contains(pv.Body.String(), `src="/pages/`+sid+`/versions/1/content" sandbox="allow-scripts allow-forms"`) ||
-		!strings.Contains(pv.Body.String(), `base=""`) {
-		t.Fatalf("the preview shell: %d %s", pv.Code, pv.Body.String())
+		!strings.Contains(pv.Body.String(), `base="/pages/`+sid+`/versions/1"`) {
+		t.Fatalf("the owner's view: %d %s", pv.Code, pv.Body.String())
 	}
 	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links/"+strconv.FormatInt(ls[0].ID, 10)+"/revoke", nil, f.ownerHdr()); w.Code != http.StatusSeeOther {
 		t.Fatalf("revoke: %d", w.Code)

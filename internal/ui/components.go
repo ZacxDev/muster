@@ -1570,22 +1570,7 @@ var appScriptSrc = staticJS("app", `
   // (insecure context / older browser).
   // cgCopyText is cgCopy's copy on its own: a Promise that resolves once text
   // is on the clipboard (the page share button's copy, page_card.go, uses it).
-  window.cgCopyText = function (text) {
-    return new Promise(function (resolve, reject) {
-      function fallback() {
-        try {
-          var ta = document.createElement('textarea');
-          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-          document.body.appendChild(ta); ta.select();
-          var ok = document.execCommand('copy'); document.body.removeChild(ta);
-          if (ok) resolve(); else reject(new Error('copy refused'));
-        } catch (e) { reject(e); }
-      }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(resolve, fallback);
-      } else { fallback(); }
-    });
-  };
+`+cgCopyTextJS+`
   window.cgCopy = function (btn) {
     if (!btn) return;
     var text = btn.getAttribute('data-copy-text') || '';

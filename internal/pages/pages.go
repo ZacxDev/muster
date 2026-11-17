@@ -205,11 +205,15 @@ const (
 	KindUpload ResponseKind = "upload"
 )
 
-// Response is one thing a viewer sent.
+// Response is one thing a viewer — or the page's owner — sent.
 type Response struct {
-	ID             int64
-	PageID         int64
-	LinkID         int64
+	ID     int64
+	PageID int64
+	// LinkID is the link it came through; 0 for the owner's (ByOwner).
+	LinkID int64
+	// ByOwner: the page's owner sent it from their own view of the page,
+	// signed in (migration 0149), not a viewer through a link.
+	ByOwner        bool
 	Version        int
 	Component      string
 	Kind           ResponseKind

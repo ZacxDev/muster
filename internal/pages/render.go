@@ -106,26 +106,23 @@ type RenderOptions struct {
 	// Markdown renders a markdown block to SAFE HTML (every author character
 	// escaped; only the renderer's own tags). nil shows the source as text.
 	Markdown func(string) string
-	// Preview: the owner's preview. The SDK records nothing and says so.
-	Preview bool
 	// Uploads: the server can store files. Without it an upload block is drawn
 	// disabled, saying so.
 	Uploads bool
 }
 
 // Content is the content document of version v: muster's base styles, the
-// SDK, then every block. It is served with ContentHeaders.
+// SDK, then every block. It is served with ContentHeaders. A link's viewer
+// and the page's owner get the SAME document: whose a response is, is the
+// shell's route's to say (ShellScript), never the content's.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<title>" + esc(v.Title) + "</title>\n<style>" + contentCSS + "</style>\n<script>")
-	b.WriteString(sdkScript(v, o.Preview))
+	b.WriteString(sdkScript(v))
 	b.WriteString("</script></head>\n<body><main class=\"mp\">\n")
-	if o.Preview {
-		b.WriteString(`<p class="mp-preview" data-muster-preview>Preview — nothing you send here is recorded.</p>` + "\n")
-	}
 	for _, blk := range v.Blocks {
 		b.WriteString(renderBlock(blk, o))
 		b.WriteString("\n")
@@ -260,15 +257,38 @@ func jsString(s string) string {
 // 🔴 IT HOLDS NO CREDENTIAL AND MAKES NO REQUEST: the document has no network
 // (ContentCSP), and the token is the shell's, not the SDK's. The parent is
 // muster's shell because only 'self' may frame the document (frame-ancestors).
-func sdkScript(v Version, preview bool) string {
-	p := "false"
-	if preview {
-		p = "true"
-	}
+//
+// It also reports the document's scroll offset to the shell (rate-limited to
+// one report per animation frame), which hides its header on a scroll down
+// (ShellScript). 🔴 THE REPORT GOES THROUGH A PRIVATE PORT, NOT window
+// MESSAGES, SO THE PAGE'S OWN SCRIPT CANNOT FORGE ONE: the shell hands ONE
+// MessagePort to the frame on its load; this script, which runs before any
+// of the page's (it is the head's first script), takes it in a capture
+// listener on window registered first and stops the event there, so no later
+// listener ever sees the port. Every primitive it calls is captured before
+// the page's script runs (Reflect.apply over the prototypes' own functions
+// and getters), so patching MessagePort.prototype.postMessage, the
+// MessageEvent getters or scrollTop later changes nothing it sends. What the
+// page's script CAN still do is scroll its own document: that is a real
+// scroll, and the shell's rules (visible near the top, back on any scroll up)
+// still hold for it.
+func sdkScript(v Version) string {
 	return `(function(){"use strict";
-var PREVIEW=` + p + `,seq=0,waiting={};
+var R=Reflect.apply,W=window,PARENT=W.parent,gd=function(p,k){return Object.getOwnPropertyDescriptor(p,k).get;},
+ PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
+ gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
+ gTop=gd(Element.prototype,"scrollTop"),SE=document.scrollingElement||document.documentElement,port=null,queued=false;
+function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}]);}
+R(AEL,W,["message",function(ev){
+ if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
+ R(SIP,ev,[]);var d=R(gData,ev,[]);
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];report();}
+},true]);
+R(AEL,W,["scroll",function(){if(port&&!queued){queued=true;R(RAF,W,[report]);}},{capture:true,passive:true}]);
+})();
+(function(){"use strict";
+var seq=0,waiting={};
 function send(op,payload){
- if(PREVIEW)return Promise.resolve({preview:true});
  if(window.parent===window)return Promise.reject(new Error("open this page through its link"));
  return new Promise(function(res,rej){
   var id="m"+(++seq);waiting[id]={res:res,rej:rej};
@@ -316,7 +336,7 @@ document.addEventListener("submit",function(ev){
   if(!files.length){btns.forEach(function(b){b.disabled=false;});say("Choose a file first.",true);return;}
   p=files.reduce(function(acc,f){return acc.then(function(){return window.muster.upload(f,{component:id});});},Promise.resolve());
  }else p=window.muster.submit(collect(kind,form,ev.submitter),{component:id});
- p.then(function(r){say(r&&r.preview?"Preview: not recorded.":"Sent. Thank you.");form.reset();},function(e){say(e.message||"It could not be sent.",true);})
+ p.then(function(){say("Sent. Thank you.");form.reset();},function(e){say(e.message||"It could not be sent.",true);})
   .then(function(){btns.forEach(function(b){b.disabled=false;});});
 });
 })();`
@@ -327,8 +347,8 @@ document.addEventListener("submit",function(ev){
 const contentCSS = `:root{color-scheme:light dark;--fg:#1d1d1f;--fg2:#5b5b63;--bg:#fff;--line:#d9d9de;--accent:#2f6fde;--bad:#b3261e;--good:#1b7f3b}
 @media (prefers-color-scheme:dark){:root{--fg:#f2f2f5;--fg2:#a8a8b3;--bg:#141416;--line:#34343a;--accent:#7aa7ff;--bad:#ff8a80;--good:#7bd88f}}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-.mp{max-width:44rem;margin:0 auto;padding:16px}.mp-block{margin:0 0 20px}
-.mp-preview{padding:8px 12px;border:1px dashed var(--line);border-radius:8px;color:var(--fg2);font-size:14px}
+html{scroll-padding-top:` + shellHeaderPx + `px}
+.mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}
 form{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px}
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}legend,.mp-label{font-weight:600;padding:0;margin:0 0 4px}
@@ -340,9 +360,21 @@ button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
 
+// The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
+// which fills the window; the content document leaves room for it at its top
+// (contentTopPx: the header and the page's own 16px), so hiding the header
+// moves nothing: it slides away by a transform, and the frame never moves
+// (no layout shift).
+const (
+	shellHeaderPx = "40"
+	contentTopPx  = "56"
+)
+
 // ShellView is what the shell draws.
 type ShellView struct {
-	// Title is the page's title (an agent's words, escaped here).
+	// Title is the page's title (an agent's words, escaped here). The header
+	// draws it on one line, truncated, with the whole of it in its title
+	// attribute.
 	Title string
 	// BrandName and BrandLogo are the instance's branding as every branded
 	// surface draws it (ui.Brand): the name drawn beside the logo ("" when none
@@ -357,23 +389,83 @@ type ShellView struct {
 	Icon string
 	// FrameSrc is the content document's path.
 	FrameSrc string
-	// Base is the path the relay posts to (Base+"/submit", Base+"/upload");
-	// "" in a preview, which relays nothing.
+	// Base is the path the relay posts to (Base+"/submit", Base+"/upload").
 	Base string
 	// Nonce is the script's CSP nonce (ShellCSP).
 	Nonce string
-	// Banner, when set, is a line above the frame (the owner's preview says
-	// what it is).
-	Banner string
+	// Owner is the page's signed-in OWNER's own view (/pages/{id}/view): the
+	// relay sends their session, and the header draws the version chip. nil
+	// for a link's viewer, who gets the same header without it.
+	Owner *OwnerChrome
 }
 
-// Shell is the shell document: the instance branding, the title, the
-// sandboxed frame of the content and the relay script (ShellScript).
+// OwnerChrome is what the owner's own view draws beyond a link's: the version
+// chip and its popover.
+type OwnerChrome struct {
+	// Version is the version the frame shows.
+	Version int
+	// Versions is every version, newest first.
+	Versions []ShellVersion
+	// DetailHref is the page's own screen (links, responses, delete).
+	DetailHref string
+	// ShareButton is the page's Share button (ui.PageShareButton) and
+	// ShareScript its behaviour (ui.PageShareScript): the ONE share flow, the
+	// chat's and the Pages screens' own.
+	//
+	// 🔴 TRUSTED MARKUP AND SCRIPT, written as they are: muster's own
+	// renderer's output (every page-derived value in it escaped there), never
+	// a page's words.
+	ShareButton string
+	ShareScript string
+}
+
+// ShellVersion is one version as the popover lists it.
+type ShellVersion struct {
+	Version int
+	// Made is when it was made, in words.
+	Made string
+	// Current: the page's current version (what its links show).
+	Current bool
+	// Href views it (/pages/{id}/view?v=N).
+	Href string
+}
+
+// shellCSS is the shell's styles. The popover is a bottom sheet on a phone
+// and anchored under the chip from 640px, every target in it at least 44px.
+const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{position:fixed;top:0;left:0;right:0;z-index:2;box-sizing:border-box;height:` + shellHeaderPx + `px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
+background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent);transition:transform .18s ease-out}
+header[data-hidden]:not(:focus-within){transform:translateY(-100%)}
+header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
+header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
+header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
+.chip{position:relative;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
+background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;inset:-7px -4px}
+.scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
+.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
+padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:20rem;border-radius:12px;padding:8px;
+box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid color-mix(in srgb,CanvasText 15%,transparent)}}
+.scrim[hidden],.pop[hidden]{display:none}
+.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop ul{list-style:none;margin:0;padding:0}.pop form{display:contents}
+.pop a,.pop button{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;
+background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;cursor:pointer}
+.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:color-mix(in srgb,CanvasText 9%,transparent)}
+.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
+#action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
+#action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
+
+// Shell is the shell document: the instance branding and the title in one
+// slim header (and, for the owner, the version chip), the sandboxed frame of
+// the content and the relay script (ShellScript).
 func Shell(v ShellView) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow">
 <title>` + esc(v.Title) + `</title>
 `)
@@ -381,11 +473,7 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>:root{color-scheme:light dark}html,body{margin:0;height:100%;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
-body{display:flex;flex-direction:column;min-height:100dvh}header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent)}
-header img{height:28px;width:auto;max-width:8rem;object-fit:contain}header .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-header .n{color:color-mix(in srgb,CanvasText 65%,transparent);white-space:nowrap}.banner{padding:8px 16px;font-size:14px;background:color-mix(in srgb,CanvasText 7%,transparent)}
-iframe{flex:1;width:100%;border:0;min-height:70vh}</style></head>
+	b.WriteString(`<style>` + shellCSS + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
@@ -393,47 +481,140 @@ iframe{flex:1;width:100%;border:0;min-height:70vh}</style></head>
 	if v.BrandName != "" {
 		b.WriteString(`<span class="n" data-brand-name>` + esc(v.BrandName) + `</span>`)
 	}
-	b.WriteString(`<span class="t" data-page-title>` + esc(v.Title) + `</span></header>`)
-	if v.Banner != "" {
-		b.WriteString(`<p class="banner" data-page-banner>` + esc(v.Banner) + `</p>`)
+	b.WriteString(`<span class="t" data-page-title title="` + esc(v.Title) + `">` + esc(v.Title) + `</span>`)
+	o := v.Owner
+	if o != nil {
+		vn := strconv.Itoa(o.Version)
+		b.WriteString(`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" ` +
+			`aria-label="Version ` + vn + `: show versions">v` + vn + ` <span aria-hidden="true">▾</span></button>`)
 	}
-	b.WriteString(`<iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
-<script nonce="` + esc(v.Nonce) + `">` + ShellScript(v.Base) + `</script>
+	b.WriteString(`</header>
+<iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+`)
+	script := ShellScript(v.Base, o != nil)
+	if o != nil {
+		b.WriteString(`<div class="scrim" data-versions-scrim hidden></div>
+<div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>
+<h2>Versions</h2><ul>`)
+		for _, x := range o.Versions {
+			xn := strconv.Itoa(x.Version)
+			cur, what := "", esc(x.Made)
+			if x.Version == o.Version {
+				cur = ` aria-current="page"`
+			}
+			if x.Current {
+				what = "current · " + what
+			}
+			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
+		}
+		b.WriteString(`</ul><hr>` + o.ShareButton + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
+<div id="action-toasts" aria-live="polite"></div>
+`)
+		script += "\n" + ownerScript + "\n" + o.ShareScript
+	}
+	b.WriteString(`<script nonce="` + esc(v.Nonce) + `">` + script + `</script>
 </body></html>
 `)
 	return b.String()
 }
 
-// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell):
-// a message from the shell's OWN frame asking to submit or upload is sent to
-// base+"/submit" or base+"/upload" with credentials omitted, and the answer
-// posted back. base "" (a preview) answers every message as a preview.
+// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell)
+// and the header's hide-on-scroll.
+//
+// The relay: a message from the shell's OWN frame asking to submit or upload
+// is sent to base+"/submit" or base+"/upload", and the answer posted back. A
+// link's shell sends it with credentials omitted (the link in base is the
+// credential). The OWNER's (owner) sends their session, same-origin — the
+// route's own session and Origin checks, as every owner write — and only
+// within a few seconds of a real tap or key press in the page
+// (navigator.userActivation, which a click inside the frame gives its
+// parent too): the page's own script cannot record something as its owner's
+// while the owner merely looks at it.
 //
 // 🔴 THE SHELL IS THE ONLY CODE ON MUSTER'S ORIGIN A VIEWER RUNS, SO IT TRUSTS
 // NOTHING IT IS SENT: it accepts only its own frame's window, two ops, and
 // sends only the component name, the data as JSON, or a Blob, to two fixed
-// routes that authenticate by the link alone.
-func ShellScript(base string) string {
+// routes.
+//
+// 🔴 THE HEADER IS THE BRAND, THE TRUST SIGNAL OF A SHARE LINK, AND A PAGE'S
+// SCRIPT MUST NEVER BE ABLE TO KEEP IT HIDDEN FOR GOOD. It hides on a scroll
+// down and returns on a scroll up, by these rules, and only these:
+//   - it is visible on load (nothing hides it until a report arrives);
+//   - a report at or near the top (y no more than the header's height) shows it;
+//   - any report above the last one (a scroll up) shows it;
+//   - only a report below the last one AND past the header's height hides it;
+//   - keyboard focus inside it (CSS :focus-within) and the open version
+//     popover show it whatever the reports say.
+//
+// The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
+// the private port the shell hands the frame on its load (sdkScript), never a
+// window message: a page's script posting one to the shell is ignored, as is
+// one from any other window, and a y that is not such a number.
+// TestTheShellScriptHidesTheHeaderOnlyByTheRules and e2e pages.spec.ts.
+func ShellScript(base string, owner bool) string {
+	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
+	if owner {
+		// same-origin: the Origin a same-origin POST carries is muster's only
+		// when the referrer policy lets it (no-referrer would send "null").
+		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
+	}
 	return `(function(){"use strict";
-var f=document.getElementById("page"),base=` + jsString(base) + `;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,GATE=` + gate + `,acted=0;
+var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0;
+window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
+function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
+function onY(y){
+ if(typeof y!=="number"||!isFinite(y)||y<0)return;
+ if(y<=H||y<lastY||popOpen())window.__musterHeader(true);else if(y>lastY)window.__musterHeader(false);
+ lastY=y;
+}
+if(f){var sent=false;f.addEventListener("load",function(){
+ if(sent)return;sent=true;
+ var ch=new MessageChannel();
+ ch.port1.onmessage=function(ev){var d=ev.data;if(d&&d.muster===1&&d.op==="scroll")onY(d.y);};
+ f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
+});}
+function activated(){
+ if(!GATE)return true;var u=navigator.userActivation;if(!u)return true;
+ if(u.isActive){acted=Date.now();return true;}return Date.now()-acted<10000;
+}
 window.addEventListener("message",function(ev){
  if(!f||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){f.contentWindow.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)},"*");}
- if(!base)return reply(true,{preview:true});
+ if(!base)return reply(false,"nothing can be sent from here");
+ if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");
+ if(!activated())return reply(false,"Tap the page's button to send this as you.");
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",req;
- var opts={method:"POST",credentials:"omit",cache:"no-store",referrerPolicy:"no-referrer"};
+ var opts={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `};
  if(d.op==="submit"){
   var body;try{body=JSON.stringify({component:comp,data:d.data===undefined?null:d.data});}catch(e){return reply(false,"the data is not JSON");}
   opts.headers={"Content-Type":"application/json"};opts.body=body;req=fetch(base+"/submit",opts);
- }else if(d.op==="upload"){
+ }else{
   if(!(d.file instanceof Blob))return reply(false,"not a file");
   var fd=new FormData();fd.append("component",comp);fd.append("file",d.file,String(d.name||"file").slice(0,200));
   opts.body=fd;req=fetch(base+"/upload",opts);
- }else return reply(false,"unknown request");
+ }
  req.then(function(r){return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
   if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
   function(){reply(false,"muster could not be reached");});
 });
 })();`
 }
+
+// ownerScript is the version chip's popover: a real button (aria-expanded)
+// opening a dialog; on open the header shows and focus goes to the version
+// shown; Escape, a tap outside (the scrim) or the chip again closes it, and
+// focus returns to the chip.
+const ownerScript = `(function(){"use strict";
+var chip=document.querySelector("[data-version-chip]"),pop=document.getElementById("page-versions"),scrim=document.querySelector("[data-versions-scrim]");
+if(!chip||!pop||!scrim)return;
+function set(open,back){
+ chip.setAttribute("aria-expanded",open?"true":"false");pop.hidden=!open;scrim.hidden=!open;
+ if(open){window.__musterHeader&&window.__musterHeader(true);var c=pop.querySelector("a[aria-current]")||pop.querySelector("a,button");if(c)c.focus();}
+ else if(back)chip.focus();
+}
+chip.addEventListener("click",function(){set(pop.hidden,true);});
+scrim.addEventListener("click",function(){set(false,false);});
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!pop.hidden){e.preventDefault();set(false,true);}});
+})();`
