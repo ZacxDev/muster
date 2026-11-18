@@ -67,7 +67,7 @@ for (const size of [
       await expect(page.locator('#mv-attach-off')).toBeVisible();
       await expect(page.locator('#mv-dictate')).toHaveCount(0);
       await expect(page.locator('#mv-attach')).toHaveCount(0);
-      await expect(page.locator('#mv-dictate-off')).toHaveAttribute('aria-label', /Dictation is off on this server/);
+      await expect(page.locator('#mv-dictate-off')).toHaveAttribute('aria-label', /Voice typing is off on this server/);
 
       await page.locator('#mv-dictate-off').click();
       await page.waitForURL((u) => u.pathname === '/account/features' && u.hash === '#dictation-setup');
@@ -194,6 +194,10 @@ test.describe('phone 390×844 touch: the Features page reads plainly', () => {
     );
     await page.keyboard.press('Escape');
     await expect(sheet).toBeHidden();
+    // A change of address on the page opens the sheet it names.
+    await page.evaluate(() => (location.hash = '#push-setup'));
+    await expect(page.locator('#push-setup')).toBeVisible();
+    await page.keyboard.press('Escape');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow, 'the Features page scrolls sideways').toBeLessThanOrEqual(0);
   });

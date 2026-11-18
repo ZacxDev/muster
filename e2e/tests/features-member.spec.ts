@@ -112,12 +112,17 @@ test('a member reads plain rows, is told to ask their admin, and is sent no setu
   expect(n, 'the page lists the registry').toBeGreaterThan(30);
   await expect(page.locator('section[data-feature] [data-feature-oneline]')).toHaveCount(n);
 
-  // Every feature that is not on says to ask the admin — and no row tells a
-  // member to open an ⓘ for a setting they will not be shown.
-  const notOn = await page.locator('section[data-feature]:not([data-state="on"])').count();
-  expect(notOn, 'CONTROL: this server has features that are off').toBeGreaterThan(5);
-  await expect(page.locator('section[data-feature] [data-feature-ask]')).toHaveCount(notOn);
+  // Every feature that is not on says to ask the admin — except one that is
+  // off because another does its job (the shared password, on a server where
+  // everyone has an account), which says so instead. No row tells a member
+  // to open an ⓘ for a setting they will not be shown.
+  const askable = await page.locator('section[data-feature]:not([data-state="on"]):not(:has([data-feature-replaced]))').count();
+  expect(askable, 'CONTROL: this server has features that are off').toBeGreaterThan(5);
+  await expect(page.locator('section[data-feature] [data-feature-ask]')).toHaveCount(askable);
   await expect(page.locator('[data-feature-next]')).toHaveCount(0);
+  const sharedPassword = row(page, 'password-sign-in');
+  await expect(sharedPassword.locator('[data-feature-replaced]')).toHaveText('Not used: everyone signs in with their own account.');
+  await expect(sharedPassword.locator('[data-feature-ask]')).toHaveCount(0);
   const dictation = row(page, 'dictation');
   await expect(dictation.locator('[data-feature-name]')).toHaveText('Voice typing');
   await expect(dictation.locator('[data-feature-state]')).toHaveText('Off');
@@ -129,10 +134,16 @@ test('a member reads plain rows, is told to ask their admin, and is sent no setu
     expect(html, `a member's Features page carries ${needle}`).not.toContain(needle);
   }
 
-  // The anchor a "how to turn it on" hint links to opens the feature's sheet:
-  // for a member, it says to ask their admin.
-  await page.goto(browserURL + '/account/features#dictation-setup');
-  const sheet = page.locator('#dictation-setup');
+  // A "how to turn it on" hint on another page opens the feature's sheet: the
+  // Account page's suggested-replies note (off: this server has no model
+  // key), tapped as a member would. For a member the sheet says to ask
+  // their admin.
+  await page.goto(browserURL + '/account');
+  const hint = page.locator('a[href="/account/features#suggested-replies-setup"]');
+  await expect(hint).toBeVisible();
+  await hint.tap();
+  await page.waitForURL((u) => u.pathname === '/account/features' && u.hash === '#suggested-replies-setup');
+  const sheet = page.locator('#suggested-replies-setup');
   await expect(sheet).toBeVisible();
   await expect(sheet).toHaveAttribute('role', 'dialog');
   await expect(sheet.locator('[data-info-withheld]')).toHaveText('Ask your admin to turn this on.');

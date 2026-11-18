@@ -74,7 +74,7 @@ func attachControlOrOff(path string, off bool) g.Node {
 }
 
 // AttachOffLabel is the muted paperclip's accessible name.
-const AttachOffLabel = "File attachments are off on this server — how to turn them on"
+const AttachOffLabel = features.AttachmentsName + " are off on this server — how to turn them on"
 
 // attachOffControl is the muted paperclip: a link, not a button.
 func attachOffControl() g.Node {

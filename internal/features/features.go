@@ -74,6 +74,17 @@ const (
 	Pages                = "pages"
 )
 
+// The plain names of the features a "how to turn it on" hint names
+// elsewhere in the app (the muted mic and paperclip, the nav's Connectors
+// entry, the Credentials page): ONE spelling, which the catalog's PlainName
+// and every hint read, so a hint never calls a feature by a name the
+// Features page does not use.
+const (
+	DictationName   = "Voice typing"
+	AttachmentsName = "File attachments"
+	ConnectorsName  = "Connectors"
+)
+
 // DocsPage is the document whose headings are the feature ids.
 const DocsPage = "docs/features.md"
 
@@ -185,6 +196,12 @@ type Feature struct {
 	// Reason is why the feature is off or misconfigured ("" when on), or, for
 	// a feature that is on, what it still depends on ("" when nothing).
 	Reason string `json:"reason,omitempty"`
+	// Replaced is, for a feature that is off because another one does its
+	// job here, that fact in one plain sentence ("Not used: everyone has
+	// their own account."); "" otherwise. The Features page says it instead
+	// of "ask your admin to turn this on", which would ask for something
+	// nobody should turn on.
+	Replaced string `json:"replaced,omitempty"`
 }
 
 // ShownName is the name the Features page shows: PlainName, or Name for an entry
@@ -288,6 +305,8 @@ func joinAnd(xs []string) string {
 type Status struct {
 	State  State
 	Reason string
+	// Replaced: see Feature.Replaced. Only an OFF feature is replaced.
+	Replaced string
 }
 
 // Set is the evaluated registry, in catalog order.
@@ -331,7 +350,10 @@ func Evaluate(catalog []Feature, statuses map[string]Status) (Set, error) {
 		if st.State != On && st.Reason == "" {
 			return Set{}, fmt.Errorf("features: %q is %s with no reason", f.ID, st.State)
 		}
-		f.State, f.Reason = st.State, st.Reason
+		if st.Replaced != "" && st.State != Off {
+			return Set{}, fmt.Errorf("features: %q is %s and replaced; only an off feature is replaced", f.ID, st.State)
+		}
+		f.State, f.Reason, f.Replaced = st.State, st.Reason, st.Replaced
 		s.byID[f.ID] = len(s.list)
 		s.list = append(s.list, f)
 	}

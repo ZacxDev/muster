@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plainscan"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -134,6 +135,74 @@ func TestTheRealFeaturesPageIsPlainWithASheetPerFeature(t *testing.T) {
 	for _, s := range texts {
 		if m := plainscan.Jargon(s); m != "" {
 			t.Errorf("the real Features page's top layer says %q (%q)", s, m)
+		}
+	}
+}
+
+// TestTheSharedPasswordIsReplacedNotOffOnAnAccountsServer: with per-user
+// accounts (MUSTER_AUTH_MODE=gotrue) the shared password is off because
+// accounts replace it — the evaluator says so in a plain sentence, so the
+// Features page tells nobody to ask for it to be turned on. The control: on
+// a password server it is on and replaced by nothing.
+func TestTheSharedPasswordIsReplacedNotOffOnAnAccountsServer(t *testing.T) {
+	gt, _ := featureSet(t, config{AuthMode: "gotrue"}, api.Extensions{}, true).Get(features.PasswordSignIn)
+	if gt.State != features.Off || gt.Replaced != "Not used: everyone signs in with their own account." {
+		t.Fatalf("gotrue: shared password %s, replaced %q", gt.State, gt.Replaced)
+	}
+	if m := plainscan.Jargon(gt.Replaced); m != "" {
+		t.Errorf("the replaced line %q holds %q", gt.Replaced, m)
+	}
+	pw, _ := featureSet(t, config{UIPassword: "a-synthetic-operator-password"}, api.Extensions{}, true).Get(features.PasswordSignIn)
+	if pw.State != features.On || pw.Replaced != "" {
+		t.Fatalf("CONTROL: password mode: shared password %s, replaced %q", pw.State, pw.Replaced)
+	}
+}
+
+// TestEveryHintNamesItsFeatureAsTheFeaturesPageDoes is the seam between the
+// hints that say a feature is off elsewhere in the app and the page they open:
+// the hint calls the feature by the page's own plain name (the real catalog's
+// PlainName), read from ONE constant. Structurally: each hinted feature's
+// catalog PlainName is its constant, and the mic's and paperclip's labels
+// begin with it. Behaviourally: the real Credentials page and its nav's muted
+// entry, on a server with no credential store, as its admin, name the
+// Features page's Connectors row by that name, and the Features page's row
+// shows it.
+func TestEveryHintNamesItsFeatureAsTheFeaturesPageDoes(t *testing.T) {
+	plain := map[string]string{}
+	for _, f := range featureCatalog() {
+		plain[f.ID] = f.PlainName
+	}
+	for id, name := range map[string]string{features.Dictation: features.DictationName, features.Attachments: features.AttachmentsName,
+		features.Connectors: features.ConnectorsName} {
+		if plain[id] != name || name == "" {
+			t.Errorf("%s: the catalog calls it %q, its hints %q", id, plain[id], name)
+		}
+	}
+	for label, id := range map[string]string{ui.DictateOffLabel: features.Dictation, ui.AttachOffLabel: features.Attachments} {
+		if !strings.HasPrefix(label, plain[id]+" ") {
+			t.Errorf("the hint %q does not name %s as the Features page does (%q)", label, id, plain[id])
+		}
+	}
+	const pw = "a-synthetic-operator-password"
+	a, err := buildApp(context.Background(), config{UIPassword: pw}, log.New(&bytes.Buffer{}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	cred := operatorPage(t, a, pw, "/account/credentials")
+	for _, want := range []string{
+		`>Features → ` + plain[features.Connectors] + `</a>`,
+		`id="sidebar-connectors-off"`,
+		`aria-label="` + plain[features.Connectors] + ` — off on this server; how to turn it on"`,
+	} {
+		if !strings.Contains(cred, want) {
+			t.Errorf("the Credentials page (no credential store) lacks %s", want)
+		}
+	}
+	page := operatorPage(t, a, pw, api.FeaturesPagePath)
+	for _, id := range []string{features.Dictation, features.Attachments, features.Connectors} {
+		if !strings.Contains(page, `<h2 data-feature-name class="min-w-0 flex-1 text-sm font-semibold text-fg">`+plain[id]) {
+			t.Errorf("the Features page's %s row is not named %q", id, plain[id])
 		}
 	}
 }

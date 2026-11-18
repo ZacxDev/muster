@@ -66,7 +66,7 @@ func featureCatalog() []features.Feature {
 				v(envVAPIDSubject, "mailto: or https: contact")},
 			Settings: []string{envPushExtraHosts}},
 		{ID: features.Dictation, Name: "Dictation",
-			PlainName:   "Voice typing",
+			PlainName:   features.DictationName,
 			OneLine:     "Speak into any message box and your words are typed for you.",
 			Description: "A microphone on every message box; speech is transcribed into the box.",
 			// The documented install: the bundled `stt` profile, whose URL the
@@ -74,7 +74,7 @@ func featureCatalog() []features.Feature {
 			Enable:   []features.Var{features.ProfileVar("stt"), v(envSTTToken, "a random secret")},
 			Settings: []string{envSTTURL, envSTTModel}},
 		{ID: features.Attachments, Name: "File attachments",
-			PlainName:   "File attachments",
+			PlainName:   features.AttachmentsName,
 			OneLine:     "Attach files to your messages so your agents can open them.",
 			Description: "Attach files in the message box; agents get signed links to them.",
 			// The documented install: the bundled `s3` profile, whose store
@@ -84,7 +84,7 @@ func featureCatalog() []features.Feature {
 			Settings: []string{envS3Endpoint, envS3Bucket, envS3AccessKey, envS3SecretKey, envPublicURL, envS3Region, envUploadMaxBytes, envUploadLinkTTL}},
 		{ID: features.SuggestedReplies, Name: "Suggested replies",
 			PlainName:   "Suggested replies",
-			OneLine:     "Offers up to three ready-made replies when a session is waiting for you.",
+			OneLine:     "Up to three ready-made replies when a session waits for you; each person turns them on in Account.",
 			Description: "Up to three suggested replies when a Claude Code session hands back control. Off for each user until they turn them on in Account (with no database, until MUSTER_SUGGEST=on); needs an OpenRouter key.",
 			Enable:      []features.Var{v(envAgentOpenRouterKey, "OpenRouter key")},
 			Settings:    []string{envSuggest, envSuggestModel}},
@@ -101,7 +101,7 @@ func featureCatalog() []features.Feature {
 			Enable: []features.Var{is(envAuthMode, "gotrue"), v(envGoTrueURL, "GoTrue base URL"), v(envGoTrueSecret, "GoTrue JWT secret"),
 				v(envBrowserPort, "browser listener port")}},
 		{ID: features.Connectors, Name: "Connectors and credentials",
-			PlainName:   "Saved credentials",
+			PlainName:   features.ConnectorsName,
 			OneLine:     "Keeps the logins and keys your agents use, stored safely.",
 			Description: "Stored platform credentials agents use through muster's proxy, and each member's own Claude and OpenRouter credentials.",
 			Enable:      []features.Var{v(envConnectorEncKey, "32 random bytes, hex or base64")},
@@ -159,7 +159,7 @@ func featureCatalog() []features.Feature {
 				envChiefSessionsSessionUSD}},
 		{ID: features.ChiefNudges, Kubernetes: true, Name: "Chief stall nudges",
 			PlainName:   "Chief check-ins",
-			OneLine:     "The chief notices sessions that have gone quiet and nudges them, or asks you.",
+			OneLine:     "The chief watches for sessions that have gone quiet; your admin can let it nudge them or ask you.",
 			Description: "The chief judges idle sessions and nudges or asks (shadow mode by default).",
 			Enable:      []features.Var{is(envChiefNudges, "1")},
 			Settings: []string{envChiefNudgeLiveOwners, envChiefNudgeNeedsYouLiveOwners, envChiefNudgeChiefChatQuotesLiveOwners, envChiefNudgeIdle,
@@ -215,7 +215,7 @@ func featureCatalog() []features.Feature {
 			Settings:    []string{envChiefDispatchOwners, envChiefDispatchModels}},
 		{ID: features.PRMailRouting, Name: "Pull-request review routing",
 			PlainName:   "Code review mail",
-			OneLine:     "Review emails go straight to the session that asked for the review.",
+			OneLine:     "Review emails go straight to the session that opened the pull request.",
 			Description: "Review mail goes to the session that opened the pull request.",
 			Enable:      []features.Var{v(envPRMailSenders, "owner/handle,…")}},
 		{ID: features.FleetReports, Name: "Fleet reports",
@@ -231,7 +231,7 @@ func featureCatalog() []features.Feature {
 			Settings:    []string{envMailResumeOff}},
 		{ID: features.MemoRelay, Kubernetes: true, Name: "Memo relay",
 			PlainName:   "Memo delivery",
-			OneLine:     "Delivers your memos to the agents that are running.",
+			OneLine:     "Delivers your memos, short notes you leave for your agents, to the agents that are running.",
 			Description: "cairn memos delivered to the operator's running agents.",
 			Enable:      []features.Var{v(envMemoURL, "cairn memo listener URL"), v(envMemoToken, "read-only cairn credential")},
 			Settings:    []string{envMemoScopeMap}},
@@ -269,8 +269,8 @@ func featureCatalog() []features.Feature {
 			Enable:      []features.Var{v(envAndroidPackage, "package name"), v(envAndroidCertSHA256, "signing-certificate fingerprints")},
 			Settings:    []string{envAndroidAllowPINKeys, envAndroidSSOOrigins}},
 		{ID: features.Telemetry, Name: "Browser telemetry",
-			PlainName:   "Speed monitoring",
-			OneLine:     "Reports how quickly the app loads for you to a monitoring service.",
+			PlainName:   "Usage and error monitoring",
+			OneLine:     "Sends how fast pages load, and any errors the app hits, to the monitoring service your admin set up.",
 			Description: "Grafana Faro real-user monitoring from the web UI.",
 			Enable:      []features.Var{v(envFaroUpstream, "Faro receiver collect URL")},
 			Settings:    []string{envFaroURL, envFaroKey, envFaroTracing}},
@@ -284,6 +284,11 @@ func featureCatalog() []features.Feature {
 				officers.KubeAllowlistEnvPrefix + "<CLUSTER>", officers.ImageRegistriesEnv, envOfficerImagePullSecret}},
 	}
 }
+
+// PasswordReplacedText is what the Features page says of the shared password
+// on a server where everyone has their own account (MUSTER_AUTH_MODE=gotrue):
+// it is off because accounts replace it, not waiting for an admin.
+const PasswordReplacedText = "Not used: everyone signs in with their own account."
 
 // openRouterKeyMissing is the ONE answer to "is there no OpenRouter key for the
 // features that spend one": suggested replies, focus and the chief's stall
@@ -451,7 +456,8 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	st[features.Mirror] = pick(ext.Mirror != nil, c.Mirror, "", noDB, envMirror+" is unset")
 	switch reason := c.browserAuthRefusal(); {
 	case gotrue:
-		st[features.PasswordSignIn] = off(envAuthMode + "=gotrue: per-user accounts replace the shared password")
+		st[features.PasswordSignIn] = features.Status{State: features.Off, Reason: envAuthMode + "=gotrue: per-user accounts replace the shared password",
+			Replaced: PasswordReplacedText}
 	case reason != "":
 		st[features.PasswordSignIn] = bad(reason + ", so every browser page answers 503")
 	default:

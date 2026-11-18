@@ -324,7 +324,7 @@ func dictateSend(path, buttonID string, shape DictateSendShape, submit, hide []s
 }
 
 // DictateOffLabel is the muted mic's accessible name.
-const DictateOffLabel = "Dictation is off on this server — how to turn it on"
+const DictateOffLabel = features.DictationName + " is off on this server — how to turn it on"
 
 // dictateOffControl is the mic's place when the server has no dictation: a
 // muted mic that links to the feature's ⓘ sheet on the Features page. Shown

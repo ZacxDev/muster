@@ -294,7 +294,7 @@ func (s *Server) handleFeaturesPage(w http.ResponseWriter, r *http.Request) {
 	} else {
 		n := s.features.Counts()
 		b.WriteString(`<p class="text-sm text-fg" data-features-counts>` + strconv.Itoa(n[features.On]) + ` on · ` + strconv.Itoa(n[features.Off]) +
-			` off · ` + strconv.Itoa(n[features.Misconfigured]) + ` need setup</p>`)
+			` off · ` + strconv.Itoa(n[features.Misconfigured]) + ` ` + needSetup(n[features.Misconfigured]) + `</p>`)
 	}
 	b.WriteString(`</section>`)
 	for _, f := range s.features.All() {
@@ -303,6 +303,14 @@ func (s *Server) handleFeaturesPage(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
 	b.WriteString(`<script>` + ui.FeaturesSheetJS + `</script>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Features", ui.NavFeatures, false, b.String())
+}
+
+// needSetup is the counts line's verb for n misconfigured features.
+func needSetup(n int) string {
+	if n == 1 {
+		return "needs setup"
+	}
+	return "need setup"
 }
 
 // featureStateLabel is a state as the page's pill reads it.
@@ -334,7 +342,7 @@ func featureRow(f features.Feature, admin bool) string {
 	name := f.ShownName()
 	var b strings.Builder
 	b.WriteString(`<section id="` + e(f.ID) + `" data-feature="` + e(f.ID) + `" data-state="` + e(string(f.State)) +
-		`" class="flex min-w-0 scroll-mt-20 flex-col gap-2 rounded-2xl border border-line bg-s1/70 px-5 py-4 ring-1 ring-line">`)
+		`" class="flex min-w-0 flex-col gap-2 rounded-2xl border border-line bg-s1/70 px-5 py-4 ring-1 ring-line">`)
 	b.WriteString(`<div class="flex items-center gap-2"><h2 data-feature-name class="min-w-0 flex-1 text-sm font-semibold text-fg">` + e(name))
 	if f.Core {
 		b.WriteString(` <span class="text-xs font-normal text-muted">built in</span>`)
@@ -348,6 +356,8 @@ func featureRow(f features.Feature, admin bool) string {
 	}
 	switch {
 	case f.State == features.On:
+	case f.State == features.Off && f.Replaced != "":
+		b.WriteString(`<p data-feature-replaced class="text-sm text-fg">` + e(f.Replaced) + `</p>`)
 	case !admin:
 		b.WriteString(`<p data-feature-ask class="text-sm text-fg">` + FeatureAskAdminText + `</p>`)
 	case f.State == features.Misconfigured:
@@ -369,13 +379,17 @@ func featureRow(f features.Feature, admin bool) string {
 // are still shown, for a Kubernetes deployment.
 func featureSheet(f features.Feature, name string, admin bool) ui.InfoSheet {
 	on := f.State == features.On
+	replaced := f.State == features.Off && f.Replaced != ""
 	sh := ui.InfoSheet{ID: ui.FeatureSheetID(f.ID), Label: "How to turn on " + name, Heading: "Turn on " + name}
-	if on {
+	if on || replaced {
 		sh.Label, sh.Heading = "Setup of "+name, name
 	}
 	if !admin {
-		sh.Withheld = true
+		// Nothing a member can turn on: the sheet is about the feature.
+		sh.Withheld, sh.Label, sh.Heading = true, "About "+name, name
 		switch {
+		case replaced:
+			sh.Lead, sh.WithheldText = name+" is not used on this server.", f.Replaced
 		case on:
 			sh.Lead, sh.WithheldText = name+" is on.", "Ask your admin if it needs changing."
 		case f.State == features.Misconfigured:
@@ -389,15 +403,18 @@ func featureSheet(f features.Feature, name string, admin bool) ui.InfoSheet {
 	lines := f.EnableLines()
 	switch {
 	case len(lines) == 0:
+	case on && f.Kubernetes:
+		sh.Lead = "It is on. In a Kubernetes deployment, these lines turn it on:"
+	case on && f.HostSide:
+		sh.Lead = "It is on. On each computer, these lines in muster-mirror's environment turn it on:"
+	case on:
+		sh.Lead = "It is on. These lines in the server's .env file turn it on:"
 	case f.Kubernetes:
 		sh.Lead = "In a Kubernetes deployment, set:"
 	case f.HostSide:
 		sh.Lead = "On each computer, in muster-mirror's environment:"
 	default:
 		sh.Lead = "Add these lines to the server's .env file, then run docker compose up -d --wait:"
-	}
-	if on && sh.Lead != "" {
-		sh.Lead = "It is on. " + sh.Lead
 	}
 	sh.Code, sh.Multiline = strings.Join(lines, "\n"), true
 	var x strings.Builder

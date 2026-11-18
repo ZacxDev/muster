@@ -98,10 +98,12 @@ func FeatureHref(id string) string { return FeaturesPagePath + "#" + FeatureShee
 
 // FeaturesSheetJS opens the ⓘ sheet the Features page's address names
 // (FeatureHref), on load and when the address changes, with the sheet's row
-// scrolled into view. Only an element that IS a sheet is opened.
+// scrolled into view. Only an element that IS a sheet is opened; a malformed
+// address opens nothing; the hashchange listener is added once per document.
 const FeaturesSheetJS = `(function(){
   function open(){
-    var id = decodeURIComponent(location.hash.slice(1));
+    var id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { return; }
     if (!id) return;
     var el = document.getElementById(id);
     if (!el || !el.hasAttribute('data-info-sheet') || !el.showPopover) return;
@@ -110,7 +112,11 @@ const FeaturesSheetJS = `(function(){
     if (!el.matches(':popover-open')) el.showPopover();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', open); else open();
-  window.addEventListener('hashchange', open);
+  // One listener per document, however many times a boosted visit runs this.
+  if (!window.cgFeatureSheetHash) {
+    window.cgFeatureSheetHash = true;
+    window.addEventListener('hashchange', open);
+  }
 })();`
 
 func visibleTabs(f Features) []tab {
