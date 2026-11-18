@@ -72,6 +72,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
+	"github.com/ZacxDev/muster/internal/clientaddr"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/consumerusage"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -233,6 +234,10 @@ type app struct {
 	// browser is the listener gotrue mode serves browser sessions on
 	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
 	browser *http.Server
+	// metrics is the listener that serves /metrics and nothing else
+	// (api.MetricsHandler); nil unless MUSTER_METRICS_PORT is set. /metrics is
+	// on no other listener.
+	metrics *http.Server
 	pool    *pgxpool.Pool
 	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
 	// declares none.
@@ -357,6 +362,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
 		PublicURL:            cfg.PublicURL,
 		PluginOrigins:        cfg.PluginOrigins,
+		ClientAddr:           cfg.ClientAddr,
 	}
 
 	if cfg.Database != "" {
@@ -1135,6 +1141,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ReadHeaderTimeout: readHeaderTimeout,
 		}
 	}
+	if cfg.MetricsPort != 0 {
+		a.metrics = &http.Server{
+			Addr:              net.JoinHostPort("", strconv.Itoa(cfg.MetricsPort)),
+			Handler:           api.MetricsHandler(),
+			ReadHeaderTimeout: readHeaderTimeout,
+		}
+	}
 
 	a.logBanner(ext, port)
 	a.logFeatures(feats)
@@ -1303,7 +1316,7 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", a.http.Addr, err)
 	}
-	var connectLn, browserLn net.Listener
+	var connectLn, browserLn, metricsLn net.Listener
 	if a.connect != nil {
 		if connectLn, err = net.Listen("tcp", a.connect.Addr); err != nil {
 			ln.Close()
@@ -1319,13 +1332,23 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 			return fmt.Errorf("listen %s (%s): %w", a.browser.Addr, envBrowserPort, err)
 		}
 	}
+	if a.metrics != nil {
+		if metricsLn, err = net.Listen("tcp", a.metrics.Addr); err != nil {
+			for _, l := range []net.Listener{ln, connectLn, browserLn} {
+				if l != nil {
+					l.Close()
+				}
+			}
+			return fmt.Errorf("listen %s (%s): %w", a.metrics.Addr, envMetricsPort, err)
+		}
+	}
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	a.startBackgroundLoops(ctx)
 
-	serveErr := make(chan error, 3)
+	serveErr := make(chan error, 4)
 	go func() {
 		a.logger.Printf("muster %s listening on %s (auth tiers reported above)", api.BuildVersion, ln.Addr())
 		serveErr <- a.http.Serve(ln)
@@ -1340,6 +1363,12 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 		go func() {
 			a.logger.Printf("muster browser listener on %s (%s)", browserLn.Addr(), envBrowserPort)
 			serveErr <- a.browser.Serve(browserLn)
+		}()
+	}
+	if metricsLn != nil {
+		go func() {
+			a.logger.Printf("muster metrics listener on %s (%s; /metrics only)", metricsLn.Addr(), envMetricsPort)
+			serveErr <- a.metrics.Serve(metricsLn)
 		}()
 	}
 
@@ -1539,6 +1568,11 @@ func (a *app) shutdown() {
 	if a.browser != nil {
 		if err := a.browser.Shutdown(drainCtx); err != nil {
 			a.logger.Printf("browser listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
+		}
+	}
+	if a.metrics != nil {
+		if err := a.metrics.Shutdown(drainCtx); err != nil {
+			a.logger.Printf("metrics listener drain did not complete within %s: %v", shutdownDrainTimeout, err)
 		}
 	}
 	// The machine jobs this process accepted and will now never finish: fail
@@ -1764,7 +1798,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// this banner said so. That is exactly the "silent healthy state and silent
 	// refusing state are byte-identical" case this function's own header is about.
 	if a.cfg.SecureCookies {
-		l.Printf("session cookie: SECURE — %s is set, so the cookie is sent over HTTPS only. "+
+		l.Printf("session cookie: SECURE — %s is on (or unset, with an https public URL), so the cookie is sent over HTTPS only. "+
 			"A plain-HTTP LAN port will NOT be able to log in against this process. The one exception is "+
 			"a page this machine serves itself over http://localhost, 127.0.0.1 or [::1]: it gets the cookie "+
 			"without Secure, so every browser keeps it, and that traffic never leaves the loopback interface",
@@ -1775,18 +1809,23 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			gotrueNote = " (this is the PASSWORD-mode cookie, unused here: gotrue mode's " +
 				"cookies are always Secure — see the auth mode line)"
 		}
-		l.Printf("session cookie: NOT Secure — %s is unset, which is the DEFAULT and is "+
+		l.Printf("session cookie: NOT Secure — %s is off, or unset with no https public URL, which is "+
 			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
-			"set it: without it the session cookie travels with no Secure attribute and any "+
+			"give it its https public URL: without it the session cookie travels with no Secure attribute and any "+
 			"plain-HTTP request to the same host carries it%s", envSecureCookies, gotrueNote)
 	}
 
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
 	} else {
-		l.Printf("machine hook tier: OPEN — %s is unset, so the hook endpoints require NO "+
-			"credential. That is enforce-when-set back-compat, not a default anyone chose; "+
-			"the LAN port is included", envHookToken)
+		l.Printf("machine hook tier: CLOSED — %s is unset, so every hook endpoint refuses every caller "+
+			"(only a server built without config validation can get here)", envHookToken)
+	}
+	if a.cfg.MetricsPort != 0 {
+		l.Printf("metrics: ON — /metrics is served on its own listener, %s=%d, and on no other port",
+			envMetricsPort, a.cfg.MetricsPort)
+	} else {
+		l.Printf("metrics: OFF — %s is unset, so /metrics is served on no port", envMetricsPort)
 	}
 
 	if reason := a.cfg.serviceWriteRefusal(); reason != "" {
@@ -1837,8 +1876,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg))
 	default:
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
-			"server will NOT report ready while a notes store is wired, on purpose: see "+
-			"/readyz for the reason", envRouterURL, envStandalone)
+			"server will NOT report ready while a notes store is wired, on purpose: /readyz "+
+			"answers 503 and logs the reason (a \"readyz: not ready\" line)", envRouterURL, envStandalone)
 	}
 
 	// The claude-code approval relay's gate, on its own line: it is configurable
@@ -1951,10 +1990,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"idea the owner typed in its chat (route_to_session's text, on a turn the owner typed: owner_asked) or one of the "+
 			"owner's tasks; a plugin message is never routed (%s is off); a route unanswered after %s (%s for the owner's "+
 			"request) goes back to the chief", envSessionRouting, envPlugins, api.RouteTimeout, api.RequestRouteTimeout)
-		if a.cfg.HookToken == "" {
-			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
-				"ONLY with a personal API token or its muster MCP server's route_reply", envHookToken)
-		}
 	case ext.Routing != nil:
 		l.Printf("session routing: ON (%s=1) — the chief may hand one of its owner's sessions a plugin message, a task or an "+
 			"idea the owner typed in its chat (route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
@@ -1964,11 +1999,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"reports a reply sent directly, stamped with that message, first (POST /plugin/v1/messages/{id}/owner-answered)",
 			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout, api.PRRouteTimeout, envPRMailSenders,
 			api.ConversationRouteTimeout)
-		if a.cfg.HookToken == "" {
-			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
-				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
-				"out back to the chief", envHookToken)
-		}
 	case a.cfg.SessionRouting:
 		l.Printf("session routing: INERT — %s=1 but there is no database, so nothing is routed", envSessionRouting)
 	default:
@@ -2179,6 +2209,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("plugin origins: OFF — %s is unset, so no Host is refused as a plugin's", envPluginOrigins)
 	}
+	addrPolicy := a.cfg.ClientAddr
+	if addrPolicy == nil { // a config not from loadConfig: the strict default, named
+		addrPolicy, _ = clientaddr.New(clientaddr.Config{TrustedVar: envTrustedProxies, HeaderVar: envClientIPHeader})
+	}
+	direct := envDirectClients + " unset (no declaration that clients connect straight to muster)"
+	if a.cfg.DirectClients {
+		direct = envDirectClients + "=1 (declared: clients connect straight to muster, no proxy in front)"
+	}
+	l.Printf("%s; %s", addrPolicy.Describe(), direct)
 
 	// The agent door to browser flows. The deployment's own names are
 	// configuration, and their ABSENCE is a state an operator must be told

@@ -53,6 +53,7 @@ func TestChiefSessionRuntimesConfig(t *testing.T) {
 			t.Errorf("%s (%q) was not refused naming the variable: %v", bad.why, bad.v, err)
 		}
 		cfg.Database = "postgres://example.invalid/db"
+		cfg.HookToken = fixtureHookToken
 		if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), envChiefSessionRuntimes) {
 			t.Errorf("%s (%q): validate() did not reach the refusal: %v", bad.why, bad.v, err)
 		}
@@ -90,6 +91,7 @@ func TestTheRetiredGatewaySessionRuntimeBootsIgnoredWithOneWarning(t *testing.T)
 			t.Fatalf("%q: %v", c.v, err)
 		}
 		cfg.Database = "postgres://example.invalid/db"
+		cfg.HookToken = fixtureHookToken
 		if err := cfg.validateSessionRuntimes(); err != nil {
 			t.Errorf("%q: refused: %v", c.v, err)
 		}

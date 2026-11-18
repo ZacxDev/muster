@@ -131,7 +131,7 @@ func TestTheComposerIsPhoneShaped(t *testing.T) {
 // screen, not merely greyed out.
 func TestADisabledComposerSaysWhy(t *testing.T) {
 	view := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: false}))
-	if !strings.Contains(view, `<p id="mv-readonly"`) || !strings.Contains(view, MirrorReadOnlyNote) {
+	if !strings.Contains(view, `<p id="mv-readonly"`) || !strings.Contains(view, MirrorReadOnlyNote("host-a")) {
 		t.Fatal("a read-only host's rendered view does not say why nothing can be sent")
 	}
 	if strings.Contains(view, `<dialog id="term-confirm"`) || strings.Contains(view, "window.musterStepUp = (function") {

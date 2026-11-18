@@ -53,6 +53,18 @@ func (s *Server) mirrorName(ctx context.Context, e mirror.SessionView) sessionna
 	return sessionname.Mirror(e, stored)
 }
 
+// codeName is how a text for an AGENT or a plugin names mirrored entry e
+// whose resolved name is n: its human name when it has one, else its
+// CodeTitle ("fern:1", qualified as the codename always was) — never the
+// plain DisplayTitle the top layer shows, which gains "· window 1" the moment
+// a sibling window opens: an agent's name for a session must stay stable.
+func codeName(n sessionname.Name, e mirror.SessionView) string {
+	if n.Human() {
+		return n.Text
+	}
+	return e.CodeTitle()
+}
+
 // subjectName is the stable name of the session sub names, for a chief tool
 // that holds only its subject (focus_search's hits): its agent's, or the
 // online window's showing its conversation, through fi's stored halves; ""
@@ -73,7 +85,11 @@ func (s *Server) subjectNameOf(ctx context.Context, fi focusIndex, sub focus.Sub
 		}
 	case focus.KindMirror:
 		if e, ok := s.mirrorFocusEntryFor(ctx, sub.Key); ok {
-			return fi.mirrorName(e)
+			// For a chief tool: a name with no human one is the code name
+			// (codeName), stable as siblings come and go.
+			n := fi.mirrorName(e)
+			n.Text = codeName(n, e)
+			return n
 		}
 	}
 	return sessionname.Name{}
@@ -112,7 +128,10 @@ func (s *Server) mirrorLabel(ctx context.Context, e mirror.SessionView) string {
 	if n := s.mirrorName(ctx, e); n.Human() {
 		return n.Text
 	}
-	return e.DisplayTitle() + " @ " + e.Host
+	// Its CODE title ("mango:1", qualified as the codename was), never the
+	// plain DisplayTitle the top layer shows: this text is the chief's, and
+	// it is stored as an ask's label.
+	return e.CodeTitle() + " @ " + e.Host
 }
 
 // humanMirrorName is the HUMAN name of the mirrored conversation keyed key

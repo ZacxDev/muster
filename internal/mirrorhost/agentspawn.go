@@ -112,13 +112,15 @@ type AgentSpawnConfig struct {
 	// It must resolve to the very server this mirror mirrors; empty (the
 	// default) keeps spawning on the default tmux server only (design 3.8).
 	TenantServer string
-	// KeepPermissionPrompts is -agent-spawn-skip-permissions=false: start each
-	// spawned agent EXACTLY as before that flag existed — claude in its normal
-	// permission mode, opencode without --auto. The zero value is the default:
-	// a spawned agent starts WITHOUT permission prompts (spawnPermissionWords),
-	// because muster assumes its sessions run without them and answers none
-	// itself (docs/mirroring.md, "Permission prompts").
-	KeepPermissionPrompts bool
+	// SkipPermissionPrompts is -agent-spawn-skip-permissions: start each
+	// spawned agent WITHOUT permission prompts (the permission words below) —
+	// claude in bypassPermissions mode, opencode with --auto. 🔴 OPT-IN: the
+	// zero value, the default, starts each in its CLI's normal permission
+	// mode, so a tool call the owner did not expect (naming another pane,
+	// clearing its window's dispatch tag, reading the mirror's token) is a
+	// permission prompt the owner sees (docs/mirroring.md, "Permission
+	// prompts").
+	SkipPermissionPrompts bool
 	// Geteuid is the mirror's effective uid (nil = os.Geteuid). 🔴 AS ROOT,
 	// CLAUDE KEEPS ITS PROMPTS: Claude Code exits 1 on bypassPermissions when
 	// it runs as root outside a sandbox of its own, so a root mirror starts
@@ -169,7 +171,7 @@ type AgentSpawnConfig struct {
 // THE one place that decides it — the argv (spawnSkips) and the hello both
 // read it, so what muster is told is what the host runs.
 func (c AgentSpawnConfig) ClaudeSkipsPermissions() bool {
-	return !c.KeepPermissionPrompts && !c.Root()
+	return c.SkipPermissionPrompts && !c.Root()
 }
 
 // Root reports whether the mirror runs as root (effective uid 0, Geteuid).
@@ -186,7 +188,7 @@ func (c AgentSpawnConfig) Root() bool {
 // that is not root (ClaudeSkipsPermissions).
 func (c AgentSpawnConfig) spawnSkips(opencode bool) bool {
 	if opencode {
-		return !c.KeepPermissionPrompts
+		return c.SkipPermissionPrompts
 	}
 	return c.ClaudeSkipsPermissions()
 }
@@ -230,7 +232,7 @@ var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--ses
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
 	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption, spawnNoConfig[0], spawnNoConfig[1]}
 
-// THE PERMISSION WORDS of a spawn (-agent-spawn-skip-permissions, ON by
+// THE PERMISSION WORDS of a spawn (-agent-spawn-skip-permissions, OFF by
 // default): constants, each that CLI's own documented way to start without
 // permission prompts.
 //   - claude: `--permission-mode bypassPermissions` (Claude Code `--help`:

@@ -141,10 +141,10 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 	// A Send's gates, in mirrorSend's order.
 	switch {
 	case !q.h.Online:
-		refuse(http.StatusConflict, unprefixed(mirror.ErrHostOffline), noticeOffline)
+		refuse(http.StatusConflict, notSent(mirror.ErrHostOffline, q.h.Host), noticeOffline)
 		return
 	case !q.h.Interactive:
-		refuse(http.StatusConflict, mirror.ErrInteractiveRefused.Error(), noticeReadOnly)
+		refuse(http.StatusConflict, notSent(mirror.ErrInteractiveRefused, q.h.Host), noticeReadOnly)
 		return
 	case !stepup.Fresh(ctx, s.stepUpNow()):
 		if nav {
@@ -154,7 +154,7 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		}
 		return
 	case !q.listed:
-		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
+		refuse(http.StatusConflict, notSent(mirror.ErrWindowGone, q.h.Host), noticeWindowGone)
 		return
 	}
 	// 🔴 A message a Send may already have delivered is not sent now without

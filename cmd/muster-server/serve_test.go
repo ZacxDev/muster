@@ -42,7 +42,10 @@ func testConfig() config {
 		// Long enough to clear api.minUIPasswordLen, so the browser tier is
 		// CONFIGURED rather than fail-closed — otherwise every browser surface
 		// answers 503 and this test would be measuring the refusal.
-		UIPassword:  "correct-horse-battery-staple-not-a-real-password",
+		UIPassword: "correct-horse-battery-staple-not-a-real-password",
+		// Required at boot in every mode (validateListeners), so a fixture that
+		// is meant to be a bootable configuration carries one.
+		HookToken:   fixtureHookToken,
 		Standalone:  true,
 		RouterActor: defaultRouterActor,
 	}
@@ -52,8 +55,15 @@ func testConfig() config {
 // base URL. It fails the test rather than skipping if anything goes wrong.
 func startServer(t *testing.T, cfg config) string {
 	t.Helper()
+	return startServerLogged(t, cfg, quietLogger())
+}
 
-	app, err := buildApp(context.Background(), cfg, quietLogger())
+// startServerLogged is startServer with the app's logger supplied, for a test
+// that asserts on what the server logs.
+func startServerLogged(t *testing.T, cfg config, logger *log.Logger) string {
+	t.Helper()
+
+	app, err := buildApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}

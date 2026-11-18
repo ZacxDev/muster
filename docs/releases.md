@@ -105,9 +105,14 @@ sha256sum --check --ignore-missing checksums.txt      # macOS: shasum -a 256 --c
 ```
 
 **Attestations** prove the release workflow of this repository built it, from
-which commit. Every asset, every program inside an archive or package, and
-every image has a signed [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
-attestation (Sigstore, GitHub's attestation store). Verify with the GitHub CLI:
+which commit. Every asset of a release, every program inside its archives
+and packages, and its `ghcr.io/zacxdev/muster:<version>` image have a signed
+[build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+attestation (Sigstore, GitHub's attestation store). The
+`muster-stt-cohere` and `claude-code-agent` images are attested by the run
+that first pushed them: a version that reuses an earlier build (stt-cohere is
+retagged when its directory did not change) carries that build's attestation,
+or none if it predates attestations. Verify with the GitHub CLI:
 
 ```sh
 gh attestation verify muster_linux_amd64.tar.gz --repo ZacxDev/muster
@@ -158,17 +163,29 @@ the CLI, generated from its own `checksums.txt`
 the tap and the bucket (`.github/scripts/publish-packages.sh`): one commit
 each, "muster X.Y.Z", after the release is published.
 
-- **Homebrew** (macOS, Linux):
+- **Homebrew** (macOS, Linux), once the tap is published (the release job
+  needs `MUSTER_PACKAGES_TOKEN`, below; each release's notes say which applies):
 
   ```sh
   brew install zacxdev/muster/muster zacxdev/muster/muster-mirror     # the tap ZacxDev/homebrew-muster
   brew upgrade muster muster-mirror
   ```
 
+  Until then, from the release's own formulas in a local tap (Homebrew installs
+  formulas only from a tap):
+
+  ```sh
+  brew tap-new --no-git "$USER/muster"
+  t="$(brew --repository "$USER/muster")/Formula"
+  curl -fsSL -o "$t/muster.rb" https://github.com/ZacxDev/muster/releases/latest/download/muster.rb
+  curl -fsSL -o "$t/muster-mirror.rb" https://github.com/ZacxDev/muster/releases/latest/download/muster-mirror.rb
+  brew install "$USER/muster/muster" "$USER/muster/muster-mirror"
+  ```
+
 - **Scoop** (Windows, the CLI only):
 
   ```sh
-  scoop bucket add muster https://github.com/ZacxDev/scoop-muster
+  scoop bucket add muster https://github.com/ZacxDev/scoop-muster     # once published, as above
   scoop install muster
   scoop update muster
   ```

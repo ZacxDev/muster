@@ -772,7 +772,7 @@ func (s *Server) successionLive(ctx context.Context, x plugins.Proposal) ui.Succ
 	if s.ext.Mirror != nil {
 		for _, e := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 			if e.Host == hd.Host && e.Dispatch == hd.ID {
-				ref, v.Title = mirrorRef(e), s.mirrorName(ctx, e).Text
+				ref, v.Title = mirrorRef(e), codeName(s.mirrorName(ctx, e), e)
 				break
 			}
 		}

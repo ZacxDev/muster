@@ -18,13 +18,17 @@ func TestHalfAVAPIDConfigurationRefusesBoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := func() config { return config{Database: "postgres://x/y", Standalone: true} }
+	base := func() config {
+		return config{Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true}
+	}
 	full := map[string]string{envVAPIDPublicKey: pub, envVAPIDPrivateKey: priv, envVAPIDSubject: "mailto:ops@example.com"}
 	names := []string{envVAPIDPublicKey, envVAPIDPrivateKey, envVAPIDSubject}
 
 	load := func(set map[string]string) config {
 		c, err := loadConfig(func(k string) string {
 			switch k {
+			case envHookToken:
+				return fixtureHookToken
 			case envDatabase:
 				return "postgres://x/y"
 			case envStandalone:
@@ -140,7 +144,7 @@ func TestTheVAPIDSubjectDefaultsToMailtoUnlessHTTPS(t *testing.T) {
 	load := func(publicURL, subject string) config {
 		t.Helper()
 		c, err := loadConfig(func(k string) string {
-			return map[string]string{envDatabase: "postgres://x/y", envStandalone: "1", envVAPIDPublicKey: pub,
+			return map[string]string{envDatabase: "postgres://x/y", envHookToken: fixtureHookToken, envStandalone: "1", envVAPIDPublicKey: pub,
 				envVAPIDPrivateKey: priv, envPublicURL: publicURL, envVAPIDSubject: subject}[k]
 		})
 		if err != nil {
@@ -174,7 +178,7 @@ func TestTheVAPIDSubjectDefaultsToMailtoUnlessHTTPS(t *testing.T) {
 	}
 	// No keypair: no subject is invented (push stays off).
 	c, _ := loadConfig(func(k string) string {
-		return map[string]string{envDatabase: "postgres://x/y", envStandalone: "1", envPublicURL: "https://m.example.com"}[k]
+		return map[string]string{envDatabase: "postgres://x/y", envHookToken: fixtureHookToken, envStandalone: "1", envPublicURL: "https://m.example.com"}[k]
 	})
 	if c.VAPIDSubject != "" || c.pushConfigured() {
 		t.Errorf("no keypair, yet subject %q configured %v", c.VAPIDSubject, c.pushConfigured())

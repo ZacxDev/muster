@@ -69,6 +69,10 @@
     return { ok: true, origin: u.origin };
   }
 
+  // SELF_FALLBACK is this server's name when neither the person nor its
+  // branding gave it one.
+  var SELF_FALLBACK = 'This server';
+
   // hostLabel is an origin's fallback label: its host, with the port when it
   // is not the scheme's default (URL.host already leaves that out).
   function hostLabel(origin) {
@@ -263,7 +267,10 @@
     var dot = node.querySelector('[data-server-dot]');
     if (dot) dot.style.backgroundColor = colour;
     var label = node.querySelector('[data-server-label]');
-    if (label) label.textContent = display(s, s.origin === self ? selfName(box) : '');
+    // This server is never called by its address (no host:port in the top
+    // layer): with no label and no branding name it is SELF_FALLBACK, the
+    // words the server drew it with (ui server_switcher.go's selfLabel).
+    if (label) label.textContent = display(s, s.origin === self ? (selfName(box) || SELF_FALLBACK) : '');
     var host = node.querySelector('[data-server-host]');
     if (host) host.textContent = hostLabel(s.origin);
     var img = node.querySelector('[data-server-logo]');

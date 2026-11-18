@@ -34,8 +34,9 @@ name: ci
 # lists them), built by scripts/release-build.sh — the same script the
 # `release-dry-run` job runs on every pull request that is ready for review
 # (not on a draft), so a tag publishes nothing a PR did not already build.
-# Every asset, every program in them and every image gets a build-provenance
-# attestation (actions/attest-build-provenance; `gh attestation verify`).
+# Every asset, every program in them and every image an image job PUSHES gets
+# a build-provenance attestation (actions/attest-build-provenance; `gh
+# attestation verify`); an image only kept or retagged is not re-attested.
 #
 # 🔴 EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, its version in a trailing
 # comment: a tag can be moved to other code after review, a commit cannot.
@@ -356,6 +357,19 @@ jobs:
         if: ${{ strategy.job-index == 0 }}
         run: python3 tests/features_config_test.py
 
+      # `make run`'s development hook token: made without openssl, once, mode
+      # 600, and never an empty or short value written or reused.
+      - name: make run's development hook token is never empty
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/dev_hook_token_test.py
+
+      # Every install and test input still boots: the e2e launcher arms the hook
+      # tier, nothing sets an empty MUSTER_HOOK_TOKEN, nothing scrapes /metrics
+      # from a main listener (kind, e2e and the release dry run skip drafts).
+      - name: every way the repository starts muster-server satisfies its boot rules
+        if: ${{ strategy.job-index == 0 }}
+        run: python3 tests/boot_inputs_test.py
+
       # docs/guides/*.md and docs/README.md's table of them agree, each guide
       # has its five parts and spells no port or model id, and docs/features.md
       # links every feature page and has a Contents row per section.
@@ -469,7 +483,24 @@ jobs:
           GODEBUG: gocachetest=1
         run: |
           set -o pipefail
-          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+          go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")
+
+      # PER-TEST TIMINGS: the `-json` stream above, tee'd (the SAME run the
+      # verdict read, never a second one), kept for an external weekly
+      # per-test timing report, which ranks slow and flaky tests across runs. `!cancelled()` so a red run's timings are kept too: a flake
+      # is a pass and a fail on one sha. Its own `test-times-` name, so no
+      # download pattern in this workflow (`e2e-results-*`) can pick it up.
+      # One artifact per ATTEMPT (`-a<run_attempt>`): a re-run of a red shard would
+      # otherwise collide on the name, and the red attempt plus its green re-run on
+      # one sha is exactly the flake the reader counts.
+      - name: keep the go test -json stream (per-test timings)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-times-${{ strategy.job-index }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test.json
+          if-no-files-found: warn
+          retention-days: 8
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
@@ -575,6 +606,49 @@ jobs:
 
       - name: scan
         run: python3 tests/leakscan.py
+
+  # Local: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > govulncheck.json
+  #        python3 .github/scripts/vulngate.py --allowlist .github/govulncheck-allowlist.txt < govulncheck.json
+  #
+  # 🔴 BLOCKING. It fails when a vulnerable symbol is REACHABLE from muster's
+  # own code (call graph, not merely imported) and the advisory is not on
+  # .github/govulncheck-allowlist.txt with an unexpired date, or when any
+  # allowlist entry has expired. The standard library is judged by the
+  # toolchain setup-go installs from go.mod, so this is also the gate that the
+  # `go` directive names a patched Go release, not only that the dependencies
+  # are patched.
+  #
+  # ⚠ IT CAN GO RED WITH NO CODE CHANGE when a new advisory is published. The
+  # fix is the bump its output names (a dependency, or the `go` directive plus
+  # every site internal/modulegate/gotoolchain_test.go lists). Only when no
+  # fixed release exists yet does an advisory go on the allowlist, dated.
+  #
+  # The scan runs in JSON mode, which exits 0 whatever it finds; vulngate.py is
+  # the verdict, and it refuses an output with no scan in it. Its own tests run
+  # first, so a verdict that cannot go red is visible as its own failed step.
+  #
+  # Its own job, like `leakscan`, so the verdict shows in the checks list. It is
+  # in publish-gate's needs, which blocks images and the release on it.
+  govulncheck:
+    name: govulncheck (reachable vulnerabilities)
+    needs: main-verdict
+    if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: the verdict can refuse (allowlist expiry, unlisted advisory, malformed input)
+        run: python3 tests/vulngate_test.py
+      - name: scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format json ./... > govulncheck.json
+      - name: verdict (reachable advisories against the allowlist)
+        run: python3 .github/scripts/vulngate.py --allowlist .github/govulncheck-allowlist.txt < govulncheck.json
 
   # Local: nix build .#muster-cli .#muster-migrate .#muster-mirror --no-link -L
   #
@@ -1693,7 +1767,7 @@ jobs:
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
+    needs: [main-verdict, build, test, leakscan, govulncheck, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
     # 🔴 `!cancelled()`, AND THE VERDICT IS THE STEP BELOW, NOT `success()`: a
     # test job SKIPPED because main-verdict answered retest=false must not skip
     # this gate (and every publish behind it). tag_gate.py gate passes a job
@@ -2206,13 +2280,18 @@ jobs:
       # without GitHub (tests/release-publish-test.sh, fake `gh`): create;
       # complete-and-publish a DRAFT a died attempt left; a no-op on a complete
       # release; refuse different bytes or a foreign asset, untouched.
+      # TAP: `tap` exactly when the publish-to-tap step below will run (the
+      # MUSTER_PACKAGES_TOKEN secret is set): only then do the notes offer
+      # `brew install <owner>/muster/…`; without it they point at the
+      # formula assets (scripts/release-install-block.sh).
       - name: the release notes (the pull requests since the previous tag, grouped)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP: ${{ secrets.MUSTER_PACKAGES_TOKEN != '' && 'tap' || 'no-tap' }}
         run: |
           tag="$GITHUB_REF_NAME"
           python3 scripts/release-notes.py collect --repo "$GITHUB_REPOSITORY" --tag "$tag" > "$RUNNER_TEMP/notes-data.json"
-          scripts/release-install-block.sh "$tag" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/install.md"
+          scripts/release-install-block.sh "$tag" "$GITHUB_REPOSITORY" "$TAP" > "$RUNNER_TEMP/install.md"
           python3 scripts/release-notes.py notes --data "$RUNNER_TEMP/notes-data.json" --install "$RUNNER_TEMP/install.md" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 

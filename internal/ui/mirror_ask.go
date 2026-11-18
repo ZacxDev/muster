@@ -85,14 +85,19 @@ func MirrorAskRowID(toolID string) string { return toolRowID(toolID) }
 // askCardClass is the card's frame: the tool row's, a little wider.
 const askCardClass = "w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-sm ring-1 ring-inset ring-line"
 
+// AskCardKind is what a question card's head calls it (askCardHead).
+const AskCardKind = "Question"
+
 // askCardHead is the card's title line; extra (the conversation's card: its
 // context badge, tool_context.go) is drawn before the label.
 func askCardHead(label string, extra ...g.Node) g.Node {
 	return Div(Class("flex min-h-[44px] items-center gap-2 px-3 py-2 text-xs font-medium text-fg2"),
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
-		// The tool's name gives way (truncates) so the badge and the label
+		// The card's kind, in words: "Question" — never the tool's identifier
+		// ("AskUserQuestion", code in the top layer: the operator rule). It
+		// gives way (truncates) so the badge and the label
 		// always fit, down to a 300px phone.
-		Span(Class("min-w-0 truncate font-mono text-st-review-fg"), g.Text(askq.ToolName)),
+		Span(g.Attr("data-ask-kind", ""), Class("min-w-0 truncate text-st-review-fg"), g.Text(AskCardKind)),
 		g.Group(extra),
 		Span(g.Attr("data-ask-label", ""), Class("ml-auto shrink-0 text-muted"), g.Text(label)))
 }

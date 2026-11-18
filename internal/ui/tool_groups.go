@@ -69,7 +69,13 @@ func toolGroupState(states []string) string {
 }
 
 // toolGroupLabel is a group's summary text.
-func toolGroupLabel(n int) string { return strconv.Itoa(n) + " tool calls" }
+//
+// "steps", never "tool calls" (the operator rule: muster's chrome speaks to
+// people who are not engineers); the rows inside keep their own detail.
+func toolGroupLabel(n int) string { return strconv.Itoa(n) + toolGroupNoun }
+
+// toolGroupNoun follows a group's count, in Go and in the script alike.
+const toolGroupNoun = " steps"
 
 // toolGroupStatus is the status glyph a group's summary carries, drawn the
 // rows' way (toolChip).
@@ -203,7 +209,7 @@ func toolGroupScript() g.Node {
     gr.setAttribute('data-tool-status', st);
     var cnt = gr.querySelector(':scope > summary [data-tool-group-count]');
     cnt.setAttribute('data-tool-group-count', String(rows.length));
-    cnt.textContent = rows.length + ' tool calls';
+    cnt.textContent = rows.length + ` + strconv.Quote(toolGroupNoun) + `;
     var s = gr.querySelector(':scope > summary [data-tool-group-status]');
     s.setAttribute('aria-label', 'status: ' + st);
     s.textContent = GLYPH[st][0];

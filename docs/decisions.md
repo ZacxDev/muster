@@ -163,6 +163,31 @@ that card and that answer, so it can be neither replayed for another
 decision nor ridden as a time window. Deciding in muster's own web UI is
 unchanged. [design/officers-on-hosts.md](design/officers-on-hosts.md).
 
+## On a machine that starts agents, the same; and skipping their prompts is opt-in
+
+A host-spawned agent runs as the machine's user, so it can name another of the
+owner's panes, clear its own window's dispatch tag, or read the host's token
+and call the door directly — each of which reached the owner's authority on
+muster, not just the host. By operator decision ("opt-in skip + host gate"):
+`-agent-spawn-skip-permissions` is **off by default** (each of those steps is
+then a permission prompt the owner sees); the owner tools decide whether a
+caller is a spawned agent from the server's own host-dispatch record, not the
+window's tag; and a machine that starts agents for the chief (its host token is marked
+as a spawning host's, an agent muster started there has not ended, or it
+advertises `-agent-spawn` now) is gated
+exactly as a host officer's machine is, whichever session the call names.
+"Starts agents" is a mark on the host TOKEN, kept in the database and cleared
+only by rotating the token — a spawned agent can read the token, so a restart
+or the host no longer advertising `-agent-spawn` proves nothing; rotate the
+token when spawning is turned off, once the agents it started have ended. A
+`route_reply` to the very session and host a message was routed to is not
+carded while no agent muster started there is running; a `dispatch_approve`
+card shows the held start (its instructions in full or labelled as an
+excerpt, with their length and SHA-256); the owner-authority reads are refused to a spawned agent's session and
+not carded for the owner's. The cost: the owner's own sessions on such a
+machine get a card for each other owner-authority call.
+[mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated).
+
 ## Step-up: twelve hours, per browser session
 
 Typing into a mirrored session can run commands on a host, so it needs a recent

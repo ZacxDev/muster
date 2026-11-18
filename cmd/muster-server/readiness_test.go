@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"testing"
@@ -67,7 +68,8 @@ func TestReadyzRefusesAnUndeclaredMissingRouter(t *testing.T) {
 	cfg.Standalone = false // nobody declared anything
 	cfg.RouterURL = ""
 
-	code, body := readyz(t, startServer(t, cfg))
+	var logged lockedBuffer
+	code, body := readyz(t, startServerLogged(t, cfg, log.New(&logged, "", 0)))
 
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /readyz = %d, want 503.\n"+
@@ -78,11 +80,14 @@ func TestReadyzRefusesAnUndeclaredMissingRouter(t *testing.T) {
 	// 🔴 THE REASON IS ASSERTED, NOT JUST THE CODE. A 503 for an unrelated cause
 	// — an unreachable database, say — would satisfy a status-only assertion and
 	// this test would be green for the wrong reason, with the defect check
-	// deleted. The detail names the field.
-	detail := strings.ToLower(join(body["detail"]))
-	if !strings.Contains(detail, "sessionliveness") {
-		t.Errorf("/readyz refused, but not for the wiring defect: detail = %v.\n"+
-			"  This test would pass on any 503; it is asserting the reason.", body["detail"])
+	// deleted. The LOG names the field: the body answers anyone, so it carries
+	// the status only (api.handleReady).
+	if !strings.Contains(strings.ToLower(logged.String()), "sessionliveness") {
+		t.Errorf("/readyz refused, but the log does not name the wiring defect.\n"+
+			"  This test would pass on any 503; it is asserting the reason.\nlog:\n%s", logged.String())
+	}
+	if _, ok := body["detail"]; ok || len(body) != 1 {
+		t.Errorf("/readyz body = %v; want the status only", body)
 	}
 }
 
@@ -200,20 +205,4 @@ func TestAnUnconfiguredRouterPortNeverReachesTheLivenessField(t *testing.T) {
 	if _, ok := got.(router.Port); !ok {
 		t.Fatalf("got %T, want router.Port", got)
 	}
-}
-
-// join renders /readyz's `detail` (a JSON array of strings) for matching.
-func join(v any) string {
-	items, ok := v.([]any)
-	if !ok {
-		return ""
-	}
-	var b strings.Builder
-	for _, it := range items {
-		b.WriteString(" ")
-		if s, ok := it.(string); ok {
-			b.WriteString(s)
-		}
-	}
-	return b.String()
 }

@@ -23,7 +23,8 @@ import (
 
 // memoBase is a configuration validate accepts apart from the memo pair.
 func memoBase() config {
-	return config{Database: "postgres://x/y", Standalone: true, AgentProvisioner: provisionerNone, AgentGateway: gatewayNone}
+	return config{Database: "postgres://x/y", Standalone: true, AgentProvisioner: provisionerNone, AgentGateway: gatewayNone,
+		HookToken: fixtureHookToken}
 }
 
 // TestTheMemoRelayIsReadFromItsTwoVariables: the names in the manifest are the names read.

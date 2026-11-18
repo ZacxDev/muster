@@ -393,7 +393,7 @@ if grep -qi '^set-cookie:' <<<"$bad"; then fail "a WRONG password set a cookie: 
 echo "ok   sign-in: the password sets a session cookie, a wrong one does not"
 
 # The push keys reached muster: the signed-in key route serves the generated key.
-cookie="$(grep -i '^set-cookie:' <<<"$good" | head -1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]*).*/\1/')"
+cookie="$(grep -i '^set-cookie: muster_session=' <<<"$good" | head -1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]*).*/\1/')"
 key="$(curl -fsS -H "Cookie: $cookie" "$base/api/push/vapid-public-key")" || fail "/api/push/vapid-public-key did not answer 200"
 grep -qF "$VAPID_PUB" <<<"$key" || fail "the push key route served '$key', not the generated key"
 echo "ok   web push: the generated VAPID key is served"
@@ -480,7 +480,7 @@ echo "MUSTER_PUBLIC_URL=$base" >> "$tmp/env"
 cp "$tmp/env" "$tmp/env.core"
 
 signin_cookie() {
-  signin "$PASSWORD" | grep -i '^set-cookie:' | head -1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]*).*/\1/'
+  signin "$PASSWORD" | grep -i '^set-cookie: muster_session=' | head -1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]*).*/\1/'
 }
 
 phase_s3() {

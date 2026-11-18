@@ -343,6 +343,9 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 		// MUSTER_OFFICERS roster, the .env.example's.)
 		// By design: the Compose chief is not offered the task-event tools.
 		{[]string{"MUSTER_TASK_ROUTING"}, "MUSTER_CHIEF_RUNTIME=compose runs the chief in its Compose container, which cannot decide a task event"},
+		// By design: the two client-topology declarations contradict each other
+		// (a proxy in front, and none).
+		{[]string{"MUSTER_DIRECT_CLIENTS"}, "MUSTER_TRUSTED_PROXIES and MUSTER_DIRECT_CLIENTS=1 are both set"},
 	}
 	without := func(drop ...string) map[string]string {
 		out := map[string]string{}
@@ -458,7 +461,10 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 	// connector store) goes too — asserted refused first, so it is dropped
 	// for that reason and no other (open: it refuses the boot rather than
 	// turning itself off).
-	chief := []string{"MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL"}
+	// The client-topology declarations are the other excluded pair: here
+	// MUSTER_DIRECT_CLIENTS is on, so the proxy pair is its off side.
+	chief := []string{"MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL",
+		"MUSTER_TRUSTED_PROXIES", "MUSTER_CLIENT_IP_HEADER"}
 	app := []string{"MUSTER_GITHUB_APP_ID", "MUSTER_GITHUB_APP_PRIVATE_KEY", "MUSTER_GITHUB_APP_ACCOUNTS", "MUSTER_GITHUB_APP_ACCESS"}
 	if _, err := loadComposeExample(t, without(chief...)); err == nil ||
 		!strings.Contains(err.Error(), "MUSTER_GITHUB_APP_ID is set but the agent connector store is not") {

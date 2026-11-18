@@ -208,8 +208,8 @@ func TestAStandaloneMusterWithoutAnApprovalGateAnswers503(t *testing.T) {
 
 func TestHalfAnApprovalGateIsRefusedAtBoot(t *testing.T) {
 	for name, c := range map[string]config{
-		"url only":   {Database: "postgres://x/y", Standalone: true, ApprovalGateURL: "https://gate.example.invalid"},
-		"token only": {Database: "postgres://x/y", Standalone: true, ApprovalGateToken: "t"},
+		"url only":   {Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true, ApprovalGateURL: "https://gate.example.invalid"},
+		"token only": {Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true, ApprovalGateToken: "t"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := c.validate()
@@ -220,8 +220,8 @@ func TestHalfAnApprovalGateIsRefusedAtBoot(t *testing.T) {
 	}
 	// Control: neither, and both, are accepted beside standalone.
 	for _, c := range []config{
-		{Database: "postgres://x/y", Standalone: true},
-		{Database: "postgres://x/y", Standalone: true, ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "t"},
+		{Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true},
+		{Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true, ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "t"},
 	} {
 		if err := c.validate(); err != nil {
 			t.Fatalf("validate(%+v) = %v, want accepted", c, err)
@@ -282,7 +282,7 @@ func TestTheApprovalGateBannerNamesWhichGateTheRelayUses(t *testing.T) {
 // A gate config with an actor the router would refuse 403 is refused at boot,
 // instead of failing every prompt at run time.
 func TestAnApprovalGateWithAnUnacceptableActorIsRefusedAtBoot(t *testing.T) {
-	gate := config{Database: "postgres://x/y", Standalone: true, ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "g"}
+	gate := config{Database: "postgres://x/y", HookToken: fixtureHookToken, Standalone: true, ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "g"}
 	for _, bad := range []string{"Muster", "-muster", "muster agent", "pre-0035-unattributed", strings.Repeat("a", 65)} {
 		c := gate
 		c.RouterActor = bad
@@ -317,7 +317,7 @@ func TestTheRouterHeaderNamesComeFromTheEnvironment(t *testing.T) {
 	defer srv.Close()
 
 	env := map[string]string{
-		envDatabase:          "postgres://x/y",
+		envDatabase: "postgres://x/y", envHookToken: fixtureHookToken,
 		envStandalone:        "1",
 		envApprovalGateURL:   srv.URL,
 		envApprovalGateToken: "gate-token-0123456789",
@@ -358,7 +358,7 @@ func TestTheRouterHeaderNamesComeFromTheEnvironment(t *testing.T) {
 // boot, naming the variable. The prefix here is SYNTHETIC.
 func TestTheLegacyProvenancePrefixComesFromTheEnvironment(t *testing.T) {
 	load := func(prefix string) config {
-		env := map[string]string{envDatabase: "postgres://x/y", envStandalone: "1"}
+		env := map[string]string{envDatabase: "postgres://x/y", envHookToken: fixtureHookToken, envStandalone: "1"}
 		if prefix != "" {
 			env[envLegacyProvenancePrefix] = prefix
 		}

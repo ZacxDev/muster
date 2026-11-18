@@ -133,14 +133,49 @@ func TestTheStepUpGateIsALedger(t *testing.T) {
 }
 
 // TestTheStepUpGateSparesAMachineWithNoHostOfficer: a gated tool from a
-// machine with no host officer of the caller's owner is not the gate's — it
-// runs as before; a non-gated tool is never the gate's.
+// machine with no host officer of the caller's owner, that does not start
+// agents for the chief, is not the gate's — it runs as before; a non-gated
+// tool is never the gate's. The same machine advertising -agent-spawn IS
+// gated; once it stops, a call with an unmarked token is not, and a call
+// whose host token is marked (mirror.Token.SpawnedAt) is — whatever the host
+// advertises — until the token is rotated.
 func TestTheStepUpGateSparesAMachineWithNoHostOfficer(t *testing.T) {
 	r := newHostOfficerRig(t, false)
+	setSpawn := func(on bool) {
+		r.m.mu.Lock()
+		defer r.m.mu.Unlock()
+		for i := range r.m.hosts {
+			if r.m.hosts[i].Host == hostOffOther {
+				r.m.hosts[i].AgentSpawn = nil
+				if on {
+					r.m.hosts[i].AgentSpawn = []string{mirror.SpawnRuntimeClaude}
+				}
+			}
+		}
+	}
+	setSpawn(false)
 	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: hostOffOwner, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
 	c := toolCaller{asker: attention.Asker{MirrorHost: hostOffOther, MirrorSession: "55555555-6666-4777-8888-999999999999"}, mirrorWindow: "@3"}
 	if _, ok := r.s.hostStepUpGate(ctx, hostOffOther, c, pluginDraftDecideTool, `{}`); ok {
-		t.Fatal("the gate took a call from a machine with no host officer")
+		t.Fatal("the gate took a call from a machine with no host officer that starts no agents")
+	}
+	setSpawn(true)
+	if out, ok := r.s.hostStepUpGate(ctx, hostOffOther, c, pluginDraftDecideTool, `{}`); !ok || !strings.Contains(out, "starts agents for the chief") {
+		t.Fatalf("a machine that advertises -agent-spawn: %v %s, want the gate's refusal naming it", ok, out)
+	}
+	setSpawn(false)
+	if out, ok := r.s.hostStepUpGate(ctx, hostOffOther, c, pluginDraftDecideTool, `{}`); ok {
+		t.Fatalf("a machine that stopped advertising -agent-spawn, with an unmarked token: gated %s", out)
+	}
+	marked := time.Now()
+	withTok := func(tok mirror.Token) context.Context { return context.WithValue(ctx, mirrorHostCtxKey{}, tok) }
+	if out, ok := r.s.hostStepUpGate(withTok(mirror.Token{ID: 5, OwnerID: hostOffOwner, Host: hostOffOther, SpawnedAt: &marked}),
+		hostOffOther, c, pluginDraftDecideTool, `{}`); !ok || !strings.Contains(out, "until the token is rotated") {
+		t.Fatalf("a marked host token: %v %s, want it gated", ok, out)
+	}
+	if out, ok := r.s.hostStepUpGate(withTok(mirror.Token{ID: 6, OwnerID: hostOffOwner, Host: hostOffOther}),
+		hostOffOther, c, pluginDraftDecideTool, `{}`); ok {
+		t.Fatalf("the rotated (unmarked) token: gated %s", out)
 	}
 	other := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 7, Role: authz.RoleMember, Via: authz.ViaMirrorHost})
 	if _, ok := r.s.hostStepUpGate(other, hostOffHost, c, pluginDraftDecideTool, `{}`); ok {

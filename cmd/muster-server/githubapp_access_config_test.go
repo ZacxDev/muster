@@ -26,7 +26,7 @@ import (
 func TestGitHubAppAccessModeIsParsedOrRefusedAtBoot(t *testing.T) {
 	keyPEM := testAppKeyPEM(t)
 	load := func(extra map[string]string) (config, error) {
-		full := map[string]string{envDatabase: "postgres://unused", envStandalone: "1",
+		full := map[string]string{envDatabase: "postgres://unused", envHookToken: fixtureHookToken, envStandalone: "1",
 			envConnectorEncKey: connectorKey(1), envConnectPort: "18191",
 			envAgentConnectURL: "http://muster.example.test:18191/"}
 		for k, v := range extra {

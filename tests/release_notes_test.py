@@ -348,14 +348,25 @@ class InstallBlock(unittest.TestCase):
     """scripts/release-install-block.sh: the block under the notes."""
 
     BLOCK = ROOT / "scripts" / "release-install-block.sh"
+    DL = "https://github.com/Example/Proj/releases/download/v1.2.3"
+    CLANKMAIL = ("\nClankMail plugin: the muster image no longer ships `/muster-clankmail` (earlier releases did). "
+                 "Use its own image, `ghcr.io/example/muster-clankmail` "
+                 "(https://github.com/ZacxDev/muster-clankmail; docs/clankmail.md).\n")
+    ATTEST = ("Every asset is in `checksums.txt`. This release's assets, the programs inside its archives and "
+              "packages, and its `ghcr.io/example/muster:1.2.3` image have signed build-provenance attestations "
+              "from the workflow that built them. (The `muster-stt-cohere` and `claude-code-agent` images are "
+              "attested only by the run that first pushed them, so one carried over from an earlier release may "
+              "have none.)\n")
+
+    def block(self, tag="v1.2.3", tap="no-tap") -> str:
+        return subprocess.run([str(self.BLOCK), tag, "Example/Proj", tap], check=True, capture_output=True, text=True).stdout
 
     def test_block_names_this_release_and_the_verify_commands(self):
-        out = subprocess.run([str(self.BLOCK), "v1.2.3", "Example/Proj"], check=True, capture_output=True, text=True).stdout
+        out = self.block()
         self.assertTrue(out.startswith("## Install\n"))
-        dl = "https://github.com/Example/Proj/releases/download/v1.2.3"
-        for want in (f"`curl -fsSL {dl}/install.sh | sh`",
-                     f"scoop install {dl}/muster.json",
-                     "muster_windows_amd64.zip", "muster.rb", "muster-mirror.rb",
+        for want in (f"`curl -fsSL {self.DL}/install.sh | sh`",
+                     f"scoop install {self.DL}/muster.json",
+                     "muster_windows_amd64.zip",
                      # GHCR names are lowercase whatever the owner's case
                      "`ghcr.io/example/muster:1.2.3`",
                      "\n## Verify\n",
@@ -363,11 +374,33 @@ class InstallBlock(unittest.TestCase):
                      "gh attestation verify muster_linux_amd64.tar.gz --repo Example/Proj\n",
                      "gh attestation verify oci://ghcr.io/example/muster:1.2.3 --repo Example/Proj\n"):
             self.assertIn(want, out)
-        self.assertNotIn("v1.2.3/muster-v1.2.3", out)
-        self.assertIn(f"helm install muster {dl}/muster-1.2.3.tgz", out)
+        self.assertIn(f"helm install muster {self.DL}/muster-1.2.3.tgz", out)
+
+    def test_attestation_sentence_names_only_what_this_release_attests(self):
+        out = self.block()
+        self.assertIn(self.ATTEST, out)
+        self.assertNotIn("every image", out)
+
+    def test_homebrew_tap_line_only_with_tap(self):
+        tap, no = self.block(tap="tap"), self.block(tap="no-tap")
+        self.assertIn("- **Homebrew:** `brew install example/muster/muster example/muster/muster-mirror` "
+                      "(the tap example/homebrew-muster carries this release's formulas).\n", tap)
+        self.assertNotIn("brew install", no)
+        self.assertIn("- **Homebrew:** this release's `muster.rb` and `muster-mirror.rb`, installed from a local tap "
+                      "(no published tap carries them yet: [docs/releases.md]"
+                      "(https://github.com/Example/Proj/blob/v1.2.3/docs/releases.md#homebrew-and-scoop)).\n", no)
+
+    def test_clankmail_notice_below_0_250_0_only(self):
+        for tag in ("v0.248.0", "v0.249.9", "v0.9.0"):
+            with self.subTest(tag=tag):
+                self.assertIn(self.CLANKMAIL, self.block(tag=tag))
+        for tag in ("v0.250.0", "v0.250.1", "v1.0.0"):
+            with self.subTest(tag=tag):
+                self.assertNotIn("ClankMail", self.block(tag=tag))
 
     def test_block_refuses_bad_arguments(self):
-        for args in (["1.2.3", "Example/Proj"], ["v1.2.3", "no-slash"], ["v1.2.3"]):
+        for args in (["1.2.3", "Example/Proj", "tap"], ["v1.2.3", "no-slash", "tap"], ["v1.2.3", "Example/Proj"],
+                     ["v1.2.3", "Example/Proj", "maybe"]):
             with self.subTest(args=args):
                 r = subprocess.run([str(self.BLOCK), *args], capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2)
