@@ -190,8 +190,23 @@ func (o Officer) ChatIdleStop() time.Duration {
 func (o Officer) WithChatIdleStop(d time.Duration) Officer { o.chatIdleStop = d; return o }
 
 // Slots is how many instance numbers pool o has: 1..Slots. Queue work uses
-// 1..MaxInstances of them.
-func (o Officer) Slots() int { return o.MaxInstances }
+// 1..MaxInstances of them; chats 1..ChatMaxInstances. 🔴 ONE NUMBERING: a
+// chat instance is the pool's own instance n, so its agent name, volume and
+// pod are the queue's instance n's; the numbers past max_instances are
+// chat-only (ChatOnly). Only a pool that may run chats has them
+// (RunsChatInstances); every other pool's slots are its max_instances.
+func (o Officer) Slots() int {
+	if o.RunsChatInstances() && o.ChatMaxInstances() > o.MaxInstances {
+		return o.ChatMaxInstances()
+	}
+	return o.MaxInstances
+}
+
+// RunsChatInstances reports whether pool o may run chat instances: a pool
+// that runs chats (ChatsPool: an untiered officer or the judgement pool), on
+// pods (a host instance has no ccd) and of an HQ officer (the built-in
+// backend serves no chat routes).
+func (o Officer) RunsChatInstances() bool { return o.ChatsPool() && !o.OnHost() && !o.IsBuiltin() }
 
 // ChatOnly reports whether instance n of pool o serves chats only: numbered
 // past max_instances, within the chat ceiling. Its primary takes no queue
@@ -433,8 +448,10 @@ var ErrChatLaneUnavailable = errors.New("officers: the chat's lane could not tak
 // gateway.
 type ChatLanes interface {
 	// Home is the instance number chatID's lane lives on (its session row's
-	// agent), 0 when it has none yet. A lane's conversation is on its
-	// instance's volume, so a chat never moves.
+	// agent), 0 when it has none yet — a number past the pool's slots too
+	// (the ceiling lowered since). A lane's conversation is on its
+	// instance's volume, so a chat stays there while that instance is up;
+	// it moves (Rehome) only when it is down, in error or past the ceiling.
 	Home(ctx context.Context, o Officer, chatID string) (int, error)
 	// Open finds or makes chatID's lane session on instance n and answers its
 	// marks.
@@ -516,6 +533,11 @@ type ChatRunner struct {
 	// logged is each "this chat cannot run here" line already written, so a
 	// chat that waits says why once, not every pass.
 	logged map[string]bool
+	// active is when each instance (by agent name) was last seen active: a
+	// chat turn starting or ending on it, a live claim of its own or its chat
+	// holder's (Want), or — first — when Want first saw it up. Forgotten when
+	// Want sees it down, so an instance seen up again starts a new window.
+	active map[string]time.Time
 	now    func() time.Time
 	wg     sync.WaitGroup
 }
@@ -623,7 +645,7 @@ func NewChatRunner(cfg ChatRunnerConfig) (*ChatRunner, error) {
 	}
 	return &ChatRunner{lanes: cfg.Lanes, backend: cfg.Backend, log: cfg.Logger, base: cfg.Context, heartbeatEvery: cfg.HeartbeatEvery,
 		replyRetries: cfg.ReplyRetries, running: map[string]string{}, lanesBusy: map[string]int{}, backoff: map[string]chatBackoff{},
-		logged: map[string]bool{}, now: cfg.Now}, nil
+		logged: map[string]bool{}, active: map[string]time.Time{}, now: cfg.Now}, nil
 }
 
 // Wait blocks until every turn this runner started has ended.
@@ -679,68 +701,145 @@ func PendingChats(obs Observation, now time.Time) []Item {
 	return out
 }
 
-// Want is the instance numbers pool o must have up for its pending chats
-// (Observation.ChatWant): each pending chat's home instance, and — for a chat
-// with no home yet while no instance of o is up — instance 1; and the
-// pending chats the pool cannot serve now (Observation.ChatHeldBack), which
-// keep nothing up: every chat of a pool that runs none here (cannotRun), a
-// chat whose home cannot be read or is beyond max_instances, and a chat
-// waiting out a backoff. Nothing for a pool that runs no chats.
+// Want is what pool o's chats need of its instances at now
+// (Observation.ChatPlan), and the pending chats it cannot serve now
+// (Observation.ChatHeldBack), which keep nothing up: every chat of a pool
+// that runs none here (cannotRun), a chat whose home cannot be read, and a
+// chat waiting out a backoff. Zero for a pool that runs no chats.
+//
+//   - A pending chat whose home is up (up, not in error, within the chat
+//     ceiling) counts against its home's lanes and waits for one there: its
+//     conversation is on that instance's volume.
+//   - Every other pending chat — no home yet, or a home that is down, in
+//     error or past chat_max_instances — is UNPLACED: Dispatch puts it on an
+//     up instance with a free lane (re-homing it when it had a home).
+//   - The unplaced chats no free lane takes need ceil(left / chat_sessions)
+//     more instances (Need), the down homes among them first (Prefer).
+//     Decide starts them, within chat_max_instances.
+//
+// It also records when each instance was last active (ChatRunner.active)
+// and answers it as ActiveAt, with the turns running on each (Busy) and the
+// pending chats homed on each up instance (PendingOn): Decide's chat-idle
+// stop reads them.
 func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now time.Time) (ChatPlan, map[ItemID]bool) {
-	want, held := r.want(ctx, o, obs, now)
-	return ChatPlan{Prefer: want, Need: len(want)}, held
-}
-
-func (r *ChatRunner) want(ctx context.Context, o Officer, obs Observation, now time.Time) ([]int, map[ItemID]bool) {
 	if !r.On(o) || !o.ChatsPool() {
-		return nil, nil
+		return ChatPlan{}, nil
 	}
 	pending := PendingChats(obs, now)
-	if len(pending) == 0 {
-		return nil, nil
-	}
-	held := map[ItemID]bool{}
 	if why := cannotRun(o); why != "" {
+		if len(pending) == 0 {
+			return ChatPlan{}, nil
+		}
+		held := map[ItemID]bool{}
 		for _, it := range pending {
 			held[it.ID] = true
 		}
 		r.logOnce("cannot-run "+o.Key(), fmt.Sprintf("officers: %s: %d chat(s) wait and none is run: %s; they stay unclaimed", o.label(), len(pending), why))
-		return nil, held
+		return ChatPlan{}, held
 	}
-	anyUp := false
-	for _, in := range obs.Instances {
-		if in.Up && !in.Error {
-			anyUp = true
-		}
+	plan := ChatPlan{Busy: map[int]int{}, PendingOn: map[int]int{}, ActiveAt: map[int]time.Time{}}
+	up := r.track(o, obs, now, &plan)
+	free := map[int]int{}
+	for n := range up {
+		free[n] = o.ChatSessions() - plan.Busy[n]
 	}
-	want := map[int]bool{}
+	held := map[ItemID]bool{}
+	seenPrefer := map[int]bool{}
 	for _, it := range pending {
 		chat, _, _ := ChatOf(it)
 		if r.backingOff(chatRunKey(o, chat), now) {
 			held[it.ID] = true
 			continue
 		}
-		n, err := r.lanes.Home(ctx, o, chat)
-		switch {
-		case err != nil:
+		h, err := r.lanes.Home(ctx, o, chat)
+		if err != nil {
 			held[it.ID] = true
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
-		case n > o.MaxInstances:
-			held[it.ID] = true
-			r.logOnce("home "+chatRunKey(o, chat), fmt.Sprintf("officers: %s: chat %s lives on instance %s, beyond max_instances %d: it is not run until that instance is declared again",
-				o.label(), chat, o.InstanceLabel(n), o.MaxInstances))
-		case n > 0:
-			want[n] = true
-		case !anyUp:
-			want[1] = true
+			continue
+		}
+		if up[h] {
+			plan.PendingOn[h]++
+			free[h]--
+			continue
+		}
+		plan.Unplaced++
+		if h >= 1 && h <= o.ChatMaxInstances() && !seenPrefer[h] {
+			// Its home is down (or in error): started first if a new
+			// instance is needed, as its conversation is there.
+			seenPrefer[h] = true
+			plan.Prefer = append(plan.Prefer, h)
 		}
 	}
-	out := make([]int, 0, len(want))
-	for n := range want {
-		out = append(out, n)
+	avail := 0
+	for _, f := range free {
+		if f > 0 {
+			avail += f
+		} else {
+			plan.Waiting -= f // homed chats waiting for their own home's lane
+		}
 	}
-	sort.Ints(out)
-	return out, held
+	if left := plan.Unplaced - avail; left > 0 {
+		plan.Waiting += left
+		plan.Need = (left + o.ChatSessions() - 1) / o.ChatSessions()
+	}
+	if len(plan.Prefer) > 0 && plan.Need == 0 {
+		plan.Prefer = nil
+	}
+	if len(held) == 0 {
+		held = nil
+	}
+	return plan, held
+}
+
+// chatUp is pool o's instances a chat can run on now, by number: up, not in
+// error, with an agent, within the chat ceiling. Want and Dispatch both ask
+// it, so the plan and the placement agree.
+func chatUp(o Officer, obs Observation) map[int]bool {
+	up := map[int]bool{}
+	for _, in := range obs.Instances {
+		if in.Up && !in.Error && in.Exists && in.N >= 1 && in.N <= o.ChatMaxInstances() {
+			up[in.N] = true
+		}
+	}
+	return up
+}
+
+// track updates when each of pool o's instances was last active
+// (ChatRunner.active) from obs at now — first seen up, or holding a live
+// claim (its own or its chat holder's); forgotten when down — and fills
+// plan's Busy and ActiveAt. It answers chatUp.
+func (r *ChatRunner) track(o Officer, obs Observation, now time.Time, plan *ChatPlan) map[int]bool {
+	claimed := map[string]bool{}
+	for _, it := range obs.Claimed {
+		if it.LeaseLive(now) {
+			claimed[it.ClaimedBy] = true
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, in := range obs.Instances {
+		if !in.Up {
+			delete(r.active, in.Name)
+			continue
+		}
+		if at, ok := r.active[in.Name]; !ok || claimed[in.Name] || claimed[ChatHolder(in.Name)] || r.lanesBusy[in.Name] > 0 {
+			if !ok || now.After(at) {
+				r.active[in.Name] = now
+			}
+		}
+		plan.ActiveAt[in.N] = r.active[in.Name]
+		if b := r.lanesBusy[in.Name]; b > 0 {
+			plan.Busy[in.N] = b
+		}
+	}
+	return chatUp(o, obs)
+}
+
+// touch records a chat turn's activity on instance name at the runner's now.
+func (r *ChatRunner) touch(name string) {
+	r.mu.Lock()
+	r.active[name] = r.now()
+	r.mu.Unlock()
 }
 
 func chatRunKey(o Officer, chat string) string { return o.Key() + "\x00" + chat }
@@ -761,12 +860,7 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 		}
 		return
 	}
-	up := map[int]InstanceState{}
-	for _, in := range obs.Instances {
-		if in.Up && !in.Error && in.Exists {
-			up[in.N] = in
-		}
-	}
+	up := chatUp(o, obs)
 	for _, it := range PendingChats(obs, now) {
 		chat, _, _ := ChatOf(it)
 		key := chatRunKey(o, chat)
@@ -781,12 +875,18 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
 			continue
 		}
-		n := home
+		// 🔴 A CHAT WHOSE INSTANCE IS GONE IS RE-HOMED, NEVER HELD: its home
+		// down, in error or past chat_max_instances, it runs on an up
+		// instance with a free lane, its old lane set aside (Rehome).
+		n, from := home, 0
+		if home > 0 && !up[home] {
+			n, from = 0, home
+		}
 		if n == 0 {
 			n = r.leastBusy(o, up)
 		}
-		if _, isUp := up[n]; n == 0 || !isUp {
-			continue // its instance is not up: Want starts it
+		if n == 0 || !up[n] {
+			continue // no lane for it now: Want starts an instance
 		}
 		name := o.InstanceName(n)
 		r.mu.Lock()
@@ -798,7 +898,7 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 		r.lanesBusy[name]++
 		r.mu.Unlock()
 		r.wg.Add(1)
-		go func(it Item, chat string, n int) {
+		go func(it Item, chat string, n, from int) {
 			defer r.wg.Done()
 			defer r.done(key, name)
 			defer func() {
@@ -806,23 +906,25 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 					r.log.Printf("officers: %s: PANIC in chat %s's turn: %v", o.label(), chat, rec)
 				}
 			}()
-			r.settle(key, r.Run(r.base, o, n, it))
-		}(it, chat, n)
+			r.settle(key, r.run(r.base, o, n, it, from))
+		}(it, chat, n, from)
 	}
 }
 
-// leastBusy is the up instance with the fewest chat turns running (lowest
-// number first), 0 when none is up. Whether it has a free lane is Dispatch's
-// one check.
-func (r *ChatRunner) leastBusy(o Officer, up map[int]InstanceState) int {
+// leastBusy is the up instance with a free lane and the fewest chat turns
+// running (lowest number first), 0 when none has a free lane.
+func (r *ChatRunner) leastBusy(o Officer, up map[int]bool) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	best, bestBusy := 0, 0
-	for n := 1; n <= o.MaxInstances; n++ {
-		if _, ok := up[n]; !ok {
+	for n := 1; n <= o.ChatMaxInstances(); n++ {
+		if !up[n] {
 			continue
 		}
 		busy := r.lanesBusy[o.InstanceName(n)]
+		if busy >= o.ChatSessions() {
+			continue
+		}
 		if best == 0 || busy < bestBusy {
 			best, bestBusy = n, busy
 		}
@@ -867,6 +969,14 @@ const (
 // (claim, read, turn, reply), synchronously. Dispatch runs it on a goroutine;
 // tests call it directly.
 func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOutcome {
+	return r.run(ctx, o, n, it, 0)
+}
+
+// run is Run; oldHome, when not 0, is the chat's old home (down, in error or
+// past the chat ceiling): once the item is claimed, its lane there is set
+// aside (ChatLanes.Rehome), so the turn opens a new session on n — one with
+// no marks, which starts after the officer's last reply.
+func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome int) ChatOutcome {
 	b, cb, ok := r.serves(o)
 	if !ok {
 		return ChatNotServed
@@ -917,6 +1027,17 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 		if _, err := b.Release(rctx, it.ID, holder); err != nil && hqStatus(err) != http.StatusConflict {
 			r.log.Printf("officers: %s: chat %s: release item %s (%s): %v; it is claimable again once its lease lapses", o.label(), chat, it.ID, why, err)
 		}
+	}
+	r.touch(o.InstanceName(n))
+	defer r.touch(o.InstanceName(n))
+	if oldHome > 0 && oldHome != n {
+		if err := r.lanes.Rehome(ctx, o, chat, oldHome); err != nil {
+			r.log.Printf("officers: %s: chat %s: set aside its lane on instance %s to re-home it: %v", o.label(), chat, o.InstanceLabel(oldHome), err)
+			release("re-home failed")
+			return ChatReadFailed
+		}
+		r.log.Printf("officers: %s: chat %s re-homed from instance %s (stopped, in error or past chat_max_instances %d) to instance %s; it starts after the officer's last reply",
+			o.label(), chat, o.InstanceLabel(oldHome), o.ChatMaxInstances(), o.InstanceLabel(n))
 	}
 	marks, err := r.lanes.Open(ctx, o, n, chat)
 	if err != nil {

@@ -323,6 +323,11 @@ type declared struct {
 	// ChatSessions is how many chat sessions (ccd lanes) each instance runs
 	// at once, 1..MaxChatSessions; 0 (absent) is DefaultChatSessions (chat.go).
 	ChatSessions int `json:"chat_sessions"`
+	// ChatMaxInstances is the chat ceiling, 1..MaxChatMaxInstances; 0
+	// (absent) is DefaultChatMaxInstances. ChatIdleStop is a duration in
+	// MinChatIdleStop..MaxChatIdleStop; "" is DefaultChatIdleStop (chat.go).
+	ChatMaxInstances int    `json:"chat_max_instances"`
+	ChatIdleStop     string `json:"chat_idle_stop"`
 	// InstanceSlug is never in MUSTER_OFFICERS: a DB-declared officer's
 	// server-allocated slug (Declaration.Officer), so the instance-name
 	// length check measures the names it will really have.
@@ -401,6 +406,12 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 	}
 	if d.ChatSessions != 0 {
 		refuse("chat_sessions", "chat_sessions (a chat runs in a ccd lane of a pod instance; a host instance has no ccd)")
+	}
+	if d.ChatMaxInstances != 0 {
+		refuse("chat_max_instances", "chat_max_instances (a host instance has no ccd, so it runs no chat)")
+	}
+	if strings.TrimSpace(d.ChatIdleStop) != "" {
+		refuse("chat_idle_stop", "chat_idle_stop (a host instance has no ccd, so it runs no chat)")
 	}
 	if len(refused) > 0 {
 		return "", "", &FieldErrors{Prefix: `runtime "host" refuses `, List: refused}
@@ -914,6 +925,17 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		return Officer{}, fieldErr("chat_sessions", fmt.Errorf("officer %s: chat_sessions %d is not 1..%d (leave it out for %d)", o.ID, d.ChatSessions, MaxChatSessions, DefaultChatSessions))
 	}
 	o.chatSessions = d.ChatSessions
+	if d.ChatMaxInstances < 0 || d.ChatMaxInstances > MaxChatMaxInstances {
+		return Officer{}, fieldErr("chat_max_instances", fmt.Errorf("officer %s: chat_max_instances %d is not 1..%d (leave it out for %d)", o.ID, d.ChatMaxInstances, MaxChatMaxInstances, DefaultChatMaxInstances))
+	}
+	o.chatMaxInstances = d.ChatMaxInstances
+	if s := strings.TrimSpace(d.ChatIdleStop); s != "" {
+		v, err := time.ParseDuration(s)
+		if err != nil || v < MinChatIdleStop || v > MaxChatIdleStop {
+			return Officer{}, fieldErr("chat_idle_stop", fmt.Errorf("officer %s: chat_idle_stop %q is not a duration from %s to %s (leave it out for %s)", o.ID, s, MinChatIdleStop, MaxChatIdleStop, DefaultChatIdleStop))
+		}
+		o.chatIdleStop = v
+	}
 	if o.Owner == 0 {
 		o.Owner = 1
 	}
@@ -938,7 +960,7 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		return Officer{}, fieldErr("poll_interval", fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval))
 	}
 	for _, p := range o.Pools() {
-		if n := p.InstanceName(p.MaxInstances); len(n) > maxName {
+		if n := p.InstanceName(p.Slots()); len(n) > maxName {
 			return Officer{}, fieldErr("id", fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
 				o.ID, n, len(n), maxName, MaxNamespaceLen))
 		}

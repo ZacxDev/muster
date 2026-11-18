@@ -88,7 +88,8 @@ func TestInstanceNamesAndTheBindingRule(t *testing.T) {
 	for name, want := range map[string]string{
 		"officer-release-web-1":   "release:web#1",
 		"officer-release-web-2":   "release:web#2",
-		"officer-release-web-3":   "", // past a's max
+		"officer-release-web-3":   "release:web#3", // past a's max_instances: a chat-only instance (the default chat ceiling, 3)
+		"officer-release-web-4":   "",              // past a's slots
 		"officer-release-web-1-3": "release:web-1#3",
 		"officer-release-web-1-4": "", // past b's max
 		"officer-release-web-01":  "",

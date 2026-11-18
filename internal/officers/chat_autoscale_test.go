@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
@@ -384,6 +387,10 @@ func TestTheWakeLoopScalesChatInstancesUpAndDown(t *testing.T) {
 	if !strings.Contains(r.logs.String(), "chat scale-up") {
 		t.Fatalf("no log line names the chat scale-up:\n%s", r.logs)
 	}
+	// The gauges, as of that pass: instance 1 up, c-2 waiting.
+	if up, w := testutil.ToFloat64(metrics.OfficerChatInstancesUp), testutil.ToFloat64(metrics.OfficerChatsWaiting); up != 1 || w != 1 {
+		t.Fatalf("gauges after the scale-up pass: chat instances up %v, chats waiting %v; want 1 and 1", up, w)
+	}
 	// A second pass while instance 2 boots starts nothing more.
 	if res := rec.Check(context.Background(), relID, true); len(res.Decision.Start) != 0 {
 		t.Fatalf("the next pass: start %v, want none (instance 2 is on its way up)", res.Decision.Start)
@@ -409,6 +416,9 @@ func TestTheWakeLoopScalesChatInstancesUpAndDown(t *testing.T) {
 	// The stopped instance is not started again for nothing (no flap).
 	if res := rec.Check(context.Background(), relID, true); len(res.Decision.Start) != 0 || len(res.Decision.Stop) != 0 {
 		t.Fatalf("the pass after the stop: start %v stop %v, want neither", res.Decision.Start, res.Decision.Stop)
+	}
+	if up, w := testutil.ToFloat64(metrics.OfficerChatInstancesUp), testutil.ToFloat64(metrics.OfficerChatsWaiting); up != 1 || w != 0 {
+		t.Fatalf("gauges after the stop: chat instances up %v, chats waiting %v; want 1 and 0", up, w)
 	}
 }
 

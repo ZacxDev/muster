@@ -68,11 +68,15 @@ func (l officerChatLanes) Home(ctx context.Context, o officers.Officer, chatID s
 	if err != nil {
 		return 0, fmt.Errorf("its session's agent %d: %w", sess.AgentID, err)
 	}
-	p, n, ok := l.s.officerRT.reg.ForAgentName(a.Name)
-	if !ok || p.Key() != o.Key() || p.Tier != o.Tier {
-		return 0, fmt.Errorf("its session %d is on agent %s, which is not an instance of %s", sess.ID, a.Name, o.ID)
+	// 🔴 A HOME PAST THE POOL'S SLOTS IS STILL A HOME (chat_max_instances
+	// lowered since): its number is answered, so the runner re-homes the chat
+	// rather than holding it for ever on an error.
+	for n := 1; n <= officers.MaxInstancesCap; n++ {
+		if o.InstanceName(n) == a.Name {
+			return n, nil
+		}
 	}
-	return n, nil
+	return 0, fmt.Errorf("its session %d is on agent %s, which is not an instance of %s", sess.ID, a.Name, o.ID)
 }
 
 // instance is instance n of o's agent row.
@@ -118,9 +122,25 @@ func (l officerChatLanes) Mark(ctx context.Context, o officers.Officer, n int, c
 	return st.SetOfficerChatMarks(l.s.officerPrincipal(ctx, o.Owner), sess.ID, agents.ChatLaneMarks{Seen: m.Seen, Answered: m.Answered, Charter: m.Charter})
 }
 
-// Rehome implements officers.ChatLanes.
+// Rehome implements officers.ChatLanes: the chat's session on instance
+// from's agent is set aside (agents.OfficerChatStore.SetAsideOfficerChat: its
+// key renamed, its lane secret cleared, its history kept on that agent), so
+// the key is free for the session Open makes on the chat's new instance. No
+// such agent, or no such session on it, is nothing to set aside.
 func (l officerChatLanes) Rehome(ctx context.Context, o officers.Officer, chatID string, from int) error {
-	return errors.New("officers: re-homing a chat is not served yet")
+	st, err := l.store()
+	if err != nil {
+		return err
+	}
+	a, err := l.instance(ctx, o, from)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // no agent: its sessions went with it
+	}
+	if err != nil {
+		return err
+	}
+	_, err = st.SetAsideOfficerChat(l.s.officerPrincipal(ctx, o.Owner), a.ID, officers.ChatSessionKey(chatID))
+	return err
 }
 
 // mcpSessionLaneReader is the agent gateway's read of a ccd's

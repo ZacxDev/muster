@@ -457,6 +457,20 @@ var (
 		Name: "muster_officer_judgement_cap_reached",
 		Help: "Officers whose judgement pool has used its daily session cap while claimable judgement items wait (not woken until 00:00 UTC).",
 	})
+	// OfficerChatInstancesUp counts the instances up (running or on their way
+	// up) in the pools that run chats, within each pool's chat ceiling
+	// (chat_max_instances), across every officer, as of each officer's last
+	// successful pass. OfficerChatsWaiting counts the pending chats no lane
+	// is free for (each officer's last pass): above zero for longer than a
+	// pass or two, the pool is at its chat ceiling.
+	OfficerChatInstancesUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_chat_instances_up",
+		Help: "Officer instances up within their pool's chat ceiling (chat_max_instances), in the pools that run chats.",
+	})
+	OfficerChatsWaiting = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_chats_waiting",
+		Help: "Pending officer chats with no free chat lane at the last pass.",
+	})
 	// OfficerTranscriptEvents counts officer transcript events by what became
 	// of them (internal/officers/transcript): posted (HQ answered 2xx),
 	// dropped_buffer (an instance's buffer was full: the oldest went),

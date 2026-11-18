@@ -45,6 +45,8 @@ var wantMetrics = map[string][]string{
 	"muster_officer_hq_faults":                        nil,
 	"muster_officer_cap_refusal_withheld":             nil,
 	"muster_officer_judgement_cap_reached":            nil,
+	"muster_officer_chat_instances_up":                nil,
+	"muster_officer_chats_waiting":                    nil,
 	"muster_officer_transcript_events_total":          {"result"},
 	"muster_officer_usage_push_total":                 {"result"},
 	"muster_cc_consumer_usage_push_total":             {"result"},

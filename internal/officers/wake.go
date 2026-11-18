@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,7 +46,8 @@ import (
 
 // InstanceState is one instance agent of an officer as the fleet sees it.
 type InstanceState struct {
-	// N is the instance number, 1..MaxInstances.
+	// N is the instance number, 1..Slots (Officer.Slots: max_instances, or
+	// the chat ceiling past it).
 	N int
 	// Name is the agent name (InstanceName(officer, N)).
 	Name string
@@ -77,7 +79,8 @@ type InstanceState struct {
 // Fleet is how the loop observes and moves an officer's instances.
 // internal/api implements it over the agents store and the provisioner.
 type Fleet interface {
-	// Instances returns the state of instances 1..o.MaxInstances. An error
+	// Instances returns the state of instances 1..o.Slots() — chat-only
+	// instances included, so one started for chats is seen up. An error
 	// means the fleet could not be SEEN; the pass then changes nothing.
 	Instances(ctx context.Context, o Officer) ([]InstanceState, error)
 	// Start brings instance n up — creating its agent when it does not exist
@@ -311,6 +314,12 @@ type Decision struct {
 	Reprompt []int
 	// StopReason is why Stop stops ("" = the officer was idle for its window).
 	StopReason string
+	// StopWhy is why each instance in Stop stops when it is not StopReason:
+	// a chat-idle stop of a busy pool (chatIdleStops), by instance number.
+	StopWhy map[int]string
+	// ChatWhy is why each instance in Start was started for chats (a chat
+	// scale-up), by instance number.
+	ChatWhy map[int]string
 	// StartWhy is why each instance in Start was down (InstanceState.Down;
 	// "" when the fleet did not say), by instance number.
 	StartWhy map[int]string
@@ -362,9 +371,13 @@ type Decision struct {
 //   - Held = claimed items with a live lease whose holder is one of this
 //     pool's instances — whatever the item's tier: a claim belongs to the pool
 //     that holds it.
-//   - Busy (Claimable > 0 or Held > 0): want min(MaxInstances, held-by-up +
-//     Claimable) instances up; start the lowest-numbered down instances to
-//     reach it. Never stop anything while busy.
+//   - Busy (Claimable > 0 or Held > 0, or chat work): want min(MaxInstances,
+//     held-by-up + Claimable) of the queue's instances (1..MaxInstances) up;
+//     start the lowest-numbered down ones to reach it. A pool that runs chats
+//     also starts the instances its waiting chats need (ChatPlan.Need, up to
+//     chat_max_instances), and stops an instance quiet for chat_idle_stop
+//     (chatIdleStops) — never one doing queue work. Nothing else is stopped
+//     while busy.
 //   - Idle (neither): once idle has lasted IdleAfter (now - idleSince), stop
 //     every up instance. idleSince zero means "idle only now", so nothing is
 //     stopped on the first idle pass.
@@ -410,8 +423,8 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// held, waiting or capped for the queue — no instance is re-prompted for
 	// it, and its claim (held as ChatHolder) is never released, capped or
 	// counted as an instance's. The chat pool counts it apart (ChatPending,
-	// ChatHeld): it keeps the pool busy, and obs.ChatWant names the instances
-	// it needs up.
+	// ChatHeld): it keeps the pool busy, and obs.ChatPlan says how many more
+	// instances its chats need (the chat scale-up below).
 	chatItem := func(it Item) bool { return obs.Chats && it.IsChat() }
 	workable := func(it Item) bool { return !chatItem(it) && !it.Blocked && o.worksItem(it) && it.Due(now) }
 	// Over its daily budget, the officer may claim only what bypasses it
@@ -442,6 +455,9 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		}
 	}
 	heldByUp := map[string]bool{}
+	// chatHeldBy: the instances whose chat holder (ChatHolder) holds a live
+	// chat claim — a turn is running for it somewhere.
+	chatHeldBy := map[string]bool{}
 	overrun := map[string]bool{}
 	// capHolder: the instance numbers holding a capped claim. Never started.
 	capHolder := map[int]bool{}
@@ -450,6 +466,9 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		if chatItem(it) {
 			if o.ChatsPool() && it.LeaseLive(now) {
 				d.ChatHeld++
+				if inst, ok := strings.CutSuffix(it.ClaimedBy, chatHolderSuffix); ok {
+					chatHeldBy[inst] = true
+				}
 			}
 			continue
 		}
@@ -477,14 +496,22 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 			d.Release = append(d.Release, it)
 		}
 	}
-	up := 0
+	up, upQueue := 0, 0
+	upN := map[int]bool{}
 	for _, in := range obs.Instances {
 		if in.Up {
 			up++
+			upN[in.N] = true
+			if in.N <= o.MaxInstances {
+				upQueue++
+			}
 		}
 	}
+	chatsOn := obs.Chats && o.ChatsPool()
 	chatWork := d.ChatPending > 0 || d.ChatHeld > 0
 	if d.Claimable > 0 || d.Held > 0 || chatWork {
+		// Queue capacity is the queue's instances (1..max_instances) only: a
+		// chat-only instance up takes no queue work.
 		want := len(heldByUp) + d.Claimable
 		if want > o.MaxInstances {
 			want = o.MaxInstances
@@ -495,31 +522,52 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 				downWhy[in.N] = in.Down
 			}
 		}
+		start := func(n int) {
+			d.Start = append(d.Start, n)
+			if d.StartWhy == nil {
+				d.StartWhy = map[int]string{}
+			}
+			d.StartWhy[n] = downWhy[n]
+		}
 		for _, n := range downInstances(o, obs.Instances) {
-			if up+len(d.Start) >= want {
+			if upQueue+len(d.Start) >= want {
 				break
 			}
 			if !capHolder[n] {
-				d.Start = append(d.Start, n)
-				if d.StartWhy == nil {
-					d.StartWhy = map[int]string{}
-				}
-				d.StartWhy[n] = downWhy[n]
+				start(n)
 			}
 		}
-		// The instances the pending chats need (a chat's lane lives on one
-		// instance): started when down, beside any queue work wants.
-		if d.ChatPending > 0 {
-			for _, n := range obs.ChatPlan.Prefer {
-				_, down := downWhy[n]
-				if !down || capHolder[n] || n < 1 || n > o.MaxInstances || slices.Contains(d.Start, n) {
+		queueStarts := len(d.Start)
+		// 🔴 CHAT SCALE-UP: the instances the waiting chats need
+		// (ChatPlan.Need: no up instance has a free lane for them), the down
+		// homes first (Prefer), then the lowest free numbers — never past
+		// chat_max_instances, never a capped holder. An instance the queue
+		// starts this pass gives the chats lanes too, so it counts.
+		if chatsOn && d.ChatPending > 0 && obs.ChatPlan.Need > 0 {
+			need := obs.ChatPlan.Need
+			for _, n := range d.Start {
+				if n <= o.ChatMaxInstances() {
+					need--
+				}
+			}
+			cands := append([]int(nil), obs.ChatPlan.Prefer...)
+			for n := 1; n <= o.ChatMaxInstances(); n++ {
+				cands = append(cands, n)
+			}
+			for _, n := range cands {
+				if need <= 0 {
+					break
+				}
+				if n < 1 || n > o.ChatMaxInstances() || upN[n] || capHolder[n] || slices.Contains(d.Start, n) {
 					continue
 				}
-				d.Start = append(d.Start, n)
-				if d.StartWhy == nil {
-					d.StartWhy = map[int]string{}
+				start(n)
+				if d.ChatWhy == nil {
+					d.ChatWhy = map[int]string{}
 				}
-				d.StartWhy[n] = downWhy[n]
+				d.ChatWhy[n] = fmt.Sprintf("chat scale-up: %d chat(s) wait with every lane busy (chat_sessions %d, chat_max_instances %d)",
+					obs.ChatPlan.Waiting, o.ChatSessions(), o.ChatMaxInstances())
+				need--
 			}
 			sort.Ints(d.Start)
 		}
@@ -530,7 +578,23 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		for n := range overrun {
 			skip[n] = true
 		}
-		d.Reprompt = reprompts(obs.Instances, skip, d.Claimable-len(d.Start), promptedAt, now)
+		// A chat-only instance (past max_instances) is never prompted for the
+		// queue: its primary takes no queue work.
+		for _, in := range obs.Instances {
+			if in.N > o.MaxInstances {
+				skip[in.Name] = true
+			}
+		}
+		d.Reprompt = reprompts(obs.Instances, skip, d.Claimable-queueStarts, promptedAt, now)
+		if chatsOn {
+			d.Stop = chatIdleStops(o, obs, d, heldByUp, chatHeldBy, overrun, capHolder, promptedAt, now)
+			if len(d.Stop) > 0 {
+				d.StopWhy = map[int]string{}
+				for _, n := range d.Stop {
+					d.StopWhy[n] = fmt.Sprintf("chat scale-down: no chat turn, claim or prompt for %s (chat_idle_stop)", o.ChatIdleStop())
+				}
+			}
+		}
 		return d
 	}
 	d.Idle = true
@@ -543,6 +607,49 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 		sort.Ints(d.Stop)
 	}
 	return d
+}
+
+// chatIdleStops is the instances a busy pool that runs chats stops for
+// chat idleness (Decide): up, not in error, owed no prompt, and quiet — no
+// chat turn, live claim or prompt — for chat_idle_stop by the plan's
+// ActiveAt and promptedAt (an instance this process never saw active is not
+// stopped: a restarted muster stops nothing on its first pass). 🔴 NEVER ONE
+// DOING QUEUE WORK: not one holding a queue claim, a capped claim or a live
+// chat claim, nor one a chat turn runs on or a pending chat is homed on, nor
+// — while a chat waits for a lane — one within the chat ceiling; and an
+// instance within max_instances only when the queue has no work at all
+// (nothing claimable or held), so the queue's instance is never stopped
+// under it.
+func chatIdleStops(o Officer, obs Observation, d Decision, heldByUp, chatHeldBy, overrun map[string]bool, capHolder map[int]bool,
+	promptedAt map[int]time.Time, now time.Time) []int {
+	plan := obs.ChatPlan
+	idle := o.ChatIdleStop()
+	var out []int
+	for _, in := range obs.Instances {
+		n := in.N
+		switch {
+		case !in.Up || in.Error || in.PromptPending:
+			continue
+		case heldByUp[in.Name] || overrun[in.Name] || capHolder[n] || chatHeldBy[in.Name]:
+			continue
+		case plan.Busy[n] > 0 || plan.PendingOn[n] > 0:
+			continue
+		case plan.Unplaced > 0 && n <= o.ChatMaxInstances():
+			continue
+		case n <= o.MaxInstances && (d.Claimable > 0 || d.Held > 0):
+			continue
+		}
+		at, seen := plan.ActiveAt[n]
+		if !seen || now.Sub(at) < idle {
+			continue
+		}
+		if p, ok := promptedAt[n]; ok && now.Sub(p) < idle {
+			continue
+		}
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // reprompts picks the up instances to prompt again for claimable work an
@@ -678,6 +785,10 @@ type officerState struct {
 	// is reached (Config.BudgetAlert): told once per (officer, UTC day) per
 	// process — a restarted muster tells them once more that day.
 	budgetAlertDay string
+	// chatUp and chatWaiting are the last successful pass's chat instances
+	// up and chats waiting for a lane, over the officer's chat pools
+	// (muster_officer_chat_instances_up, muster_officer_chats_waiting).
+	chatUp, chatWaiting int
 	// budgetUnreadableDay is the UTC day the owner was last told the spend
 	// cannot be read (BudgetAlert.Unreadable): once per (officer, UTC day)
 	// per process, like budgetAlertDay.
@@ -972,7 +1083,7 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	ds := make([]Decision, len(pools))
 	for i, p := range pools {
 		prompted := map[int]time.Time{}
-		for n := 1; n <= p.MaxInstances; n++ {
+		for n := 1; n <= p.Slots(); n++ {
 			if at, ok := s.promptedAt[p.InstanceName(n)]; ok {
 				prompted[n] = at
 			}
@@ -990,6 +1101,18 @@ func (r *Reconciler) Check(ctx context.Context, key string, force bool) PassResu
 	s.strikes = 0
 	s.failures = 0
 	s.nextAt = now.Add(o.PollInterval)
+	s.chatUp, s.chatWaiting = 0, 0
+	for i, p := range pools {
+		if !obs[i].Chats || !p.ChatsPool() {
+			continue
+		}
+		for _, in := range obs[i].Instances {
+			if in.Up && in.N <= p.ChatMaxInstances() {
+				s.chatUp++
+			}
+		}
+		s.chatWaiting += obs[i].ChatPlan.Waiting
+	}
 	over := map[ItemID]bool{}
 	for _, d := range ds {
 		for _, ov := range d.Overrun {
@@ -1208,7 +1331,10 @@ func (r *Reconciler) publish() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	slots, faults, withheld, capReached := 0, 0, 0, 0
+	chatUp, chatWaiting := 0, 0
 	for _, s := range r.state {
+		chatUp += s.chatUp
+		chatWaiting += s.chatWaiting
 		if s.capReached {
 			capReached++
 		}
@@ -1222,6 +1348,8 @@ func (r *Reconciler) publish() {
 	metrics.OfficerHQFaults.Set(float64(faults))
 	metrics.OfficerCapRefusalWithheld.Set(float64(withheld))
 	metrics.OfficerJudgementCapReached.Set(float64(capReached))
+	metrics.OfficerChatInstancesUp.Set(float64(chatUp))
+	metrics.OfficerChatsWaiting.Set(float64(chatWaiting))
 	published.Lock()
 	published.slots, published.faults = float64(slots), float64(faults)
 	published.Unlock()
@@ -1311,6 +1439,9 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 			continue
 		}
 		why := r.startReason(o, n, d.StartWhy[n])
+		if c, ok := d.ChatWhy[n]; ok {
+			why = c + "; " + why
+		}
 		r.prompted(o, n)
 		r.log.Printf("officers: %s: started instance %s — %s (%d claimable, %d held)", o.label(), o.InstanceLabel(n), why, d.Claimable, d.Held)
 	}
@@ -1336,6 +1467,9 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 			continue
 		}
 		reason := d.StopReason
+		if why, ok := d.StopWhy[n]; ok {
+			reason = why
+		}
 		if reason == "" {
 			reason = "idle " + o.IdleAfter.String()
 		}
