@@ -197,14 +197,14 @@ for (const size of sizes) {
       await noSidewaysScroll(page);
 
       // 4. Run now: one manual.run item; a second tap while it waits adds none.
-      const run1 = await submitTo(page, '#officer-actions', '/run');
+      const run1 = await submitTo(page, '#officer-run', '/run');
       expect(run1.status(), 'Run now redirects').toBe(303);
       const q1 = (await items(id)).filter((it) => it.kind === 'manual.run');
       expect(q1.length, 'one Run now queues exactly one manual.run item').toBe(1);
       expect(q1[0].status, 'the item waits').toBe('open');
       await expect.poll(() => notice(page)).toBe('queued');
       await expect(page.locator('#officer-queue [data-item]')).toHaveCount(1);
-      await submitTo(page, '#officer-actions', '/run');
+      await submitTo(page, '#officer-run', '/run');
       const q2 = (await items(id)).filter((it) => it.kind === 'manual.run');
       expect(q2.map((it) => it.id), 'a second Run now while the first waits adds no item').toEqual([q1[0].id]);
       await expect.poll(() => notice(page)).toBe('already-queued');
@@ -215,16 +215,16 @@ for (const size of sizes) {
       expect((await declared(id)).mode, 'Switch to Live makes it live on the server').toBe('live');
       await expect.poll(() => notice(page)).toBe('mode-live');
       await expect(page.locator('#officer-actions form[action$="/mode"] input[name=mode]')).toHaveValue('shadow');
-      await submitTo(page, '#officer-actions', '/pause');
+      await submitTo(page, '#officer-run', '/pause');
       const paused = await declared(id);
       expect(paused.paused, 'Pause switches it off on the server').toBe(true);
       expect(paused.mode, 'a pause keeps it Live').toBe('live');
-      await expect(page.locator('#officer-actions form[action$="/resume"]')).toBeVisible();
-      await submitTo(page, '#officer-actions', '/resume');
+      await expect(page.locator('#officer-run form[action$="/resume"]')).toBeVisible();
+      await submitTo(page, '#officer-run', '/resume');
       const resumed = await declared(id);
       expect(resumed.paused, 'Resume switches it back on').toBe(false);
       expect(resumed.mode, 'a resume keeps it Live').toBe('live');
-      await expect(page.locator('#officer-actions form[action$="/pause"]')).toBeVisible();
+      await expect(page.locator('#officer-run form[action$="/pause"]')).toBeVisible();
 
       // 6. Edit: only its own steps (no "Start from", no "When it works", no
       // stepping); the instructions changed and saved.

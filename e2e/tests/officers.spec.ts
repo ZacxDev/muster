@@ -113,13 +113,13 @@ for (const size of sizes) {
       await row.locator('a').click();
       await page.waitForURL((u) => u.pathname === `/officers/${id}`);
 
-      // Pause, then resume.
-      await page.click('#officer-actions button:has-text("Pause")');
+      // Pause, then resume: the Needs-you section's run controls.
+      await page.click('#officer-run button:has-text("Pause")');
       await page.waitForURL((u) => u.searchParams.get('notice') === 'paused');
-      await expect(page.locator('#officer-actions button', { hasText: 'Resume' })).toBeVisible();
-      await page.click('#officer-actions button:has-text("Resume")');
+      await expect(page.locator('#officer-run button', { hasText: 'Resume' })).toBeVisible();
+      await page.click('#officer-run button:has-text("Resume")');
       await page.waitForURL((u) => u.searchParams.get('notice') === 'resumed');
-      await expect(page.locator('#officer-actions button', { hasText: 'Pause' })).toBeVisible();
+      await expect(page.locator('#officer-run button', { hasText: 'Pause' })).toBeVisible();
 
       // Delete: only with its id typed.
       await page.fill('#officer-delete-confirm', id);

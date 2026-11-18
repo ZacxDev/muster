@@ -26,10 +26,13 @@ import (
 //   - the day's spend is ONE query for every officer (builtin.Store.SpentOn,
 //     the budget's own sum), and only when an officer has a daily budget;
 //     "held" is officers.Officer.OverBudget over it, the cap's own predicate;
+//   - the "N new" counts (its finished items since the viewer last opened its
+//     page) are ONE query for every officer (builtin.Store.UnreadCounts), and
+//     only when an officer is builtin;
 //   - the teams' names are one read (teamNames), only when a team's officer
 //     is listed.
 //
-// So a sidebar load adds at most three reads, however many officers there are
+// So a sidebar load adds at most four reads, however many officers there are
 // (TestTheOfficerRosterReadsInBatches). Whether an officer runs is read from
 // the agent rows the list already holds (AgentCardView.Officer), never here.
 
@@ -38,6 +41,7 @@ import (
 type navOfficerReads interface {
 	ItemCounts(ctx context.Context, owners []int64, statuses []string) (map[builtin.OfficerRef]int, error)
 	SpentOn(ctx context.Context, owners []int64, now time.Time) (map[builtin.OfficerRef]float64, error)
+	UnreadCounts(ctx context.Context, owners []int64, now time.Time) (map[builtin.OfficerRef]int, error)
 }
 
 // queuedStatuses are the item statuses the sidebar counts as queued: work
@@ -155,6 +159,17 @@ func (s *Server) navOfficerRoster(ctx context.Context, reads navOfficerReads) []
 			spendOK = true
 		}
 	}
+	// The "new" counts: the same owners as the queue's (builtin officers).
+	var unread map[builtin.OfficerRef]int
+	unreadOK := false
+	if len(queueOwners) > 0 && reads != nil {
+		var err error
+		if unread, err = reads.UnreadCounts(ctx, queueOwners, rt.clock()); err != nil {
+			s.logger.Printf("officers: the sidebar's new counts: %v (drawn without them)", err)
+		} else {
+			unreadOK = true
+		}
+	}
 	names := map[int64]string{}
 	if len(teams) > 0 {
 		names = s.teamNames(ctx, teams)
@@ -167,6 +182,9 @@ func (s *Server) navOfficerRoster(ctx context.Context, reads navOfficerReads) []
 		if e.builtin && queueOK {
 			n := queued[ref]
 			v.Queued = &n
+		}
+		if e.builtin && unreadOK {
+			v.Unread = unread[ref]
 		}
 		if e.officer != nil && e.officer.Budget.DailyUSD > 0 && spendOK {
 			x := spent[ref]
