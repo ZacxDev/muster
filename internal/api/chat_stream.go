@@ -141,8 +141,15 @@ func (w *wsChatStream) emit(ev agents.StreamEvent) {
 	case "thinking":
 		w.event(true, map[string]any{"type": "thinking", "content": ev.Text})
 	case "tool_call":
-		w.event(true, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
-			"target": ui.ToolRowTarget(ev.ToolName, ev.ToolArgs, "")})
+		msg := map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
+			"target": ui.ToolRowTarget(ev.ToolName, ev.ToolArgs, "", true)}
+		// One of muster's own tools carries its label, read from the call's
+		// arguments as the stored row reads it (ui.ToolRowLabel); any other
+		// tool's message is as before.
+		if l := ui.ToolRowLabel(ev.ToolName, ev.ToolArgs); l != "" {
+			msg["label"] = l
+		}
+		w.event(true, msg)
 	case "tool_result":
 		w.event(true, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
 	case "queued":

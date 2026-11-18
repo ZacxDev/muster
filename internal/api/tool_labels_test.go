@@ -184,7 +184,7 @@ func TestEveryMusterToolHasAPlainLabel(t *testing.T) {
 	}
 	for _, n := range names {
 		for _, as := range []string{n, "mcp__muster__" + n, "muster_" + n} {
-			if l, ok := ui.MusterToolLabel(as); !ok || strings.TrimSpace(l) == "" {
+			if l, ok := ui.MusterToolLabel(as, "", as == n); !ok || strings.TrimSpace(l) == "" {
 				t.Errorf("muster tool %s has no plain label (as %q): add it to ui's musterToolLabels", n, as)
 			}
 		}
@@ -193,5 +193,38 @@ func TestEveryMusterToolHasAPlainLabel(t *testing.T) {
 		if !slices.Contains(names, n) {
 			t.Errorf("ui's musterToolLabels names %s, which no door serves: remove it", n)
 		}
+	}
+}
+
+// TestEveryDecisionAToolCanTakeHasItsOwnLabel: a served tool whose arguments
+// carry a decision enum ("approve", "deny", "reject") is labelled by what each
+// decision did (ui's musterToolDecisions) — never by one neutral label for
+// all, and never as the owner's decision. Seam ledger over the definitions.
+func TestEveryDecisionAToolCanTakeHasItsOwnLabel(t *testing.T) {
+	seen := 0
+	for _, ledger := range []map[string]func() []agents.ToolDef{agentToolDefFuncs, mirrorToolDefFuncs} {
+		for _, defs := range ledger {
+			for _, d := range defs() {
+				props, _ := d.Parameters["properties"].(map[string]any)
+				dec, _ := props["decision"].(map[string]any)
+				enum, _ := dec["enum"].([]string)
+				if len(enum) == 0 {
+					continue
+				}
+				seen++
+				neutral, _ := ui.MusterToolLabel(d.Name, "", true)
+				labels := map[string]string{}
+				for _, v := range enum {
+					l, _ := ui.MusterToolLabel(d.Name, `{"decision":"`+v+`"}`, true)
+					if l == neutral || labels[l] != "" {
+						t.Errorf("%s: decision %q is labelled %q, not by what it did", d.Name, v, l)
+					}
+					labels[l] = v
+				}
+			}
+		}
+	}
+	if seen < 3 {
+		t.Fatalf("instrument check FAILED: %d tools with a decision enum", seen)
 	}
 }

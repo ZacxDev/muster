@@ -47,6 +47,16 @@ func routedAgentSide(t *testing.T) string {
 	const nonce = "0123456789abcdef"
 	s := &Server{}
 	ctx := context.Background()
+	// A pull-request review route (Route.IsPRReview), and one answered
+	// through HQ (AnswersViaHQ: a review that is also one-way); the HQ one's
+	// body is a findings mail with no machine block, so its ids are UNKNOWN.
+	prReview := r
+	prReview.PRHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+	hqReview := prReview
+	hqReview.OneWay = true
+	// A body too long for one paste: renderRoutedBlock cuts it.
+	long := m
+	long.Body = strings.Repeat("A long line of the message. ", 1200)
 	parts := []string{
 		"== message, by chief\n" + renderRoutedMessageBy(routedByChief, r, p, m, nonce),
 		"== message, by owner\n" + renderRoutedMessageBy(routedByOwner, r, p, m, nonce),
@@ -55,6 +65,11 @@ func routedAgentSide(t *testing.T) string {
 		"== message, one-way\n" + renderRoutedMessageBy(routedByChief, oneWay, p, m, nonce),
 		"== redraft\n" + renderRedraftMessage(r, p, m, "my earlier reply", "too long", nonce),
 		"== task\n" + renderRoutedTask(routedByChief, task, n, nonce),
+		"== task, by owner\n" + renderRoutedTask(routedByOwner, task, n, nonce),
+		"== task, by rule\n" + renderRoutedTask(routedByRule, task, n, nonce),
+		"== message, PR review\n" + renderRoutedMessageBy(routedByPR, prReview, p, m, nonce),
+		"== message, HQ review\n" + renderRoutedMessageBy(routedByPR, hqReview, p, m, nonce),
+		"== message, cut to one paste\n" + renderRoutedMessageBy(routedByChief, r, p, long, nonce),
 		"== request\n" + renderRoutedRequest(req, owner, nonce),
 		"== request answer (chief's chat)\n" + s.routeAnswerText(ctx, req),
 		"== combined answers head\n" + routeAnswersHead(2),

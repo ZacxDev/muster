@@ -2061,12 +2061,14 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 // chip the live stream shows: ONE line — 🔧 name, its target (the file, the
 // command), a ✓/✗/… status — expanding to the args and result. call carries the
 // args (Content), result (may be nil) the output + ok.
-func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "") }
+func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "", true) }
 
 // toolChip is chatToolChip with an element id (the mirrored view replaces a
 // running row in place when its result arrives) and, from the mirrored view,
-// extra nodes drawn just before the status (its context badge).
-func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Node {
+// extra nodes drawn just before the status (its context badge). bare: a tool
+// name with no prefix may be one of muster's own (the chief's chat only;
+// MusterToolBase).
+func toolChip(call ChatLine, result *ChatLine, id string, bare bool, extra ...g.Node) g.Node {
 	name := call.ToolName
 	if name == "" && result != nil {
 		name = result.ToolName
@@ -2075,7 +2077,7 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 		name = "tool"
 	}
 	// One of muster's own tools never draws an id as its target (ToolRowTarget).
-	target := ToolRowTarget(name, call.Content, call.ToolTarget)
+	target := ToolRowTarget(name, call.Content, call.ToolTarget, bare)
 	state := toolChipState(result)
 	status, statusClass := "…", "ml-auto shrink-0 text-muted"
 	switch state {
@@ -2088,7 +2090,7 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 	// One of muster's own tools is drawn by its plain label (tool_labels.go),
 	// and its raw name is in the row's ⓘ — inside the row's body, since an ⓘ
 	// is never a child of a toggle (info_sheet.go) and the summary is one.
-	label, mine := MusterToolLabel(name)
+	label, mine := MusterToolLabel(name, call.Content, bare)
 	if sheet, ok := toolNameSheet(call.ToolID, id, name); mine && ok {
 		body = append(body, sheet)
 	}
@@ -2433,7 +2435,7 @@ func agentChatScript(name string) g.Node {
 
 ` + toolLabelsJS() + `
   // Render (or fetch) the collapsible tool chip for a tool_call id.
-  function toolChip(id, nm, target) {
+  function toolChip(id, nm, target, label) {
     if (tools[id]) return tools[id];
     ensureTurn();
     var d = document.createElement('details');
@@ -2443,7 +2445,7 @@ func agentChatScript(name string) g.Node {
     var icon = document.createElement('span'); icon.textContent = '🔧';
     // One of muster's own tools by its plain label, its raw name in the
     // row's ⓘ (ui.toolChip's rule, from the same table: toolLabelsJS).
-    var plain = musterToolLabel(nm);
+    var plain = label || musterToolLabel(nm);
     var nameEl = document.createElement('span'); nameEl.setAttribute('data-tool-name', '');
     if (plain) { nameEl.className = 'min-w-0 max-w-[60%] shrink-0 truncate text-fg'; nameEl.setAttribute('data-tool-label', ''); nameEl.textContent = plain; }
     else { nameEl.className = 'shrink-0 font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool'; }
@@ -2606,7 +2608,7 @@ func agentChatScript(name string) g.Node {
         scroll();
         break;
       case 'tool_call': {
-        var c = toolChip(msg.id, msg.name, msg.target);
+        var c = toolChip(msg.id, msg.name, msg.target, msg.label);
         if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
         // Interleave: text streamed AFTER this tool call must render in a NEW bubble
         // below the chip, not merged into the pre-tool text bubble (which made tool

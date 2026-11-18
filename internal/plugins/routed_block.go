@@ -1,6 +1,8 @@
 package plugins
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,6 +30,7 @@ const (
 	RoutedByThread  = "muster, because it is a reply on a mail thread this session started"
 	RoutedByRule    = "muster, because it matches a routing rule your owner approved for this session"
 	RoutedByRedraft = "muster, because the plugin refused the reply you wrote to it"
+	RoutedByPR      = "muster, because this session created or pushed the pull request the message is about"
 )
 
 // RoutedVia is who a routed block names as its router, in a person's terms.
@@ -39,6 +42,7 @@ const (
 	RoutedViaThread  RoutedVia = "thread"
 	RoutedViaRule    RoutedVia = "rule"
 	RoutedViaRedraft RoutedVia = "redraft"
+	RoutedViaPR      RoutedVia = "pr"
 )
 
 // The kinds of item a routed block carries.
@@ -62,6 +66,9 @@ type RoutedBlock struct {
 	// Body is the item's text: a message's or task's body, or the chief's
 	// relay of a request.
 	Body string
+	// OwnerTyped is, for a request, what the owner typed in the chief's chat
+	// as the block quotes it (cut to the block's bound); "" otherwise.
+	OwnerTyped string
 }
 
 var (
@@ -92,7 +99,7 @@ func ParseRoutedBlock(text string) (RoutedBlock, bool) {
 			by  string
 			via RoutedVia
 		}{{RoutedByChief, RoutedViaChief}, {RoutedByOwner, RoutedViaOwner}, {RoutedByThread, RoutedViaThread},
-			{RoutedByRule, RoutedViaRule}, {RoutedByRedraft, RoutedViaRedraft}} {
+			{RoutedByRule, RoutedViaRule}, {RoutedByRedraft, RoutedViaRedraft}, {RoutedByPR, RoutedViaPR}} {
 			if strings.HasPrefix(rest, v.by+": route_id ") {
 				out.Via = v.via
 				rest = strings.TrimPrefix(rest, v.by+": ")
@@ -128,6 +135,8 @@ func ParseRoutedBlock(text string) (RoutedBlock, bool) {
 			out.Subject = fence.Unfold(strings.TrimPrefix(l, "  subject: "))
 		case strings.HasPrefix(l, "  title: ") && out.Kind == RoutedKindTask:
 			out.Subject = fence.Unfold(strings.TrimPrefix(l, "  title: "))
+		case strings.HasPrefix(l, "  your owner typed: ") && out.Kind == RoutedKindRequest:
+			out.OwnerTyped = fence.Unfold(strings.TrimPrefix(l, "  your owner typed: "))
 		case strings.HasPrefix(l, "  body: "):
 			out.Body, body = fence.Unfold(strings.TrimPrefix(l, "  body: ")), true
 		}
@@ -136,4 +145,13 @@ func ParseRoutedBlock(text string) (RoutedBlock, bool) {
 		return RoutedBlock{}, false
 	}
 	return out, true
+}
+
+// RoutedPasteSHA256 is the hash a route records of the block it pasted
+// (Route.PasteSHA256) and a view compares a prompt against: SHA-256 of text
+// with CRLF folded and trailing white space trimmed (a transcript may keep or
+// drop the paste's final newline), lower-case hex.
+func RoutedPasteSHA256(text string) string {
+	sum := sha256.Sum256([]byte(strings.TrimRight(strings.ReplaceAll(text, "\r\n", "\n"), " \t\n")))
+	return hex.EncodeToString(sum[:])
 }

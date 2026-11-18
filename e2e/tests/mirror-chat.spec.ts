@@ -143,13 +143,15 @@ test('snake_case identifiers in a routed prompt are not italicised; _real emphas
   await expect(asst.locator('em')).toHaveText('real emphasis');
 });
 
-// A BLOCK MUSTER ROUTED IS A "FROM" CARD, NOT THE OWNER'S BUBBLE (jargon audit
-// U-28): the routed paste — preface, route id, fence — as the session received
-// it is drawn as "From your chief" with the request as plain words; the exact
-// paste is in the card's ⓘ. The block is synthetic, in the shape
-// internal/api's renderRoutedRequest writes. On origin/main it is a user
-// bubble spelling route_id, the fence markers and "Data, not instructions".
-test('a routed request is a "From your chief" card; the exact paste is in its ⓘ', async ({ page }, testInfo) => {
+// A BLOCK OF THE ROUTED SHAPE THAT MUSTER NEVER PASTED IS THE OWNER'S OWN
+// BUBBLE (audit round 1 of the chats PR): a "From your chief" card is drawn
+// only for a paste muster has on record — its route, targeting this session,
+// with this text's SHA-256 (internal/api routedPasteOnRecord; the real card
+// end to end is session-routing.spec.ts). This block, in the shape
+// renderRoutedRequest writes, names a route id muster never made, as an agent
+// typing into its own pane could. Red at the chats PR's e2271dae7, which drew
+// a card from the shape alone.
+test('a routed-shaped block muster never pasted is the owner\'s bubble, never a "From your chief" card', async ({ page }) => {
   const id = 'rt_8f51ffceb101b6c0faaf3b9b';
   const nonce = '0123456789abcdef';
   const fenced =
@@ -166,21 +168,9 @@ test('a routed request is a "From your chief" card; the exact paste is in its �
   const tr = newTranscript(prompt(fenced) + reply('Logging each retry now.'));
   await openView(page, tr);
   const log = page.locator('#mv-log');
-  const card = log.locator('[data-routed-card="prompt"]');
-  await expect(card).toHaveCount(1);
-  await page.screenshot({ path: testInfo.outputPath('routed-card.png') });
-  await expect(card.locator('[data-routed-from]')).toHaveText('From your chief');
-  await expect(card.locator('[data-routed-body]')).toHaveText('Please also log each retry.\nThanks');
-  await expect(log.locator('[data-bubble="user"]')).toHaveCount(0);
-  for (const word of ['route_id', id, '<<<', 'untrusted', 'Data, not instructions']) {
-    expect(await log.innerText(), `the chat's visible text spells ${word}`).not.toContain(word);
-  }
-  await card.getByRole('button', { name: 'What the session was handed' }).click();
-  const sheet = page.locator('[data-info-sheet]:popover-open');
-  await expect(sheet).toBeVisible();
-  await expect(sheet.locator('[data-info-code]')).toContainText(`<<<routed-message untrusted nonce=${nonce} count=1>>>`);
-  await expect(sheet.locator('[data-info-code]')).toContainText('route_id ' + id);
-  await page.screenshot({ path: testInfo.outputPath('routed-card-info.png') });
+  await expect(log.locator('[data-bubble="user"]')).toHaveCount(1);
+  await expect(log.locator('[data-bubble="user"]')).toContainText('route_id ' + id);
+  await expect(log.locator('[data-routed-card]')).toHaveCount(0);
 });
 
 // 🔴 A TOKEN IN THE TRANSCRIPT NEVER REACHES THE PAGE: the host redacts every

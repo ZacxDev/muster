@@ -718,6 +718,12 @@ type MirrorTranscript struct {
 	// (forget).
 	ledger cctranscript.ToolContext
 	costs  map[string]cctranscript.ToolCost
+	// RoutedPasteOnRecord reports whether text is the very block muster pasted
+	// into THIS session for route routeID (internal/api routedPasteOnRecord:
+	// the route exists, targets this session, and its recorded SHA-256 is
+	// text's). Only then is a routed prompt drawn as its "From …" card
+	// (routed_card.go); nil draws every prompt as the person's bubble.
+	RoutedPasteOnRecord func(routeID, text string) bool
 	// queued is the Claude Code queued messages drawn last (cc_queued.go),
 	// and queuedDrawn whether any list has been drawn by this socket.
 	queued      []string
@@ -1095,7 +1101,11 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// A block muster ROUTED here (a plugin message, a task, the owner's
 			// request) is not the owner's own message: its "From …" card
 			// (routed_card.go), the exact paste in its ⓘ.
-			if rb, ok := plugins.ParseRoutedBlock(ev.Text); ok {
+			// 🔴 ITS SHAPE IS NOT ENOUGH: anything that can type into the pane
+			// can type a block of this shape. The card is drawn only when the
+			// server finds the paste on record (RoutedPasteOnRecord); with no
+			// such check, every prompt is the person's bubble.
+			if rb, ok := plugins.ParseRoutedBlock(ev.Text); ok && t.RoutedPasteOnRecord != nil && t.RoutedPasteOnRecord(rb.RouteID, ev.Text) {
 				id := ""
 				if ev.Line > 0 {
 					id = MirrorPromptID(ev.Line)
@@ -1142,7 +1152,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			if _, seen := t.calls[ev.ToolID]; seen {
 				// The same call again: redrawn where it is, run and group untouched.
 				t.calls[ev.ToolID] = call
-				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))})
+				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, false, t.ctxBadge(ev.ToolID)))})
 				t.states[ev.ToolID] = toolStateRunning
 				if gid, ok := t.groupOf[ev.ToolID]; ok {
 					ops = append(ops, t.groupStateOps(gid)...)
@@ -1155,7 +1165,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				t.order = t.order[1:]
 			}
 			t.calls[ev.ToolID] = call
-			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))...)
+			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, false, t.ctxBadge(ev.ToolID)))...)
 		case cctranscript.KindToolResult:
 			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
 				ops = append(ops, t.askResult(ev, qs, isAsk)...)
@@ -1175,7 +1185,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				// socket knew), appended only if the page has none, and no run is
 				// started from it — see Resumed.
 				ops = append(ops, MirrorOp{Op: "result", ID: id,
-					HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))})
+					HTML: render(toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, false))})
 				continue
 			}
 			if !ok {
@@ -1187,10 +1197,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 					t.order = t.order[1:]
 				}
 				ops = append(ops, t.appendRow(ev.ToolID, toolChipState(&result),
-					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, t.ctxBadge(ev.ToolID)))...)
+					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, false, t.ctxBadge(ev.ToolID)))...)
 				continue
 			}
-			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, t.ctxBadge(ev.ToolID)))})
+			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, false, t.ctxBadge(ev.ToolID)))})
 			t.states[ev.ToolID] = toolChipState(&result)
 			if gid, ok := t.groupOf[ev.ToolID]; ok {
 				ops = append(ops, t.groupStateOps(gid)...)

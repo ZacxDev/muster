@@ -714,7 +714,7 @@ func (s *Server) injectRoute(ctx context.Context, r plugins.Route, p plugins.Plu
 		s.logger.Printf("routes: %s: queue for %s: %v", r.RouteID, target, err)
 		return "the message could not be queued for the window"
 	}
-	if err := s.ext.Routes.SetRouteQueued(ctx, r.RouteID, stored.ID); err != nil {
+	if err := s.ext.Routes.SetRouteQueued(ctx, r.RouteID, stored.ID, plugins.RoutedPasteSHA256(text)); err != nil {
 		// The route must name its row, or a timeout could not cancel it: take
 		// the row back out and fail the route. (Even a row left behind cannot be
 		// pasted once its route is not `routed`: sendQueueRoutedGate.)

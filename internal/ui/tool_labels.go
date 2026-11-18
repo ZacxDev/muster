@@ -50,7 +50,7 @@ var musterToolLabels = map[string]string{
 	"attention_wait":          "Waited for your answer",
 	"attention_cancel":        "Withdrew a question",
 	"attention_list":          "Checked what needs you",
-	"attention_answer":        "Passed on your answer",
+	"attention_answer":        "Answered an open question",
 	"chief_ask":               "Asked your chief",
 	"answer_session_question": "Answered a session's question",
 
@@ -60,7 +60,7 @@ var musterToolLabels = map[string]string{
 	"page_get":           "Read a page",
 	"page_list":          "Looked at its pages",
 	"page_responses":     "Read a page's responses",
-	"page_share_request": "Shared a page",
+	"page_share_request": "Asked to share a page",
 	"page_link_revoke":   "Turned off a page link",
 
 	// Sessions and agents.
@@ -71,9 +71,9 @@ var musterToolLabels = map[string]string{
 	"session_context":     "Looked at a session",
 	"agents_list":         "Looked at your agents",
 	"agent_dispatch":      "Started an agent",
-	"agent_destroy":       "Stopped an agent",
+	"agent_destroy":       "Removed an agent",
 	"dispatch_request":    "Asked to start an agent",
-	"dispatch_approve":    "Started an agent you approved",
+	"dispatch_approve":    "Started an agent that was waiting",
 	"chief_restart":       "Restarted your chief",
 	"repos_list":          "Looked at your code projects",
 	"succession_propose":  "Suggested a new session to carry on",
@@ -89,18 +89,18 @@ var musterToolLabels = map[string]string{
 	"plugin_messages_list":         "Looked at your messages",
 	"plugin_message_route":         "Sent a message to a session",
 	"plugin_drafts_list":           "Looked at reply drafts",
-	"plugin_draft_decide":          "Passed on your decision on a reply",
+	"plugin_draft_decide":          "Decided on a reply",
 	"plugin_requests_list":         "Looked at connection requests",
-	"plugin_request_decide":        "Passed on your decision on a connection",
+	"plugin_request_decide":        "Decided on a connection request",
 	"plugin_outbound_batch_get":    "Looked at planned follows and likes",
-	"plugin_outbound_batch_decide": "Passed on your decision on follows and likes",
+	"plugin_outbound_batch_decide": "Decided on planned follows and likes",
 
 	// Access to services.
 	"connectors_list":          "Checked what it can use",
 	"connector_request":        "Asked for access to a service",
 	"connector_status":         "Checked its access to a service",
 	"connector_requests_list":  "Looked at access requests",
-	"connector_request_decide": "Passed on your decision on access",
+	"connector_request_decide": "Decided on an access request",
 	"postgres_query":           "Looked something up in a database",
 	"internal_http_request":    "Used a connected service",
 	"browser_flow_request":     "Asked to use a website for you",
@@ -151,21 +151,62 @@ const (
 	openCodeMusterPrefix   = "muster_"
 )
 
-// MusterToolLabel is the plain label of muster's tool name — bare (a gateway
-// chief's call), mcp__muster__… (Claude Code) or muster_… (opencode) — and ok
-// false for any other tool (a runtime's built-in, another server's).
-func MusterToolLabel(name string) (string, bool) {
-	if l, ok := musterToolLabels[name]; ok {
-		return l, true
-	}
+// MusterToolBase is name's tool in muster's own namespace — mcp__muster__…
+// (Claude Code) or muster_… (opencode), or, with bare, a name with no prefix
+// at all (a gateway chief's in-process call) — and ok false for any other
+// tool. 🔴 bare is only for the chief's chat: in a mirrored session every
+// MCP tool carries its server's prefix, so a bare name there is a runtime's
+// built-in or another server's, never muster's.
+func MusterToolBase(name string, bare bool) (string, bool) {
 	for _, p := range []string{claudeCodeMusterPrefix, openCodeMusterPrefix} {
 		if base, ok := strings.CutPrefix(name, p); ok {
-			if l, ok := musterToolLabels[base]; ok {
-				return l, true
+			if _, ok := musterToolLabels[base]; ok {
+				return base, true
 			}
 		}
 	}
+	if _, ok := musterToolLabels[name]; ok && bare {
+		return name, true
+	}
 	return "", false
+}
+
+// musterToolDecisions are the labels of the tools that decide something, by
+// the decision their arguments carry: what the call DID ("Approved access to
+// a service"), never whose decision it was — the server checks only that the
+// call came from the owner's own session, not that the owner made it. A call
+// whose decision cannot be read keeps the table's neutral label.
+var musterToolDecisions = map[string]map[string]string{
+	"connector_request_decide": {"approve": "Approved access to a service", "deny": "Denied access to a service"},
+	"plugin_draft_decide":      {"approve": "Approved a reply", "reject": "Rejected a reply"},
+	"plugin_request_decide":    {"approve": "Approved a connection", "deny": "Denied a connection"},
+}
+
+// MusterToolLabel is the plain label of muster's tool name (MusterToolBase,
+// bare as there), read with the call's arguments args where the label depends
+// on them (musterToolDecisions; plugin_outbound_batch_decide by whether any
+// draft was approved); ok false for any other tool.
+func MusterToolLabel(name, args string, bare bool) (string, bool) {
+	base, ok := MusterToolBase(name, bare)
+	if !ok {
+		return "", false
+	}
+	var in struct {
+		Decision   string   `json:"decision"`
+		ApproveIDs *[]int64 `json:"approve_ids"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(args)), &in) == nil {
+		if l, ok := musterToolDecisions[base][in.Decision]; ok {
+			return l, true
+		}
+		if base == "plugin_outbound_batch_decide" && in.ApproveIDs != nil {
+			if len(*in.ApproveIDs) == 0 {
+				return "Turned down planned follows and likes", true
+			}
+			return "Approved planned follows and likes", true
+		}
+	}
+	return musterToolLabels[base], true
 }
 
 // musterTargetKeys are the argument fields a muster tool row's one-line target
@@ -182,8 +223,8 @@ var musterTargetKeys = []string{"title", "question", "query", "text", "body", "s
 // tools, and never used for muster's (an older host computes it the generic
 // way). One rule for the persisted rows, the mirrored view and the live
 // stream (internal/api chat_stream.go).
-func ToolRowTarget(name, args, host string) string {
-	if _, mine := MusterToolLabel(name); !mine {
+func ToolRowTarget(name, args, host string, bare bool) string {
+	if _, mine := MusterToolBase(name, bare); !mine {
 		if host != "" {
 			return host
 		}
@@ -202,6 +243,16 @@ func ToolRowTarget(name, args, host string) string {
 		}
 	}
 	return ""
+}
+
+// ToolRowLabel is the chief chat's label for a call of tool name with args:
+// MusterToolLabel with bare names allowed, "" for a tool that is not muster's.
+// The live stream sends it with each call (internal/api chat_stream.go), so a
+// streamed row reads the decision its arguments carry exactly as the stored
+// row will.
+func ToolRowLabel(name, args string) string {
+	l, _ := MusterToolLabel(name, args, true)
+	return l
 }
 
 // toolSheetPlaceholder stands for a row's id in toolLabelsJS's template.

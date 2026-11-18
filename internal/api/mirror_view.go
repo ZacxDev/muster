@@ -297,6 +297,11 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0
+	// A routed paste is drawn as its "From …" card only when muster has it on
+	// record for this very window's session (route_answer_cards.go).
+	drawn.RoutedPasteOnRecord = func(routeID, text string) bool {
+		return s.routedPasteOnRecord(r.WithContext(live), host, session, window, routeID, text)
+	}
 	// The tool-context ledger resumes from the checkpoint the socket before
 	// this one left at this very place (mirror_ledger.go), so a call still
 	// running across the reconnect is attributed when its next turn arrives.

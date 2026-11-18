@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -51,8 +52,13 @@ const (
 	routeOneWayAnswerLine    = "Reported back on a message"
 )
 
-// routedFrom is who a routed paste is from, and the line under it, in a
-// person's words.
+// routedFrom is who a routed paste is from — the card's heading, after
+// "From " — and the line under it, in a person's words.
+//
+// 🔴 A PLUGIN'S LABEL IS THE PLUGIN'S WORDS, NEVER MUSTER'S: a plugin named
+// "your chief" or "you" must not draw "From your chief". So a message is
+// always framed as an app's — "the app ‘<label>’" — and only muster's own
+// router names (the chief, the owner) are said bare.
 func routedFrom(rb plugins.RoutedBlock) (from, line string) {
 	who := map[plugins.RoutedVia]string{plugins.RoutedViaChief: "your chief", plugins.RoutedViaOwner: "you"}[rb.Via]
 	if who == "" {
@@ -60,14 +66,11 @@ func routedFrom(rb plugins.RoutedBlock) (from, line string) {
 	}
 	switch rb.Kind {
 	case plugins.RoutedKindRequest:
-		return "your chief", "Your request, passed on"
+		return "your chief", routedRequestLine
 	case plugins.RoutedKindTask:
 		return who, "Task #" + strconv.FormatInt(rb.TaskID, 10)
 	}
-	from = rb.Source
-	if from == "" {
-		from = "a connected app"
-	}
+	from = routedAppFrom(rb.Source)
 	switch rb.Via {
 	case plugins.RoutedViaChief:
 		line = "Passed on by your chief"
@@ -79,17 +82,44 @@ func routedFrom(rb plugins.RoutedBlock) (from, line string) {
 		line = "Sent here by a rule you approved"
 	case plugins.RoutedViaRedraft:
 		line = "Its earlier reply was refused, so this came back"
+	case plugins.RoutedViaPR:
+		line = "About a code change this session made"
 	}
 	return from, line
 }
 
+// routedAppFrom is a plugin message's source as a heading names it: always
+// an app's, whatever its label says.
+func routedAppFrom(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return "a connected app"
+	}
+	return "the app ‘" + label + "’"
+}
+
+// The request card's words: the line under its heading, and the labels of its
+// two parts — the owner's own message and the chief's relay of it, both shown,
+// since the session is told to weigh one against the other.
+const (
+	routedRequestLine       = "Your request, passed on"
+	routedOwnerTypedLabel   = "You wrote"
+	routedChiefRelayedLabel = "Your chief passed it on as"
+)
+
+// routedPart is one labelled text of a card's body ("" label: unlabelled).
+type routedPart struct{ label, text string }
+
 // routedPromptCard draws a routed paste (a mirrored session's prompt that
-// plugins.ParseRoutedBlock read) as its card; raw is the prompt as the session
-// received it (the ⓘ's), id the card's element id (the prompt's: the message
-// index links to it), sheetID its ⓘ's.
+// plugins.ParseRoutedBlock read and the server found on record) as its card;
+// raw is the prompt as the session received it (the ⓘ's), id the card's
+// element id (the prompt's: the message index links to it), sheetID its ⓘ's.
 func routedPromptCard(rb plugins.RoutedBlock, raw, id, sheetID string) g.Node {
 	from, line := routedFrom(rb)
-	return routedCard("prompt", id, "From "+from, line, rb.Subject, rb.Body,
+	parts := []routedPart{{"", rb.Body}}
+	if rb.Kind == plugins.RoutedKindRequest {
+		parts = []routedPart{{routedOwnerTypedLabel, rb.OwnerTyped}, {routedChiefRelayedLabel, rb.Body}}
+	}
+	return routedCard("prompt", id, "From "+from, line, rb.Subject, parts,
 		InfoSheet{ID: sheetID, Label: routedSheetPromptLabel, Heading: routedSheetPromptHeading, Lead: routedSheetPromptLead, Code: raw, Multiline: true})
 }
 
@@ -108,7 +138,7 @@ func routeAnswerRow(m ChatLine, cards []RouteAnswerCard) g.Node {
 		if i == 0 {
 			sheet = InfoSheet{ID: sheetID, Label: routedSheetAnswerLabel, Heading: routedSheetAnswerHeading, Lead: routedSheetAnswerLead, Code: m.Content, Multiline: true}
 		}
-		nodes = append(nodes, routedCard("answer", "", "From "+c.From, line, "", c.Body, sheet))
+		nodes = append(nodes, routedCard("answer", "", "From "+c.From, line, "", []routedPart{{"", c.Body}}, sheet))
 	}
 	return Div(
 		g.Attr("data-route-answers", ""),
@@ -120,9 +150,21 @@ func routeAnswerRow(m ChatLine, cards []RouteAnswerCard) g.Node {
 
 // routedCard is the card's frame: a self-start card (never the owner's
 // right-hand bubble), its "From …" heading with the ⓘ beside it (a sheet with
-// no ID draws none), the line under it, the subject, and the body as plain
-// text.
-func routedCard(kind, id, heading, line, subject, body string, sheet InfoSheet) g.Node {
+// no ID draws none), the line under it, the subject, and the body's parts as
+// plain text, each under its label when it has one.
+func routedCard(kind, id, heading, line, subject string, parts []routedPart, sheet InfoSheet) g.Node {
+	var body []g.Node
+	for _, p := range parts {
+		if p.text == "" {
+			continue
+		}
+		body = append(body, Div(
+			g.Attr("data-routed-part", p.label),
+			Class("flex flex-col gap-0.5"),
+			g.If(p.label != "", P(g.Attr("data-routed-part-label", ""), Class("text-xs font-medium text-muted"), g.Text(p.label))),
+			P(g.Attr("data-routed-body", ""), Class("max-h-72 overflow-y-auto whitespace-pre-wrap break-words text-fg2"), g.Text(p.text)),
+		))
+	}
 	return Div(
 		g.If(id != "", ID(id)),
 		g.Attr("data-routed-card", kind),
@@ -135,6 +177,6 @@ func routedCard(kind, id, heading, line, subject, body string, sheet InfoSheet) 
 		),
 		g.If(line != "", P(g.Attr("data-routed-line", ""), Class("text-xs text-muted"), g.Text(line))),
 		g.If(subject != "", P(g.Attr("data-routed-subject", ""), Class("font-medium text-fg"), g.Text(subject))),
-		g.If(body != "", P(g.Attr("data-routed-body", ""), Class("max-h-72 overflow-y-auto whitespace-pre-wrap break-words text-fg2"), g.Text(body))),
+		g.Group(body),
 	)
 }
