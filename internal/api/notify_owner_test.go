@@ -209,4 +209,17 @@ func TestASessionNamedLikeAnotherKindIsMarkedAsASession(t *testing.T) {
 	if got := pageCreatorLine((pages.Creator{AgentID: 4, Label: "builder"})); got != "agent builder" {
 		t.Errorf("an agent's page: %q", got)
 	}
+	// The page label is plained by the title rule BEFORE the quote and the
+	// cap: markdown goes, a quote inside still cannot close it, and the cap
+	// still holds.
+	if got := pageCreatorLine((pages.Creator{MirrorHost: "host-a", Label: `**Your** "chief"`})); got != `session "Your 'chief'"` {
+		t.Errorf("a markdown session label: %q", got)
+	}
+	if got := pageCreatorLine((pages.Creator{AgentID: 4, Label: "`builder`"})); got != "agent builder" {
+		t.Errorf("a markdown agent label: %q", got)
+	}
+	long := pageCreatorLine((pages.Creator{MirrorHost: "host-a", Label: "_" + strings.Repeat("n", 200) + "_"}))
+	if want := `session "` + strings.Repeat("n", notifySenderMax) + `…"`; long != want {
+		t.Errorf("a long session label after the title rule: %q; want the cap at %d", long, notifySenderMax)
+	}
 }

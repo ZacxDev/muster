@@ -140,12 +140,15 @@ func quotedSessionName(name string) string {
 
 // pageCreatorLine is a page's creator as a page push names it — the same
 // markers as fromLine: "agent <name>" for a dispatched agent's page,
-// quotedSessionName for a mirrored session's.
+// quotedSessionName for a mirrored session's. The stored label is shown, so
+// it is plained by the title rule (textplain.Title) FIRST, and only then
+// redacted, capped and, for a session, quoted.
 func pageCreatorLine(c pages.Creator) string {
+	name := textplain.Title(c.Label)
 	if c.AgentID > 0 {
-		return "agent " + truncate(pushLine(c.Label), notifySenderMax)
+		return "agent " + truncate(pushLine(name), notifySenderMax)
 	}
-	return quotedSessionName(c.Label)
+	return quotedSessionName(name)
 }
 
 // notifySenderOf is THE rule for naming a notify_owner caller (one rule, one
