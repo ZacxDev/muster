@@ -69,7 +69,7 @@ for n in muster_linux_amd64.tar.gz muster-mirror_linux_amd64.tar.gz docker-compo
   echo "content of $n" > "$dist/$n"
 done
 (cd "$dist" && sha256sum muster* docker-compose.yml env.example > checksums.txt)
-echo "## header" > "$work/header.md"
+echo "## Highlights" > "$work/notes.md"
 
 fails=0; passes=0
 # run_case <name> <want-rc> <setup-fn> <check-fn>
@@ -79,7 +79,7 @@ run_case() {
   export GH_STATE="$work/state-$name"; rm -rf "$GH_STATE"; mkdir -p "$GH_STATE/assets"; echo false > "$GH_STATE/draft"
   "$setup"
   ( cd "$work" && PATH="$work/bin:$PATH" GITHUB_REF_NAME="$TAG" GITHUB_REPOSITORY_OWNER=Example \
-      "$PUBLISH" "$TAG" "$dist" "$work/header.md" ) > "$work/out-$name" 2>&1
+      "$PUBLISH" "$TAG" "$dist" "$work/notes.md" ) > "$work/out-$name" 2>&1
   local rc=$?
   local why=""
   if [ "$want" = 0 ] && [ "$rc" -ne 0 ]; then why="exit $rc, want 0"
@@ -96,7 +96,8 @@ check_fresh() {
   [ -f "$GH_STATE/exists" ] || { echo "no release created"; return; }
   assets_eq_dist; published
   grep -q -- '--verify-tag' "$GH_STATE/calls" || echo "create without --verify-tag"
-  grep -q -- '--generate-notes' "$GH_STATE/calls" || echo "create without --generate-notes"
+  grep -q -- "--notes-file $work/notes.md" "$GH_STATE/calls" || echo "create without --notes-file <the notes>"
+  ! grep -q -- '--generate-notes' "$GH_STATE/calls" || echo "create with --generate-notes (the PRs a second time)"
 }
 complete() { touch "$GH_STATE/exists"; cp "$dist"/* "$GH_STATE/assets/"; }
 check_noop() {

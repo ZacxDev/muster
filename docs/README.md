@@ -75,6 +75,7 @@ it off. The full list of features, with every `.env` line, is
 - [quickstart-local.md](quickstart-local.md) — the one-line install on one machine, by hand, and adding your phone
 - [multi-tenant-hosts.md](multi-tenant-hosts.md) — one machine's sessions in a second muster server (tenants)
 - [kubernetes.md](kubernetes.md) — the Helm chart: installing muster on Kubernetes, the values per feature, RBAC, upgrades
+- [releases.md](releases.md) — what a release contains per platform (archives, .deb/.rpm, the Windows CLI, Homebrew, Scoop), verifying downloads (checksums, attestations), the release notes and CHANGELOG
 - [features.md](features.md) — every optional feature: what it needs, the `.env` lines that turn it on, and how to check it is on
 - [configuration.md](configuration.md) — every environment variable, checked by a test
 - [telemetry.md](telemetry.md) — tracing an open from the browser to the host: the hops, the spans, the metrics, the log line, and what to set
