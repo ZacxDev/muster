@@ -91,7 +91,13 @@ func (s *Server) noteConnectorBlocked(ctx context.Context, a agents.Agent, grant
 		return
 	}
 	now := rt.clock()
-	key := strconv.FormatInt(a.ID, 10) + " " + strconv.FormatInt(grantID, 10)
+	// 🔴 THE REFUSED SESSION'S HOLDER, NOT THE AGENT'S (officer_chat.go): a
+	// chat lane's call acts as its chat claim's holder, so it records its own
+	// chat item; and the holder is in the debounce key, so a lane's refusal
+	// never suppresses the primary's on the same grant.
+	holder := officerCallerName(ctx, a)
+	_, lane := chatLaneCall(ctx)
+	key := strconv.FormatInt(a.ID, 10) + " " + holder + " " + strconv.FormatInt(grantID, 10)
 	rt.blockNotesMu.Lock()
 	if last, seen := rt.blockNotes[key]; seen && now.Sub(last) < connectorBlockDebounce {
 		rt.blockNotesMu.Unlock()
@@ -108,7 +114,27 @@ func (s *Server) noteConnectorBlocked(ctx context.Context, a agents.Agent, grant
 		defer rt.blockWork.Done()
 		cctx, cancel := context.WithTimeout(s.officerPrincipal(ctx, o.Owner), connectorBlockTimeout)
 		defer cancel()
-		held, err := heldItemsAt(cctx, rt.hq.Backend(o), a.Name, now)
+		b := rt.hq.Backend(o)
+		if !lane {
+			// 🔴 A REFUSAL THAT NAMES NO SESSION (the connector proxy: a CLI's
+			// git or curl, which carries no session header) while one of the
+			// instance's chat lanes holds a live claim is AMBIGUOUS: the
+			// primary or a chat lane may have made it. Recorded for neither,
+			// rather than charged to the primary's item: a wrong record re-runs
+			// an item that never touched the connector.
+			chats, err := heldItemsAt(cctx, b, officers.ChatHolder(a.Name), now)
+			if err != nil {
+				s.logger.Printf("officers: %s refused on grant %d (%s): its chat claims could not be read, so none is recorded for a re-run: %v",
+					a.Name, grantID, connector, err)
+				return
+			}
+			if len(chats) > 0 {
+				s.logger.Printf("officers: %s refused on grant %d (%s) on a path that names no session, while %d chat session(s) of it hold a claim: "+
+					"not recorded for a re-run (it cannot be told whose call it was)", a.Name, grantID, connector, len(chats))
+				return
+			}
+		}
+		held, err := heldItemsAt(cctx, b, holder, now)
 		if err != nil {
 			s.logger.Printf("officers: %s refused on grant %d (%s): the items it holds could not be read, so none is recorded for a re-run: %v",
 				a.Name, grantID, connector, err)

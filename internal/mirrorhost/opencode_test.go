@@ -205,7 +205,7 @@ func TestTheViewAndTheCardSayWhatTheTokenNeeds(t *testing.T) {
 		if ap := locate(src); ap.Gen != sid || ap.Note != "" {
 			t.Fatalf("%+v", ap)
 		}
-		if e := firstRow(t, src); !strings.HasPrefix(e.Text, "matched by title") {
+		if e := firstRow(t, src); !strings.HasPrefix(e.Text, "Showing “") || e.Output != OpenCodeFoundReadOnly {
 			t.Fatalf("the first row: %+v", e)
 		}
 	})
@@ -389,9 +389,9 @@ func TestAnOpenCodeWindowStreamsItsSessionReadOnly(t *testing.T) {
 	if resets != 1 || last.Gen != sid {
 		t.Fatalf("resets %d gen %q", resets, last.Gen)
 	}
-	// A host that does not send to opencode says "matched by title" even of a
-	// match it verified (opencode_bind.go): nothing is sent to it.
-	if evs[0].Kind != cctranscript.KindNotice || !strings.HasPrefix(evs[0].Text, "matched by title: Fix the flaky fixture") {
+	// A host that does not send to opencode says it only shows the session,
+	// even of a match it verified (opencode_bind.go): nothing is sent to it.
+	if evs[0].Kind != cctranscript.KindNotice || evs[0].Text != "Showing “Fix the flaky fixture”" || evs[0].Output != OpenCodeFoundReadOnly {
 		t.Fatalf("the view does not open with how it was matched: %+v", evs[0])
 	}
 	if strings.Contains(got, secret) || !strings.Contains(got, "prompt:deploy with") || !strings.Contains(got, "text:On it.") ||

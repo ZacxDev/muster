@@ -104,11 +104,11 @@ func headerOf(t *testing.T, card string) string {
 	return card[i:]
 }
 
-// TestAMirroredPageBadgeLeadsWithItsHostsIcon: the "Mirrored · <host>" badge on
+// TestAMirroredPageBadgeLeadsWithItsHostsIcon: the "On <host>" badge on
 // a window's own pages draws the icon its cards draw.
 func TestAMirroredPageBadgeLeadsWithItsHostsIcon(t *testing.T) {
 	key := hostIconSet[2].Key
-	got := renderString(t, mirrorBadge("Mirrored · tower", "tower", key))
+	got := renderString(t, mirrorBadge(MirrorBadgeText("tower"), "tower", key))
 	if !strings.Contains(got, `data-host-icon="`+key+`"`) || !strings.Contains(got, hostIconSet[2].Body) {
 		t.Errorf("the badge does not draw tower's icon %q:\n%s", key, got)
 	}

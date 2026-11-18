@@ -49,6 +49,10 @@ type officerAgents struct {
 	rearmed      map[int64]string
 	created      []agents.Agent
 	claims       map[int64]string
+
+	// laneSecrets is each chat lane's secret, by "<agent id> <session key>"
+	// (ChatLaneSecret, officer_chat_round1_test.go).
+	laneSecrets map[string]string
 }
 
 func (s *officerAgents) List(context.Context) ([]agents.Agent, error) {

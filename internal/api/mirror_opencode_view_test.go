@@ -51,7 +51,7 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	for _, want := range []string{`id="mv-log"`, `data-ws="` + amp(view.ViewWSPath()) + `"`, "opencode is working…",
 		// The note, pinned literally: a title-matched window on a host that
 		// did not opt in to the opencode send says THAT (mirror.SendBlocked).
-		html.EscapeString("Not sent: this host's muster-mirror does not send to opencode (it needs -interactive and -opencode-send). Type it in the terminal.")} {
+		html.EscapeString("Not sent: replying to opencode from muster is not turned on for this computer. Type it in the terminal.")} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the opencode view lacks %q", want)
 		}

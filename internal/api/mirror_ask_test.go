@@ -145,7 +145,7 @@ func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
 	am, s, ts := askServer(t, true)
 	register(t, ts)
 	card := region(t, s, ts, `data-ask-state="pending"`)
-	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main:0? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
+	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the pending card lacks %q:\n%s", want, card)
 		}
@@ -716,8 +716,8 @@ func TestAnAnswerPassesEveryGate(t *testing.T) {
 	am.fakeMirror.mu.Lock()
 	am.fakeMirror.interactive = false
 	am.fakeMirror.mu.Unlock()
-	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ErrInteractiveRefused.Error()) {
-		t.Fatalf("a read-only host: %d %q, want 409 saying it is read-only", resp.StatusCode, body)
+	if resp, body := answerReq(t, s, ts, good, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, mirror.ViewOnlyWords("ws")) {
+		t.Fatalf("a read-only host: %d %q, want 409 saying it is view-only", resp.StatusCode, body)
 	}
 }
 

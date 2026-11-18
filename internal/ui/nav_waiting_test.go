@@ -97,9 +97,9 @@ func TestThePaletteCopiesTheSidebarsWaitingMark(t *testing.T) {
 		// A count with nothing for "you": the sidebar draws the count, and so
 		// does the palette (one call).
 		{"ag-notice", `data-nav-attention="" data-kind="notice" data-count="2"`},
-		{"plum:1", `data-nav-attention="" data-kind="session" data-count="1"`},
+		{"plum", `data-nav-attention="" data-kind="session" data-count="1"`},
 		{"ag-quiet", ""},
-		{"kiwi:1", ""},
+		{"kiwi", ""},
 	} {
 		it, ok := byLabel[c.label]
 		if !ok {
@@ -163,5 +163,19 @@ func TestTheOverlayBadgeIsDrawnWithThePage(t *testing.T) {
 	plain := renderString(t, overlayNavButton(nil, false))
 	if !strings.Contains(plain, "load[") || !strings.Contains(plain, "every 60s") || !strings.Contains(plain, `data-count="0"`) {
 		t.Errorf("without a switcher the badge must load its count: %s", plain)
+	}
+}
+
+// TestTheOverlayBadgeDrawsTheOpenCountWhenGiven: a switcher carrying the one
+// open count (MenuCount, set by internal/api wherever the Asks queue is
+// served) draws THAT on the ☰, not its Waiting view's length — the 7 is
+// neither the fixture's 3 waiting rows nor its entries.
+func TestTheOverlayBadgeDrawsTheOpenCountWhenGiven(t *testing.T) {
+	list, mirrors := menuBadgeFixture()
+	sw := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
+	n := 7
+	sw.MenuCount = &n
+	if over := renderString(t, overlayNavButton(sw, false)); !strings.Contains(over, `data-count="7"`) || strings.Contains(over, `data-count="3"`) {
+		t.Fatalf("the overlay ☰ does not draw the open count 7: %s", over)
 	}
 }

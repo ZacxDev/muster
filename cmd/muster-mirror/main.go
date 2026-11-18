@@ -768,6 +768,10 @@ func loadCodenames(path string, logger *log.Logger) map[string]string {
 // listen until ctx ends, completing proxy with the secret and the backend's
 // window and tmux-server lookups. An error means the endpoint is not served.
 func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost.Backend, proxy *mirrorhost.MCPProxy, logger *log.Logger) error {
+	// A leading ~/ (MUSTER_MIRROR_MCP_SECRET_FILE comes from a settings file
+	// no shell expanded) is this user's home, as for every other path flag —
+	// and as `muster doctor` reads the same line.
+	secretFile = expandHome(secretFile)
 	secret, err := mirrorhost.EnsureMCPSecret(secretFile)
 	if err != nil {
 		return err

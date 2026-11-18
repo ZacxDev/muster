@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"html"
 	"net/http"
 	"slices"
@@ -59,6 +60,8 @@ func askFeedBadge(it attentionItem) (kind, label string) {
 		return "waiting", "Waiting"
 	case attentionKindTask:
 		return "task", "Task to route"
+	case attentionKindPlugin:
+		return "pairing", "Pairing request"
 	}
 	return "other", "Item"
 }
@@ -84,10 +87,18 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 	case it.Kind == attentionKindTask:
 		inner = `<span>` + taskToRouteWhy + `</span>`
 	}
-	if inner == "" {
+	// The card's ⓘ: the exact tmux address of the window it names
+	// (attentionPlaceSheetHTML), at the end of this line — the head is the
+	// card's toggle, and a button cannot sit inside it.
+	info := attentionPlaceSheetHTML(it, it.Key)
+	switch {
+	case inner == "" && info == "":
 		return ""
+	case info == "":
+		return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+`
 	}
-	return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="` + ui.AsksCardContextClass + ` min-w-0 flex-1" data-asks-context>` + inner + `</div>` + info + `</div>
 `
 }
 
@@ -151,8 +162,18 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 	var b strings.Builder
 	kind, label := askFeedBadge(it)
 	more := asksCardMoreID(it.Key)
+	// data-asks-who: the session's name as the head titles it (attentionTitle,
+	// the one naming rule) — what an accepted answer's "Sent to" toast says.
+	// data-asks-uncounted: a card listed but not waiting on this reader (a
+	// team's ask a viewer watches: waitingOnReader), which the open count
+	// leaves out (asksPendingCount).
+	whoName, _, _ := attentionTitle(it)
+	uncounted := ""
+	if it.Kind == attentionKindAsk && it.watchOnly != "" {
+		uncounted = " data-asks-uncounted"
+	}
 	b.WriteString(`<li id="` + esc(it.Key) + `" class="` + ui.AsksFeedCardClass + `" data-attention-item data-kind="` + esc(it.Kind) +
-		`" data-asks-card data-expanded="false" tabindex="-1">
+		`" data-asks-card data-asks-who="` + esc(whoName) + `"` + uncounted + ` data-expanded="false" tabindex="-1">
 `)
 	// THE HEAD: badge, who, how long — one toggle.
 	who := attentionHeadLines(it, now)
@@ -243,6 +264,8 @@ func askFeedCardHTML(it attentionItem, now time.Time) string {
 		links = append(links, `<a href="`+esc(href)+`" class="`+ui.AsksCardLinkClass+`" data-asks-view-session>`+askViewInSession+`</a>`)
 	}
 	switch {
+	case it.Kind == attentionKindPlugin && it.Link != "":
+		links = append(links, `<a href="`+esc(it.Link)+`" class="`+ui.AsksCardLinkClass+`" data-asks-pairing>Review on Plugins</a>`)
 	case it.Kind == attentionKindTask && it.Link != "":
 		links = append(links, `<a href="`+esc(it.Link)+`" class="`+ui.AsksCardLinkClass+`" data-asks-task>Open task</a>`)
 	case it.taskID > 0:
@@ -361,9 +384,18 @@ func askFeedAnswerFormHTML(it attentionItem, id string) string {
 // askFeedHTML is the Open feed's <li>s and how many cards it holds: the items
 // (the queue without its reply drafts, askTabItems) in askGroups' order —
 // newest first within a kind — with session state's stalled rows (episodes,
-// n of them) after the waiting windows; the All clear state when there is
-// nothing at all.
+// n of them) after the waiting windows.
+//
+// 🔴 "ALL CLEAR" ONLY WHEN NOTHING IS PENDING, DRAFTS INCLUDED. The reply
+// drafts in items are the Drafts tab's, never a card here — but they wait on
+// the owner too, so an Open feed with no card and a draft pending draws the
+// drafts' empty state (ui.AsksDraftsWaitHTML, pointing at the tab), never All
+// clear. The drafts' count rides along on a hidden marker
+// (ui.AsksDraftsMarkerHTML), so the feed's script counts the same total as
+// the server (asksPendingOf) after every live refresh.
 func askFeedHTML(items []attentionItem, episodes string, n int, now time.Time) (string, int) {
+	// The drafts the Drafts tab LISTS (draftsTabItem), never every plugin item.
+	drafts := len(items) - len(askTabItems(items))
 	items = askTabItems(items)
 	var b strings.Builder
 	count := n
@@ -380,34 +412,59 @@ func askFeedHTML(items []attentionItem, episodes string, n int, now time.Time) (
 			b.WriteString(`<li class="min-w-0" data-asks-episodes>` + episodes + "</li>\n")
 		}
 	}
-	if count == 0 {
-		return ui.AsksAllClearHTML, 0
+	marker := ui.AsksDraftsMarkerHTML(drafts)
+	switch {
+	case count == 0 && drafts == 0:
+		return ui.AsksAllClearHTML + marker, 0
+	case count == 0:
+		return ui.AsksDraftsWaitHTML(drafts) + marker, 0
 	}
-	return b.String(), count
+	return b.String() + marker, count
 }
 
 // answeredCardHTML is one recent answer's card on the Answered tab: who asked
 // and when, the question, the answer, where it went — and Retry on a failed
 // delivery. Its more region holds where the answer came from when it was not
 // this view.
-func answeredCardHTML(a attention.Ask, hosts []mirror.HostView, now time.Time, proposal bool) string {
+//
+// 🔴 IT IS TITLED BY THE ONE NAMING RULE (attentionTitle over it, the ask as an
+// attention item with its stored name: answeredItems) — the session's human
+// name, its tmux target small under it — exactly as its card was titled on
+// the Open tab. It used to be titled by its window's place ("tmux fern:1 @
+// atlas"), so a session was "Rate-limit the public API" until answered and a
+// tmux address after.
+func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal bool) string {
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
-	who := textplain.TitleKeeping(askSourceParts(a, hosts))
+	who, src, srcIsTitle := attentionTitle(it)
+	// The delivery line names the session as the card's title does (who: in
+	// words, never a tmux target); the exact target — where a queued or
+	// waiting delivery sends the owner — is the card's ⓘ, beside the line.
 	text, retry := answerDeliveryText(a, who, proposal)
-	age := ""
+	var sub []string
 	if !a.ResolvedAt.IsZero() {
-		age = `<span class="` + ui.AsksSubClass + `"><time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time></span>`
+		sub = append(sub, `<time datetime="`+a.ResolvedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.ResolvedAt)))+`</time>`)
+	}
+	if !srcIsTitle && src != "" && src != who {
+		sub = append(sub, `<span class="`+ui.AsksTargetClass+`" data-attention-source>`+esc(src)+`</span>`)
+	}
+	age := ""
+	if len(sub) > 0 {
+		age = `<span class="` + ui.AsksSubClass + `">` + strings.Join(sub, ` · `) + `</span>`
+	}
+	titleAttrs := ` data-attention-title`
+	if srcIsTitle || src == "" || src == who {
+		titleAttrs += ` data-attention-source`
 	}
 	key := "answered-" + id
 	var b strings.Builder
 	b.WriteString(`<li id="` + key + `" class="` + ui.AsksFeedCardClass + `" data-attention-answered data-asks-card data-expanded="false" tabindex="-1" data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
 <button type="button" class="` + ui.AsksCardHeadClass + `" aria-expanded="false" aria-controls="` + asksCardMoreID(key) + `" aria-label="` + ui.AsksCardToggleLabel +
 		`" aria-describedby="` + key + `-who" data-asks-toggle>` + ui.AsksKindBadge("answered", "Answered") +
-		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `" data-attention-source>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
+		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
 <p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
-<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>
+` + answeredDeliveryRowHTML(it, key, `<p class="break-words text-xs text-fg2" data-attention-delivery>`+esc(text)+`</p>`) + `
 `)
 	if retry {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
@@ -422,13 +479,37 @@ func answeredCardHTML(a attention.Ask, hosts []mirror.HostView, now time.Time, p
 
 // answeredFeedHTML is the Answered tab's feed: one card per recent answer, or
 // its empty line.
-func answeredFeedHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Time, proposals map[int64]bool) string {
+// items[i] is asks[i] as an attention item, named (answeredItems).
+func answeredFeedHTML(asks []attention.Ask, items []attentionItem, now time.Time, proposals map[int64]bool) string {
 	if len(asks) == 0 {
 		return `<li class="px-1 py-6 text-center text-sm text-fg2" data-asks-answered-empty>No answers in the last day.</li>`
 	}
 	var b strings.Builder
-	for _, a := range asks {
-		b.WriteString(answeredCardHTML(a, hosts, now, proposals[a.ID]))
+	for i, a := range asks {
+		b.WriteString(answeredCardHTML(a, items[i], now, proposals[a.ID]))
 	}
 	return b.String()
+}
+
+// answeredItems is asks as attention items (askItem over hosts: the source,
+// target and place an Open card has) — named, as an Open card is, by
+// withNames — for the Answered cards' titles.
+func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts []mirror.HostView) []attentionItem {
+	items := make([]attentionItem, len(asks))
+	for i, a := range asks {
+		items[i] = askItem(a, hosts...)
+	}
+	s.withNames(ctx, items)
+	return items
+}
+
+// answeredDeliveryRowHTML is an Answered card's delivery line and, when the
+// ask names a window, its ⓘ (attentionPlaceSheetHTML) beside it — outside the
+// card's toggle, which a button cannot sit inside.
+func answeredDeliveryRowHTML(it attentionItem, key, line string) string {
+	info := attentionPlaceSheetHTML(it, key)
+	if info == "" {
+		return line
+	}
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="min-w-0 flex-1">` + line + `</div>` + info + `</div>`
 }

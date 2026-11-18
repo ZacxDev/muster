@@ -333,7 +333,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(v.active(), g.Attr("data-active", "")),
 		Class("px-3 pt-2"),
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
-			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
+			g.Text(SendQueueHead(open)))),
 		g.If(v.Waiting != "", sendQueueWaiting(v)),
 		g.If(v.Waiting != "", sendQueueWaitingFull()),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
@@ -1152,4 +1152,13 @@ func sendQueueScript() g.Node {
   schedule();
 })();
 `))
+}
+
+// SendQueueHead is the queue's line over its open messages, in plain words
+// ("waiting", "free" — not "queued", "idle"): open is how many there are.
+func SendQueueHead(open int) string {
+	if open == 1 {
+		return "1 message waiting — it sends when Claude is free."
+	}
+	return strconv.Itoa(open) + " messages waiting — they send one at a time, each when Claude is free."
 }

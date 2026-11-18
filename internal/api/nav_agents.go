@@ -76,9 +76,20 @@ func (s *Server) gatePreviewMarks(ctx context.Context, mirrors []ui.MirrorCardVi
 // (agentsListEntries, as handleNavAgents) by the rows' own predicate
 // (ui.NavWaitingCount). No agent store: zero, hidden. A failed read is a 500
 // the slot keeps its previous badge through (htmx swaps no error).
+//
+// 🔴 WITH THE ASKS QUEUE SERVED THE BADGE IS THE ONE OPEN COUNT (menuCount,
+// asks_count.go): the number the sidebar's More, the Asks page's header and
+// the Log's Open pill show. It used to count the sidebar's waiting ROWS, so the
+// ☰ said 4 while everything else said 6 (a notice, an officer's ask and a
+// task have no row). Without the queue there are no asks to count, and the
+// rows' count stands.
 func (s *Server) handleNavWaiting(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
+	if n, ok := s.menuCount(r.Context()); ok {
+		_, _ = w.Write([]byte(ui.NavWaitingBadgeHTML(n)))
+		return
+	}
 	if s.ext.Agents == nil {
 		if err := ui.RenderNavWaiting(w, nil, nil); err != nil {
 			s.logger.Printf("nav waiting: render: %v", err)

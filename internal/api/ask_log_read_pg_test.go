@@ -316,14 +316,17 @@ func TestTheAskLogAPIFiltersPagesAndSummarises(t *testing.T) {
 }
 
 // TestTheLogTabSaysWhetherTheLogIsOffEmptyOrFiltered: with MUSTER_ASK_LOG off
-// the tab says how to turn it on and the API answers the typed feature_disabled
-// 404; on with no asks, "No asks recorded yet"; on with asks and a filter that
-// matches none, "No asks match these filters" — three different sentences.
+// there is NO Log tab (?tab=log opens Open; no setup prose on the page) and
+// the API answers the typed feature_disabled 404; on with no asks, "No asks
+// recorded yet"; on with asks and a filter that matches none, "No asks match
+// these filters". RED at origin/main d1ff2dbe for the off page: the tab was
+// drawn, saying "set MUSTER_ASK_LOG=1 and restart".
 func TestTheLogTabSaysWhetherTheLogIsOffEmptyOrFiltered(t *testing.T) {
 	off := newAskReadFixture(t, false)
 	body := off.session(t, attentionPath+"?tab=log", off.a).Body.String()
-	if !strings.Contains(body, "data-asklog-off") || !strings.Contains(body, "MUSTER_ASK_LOG=1") || strings.Contains(body, "data-asklog-empty") {
-		t.Fatalf("the off tab:\n%s", body)
+	if strings.Contains(body, `data-tab="log"`) || strings.Contains(body, `data-testid="log-panel"`) || strings.Contains(body, "data-asklog-off") ||
+		strings.Contains(body, "MUSTER_ASK_LOG") || !regexp.MustCompile(`aria-selected="true"[^>]*data-tab="open"|data-tab="open"[^>]*aria-selected="true"`).MatchString(body) {
+		t.Fatalf("the page with the log off:\n%s", body)
 	}
 	for _, path := range []string{apiAsksLogPath, apiAsksSumPath} {
 		w := off.bearer(t, path, off.aTok)

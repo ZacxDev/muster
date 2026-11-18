@@ -23,13 +23,13 @@ import (
 //
 // LIVE KEYS ARE NOW ALWAYS ON and the switch is gone (ui.AgentTerminalPage):
 // the status line names the state instead — Connected, "confirm it's you to
-// type", "this host takes no keys" — and none of it says read-only either.
+// type", "typing is off" — and none of it says read-only either.
 
 var (
 	scriptBlock = regexp.MustCompile(`(?s)<script\b[^>]*>.*?</script>`)
 	jsLiteral   = regexp.MustCompile(`'[^'\n]*'|"[^"\n]*"`)
 	anyTag      = regexp.MustCompile(`(?s)<[^>]*>`)
-	readOnlyRe  = regexp.MustCompile(`(?i)read[- ]only`)
+	readOnlyRe  = regexp.MustCompile(`(?i)read[- ]only|view[- ]only`)
 )
 
 // readOnlyWording is every place page SHOWS "read-only" to a person: its text
@@ -97,7 +97,7 @@ func TestAnInteractiveHostsTerminalPageSaysNothingIsReadOnly(t *testing.T) {
 func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 	s, ts := viewServer(t, &fakeMirror{online: true, interactive: false, v2: &fakeMirrorV2{}})
 	_, page := mirrorGet(t, s, ts, chiefTermPage)
-	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
+	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote("ws")) {
 		t.Fatal("a read-only host's page does not carry its composer's note")
 	}
 	if term := tagOf(page, "term"); !strings.Contains(term, ` data-keys-off`) {
@@ -109,8 +109,8 @@ func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 	if got := readOnlyWording(page); len(got) == 0 {
 		t.Fatal("control: readOnlyWording does not see the composer's own note")
 	}
-	rest := strings.ReplaceAll(page, ui.MirrorReadOnlyNote, "")
-	rest = strings.Replace(rest, `placeholder="Read-only host"`, "", 1)
+	rest := strings.ReplaceAll(page, ui.MirrorReadOnlyNote("ws"), "")
+	rest = strings.Replace(rest, `placeholder="`+ui.MirrorReadOnlyPlaceholder+`"`, "", 1)
 	if got := readOnlyWording(rest); len(got) != 0 {
 		t.Errorf("a read-only host's page says read-only outside its composer's note:\n  %s", strings.Join(got, "\n  "))
 	}

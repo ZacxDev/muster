@@ -14,7 +14,7 @@ test('an agent chat shows collapsed tool rows that expand', async ({ page }) => 
   await expect(rows).toHaveCount(2);
   const group = page.locator('#chat-log [data-tool-group]');
   await expect(group).toHaveCount(1);
-  await expect(group.locator('summary [data-tool-group-count]')).toHaveText('2 tool calls');
+  await expect(group.locator('summary [data-tool-group-count]')).toHaveText('2 steps');
   await group.locator(':scope > summary').click();
 
   const make = rows.nth(0);
