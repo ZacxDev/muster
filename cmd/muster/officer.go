@@ -124,7 +124,7 @@ scratch directory); an older muster-mirror needs --repo.`,
 	f.StringVar(&charterFile, "charter-file", "", "read the charter from this file, or - for stdin (never from argv)")
 	f.StringVar(&runtime, "runtime", "auto", "pod, host or auto")
 	f.StringVar(&host, "host", "", "the mirror host of a --runtime host officer")
-	f.StringVar(&repo, "repo", "", "its repository, owner/name (a host officer needs one)")
+	f.StringVar(&repo, "repo", "", "its repository, owner/name (optional for a host officer on a current muster-mirror)")
 	f.StringSliceVar(&connectors, "connector", nil, "a connector its instances may request (repeatable)")
 	f.StringSliceVar(&readRepos, "read-repo", nil, "a public repository it reads with no approval (repeatable; pods only)")
 	f.IntVar(&maxInstances, "max-instances", 0, "how many instances may run at once (default 1)")

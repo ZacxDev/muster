@@ -36,13 +36,72 @@ your plugin --POST /plugin/v1/drafts/{id}/result--> muster
   ([attention.md](attention.md#mirrored-claude-code-sessions)): the Compose
   chief cannot write a reply itself, so it hands the message to one of your
   sessions, and the session writes the reply
-  ([chief.md](chief.md#on-the-docker-compose-install)). On Kubernetes the chief
-  writes the reply itself, and you can skip this.
+  ([chief.md](chief.md#on-the-docker-compose-install)). **The one-line install
+  does not set that session up**: do
+  [The session that writes the reply](#the-session-that-writes-the-reply)
+  below first. On Kubernetes the chief writes the reply itself, and you can
+  skip this.
 - `curl`, and `jq` for the examples that read an answer.
 
 ```sh
 MUSTER=http://localhost:8105
 ```
+
+### The session that writes the reply
+
+On the Compose install, on the machine where your Claude Code session runs.
+The one-line install starts `muster-mirror` **read-only** (its log says
+`read-only`), and a read-only host refuses a routed message: the chief's
+`route_to_session` answers `host_not_interactive`, "This host is read-only —
+its muster-mirror was not started with -interactive.", and the message never
+reaches the session. The session also needs muster's tools, which the install
+does not register, to answer with `route_reply`.
+
+1. **Let muster type into this host's windows, and turn on its tools.** Add
+   two lines to `~/.config/muster-mirror/env` (the install keeps lines it did
+   not write):
+
+   ```sh
+   MUSTER_MIRROR_INTERACTIVE=1
+   MUSTER_MIRROR_MCP_LISTEN=127.0.0.1:47823
+   ```
+
+   ⚠ An interactive host is effectively a shell on this machine for whoever
+   signs in to your muster: it can open interactive terminals here, not only
+   paste a routed message
+   ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
+2. **Restart `muster-mirror`.** On Linux:
+
+   ```sh
+   systemctl --user restart muster-mirror
+   journalctl --user -u muster-mirror -n 20
+   ```
+
+   On macOS the service holds a copy of the settings made when the installer
+   last ran, so run the installer again instead (it also updates muster to
+   the latest release); it keeps both lines and writes the interactive one
+   itself:
+
+   ```sh
+   curl -fsSL https://github.com/ZacxDev/muster/releases/latest/download/install.sh | MUSTER_MIRROR_INTERACTIVE=1 sh
+   ```
+
+   The log (`~/Library/Logs/muster-mirror.log` on macOS) now says
+   `INTERACTIVE (-interactive)` and `MCP endpoint for this host's Claude Code
+   sessions at http://127.0.0.1:47823/mcp`.
+3. **Register the endpoint with Claude Code**, for this user, by running the
+   first line below, and add the second line to the shell tmux starts
+   (`~/.zshrc` or `~/.bashrc`), which hands each session the secret:
+
+   ```sh
+   claude mcp add-json --scope user muster '{"type":"http","url":"http://127.0.0.1:47823/mcp","headers":{"Authorization":"Bearer ${MUSTER_MIRROR_MCP_SECRET:-}","X-Muster-Pane":"${TMUX_PANE:-}","X-Muster-Tmux":"${TMUX:-}"}}'
+   export MUSTER_MIRROR_MCP_SECRET="$(cat ~/.config/muster-mirror/mcp-secret 2>/dev/null)"
+   ```
+
+   Keep the single quotes: Claude Code expands the `${…}` itself, in each
+   session ([features.md](features.md#agent-ask-tool)).
+4. **Start Claude Code in a new tmux window**, so it reads both. Its `/mcp`
+   lists `muster` with `route_reply` among its tools.
 
 ## 1. Turn plugins on
 
@@ -113,18 +172,24 @@ so the route does not reveal who has an account here), but no request is
 made, and its poll says `pending` until it expires.
 
 Then poll. The answer carries the token **once**: the next poll says
-`redeemed`. So write it straight to a file only you can read, as it arrives:
+`redeemed`. So write it straight to a file only you can read, as it arrives.
+It goes to a temporary file first, and replaces `~/.echo-inbox-token` only if
+a token arrived, so a poll that answers `redeemed` or fails on the network
+never empties a good token file:
 
 ```sh
 ( umask 077
   curl -s "$MUSTER/plugin/v1/pair/$(jq -r .request_id /tmp/pair.json)" \
     -H "Authorization: Bearer $(jq -r .poll_secret /tmp/pair.json)" \
-    | jq -r '.token // empty' > ~/.echo-inbox-token )
+    | jq -r '.token // empty' > ~/.echo-inbox-token.tmp
+  if [ -s ~/.echo-inbox-token.tmp ]; then mv ~/.echo-inbox-token.tmp ~/.echo-inbox-token
+  else rm -f ~/.echo-inbox-token.tmp; echo 'no token in this answer'; fi )
 TOKEN=$(cat ~/.echo-inbox-token)
 # the answer was {"status": "approved", "token": "mpl_…", "plugin_id": 1, "plugin_name": "echo-inbox", …}
 ```
 
-An empty file means the answer carried no token. Most often you polled before
+`no token in this answer` means the answer carried none, and the token file
+was left as it was. Most often you polled before
 approving (`{"status": "pending", …}`): approve, then run it again. After
 `redeemed` (the token went to an earlier poll), `denied` or `expired`, revoke
 any plugin it minted and pair again. A request expires after 10 minutes.
@@ -176,6 +241,9 @@ What the chief does next is its own judgement:
   session's window, and pasted once Claude Code is idle. The session answers
   with its `route_reply` tool, and that answer becomes a **reply draft**. If
   the chief leaves it, ask it in its chat to route message 1 to your session.
+  If it says the route was refused with `host_not_interactive`, that host's
+  `muster-mirror` is read-only: see
+  [The session that writes the reply](#the-session-that-writes-the-reply).
 - **On Kubernetes** the chief can also draft the reply itself (`reply_draft`).
 
 Either way nothing is sent: a draft waits for you. You get a push, "A reply

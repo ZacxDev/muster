@@ -30,13 +30,17 @@ on the Officers page, which a plugin's README can carry as a starting point.
   (`POST /plugin/v1/messages`). muster hands it to your chief, or to the
   officer the plugin is bound to, fenced as untrusted data.
 - **Replies out, approved.** Nothing a plugin sends was not approved by you,
-  on its exact text, unless you chose to let muster answer someone you trust
-  without asking: a sender you allowlisted for that plugin, whose identity the
-  plugin verified, gets the answer one of your sessions wrote straight away
-  (`MUSTER_ROUTE_RELAY_ALLOW`; [Routing a message to a session](plugins.md#routing-a-message-to-a-session),
-  [`sender_verified`](plugins.md#sender_verified)). The plugin collects an
-  approved reply (`POST /plugin/v1/drafts/claim`), sends it, and reports what
-  happened.
+  on its exact text, unless the server is set to answer a sender it trusts
+  without asking. There are two such allowlists, both off until set, and both
+  apply only to a sender the plugin verified
+  ([`sender_verified`](plugins.md#sender_verified)): a sender you allowlisted
+  for a plugin in `MUSTER_ROUTE_RELAY_ALLOW` gets the answer one of your
+  sessions wrote straight away ([Routing a message to a session](plugins.md#routing-a-message-to-a-session)),
+  and an agent-mail address in `MUSTER_FLEET_REPORT_SENDERS` gets the report
+  on your sessions it asked for, which muster writes itself
+  ([A fleet-report request](plugins.md#a-fleet-report-request)).
+  The plugin collects an approved reply (`POST /plugin/v1/drafts/claim`),
+  sends it, and reports what happened.
 - **Its own rules.** A plugin with `draft_checks` checks each reply before you
   can approve it, so your upstream's limits (a length, no Markdown) are
   enforced in one place, the plugin.
