@@ -33,16 +33,29 @@ var wantVerdictPipes = map[string]string{
 	// The shard's packages / `-run` and its `--require` names come from the
 	// plan step (tests/goshard.py); the required names are pinned there, in
 	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
-	// The `tee` keeps the SAME stream verdict.py reads (one run, no second
-	// execution) for the `test-times-` artifact; TestCIUploadsTheVerdictStreamAsTestTimes
+	// Multi-process internal/api: the shard's processes write one -json file
+	// each, ONE verdict reads them all (each process's exit status is checked
+	// by the step separately, wantTestExitChecks), and the `tee` keeps that
+	// SAME union for the `test-times-` artifact; TestCIUploadsTheVerdictStreamAsTestTimes
 	// pins the upload.
-	"test":     `go test -race -cover -timeout 30m -json $(cat "$RUNNER_TEMP/go-test-args") | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP/verdict-args")`,
+	"test":     `cat "$RUNNER_TEMP"/go-test.*.json | tee "$RUNNER_TEMP/go-test.json" | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)`,
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
 		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
 		" --require TestTmuxATenantSpawnLandsInItsServerAndReachesItsOwnMuster --require TestTmuxATenantSpawnNeverStartsItsServer" +
 		" --require TestTmuxAMisSetTenantUnitNeitherSpawnsNorSweepsTheDefaultsWorktrees --require TestTmuxATenantOpenCodeSpawnBindsInItsServer",
 	"mirror-macos": "go test -race -json ./internal/mirrorhost/... ./cmd/muster-mirror/... | python3 -u tests/verdict.py --echo summary --require TestDarwinSourceReadsThisHostsOwnProcesses",
+}
+
+// 🔴 THE `test` JOB IS THE EXCEPTION: its left side is `cat` over the
+// processes' -json files, so pipefail there carries only a missing file. Its
+// `go test` exit statuses are carried by the two lines after the pipe, which
+// check one recorded status per process and fail on any non-zero one; they are
+// pinned exactly below (wantTestExitChecks), because deleting them leaves a
+// process that died over a clean stream green.
+var wantTestExitChecks = []string{
+	`[ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }`,
+	`while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"`,
 }
 
 // TestCIGoSuitesPipeIntoTheVerdictUnderPipefail pins every verdict step.
@@ -73,6 +86,13 @@ func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 		i := at[0]
 		if lines[i] != want {
 			t.Errorf("job %q: the verdict line is\n  %s\nwant\n  %s", job, lines[i], want)
+		}
+		if job == "test" {
+			for k, w := range wantTestExitChecks {
+				if i+1+k >= len(lines) || lines[i+1+k] != w {
+					t.Errorf("job \"test\": line %d after the verdict pipe is not\n  %s\n(without it a go test process that exited non-zero over a clean stream is green)", k+1, w)
+				}
+			}
 		}
 		if i < 2 || lines[i-1] != "set -o pipefail" || lines[i-2] != "run: |" {
 			t.Errorf("job %q: the verdict pipe must be directly under `run: |` and "+

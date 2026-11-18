@@ -1,8 +1,15 @@
 # muster documentation
 
-Start with the [project README](../README.md) for the pitch and the two ways to install.
-[comparison.md](comparison.md) sets muster beside other ways to reach coding agents from a phone.
-Words muster uses (hub, mirrored session, Rendered view, step-up, chief, officer, …): [glossary.md](glossary.md).
+The [project README](../README.md) is the front door: what muster is, the quick
+start and the install options. This page is the index of everything else.
+
+- New here? [overview.md](overview.md) is the long version of the README: what
+  you get, notifications, the core and the optional features, muster beside
+  Remote Control, and the limits.
+- [comparison.md](comparison.md) sets muster beside other ways to reach coding
+  agents from a phone.
+- The words muster uses (hub, mirrored session, Rendered view, step-up, chief,
+  officer, …): [glossary.md](glossary.md).
 
 ## Set it up: the core first, then one feature at a time
 
@@ -36,11 +43,14 @@ it off. The full list of features, with every `.env` line, is
 
 ## Every document
 
+**Start here**
+
+- [overview.md](overview.md) — the long version of the README: what you get, notifications, core vs optional, muster vs Remote Control, the limits, the name
+
 **Using it**
 
 - [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
 - [glossary.md](glossary.md) — the words these documents use, each linked to its page
-
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
@@ -112,4 +122,11 @@ it off. The full list of features, with every `.env` line, is
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [design/fleet-metrics.md](design/fleet-metrics.md) — saved queries: the baseline metrics for the chief's fleet work (owner wait on a stop, stops resolved without the owner, CI waits, done sessions left idle, the chief's tokens per day), each parameterised on owner and window
-- [../CONTRIBUTING.md](../CONTRIBUTING.md)
+
+**The project**
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — setting up, the tests and gates, the leak gate, pull requests
+- [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) — the Contributor Covenant, and how to report a problem privately
+- [SECURITY.md](../SECURITY.md) — supported versions, and reporting a vulnerability privately
+- [AGENTS.md](../AGENTS.md) — where a coding agent working on this repository finds each subject
+- [LICENSE](../LICENSE) — MIT
