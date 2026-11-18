@@ -464,6 +464,12 @@ type OwnerChrome struct {
 	Versions []ShellVersion
 	// DetailHref is the page's own screen (links, responses, delete).
 	DetailHref string
+	// SessionHref is where the session that made the page is NOW (internal/api
+	// pageSessionLink: a mirrored session's current window, or an agent's
+	// page), and SessionLabel its short name. "" when it cannot be resolved:
+	// then no session button and no "Made by" link are drawn — never a guess.
+	SessionHref  string
+	SessionLabel string
 	// ShareButton is the page's Share button (ui.PageShareButton) and
 	// ShareScript its behaviour (ui.PageShareScript): the ONE share flow, the
 	// chat's and the Pages screens' own.
@@ -486,6 +492,11 @@ type ShellVersion struct {
 	Href string
 }
 
+// sessionIcon is the session button's icon: a terminal prompt, drawn inline
+// (the shell's CSP takes no image but its brand logo).
+const sessionIcon = `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">` +
+	`<rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6.5 6.5 8.5 4.5 10.5M8.5 10.5h3"/></svg>`
+
 // shellCSS is the shell's styles. The popover is a bottom sheet on a phone
 // and anchored under the chip from 640px, every target in it at least 44px.
 const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -496,6 +507,11 @@ header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
 header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
 header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
+.sess{position:relative;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
+border:1px solid color-mix(in srgb,CanvasText 25%,transparent);color:inherit;text-decoration:none;font-size:13px}
+.sess::after{content:"";position:absolute;inset:-3px -2px -11px}.sess svg{flex:none;width:14px;height:14px}
+.sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
 .chip{position:relative;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
 background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;inset:-7px -4px}
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
@@ -549,6 +565,10 @@ func Shell(v ShellView) string {
 	}
 	b.WriteString(`<span class="t" data-page-title title="` + esc(v.Title) + `">` + esc(v.Title) + `</span>`)
 	o := v.Owner
+	if o != nil && o.SessionHref != "" {
+		b.WriteString(`<a class="sess" href="` + esc(o.SessionHref) + `" data-page-session title="Made by ` + esc(o.SessionLabel) +
+			`" aria-label="Open the session that made this page: ` + esc(o.SessionLabel) + `">` + sessionIcon + `<span class="sl">` + esc(o.SessionLabel) + `</span></a>`)
+	}
 	if o != nil {
 		vn := strconv.Itoa(o.Version)
 		b.WriteString(`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" ` +
@@ -573,7 +593,11 @@ func Shell(v ShellView) string {
 			}
 			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
 		}
-		b.WriteString(`</ul><hr>` + o.ShareButton + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
+		made := ""
+		if o.SessionHref != "" {
+			made = `<a href="` + esc(o.SessionHref) + `" data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		}
+		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
 <div id="action-toasts" aria-live="polite"></div>
 <div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
 <p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>

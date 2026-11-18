@@ -103,7 +103,14 @@ var (
 type Creator struct {
 	AgentID    int64
 	MirrorHost string
-	Label      string
+	// MirrorSession is the mirrored session the page was made from — the
+	// caller's Claude Code session id (or opencode key), what the mirror
+	// MCP request bound to — recorded at create (0150) so the owner can open
+	// that session from the page. "" for an agent's page, and for a page
+	// made before it was recorded. It identifies; it never scopes: a tool
+	// acts on its HOST's pages (creatorClause), as before.
+	MirrorSession string
+	Label         string
 }
 
 // Valid reports whether c names exactly one creator.

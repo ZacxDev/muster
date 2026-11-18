@@ -283,6 +283,17 @@ the built-in upload's message list a page-built Proxy. Two bypasses of one
 check in the page's own realm: the gate was removed, and the decision moved
 to the shell.
 
+**As built (the session that made it):** `pages.mirror_session` (0150,
+nullable) records the Claude Code session id a mirrored session's
+`page_create` came from — the id its MCP request bound to — beside
+`mirror_host`; an agent's page keeps `agent_id`. The owner's view resolves it
+when opened (`pageSessionLink`): a mirrored session through
+`claudeSessionWindow` over the viewer's own hosts — the resolver the Asks'
+"View in session" uses — to its current window's rendered view; an agent
+through `agentPageHref`. Unresolvable is no link, never a guessed window.
+It is the owner's chrome: the header's session button, "Made by" in the
+version popover and on the page's screen; never the link's shell.
+
 **As built (the header):** the shell's header is one ~40px row over a
 full-window frame and hides on a scroll down by a transform (the frame never
 moves). The SDK reports the document's scroll offset to the shell on a

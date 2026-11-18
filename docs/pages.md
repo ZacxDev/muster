@@ -263,6 +263,18 @@ one views it. Under the list are **Share** (the same Share as everywhere else)
 and **Page details**, the page's screen. On a phone the list is a sheet from
 the bottom; Escape, a tap outside or the chip closes it.
 
+Beside the chip is the **session that made the page**: a button with its
+name, one tap to it. For a page a mirrored Claude Code session made, that is
+the session's view in muster, at the window it runs in **now** — muster
+records the session (not its window, which moves) when the page is made, and
+looks it up among your own machines when you open the page. For an agent's
+page, the agent's page. The version list says *Made by …* with the same
+link, and so does the page's screen. When the session cannot be found — it
+has ended, its machine is offline, or the page was made before muster
+recorded sessions — there is no button and no link, only its name on the
+page's screen: muster never guesses a window. Only you see it; a link's
+viewer never does.
+
 `/pages/{id}/preview`, the view's former address, redirects to it.
 
 ## The Pages screen

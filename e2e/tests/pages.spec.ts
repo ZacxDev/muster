@@ -1177,3 +1177,51 @@ for (const vp of ROUND_VIEWPORTS) {
     });
   });
 }
+
+// --- THE SESSION THAT MADE A PAGE -------------------------------------------
+// The operator: "when I'm looking at a page, I want to be able to see the
+// session that created [it], so I can hit one tap [and] jump to that
+// session." A page made by this spec's mirrored Claude Code session (its MCP
+// call) records the session; the owner's header has its button; one tap
+// lands on that session's rendered view, at its current window.
+for (const vp of ROUND_VIEWPORTS) {
+  test(`at ${vp.name}, one tap on the page's session button lands on the session that made it`, async ({ browser }) => {
+    const made = await call('page_create', { title: 'From my session ' + vp.name + ' ' + stamp, blocks: [{ type: 'markdown', text: 'made here' }] });
+    expect(made.isError, JSON.stringify(made.body)).toBe(false);
+    const id = made.body.page_id as number;
+    await asOwner(browser, vp, async (page) => {
+      await page.goto(origin + `/pages/${id}/view`);
+      const sess = page.locator('header [data-page-session]');
+      await expect(sess).toBeVisible();
+      const href = await sess.getAttribute('href');
+      expect(href, 'the button links the mirrored window of the session').toMatch(new RegExp(`^/mirror/view\\?host=${host}&session=[^&]+&window=%40\\d+$`));
+      const box = (await sess.boundingBox())!;
+      expect(box.height, 'the button fits the slim header').toBeLessThanOrEqual(32);
+      // Its tap target (the ::after) is 44px tall from the top of the screen:
+      // y=1 and y=43, at its middle, are still the button.
+      for (const y of [1, 43]) {
+        expect(await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('[data-page-session]'), [box.x + box.width / 2, y]),
+          `the button's target at y=${y}`).toBe(true);
+      }
+      await shot(page, `owner-${vp.name}-session`);
+      if (vp.touch) await sess.tap();
+      else await sess.click();
+      await page.waitForURL((u) => u.pathname === '/mirror/view');
+      expect(page.url()).toBe(origin + href);
+      await expect(page.locator('body')).not.toContainText('not found');
+    });
+    // A link's viewer: no button.
+    await asOwner(browser, vp, async (page) => {
+      const shared = await page.request.post(origin + `/pages/${id}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+      try {
+        const sp = await stranger.newPage();
+        await sp.goto((await shared.json()).url as string);
+        await expect(sp.frameLocator('iframe#page').locator('main')).toContainText('made here');
+        await expect(sp.locator('[data-page-session]')).toHaveCount(0);
+      } finally {
+        await stranger.close();
+      }
+    });
+  });
+}

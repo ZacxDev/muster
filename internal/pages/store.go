@@ -147,11 +147,11 @@ func (s *PGStore) LinksReusable() bool { return s.seal != nil }
 // owner it then acts as. Only the link row is handed on.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, p.creator_label, p.created_at, p.updated_at`
+const pageCols = `p.id, p.owner_id, p.title, p.current_version, coalesce(p.agent_id, 0), p.mirror_host, coalesce(p.mirror_session, ''), p.creator_label, p.created_at, p.updated_at`
 
 func scanPage(row pgx.Row, extra ...any) (Page, error) {
 	var p Page
-	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.Label,
+	dest := append([]any{&p.ID, &p.OwnerID, &p.Title, &p.CurrentVersion, &p.Creator.AgentID, &p.Creator.MirrorHost, &p.Creator.MirrorSession, &p.Creator.Label,
 		&p.CreatedAt, &p.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -214,8 +214,14 @@ func (s *PGStore) Create(ctx context.Context, c Creator, title string, blocks []
 		if c.AgentID > 0 {
 			agent = c.AgentID
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, creator_label) VALUES ($1, $2, $3, $4)
-			RETURNING `+pageCols, title, agent, c.MirrorHost, truncate(c.Label, 200))
+		// A mirrored session's page records the session it came from
+		// (0150: NULL when there is none to record — an agent's page).
+		var sess any
+		if c.AgentID <= 0 && c.MirrorSession != "" {
+			sess = truncate(c.MirrorSession, 200)
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO pages AS p (title, agent_id, mirror_host, mirror_session, creator_label) VALUES ($1, $2, $3, $4, $5)
+			RETURNING `+pageCols, title, agent, c.MirrorHost, sess, truncate(c.Label, 200))
 		var err error
 		if p, err = scanPage(row); err != nil {
 			return err

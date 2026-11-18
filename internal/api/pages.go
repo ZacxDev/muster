@@ -740,10 +740,11 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	esc := html.EscapeString
 	pid := strconv.FormatInt(id, 10)
 	base := pagePath(id)
+	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">By ` + esc(p.Creator.Label) + `. Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
+<p class="text-sm text-fg2">` + pageMadeBy(esc(p.Creator.Label), sessHref, esc(sessLabel)) + ` Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + pageViewPath(id) + `" class="text-accent underline" data-page-view>Open the page</a> (what you send from it is recorded as yours).</p>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
@@ -901,6 +902,59 @@ func prettyJSON(raw []byte) string {
 	return string(b)
 }
 
+// pageSessionLink is where the session that made page p is NOW, for the
+// signed-in owner viewing it (ctx is their request), and its short label: a
+// dispatched agent's own page (agentPageHref: the agent's latest session, as
+// every in-app agent link names it); a mirrored Claude Code session's
+// CURRENT window, resolved from
+// the session id recorded at create to wherever it runs now
+// (claudeSessionEntry, claudeSessionWindow's own lookup — the resolver the
+// Asks' "View in session" uses — over the viewer's OWN hosts only,
+// s.ext.Mirror.Hosts(ctx)), labelled by where it runs now.
+//
+// 🔴 "" — no link, never a guess — when it cannot be resolved: no session
+// recorded (a mirrored window's page made before 0150), the session no longer
+// running on any of the owner's windows, the host offline, or an agent that
+// is not the page owner's. Another owner's hosts are never searched (Hosts
+// is the principal's own), so their session is never resolved.
+func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label string) {
+	label = textplain.Title(p.Creator.Label)
+	switch {
+	case p.Creator.AgentID > 0:
+		if s.ext.Agents == nil {
+			return "", ""
+		}
+		a, err := s.ext.Agents.Get(ctx, p.Creator.AgentID)
+		if err != nil || a.OwnerID != p.OwnerID {
+			return "", ""
+		}
+		return s.agentPageHref(ctx, a), textplain.Title(a.Name)
+	case p.Creator.MirrorHost != "" && p.Creator.MirrorSession != "":
+		if s.ext.Mirror == nil {
+			return "", ""
+		}
+		// claudeSessionEntry: claudeSessionWindow's own lookup, with the
+		// window's CURRENT name, so the label says where the link goes now
+		// (the label stored at create named the window it was in then).
+		e, ok := claudeSessionEntry(s.ext.Mirror.Hosts(ctx), p.Creator.MirrorHost, p.Creator.MirrorSession)
+		if !ok {
+			return "", ""
+		}
+		return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath(), e.TitleAt()
+	}
+	return "", ""
+}
+
+// pageMadeBy is the page screen's "Made by …": the session, as a link to it
+// (pageSessionLink) when it resolves, else its label alone. creator and
+// label come escaped; href is escaped here.
+func pageMadeBy(creator, href, label string) string {
+	if href == "" {
+		return "Made by " + creator + "."
+	}
+	return `Made by <a href="` + html.EscapeString(href) + `" class="text-accent underline" data-page-session>` + label + `</a>.`
+}
+
 // pageResponseFrom is who sent response x, in words: "you" for the owner's
 // own, else the link it came through.
 func pageResponseFrom(x pages.Response) string {
@@ -970,9 +1024,11 @@ func (s *Server) handlePageView(w http.ResponseWriter, r *http.Request) {
 	}
 	var share strings.Builder
 	_ = ui.PageShareButton(id, p.Title, shareURL, s.ext.Pages.LinksReusable()).Render(&share)
+	sessHref, sessLabel := s.pageSessionLink(ctx, p)
 	vb := pagePath(id) + "/versions/" + strconv.Itoa(v.Version)
 	serveShell(w, s.shellBrand(ctx, pages.ShellView{Title: v.Title, FrameSrc: vb + "/content", Base: vb, Nonce: pages.NewNonce(),
 		Owner: &pages.OwnerChrome{Version: v.Version, Versions: list, DetailHref: pagePath(id),
+			SessionHref: sessHref, SessionLabel: sessLabel,
 			ShareButton: share.String(), ShareScript: ui.PageShareScript()}}))
 }
 

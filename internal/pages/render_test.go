@@ -480,3 +480,28 @@ func TestTheOwnersShellDrawsTheVersionChipAndItsPopover(t *testing.T) {
 		t.Error("the owner's shell says preview")
 	}
 }
+
+// TestTheOwnersHeaderLinksTheSessionThatMadeThePage: with a resolved session
+// (internal/api pageSessionLink) the owner's header draws the session button
+// — a link, its icon and label, before the version chip — and the popover a
+// "Made by" link; without one, neither; a link's viewer, never.
+func TestTheOwnersHeaderLinksTheSessionThatMadeThePage(t *testing.T) {
+	with := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/pages/7/versions/1", Nonce: "N",
+		Owner: &OwnerChrome{Version: 1, DetailHref: "/pages/7", SessionHref: "/mirror/view?host=ws&session=main&window=%403", SessionLabel: "ws · build <x>"}})
+	for _, want := range []string{
+		`<a class="sess" href="/mirror/view?host=ws&amp;session=main&amp;window=%403" data-page-session title="Made by ws · build &lt;x&gt;" aria-label="Open the session that made this page: ws · build &lt;x&gt;">` +
+			sessionIcon + `<span class="sl">ws · build &lt;x&gt;</span></a><button type="button" class="chip"`,
+		`<a href="/mirror/view?host=ws&amp;session=main&amp;window=%403" data-page-made-by>Made by ws · build &lt;x&gt;</a><a href="/pages/7" data-page-details>`,
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("the owner's shell lacks %q", want)
+		}
+	}
+	without := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/pages/7/versions/1", Nonce: "N", Owner: &OwnerChrome{Version: 1, DetailHref: "/pages/7"}})
+	link := Shell(ShellView{Title: "x", FrameSrc: "/c", Base: "/s/T", Nonce: "N"})
+	for name, doc := range map[string]string{"no session": without, "a link's": link} {
+		if strings.Contains(doc, "data-page-session") || strings.Contains(doc, "data-page-made-by") {
+			t.Errorf("%s shell draws a session link", name)
+		}
+	}
+}
