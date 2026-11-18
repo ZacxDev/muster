@@ -122,6 +122,7 @@ func (r *spawnRig) tmux(t *testing.T, args ...string) string {
 // the request wrote its two audit lines, admitted.
 func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) {
 	r := newSpawnRig(t)
+	r.c.cfg.AgentSpawn.SkipPermissionPrompts = true // -agent-spawn-skip-permissions (opt-in)
 	if err := os.WriteFile(filepath.Join(r.clone, "README"), []byte("the owner's edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) 
 			t.Fatalf("prompt %q: refused %+v", tail, e)
 		}
 		argv := r.argvOf(t, d)
-		// DEFAULT ON (-agent-spawn-skip-permissions): the permission words sit
+		// WITH -agent-spawn-skip-permissions: the permission words sit
 		// between the session id and `--`, as literals.
 		if want := []string{"--session-id", w.AgentSession, "--permission-mode", "bypassPermissions",
 			"--settings", `{"skipDangerousModePermissionPrompt":true}`, "--", prompt}; !slices.Equal(argv, want) {
@@ -211,13 +212,14 @@ exec sleep 300
 `
 
 // TestTmuxASpawnedClaudeNeverStallsAtTheBypassScreen: the production defect,
-// on a real tmux pane. A skip-permissions spawn (the default) whose claude
+// on a real tmux pane. A skip-permissions spawn (opted in) whose claude
 // shows the bypass acceptance screen unless it was given the consent: the
 // spawned pane shows the task starting, never the screen. The positive
 // control: the same stub with no --settings word shows the screen in a pane
 // of its own, so the pane read can see it.
 func TestTmuxASpawnedClaudeNeverStallsAtTheBypassScreen(t *testing.T) {
 	r := newSpawnRig(t)
+	r.c.cfg.AgentSpawn.SkipPermissionPrompts = true
 	stub := filepath.Join(r.tmp, "bin", "claude-bypass-screen")
 	if err := os.WriteFile(stub, []byte(bypassScreenStub), 0o755); err != nil {
 		t.Fatal(err)

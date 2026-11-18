@@ -54,11 +54,11 @@ var verbatimWhere = map[string]string{
 var verbatimCardSource = regexp.MustCompile(`<li id="(session-[0-9a-f]+)"(?s:.*?)data-attention-title>([^<]*)</span>(?s:.*?)data-attention-source>([^<]*)</span>`)
 
 // verbatimTitle is each window's card title: its label, plained, or — with
-// none — its tmux address, verbatim.
+// none — its tmux session, verbatim; either without tmux's window index.
 var verbatimTitle = map[string]string{
-	sessionKey("ws", "_scratch_", "@11"): "mango:1",
-	sessionKey("ws", "*dev*", "@12"):     "*dev*:3",
-	sessionKey("ws", "a`b`c", "@13"):     "a`b`c:4",
+	sessionKey("ws", "_scratch_", "@11"): "mango",
+	sessionKey("ws", "*dev*", "@12"):     "*dev*",
+	sessionKey("ws", "a`b`c", "@13"):     "a`b`c",
 }
 
 // TestAWindowsTargetIsShownVerbatimOnThePushTheSummaryAndTheCard: the waiting
@@ -83,16 +83,21 @@ func TestAWindowsTargetIsShownVerbatimOnThePushTheSummaryAndTheCard(t *testing.T
 			t.Errorf("%s: summary title %q why %q, want %q / %q", it.Key, sum.Title, sum.Why, want, "Waiting: "+want)
 		}
 	}
-	cards := verbatimCardSource.FindAllStringSubmatch(attentionItemsHTML(items, time.Now()), -1)
+	page := attentionItemsHTML(items, time.Now())
+	cards := verbatimCardSource.FindAllStringSubmatch(page, -1)
 	if len(cards) != len(verbatimWhere) {
 		t.Fatalf("%d cards, want %d", len(cards), len(verbatimWhere))
 	}
-	// The card titles the window by its name and shows its target, verbatim,
-	// under it (the label it leads with is the title, not repeated).
+	// The card titles the window by its name and says where it runs in words
+	// under it; its target, verbatim, is its ⓘ's (the label it leads with is
+	// the title, not repeated).
 	for _, m := range cards {
 		where := verbatimWhere[m[1]]
-		if got, want := html.UnescapeString(m[3]), where[strings.Index(where, "tmux "):]; got != want {
+		if got, want := html.UnescapeString(m[3]), "on ws"; got != want {
 			t.Errorf("%s: card source %q, want %q", m[1], got, want)
+		}
+		if code := `data-info-code="">` + html.EscapeString(where[strings.Index(where, "tmux "):]) + `</code>`; !strings.Contains(page, code) {
+			t.Errorf("%s: no ⓘ holds the target verbatim (%s)", m[1], code)
 		}
 		if got, want := html.UnescapeString(m[2]), verbatimTitle[m[1]]; got != want {
 			t.Errorf("%s: card title %q, want %q", m[1], got, want)

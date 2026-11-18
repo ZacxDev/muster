@@ -292,7 +292,7 @@ func TestTheOfferIsAnsweredInPlace(t *testing.T) {
 	if got := rec.Header().Get("HX-Trigger"); got != "agents:changed" {
 		t.Errorf("HX-Trigger %q, want agents:changed (the sidebar's refresh)", got)
 	}
-	if title, focusOn := settled(t, rec); title != offer+" · Mirrored · muster" || focusOn != "mv-heading" {
+	if title, focusOn := settled(t, rec); title != offer+" · On ws · muster" || focusOn != "mv-heading" {
 		t.Errorf("rename settles title %q focus %q", title, focusOn)
 	}
 	body := rec.Body.String()
@@ -329,9 +329,10 @@ func TestADialogRenameIsAnsweredOnThePageThatPostedIt(t *testing.T) {
 	}{
 		{"Payments", view, `<button id="mv-title"`, `</button>`, "mv-heading", "", "Payments"},
 		{"Ledger sync", term, `<h1 id="term-title"`, `</h1>`, "term-title", "Terminal · ", "Ledger sync"},
-		// Cleared: no human name is left — the window's label heads it again.
-		{"", view, `<button id="mv-title"`, `</button>`, "mv-heading", "", "mango:1"},
-		{"", term, `<h1 id="term-title"`, `</h1>`, "term-title", "Terminal · ", "mango:1"},
+		// Cleared: no human name is left — the window's label heads it again,
+		// without tmux's window index.
+		{"", view, `<button id="mv-title"`, `</button>`, "mv-heading", "", "mango"},
+		{"", term, `<h1 id="term-title"`, `</h1>`, "term-title", "Terminal · ", "mango"},
 	} {
 		what := tc.page + " " + strconv.Quote(tc.name)
 		rec := postFrom(t, s, ui.SessionNamePath, renameForm(tc.name), tc.page)

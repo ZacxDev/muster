@@ -22,7 +22,7 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	// (the card's "tmux session main" tooltip is the palette's word now), and
 	// linking the session by its NAME. The unlabelled one: its raw name.
 	main := cardFor(t, list, ui.MirrorViewPath("ws", "main"))
-	for _, want := range []string{`title="mango:1"`, `truncate">mango:1</span>`, `data-switcher-words="claude code main ws"`} {
+	for _, want := range []string{`title="mango"`, `truncate">mango</span>`, `data-switcher-words="claude code main ws"`} {
 		if !strings.Contains(main, want) {
 			t.Errorf("the labelled row lacks %q:\n%s", want, main)
 		}
@@ -35,8 +35,9 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
-	if !strings.Contains(term, "<title>Terminal · mango:1 · muster</title>") || !strings.Contains(term, `title="tmux session main"`) {
-		t.Error("the terminal page is not titled by the label with the raw name")
+	// Titled by the label; the tmux session is in no tooltip (F012).
+	if !strings.Contains(term, "<title>Terminal · mango · muster</title>") || strings.Contains(term, `title="tmux session`) {
+		t.Error("the terminal page is not titled by the label alone")
 	}
 	if !strings.Contains(term, amp(ui.MirrorTerminalWSPath("ws", "main"))) {
 		t.Error("the terminal's socket does not address the session by name")
@@ -47,7 +48,7 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	}
 
 	_, view := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
-	if !strings.Contains(view, "<title>mango:1 · Mirrored · muster</title>") {
+	if !strings.Contains(view, "<title>mango · On ws · muster</title>") {
 		t.Error("the rendered view is not titled by the label")
 	}
 
@@ -63,8 +64,8 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 // "mango:1" (the measured bug: two cards titled exactly that, the operator
 // opened the wrong one). Through the real mux, the sidebar's row (where the
 // retired list's card went), the terminal page and the rendered view all call
-// ws's entry "mango:1 · ws" — header AND <title> — and the other host's row
-// "mango:1 · tower". A label only ONE host lists ("solo" below) is left as it
+// ws's entry "mango · ws" — header AND <title> — and the other host's row
+// "mango · tower". A label only ONE host lists ("solo" below) is left as it
 // is.
 func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1", "chief": "solo"},
@@ -73,8 +74,8 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 
 	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 	for _, c := range []struct{ href, name string }{
-		{ui.MirrorViewPath("ws", "main"), "mango:1 · ws"},
-		{ui.MirrorTerminalPath("tower", "mango"), "mango:1 · tower"},
+		{ui.MirrorViewPath("ws", "main"), "mango · ws"},
+		{ui.MirrorTerminalPath("tower", "mango"), "mango · tower"},
 		// Unqualified, and with no raw session name beside it.
 		{ui.MirrorTerminalPath("ws", "chief"), "solo"},
 	} {
@@ -82,43 +83,43 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 			t.Errorf("the row of %s is not named %q:\n%s", c.href, c.name, row)
 		}
 	}
-	if n := strings.Count(list, `mango:1 · `); n != 6 {
-		t.Errorf("%d qualified names, want 6 (the two mango:1 rows' title, data-switcher-name and text, not solo)", n)
+	if n := strings.Count(list, `mango · `); n != 6 {
+		t.Errorf("%d qualified names, want 6 (the two mango rows' title, data-switcher-name and text, not solo)", n)
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
-	for _, want := range []string{"<title>Terminal · mango:1 · ws · muster</title>",
-		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · ws</span>`} {
+	for _, want := range []string{"<title>Terminal · mango · ws · muster</title>",
+		`<span data-mirror-label="">mango</span><span data-mirror-qualifier=""> · ws</span>`} {
 		if !strings.Contains(term, want) {
 			t.Errorf("the terminal page lacks %q", want)
 		}
 	}
 	_, view := mirrorGet(t, s, ts, ui.MirrorViewPath("ws", "main"))
-	for _, want := range []string{"<title>mango:1 · ws · Mirrored · muster</title>",
-		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · ws</span>`} {
+	for _, want := range []string{"<title>mango · ws · On ws · muster</title>",
+		`<span data-mirror-label="">mango</span><span data-mirror-qualifier=""> · ws</span>`} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the rendered view lacks %q", want)
 		}
 	}
 	_, other := mirrorGet(t, s, ts, ui.MirrorTerminalPath("tower", "mango"))
-	if !strings.Contains(other, "<title>Terminal · mango:1 · tower · muster</title>") {
-		t.Error("the other host's terminal page is not titled mango:1 · tower")
+	if !strings.Contains(other, "<title>Terminal · mango · tower · muster</title>") {
+		t.Error("the other host's terminal page is not titled mango · tower")
 	}
 	_, unique := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "chief"))
 	if !strings.Contains(unique, "<title>Terminal · solo · muster</title>") || strings.Contains(unique, "data-mirror-qualifier") {
 		t.Error("a label only one host lists was qualified")
 	}
 
-	// Control: the clashing host gone — ws's entry is plain "mango:1" again.
+	// Control: the clashing host gone — ws's entry is plain "mango" again.
 	fm.mu.Lock()
 	fm.others = nil
 	fm.mu.Unlock()
 	_, alone := mirrorGet(t, s, ts, ui.NavAgentsPath)
-	if row := cardFor(t, alone, ui.MirrorViewPath("ws", "main")); strings.Contains(row, " · ws") || !strings.Contains(row, `truncate">mango:1</span>`) {
+	if row := cardFor(t, alone, ui.MirrorViewPath("ws", "main")); strings.Contains(row, " · ws") || !strings.Contains(row, `truncate">mango</span>`) {
 		t.Errorf("with no clash left, the row is still qualified:\n%s", row)
 	}
 	_, aloneTerm := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
-	if !strings.Contains(aloneTerm, "<title>Terminal · mango:1 · muster</title>") {
+	if !strings.Contains(aloneTerm, "<title>Terminal · mango · muster</title>") {
 		t.Error("with no clash left, the terminal page is still qualified")
 	}
 }

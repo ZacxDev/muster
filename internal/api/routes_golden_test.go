@@ -49,8 +49,9 @@ import (
 // live upstream — a machine bearer token that is enforce-when-set (unset means
 // OPEN), a browser session, a terminal token, an agent-resolved token and a
 // browser-terminal tier — and specifies a SIXTH, fail-closed service-to-service
-// door for exactly this split. Six tiers, one of which fails OPEN when its
-// secret is missing, and a gate that cannot tell any of them apart. The plan
+// door for exactly this split. Six tiers, one of which then failed OPEN when its
+// secret was missing (muster's hook tier has since been made fail-closed), and
+// a gate that cannot tell any of them apart. The plan
 // names getting a route's tier wrong as one of the two most likely ways the
 // carve ships broken.
 //
@@ -503,15 +504,34 @@ func TestRouteGatePositiveControl(t *testing.T) {
 // extra. The direction that matters is the one checked: a literal in the
 // source that the recorder never saw is a registration happening somewhere
 // this gate cannot see.
+// offTheMainMux is every literal route pattern the module registers on a
+// handler that is deliberately NOT registerAll's, with the reason. Each one is
+// asserted both ways: present in the sources (so the entry cannot outlive its
+// code) and ABSENT from the recorded set (so it is not served on the main
+// handler as well, which is the whole point of putting it elsewhere).
+var offTheMainMux = map[string]string{
+	"GET /metrics": "MetricsHandler: the metrics listener's own mux, served only on MUSTER_METRICS_PORT and on no " +
+		"listener the main handler backs (TestMetricsAreServedOnlyOnTheMetricsListener)",
+}
+
 func assertNoRouteOutsideTheChokepoint(t *testing.T, recorded []string, inSource map[string]string) {
 	t.Helper()
 	have := make(map[string]bool, len(recorded))
 	for _, r := range recorded {
 		have[r] = true
 	}
+	for pat := range offTheMainMux {
+		if _, ok := inSource[pat]; !ok {
+			t.Errorf("offTheMainMux lists %q, which no source registers any more: delete the entry", pat)
+		}
+		if have[pat] {
+			t.Errorf("offTheMainMux lists %q, and RegisterRoutes records it too: it is on the main handler, "+
+				"which is what registering it elsewhere was meant to prevent", pat)
+		}
+	}
 	var orphans []string
 	for pat, pos := range inSource {
-		if !have[pat] {
+		if _, off := offTheMainMux[pat]; !have[pat] && !off {
 			orphans = append(orphans, fmt.Sprintf("  %q at %s", pat, pos))
 		}
 	}
@@ -730,19 +750,13 @@ func moduleRoot(t *testing.T) string {
 //     /v1/usage is the pod's Claude usage per session and UTC hour, counted
 //     from its transcripts, read by muster-server's officer usage collector
 //     (internal/officers/usage), bearer-authenticated the same way.
-//   - internal/clankmailplugin: the muster-clankmail plugin's ADMIN socket
-//     ($STATE_DIR/admin.sock, a 0600 unix socket inside the plugin's own
-//     container), used by its admin subcommands. muster-server never serves it,
-//     and muster never calls a plugin. (Its /health is a plain handler, not a
-//     mux pattern.)
 //   - e2e/previewfix: the previews browser spec's fixture (e2e/tests/previews.spec.ts):
 //     the "dev server" a mirrored window runs, reached only on loopback through the
 //     preview gateway. A test tool in no shipped binary (internal/modulegate's
 //     ledger says so).
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "GET /v1/usage", "POST /hook/{event}", "POST /v1/responses"},
-	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify"},
-	"e2e/previewfix":           {"GET /{$}", "GET /api/ping", "GET /attack", "GET /secret", "GET /sse", "GET /ws"},
+	"cmd/ccd":        {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "GET /v1/usage", "POST /hook/{event}", "POST /v1/responses"},
+	"e2e/previewfix": {"GET /{$}", "GET /api/ping", "GET /attack", "GET /secret", "GET /sse", "GET /ws"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

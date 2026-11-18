@@ -281,7 +281,6 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 	return Span(
 		Class(class),
 		g.Attr("data-mirror-name", ""),
-		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(name)),
 		q,
 	)
@@ -292,11 +291,15 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 // else its title, else its session. entryTitle draws it; the rendered view's
 // <title> and its full-title popover (mirrorViewTitle) spell it from here too,
 // so the three cannot drift apart.
+//
+// The name is a person's (mirror.PlainCode): tmux's window index is dropped —
+// "mango", never "mango:1" — and comes back only as the list's qualifier
+// ("window 2") where two entries would otherwise read alike.
 func mirrorDisplayName(label, title, session string) (name string, labelled bool) {
 	if label == "" || label == session {
-		return plainOr(title, session), false
+		return mirror.PlainCode(plainOr(title, session)), false
 	}
-	return plainOr(label, session), true
+	return mirror.PlainCode(plainOr(label, session)), true
 }
 
 // mirrorQualifierSep joins a mirrored entry's name and its qualifier — the
@@ -313,7 +316,11 @@ func mirrorQualified(name, qualifier string) string {
 	return name + mirrorQualifierSep + qualifier
 }
 
-// mirrorBadge is the "Mirrored · <host>" badge beside a mirrored entry's
+// MirrorBadgeText is a mirrored entry's badge: where it runs, in words ("On
+// atlas") — never muster's own word "Mirrored" (the operator rule).
+func MirrorBadgeText(host string) string { return "On " + host }
+
+// mirrorBadge is the "On <host>" badge beside a mirrored entry's
 // title on both its pages. It is NOT the generic grey chip:
 // a muted chip among the kind/mode chips was easy to miss on a phone, and the
 // host is what tells two same-named windows apart — so it is tinted, bold, and

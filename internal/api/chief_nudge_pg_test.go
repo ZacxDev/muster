@@ -671,7 +671,7 @@ func TestChiefNudgeALiveAskIsANoticeNeverAnsweredNorRelayed(t *testing.T) {
 	body := f.page(t, "/attention")
 	item := body[strings.Index(body, `id="`+attentionAskKey(a.ID)+`"`):]
 	item = item[:strings.Index(item, "</li>")]
-	for _, want := range []string{`data-kind="notice"`, `data-attention-title>Gold:1<`, `data-attention-source>tmux main:1 @ ws<`,
+	for _, want := range []string{`data-kind="notice"`, `data-attention-title>Gold<`, `data-attention-source>on ws<`, `data-info-code="">tmux main:1 @ ws</code>`,
 		"Waiting on you: Merge into main or into release?", "data-attention-dismiss"} {
 		if !strings.Contains(item, want) {
 			t.Fatalf("the notice's card lacks %q:\n%s", want, item)

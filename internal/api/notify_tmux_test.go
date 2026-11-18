@@ -153,7 +153,7 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 			t.Fatalf("%s: name %q, push %q keep %q — want today's text", what, it.Name, n.Title, n.TitleKeep)
 		}
 		if head := attentionHeadLines(it, time.Now()); !strings.Contains(head, `data-attention-name>Billing migration</span>`) ||
-			!strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+			!strings.Contains(head, `data-attention-source>on ws</span>`) {
 			t.Fatalf("%s: Asks row %s", what, head)
 		}
 		if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != "Billing migration" {
@@ -177,7 +177,7 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 		t.Fatalf("on: push title %q keep %q", n.Title, n.TitleKeep)
 	}
 	if head := attentionHeadLines(it, time.Now()); !strings.Contains(head, `data-attention-name>`+want+`</span>`) ||
-		!strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+		!strings.Contains(head, `data-attention-source>on ws</span>`) {
 		t.Fatalf("on: Asks row %s", head)
 	}
 	if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != want {

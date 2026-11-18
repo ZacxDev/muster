@@ -33,15 +33,17 @@ func deviceRoutes() map[string]bool {
 
 // TestADeviceCredentialIsRefusedOutsideTheDeviceTier drives EVERY route in
 // routes.golden outside the device tier with a valid device credential, on a
-// server whose hook tier is UNARMED — so the hook-tier wrappers admit any
-// caller, and only admit's shape check (refuseDeviceTokenElsewhere) stands
-// between the credential and the handler. Session routes are driven with a
-// valid session cookie as well, for the same reason. None may reach a handler.
+// server whose hook tier is UNARMED. Session routes are driven with a valid
+// session cookie, so only admit's shape check (refuseDeviceTokenElsewhere)
+// stands between the credential and the handler. Hook-tier routes are refused
+// either by that check or by the hook tier itself, which fails closed unarmed
+// (an armed server's 401). None may reach a handler.
 //
 // The positive controls: the same credential on the device tier reaches its
 // handlers as the device's owner, and the shape refusal (DeviceTokenElsewhere)
-// is what answered at least every hook-tier and session route — so the zero
-// above is the check working, not every request failing for another reason.
+// answered at least every session route, and every hook-tier route was refused
+// by one of those two — so the zero above is the checks working, not every
+// request failing for another reason.
 func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	s, h, seen := newPrincipalTestServerWith(t, AuthConfig{UIPassword: pPassword})
 	tier := deviceRoutes()
@@ -53,7 +55,7 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	for _, r := range routeVias[authz.ViaHook] {
 		hookish[r] = true
 	}
-	shapeRefused, driven, unarmed, unarmedHook := 0, 0, 0, 0
+	shapeRefused, driven, unarmed, unarmedHook, hookRefused := 0, 0, 0, 0, 0
 	for _, pattern := range readGolden(t) {
 		if tier[pattern] {
 			continue
@@ -86,6 +88,10 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 					t.Fatalf("the shape refusal answered %d; want 401", rec.Code)
 				}
 				shapeRefused++
+			} else if hookish[pattern] && rec.Code == http.StatusUnauthorized {
+				// The unarmed hook tier fails closed (a 401, whichever of its
+				// wrappers answered) before admit is reached.
+				hookRefused++
 			} else if rec.Code == http.StatusServiceUnavailable && strings.Contains(rec.Body.String(), `"`+HookUnarmedField+`":true`) {
 				// The fail-closed hook routes (requireArmedHookToken) refuse an
 				// unarmed server before any credential is looked at, and so does
@@ -113,7 +119,8 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 			armedHook++
 		}
 	}
-	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook; shapeRefused < want || driven < 200 ||
+	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook - hookRefused; shapeRefused < want || driven < 200 ||
+		hookRefused == 0 ||
 		unarmedHook > armedHook || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
 		t.Fatalf("CONTROL: the shape refusal answered %d of %d routes; want at least the %d session and hook routes "+
 			"(unarmed: %d hook, %d other; at most %d and %d)",

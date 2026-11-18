@@ -111,6 +111,10 @@ test.beforeAll(async () => {
     MUSTER_GOTRUE_JWT_SECRET: gotrueSecret,
     MUSTER_BROWSER_PORT: String(stepupBrowserPort),
     MUSTER_PUBLIC_URL: browserURL,
+    // The browser plays the edge proxy: its loopback peer is trusted to name
+    // the client in CF-Connecting-IP (ownAddress, below).
+    MUSTER_TRUSTED_PROXIES: '127.0.0.1/32,::1/128',
+    MUSTER_CLIENT_IP_HEADER: 'CF-Connecting-IP',
     MUSTER_MIRROR: '1',
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
@@ -875,8 +879,9 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     return { inPage: () => page.evaluate(() => (window as unknown as W).__options!), net };
   }
 
-  // ownAddress gives this test its own client address: muster's browser
-  // listener reads CF-Connecting-IP (clientIP) and forwards it to GoTrue, which
+  // ownAddress gives this test its own client address: muster believes
+  // CF-Connecting-IP from the loopback peer (MUSTER_TRUSTED_PROXIES above,
+  // clientIP) and forwards it to GoTrue, which
   // buckets its passkey rate limit on it. The tests above already spend most of
   // 127.0.0.1's budget; a test that adds many passkey calls takes its own
   // (documentation range) address instead of starving the tests after it.

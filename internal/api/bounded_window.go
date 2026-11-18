@@ -96,6 +96,16 @@ func (b *boundedWindow) add(key string, now time.Time, window time.Duration) {
 	b.entryLocked(key, now, window, true).n++
 }
 
+// forget drops key's count (a success that clears what it was charged).
+func (b *boundedWindow) forget(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if e, ok := b.items[key]; ok {
+		b.order.Remove(e)
+		delete(b.items, key)
+	}
+}
+
 // size is the number of keys held (tests).
 func (b *boundedWindow) size() int {
 	b.mu.Lock()

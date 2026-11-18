@@ -190,7 +190,7 @@ func (s *Server) openCodeCard(ctx context.Context, h mirror.HostView, e mirror.S
 	}
 	switch {
 	case !h.Interactive:
-		v.Unanswerable = ui.MirrorReadOnlyNote
+		v.Unanswerable = ui.MirrorReadOnlyNote(h.Host)
 	case !h.Online:
 		v.Unanswerable = "This host is offline — answer it in the terminal."
 	case !h.OpenCodeAnswer:

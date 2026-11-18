@@ -9,10 +9,12 @@ mirror being a shell on its host are under [Deployment](#deployment) and
 - **Linux.** No Windows. macOS hosts are experimental: see
   [Mirroring](#mirroring).
 - **muster assumes sessions run without permission prompts.** Start your own
-  Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
-  starts for your chief are started without them by default, so they run
-  their tools without asking (`-agent-spawn-skip-permissions=false` turns that
-  off: [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)).
+  Claude Code sessions in `bypassPermissions` or auto mode. The agents a host
+  starts for your chief start in their normal permission mode unless that
+  host opts in with `-agent-spawn-skip-permissions`
+  ([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)),
+  and owner-authority calls from such a host need your phone
+  ([mirroring.md](mirroring.md#a-machine-that-starts-agents-is-step-up-gated)).
   A Claude Code permission prompt that does appear is answered in the Terminal
   view: the chat view refuses to type into a waiting prompt, and there is no
   one-tap approve ([sending-and-step-up.md](sending-and-step-up.md)).

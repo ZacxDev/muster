@@ -56,6 +56,26 @@
     "secureCookies": {
       "type": "boolean"
     },
+    "clientAddress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trustedProxies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "header": {
+          "type": "string",
+          "pattern": "^((?i)cf-connecting-ip|x-forwarded-for|x-real-ip)?$"
+        },
+        "directClients": {
+          "type": "boolean"
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "additionalProperties": false,
@@ -133,8 +153,20 @@
         "browserPort": {
           "type": "integer"
         },
+        "metricsPort": {
+          "type": "integer"
+        },
         "annotations": {
           "type": "object"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
         }
       }
     },

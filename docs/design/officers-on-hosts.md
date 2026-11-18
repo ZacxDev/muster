@@ -176,7 +176,9 @@ a connector grant (granted per agent, decided per request) — works unchanged.
   replayed for another, and there is no time window an officer could ride. A
   browser answer of the card, an MCP answer (from any machine) and an answer
   after a restart lost the pending decision are refused. Deciding in muster's
-  web UI is unchanged; a machine with no host officer is unaffected.
+  web UI is unchanged. The same gate also holds on a machine that starts
+  agents for the chief, host officer or not
+  ([mirroring.md](../mirroring.md#a-machine-that-starts-agents-is-step-up-gated)).
 - **The mirror door lists these tools to every session of the owner's hosts
   while a host officer is declared** (the connector tools only when one
   declares a connector) — `tools/list` carries no session (the same reason
@@ -244,8 +246,9 @@ State it plainly; the operator chose this knowing it.
   the missing credentials and the egress lock make the approval the only way
   out; on a host nothing does. The charter is what keeps it on the sanctioned
   path.
-- **It runs without permission prompts** by default (the host's
-  `-agent-spawn-skip-permissions`, on unless the host turns it off).
+- **It runs without permission prompts** only when the host opts in (the
+  host's `-agent-spawn-skip-permissions`, off by default); otherwise in normal
+  permission mode.
 - **Its tool identity is a selector bound to muster's record, not a
   credential.** The binding is the caller's Claude session on the caller's host
   (muster recorded both from the host's spawn reply) AND the caller's window

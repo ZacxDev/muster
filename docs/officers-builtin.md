@@ -465,8 +465,8 @@ What happens:
   records the spawn and the host opens a window in its `agents` tmux session,
   in a fresh worktree of `repo` (or its scratch directory), running Claude
   Code with the officer's first message (behind the preface `muster: your owner's officer runtime started
-  you`), without permission prompts unless the host turned
-  `-agent-spawn-skip-permissions` off.
+  you`), in normal permission mode unless the host opted in to
+  `-agent-spawn-skip-permissions`.
 - **Its agent row.** Each instance has an agent row of its own name that
   nothing starts or stops (no provisioner, no reaper; it is not shown in the
   agent list — the instance is its mirrored window). Its outbound drafts and

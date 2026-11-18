@@ -117,13 +117,12 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// originally made about. Its caller runs on the operator's host and presents the
 	// shared secret.
 	//
-	// 🔴 requireARMEDHookToken — FAIL-CLOSED, AND THE ONE ROUTE ON THIS CREDENTIAL
-	// THAT IS. Every other requireHookToken route is enforce-when-set: with
-	// MUSTER_HOOK_TOKEN unset the wrapper calls the handler and the route is open to
-	// anyone who can reach the LAN NodePort — tmux.go, transcripts.go, layout.go,
-	// attention.go and comment_delete.go each carry that warning at their own routes.
-	// This one refuses instead. Two reasons, and the audit that produced them is
-	// task #633 round 1:
+	// 🔴 requireARMEDHookToken — FAIL-CLOSED. When this was written it was the one
+	// route on this credential that was: the rest of the hook tier then served an
+	// unconfigured server open. The whole tier is fail-closed now (an unset
+	// MUSTER_HOOK_TOKEN refuses boot, and every hook wrapper admits nobody without
+	// it), so requireArmedHookToken is requireHookToken. The two reasons it was
+	// made fail-closed first, from task #633 round 1, still stand:
 	//
 	//   - IT REPLACED A FAIL-CLOSED GATE. POST /operator/agents/{id}/message sat on
 	//     requireOperatorToken, which demanded a bearer UNCONDITIONALLY and resolved it
@@ -144,11 +143,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     says so at length, which is why that door refuses to equal it). That is a
 	//     deliberate trade for a CLI that works without a second privileged agent,
 	//     and refusing when the shared secret is absent is the least it should cost.
-	//
-	// ⚠ ITS GET TWIN STAYS enforce-when-set. Not an oversight: the read discloses a
-	// transcript, the write runs arbitrary work inside an agent instance (a shell,
-	// its repository checkout, whatever connectors it has been granted), and the
-	// read predates this change.
 	//
 	// ⚠ REGISTERED AFTER THE PROVISIONER GATE, unlike its GET twin: the write
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing

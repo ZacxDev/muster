@@ -227,7 +227,7 @@ for (const vp of [
       writeFocus([{ subject, title: 'Greeting the user', tail: GREETING_TAIL }]);
       await page.goto(origin + view(w));
       await openSidebar(page);
-      await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText(`walnut:${w}`);
+      await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText(new RegExp(`^walnut( · window ${w})?$`));
 
       // 2. The first good title becomes the name.
       writeFocus([{ subject, title: 'Billing migration', tail: REAL_TAIL }]);
@@ -238,11 +238,12 @@ for (const vp of [
       const row = rowOf(page, w);
       await expect(row.locator('[data-nav-name]')).toHaveText('Billing migration');
       await expect(row.locator('[data-nav-focus]')).toContainText('Billing migration');
-      // The technical ids are off the row's text, and in its tooltip.
+      // The technical ids are off the row's text; its tooltip says where it
+      // runs in words (the tmux address is the page's ⓘ).
       const text = (await row.innerText()).toLowerCase();
       expect(text, 'the codename is not on the row').not.toContain('walnut');
       expect(text, 'the host is not on the row').not.toContain(host.toLowerCase());
-      await expect(row).toHaveAttribute('title', new RegExp(`^Billing migration · walnut:${w} · tmux namesx:${w} @ ${host}$`));
+      await expect(row).toHaveAttribute('title', `Billing migration · on ${host}`);
 
       // 3. A later title moves the live line, not the name.
       writeFocus([{ subject, title: 'Fixing the Stripe webhook retry', tail: [...REAL_TAIL, { role: 'user', text: 'now the webhooks' }, { role: 'assistant', text: 'Looking.' }] }]);
@@ -267,7 +268,7 @@ for (const vp of [
       await dialog.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(dialog).toBeHidden();
       await expect(page.locator('header [data-session-name="manual"]')).toHaveText(`Payments ${vp.key}`);
-      await expect(page).toHaveTitle(`Payments ${vp.key} · Mirrored · muster`);
+      await expect(page).toHaveTitle(`Payments ${vp.key} · On ${host} · muster`);
       await expectSamePage(page, navs, 'the dialog Save');
       await expect.poll(() => focusedId(page), 'focus is on the title').toBe('mv-heading');
       page.removeAllListeners('framenavigated');
@@ -386,7 +387,7 @@ for (const vp of [
       await expect(banner).toHaveCount(0);
       await expectNoReload(page, navs, `draft renamed ${vp.key}`, 'Rename');
       await expect(page.locator('header [data-session-name="manual"]')).toHaveText(longOffer);
-      await expect(page).toHaveTitle(`${longOffer} · Mirrored · muster`);
+      await expect(page).toHaveTitle(`${longOffer} · On ${host} · muster`);
       await expect(page.locator('#mv-title-full'), 'the full title follows').toContainText(longOffer);
       await expect(status, 'the change is announced').toHaveText(`Renamed to “${longOffer}”.`);
       await expect.poll(() => focusedId(page), 'Rename: focus is on the title, not <body>').toBe('mv-heading');
@@ -426,11 +427,11 @@ for (const vp of [
       // Armed once the frame is open: the switch itself moves the address
       // (history.replaceState), which Playwright counts as a navigation.
       let navs = await markPage(page);
-      await expect(page, 'control: the top tab shows the frame').toHaveTitle('Billing migration · Mirrored · muster');
+      await expect(page, 'control: the top tab shows the frame').toHaveTitle(`Billing migration · On ${host} · muster`);
       await framed.locator('[data-session-drift-accept]').click();
       await expect(framed.locator('#session-drift')).toHaveCount(0);
       await expect(framed.locator('header [data-session-name="manual"]')).toHaveText('Fixing the Stripe webhook retry');
-      await expect(page, 'the top tab follows the framed rename').toHaveTitle('Fixing the Stripe webhook retry · Mirrored · muster');
+      await expect(page, 'the top tab follows the framed rename').toHaveTitle(`Fixing the Stripe webhook retry · On ${host} · muster`);
       await expectSamePage(page, navs, 'the framed Rename');
       page.removeAllListeners('framenavigated');
 

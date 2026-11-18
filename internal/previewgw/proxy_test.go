@@ -499,7 +499,7 @@ func TestPausedReadersNeitherBufferNorStall(t *testing.T) {
 		b, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil || len(b) != size || bytes.Count(b, []byte{byte('a' + n)}) != size {
-			t.Fatalf("download %d resumed: %d bytes, %v; want %d bytes of %q", n, len(b), err, size, 'a'+n)
+			t.Fatalf("download %d resumed: %d bytes, %v; want %d bytes of %q", n, len(b), err, size, rune('a'+n))
 		}
 	}
 }

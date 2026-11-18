@@ -54,7 +54,7 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"mirror sidebar row", "Opencode chat about x_y", func() g.Node {
 			return NavAgentsList(nil, []MirrorCardView{{Host: "h1", Session: "s6", Label: "**Opencode** chat about `x_y`", Online: true}}, "", now)
 		}},
-		{"mirror view <title>", "<title>Session one · Mirrored · muster</title>", func() g.Node {
+		{"mirror view <title>", "<title>Session one · On h1 · muster</title>", func() g.Node {
 			return MirrorViewPage(MirrorViewView{Host: "h1", Session: "s7", Label: "> Session ~~one~~"})
 		}},
 		{"chat session drawer", "Plan the 2*3 migration", func() g.Node {

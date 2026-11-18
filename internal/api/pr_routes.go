@@ -140,7 +140,7 @@ func (s *Server) prAuthorHint(ctx context.Context, m plugins.Message) *plugins.A
 		Repo: hit.Repo, PR: hit.PR, HeadRef: hit.HeadRef, LastSeen: hit.LastSeen}
 	e, online := s.mirrorEntryForSession(ctx, hit.ClaudeSession)
 	if online {
-		a.Online, a.Host, a.Name, a.Where = true, e.Host, e.DisplayTitle(), e.Where()
+		a.Online, a.Host, a.Name, a.Where = true, e.Host, e.CodeTitle(), e.Where()
 	}
 	if s.ext.Focus != nil {
 		if f, has, err := s.ext.Focus.Get(ctx, focus.MirrorSubject(hit.ClaudeSession)); err == nil && has && f.Has() {
@@ -258,10 +258,9 @@ type prSessionRow struct {
 // on a missing or malformed repo or pr; 404 when the server keeps no
 // authorship store.
 //
-// 🔴 THE SAME DOOR AS THE REPORT (requireArmedHookToken), NOT THE OPEN
-// enforce-when-set ONE. A row names a Claude session id — a `claude --resume`
-// handle — and the host it ran on; reading that on an unarmed server would be
-// a disclosure to anyone who can reach the machine port.
+// 🔴 THE SAME DOOR AS THE REPORT (requireArmedHookToken, which is
+// requireHookToken: fail-closed). A row names a Claude session id — a `claude
+// --resume` handle — and the host it ran on.
 //
 // ⚠ IT IS SERVED ONLY WHERE PULL-REQUEST ROUTING IS CONFIGURED. The handler
 // checks only for the store, but cmd/muster-server wires ext.PRSessions only

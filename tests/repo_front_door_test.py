@@ -32,9 +32,9 @@ Static. What it pins:
   globs in prose and code, never links, so they are not references to this
   tree.)
 * LINKS AND IMAGES RESOLVE in README.md and docs/README.md: every relative
-  Markdown link and anchor (tests/features_config_test.py's broken_links, the
-  one link rule), plus every `![alt](path)`, `<img src="path">` and
-  `<a href="path">`, which that rule does not read.
+  Markdown link, anchor and image (tests/features_config_test.py's
+  broken_links, the one link rule), plus every `<a href="path">`, which that
+  rule does not read (the feature grid links its cards with one).
 * THE README's BADGES: CI status, latest release, licence and Go version.
 * THE INSTALL TABLE IS WHAT A RELEASE SHIPS. Every release asset the README's
   "Install options" section names (with `<os>`, `<arch>` and `<X.Y.Z>`
@@ -110,8 +110,6 @@ BADGES = {
 
 PLACEHOLDERS = {"<os>": ["linux", "darwin"], "<arch>": ["amd64", "arm64"]}
 ASSET_TOKEN = re.compile(r"`([\w<>.-]+\.(?:tar\.gz|tgz|yml|sh)|env\.example)`")
-MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-IMG_SRC = re.compile(r"<img[^>]*\ssrc=\"([^\"]+)\"")
 A_HREF = re.compile(r"<a[^>]*\shref=\"([^\"]+)\"")
 CLAUDEDOCS_LINK = re.compile(r"\]\((?:\./|(?:\.\./)+)?claudedocs(?:/|\))")
 
@@ -334,18 +332,17 @@ def internal_note_refs(files: dict[str, str | None]) -> list[str]:
     return errs
 
 
-def broken_html_refs(files: dict[str, str]) -> list[str]:
-    """Images (Markdown and HTML) and HTML links whose relative target file is missing."""
+def broken_html_links(files: dict[str, str]) -> list[str]:
+    """`<a href>` links whose relative target file is missing (broken_links
+    reads Markdown links and images, not HTML anchors)."""
     errs = []
     for path, text in files.items():
-        prose = strip_code(text)
-        for kind, target in ([("image", t) for t in MD_IMAGE.findall(prose) + IMG_SRC.findall(prose)] +
-                             [("link", t) for t in A_HREF.findall(prose)]):
+        for target in A_HREF.findall(strip_code(text)):
             if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("//"):
                 continue
             rel = (Path(path).parent / target.split("#", 1)[0]).as_posix()
             if not (ROOT / rel).is_file():
-                errs.append(f"{path}: {kind} {target} -> {rel} does not exist")
+                errs.append(f"{path}: link {target} -> {rel} does not exist")
     return errs
 
 
@@ -476,9 +473,10 @@ class FrontDoor(unittest.TestCase):
         links = sum(len(re.findall(r"\]\((?!https?://)", strip_code(t))) for t in files.values())
         self.assertGreater(links, 40, "positive control: the link pattern found almost nothing")
         self.assertEqual(broken_links(files), [])
-        self.assertEqual(broken_html_refs(files), [])
-        # Negative controls: a missing page, a missing anchor and a missing
-        # image are each reported, in either file; a fenced one is not.
+        self.assertEqual(broken_html_links(files), [])
+        # Negative controls: a missing page, a missing anchor, a missing
+        # image (both spellings) and a missing <a href> page are each
+        # reported, in either file; a fenced one is not.
         planted = {README: files[README] + "\n[a](docs/nope.md) [b](docs/README.md#nowhere) "
                                            "<img src=\"docs/img/nope.png\"> ![c](docs/img/nope2.png) "
                                            "<a href=\"docs/nope3.md\">x</a>\n"
@@ -487,11 +485,11 @@ class FrontDoor(unittest.TestCase):
         self.assertEqual(sorted(broken_links(planted)), sorted([
             "README.md: docs/nope.md -> docs/nope.md does not exist",
             "README.md: docs/README.md#nowhere -> #nowhere is not a heading of docs/README.md",
+            "README.md: docs/img/nope.png -> docs/img/nope.png does not exist",
+            "README.md: docs/img/nope2.png -> docs/img/nope2.png does not exist",
             "docs/README.md: nope.md -> docs/nope.md does not exist",
         ]))
-        self.assertEqual(broken_html_refs(planted), [
-            "README.md: image docs/img/nope2.png -> docs/img/nope2.png does not exist",
-            "README.md: image docs/img/nope.png -> docs/img/nope.png does not exist",
+        self.assertEqual(broken_html_links(planted), [
             "README.md: link docs/nope3.md -> docs/nope3.md does not exist",
         ])
 

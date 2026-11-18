@@ -155,7 +155,7 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   // Host A alone: its label is unique, so its title is unchanged.
   await expect(cardsOf(page, hostA), `host A's rows (muster-mirror log:\n${mirrorLog})`).toHaveCount(2, { timeout: 20_000 });
   const a = mangoCard(page, hostA);
-  await expect.poll(() => rowTitle(a)).toBe('mango:1');
+  await expect.poll(() => rowTitle(a)).toBe('mango');
 
   // Host B connects, listing "mango:1" too. With NO reload, both rows now
   // carry their host in the TITLE; the unique kiwi:2 does not.
@@ -163,12 +163,12 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   startHost(hostB, tokenB);
   const b = mangoCard(page, hostB);
   await expect(b, `host B's row (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await expect.poll(() => rowTitle(a), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
-  await expect.poll(() => rowTitle(b)).toBe(`mango:1 · ${hostB}`);
+  await expect.poll(() => rowTitle(a), { timeout: 20_000 }).toBe(`mango · ${hostA}`);
+  await expect.poll(() => rowTitle(b)).toBe(`mango · ${hostB}`);
   const titles = [await rowTitle(a), await rowTitle(b)];
   expect(new Set(titles).size, `two DISTINCT titles: ${titles}`).toBe(2);
   const kiwi = sessionRow(page, hostA, 'kiwi');
-  await expect.poll(() => rowTitle(kiwi)).toBe('kiwi:2');
+  await expect.poll(() => rowTitle(kiwi)).toBe('kiwi');
   expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
   // Each row fits the phone, and names its host (the palette's last word).
@@ -185,7 +185,7 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await page.locator('#sidebar-search').tap();
   await page.locator('#switcher-search-input').fill('mango');
   const found = await page.locator('#switcher-search-results [role="option"] > span:first-child').allTextContents();
-  expect(found, 'two mango windows, told apart by their hosts').toEqual(expect.arrayContaining([`mango:1 · ${hostA}`, `mango:1 · ${hostB}`]));
+  expect(found, 'two mango windows, told apart by their hosts').toEqual(expect.arrayContaining([`mango · ${hostA}`, `mango · ${hostB}`]));
   await page.keyboard.press('Escape');
 
   // Each row opens a page titled EXACTLY as the row: A's (Claude Code) the
@@ -194,12 +194,12 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await a.tap();
   await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('host') === hostA);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(aTitle);
-  await expect(page).toHaveTitle(`${aTitle} · Mirrored · muster`);
-  await expect(page.locator('header [data-term-badge]')).toContainText(`Mirrored · ${hostA}`);
+  await expect(page).toHaveTitle(`${aTitle} · On ${hostA} · muster`);
+  await expect(page.locator('header [data-term-badge]')).toContainText(`On ${hostA}`);
 
   await openSidebar(page);
   const bTitle = await rowTitle(mangoCard(page, hostB));
-  expect(bTitle).toBe(`mango:1 · ${hostB}`);
+  expect(bTitle).toBe(`mango · ${hostB}`);
   await mangoCard(page, hostB).tap();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('host') === hostB);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(bTitle);
@@ -207,11 +207,11 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   expect(aTitle).not.toBe(bTitle);
 
   // The clash goes away (host B closes its mango window): A's row is plain
-  // "mango:1" again, live.
+  // "mango" again, live (no tmux window index in a name).
   await openSidebar(page);
-  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
+  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe(`mango · ${hostA}`);
   writeWindows(hostB, [{ ...bMango, session: 'other', id: '@6' }]);
-  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe('mango:1');
+  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe('mango');
   await expect(mangoCard(page, hostB)).toHaveCount(0);
 });
 
@@ -249,9 +249,9 @@ test('two sessions of one host given one codename: two distinct titles, and no r
   await expect(cardsOf(page, hostD), `host D's rows (log:\n${mirrorLog})`).toHaveCount(3, { timeout: 20_000 });
   const violet = [sessionRow(page, hostD, 'scratch7'), sessionRow(page, hostD, 'scratch8')];
   const titles = (await Promise.all(violet.map(rowTitle))).sort();
-  expect(titles, 'each carries its tmux address as its qualifier').toEqual(['violet:1 · scratch7:1', 'violet:1 · scratch8:1']);
+  expect(titles, 'each carries its tmux address as its qualifier').toEqual(['violet · scratch7:1', 'violet · scratch8:1']);
   const amber = sessionRow(page, hostD, 'scratch9');
-  expect(await rowTitle(amber)).toBe('amber:1');
+  expect(await rowTitle(amber)).toBe('amber');
   expect(await amber.innerText(), 'a unique codename\'s row spells no session name').not.toContain('scratch9');
   // The violet rows spell their session ONLY in the qualifier, once each.
   for (const c of violet) {

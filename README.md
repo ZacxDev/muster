@@ -103,9 +103,9 @@ Screen for push): [docs/quickstart-local.md](docs/quickstart-local.md#add-your-p
 <sub>A Claude Code question becomes a form on your phone, pushed with its text; answer it and the session carries on. One-time setup per machine.</sub>
 </td>
 <td align="center" valign="top" width="33%">
-<img src="docs/img/tool-context.png" width="220" alt="A Claude Code session, 'Speed up the task-list endpoint', rendered as a chat on a phone; each of its three tool calls shows how much context it added"><br>
+<img src="docs/img/tool-context.png" width="220" alt="A Claude Code session, 'Speed up the task-list endpoint', rendered as a chat on a phone"><br>
 <a href="docs/sending-and-step-up.md"><b>A chat, not a terminal</b></a><br>
-<sub>A Claude Code session reads as a chat, with the message box under your thumb and the context each tool call added.</sub>
+<sub>A Claude Code session reads as a chat, with the message box under your thumb.</sub>
 </td>
 </tr>
 <tr>
@@ -133,6 +133,31 @@ Every feature, what it needs and the `.env` lines that turn it on:
 [docs/features.md](docs/features.md). The long version of this page (what you
 get, notifications, the core and the optional features, the comparison with
 Remote Control, the limits): [docs/overview.md](docs/overview.md).
+
+## Ecosystem
+
+muster grows with what you plug into it.
+
+- **Plugins** bring your other inboxes to muster: email, a chat, a forum, a
+  support desk. Your agents read what arrives and draft the answers, and
+  nothing is sent until you approve the exact words, unless you choose to
+  let muster answer someone you trust automatically.
+- **Officers** are agents with one standing job, such as answering support,
+  writing release notes or testing each change. Each works on its own and
+  asks you before anything leaves.
+- **Together**, a plugin and an officer make an assistant for one channel:
+  it handles the routine messages, brings you the ones that need you, and
+  sends only the replies you approve.
+
+Anyone can build one and share it. See what exists and how to list yours in
+[Building on muster](docs/ecosystem.md), build your first plugin with
+[Build a plugin in 15 minutes](docs/plugins-quickstart.md), and give it an
+officer with
+[Recipe: a specialised officer with its own plugin](docs/officer-plugin-recipe.md).
+
+<!-- MEDIA SLOT (ecosystem): the film goes here, then 2-3 stills in a row
+     (a message arriving, the draft on the Asks page, the reply sent).
+     Add them once shot; no placeholder images. -->
 
 ## Install options
 

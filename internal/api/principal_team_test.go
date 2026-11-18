@@ -173,7 +173,6 @@ var publicRouteTeamGuard = map[string]string{
 	"GET /brand/logo.png":                   guardNoIdentity,
 	"GET /brand/icon-192.png":               guardNoIdentity,
 	"GET /brand/icon-512.png":               guardNoIdentity,
-	"GET /metrics":                          guardNoIdentity,
 	"GET /readyz":                           guardNoIdentity,
 	"GET /static/":                          guardNoIdentity,
 	"GET /sw.js":                            guardNoIdentity,

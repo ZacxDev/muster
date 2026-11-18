@@ -171,16 +171,21 @@
       # bump would move it again silently. Move this, `go.mod`'s `go` directive
       # and the CI job's toolchain together or not at all.
       #
-      # 🔴 IT IS `buildGo125Module`, NOT `buildGoModule` WITH THE COMPILER IN
+      # 🔴 IT IS `buildGo126Module`, NOT `buildGoModule` WITH THE COMPILER IN
       # `nativeBuildInputs`. That spelling is a NO-OP for the pin:
       # `buildGoModule` uses the `go` from its OWN scope, so the build would
-      # fetch whatever nixpkgs' default is while the derivation advertised 1.25
+      # fetch whatever nixpkgs' default is while the derivation advertised 1.26
       # in its inputs — a pin that reads as one and is not.
       #
-      # ⚠ `go_1_25` TRACKS A SERIES, NOT A PATCH RELEASE. The property this pin
-      # holds is the MINOR version, which is what a language-version skew would
-      # break.
-      buildGoPinned = pkgs: pkgs.buildGo125Module;
+      # ⚠ `go_1_26` TRACKS A SERIES, NOT A PATCH RELEASE. This binding holds
+      # the MINOR version; the PATCH floor is held by `go.mod`'s `go` directive
+      # (`go 1.26.11`), which makes a toolchain older than that refuse to build
+      # the module at all. So a `flake.lock` whose `go_1_26` is below the floor
+      # fails loudly instead of building an unpatched binary — move the lock
+      # forward, never the directive back.
+      # `internal/modulegate/gotoolchain_test.go` pins that every Go build site
+      # names the `go` directive's minor.
+      buildGoPinned = pkgs: pkgs.buildGo126Module;
 
       # 🔴 ONE BINDING, READ BY EVERY GO DERIVATION, BECAUSE THERE IS ONE
       # MODULE. Several literals would be several chances for one to go stale,
@@ -203,7 +208,7 @@
       # here with the value nix printed for the first fetch that actually
       # succeeded, and the `nix` CI job added with this change is what will
       # contradict it next time.
-      goVendorHash = "sha256-bIgovAofF+KTnaQL7CKLJGzlqAE6OyHFnSj9LIoHL1Y=";
+      goVendorHash = "sha256-HzG3NMHIid3WRUngGX5XEZaPiKuDytZBtYMAaHR9Qv0=";
 
       # goCheckPhase builds a check phase for one of this flake's Go
       # derivations. `testPaths` is the package pattern `go test` is given.
@@ -657,7 +662,7 @@
           packages = [
             # The same toolchain the package and the CI job use — see
             # `buildGoPinned` above for why it is pinned rather than inherited.
-            pkgs.go_1_25
+            pkgs.go_1_26
             pkgs.git
             pkgs.python3
             # For `make test-db` and the compose file.

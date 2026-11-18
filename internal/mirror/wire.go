@@ -439,7 +439,7 @@ type Msg struct {
 	AgentSpawn []string `json:"agentSpawn,omitempty"`
 	// AgentSpawnSkipPermissions (hello) is the host saying it starts the
 	// CLAUDE CODE agents it spawns WITHOUT permission prompts
-	// (-agent-spawn-skip-permissions, on by default; never on a root mirror,
+	// (-agent-spawn-skip-permissions, OFF by default; never on a root mirror,
 	// where Claude Code refuses bypassPermissions). It is one bool per host,
 	// not per runtime, because Claude Code's is the only wording muster varies
 	// by it: an opencode spawn is told it does not ask either way. muster only
@@ -1591,8 +1591,10 @@ const (
 		"because Enter there can answer a prompt opencode is showing, such as a permission request. Send it from " +
 		"the session's Rendered view (when it was started with `muster-mirror opencode`), or type it in the terminal."
 	// The opencode gated send's refusals, in the person's words.
-	PasteRefusedOpenCodeOffText = "Not sent: this host's muster-mirror does not send to opencode " +
-		"(it needs -interactive and -opencode-send). Type it in the terminal."
+	// No flag in it (the operator rule): the setting is the ⓘ's, for an
+	// admin (OpenCodeSendSetting).
+	PasteRefusedOpenCodeOffText = "Not sent: replying to opencode from muster is not turned on for this computer. " +
+		"Type it in the terminal."
 	PasteRefusedOpenCodeUnboundText = "Not sent: muster can't be sure which session this opencode shows, " +
 		"because it wasn't started with `muster-mirror opencode`. Type it in the terminal, or restart it that way."
 	PasteRefusedOpenCodeBusyText    = "Not sent: opencode is working. Queue it instead."

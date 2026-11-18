@@ -29,8 +29,9 @@
 //     A task-dispatched agent's auto name is still frozen and stored; it is
 //     simply never shown while the dispatch name ranks above it.
 //  5. FALLBACK — the session's technical id: an agent's slug, a mirrored
-//     window's host label or tmux address. Only a session with nothing above
-//     is called by it.
+//     window's host label or tmux session without tmux's window index
+//     (mirror.SessionView.DisplayTitle: "mango", never "mango:1"). Only a
+//     session with nothing above is called by it.
 //
 // Every level but FALLBACK is plained with the title rule (textplain.Title),
 // and one that plains to nothing falls through to the next. The fallback is
@@ -62,10 +63,16 @@ const (
 // places that show one — the detail page, a tooltip, a chief tool that needs
 // an address: an agent's slug; a mirrored window's "tmux <session>:<index> @
 // <host>" (mirror.Where), led by its host label when it has one.
+//
+// Place is where the session runs, in the words the top layer of a surface
+// may show beside its name — "on atlas" (mirror.PlaceWords) for a mirrored
+// window, "" for an agent. Technical is never shown in that layer for a
+// mirrored window: it is the ⓘ details' (ui.InfoSheet).
 type Name struct {
 	Text      string
 	Source    Source
 	Technical string
+	Place     string
 }
 
 // Human reports whether n is a human name rather than a technical id: any
@@ -144,11 +151,14 @@ func Agent(a agents.Agent, stored focus.Name) Name {
 // below the conversation's own auto name, and is shown only while the
 // conversation has no human name (decision recorded in docs/focus.md).
 //
-// The fallback is e.DisplayTitle(): the title WITH the list's qualifier when
-// it needs one — how two "mango:1" windows on two hosts are told apart. A
+// The fallback is e.DisplayTitle(): the plain title (tmux's window index
+// dropped: "mango", mirror.PlainCode) WITH the list's qualifier when it needs
+// one — how two "mango" windows on two hosts are told apart. A
 // human name carries none (its tooltip has the place). The ui draws a
 // fallback name from the view's own fields (Label, Title, Qualifier), never
 // from this text, so it is not qualified twice.
 func Mirror(e mirror.SessionView, stored focus.Name) Name {
-	return Resolve(Parts{Manual: stored.Manual, Auto: stored.Auto, Fallback: e.DisplayTitle(), Technical: e.Where()})
+	n := Resolve(Parts{Manual: stored.Manual, Auto: stored.Auto, Fallback: e.DisplayTitle(), Technical: e.Where()})
+	n.Place = mirror.PlaceWords(e.Host)
+	return n
 }
