@@ -501,7 +501,7 @@ func TestNoHostLabelLeavesEvenWhenTitlesClash(t *testing.T) {
 	// Control: the chief's tool, which may show hosts, does show the qualified
 	// names — so the clash is real and the assertion below can see one.
 	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("fleet_report", `{"since":"`+time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)+`"}`)
-	if !strings.Contains(text, "work:1 · tower") || !strings.Contains(text, "work:1 · hostbeta") {
+	if !strings.Contains(text, "work · tower") || !strings.Contains(text, "work · hostbeta") {
 		t.Fatalf("control: the tool does not show the host-qualified names, so the fixture has no clash: %s", text)
 	}
 	r, body := f.reply(t, f.ask(t, "fr-clash-1", frSender, true, requestBody("example-member", "req-clash")))

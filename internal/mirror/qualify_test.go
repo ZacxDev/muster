@@ -226,3 +226,26 @@ func TestPlainCodeDropsOnlyATrailingWindowIndex(t *testing.T) {
 		}
 	}
 }
+
+// CodeTitle keeps the TECHNICAL name the chief's labels carry: the codename
+// with its index, qualified as it always was — while DisplayTitle, over the
+// same list, is the plain name.
+func TestCodeTitleIsTheCodenameQualifiedAsBefore(t *testing.T) {
+	hosts := []mirror.HostView{
+		perWindow("laptop", win("scratch3", "@2", 1, "Gold:1"), win("scratch4", "@6", 1, "Gold:1"), win("fern", "@7", 2, "")),
+		perWindow("tower", win("fern", "@9", 2, "")),
+	}
+	got := map[string][2]string{}
+	for _, e := range mirror.Ordered(hosts) {
+		got[e.Host+"/"+e.Window] = [2]string{e.CodeTitle(), e.DisplayTitle()}
+	}
+	want := map[string][2]string{
+		"laptop/@2": {"Gold:1 · scratch3:1", "Gold · scratch3:1"},
+		"laptop/@6": {"Gold:1 · scratch4:1", "Gold · scratch4:1"},
+		"laptop/@7": {"fern:2 · laptop", "fern · laptop"},
+		"tower/@9":  {"fern:2 · tower", "fern · tower"},
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("code / display titles:\n got %v\nwant %v", got, want)
+	}
+}

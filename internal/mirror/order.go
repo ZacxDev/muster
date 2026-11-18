@@ -73,6 +73,12 @@ type SessionView struct {
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
 	// or Find alone has none — Qualified gives one the list's.
 	Qualifier string
+	// CodeQualifier is Qualifier's rule over the CODENAME (Title, tmux's window
+	// index and all) rather than the plain title — "mango:1 · laptop",
+	// "Gold:1 · scratch3:1" — for a text that names a window technically, to
+	// an agent or in a stored label (CodeTitle). Set by Ordered (qualify) and
+	// only there.
+	CodeQualifier string
 	// Repo is the short name of the repository the entry works in
 	// (HostView.Repos, repos.go), "" when its host did not say.
 	Repo string
@@ -113,6 +119,17 @@ func (s SessionView) DisplayTitle() string {
 		return s.PlainTitle()
 	}
 	return s.PlainTitle() + QualifierSep + s.Qualifier
+}
+
+// CodeTitle is the entry's name as muster spelled it before names dropped
+// tmux's window index: its Title (the codename, "mango:1"), then its
+// CodeQualifier. For a text that names the window technically — the chief's
+// labels (internal/api mirrorLabel), never the top layer of a page.
+func (s SessionView) CodeTitle() string {
+	if s.CodeQualifier == "" {
+		return s.Title()
+	}
+	return s.Title() + QualifierSep + s.CodeQualifier
 }
 
 // PlainTitle is the entry's Title as a person reads it: the codename with
@@ -277,6 +294,7 @@ func (s SessionView) WhereTarget() string {
 //     1). Address is unique per host, so every listed entry ends up with a
 //     distinct DisplayTitle.
 func qualify(list []SessionView) {
+	qualifyCodes(list)
 	type hostTitle struct{ host, title string }
 	byTitle := map[string]int{}
 	hostsOf := map[string]map[string]bool{}
@@ -320,15 +338,49 @@ func qualify(list []SessionView) {
 	}
 }
 
+// qualifyCodes sets every entry's CodeQualifier: qualify's rule as it was
+// over the codename (Title) — its host when the codename is shared across
+// hosts, its tmux Address when it is shared within one.
+func qualifyCodes(list []SessionView) {
+	type hostTitle struct{ host, title string }
+	byTitle := map[string]int{}
+	hostsOf := map[string]map[string]bool{}
+	byHostTitle := map[hostTitle]int{}
+	for _, s := range list {
+		t := s.Title()
+		byTitle[t]++
+		if hostsOf[t] == nil {
+			hostsOf[t] = map[string]bool{}
+		}
+		hostsOf[t][s.Host] = true
+		byHostTitle[hostTitle{s.Host, t}]++
+	}
+	for i := range list {
+		t := list[i].Title()
+		list[i].CodeQualifier = ""
+		if byTitle[t] < 2 {
+			continue
+		}
+		var parts []string
+		if len(hostsOf[t]) > 1 {
+			parts = append(parts, list[i].Host)
+		}
+		if byHostTitle[hostTitle{list[i].Host, t}] > 1 {
+			parts = append(parts, list[i].Address())
+		}
+		list[i].CodeQualifier = strings.Join(parts, QualifierSep)
+	}
+}
+
 // Qualified is e with the Qualifier Ordered(hosts) gives the same entry (host,
 // session, window): what a PAGE of one entry calls it, so the page and the
 // card it was opened from say the same name. An entry hosts does not list
 // keeps no qualifier.
 func Qualified(hosts []HostView, e SessionView) SessionView {
-	e.Qualifier = ""
+	e.Qualifier, e.CodeQualifier = "", ""
 	for _, s := range Ordered(hosts) {
 		if s.Owner == e.Owner && s.Host == e.Host && s.Session == e.Session && s.Window == e.Window {
-			e.Qualifier = s.Qualifier
+			e.Qualifier, e.CodeQualifier = s.Qualifier, s.CodeQualifier
 			break
 		}
 	}

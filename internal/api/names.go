@@ -112,7 +112,10 @@ func (s *Server) mirrorLabel(ctx context.Context, e mirror.SessionView) string {
 	if n := s.mirrorName(ctx, e); n.Human() {
 		return n.Text
 	}
-	return e.DisplayTitle() + " @ " + e.Host
+	// Its CODE title ("mango:1", qualified as the codename was), never the
+	// plain DisplayTitle the top layer shows: this text is the chief's, and
+	// it is stored as an ask's label.
+	return e.CodeTitle() + " @ " + e.Host
 }
 
 // humanMirrorName is the HUMAN name of the mirrored conversation keyed key
