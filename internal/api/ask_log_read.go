@@ -400,6 +400,9 @@ func (s *Server) askLogPanelHTML(ctx context.Context, q url.Values) string {
 		}
 		return b.String()
 	}
+	// 🔴 The By-outcome pills are the LOG's own breakdown — they add up to its
+	// Total — so its "Open" is the log's rows with no outcome yet, not THE ONE
+	// OPEN COUNT (the header, More and the ☰ say that one; audit of #787).
 	b.WriteString(askLogSummaryHTML(sum, s.askLogTextTTL()))
 	rows, next, err := st.Page(ctx, f, before, asklog.DefaultPageSize)
 	if err != nil {

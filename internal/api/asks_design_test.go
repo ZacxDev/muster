@@ -365,8 +365,13 @@ func TestEveryTabValueOpensWhereItDid(t *testing.T) {
 			t.Errorf("%q (drafts %v, nudges %q): top %q view %q, want %q %q", c.query, c.drafts, c.nudges, top, view, c.top, c.view)
 		}
 	}
+	// The ask log off (no Log panel): no Log tab, and ?tab=log opens Open.
+	off := s.asksTabsHTML("<ul></ul>", "<ul></ul>", true, nil, nil, "n", "", asksTab(httptest.NewRequest("GET", "/attention?tab=log", nil)))
+	if strings.Contains(off, `id="asks-tabs-tab-log"`) || !regexp.MustCompile(`id="asks-tabs-tab-open" [^>]*aria-selected="true"|aria-selected="true"[^>]* id="asks-tabs-tab-open"`).MatchString(off) {
+		t.Errorf("with the ask log off ?tab=log draws a Log tab or does not open Open:\n%s", off)
+	}
 	// The labels and their order: Open · Answered · Drafts · Nudges · Log.
-	out := s.asksTabsHTML("", "", true, []plugins.DraftCard{{}, {}}, nil, "n", "", asksTabOpen)
+	out := s.asksTabsHTML("", "", true, []plugins.DraftCard{{}, {}}, nil, "n", "log", asksTabOpen)
 	var labels []string
 	for _, m := range regexp.MustCompile(`role="tab"[^>]*>([^<]+)</button>`).FindAllStringSubmatch(out, -1) {
 		labels = append(labels, m[1])

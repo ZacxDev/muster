@@ -84,6 +84,8 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		`internal/api/jobs.go (*Server).runJobTurn → AddChatMessage(role "assistant", TypedBy -)`:                  chatReply,
 		`internal/api/officers.go Reprompt → AddChatMessage(role "user", TypedBy -)`:                               chatAgentSent,
 		`internal/api/officers.go Reprompt → AddChatMessage(role "assistant", TypedBy -)`:                          chatReply,
+		`internal/api/officer_chat.go Turn → AddChatMessage(role "user", TypedBy -)`:                               chatAgentSent,
+		`internal/api/officer_chat.go Turn → AddChatMessage(role "assistant", TypedBy -)`:                          chatReply,
 		`internal/agentkickoff/agentkickoff.go (*Deliverer).deliver → AddChatMessage(role "user", TypedBy -)`:      chatAgentSent,
 		`internal/agentkickoff/agentkickoff.go (*Deliverer).deliver → AddChatMessage(role "assistant", TypedBy -)`: chatReply,
 		`internal/memorelay/relay.go (*Relay).deliver → AddChatMessage(role "user", TypedBy -)`:                    chatAgentSent,
