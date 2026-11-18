@@ -84,10 +84,18 @@ func asksCardContextSlot(it attentionItem, now time.Time) string {
 	case it.Kind == attentionKindTask:
 		inner = `<span>` + taskToRouteWhy + `</span>`
 	}
-	if inner == "" {
+	// The card's ⓘ: the exact tmux address of the window it names
+	// (attentionPlaceSheetHTML), at the end of this line — the head is the
+	// card's toggle, and a button cannot sit inside it.
+	info := attentionPlaceSheetHTML(it, it.Key)
+	switch {
+	case inner == "" && info == "":
 		return ""
+	case info == "":
+		return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+`
 	}
-	return `<div class="` + ui.AsksCardContextClass + `" data-asks-context>` + inner + `</div>
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="` + ui.AsksCardContextClass + ` min-w-0 flex-1" data-asks-context>` + inner + `</div>` + info + `</div>
 `
 }
 

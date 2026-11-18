@@ -50,7 +50,8 @@ const WINDOWS: [string, string][] = [
   ['wheat', '@2'],
   ['vapor', '@3'],
 ];
-const label = (s: string) => s + ':1';
+// A window's name: its session's, without tmux's window index.
+const label = (s: string) => s;
 const viewOf = (s: string) => `${origin}${rig.viewPath(s)}&window=${encodeURIComponent(WINDOWS.find((w) => w[0] === s)![1])}`;
 
 test.beforeAll(async () => {

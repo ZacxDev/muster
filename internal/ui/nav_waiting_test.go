@@ -97,9 +97,9 @@ func TestThePaletteCopiesTheSidebarsWaitingMark(t *testing.T) {
 		// A count with nothing for "you": the sidebar draws the count, and so
 		// does the palette (one call).
 		{"ag-notice", `data-nav-attention="" data-kind="notice" data-count="2"`},
-		{"plum:1", `data-nav-attention="" data-kind="session" data-count="1"`},
+		{"plum", `data-nav-attention="" data-kind="session" data-count="1"`},
 		{"ag-quiet", ""},
-		{"kiwi:1", ""},
+		{"kiwi", ""},
 	} {
 		it, ok := byLabel[c.label]
 		if !ok {

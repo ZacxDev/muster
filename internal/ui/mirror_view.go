@@ -42,6 +42,10 @@ func MirrorViewWSPath(host, session string) string {
 
 // MirrorViewView is the data the rendered view's page renders.
 type MirrorViewView struct {
+	// PlaceAddress is the window's exact tmux target ("tmux fern:1 @ atlas",
+	// mirror.WhereTarget), which the header's ⓘ holds (mirrorViewTitleRow);
+	// "" draws no ⓘ.
+	PlaceAddress string
 	// DraftUser is the signed-in user, the first part of the message box's
 	// draft key (composer_draft.go).
 	DraftUser int64
@@ -289,6 +293,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							// (mirrorUpdatingChip), taking none of its width.
 							Class("relative flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
+							mirrorPlaceInfo(v),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
 							mirrorContextChip(),
@@ -512,6 +517,25 @@ func mirrorViewTitleRow(v MirrorViewView) g.Node {
 	)
 }
 
+// mirrorPlaceInfo is the rendered view header's ⓘ (SessionPlaceSheet): the
+// window's exact tmux target, which the header's words no longer spell —
+// drawn only when the page has it (PlaceAddress: none on a team host's
+// session). It sits in the STATUS row, inline (InfoSheet.Inline): in the
+// title row its 44px button cost the title 44px of a phone header and grew
+// the header past its 57px (e2e title-room measured both), and the title
+// button's z-10 hit area spans both rows, so the trigger is raised over it.
+func mirrorPlaceInfo(v MirrorViewView) g.Node {
+	if v.PlaceAddress == "" {
+		return nil
+	}
+	s := SessionPlaceSheet(MirrorPlaceSheetID, mirrorViewName(v), v.Host, v.PlaceAddress)
+	s.Inline = true
+	return s.Node()
+}
+
+// MirrorPlaceSheetID is the rendered view header's ⓘ sheet (mirrorViewTitleRow).
+const MirrorPlaceSheetID = "mv-place"
+
 // mirrorViewName is the window's name as the rendered view's header and
 // <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
 // qualifier.
@@ -546,20 +570,12 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 // "Mirrored · <host>". The full-title popover shows exactly this, so when only
 // the badge is clipped the popover still says what the header did not.
 //
-// A window titled by its host's label also names its raw tmux session
-// ("tmux session scratch2"): the header no longer draws that name beside the
-// label (it made room for the tags), and it is what `tmux attach` takes.
+// 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
+// used to end with the window's technical id ("· tmux cedar:1 @ atlas", or
+// "· tmux session scratch2" under a label); that is the header's ⓘ now
+// (mirrorViewTitleRow), with a Copy button.
 func mirrorViewHeading(v MirrorViewView) string {
-	h := mirrorViewName(v) + " · Mirrored · " + v.Host
-	if v.SessionName.Human() {
-		// The technical id the human name hides: the tmux address on its
-		// host (mirror.Where).
-		return h + " · " + v.SessionName.Technical
-	}
-	if _, labelled := mirrorDisplayName(v.Label, v.Title, v.Session); labelled {
-		h += " · tmux session " + v.Session
-	}
-	return h
+	return mirrorViewName(v) + " · Mirrored · " + v.Host
 }
 
 // mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb

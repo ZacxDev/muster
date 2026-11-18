@@ -92,8 +92,8 @@ type succFixture struct {
 
 func sxWindows() []mirror.Window {
 	return []mirror.Window{
-		{Session: "main", ID: "@1", Index: 1, Active: true, Claude: true, ClaudeSession: sxClaudeKey, Status: mirror.StatusIdle, Activity: 1_700_000_000},
-		{Session: "main", ID: "@3", Index: 3, Runtime: mirror.RuntimeOpenCode, AgentSession: sxOpenCodeSID, Status: mirror.StatusIdle, Activity: 1_700_000_000},
+		{Session: "main", ID: "@1", Index: 2, Active: true, Claude: true, ClaudeSession: sxClaudeKey, Status: mirror.StatusIdle, Activity: 1_700_000_000},
+		{Session: "main", ID: "@3", Index: 5, Runtime: mirror.RuntimeOpenCode, AgentSession: sxOpenCodeSID, Status: mirror.StatusIdle, Activity: 1_700_000_000},
 	}
 }
 

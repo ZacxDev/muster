@@ -145,7 +145,7 @@ func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
 	am, s, ts := askServer(t, true)
 	register(t, ts)
 	card := region(t, s, ts, `data-ask-state="pending"`)
-	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main:0? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
+	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the pending card lacks %q:\n%s", want, card)
 		}

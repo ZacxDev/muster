@@ -335,7 +335,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// The host's display label ("mango:1") — or, for a window with none,
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).
-		DisplayName: e.Title(),
+		DisplayName: e.PlainTitle(),
 		// What tells this entry apart from another host's (or window's) of the
 		// same name — the sidebar row's own qualifier (mirror.Qualified).
 		TitleQualifier: e.Qualifier,

@@ -109,8 +109,9 @@ func TestTheChiefsFleetListCarriesEachWindowsWhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	// name is the session's stable name (internal/sessionname): with no
-	// human one, its codename or tmux address — no longer with " @ <host>",
-	// which is `host` (and `where`).
+	// human one, its CODE name (codeName: the codename or tmux address, index
+	// and all — an agent's name for a session stays stable as siblings come
+	// and go) — no longer with " @ <host>", which is `host`.
 	want := map[string][3]string{
 		"mirror:" + whereLabelledSID:   {"mango:1", "ws", "mango:1 · tmux scratch3:5 @ ws"},
 		"mirror:" + whereUnlabelledSID: {"build:7", "ws", "tmux build:7 @ ws"},
