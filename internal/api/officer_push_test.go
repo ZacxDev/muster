@@ -79,7 +79,8 @@ func officerBatchDraft(o string) plugins.Draft {
 func TestEveryOfficerPushIsClassified(t *testing.T) {
 	want := map[officerPush]bool{
 		"ask": true, "escalation": true, "draft": true, "outreach_batch": true, "connector_request": true,
-		"draft_refused": false, "budget": false, "cap_hold": false, "unclaimed": false, "page_published": false, "page_shared": false,
+		"budget": true, "cap_hold": true,
+		"draft_refused": false, "budget_unreadable": false, "unclaimed": false, "page_published": false, "page_shared": false,
 		"page_updated": false, "notify_owner": false,
 	}
 	for k, d := range want {
@@ -107,7 +108,9 @@ func TestOfficerDecisionCardsAreTheirCards(t *testing.T) {
 		{officerPushOutreachBatch, officerCardRef{ID: "1:" + offB + "@2000-01-03"}, "/attention?tab=drafts#outreach-1-" + strings.ReplaceAll(offB, ":", "-") + "-2000-01-03"},
 		{officerPushConnectorRequest, officerCardRef{ID: "6421"}, "/connectors#connector-request-6421"},
 		{officerPushConnectorRequest, officerCardRef{ID: "6437", Team: 908}, "/teams/908/connectors#connector-request-6437"},
-		{officerPushBudget, officerCardRef{ID: "7103"}, ""},
+		{officerPushBudget, officerCardRef{ID: "scout:docs", Owner: 1}, "/officers/scout:docs?owner=1"},
+		{officerPushCapHold, officerCardRef{ID: "ops watch", Owner: 908}, "/officers/ops%20watch?owner=908"},
+		{officerPushBudgetUnreadable, officerCardRef{ID: "scout:docs", Owner: 1}, ""},
 		{officerPushDraftRefused, officerCardRef{ID: "5317"}, ""},
 	} {
 		if got := officerDecisionCard(c.k, c.ref); got != c.want {
@@ -200,17 +203,23 @@ func TestAnOfficersRefusedDraftIsWithdrawnNotPushed(t *testing.T) {
 	}
 }
 
-// TestAnOfficersBudgetIsNotPushed: the budget reached and the spend
-// unreadable are information: nothing is pushed.
-func TestAnOfficersBudgetIsNotPushed(t *testing.T) {
+// TestAnOfficersBudgetReachedPushesItsPageAndUnreadableDoesNot: the daily
+// budget reached holds the officer for the day — a decision (raise the cap,
+// lift the hold): ONE push, opening the officer's page. Its spend unreadable
+// is muster's own failure: nothing is pushed (the reached push, observed on
+// the same device, is the positive control for that zero).
+func TestAnOfficersBudgetReachedPushesItsPageAndUnreadableDoesNot(t *testing.T) {
 	r, p := officerPushRig(t)
 	o := officers.Officer{ID: offA, Owner: 1}
-	r.s.officerBudgetNotice(o, officers.BudgetAlert{Spent: 10.49, Budget: 10, Waiting: 3, ResetAt: time.Date(2000, 1, 5, 0, 0, 0, 0, time.UTC)})
 	r.s.officerBudgetNotice(o, officers.BudgetAlert{Unreadable: true, Budget: 10, Waiting: 2})
 	if got := r.sent(p); len(got) != 0 {
-		t.Fatalf("an officer's budget notices (information) pushed %+v, want nothing", got)
+		t.Fatalf("an officer's spend unreadable (information) pushed %+v, want nothing", got)
 	}
-	officerPushControl(t, r, p)
+	r.s.officerBudgetNotice(o, officers.BudgetAlert{Spent: 10.49, Budget: 10, Waiting: 3, ResetAt: time.Date(2000, 1, 5, 0, 0, 0, 0, time.UTC)})
+	got := r.sent(p)
+	if len(got) != 1 || got[0].Tag != "officer-budget-"+offA+"-2000-01-05" || got[0].Data["url"] != "/officers/"+offA+"?owner=1" {
+		t.Fatalf("an officer's budget reached pushed %+v, want one on its day's tag opening /officers/%s?owner=1", got, offA)
+	}
 }
 
 // TestAnOfficersPagePushesNothing: a page an officer's instance published

@@ -14,10 +14,12 @@ import (
 // a push from an officer — or from a plugin draft or outreach batch filed on
 // an officer's behalf — is sent ONLY when something needs the operator to
 // decide, and every one of those opens the exact card the decision is made
-// on. Something an officer did that the operator need not act on (a page it
-// published, a reply its plugin refused, its budget or a cap hold stopping
-// it, a host instance slow to claim) causes NO push: the operator reads it on
-// the Asks page, the officer's page or the sidebar when they look.
+// on — an officer HELD (its daily budget reached, its judgement pool held by a
+// refused cap escalation) is one: it stops working until the operator raises
+// the cap or lifts the hold. Something the operator need not act on (a page
+// it published, a reply its plugin refused, its spend unreadable, a host
+// instance slow to claim) causes NO push: the operator reads it on the Asks
+// page, the officer's page or the sidebar when they look.
 //
 // 🔴 ONE TABLE, ONE PLACE: officerPushes classifies every push path an
 // officer can reach, and each of those call sites asks officerPushSends —
@@ -57,11 +59,16 @@ const (
 	// officerPushDraftRefused: the plugin refused an officer's draft; it went
 	// back to the officer (notifyDraftRefused).
 	officerPushDraftRefused officerPush = "draft_refused"
-	// officerPushBudget: the officer's daily budget was reached, or its spend
-	// could not be read (officerBudgetNotice).
+	// officerPushBudget: the officer's daily budget was reached
+	// (officerBudgetNotice): it is held for the day unless the operator
+	// raises the cap or lifts the hold, on the officer's page.
 	officerPushBudget officerPush = "budget"
-	// officerPushCapHold: a judgement-pool turn withheld by its cap
-	// (officerCapHoldNotice).
+	// officerPushBudgetUnreadable: the officer's spend could not be read
+	// (officerBudgetNotice): muster's own failure, logged; nothing to decide.
+	officerPushBudgetUnreadable officerPush = "budget_unreadable"
+	// officerPushCapHold: the officer's judgement pool is held, its wall-time
+	// cap's escalation refused (officerCapHoldNotice): the officer is stopped
+	// until the operator acts on its page.
 	officerPushCapHold officerPush = "cap_hold"
 	// officerPushUnclaimed: a host instance has not claimed its item
 	// (raiseUnclaimedNotice): a dismiss-only notice.
@@ -90,8 +97,9 @@ var officerPushes = map[officerPush]bool{
 	officerPushOutreachBatch:    true,  // tick the follows and likes that go out
 	officerPushConnectorRequest: true,  // approve or deny the access
 	officerPushDraftRefused:     false, // it went back to the officer, which handles it
-	officerPushBudget:           false, // the sidebar row says "held"; it resumes at midnight UTC
-	officerPushCapHold:          false, // it resumes when the pool frees
+	officerPushBudget:           true,  // raise the cap for today, or lift the hold (the officer's page)
+	officerPushBudgetUnreadable: false, // muster's failure, in its log; nothing the operator decides
+	officerPushCapHold:          true,  // the officer is held: act on its page
 	officerPushUnclaimed:        false, // dismiss-only: its card stays on the Asks page
 	officerPushPagePublished:    false, // the page is in the officer's chat
 	officerPushPageShared:       false, // the owner opted in to unasked shares
@@ -115,12 +123,14 @@ func (s *Server) officerPushSends(k officerPush, owner int64, tag string) bool {
 }
 
 // officerCardRef names what a decision is made on: ID is the ask's attention
-// key, the draft's id, the batch's id or the connector grant's id; Team is a
-// team's id when the card is on that team's page (a team's connector
-// requests), 0 for the viewer's own.
+// key, the draft's id, the batch's id, the connector grant's id or the
+// officer's id; Team is a team's id when the card is on that team's page (a
+// team's connector requests), 0 for the viewer's own; Owner is the officer's
+// owner (a person or a team), for its page.
 type officerCardRef struct {
-	ID   string
-	Team int64
+	ID    string
+	Team  int64
+	Owner int64
 }
 
 // officerDecisionCard is where decision k's card lives — the address its push
@@ -145,6 +155,12 @@ func officerDecisionCard(k officerPush, r officerCardRef) string {
 			return ""
 		}
 		return connectorRequestLink(r.Team, id)
+	case officerPushBudget, officerPushCapHold:
+		// The officer's page: where a hold is lifted or the day's cap raised.
+		// It has no budget section to anchor yet; a later change adds one
+		// and retargets this. owner= is always named: the page reads it for
+		// a team's officer and accepts the person's own id.
+		return officerHref(officerScope{Owner: r.Owner, Team: r.Owner > 0}, r.ID, "")
 	}
 	return ""
 }

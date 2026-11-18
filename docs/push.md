@@ -163,7 +163,10 @@ decide**, and a tap opens the card you decide it on. Everything else an officer
 does is on its page, the sidebar and the Asks page when you look; none of it
 pushes. One table in the server classifies every push an officer can cause
 (`internal/api/officer_push.go`), and one function names each decision's card,
-so a later change can move a card without touching each push.
+so a later change can move a card without touching each push. A test pins
+every push call site in the server as either routed through that table or
+named, with a reason, as one no officer reaches: a new push path fails it
+until it is classified.
 
 | what the officer did | pushes? | a tap opens |
 |---|---|---|
@@ -173,8 +176,9 @@ so a later change can move a card without touching each push.
 | filed a day's follows and likes | yes (`plugin`), one per batch | the batch's card (`/attention?tab=drafts#outreach-<…>`) |
 | asked for a connector | yes (`connector`) | the request's card (`/connectors#connector-request-<id>`, or the team's page) |
 | its plugin refused a draft | no: the draft went back to the officer; its "awaits your approval" notification is withdrawn | — |
-| its daily budget was reached, or its spend could not be read | no: its sidebar row says `held` | — |
-| a judgement-pool turn was withheld by a refused cap escalation | no: counted by `muster_officer_cap_refusal_withheld` | — |
+| its daily budget was reached (it is held for the day) | yes (`attention`), once per day | the officer's page (`/officers/<id>?owner=<owner>`), where the hold is lifted or the day's cap raised |
+| its judgement pool is held by a refused cap escalation | yes (`attention`), once per hold; withdrawn when the hold ends | the officer's page, as above |
+| its spend could not be read | no: muster's own failure, in its log | — |
 | a host instance has not claimed its item | no: its notice is on the Asks page | — |
 | published a page, or shared one under your opt-in to unasked shares | no: the page lists its links | — |
 | published a new version of a page (`page_update`) | no: the page shows it | — |
