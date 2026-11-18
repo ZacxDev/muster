@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,9 @@ import (
 // max_instances, up to chat_max_instances, when every lane of every up
 // instance is busy; an instance with no chat turn, claim or prompt for
 // chat_idle_stop is stopped, never one doing queue work; a chat whose instance
-// is down or past the ceiling is re-homed onto a running one.
+// is stopped waits for it to be started again (its conversation is there);
+// one whose instance is in error or past the ceiling is re-homed onto a
+// running one.
 
 var autoNow = time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -121,16 +124,31 @@ func TestAScaleUpStartsNoMoreThanTheChatsNeed(t *testing.T) {
 	if d := officers.Decide(o, obs, time.Time{}, autoNow, nil); fmt.Sprint(d.Start) != "[2 3]" {
 		t.Fatalf("Need 2 beside a queue start of 2: start %v, want [2 3]", d.Start)
 	}
-	// Prefer: a down home is started before the lowest free number.
+	// Homes: a waiting chat's stopped home is started whatever Need says.
 	obs.Open = obs.Open[:4]
-	obs.ChatPlan.Need, obs.ChatPlan.Prefer = 1, []int{4}
+	obs.ChatPlan.Need, obs.ChatPlan.Homes = 0, []int{4}
 	if d := officers.Decide(o, obs, time.Time{}, autoNow, nil); fmt.Sprint(d.Start) != "[4]" {
-		t.Fatalf("Need 1 preferring instance 4 (a waiting chat's home): start %v, want [4]", d.Start)
+		t.Fatalf("Need 0, Homes [4]: start %v, want [4]", d.Start)
 	}
-	// A preferred home past the ceiling is not started; the lowest free one is.
-	obs.ChatPlan.Prefer = []int{7}
+	// Then Need more: the home and the lowest free number.
+	obs.ChatPlan.Need = 1
+	if d := officers.Decide(o, obs, time.Time{}, autoNow, nil); fmt.Sprint(d.Start) != "[2 4]" {
+		t.Fatalf("Need 1, Homes [4]: start %v, want [2 4]", d.Start)
+	}
+	// A home the queue starts this pass is not counted again toward Need
+	// (Want counted its free lanes already): queue starts 2, the home, so
+	// Need 1 still starts 3.
+	obs.ChatPlan.Homes = []int{2}
+	obs.Open = append(obs.Open, officers.Item{ID: "q1", Kind: "release.evaluate", Status: officers.StatusOpen},
+		officers.Item{ID: "q2", Kind: "release.evaluate", Status: officers.StatusOpen})
+	if d := officers.Decide(o, obs, time.Time{}, autoNow, nil); fmt.Sprint(d.Start) != "[2 3]" {
+		t.Fatalf("Need 1, Homes [2] which the queue starts: start %v, want [2 3]", d.Start)
+	}
+	// A home past the ceiling is not started; the lowest free one is.
+	obs.Open = obs.Open[:4]
+	obs.ChatPlan.Homes = []int{7}
 	if d := officers.Decide(o, obs, time.Time{}, autoNow, nil); fmt.Sprint(d.Start) != "[2]" {
-		t.Fatalf("Need 1 preferring instance 7 (past chat_max_instances 5): start %v, want [2]", d.Start)
+		t.Fatalf("Need 1, Homes [7] (past chat_max_instances 5): start %v, want [2]", d.Start)
 	}
 }
 
@@ -236,12 +254,66 @@ func TestTheQueuesInstanceIsNeverStoppedWhileTheQueueHasWork(t *testing.T) {
 	}
 }
 
-// TestAChatWhoseInstanceStoppedIsRehomed: chat c-41 was answered on instance
-// 2, which has been stopped; instance 1 is up with a free lane. The chat is
-// not held back and needs nothing started; its next turn runs on instance 1,
-// its old lane is set aside (Rehome), and the new lane starts after the
-// officer's last reply.
-func TestAChatWhoseInstanceStoppedIsRehomed(t *testing.T) {
+// TestAChatWhoseHomeStoppedWaitsForItAndKeepsItsSession (operator: "Restart
+// its own instance"): chat c-41 was answered on instance 2, which chat-idle
+// stopped; instance 1 is up with a free lane. The chat is NOT moved: while 2
+// is down it stays unclaimed (no turn, no Rehome), the plan has instance 2
+// started for it, and once 2 is up the next turn runs THERE on the same
+// session — its marks carried on, nothing set aside.
+func TestAChatWhoseHomeStoppedWaitsForItAndKeepsItsSession(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "old question")
+	if got := r.runner.Run(context.Background(), r.o, 2, r.item(t, id)); got != officers.ChatReplied {
+		t.Fatalf("the first turn, on instance 2: %s; log:\n%s", got, r.logs)
+	}
+	before := r.lanes.marksOf("c-41")
+	if before.Answered == 0 {
+		t.Fatalf("the first turn left no marks: %+v", before)
+	}
+	_, id = r.hq.MemberSays("c-41", "member1", "Member One", "new question")
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	r.runner.Dispatch(context.Background(), r.o, obs, clk.Now())
+	r.runner.Wait()
+	if turns := r.lanes.sent(); len(turns) != 1 || len(r.lanes.rehomes) != 0 {
+		t.Fatalf("home 2 stopped, a free lane on 1: turns %+v rehomes %v; want the chat left unclaimed for its own instance (no turn, no re-home); log:\n%s",
+			turns, r.lanes.rehomes, r.logs)
+	}
+	if st := r.hq.Item(id).Status; st != "open" {
+		t.Fatalf("the waiting chat's item is %s, want open (unclaimed)", st)
+	}
+	plan, held := r.runner.Want(context.Background(), r.o, obs, clk.Now())
+	obs.ChatPlan = plan
+	d := officers.Decide(r.o, obs, time.Time{}, clk.Now(), nil)
+	if held[officers.ItemID(id)] || fmt.Sprint(d.Start) != "[2]" || slices.Contains(d.Stop, 2) {
+		t.Fatalf("home 2 stopped: plan %+v held %v start %v stop %v; want instance 2 started for the chat (and never stopped), nothing held", plan, held, d.Start, d.Stop)
+	}
+	if !strings.Contains(d.ChatWhy[2], "chat home") {
+		t.Fatalf("the start of instance 2 says %q; want it named a chat home start", d.ChatWhy[2])
+	}
+	obs.Instances[1] = upInstance(r.o, 2)
+	r.runner.Dispatch(context.Background(), r.o, obs, clk.Now())
+	r.runner.Wait()
+	turns := r.lanes.sent()
+	last := turns[len(turns)-1]
+	if len(turns) != 2 || last.n != 2 || !strings.Contains(last.text, "new question") || strings.Contains(last.text, "old question") {
+		t.Fatalf("turns %+v; want the second on instance 2 carrying only the new question; log:\n%s", turns, r.logs)
+	}
+	if len(r.lanes.rehomes) != 0 || strings.Contains(r.logs.String(), "re-homed") {
+		t.Fatalf("rehomes %v; want none (same session on its own instance); log:\n%s", r.lanes.rehomes, r.logs)
+	}
+	if after := r.lanes.marksOf("c-41"); after.Seen <= before.Seen || after.Answered <= before.Answered {
+		t.Fatalf("marks %+v after %+v; want the same session's marks carried on past the first turn's", after, before)
+	}
+	if st := r.hq.Item(id).Status; st != "done" {
+		t.Fatalf("item %s, want done", st)
+	}
+}
+
+// TestAChatWhoseHomeIsInErrorIsRehomed: chat c-41's home, instance 2, is in
+// error. It is not waited for: the chat runs on instance 1, its old lane set
+// aside, and the log names why.
+func TestAChatWhoseHomeIsInErrorIsRehomed(t *testing.T) {
 	r, clk := clockRig(t, 1)
 	r.hq.AddChat(relID, "c-41", "triage")
 	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "old question")
@@ -249,26 +321,49 @@ func TestAChatWhoseInstanceStoppedIsRehomed(t *testing.T) {
 		t.Fatalf("the first turn, on instance 2: %s; log:\n%s", got, r.logs)
 	}
 	_, id = r.hq.MemberSays("c-41", "member1", "Member One", "new question")
-	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	broken := upInstance(r.o, 2)
+	broken.Error = true
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1), broken}}
 	plan, held := r.runner.Want(context.Background(), r.o, obs, clk.Now())
-	if held[officers.ItemID(id)] || plan.Need != 0 {
-		t.Fatalf("a chat whose instance stopped, a free lane on 1: plan %+v held %v; want nothing started, nothing held", plan, held)
+	if held[officers.ItemID(id)] || len(plan.Homes) != 0 || plan.Unplaced != 1 || plan.Need != 0 {
+		t.Fatalf("home 2 in error, a free lane on 1: plan %+v held %v; want it unplaced (Unplaced 1), no home to start, Need 0", plan, held)
 	}
 	r.runner.Dispatch(context.Background(), r.o, obs, clk.Now())
 	r.runner.Wait()
 	turns := r.lanes.sent()
-	last := turns[len(turns)-1]
-	if len(turns) != 2 || last.n != 1 || !strings.Contains(last.text, "new question") || strings.Contains(last.text, "old question") {
-		t.Fatalf("turns %+v; want the second on instance 1 carrying only what came after the last reply; log:\n%s", turns, r.logs)
+	if len(turns) != 2 || turns[1].n != 1 || fmt.Sprint(r.lanes.rehomes) != "[c-41:2]" {
+		t.Fatalf("turns %+v rehomes %v; want the second on instance 1 and c-41 re-homed from 2; log:\n%s", turns, r.lanes.rehomes, r.logs)
 	}
-	if fmt.Sprint(r.lanes.rehomes) != "[c-41:2]" {
-		t.Fatalf("rehomes %v, want [c-41:2]", r.lanes.rehomes)
+	if !strings.Contains(r.logs.String(), "re-homed from instance 2 (in error) to instance 1") {
+		t.Fatalf("no log line names the re-home and its reason:\n%s", r.logs)
 	}
-	if !strings.Contains(r.logs.String(), "re-homed") {
-		t.Fatalf("no log line names the re-home:\n%s", r.logs)
+}
+
+// TestAChatWhoseHomeHoldsACappedClaimIsRehomed: a judgement pool whose
+// instance 2 is stopped while HQ shows it holding a capped claim. Decide
+// never starts that number, so a chat homed there is moved to instance 1
+// rather than waiting for a start that never comes.
+func TestAChatWhoseHomeHoldsACappedClaimIsRehomed(t *testing.T) {
+	r, clk := clockRig(t, 1)
+	r.o.Tiers = &officers.Tiers{Judgement: officers.TierPool{MaxInstances: 1, MaxItemMinutes: 30}, Routine: officers.TierPool{MaxInstances: 1}}
+	r.o = r.o.Pool(officers.TierJudgement)
+	r.hq.AddChat(relID, "c-41", "triage")
+	_, id := r.hq.MemberSays("c-41", "member1", "Member One", "a question")
+	r.lanes.homes["c-41"] = 2
+	exp, at := clk.Now().Add(time.Hour), clk.Now().Add(-time.Hour)
+	capped := officers.Item{ID: "q1", Kind: "release.evaluate", Status: officers.StatusClaimed, ClaimedBy: r.o.InstanceName(2), LeaseExpiresAt: &exp, ClaimedAt: &at}
+	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Claimed: []officers.Item{capped},
+		Instances: []officers.InstanceState{upInstance(r.o, 1), downInstance(r.o, 2)}}
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); len(plan.Homes) != 0 || plan.Unplaced != 1 {
+		t.Fatalf("home 2 holds a capped claim: plan %+v; want it unplaced, no home to start", plan)
 	}
-	if st := r.hq.Item(id).Status; st != "done" {
-		t.Fatalf("item %s, want done", st)
+	r.runner.Dispatch(context.Background(), r.o, obs, clk.Now())
+	r.runner.Wait()
+	if turns := r.lanes.sent(); len(turns) != 1 || turns[0].n != 1 || fmt.Sprint(r.lanes.rehomes) != "[c-41:2]" {
+		t.Fatalf("turns %+v rehomes %v; want one on instance 1, re-homed from 2; log:\n%s", turns, r.lanes.rehomes, r.logs)
+	}
+	if !strings.Contains(r.logs.String(), "(holding a capped claim, so it is not started)") {
+		t.Fatalf("no log line names the capped claim:\n%s", r.logs)
 	}
 }
 
@@ -297,12 +392,20 @@ func TestAChatPastTheCeilingIsRehomedNotHeld(t *testing.T) {
 	if fmt.Sprint(r.lanes.rehomes) != "[c-41:3]" {
 		t.Fatalf("rehomes %v, want [c-41:3]", r.lanes.rehomes)
 	}
+	if !strings.Contains(r.logs.String(), "re-homed from instance 3 (past chat_max_instances 2) to instance 1") {
+		t.Fatalf("no log line names the re-home and its reason:\n%s", r.logs)
+	}
 }
 
-// TestADownHomeIsStartedOnlyWhenNoLaneIsFree: chat c-41's home (instance 2)
-// is down and instance 1's one lane is busy: the plan prefers starting its
-// home (its conversation is there) over the lowest free number.
-func TestADownHomeIsStartedOnlyWhenNoLaneIsFree(t *testing.T) {
+// TestAStoppedHomeIsStartedOnceForItsChats: chat c-41's home (instance 3)
+// is stopped and instance 1's one lane is busy. Its home is started for it
+// (Homes [3]) and nothing else: the chat waits for its own instance, so no
+// second instance is started for it (Need 0). With two lanes an instance and
+// nothing up, a new chat waiting beside it takes home 3's spare lane: still
+// only [3], not [1 3].
+// A home past the ceiling (7) is never started: the chat is unplaced and
+// needs a new instance.
+func TestAStoppedHomeIsStartedOnceForItsChats(t *testing.T) {
 	r, clk, _ := busyRig(t, 1, 1)
 	r.o = r.o.WithChatMaxInstances(4)
 	r.hq.AddChat(relID, "c-41", "triage")
@@ -312,13 +415,21 @@ func TestADownHomeIsStartedOnlyWhenNoLaneIsFree(t *testing.T) {
 	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: insts}
 	plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now())
 	obs.ChatPlan = plan
-	if d := officers.Decide(r.o, obs, time.Time{}, clk.Now(), nil); plan.Need != 1 || fmt.Sprint(plan.Prefer) != "[3]" || fmt.Sprint(d.Start) != "[3]" {
-		t.Fatalf("a down home, no free lane: plan %+v start %v; want Need 1, Prefer [3], start [3]", plan, d.Start)
+	if d := officers.Decide(r.o, obs, time.Time{}, clk.Now(), nil); plan.Need != 0 || fmt.Sprint(plan.Homes) != "[3]" || plan.Waiting != 1 || fmt.Sprint(d.Start) != "[3]" {
+		t.Fatalf("a stopped home, no free lane: plan %+v start %v; want Need 0, Homes [3], Waiting 1, start [3]", plan, d.Start)
 	}
-	// A home past the ceiling (4) is never preferred: the chat is re-homed.
+	two := r.o.WithChatSessions(2)
+	obs.Open = append(obs.Open, waiting(t, r, 1)...)
+	obs.Instances = []officers.InstanceState{downInstance(r.o, 1), downInstance(r.o, 2), downInstance(r.o, 3), downInstance(r.o, 4)}
+	plan, _ = r.runner.Want(context.Background(), two, obs, clk.Now())
+	obs.ChatPlan = plan
+	if d := officers.Decide(two, obs, time.Time{}, clk.Now(), nil); plan.Need != 0 || fmt.Sprint(plan.Homes) != "[3]" || plan.Unplaced != 1 || fmt.Sprint(d.Start) != "[3]" {
+		t.Fatalf("nothing up, a stopped home with a lane to spare, a new chat beside it: plan %+v start %v; want Need 0, Homes [3], Unplaced 1, start [3]", plan, d.Start)
+	}
+	obs.Open, obs.Instances = obs.Open[:1], insts
 	r.lanes.homes["c-41"] = 7
-	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); plan.Need != 1 || len(plan.Prefer) != 0 {
-		t.Fatalf("a home past the ceiling, no free lane: plan %+v; want Need 1 and no preferred home", plan)
+	if plan, _ := r.runner.Want(context.Background(), r.o, obs, clk.Now()); plan.Need != 1 || len(plan.Homes) != 0 || plan.Unplaced != 1 {
+		t.Fatalf("a home past the ceiling, no free lane: plan %+v; want Need 1, Unplaced 1, no home to start", plan)
 	}
 }
 
@@ -434,6 +545,20 @@ func TestTheWakeLoopScalesChatInstancesUpAndDown(t *testing.T) {
 	}
 	if up, w := testutil.ToFloat64(metrics.OfficerChatInstancesUp), testutil.ToFloat64(metrics.OfficerChatsWaiting); up != 1 || w != 0 {
 		t.Fatalf("gauges after the stop: chat instances up %v, chats waiting %v; want 1 and 0", up, w)
+	}
+	// c-2 speaks again with its home stopped and instance 1's lane free: its
+	// home is started for it (logged as a chat home start) and it is not run
+	// on 1; the next pass runs it on 2, its same session, nothing set aside.
+	r.hq.MemberSays("c-2", "member1", "Member One", "q3")
+	res = rec.Check(context.Background(), relID, true)
+	runner.Wait()
+	if fmt.Sprint(res.Decision.Start) != "[2]" || len(lanes.sent()) != 2 || !strings.Contains(r.logs.String(), "chat home") {
+		t.Fatalf("c-2 again, its home stopped: start %v, turns %+v; want instance 2 started (a chat home start) and no turn yet; log:\n%s", res.Decision.Start, lanes.sent(), r.logs)
+	}
+	rec.Check(context.Background(), relID, true)
+	runner.Wait()
+	if turns := lanes.sent(); len(turns) != 3 || turns[2].chat != "c-2" || turns[2].n != 2 || len(lanes.rehomes) != 0 {
+		t.Fatalf("the pass after its home started: turns %+v rehomes %v; want c-2's turn on 2, no re-home; log:\n%s", turns, lanes.rehomes, r.logs)
 	}
 }
 

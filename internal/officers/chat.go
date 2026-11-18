@@ -450,8 +450,9 @@ type ChatLanes interface {
 	// Home is the instance number chatID's lane lives on (its session row's
 	// agent), 0 when it has none yet — a number past the pool's slots too
 	// (the ceiling lowered since). A lane's conversation is on its
-	// instance's volume, so a chat stays there while that instance is up;
-	// it moves (Rehome) only when it is down, in error or past the ceiling.
+	// instance's volume, so a chat stays there: a stopped home is started
+	// for it, and it moves (Rehome) only when its home is in error, past the
+	// ceiling or holds a capped claim (rehomeWhy).
 	Home(ctx context.Context, o Officer, chatID string) (int, error)
 	// Open finds or makes chatID's lane session on instance n and answers its
 	// marks.
@@ -465,8 +466,8 @@ type ChatLanes interface {
 	// answers the lane's final assistant text. ErrChatLaneUnavailable (wrapped)
 	// when the lane refused it before anything was typed.
 	Turn(ctx context.Context, o Officer, n int, chatID, text string) (string, error)
-	// Rehome sets aside chatID's lane session on instance from (stopped, in
-	// error or past the chat ceiling), so its next Open on another instance
+	// Rehome sets aside chatID's lane session on instance from (in error,
+	// past the chat ceiling or holding a capped claim: rehomeWhy), so its next Open on another instance
 	// makes a new session there: one with no marks, which starts after the
 	// officer's last reply. Its history stays readable where it was. Nothing
 	// to set aside is no error.
@@ -476,18 +477,21 @@ type ChatLanes interface {
 // ChatPlan is what pool o's chats need of its instances at one pass
 // (ChatRunner.Want; Observation.ChatPlan). Decide reads it, purely.
 type ChatPlan struct {
-	// Need is how many more instances the waiting chats need: the chats no
-	// up instance has a free lane for, ChatSessions to an instance, rounded
-	// up. 0 while a lane is free.
+	// Need is how many more instances the unplaced chats need beyond Homes:
+	// the unplaced chats no up instance has a free lane for, less the lanes
+	// Homes leave free once up, ChatSessions to an instance, rounded up. 0
+	// while a lane is free.
 	Need int
-	// Prefer is the down instances to start first for Need: the homes of
-	// chats whose instance is down (its conversation is on that instance's
-	// volume), in the order the chats came.
-	Prefer []int
+	// Homes is the stopped instances to start for the chats homed on them,
+	// whatever Need says: a chat whose home is stopped (not in error, within
+	// the ceiling, no capped claim) waits for it, because its conversation
+	// is on that instance's volume. In the order the chats came.
+	Homes []int
 	// Waiting is how many pending chats have no free lane now.
 	Waiting int
-	// Unplaced is how many pending chats have no up home: each goes to an
-	// up instance with a free lane, or waits for one Need starts.
+	// Unplaced is how many pending chats have no home to wait for (none yet,
+	// or one to re-home from): each goes to an up instance with a free lane,
+	// or waits for one Homes or Need starts.
 	Unplaced int
 	// Busy is the chat turns running on each instance, by number.
 	Busy map[int]int
@@ -710,12 +714,17 @@ func PendingChats(obs Observation, now time.Time) []Item {
 //   - A pending chat whose home is up (up, not in error, within the chat
 //     ceiling) counts against its home's lanes and waits for one there: its
 //     conversation is on that instance's volume.
-//   - Every other pending chat — no home yet, or a home that is down, in
-//     error or past chat_max_instances — is UNPLACED: Dispatch puts it on an
-//     up instance with a free lane (re-homing it when it had a home).
-//   - The unplaced chats no free lane takes need ceil(left / chat_sessions)
-//     more instances (Need), the down homes among them first (Prefer).
-//     Decide starts them, within chat_max_instances.
+//   - 🔴 A pending chat whose home is STOPPED — not in error, within the chat
+//     ceiling, holding no capped claim (rehomeWhy "") — waits for it: its
+//     home is in Homes, which Decide starts, and the chat continues its
+//     same session there once it is up. It is never moved for a stop.
+//   - Every other pending chat — no home yet, or a home in error, past
+//     chat_max_instances or holding a capped claim — is UNPLACED: Dispatch
+//     puts it on an up instance with a free lane (re-homing it when it had a
+//     home).
+//   - The unplaced chats no free lane takes, less the lanes Homes leave free,
+//     need ceil(left / chat_sessions) more instances (Need). Decide starts
+//     them, within chat_max_instances.
 //
 // It also records when each instance was last active (ChatRunner.active)
 // and answers it as ActiveAt, with the turns running on each (Busy) and the
@@ -744,7 +753,8 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 		free[n] = o.ChatSessions() - plan.Busy[n]
 	}
 	held := map[ItemID]bool{}
-	seenPrefer := map[int]bool{}
+	capped := cappedHolders(o, obs, now)
+	homed := map[int]int{} // the chats waiting for their stopped home, by its number
 	for _, it := range pending {
 		chat, _, _ := ChatOf(it)
 		if r.backingOff(chatRunKey(o, chat), now) {
@@ -757,17 +767,20 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
 			continue
 		}
-		if up[h] {
+		switch {
+		case up[h]:
 			plan.PendingOn[h]++
 			free[h]--
-			continue
-		}
-		plan.Unplaced++
-		if h >= 1 && h <= o.ChatMaxInstances() && !seenPrefer[h] {
-			// Its home is down (or in error): started first if a new
-			// instance is needed, as its conversation is there.
-			seenPrefer[h] = true
-			plan.Prefer = append(plan.Prefer, h)
+		case h >= 1 && rehomeWhy(o, obs, h, capped) == "":
+			// Its home is stopped: started for it, as its conversation is
+			// there.
+			plan.Waiting++
+			if homed[h] == 0 {
+				plan.Homes = append(plan.Homes, h)
+			}
+			homed[h]++
+		default:
+			plan.Unplaced++
 		}
 	}
 	avail := 0
@@ -780,10 +793,16 @@ func (r *ChatRunner) Want(ctx context.Context, o Officer, obs Observation, now t
 	}
 	if left := plan.Unplaced - avail; left > 0 {
 		plan.Waiting += left
-		plan.Need = (left + o.ChatSessions() - 1) / o.ChatSessions()
-	}
-	if len(plan.Prefer) > 0 && plan.Need == 0 {
-		plan.Prefer = nil
+		// A home started for its own chats gives the rest its free lanes:
+		// no second instance is started where one is coming up.
+		for _, h := range plan.Homes {
+			if f := o.ChatSessions() - homed[h]; f > 0 {
+				left -= f
+			}
+		}
+		if left > 0 {
+			plan.Need = (left + o.ChatSessions() - 1) / o.ChatSessions()
+		}
 	}
 	if len(held) == 0 {
 		held = nil
@@ -802,6 +821,32 @@ func chatUp(o Officer, obs Observation) map[int]bool {
 		}
 	}
 	return up
+}
+
+// rehomeWhy is why a pending chat whose home h (1 or more) is not up for
+// chats (chatUp) is moved to another instance, "" when it waits for h
+// instead (h is stopped: Decide starts it, and the chat continues its same
+// session there). capped is cappedHolders. Want and Dispatch both ask it, so
+// the plan and the placement agree.
+//
+// 🔴 ONLY A HOME THAT CANNOT SERVE IT AGAIN SOON MOVES THE CHAT: in error
+// (it holds its slot and is not started), numbered past chat_max_instances,
+// or holding a capped claim (Decide never starts that number). A routine stop
+// (chat_idle_stop, idle_scale_to_zero_after) is no reason: a moved chat loses
+// its lane's conversation.
+func rehomeWhy(o Officer, obs Observation, h int, capped map[int]bool) string {
+	if h > o.ChatMaxInstances() {
+		return fmt.Sprintf("past chat_max_instances %d", o.ChatMaxInstances())
+	}
+	for _, in := range obs.Instances {
+		if in.N == h && in.Error {
+			return "in error"
+		}
+	}
+	if capped[h] {
+		return "holding a capped claim, so it is not started"
+	}
+	return ""
 }
 
 // track updates when each of pool o's instances was last active
@@ -846,9 +891,11 @@ func chatRunKey(o Officer, chat string) string { return o.Key() + "\x00" + chat 
 
 // Dispatch starts a turn for every pending chat of pool o that this process
 // is not already running, on its home instance — or, for a chat with no home
-// yet, the up instance running the fewest chats (lowest number first) — when
-// that instance is up, not in error, and has a free lane (o.ChatSessions()).
-// A chat whose instance has no free lane is left UNCLAIMED for a later pass.
+// yet or one re-homed (rehomeWhy), the up instance running the fewest chats
+// (lowest number first) — when that instance is up, not in error, and has a
+// free lane (o.ChatSessions()). A chat whose instance has no free lane, or
+// whose home is stopped (Want has it started), is left UNCLAIMED for a later
+// pass.
 // It returns at once; each turn runs on its own goroutine.
 func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, now time.Time) {
 	if _, _, ok := r.serves(o); !ok {
@@ -861,6 +908,7 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 		return
 	}
 	up := chatUp(o, obs)
+	capped := cappedHolders(o, obs, now)
 	for _, it := range PendingChats(obs, now) {
 		chat, _, _ := ChatOf(it)
 		key := chatRunKey(o, chat)
@@ -875,11 +923,17 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 			r.log.Printf("officers: %s: chat %s: reading which instance runs it: %v (it waits for a later pass)", o.label(), chat, err)
 			continue
 		}
-		// 🔴 A CHAT WHOSE INSTANCE IS GONE IS RE-HOMED, NEVER HELD: its home
-		// down, in error or past chat_max_instances, it runs on an up
-		// instance with a free lane, its old lane set aside (Rehome).
-		n, from := home, 0
+		// 🔴 A STOPPED HOME IS WAITED FOR, NEVER LEFT: the chat stays
+		// unclaimed until Want's start of it is up, and continues its same
+		// session there. Only a home that cannot serve it again soon (in
+		// error, past chat_max_instances, holding a capped claim: rehomeWhy)
+		// re-homes it onto an up instance with a free lane, its old lane set
+		// aside (Rehome).
+		n, from, why := home, 0, ""
 		if home > 0 && !up[home] {
+			if why = rehomeWhy(o, obs, home, capped); why == "" {
+				continue // its home is stopped: Want has it started
+			}
 			n, from = 0, home
 		}
 		if n == 0 {
@@ -898,7 +952,7 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 		r.lanesBusy[name]++
 		r.mu.Unlock()
 		r.wg.Add(1)
-		go func(it Item, chat string, n, from int) {
+		go func(it Item, chat string, n, from int, why string) {
 			defer r.wg.Done()
 			defer r.done(key, name)
 			defer func() {
@@ -906,8 +960,8 @@ func (r *ChatRunner) Dispatch(ctx context.Context, o Officer, obs Observation, n
 					r.log.Printf("officers: %s: PANIC in chat %s's turn: %v", o.label(), chat, rec)
 				}
 			}()
-			r.settle(key, r.run(r.base, o, n, it, from))
-		}(it, chat, n, from)
+			r.settle(key, r.run(r.base, o, n, it, from, why))
+		}(it, chat, n, from, why)
 	}
 }
 
@@ -969,14 +1023,15 @@ const (
 // (claim, read, turn, reply), synchronously. Dispatch runs it on a goroutine;
 // tests call it directly.
 func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOutcome {
-	return r.run(ctx, o, n, it, 0)
+	return r.run(ctx, o, n, it, 0, "")
 }
 
-// run is Run; oldHome, when not 0, is the chat's old home (down, in error or
-// past the chat ceiling): once the item is claimed, its lane there is set
+// run is Run; oldHome, when not 0, is the chat's old home, moved from for
+// moveWhy (rehomeWhy: in error, past the chat ceiling or holding a capped
+// claim): once the item is claimed, its lane there is set
 // aside (ChatLanes.Rehome), so the turn opens a new session on n — one with
 // no marks, which starts after the officer's last reply.
-func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome int) ChatOutcome {
+func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome int, moveWhy string) ChatOutcome {
 	b, cb, ok := r.serves(o)
 	if !ok {
 		return ChatNotServed
@@ -1036,8 +1091,8 @@ func (r *ChatRunner) run(ctx context.Context, o Officer, n int, it Item, oldHome
 			release("re-home failed")
 			return ChatReadFailed
 		}
-		r.log.Printf("officers: %s: chat %s re-homed from instance %s (stopped, in error or past chat_max_instances %d) to instance %s; it starts after the officer's last reply",
-			o.label(), chat, o.InstanceLabel(oldHome), o.ChatMaxInstances(), o.InstanceLabel(n))
+		r.log.Printf("officers: %s: chat %s re-homed from instance %s (%s) to instance %s; it starts after the officer's last reply",
+			o.label(), chat, o.InstanceLabel(oldHome), moveWhy, o.InstanceLabel(n))
 	}
 	marks, err := r.lanes.Open(ctx, o, n, chat)
 	if err != nil {

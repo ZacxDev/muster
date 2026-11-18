@@ -197,14 +197,14 @@ func TestAPendingChatStartsTheInstanceItNeeds(t *testing.T) {
 	now := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
 	o := officers.Officer{ID: relID, MaxInstances: 3, IdleAfter: time.Minute}
 	down := []officers.InstanceState{{N: 1, Name: o.InstanceName(1)}, {N: 2, Name: o.InstanceName(2)}, {N: 3, Name: o.InstanceName(3)}}
-	obs := officers.Observation{Chats: true, Open: []officers.Item{chatItem("7", "c-1", 1)}, Instances: down, ChatPlan: officers.ChatPlan{Need: 1, Prefer: []int{2}}}
+	obs := officers.Observation{Chats: true, Open: []officers.Item{chatItem("7", "c-1", 1)}, Instances: down, ChatPlan: officers.ChatPlan{Homes: []int{2}}}
 	d := officers.Decide(o, obs, time.Time{}, now, nil)
 	if fmt.Sprint(d.Start) != "[2]" {
 		t.Fatalf("a chat whose lane lives on instance 2: start %v, want [2]", d.Start)
 	}
-	// A preferred home past the chat ceiling (3, the default) is not started:
-	// the chat is re-homed, so the lowest down instance is started instead.
-	obs.ChatPlan = officers.ChatPlan{Need: 1, Prefer: []int{4}}
+	// A home past the chat ceiling (3, the default) is not started: the chat
+	// is re-homed, so the lowest down instance is started instead.
+	obs.ChatPlan = officers.ChatPlan{Need: 1, Homes: []int{4}}
 	if d := officers.Decide(o, obs, time.Time{}, now, nil); fmt.Sprint(d.Start) != "[1]" {
 		t.Fatalf("a home past the chat ceiling: start %v, want [1]", d.Start)
 	}

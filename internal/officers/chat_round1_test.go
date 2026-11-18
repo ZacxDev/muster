@@ -51,7 +51,7 @@ func TestAHostOfficerRunsNoChatAndKeepsNothingUp(t *testing.T) {
 	now := time.Now()
 	obs := officers.Observation{Chats: true, Open: []officers.Item{r.item(t, id)}, Instances: []officers.InstanceState{upInstance(r.o, 1)}}
 	want, held := r.runner.Want(context.Background(), r.o, obs, now)
-	if want.Need != 0 || len(want.Prefer) != 0 || !held[officers.ItemID(id)] {
+	if want.Need != 0 || len(want.Homes) != 0 || !held[officers.ItemID(id)] {
 		t.Fatalf("a host officer's chat: want %+v, held back %v; want nothing started and the chat held back", want, held)
 	}
 	r.runner.Dispatch(context.Background(), r.o, obs, now)

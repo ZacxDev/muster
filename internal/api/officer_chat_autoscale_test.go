@@ -74,3 +74,21 @@ func TestTheFleetReportsAChatPoolsChatOnlyInstances(t *testing.T) {
 		}
 	}
 }
+
+// TestTheOfficerViewListsChatOnlyInstances: the officer view's instances are
+// the pool's slots (Officer.Slots), as the fleet listing reads them — an
+// untiered pod officer of max_instances 1 at chat ceiling 3 lists instances 1,
+// 2 and 3, so a running chat-only instance is not missing. A host officer
+// (no chat instances) lists max_instances only.
+func TestTheOfficerViewListsChatOnlyInstances(t *testing.T) {
+	o := officers.Officer{ID: "release:view-web", MaxInstances: 1}.WithChatMaxInstances(3)
+	want := fmt.Sprint([]string{o.InstanceName(1), o.InstanceName(2), o.InstanceName(3)})
+	if got := fmt.Sprint(viewOfEnv(o, nil).Instances); got != want {
+		t.Fatalf("view instances %s, want %s (chat-only 2 and 3 included)", got, want)
+	}
+	host := o
+	host.Backend, host.Runtime, host.Host = officers.BackendBuiltin, officers.RuntimeHost, "h1"
+	if got := fmt.Sprint(viewOfEnv(host, nil).Instances); got != fmt.Sprint([]string{host.InstanceName(1)}) {
+		t.Fatalf("host officer view instances %s, want instance 1 only", got)
+	}
+}
