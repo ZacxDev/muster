@@ -23,7 +23,7 @@ func TestARehomedChatGetsANewLaneAndKeepsItsHistory(t *testing.T) {
 	row := func(n int) agents.Agent {
 		t.Helper()
 		name := c.o.InstanceName(n)
-		a, err := c.pg.Create(c.ctx, agents.Agent{Name: name, Namespace: "rehome-" + name, Status: agents.StatusRunning, Kind: agents.KindClaudeCode})
+		a, err := c.pg.Create(c.ctx, agents.Agent{Name: name, Namespace: "rehome-" + name, Status: agents.StatusRunning, Kind: agents.KindClaudeCode, CCAccount: "acct-one"})
 		if err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
