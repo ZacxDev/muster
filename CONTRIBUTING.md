@@ -137,14 +137,15 @@ then set `DENIED_COUNT` in `tests/leakscan.py` to the count it prints.
 ## Documentation
 
 The README is for newcomers; everything else lives in [`docs/`](docs/README.md).
-Two tests in `internal/modulegate` keep the docs honest, and both run in
-`go test ./...`:
+Two tests keep the docs honest:
 
 - **A new environment variable needs a row in
-  [`docs/configuration.md`](docs/configuration.md).** The test parses the Go
-  source for every variable it reads, and fails on a variable with no row and on
-  a row nothing reads.
-- **Relative links and images must resolve,** including `#anchors`.
+  [`docs/configuration.md`](docs/configuration.md).** A test in
+  `internal/modulegate` (run by `go test ./...`) parses the Go source for every
+  variable it reads, and fails on a variable with no row and on a row nothing
+  reads.
+- **Relative links and images must resolve,** including `#anchors`, in every
+  tracked `*.md` (`tests/features_config_test.py`).
 
 Screenshots in `docs/img/` are generated: `make screenshots` (see
 [docs/testing.md](docs/testing.md#screenshots)). Re-run it when a pictured view
