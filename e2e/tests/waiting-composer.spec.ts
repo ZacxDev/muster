@@ -128,6 +128,16 @@ async function waitingRows(page: Page): Promise<number> {
   return (html.match(/data-nav-wait=""/g) || []).length;
 }
 
+// openCount is THE ONE OPEN COUNT (internal/api asks_count.go) as the
+// server has it: the More badge's route, whose number the ☰ badge shows too
+// since the Asks design review (it used to count the sidebar's waiting rows,
+// waitingRows, which leaves out what has no row: a notice, an officer's ask,
+// a task to route).
+async function openCount(page: Page): Promise<number> {
+  const html = await (await page.request.get(origin + '/attention/badge')).text();
+  return Number((html.match(/data-count="(\d+)"/) || ['', 'NaN'])[1]);
+}
+
 // The sidebar's mark for ASKER, as the server draws it on its row.
 async function askerRowMark(page: Page): Promise<string> {
   const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
@@ -152,11 +162,16 @@ for (const vp of [
     test.use(vp.use);
     const tap = async (page: Page, sel: string) => (vp.phone ? page.locator(sel).tap() : page.locator(sel).click());
 
+    // The ☰ badge is the ONE OPEN COUNT (asks_count.go). An INVARIANT GUARD
+    // here (green at origin/main 271e6726 too: in this rig every open item has
+    // a sidebar row, so the two counts agree); the regression coverage is
+    // asks-feed.spec's "one count" and TestEverySurfaceShowsTheSameOpenCount.
     test('the ☰ badge counts what waits: shown when an ask arrives, gone when it is answered, live', async ({ page }) => {
       test.setTimeout(120_000);
       await rig.login(page);
       await rig.waitListed(page, 'kiwi');
-      const base = await waitingRows(page);
+      const base = await openCount(page);
+      const rows = await waitingRows(page);
       // A page whose ☰ is on screen at this size: the shell on a phone (the
       // rail is a drawer there), the Rendered view and then a Terminal view on
       // a desktop (their sidebar is an overlay at every width).
@@ -190,7 +205,8 @@ for (const vp of [
       if (base === 0) await expect(badge(page), 'nothing waits: no badge').toBeHidden();
 
       const id = await ask(`Ship the ${stamp} build?`);
-      expect(await waitingRows(page), 'POSITIVE CONTROL: the sidebar marks one more row waiting').toBe(base + 1);
+      expect(await waitingRows(page), 'POSITIVE CONTROL: the sidebar marks one more row waiting').toBe(rows + 1);
+      expect(await openCount(page), 'and the open count is one more').toBe(base + 1);
       if (vp.phone) {
         // The shell holds the /events stream: the badge follows it, no reload.
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
@@ -236,7 +252,8 @@ for (const vp of [
       await noSidewaysScroll(page, vp.w);
 
       await answer(page, id);
-      expect(await waitingRows(page)).toBe(base);
+      expect(await waitingRows(page)).toBe(rows);
+      expect(await openCount(page)).toBe(base);
       if (vp.phone) {
         await expect(badge(page), 'answered: the badge follows, live').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
       } else {
