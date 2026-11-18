@@ -82,6 +82,12 @@ it off. The full list of features, with every `.env` line, is
 - [cli.md](cli.md) — the `muster` CLI and the other binaries
 - [schema.md](schema.md) — tables, migrations, row-level security, restore and rollback
 
+**Building on it**
+
+- [ecosystem.md](ecosystem.md) — what you can build on muster (plugins, officers, connectors, the MCP tools, the API), the list of published plugins, and how to add yours
+- [plugins-quickstart.md](plugins-quickstart.md) — build a working plugin in about 15 minutes: turn plugins on, mint or pair a token, post a message, approve the draft, claim it, report the result
+- [officer-plugin-recipe.md](officer-plugin-recipe.md) — a worked example: a support inbox officer extended by a plugin, from its charter to the replies it sends
+
 **Working on it**
 
 - [development.md](development.md) — run muster from source against a throwaway database
