@@ -94,7 +94,8 @@ func TestATiersBlockDeclaresTwoPools(t *testing.T) {
 	for name, want := range map[string]string{
 		judgeStem + "1":    "judgement#1 opus/2",
 		judgeStem + "2":    "judgement#2 opus/2",
-		judgeStem + "3":    "", // past judgement's max of 2 (routine's 3 must not leak)
+		judgeStem + "3":    "judgement#3 opus/2", // past judgement's max of 2: a chat-only instance (the default chat ceiling, 3)
+		judgeStem + "4":    "",                   // past judgement's slots (routine's max is 3: a routine 4 must not leak either)
 		routineStem + "1":  "routine#1 haiku/3",
 		routineStem + "3":  "routine#3 haiku/3",
 		routineStem + "4":  "", // past routine's max

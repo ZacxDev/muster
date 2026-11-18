@@ -62,8 +62,13 @@ the README's pictures do.
 ## Before the first session
 
 What each part needs, and what is optional: [Core vs optional](#core-vs-optional).
-While there is no session yet, home shows how to start an agent in tmux
-(`tmux new -A -s work claude`) and the one prompt ([onboarding.md](onboarding.md)), to connect another machine.
+While there is no session yet, home walks an admin through connecting a
+computer and starting an agent in plain steps; the one prompt
+([onboarding.md](onboarding.md)) and the tmux command
+(`tmux new -A -s work claude`) are each behind an ⓘ with a Copy button. With a
+computer already connected it leads with starting an agent. Anyone who is not
+an admin is told to ask their admin, and anyone whose menu lists their team's
+agents is pointed to the menu.
 
 ## Notifications: only when you are needed
 

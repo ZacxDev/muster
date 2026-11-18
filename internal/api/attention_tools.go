@@ -890,10 +890,17 @@ func (s *Server) toolTasksList(ctx context.Context, c toolCaller, arguments stri
 		Updated string `json:"updated"`
 	}
 	out := []row{}
+	// A plugin's title is fenced in front of the JSON, its row's left empty
+	// (task_kickoff.go, taskListText).
+	fenced := map[int64]plugins.TaskText{}
 	add := func(n notes.Note) {
 		if in.Status == "" || n.Status == in.Status {
 			gate, _ := notes.GateReason(n.Tags)
-			out = append(out, row{ID: n.ID, Title: taskTitle(n), Status: n.Status, Gate: gate, Updated: n.UpdatedAt.UTC().Format(time.RFC3339)})
+			title, plugin := taskListTitle(n)
+			if plugin != nil {
+				fenced[n.ID] = *plugin
+			}
+			out = append(out, row{ID: n.ID, Title: title, Status: n.Status, Gate: gate, Updated: n.UpdatedAt.UTC().Format(time.RFC3339)})
 		}
 	}
 	if sc.all {
@@ -924,7 +931,13 @@ func (s *Server) toolTasksList(ctx context.Context, c toolCaller, arguments stri
 	if len(out) > tasksListMax {
 		out = out[:tasksListMax]
 	}
-	return toolJSON(map[string]any{"tasks": out})
+	var block []plugins.TaskText
+	for _, r := range out {
+		if t, ok := fenced[r.ID]; ok {
+			block = append(block, t)
+		}
+	}
+	return taskListText(map[string]any{"tasks": out}, block)
 }
 
 func taskIDArg(arguments string) int64 {
@@ -944,7 +957,8 @@ func (s *Server) toolTaskGet(ctx context.Context, c toolCaller, arguments string
 	if err != nil {
 		return s.taskErr(id, err, "read")
 	}
-	return toolJSON(n)
+	// A plugin's text fenced, in front of the JSON (task_kickoff.go).
+	return taskToolText(n)
 }
 
 func (s *Server) toolTaskComment(ctx context.Context, c toolCaller, arguments string) string {
@@ -1008,5 +1022,5 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 		return s.taskErr(in.ID, err, "set the status of")
 	}
 	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(in.ID, 10))
-	return toolJSON(n)
+	return taskToolText(n)
 }

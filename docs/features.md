@@ -23,7 +23,9 @@ Secrets go in `.env` only.
 
 **Checking a feature is on:** `muster doctor`, and on releases that have it,
 the **Features** page (`/account/features`), list every feature as on, off or
-misconfigured, and say what an off one needs. Many features also log their own
+misconfigured (the page says "Needs setup"); on the page, an admin finds what
+an off one needs — the lines below, to copy — behind its row's ⓘ, and anyone
+else is told to ask their admin. Many features also log their own
 line when muster starts, saying whether they are on and why; each section below
 quotes it where there is one. Read them with
 

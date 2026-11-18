@@ -1008,7 +1008,9 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		if task.Repo == "" {
 			task.Repo = in.Repo
 		}
-		kickoff = task.Body + chiefDispatchRules
+		// The task's text through the one rule (task_kickoff.go): a plugin's
+		// title and body arrive fenced, the owner's unchanged.
+		kickoff = taskKickoffText(task) + chiefDispatchRules
 		switch {
 		case prompt != "" && byTap:
 			kickoff = renderApprovedBrief(prompt, true) + "\n" + kickoff

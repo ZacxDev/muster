@@ -40,8 +40,11 @@ the opposite of a mirrored session. [provisioner.md](provisioner.md),
 **Episode.** One stop of a session (waiting on you, or stalled), pushed once.
 [features.md](features.md#session-state).
 
-**Features page.** `/account/features`: every optional feature as on, off or
-misconfigured, as `muster doctor` lists them. [features.md](features.md).
+**Features page.** `/account/features`: every feature by a plain name, what it
+does and whether it is on (a misconfigured one reads "Needs setup"), as
+`muster doctor` lists them. Each row's ⓘ holds the lines that turn it on, with
+a Copy button, for an admin only; anyone else is told to ask their admin.
+[features.md](features.md).
 
 **Focus.** A short title and summary of what each session is doing now, made by
 a model on an OpenRouter key. [focus.md](focus.md).

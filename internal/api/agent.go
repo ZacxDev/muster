@@ -89,7 +89,8 @@ func (s *Server) handleAgentTask(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not load task"})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, note)
+	// A plugin's text fenced, its fields blanked (task_kickoff.go).
+	s.writeJSON(w, http.StatusOK, taskAgentJSON(note))
 }
 
 type agentCommentRequest struct {
@@ -199,7 +200,8 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.broadcast(r.Context(), EventTaskChanged, strconv.FormatInt(id, 10))
-	s.writeJSON(w, http.StatusOK, note)
+	// A plugin's text fenced, its fields blanked (task_kickoff.go).
+	s.writeJSON(w, http.StatusOK, taskAgentJSON(note))
 }
 
 // --- worker self-service native tools (the /v1/responses mechanism) ---
@@ -962,7 +964,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		if err != nil {
 			return toolErr("could not load task: %v", err)
 		}
-		return toolJSON(n)
+		// A plugin's text fenced, in front of the JSON (task_kickoff.go).
+		return taskToolText(n)
 	case "agent_comment_task":
 		if a.NoteID == nil {
 			return toolErr("no task assigned to you")
@@ -1006,7 +1009,7 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 			return toolErr("could not set status: %v", err)
 		}
 		s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
-		return toolJSON(n)
+		return taskToolText(n)
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
 	case askOwnerTool:
