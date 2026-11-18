@@ -8,16 +8,18 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR OR ON `main`; A TAG RUN
-// IS NEVER CANCELLED OR DROPPED.
+// A NEWER PUSH SUPERSEDES AN OLDER RUN ON THE SAME PR ONLY; A `main` PUSH AND
+// A TAG RUN ARE NEVER CANCELLED OR DROPPED.
 //
 // HISTORY. The group was first `ci-${{ github.ref }}` with
 // `cancel-in-progress: true` for every event, under which a later push to
-// `main` cancelled the run of the `main` commit before it. It then became "PR runs only; every other run in its own `run_id` group",
-// so each `main` push ran in full. Operator decision 2026-11-16: a newer push
-// to `main` cancels the older `main` run, because the downstream release tool
-// now releases the newest green `main` descendant that CONTAINS a commit whose
-// own run was cancelled.
+// `main` cancelled the run of the `main` commit before it. It then became "PR
+// runs only; every other run in its own `run_id` group". From 2026-11-16 a
+// newer push to `main` cancelled the older `main` run, relying on the release
+// tool releasing the newest green `main` descendant; measured 2026-11-18, 38
+// of the 60 newest `main` runs were cancelled and `main` went 3 h+ with no
+// verdict and no green descendant (ci.yml carries the numbers). So `main` is
+// back in a `run_id` group of its own.
 //
 // 🔴 THE TAG HALF IS THE LOAD-BEARING ONE. A vX.Y.Z tag run publishes the
 // release images and the GitHub release; it must keep a group of its own
@@ -25,7 +27,7 @@ import (
 // FLAG: a group holds one running and ONE pending run, and a newer pending run
 // replaces the older pending one whatever the flag says — so a tag sharing any
 // group could still be dropped while queued. The group expression routes ONLY
-// a pull_request event or ref `refs/heads/main` to a shared group.
+// a pull_request event to a shared group.
 //
 // 🔴 EXACT STRING, NOT A SUBSTRING. The obvious substring check — "the group
 // mentions run_id" — accepts `github.ref || github.run_id`, which is always the
@@ -40,12 +42,12 @@ import (
 // ---------------------------------------------------------------------------
 
 const wantCIConcurrency = `concurrency:
-  group: ci-${{ (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}`
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}`
 
-// TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags pins the
-// workflow-level concurrency block.
-func TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags(t *testing.T) {
+// TestCIConcurrencySupersedesPullRequestRunsOnly pins the workflow-level
+// concurrency block.
+func TestCIConcurrencySupersedesPullRequestRunsOnly(t *testing.T) {
 	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -59,8 +61,8 @@ func TestCIConcurrencySupersedesPullRequestAndMainRunsNeverTags(t *testing.T) {
 	}
 	if got != wantCIConcurrency {
 		t.Errorf("top-level concurrency block in %s is\n%s\n\nwant\n%s\n\n"+
-			"PR and `main` runs must share a per-ref, cancelling group; every other event "+
-			"(a vX.Y.Z tag above all) must get its own `github.run_id` group and never be cancelled.",
+			"only PR runs may share a per-ref, cancelling group; every other event "+
+			"(a `main` push and a vX.Y.Z tag above all) must get its own `github.run_id` group and never be cancelled.",
 			path, got, wantCIConcurrency)
 	}
 }
