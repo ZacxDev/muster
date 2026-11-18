@@ -42,6 +42,9 @@ const (
 	failTurn         = "turn_failed"   // 502: any other API failure, and an edge/CDN challenge page (edgeChallengePage)
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
 	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
+	// 500: a chat lane's MCP config could not be written (lanes.go "A CHAT
+	// LANE SAYS WHO IT IS"): its CLI is not run without it; nothing was typed.
+	failMCPConfig = "mcp_config"
 
 	// 502: ccd typed /clear for a new conversation (server.go
 	// startNewConversation) and the CLI never confirmed it; the turn was not
