@@ -172,7 +172,7 @@ var askPageSource = regexp.MustCompile(`data-ask-source>([^<]*)</span> asks([^<]
 
 // askPageWho is what an ask's own page says asks, and where, by ask: the
 // session's name in words — its codename without tmux's window index, never
-// its tmux target (operator rule, 2026-11-17) — and "on <host>"; an asker
+// its tmux target (the operator rule) — and "on <host>"; an asker
 // that names no window keeps its source and says no place.
 var askPageWho = map[int64][2]string{
 	91: {"mango", " · on ws · "},

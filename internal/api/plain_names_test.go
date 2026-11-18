@@ -19,8 +19,8 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// SESSION NAMES FIRST, THE TMUX ADDRESS BEHIND AN ⓘ (operator rule,
-// 2026-11-17: muster is for people who are not engineers, so its own chrome
+// SESSION NAMES FIRST, THE TMUX ADDRESS BEHIND AN ⓘ (operator rule:
+// muster is for people who are not engineers, so its own chrome
 // shows no address, id or code in its top layer). A mirrored session is named
 // by its name — or, with none, its codename without tmux's window index — and
 // "on <host>"; its exact tmux address ("tmux fern:1 @ atlas") is inside the

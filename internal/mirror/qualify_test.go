@@ -192,7 +192,7 @@ func TestQualifyingDoesNotReorder(t *testing.T) {
 	}
 }
 
-// THE INDEX IS NOT A NAME (operator rule, 2026-11-17: muster's top layer shows
+// THE INDEX IS NOT A NAME (operator rule: muster's top layer shows
 // no ids). Two windows of one tmux session were "fern:1" and "fern:2"; they are
 // "fern · window 1" and "fern · window 2" — told apart in words, the index
 // kept only where it is the difference. An unlabelled window ("scratch2:1") is

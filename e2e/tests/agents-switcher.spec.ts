@@ -245,7 +245,7 @@ for (const vp of [
 
     // 🔴 A PILL SHOWS ITS WHOLE NAME, UNCLIPPED — AND NO TMUX WINDOW INDEX.
     // (An older operator report asked for "the number after the colon"; the
-    // operator rule of 2026-11-17 — no ids in muster's top layer — replaces
+    // operator rule — no ids in muster's top layer — replaces
     // it: a window is "orchid", and two that would read alike are told apart
     // by "· window N".) "orchid" is a codename that is NOT its tmux session
     // (the labels file), alone in every view. Read on a session page's bar,

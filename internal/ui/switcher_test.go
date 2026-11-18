@@ -90,7 +90,7 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 		}
 	}
 	// A codename alone in its view is its plain name: Pins with only one
-	// window pinned reads "mango" — no tmux index (operator rule, 2026-11-17:
+	// window pinned reads "mango" — no tmux index (operator rule:
 	// no ids in the top layer), no qualifier (nothing there to tell it from).
 	solo := renderString(t, switcherBar(NewSwitcher(list[:1], mirrors[1:], nil, SwitcherCurrent{}), false))
 	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango /") {

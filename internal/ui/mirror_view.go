@@ -570,7 +570,7 @@ func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 // "Mirrored · <host>". The full-title popover shows exactly this, so when only
 // the badge is clipped the popover still says what the header did not.
 //
-// 🔴 NO TMUX ADDRESS (operator rule, 2026-11-17: no ids in the top layer). It
+// 🔴 NO TMUX ADDRESS (operator rule: no ids in the top layer). It
 // used to end with the window's technical id ("· tmux cedar:1 @ atlas", or
 // "· tmux session scratch2" under a label); that is the header's ⓘ now
 // (mirrorViewTitleRow), with a Copy button.

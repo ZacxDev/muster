@@ -299,7 +299,7 @@ func mirrorCodeName(m MirrorCardView) string {
 //
 // A mirrored session's technical id (its tmux address) is NOT a tooltip's: the
 // tip says where it runs in words (sessionname.Name.Place, "on atlas"), and the
-// address is its page's ⓘ (operator rule, 2026-11-17).
+// address is its page's ⓘ (the operator rule).
 func entryTip(e listEntry, label string) string {
 	n := entryName(e)
 	if n.Place != "" {

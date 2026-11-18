@@ -528,8 +528,8 @@ for (const vp of [
   });
 }
 
-// SESSION NAMES FIRST, THE TMUX ADDRESS BEHIND AN ⓘ (operator rule,
-// 2026-11-17: no address, id or code in muster's top layer), on a phone: the
+// SESSION NAMES FIRST, THE TMUX ADDRESS BEHIND AN ⓘ (operator rule:
+// no address, id or code in muster's top layer), on a phone: the
 // Asks card of a named waiting window and its Rendered view's header call it
 // by its name and "on <host>" — nothing visible spells "tmux", " @ " or a
 // window index — and each has an ⓘ (a 44px button, named for a screen

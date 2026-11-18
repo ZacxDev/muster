@@ -2035,7 +2035,7 @@ func attentionHeadLines(it attentionItem, now time.Time) string {
 // it; else its Source itself (an agent, muster, a plugin), and srcIsTitle says
 // the title IS the source.
 //
-// 🔴 A WINDOW'S PLACE IS WORDS, NOT ITS ADDRESS (operator rule, 2026-11-17:
+// 🔴 A WINDOW'S PLACE IS WORDS, NOT ITS ADDRESS (operator rule:
 // muster's top layer shows no ids). It is "on <host>" (mirror.PlaceWords), and
 // " (host offline)" after it when its host has dropped and only the Source
 // says so; the exact tmux target (it.target) is the card's ⓘ details'

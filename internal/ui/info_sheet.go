@@ -7,7 +7,7 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE ⓘ DETAILS SHEET (operator rule, 2026-11-17): muster is for people who are
+// THE ⓘ DETAILS SHEET (the operator rule): muster is for people who are
 // not engineers, so its own chrome shows no raw address, id, host:port, flag
 // or command in its top layer. When a technical detail is genuinely needed —
 // the tmux window a session runs in, so its owner can open it in a terminal —
