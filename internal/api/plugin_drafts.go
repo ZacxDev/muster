@@ -756,39 +756,34 @@ func pgHint(err error) string {
 const DraftUncheckedRefusal = "The plugin has not yet checked that it can send that draft. " +
 	"It can be approved once the plugin says it can; if the plugin refuses it, it goes back to whoever wrote it."
 
-// draftStatusText is a draft's state in words.
+// draftStatusText is a draft's state in words: short, for its state pill. Its
+// expiry is its own pill (draftExpiryText), relative, never a raw UTC stamp.
 func draftStatusText(d plugins.Draft) string {
-	at := func(t *time.Time) string {
-		if t == nil {
-			return ""
-		}
-		return " " + t.UTC().Format("2006-01-02 15:04") + " UTC"
-	}
 	switch {
 	case d.AwaitingCheck():
-		return "Waiting for the plugin to check that it can send it · expires" + at(&d.ExpiresAt)
+		return "Waiting for the plugin to check that it can send it"
 	case d.RefusedByCheck():
-		return "Refused by the plugin before approval" + at(d.CheckedAt) + " · never sent"
+		return "Refused by the plugin before approval · never sent"
 	case d.Status == plugins.DraftPending && d.CheckState == plugins.CheckLapsed:
-		return "Awaiting your decision · the plugin did not check it in time · expires" + at(&d.ExpiresAt)
+		return "Awaiting your decision · the plugin did not check it in time"
 	}
 	switch d.Status {
 	case plugins.DraftPending:
-		return "Awaiting your decision · expires" + at(&d.ExpiresAt)
+		return "Awaiting your decision"
 	case plugins.DraftApproved:
 		if d.ClaimedAt != nil {
-			return "Approved · the plugin collected it" + at(d.ClaimedAt) + " and is sending it"
+			return "Approved · the plugin collected it and is sending it"
 		}
-		return "Approved" + at(d.ApprovedAt) + " · waiting for the plugin to collect it"
+		return "Approved · waiting for the plugin to collect it"
 	case plugins.DraftSent:
-		return "Sent" + at(d.FinishedAt)
+		return "Sent"
 	case plugins.DraftFailed:
-		return "The plugin could not send it" + at(d.FinishedAt)
+		return "The plugin could not send it"
 	case plugins.DraftUnconfirmed:
-		return "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. It may have been. " +
+		return "Unconfirmed: the plugin collected it and never said whether it was sent. It may have been. " +
 			"muster will not offer it again; ask your chief for a new draft if the sender still needs an answer."
 	case plugins.DraftRejected:
-		return "Rejected" + at(d.DecidedAt)
+		return "Rejected"
 	case plugins.DraftSuperseded:
 		if d.ApprovedAt != nil {
 			return "Not sent: another reply to this message was reported sent"
@@ -800,29 +795,83 @@ func draftStatusText(d plugins.Draft) string {
 	return string(d.Status)
 }
 
-// draftCardHTML draws one draft.
+// draftExpiryText is a pending draft's expiry, relative to now ("expires in
+// 7d"), "" for a draft that is not pending. The exact instant is the pill's
+// datetime.
+func draftExpiryText(d plugins.Draft, now time.Time) string {
+	if d.Status != plugins.DraftPending {
+		return ""
+	}
+	left := d.ExpiresAt.Sub(now)
+	switch {
+	case left <= 0:
+		return "expired"
+	case left < time.Minute:
+		return "expires in under a minute"
+	case left < time.Hour:
+		return "expires in " + strconv.Itoa(int(left/time.Minute)) + "m"
+	case left < 48*time.Hour:
+		return "expires in " + strconv.Itoa(int(left/time.Hour)) + "h"
+	}
+	return "expires in " + strconv.Itoa(int(left/(24*time.Hour))) + "d"
+}
+
+// draftKindLabel is a draft card's kind badge: a reply, or an officer's post.
+func draftKindLabel(d plugins.Draft) string {
+	if d.IsOutbound() {
+		return "Post"
+	}
+	return "Reply draft"
+}
+
+// draftCardHTML draws one draft: the Asks feed card (ui.AsksCardClass, fixed),
+// its head the kind badge, WHO drafted it (the agent's display name:
+// DraftCard.AgentDisplay, the one naming rule, set by readDraftViews) and how
+// long ago; its facts as pills (the plugin, the state, a relative expiry, the
+// length); the message it answers as a quote marked untrusted; the reply in
+// normal text; then ONE primary action (Approve and send) on its own row,
+// with Reject (and its reason box) under it (ui.AsksDecisionClass).
 //
 // 🔴 WHAT IS APPROVED IS WHAT IS SEEN (flowRequestCardHTML's rule). The draft is
 // drawn through flows.VisibleEscape — printable ASCII as itself, everything else
 // spelled out — with its length in characters, so nothing invisible or
-// look-alike rides along unseen. The message it answers is the OUTSIDE party's
-// text: drawn escaped, in its own box, labelled untrusted, and never mistaken for
-// the draft.
+// look-alike rides along unseen. It is in the page's normal text now (it was
+// monospace, broken anywhere: "minu/te"), wrapping at words. The message it
+// answers is the OUTSIDE party's text: drawn escaped, in its own box, labelled
+// untrusted, and never mistaken for the draft.
 func draftCardHTML(c plugins.DraftCard) string {
+	return draftCardHTMLAt(c, time.Now())
+}
+
+// draftCardHTMLAt is draftCardHTML at now (the expiry pill's clock).
+func draftCardHTMLAt(c plugins.DraftCard, now time.Time) string {
 	esc := html.EscapeString
 	d, m := c.Draft, c.Message
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
+	who := c.AgentDisplay
+	if who == "" {
+		who = d.AgentName
+	}
 	var b strings.Builder
-	// THE CARD (the Asks page's design pass): who drafted it and for which
-	// plugin, its state under that; the message it answers as a QUOTE, marked
-	// untrusted; the reply in its own box; then ONE primary action (Approve
-	// and send) on its own row, with the secondary one (Reject, and its
-	// reason box) under it (ui.AsksDecisionClass).
-	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `" data-draft-id="` + id +
+	age := ""
+	if !d.CreatedAt.IsZero() {
+		age = `<time datetime="` + d.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.CreatedAt))) + `</time>`
+	}
+	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-<div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg" data-draft-agent>` + esc(flows.VisibleEscape(d.AgentName)) + `</span>
-<span class="break-words text-xs text-fg2">` + esc(c.PluginLabel) + ` · <span data-draft-state>` + esc(draftStatusText(d)) + `</span></span></div>
+` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", draftKindLabel(d)),
+		`<span class="`+ui.AsksTitleClass+`" data-draft-agent>`+esc(flows.VisibleEscape(who))+`</span>`, age) + `
+`)
+	pills := []string{
+		`<span class="` + ui.AsksPillClass + `" data-draft-plugin>` + esc(c.PluginLabel) + `</span>`,
+		`<span class="` + ui.AsksPillClass + ` whitespace-normal" data-draft-state>` + esc(draftStatusText(d)) + `</span>`,
+	}
+	if exp := draftExpiryText(d, now); exp != "" {
+		pills = append(pills, `<span class="`+ui.AsksPillClass+`" data-draft-expiry><time datetime="`+d.ExpiresAt.UTC().Format(time.RFC3339)+`">`+esc(exp)+`</time></span>`)
+	}
+	pills = append(pills, `<span class="`+ui.AsksPillClass+` tabular-nums" data-draft-runes>`+runes+` characters</span>`)
+	b.WriteString(`<div class="` + ui.AsksPillsClass + `" data-draft-pills>` + strings.Join(pills, "") + `</div>
 `)
 	if d.IsOutbound() {
 		// An officer's outbound draft (plugin_outbound.go): its venue and
@@ -830,20 +879,18 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(outboundCardHTML(c))
 	} else {
 		b.WriteString(`<div class="` + ui.AsksQuoteClass + `" data-draft-original>
-<span class="break-all text-xs text-fg2"><span class="font-semibold">From ` + esc(m.Sender) + `</span> · untrusted · message ` +
-		strconv.FormatInt(m.ID, 10) + `</span>
+<span class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg2"><span class="break-all font-semibold">From ` + esc(m.Sender) + `</span><span class="` + ui.AsksPillClass + `" data-draft-untrusted>untrusted</span></span>
 `)
-	if m.Subject != "" {
-		b.WriteString(`<span class="break-all text-xs text-fg2">` + esc(m.Subject) + `</span>
+		if m.Subject != "" {
+			b.WriteString(`<span class="break-words text-xs text-fg2">` + esc(m.Subject) + `</span>
 `)
-	}
-		b.WriteString(`<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
+		}
+		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg2" data-draft-original-body>` + esc(m.Body) + `</p>
 </div>
 `)
 	}
-	b.WriteString(`<div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<span class="text-xs font-semibold text-fg">` + draftTextLabel(d) + ` · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
-<code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</code>
+	b.WriteString(`<div class="rounded-lg bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
+<p class="whitespace-pre-wrap break-words text-[15px] leading-snug text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</p>
 </div>
 `)
 	if d.ExternalRef != "" {
@@ -907,24 +954,6 @@ func draftReasonFieldHTML(id int64) string {
 	return `<label class="sr-only" for="draft-reason-` + strconv.FormatInt(id, 10) + `">Reason for rejecting (optional)</label>` +
 		`<input id="draft-reason-` + strconv.FormatInt(id, 10) + `" name="reason" maxlength="` + strconv.Itoa(plugins.MaxDecisionReasonRunes) +
 		`" placeholder="Reason (optional)" autocomplete="off" class="min-w-0 flex-1 ` + flowsInputClass + `" data-draft-reason-input>`
-}
-
-// draftTextLabel names the card's text: a reply's, or an outbound draft's
-// post.
-func draftTextLabel(d plugins.Draft) string {
-	if d.IsOutbound() {
-		return "Post"
-	}
-	return "Reply"
-}
-
-// draftTextLead says what the reply text is FOR, by state.
-func draftTextLead(st plugins.DraftStatus) string {
-	switch st {
-	case plugins.DraftPending:
-		return " · approving sends exactly this, once"
-	}
-	return ""
 }
 
 // draftStepUpHTML is the Asks page's confirm dialog and its form script

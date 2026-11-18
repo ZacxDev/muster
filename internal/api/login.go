@@ -400,16 +400,30 @@ func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, i
 //
 // app, when given, lays the page out as a phone app screen (ui.NavApp: the ask
 // page a notification opens).
-func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string, app ...*ui.NavApp) {
-	writeDocumentHeaders(w, code)
+//
+// opts lay the page out: a *ui.NavApp (a phone app screen), navWide (the wide
+// column: a page of cards, the Asks page).
+func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string, opts ...any) {
 	v := ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}
-	if len(app) > 0 {
-		v.App = app[0]
+	for _, o := range opts {
+		switch o := o.(type) {
+		case *ui.NavApp:
+			v.App = o
+		case navLayout:
+			v.Wide = o == navWide
+		}
 	}
+	writeDocumentHeaders(w, code)
 	if err := ui.RenderNavDocument(w, v); err != nil {
 		s.logger.Printf("render %s: %v", title, err)
 	}
 }
+
+// navLayout is a writeNavDocument option: navWide gives the page the wide
+// column on a desktop (ui.NavDocumentView.Wide).
+type navLayout int
+
+const navWide navLayout = 1
 
 // writeDocumentHeaders is the header set both document writers send, then the
 // status.

@@ -297,8 +297,10 @@ func (fakeTranscriberForFeatures) Transcribe(context.Context, io.Reader, string)
 }
 
 // TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff: the ask page's composer
-// and every Asks answer box draw the muted mic when the server has no
-// dictation, and the real one when it does (#441 round 1, R7).
+// draws the muted mic when the server has no dictation, and the real one when
+// it does (#441 round 1, R7). An Asks answer box (the card, a session page's
+// block: one form) draws NO mic with dictation off — the design review: a
+// disabled mic on every card was noise — and the real one when it is on.
 func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/attention/asks/9", nil)
 	off := askComposerHTML(r, attention.Ask{ID: 9}, "", true)
@@ -311,8 +313,8 @@ func TestTheAnswerBoxesShowTheMutedMicWhenDictationIsOff(t *testing.T) {
 	}
 	item := attentionItem{Kind: attentionKindAsk, AskID: 12, dictateOff: true}
 	list := attentionItemsHTMLTo([]attentionItem{item}, time.Now(), "")
-	if !strings.Contains(list, `id="answer-12-dictate-off" href="/account/features#dictation-setup"`) {
-		t.Errorf("Asks list, dictation off: no muted mic in the answer box")
+	if strings.Contains(list, `answer-12-dictate`) || !strings.Contains(list, `id="answer-12"`) {
+		t.Errorf("Asks list, dictation off: a mic is drawn, or the box is not:\n%s", list)
 	}
 	item.dictate, item.dictateOff = ui.TranscribePath, false
 	list = attentionItemsHTMLTo([]attentionItem{item}, time.Now(), "")

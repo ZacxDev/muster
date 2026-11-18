@@ -5,9 +5,10 @@ package ui
 // asks_list.go's do: the stylesheet scans internal/ui, not internal/api, so a
 // class written only there would ship unstyled with css-check green.
 //
-// The tab is the Asks page's one column (max-w-sm) at every width: the filters
-// as a two-column grid of 44px controls, the summary as two-column stat tiles,
-// then the list as the page's own cards (AsksCardClass).
+// The tab is the Asks page's column (ui.NavDocumentWideClass): the filters
+// behind one shut "Filters" toggle, as a two-column grid of 44px controls; the
+// summary as two-column stat tiles; then the list as the page's own cards
+// (AsksCardClass).
 
 const (
 	// AsksLogFormClass is the filter form: two columns of fields.

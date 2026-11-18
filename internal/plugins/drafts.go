@@ -318,6 +318,10 @@ type DraftCard struct {
 	// answers (untrusted) — when one arrived; nil otherwise. Message is the
 	// zero Message on every outbound card.
 	ReplyTo *Message
+	// AgentDisplay is how the Asks page names the drafting agent: its
+	// session's name by the one naming rule (internal/api readDraftViews),
+	// set by the reader for display only; "" draws AgentName.
+	AgentDisplay string
 }
 
 var (
