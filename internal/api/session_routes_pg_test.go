@@ -306,7 +306,7 @@ func TestRouteToSessionInjectsTheStoredMessageOnBothSurfaces(t *testing.T) {
 			t.Fatalf("%s: route %+v (%v) does not name its queued row %d", surface, r, err, items[i].ID)
 		}
 		// The route records the SHA-256 of exactly the block it queued
-		// (migration 0154), and the view's check accepts that block for this
+		// (migration 0155), and the view's check accepts that block for this
 		// session — and no other text (routedPasteMatches).
 		if len(r.PasteSHA256) != 64 || r.PasteSHA256 != plugins.RoutedPasteSHA256(body) {
 			t.Errorf("%s: route records paste %q, want the SHA-256 of its queued block", surface, r.PasteSHA256)

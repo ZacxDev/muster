@@ -70,7 +70,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief on Kubernetes | off | not in the Compose stack |
 | [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief on Kubernetes, an OpenRouter key | off | not in the Compose stack |
 | [Plugins](#plugins) | external systems (an inbox, [ClankMail](clankmail.md)) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
-| ↳ [Plugin viewers](#plugin-viewers), [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
+| ↳ [Plugin viewers](#plugin-viewers), [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [Plugin auto-start](#plugin-auto-start), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
 | [Previews](#previews) | an agent's dev server on a host, served to you | **the preview gateway you run**, a wildcard zone, plugin viewers | off | [a guide](guides/previews.md) |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
 | [Approval router](#approval-router) | transcript links, router notifications, agent permission cards | **an external permission router you run** | off (standalone) | 3 lines |
@@ -881,6 +881,27 @@ The chief routes a task a plugin filed: to the Asks page, or to the agent
 working it ([plugins.md](plugins.md#routing-a-task-to-the-chief)).
 `MUSTER_TASK_ROUTING=1`, with plugins on and the [chief](#chief).
 **Check:** `task routing: ON …`.
+
+### Plugin auto-start
+
+A plugin you trust can start an agent on each task it files, with no tap from
+you ([plugins.md](plugins.md#auto-start)). It is **off for every plugin**
+until you turn it on, on that plugin's card on `/plugins`, with a fresh
+sign-in, choosing the agent kind, the repository and a daily limit. A task
+cannot choose any of them. Each start counts against your chief's
+[dispatch budget](plugins.md#the-chiefs-dispatch-budget). You get a push you
+can stop it from.
+
+- **Needs** [dispatch](#dispatch) on **Kubernetes**, [plugin tasks](#plugin-tasks),
+  [task routing](#task-routing) with your user id in
+  `MUSTER_CHIEF_DISPATCH_OWNERS`, and a [GitHub App](#github-app) that sees the
+  repository.
+- **`.env`:** `MUSTER_PLUGIN_AUTOSTART=1`, the server's own switch, **off by
+  default**. Off stops every auto-start at once, and leaves chief dispatch alone.
+- **Not in the Compose stack:** its chief cannot start agents, so the card
+  says auto-start is not available there and refuses to turn it on.
+- **Check:** the plugin's card says *Auto-start is on*. A task it files then
+  carries a comment from muster saying what it started, or why it did not.
 
 ### PR mail routing
 
