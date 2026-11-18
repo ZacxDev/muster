@@ -133,9 +133,11 @@ const PluginChipSandbox = "allow-scripts allow-same-origin allow-forms allow-pop
 
 // SessionPageSandbox is the Pages tab's frame's sandbox: the owner's own view
 // of a page (muster's shell, which frames the page's content in its own
-// sandbox, pages.ContentCSP). Same-origin and scripts, as the shell needs;
-// a top navigation only on the owner's tap (its "Page details" link).
-const SessionPageSandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-top-navigation-by-user-activation"
+// sandbox, pages.ContentCSP). Same-origin and scripts, as the shell needs.
+// 🔴 NO allow-top-navigation OF ANY KIND, as the preview's frame
+// (TestThePanelsNewTabAndFrameAreLockedDown): the shell's own links to
+// muster's screens open in a new tab when embedded (pages.ShellView.Embed).
+const SessionPageSandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
 
 // PreviewButtonPath is a mirrored window's Open button's refresh: GET with the
 // window's host, session and window (and owner= for a team's), answering

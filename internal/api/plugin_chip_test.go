@@ -239,7 +239,9 @@ func TestThePanelsNewTabAndFrameAreLockedDown(t *testing.T) {
 	frames := iframeRE.FindAllString(page, -1)
 	var fr string
 	for _, f := range frames {
-		if strings.Contains(f, "sandbox=") {
+		// The Previews tab's frame (the Pages tab's is the owner's own view
+		// of a page, ui.SessionPageSandbox).
+		if strings.Contains(f, "data-preview-frame") {
 			fr = f
 		}
 	}

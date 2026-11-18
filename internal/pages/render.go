@@ -482,7 +482,8 @@ type ShellView struct {
 	Owner *OwnerChrome
 	// Embed: the owner's view framed in a session's panel (?embed=1, served
 	// with EmbedShellHeaders): the popover's links to muster's own screens
-	// (Page details, Made by) leave the frame for the whole tab (target=_top).
+	// (Page details, Made by) open in a new tab (the panel's frame grants no
+	// top navigation, ui.SessionPageSandbox).
 	Embed bool
 }
 
@@ -631,7 +632,7 @@ func Shell(v ShellView) string {
 		}
 		made, top := "", ""
 		if v.Embed {
-			top = ` target="_top"`
+			top = ` target="_blank" rel="noopener"`
 		}
 		if o.SessionHref != "" {
 			made = `<a href="` + esc(o.SessionHref) + `"` + top + ` data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`

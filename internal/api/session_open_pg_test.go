@@ -244,7 +244,7 @@ func TestTheOwnersViewIsFramedByMusterOnlyEmbedded(t *testing.T) {
 	}
 	// Its version links stay embedded; the session button is not drawn (it
 	// is in that session).
-	if b := w.Body.String(); !strings.Contains(b, `?v=1&amp;embed=1"`) || strings.Contains(b, `data-page-session`) || !strings.Contains(b, `target="_top" data-page-details`) {
+	if b := w.Body.String(); !strings.Contains(b, `?v=1&amp;embed=1"`) || strings.Contains(b, `data-page-session`) || !strings.Contains(b, `target="_blank" rel="noopener" data-page-details`) {
 		t.Errorf("the embedded view's links:\n%s", b)
 	}
 	w = f.get(t, view, f.ownerHdr())
