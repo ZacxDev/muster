@@ -378,6 +378,10 @@ type Extensions struct {
 	// database): the digest keeps no "since you last looked" baseline and no
 	// Fleet chat.
 	Fleet fleet.Store
+	// MorningReport is the morning report (MUSTER_MORNING_REPORT=1;
+	// morning_report.go): its store and the server's report time. nil (the
+	// default, or no database): no job runs and /morning answers 404.
+	MorningReport *MorningReport
 	// FleetPRStates is the GitHub App's pull-request read the fleet reader
 	// asks for each session's pull requests' state (fleet_read.go), behind its
 	// own two-minute cache — only for an owner the App admits

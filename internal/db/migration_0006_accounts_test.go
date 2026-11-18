@@ -119,6 +119,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - chief_session_llm_usage, chief_session_llm_reservations (0144, what the
 //     chief's OpenRouter sessions spend, and hold in flight).
 //   - fleet_owner_marks (0147, the fleet digest's marks).
+//   - morning_reports (0152, one morning report per user per day).
 //   - officer_host_spawns (0125, a host officer's spawned sessions).
 //   - plugin_pair_requests (0122, a plugin's request for a token).
 //   - agent_secrets (0128, an agent's credentials, apart from its row).
@@ -147,7 +148,8 @@ var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispa
 	"officer_contacts", "officer_contact_events",
 	"chief_session_llm_usage", "chief_session_llm_reservations",
 	"fleet_owner_marks",
-	"officer_connector_blocks"}
+	"officer_connector_blocks",
+	"morning_reports"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -221,6 +223,7 @@ var wantForeignKeys = []string{
 	"chief_session_llm_reservations|chief_session_llm_reservations_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"fleet_owner_marks|fleet_owner_marks_fleet_chat_id_fkey|FOREIGN KEY (fleet_chat_id) REFERENCES chat_sessions(id) ON DELETE SET NULL",
+	"morning_reports|morning_reports_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"officer_host_spawns|officer_host_spawns_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_pair_requests|plugin_pair_requests_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0128: an agent's credentials are its own and its owner's, and go with it.

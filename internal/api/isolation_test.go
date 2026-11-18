@@ -538,6 +538,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /rules/{id}/delete":  classParam,
 	"GET /usage":               classList,
 	"GET /answers":             classList,
+	// The morning report (morning_report.go): the caller's own report; a
+	// date names a day, not an object, and is read under row-level security.
+	"GET /morning":        classList,
+	"GET /morning/{date}": classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.

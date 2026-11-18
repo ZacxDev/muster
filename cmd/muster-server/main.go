@@ -88,6 +88,7 @@ import (
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pages"
@@ -640,6 +641,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The fleet digest (MUSTER_FLEET_DIGEST=1): the card, its routes and
 		// fleet_list's fleet fields. Off by default; it needs a database.
 		ext.FleetDigest = cfg.FleetDigest
+		// The morning report (MUSTER_MORNING_REPORT=1, migration 0152): one
+		// report per owner per day and its push. Off by default; it needs a
+		// database.
+		if cfg.MorningReport {
+			ext.MorningReport = &api.MorningReport{Store: morning.NewPG(a.pool), Schedule: cfg.MorningReportAt}
+		}
 		// The chief's stall nudges (migration 0064): off unless
 		// MUSTER_CHIEF_NUDGES=1, and then shadow for every owner not listed live.
 		if cfg.ChiefNudges {
@@ -1505,6 +1512,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	a.loop(ctx, "a.srv.RunClaimSweep", func(ctx context.Context) { a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval) })
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	a.loop(ctx, "a.srv.RunChiefNudgeSweep", func(ctx context.Context) { a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval) })
+	// The morning report (MUSTER_MORNING_REPORT=1; returns at once when off).
+	// Unguarded at replicas > 1: a day's report is one row per owner (the
+	// primary key) and its push one conditional claim, so two pods send once.
+	a.loop(ctx, "a.srv.RunMorningReportSweep", func(ctx context.Context) { a.srv.RunMorningReportSweep(ctx, api.MorningReportInterval) })
 	// The outcome watchdog: a started agent gone quiet is called stuck, once
 	// (returns at once with no outcome store). Unguarded at replicas > 1 like
 	// the sweeps above: each verdict is a conditional write, so two pods apply —
@@ -2174,6 +2185,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("fleet digest: OFF — %s is unset", envFleetDigest)
 	}
+	switch {
+	case ext.MorningReport != nil:
+		sc := ext.MorningReport.Schedule
+		l.Printf("morning report: ON (%s=1) — one push a day at %02d:%02d %s (%s, %s), only on a day something happened; "+
+			"plan usage %s", envMorningReport, sc.Hour, sc.Minute, sc.Loc, envMorningReportAt, envMorningReportTZ, morningPlanUsageLine(ext))
+	case a.cfg.MorningReport:
+		l.Printf("morning report: INERT — %s=1 but there is no database", envMorningReport)
+	default:
+		l.Printf("morning report: OFF — %s is unset", envMorningReport)
+	}
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
 	}
@@ -2769,4 +2790,13 @@ func declaresKube(list []officers.Officer) bool {
 // model (cfg.FocusModel).
 func focusSummarizer(cfg config, plane *credentials.Plane) *focus.ScaleDown {
 	return &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.FocusModel}
+}
+
+// morningPlanUsageLine says, on the morning report's boot line, whether its
+// plan-usage part has readings to show.
+func morningPlanUsageLine(ext api.Extensions) string {
+	if ext.CCUsage == nil || ext.CCUsageInterval == 0 {
+		return "NOT TRACKED (" + envCCUsagePoll + " is unset; the report says so)"
+	}
+	return "from the usage poll"
 }

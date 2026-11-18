@@ -264,6 +264,13 @@ services:
       # default; its states come from session state, above.
       MUSTER_FLEET_DIGEST: ${MUSTER_FLEET_DIGEST:-}
 
+      # The morning report: one notification a morning, on days something
+      # happened, opening a read-only page (docs/features.md#morning-report).
+      # Off by default; needs only the database.
+      MUSTER_MORNING_REPORT: ${MUSTER_MORNING_REPORT:-}
+      MUSTER_MORNING_REPORT_AT: ${MUSTER_MORNING_REPORT_AT:-}
+      MUSTER_MORNING_REPORT_TZ: ${MUSTER_MORNING_REPORT_TZ:-}
+
       # Shareable pages: agents publish pages and ask before a share link goes
       # live (docs/features.md#pages). Off by default; needs only the database.
       MUSTER_PAGES: ${MUSTER_PAGES:-}

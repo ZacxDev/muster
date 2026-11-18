@@ -32,6 +32,7 @@ import (
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/morning"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -309,6 +310,13 @@ const (
 	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
 	// outside 250ms–5m. A page replaces a stream silent for about two of them.
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
+
+	// The morning report (internal/morning; docs/features.md#morning-report):
+	// on/off, and the one report time every owner shares — a server setting,
+	// since muster stores no time zone per owner yet.
+	envMorningReport   = "MUSTER_MORNING_REPORT"
+	envMorningReportAt = "MUSTER_MORNING_REPORT_AT"
+	envMorningReportTZ = "MUSTER_MORNING_REPORT_TZ"
 
 	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
 	// asklog_config.go parses them): its switch (off by default), how long
@@ -926,6 +934,12 @@ type config struct {
 	// fleet_list's fleet fields (MUSTER_FLEET_DIGEST=1; off by default).
 	FleetDigest            bool
 	ChiefNudgeAskThreshold float64
+	// MorningReport runs the morning report (MUSTER_MORNING_REPORT=1; off by
+	// default) on the schedule MorningReportAt: MUSTER_MORNING_REPORT_AT
+	// (HH:MM, default 08:00) in MUSTER_MORNING_REPORT_TZ (an IANA zone, default
+	// America/Chicago — the operator's decision of 2026-11-18).
+	MorningReport   bool
+	MorningReportAt morning.Schedule
 
 	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
 	// postgres connector dials its database through safedial (dialGuard).
@@ -2009,6 +2023,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.FleetDigest = envFlag(getenv, envFleetDigest)
+	c.MorningReport = envFlag(getenv, envMorningReport)
+	if c.MorningReportAt, err = parseMorningReportAt(getenv(envMorningReportAt), getenv(envMorningReportTZ)); err != nil {
+		return config{}, err
+	}
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.InternalHTTP, err = connectors.ParseInternalHTTP(getenv(envInternalHTTPConnectors), getenv); err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v", envInternalHTTPConnectors, err)
@@ -3367,4 +3385,35 @@ func hookTokenRefusal(token string) string {
 			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
 	}
 	return ""
+}
+
+// The morning report's default time: 08:00 in America/Chicago (operator
+// decision, 2026-11-18).
+const (
+	defaultMorningReportAt = "08:00"
+	defaultMorningReportTZ = "America/Chicago"
+)
+
+// parseMorningReportAt is the morning report's schedule from
+// MUSTER_MORNING_REPORT_AT ("HH:MM", "" for the default) and
+// MUSTER_MORNING_REPORT_TZ (an IANA zone, "" for the default). Read whether
+// or not the report is on, so a bad value is refused at boot before anyone
+// turns it on.
+func parseMorningReportAt(at, tz string) (morning.Schedule, error) {
+	at, tz = strings.TrimSpace(at), strings.TrimSpace(tz)
+	if at == "" {
+		at = defaultMorningReportAt
+	}
+	if tz == "" {
+		tz = defaultMorningReportTZ
+	}
+	h, m, err := morning.ParseAt(at)
+	if err != nil {
+		return morning.Schedule{}, fmt.Errorf("invalid %s %q: %v", envMorningReportAt, at, err)
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return morning.Schedule{}, fmt.Errorf("invalid %s %q: want an IANA time zone such as America/Chicago", envMorningReportTZ, tz)
+	}
+	return morning.Schedule{Hour: h, Minute: m, Loc: loc}, nil
 }

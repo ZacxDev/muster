@@ -48,6 +48,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Fleet digest](#fleet-digest) | a card at the top of the chief panel grouping every one of your sessions by what it needs, with a drill-in per session | session state, the chief; for the pull-request groups, session routing + PR mail routing and the GitHub App | off | 1 line |
+| [Morning report](#morning-report) | one notification each morning, on days something happened overnight, opening a page of the questions waiting on you (answer them there), what got done, what is stuck and the night's usage | a database; for merged pull requests, session routing + PR mail routing and the GitHub App; for plan usage, the usage poll | off | 1 line |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review — read it on the Asks page's **Log** tab or with `muster asks log` / `summary` | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and share them with a link anyone can open (asking you first by default) | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -518,6 +519,53 @@ model and no chief turn: muster draws it from what it already knows.
   404 and `fleet_list` is as before.
 - **Check:** `fleet digest: ON (MUSTER_FLEET_DIGEST=1) — …`; off, the line
   reads `fleet digest: OFF — MUSTER_FLEET_DIGEST is unset`.
+
+### Morning report
+
+"While you were away": once a day, at one time the server sets (08:00 in
+America/Chicago by default), you get **one** notification — only on a day
+something happened overnight — that opens a page with four parts:
+
+1. **Waiting on you**: every question still open for you — the chief's, your
+   sessions' and your agents' — as the Asks page's own cards, so you answer
+   one right there. Only your own questions are listed, never a team's.
+2. **Done overnight**: pull requests your sessions created that merged, and
+   tasks that were finished, one line each.
+3. **Stuck**: sessions idle with nothing running, or stopped on an error
+   (the same rule the chief's stall nudges use), and agents you started that
+   failed overnight.
+4. **Usage**: how long your chief worked overnight, and each Claude
+   account's latest usage reading. A part whose source is off says so in
+   plain words ("Usage isn't tracked on this server"); an admin sees the
+   setting behind it in the ⓘ.
+
+It is **read-only**: it reads muster's own records and never nudges, sends,
+asks or changes a task. No model is called. The notification carries counts
+only (`1 question for you · 3 done · 2 stuck`), never a session's or a task's
+text.
+
+- **Quiet days:** nothing open, nothing done and nothing newly stuck means no
+  notification (the day's page still exists and says so). A session already
+  stuck before the night is listed but does not, by itself, make a day loud.
+- **Once a day:** each report is recorded per person per day, so a restart
+  never sends it twice. A server that was down at the report time sends it up
+  to 2 hours late, and skips the day after that.
+- **Needs:** a database. Merged pull requests need
+  [session routing](#session-routing) and [PR mail routing](#pr-mail-routing)
+  for the pull requests your sessions created, and the [GitHub App](#github-app)
+  for whether they merged; without them the page says so. Plan usage needs
+  `MUSTER_CC_USAGE_POLL=1`.
+- **Known limits:** muster keeps no time a task was finished, so a task counts
+  as finished overnight when it is complete and last changed overnight. Plan
+  usage is the latest reading, not a sum over the night. Only the chief's
+  working time is recorded; other agents' hours are not.
+- **Turn it on:** `MUSTER_MORNING_REPORT=1` in `.env`; the time is
+  `MUSTER_MORNING_REPORT_AT` (`HH:MM`) in `MUSTER_MORNING_REPORT_TZ` (an IANA
+  zone).
+- **Turning it off:** unset it. No report is written and `/morning` answers 404.
+- **Check:** `morning report: ON (MUSTER_MORNING_REPORT=1) — one push a day at
+  08:00 America/Chicago …`; off, the line reads `morning report: OFF —
+  MUSTER_MORNING_REPORT is unset`.
 
 ### Ask log
 

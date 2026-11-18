@@ -55,6 +55,7 @@ const (
 	SessionState         = "session-state"
 	AskLog               = "ask-log"
 	FleetDigest          = "fleet-digest"
+	MorningReport        = "morning-report"
 	Plugins              = "plugins"
 	PluginTasks          = "plugin-tasks"
 	PluginViewers        = "plugin-viewers"

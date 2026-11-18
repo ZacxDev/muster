@@ -28,6 +28,9 @@ const (
 	// page_published: muting "a page is ready" must never also hide the one
 	// notice that a page went public.
 	EventPageShared = "page_shared"
+	// EventMorningReport: the morning report — once a day, only on a day
+	// something happened (internal/morning) — counts only, tapping opens it.
+	EventMorningReport = "morning_report"
 )
 
 // Event is one toggle.
@@ -50,6 +53,7 @@ var Events = []Event{
 	{EventPage, "Someone sent a response through one of your pages' links"},
 	{EventPagePublished, "An agent published a page for you"},
 	{EventPageShared, "An agent shared one of your pages without asking (anyone with its link can open it)"},
+	{EventMorningReport, "Your morning report: what happened while you were away"},
 }
 
 // KnownEvent reports whether name is in Events.
