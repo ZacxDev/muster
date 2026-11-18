@@ -92,5 +92,11 @@ func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switc
 		return nil
 	}
 	cur.Now = s.now() // one clock for the focus ages (ui.FocusAgeOf)
-	return ui.NewSwitcher(cards, mirrors, s.recentRefs(ctx), cur)
+	sw := ui.NewSwitcher(cards, mirrors, s.recentRefs(ctx), cur)
+	// The ☰ badge's first count is THE ONE OPEN COUNT (asks_count.go) wherever
+	// the queue is served — what handleNavWaiting answers it with afterwards.
+	if n, ok := s.menuCount(ctx); ok {
+		sw.MenuCount = &n
+	}
+	return sw
 }
