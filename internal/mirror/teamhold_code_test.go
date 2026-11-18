@@ -254,6 +254,13 @@ func TestAHeldMachineLogsItsCodeAndTheServerOnlyTheHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, _ := attemptcode.Hash(codeA)
+	// refuseHeld answers the machine BEFORE it logs the held attempt, so the
+	// machine reads "held" while the server's line may not be written yet.
+	// Wait for the line, so the checks below read the log that carries it
+	// (the code's absence is otherwise checked against a log without it).
+	eventually(t, "the server's log names the held attempt", func() bool {
+		return strings.Contains(srvLog.String(), "is held")
+	})
 	out := srvLog.String() + " " + strings.Join(func() []string {
 		var s []string
 		for _, x := range r.svc.HeldReplacements(asUser(team)) {
