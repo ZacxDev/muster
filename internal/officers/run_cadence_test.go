@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -332,40 +333,133 @@ func cadenceRoster(t *testing.T, prefix string, n int, poll time.Duration) ([]of
 	return list, hq
 }
 
-// TestEveryDueOfficerGetsAPassSlot: Run gave each free pass slot to the first
-// due officer in KEY order, and a pass longer than poll_interval leaves its
-// officer due again the moment it ends — so with more officers due than
-// slots, the lowest keys took every freed slot and the highest-key officers
-// NEVER passed (and, their pass never starting, never showed a late start
-// either). Ten officers polling every 100ms, each pass 200ms, against the
-// loop's 4 slots: in 3s every officer must pass, and the busiest no more than
-// three times as often as the idlest. Key-order assignment gives the four
-// lowest keys every pass and the rest none.
-func TestEveryDueOfficerGetsAPassSlot(t *testing.T) {
+// gateFleet is a poolFleet whose Instances (one call per pass of an untiered
+// officer) announces each pass on entered and then holds until the test
+// releases it or the pass's context ends: the test decides when each pass
+// ends, so slots free one at a time and in a known order.
+type gateFleet struct {
+	*poolFleet
+	entered chan gatePass
+}
+
+// gatePass is one pass held on its fleet read.
+type gatePass struct {
+	id      string
+	release chan struct{}
+}
+
+func newGateFleet() *gateFleet {
+	return &gateFleet{poolFleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, entered: make(chan gatePass)}
+}
+
+func (f *gateFleet) Instances(ctx context.Context, o officers.Officer) ([]officers.InstanceState, error) {
+	g := gatePass{id: o.ID, release: make(chan struct{})}
+	select {
+	case f.entered <- g:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return f.poolFleet.Instances(ctx, o)
+}
+
+// cadenceSlots is the loop's pass-slot cap (maxConcurrentPasses).
+const cadenceSlots = 4
+
+// stepPasses runs Run over list on a test clock, in steps, and returns how
+// many passes each officer had (by index in list). It first waits for every
+// slot to hold a pass blocked on its fleet read; then, steps times: between
+// (if set) is called, the clock moves step, and the OLDEST running pass is
+// released — its slot is the only one free, so the loop starts exactly one
+// pass, which the step waits for, calling between again and again while it
+// waits (as a user tapping "run now" would). No wall-clock window: the test
+// clock stands still within a step, so which officer gets the freed slot is
+// decided by the clock and the order of releases — under a correct loop
+// whenever within the step between's calls land. A step whose freed slot
+// finds no officer due fails the test.
+func stepPasses(t *testing.T, list []officers.Officer, hq *hqtest.Server, steps int, step time.Duration, between func(*officers.Reconciler)) []int {
+	t.Helper()
 	saved := officers.RunTick
 	officers.RunTick = time.Millisecond
 	t.Cleanup(func() { officers.RunTick = saved })
-	const (
-		n      = 10
-		poll   = 100 * time.Millisecond
-		hold   = 200 * time.Millisecond
-		window = 3 * time.Second
-	)
-	list, _ := cadenceRoster(t, "f", n, poll)
-	fleet := newPassFleet(hold, nil)
+	clk := &clock{t: time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)}
+	hq.Now = clk.Now
+	fleet := newGateFleet()
+	logs := &syncBuffer{}
 	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: fleet,
-		Logger: log.New(&syncBuffer{}, "", 0)})
+		Logger: log.New(logs, "", 0), Now: clk.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go rec.Run(ctx)
 	t.Cleanup(func() { cancel(); <-rec.Done() })
-	time.Sleep(window)
-	got := make([]int, n)
+	index := map[string]int{}
 	for i, o := range list {
-		got[i] = fleet.count(o.ID)
+		index[o.ID] = i
 	}
+	got := make([]int, len(list))
+	var running []gatePass
+	// enter waits for the next pass to start — calling between over and
+	// over meanwhile, when set, so it also lands after the released pass
+	// has set its next poll time and before the tick that fills the slot.
+	enter := func(what string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			select {
+			case g := <-fleet.entered:
+				got[index[g.id]]++
+				running = append(running, g)
+				return
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: no pass started (passes so far in key order: %v); log:\n%s", what, got, logs)
+			}
+			if between != nil {
+				between(rec)
+			}
+			runtime.Gosched()
+		}
+	}
+	for i := range cadenceSlots {
+		enter(fmt.Sprintf("slot %d of the first passes", i+1))
+	}
+	for i := range steps {
+		if between != nil {
+			between(rec)
+		}
+		clk.Advance(step)
+		close(running[0].release)
+		running = running[1:]
+		enter(fmt.Sprintf("step %d", i+1))
+	}
+	return got
+}
+
+// TestEveryDueOfficerGetsAPassSlot: Run gave each free pass slot to the first
+// due officer in KEY order, and a pass longer than poll_interval leaves its
+// officer due again the moment it ends — so with more officers due than
+// slots, the lowest keys took every freed slot and the highest-key officers
+// NEVER passed (and, their pass never starting, never showed a late start
+// either). Ten officers polling every 1m on a test clock; each step moves it
+// 30s and ends the oldest of the 4 running passes, so every pass lasts 2m
+// (4 steps), longer than poll_interval. Over 60 steps every officer must
+// pass, and the busiest no more than three times as often as the idlest.
+// Key-order assignment gives the four lowest keys every pass and the rest none.
+func TestEveryDueOfficerGetsAPassSlot(t *testing.T) {
+	const (
+		n     = 10
+		poll  = time.Minute
+		step  = 30 * time.Second
+		steps = 60
+	)
+	list, hq := cadenceRoster(t, "f", n, poll)
+	got := stepPasses(t, list, hq, steps, step, nil)
 	t.Logf("passes per officer in key order: %v", got)
 	lo, hi := slices.Min(got), slices.Max(got)
 	if lo == 0 {
@@ -375,11 +469,96 @@ func TestEveryDueOfficerGetsAPassSlot(t *testing.T) {
 				starved = append(starved, list[i].ID)
 			}
 		}
-		t.Fatalf("%v had no pass in %s (%d officers due every %s, passes of %s): starved of a pass slot; passes per officer in key order: %v",
-			starved, window, n, poll, hold, got)
+		t.Fatalf("%v had no pass in %d steps of %s (%d officers due every %s, each pass lasting %s): starved of a pass slot; passes per officer in key order: %v",
+			starved, steps, step, n, poll, cadenceSlots*step, got)
 	}
 	if hi > 3*lo {
 		t.Fatalf("passes per officer in key order %v: the busiest had %d, more than 3x the idlest's %d — slots are not shared by wait", got, hi, lo)
+	}
+}
+
+// TestRunNowSpamDoesNotStarveOtherOfficers: Run ordered a zero nextAt — a
+// first pass, or one Due asked for — ahead of every other wait, and Due is
+// asked on every "run now" tap (a dedupe "already-queued" included) and every
+// pause/resume. So a user tapping run-now on 4 officers took all 4 slots at
+// every tick, and every other officer had no pass at all (the auditor's run:
+// passes [38 37 38 37 0 0]). Six officers polling every 1m on a test clock;
+// before every step Due is asked for the four lowest keys — those running a
+// pass and those waiting — and again and again until the freed slot is
+// filled; the clock moves 15s and the oldest pass ends. Over 60 steps each
+// of the two others must pass, and the busiest officer no more than twice
+// as often as the idlest.
+func TestRunNowSpamDoesNotStarveOtherOfficers(t *testing.T) {
+	const (
+		n     = 6
+		spam  = 4
+		poll  = time.Minute
+		step  = 15 * time.Second
+		steps = 60
+	)
+	list, hq := cadenceRoster(t, "s", n, poll)
+	got := stepPasses(t, list, hq, steps, step, func(rec *officers.Reconciler) {
+		for _, o := range list[:spam] {
+			rec.Due(o.Key())
+		}
+	})
+	t.Logf("passes per officer in key order (Due asked for the first %d throughout): %v", spam, got)
+	for i, o := range list[spam:] {
+		if got[spam+i] == 0 {
+			t.Fatalf("%s had no pass in %d steps while Due was asked for %d other officers throughout: run-now starved it; passes per officer in key order: %v",
+				o.ID, steps, spam, got)
+		}
+	}
+	if lo, hi := slices.Min(got), slices.Max(got); hi > 2*lo {
+		t.Fatalf("passes per officer in key order %v: the busiest had %d, more than 2x the idlest's %d — Due lets an officer jump the wait", got, hi, lo)
+	}
+}
+
+// TestADueAskedForDuringAPassRunsAfterIt: a Due that landed while the
+// officer's own pass ran was overwritten when that pass set its next poll
+// time, so the run-now was lost until the next poll_interval. One officer
+// polling every 1h on a test clock that never moves: Due during its first
+// pass must produce exactly one more pass once the first ends — nothing else
+// can make it due.
+func TestADueAskedForDuringAPassRunsAfterIt(t *testing.T) {
+	saved := officers.RunTick
+	officers.RunTick = time.Millisecond
+	t.Cleanup(func() { officers.RunTick = saved })
+	list, hq := cadenceRoster(t, "r", 1, time.Hour)
+	clk := &clock{t: time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)}
+	hq.Now = clk.Now
+	fleet := newGateFleet()
+	logs := &syncBuffer{}
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: fleet,
+		Logger: log.New(logs, "", 0), Now: clk.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go rec.Run(ctx)
+	t.Cleanup(func() { cancel(); <-rec.Done() })
+	next := func(within time.Duration) (gatePass, bool) {
+		select {
+		case g := <-fleet.entered:
+			return g, true
+		case <-time.After(within):
+			return gatePass{}, false
+		}
+	}
+	first, ok := next(5 * time.Second)
+	if !ok {
+		t.Fatalf("fixture: the first pass never started; log:\n%s", logs)
+	}
+	rec.Due(list[0].Key())
+	close(first.release)
+	second, ok := next(5 * time.Second)
+	if !ok {
+		t.Fatalf("Due asked for during %s's pass produced no pass after it (poll_interval 1h, clock still): the run-now was dropped; log:\n%s", list[0].ID, logs)
+	}
+	close(second.release)
+	if g, ok := next(200 * time.Millisecond); ok {
+		close(g.release)
+		t.Fatalf("a third pass of %s started with no Due and the clock still: one Due during a pass must produce one pass after it, not more", list[0].ID)
 	}
 }
 

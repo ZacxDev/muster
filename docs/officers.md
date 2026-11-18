@@ -845,9 +845,14 @@ ran every officer's pass in turn, one slow pass (a slow HQ or fleet read)
 delayed every other officer's by as long — and with it the claim of their
 [chat](#chat-sessions) items, which happens at the end of a pass. When more
 officers are due than slots are free, the slots go to the officers that have
-waited longest (never-passed ones, and ones a pause or resume made due, first);
-the rest wait for a later tick, so a roster too large for the cap is passed
-round-robin, each officer later, none never. An officer that has waited more
+waited longest — an officer waits from its next-check time, or, when it has
+none (never passed, or made due by a pause, a resume or a "run now"), from the
+loop tick that first saw it due; ties go by key. A pause, resume or run-now
+makes an officer due at once but not first, so repeating it cannot take slots
+from officers that have waited longer; one asked for while that officer's
+pass is running produces one pass after that pass, its wait starting when the
+pass ends. The rest wait for a later tick, so a roster too large for the cap
+is passed round-robin, each officer later, none never. An officer that has waited more
 than `poll_interval` for a slot is logged once
 (`officers: <id>: due <N>s ago and still waiting for a pass slot (…)`), and a
 pass that starts more than `poll_interval` after its officer was due is logged

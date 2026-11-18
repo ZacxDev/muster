@@ -692,6 +692,12 @@ type officerState struct {
 	// pass (zero: not waiting). It dates a wait whose nextAt is zero (a first
 	// pass, or one Due asked for); the officer's pass starting clears it.
 	dueSeen time.Time
+	// dueAfterPass: Due asked for a pass while one of this officer's passes was
+	// running (Reconciler.passing). That pass's end (passEnded) makes the
+	// officer due — Check would otherwise overwrite the request with the next
+	// poll time — so the pass asked for runs after it, its wait dated from the
+	// first tick after it ended, never from before.
+	dueAfterPass bool
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -890,13 +896,25 @@ type PassResult struct {
 // (RunTick) — and never while a pass for the same officer is still running
 // (Reconciler.passing), so a pass it asks for never runs beside another pass
 // for that officer. The admin API asks it after a pause or a
-// resume, so the switch acts within a tick rather than a poll interval.
+// resume, so the switch acts within a tick rather than a poll interval, and
+// on every "run now" (an already-queued one included).
+// Asked while a pass of the officer is running, it takes effect when that pass
+// ends (officerState.dueAfterPass): one pass follows it. A Due-made officer
+// is due "now", not first: Run orders it by when it was first seen due
+// (passOrder), so asking again and again cannot jump officers that have
+// waited longer.
 func (r *Reconciler) Due(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.state[key]; ok {
-		s.nextAt = time.Time{}
+	s, ok := r.state[key]
+	if !ok {
+		return
 	}
+	if r.passing[key] {
+		s.dueAfterPass = true
+		return
+	}
+	s.nextAt = time.Time{}
 }
 
 // Check runs one pass for the officer keyed key (Officer.Key: an env
@@ -1582,24 +1600,31 @@ const passTimeout = 2 * time.Minute
 // (muster_officer_pass_oldest_wait_seconds, muster_officer_pass_start_lag_seconds).
 const maxConcurrentPasses = 4
 
-// passCandidate is a due officer Run has not started a pass for: due at
-// dueAt (its nextAt; zero for a first pass or one Due asked for), waiting
-// since since (dueAt, or for a zero dueAt the tick it was first seen due).
+// passCandidate is a due officer Run has not started a pass for, waiting
+// since since: its nextAt, or — for a zero nextAt (a first pass, or one Due
+// asked for) — the tick Run first saw it due.
 type passCandidate struct {
-	o            Officer
-	dueAt, since time.Time
+	o     Officer
+	since time.Time
 }
 
-// passOrder sorts candidates so the officer that has waited longest comes
-// first: a zero dueAt (never passed, or asked for by Due) before any other,
-// then by dueAt, ties by key. A pass that ends sets its officer's nextAt to
-// its start plus poll_interval — later than the dueAt of every officer that
-// was already waiting — so no officer can be passed over twice in a row by
-// one that has just had its pass.
+// passOrder sorts candidates by how long they have waited: the earliest since
+// first, ties by key. A zero nextAt is not "first": it waits from the tick it
+// was first seen due, like any other wait. What holds: an officer waiting
+// since S is started before every officer whose wait began after S. And an
+// officer started while it waits cannot be ahead of it again during that wait:
+// the pass ends with the next wait beginning at the pass's start plus
+// poll_interval (Check; a backoff after a failure is later still), or — a Due
+// asked for during the pass (dueAfterPass) or after it — at the first tick
+// that sees it due after the pass ended; both are later than S. So each other officer passes a
+// waiting one at most once per wait, however often Due is asked for it (a
+// "run now" tap or a pause/resume). Two waits that began on the same tick go
+// by key. Not covered: a pass that panics before Check sets nextAt leaves its
+// officer's old wait in place.
 func passOrder(c []passCandidate) {
 	sort.Slice(c, func(i, j int) bool {
-		if !c[i].dueAt.Equal(c[j].dueAt) {
-			return c[i].dueAt.Before(c[j].dueAt)
+		if !c[i].since.Equal(c[j].since) {
+			return c[i].since.Before(c[j].since)
 		}
 		return c[i].o.Key() < c[j].o.Key()
 	})
@@ -1683,7 +1708,7 @@ func (r *Reconciler) startDue(list []Officer, now time.Time) []passCandidate {
 		if since.IsZero() || s.dueSeen.Before(since) {
 			since = s.dueSeen
 		}
-		due = append(due, passCandidate{o: o, dueAt: s.nextAt, since: since})
+		due = append(due, passCandidate{o: o, since: since})
 	}
 	passOrder(due)
 	n := min(max(maxConcurrentPasses-len(r.passing), 0), len(due))
@@ -1722,10 +1747,19 @@ func (r *Reconciler) noteWaiting(o Officer, wait time.Duration, running int) {
 }
 
 // passEnded takes the officer keyed key out of passing: its pass is over.
+// A Due asked for during it makes the officer due now (dueAfterPass).
 func (r *Reconciler) passEnded(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.passing, key)
+	if s, ok := r.state[key]; ok && s.dueAfterPass {
+		// A Due asked for during the pass: due now. Its wait starts at the
+		// first tick that sees it due after this — dueSeen was cleared when
+		// the pass started (startDue) and no tick sets it while the pass runs
+		// — never at a wait from before the pass.
+		s.dueAfterPass = false
+		s.nextAt = time.Time{}
+	}
 	metrics.OfficerPassesInFlight.Set(float64(len(r.passing)))
 }
 
