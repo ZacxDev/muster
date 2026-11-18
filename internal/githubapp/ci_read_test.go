@@ -121,3 +121,51 @@ func TestCommitChecksReadsEveryPageAndATruncatedReadIsNeverDone(t *testing.T) {
 		t.Fatalf("more runs than the cap reads: truncated %v, done %v, green %v; want truncated, not done", got.Truncated, sum.Done(), sum.AllGreen())
 	}
 }
+
+// statusesPage is a combined-status page of n green contexts, from first.
+func statusesPage(first, n int) string {
+	var b strings.Builder
+	b.WriteString(`{"statuses":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"context":"ctx-%d","state":"success","updated_at":"2000-01-02T03:04:05Z"}`, first+i)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// TestCommitChecksStatusesPastTheCapAreTruncatedAndExactlyTheCapIsWhole: a
+// commit whose STATUSES fill every page (more than the cap's 20 reads) is
+// truncated — not done, however green; one with exactly the cap's runs (20
+// full pages, an empty 21st) is read whole: 2,000 runs, not truncated, done.
+func TestCommitChecksStatusesPastTheCapAreTruncatedAndExactlyTheCapIsWhole(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	const many, exact = "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", "f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4"
+	f.mu.Lock()
+	f.ci = map[string]string{
+		"example-org/widget/" + many + "/status":         statusesPage(0, 100),
+		"example-org/widget/" + many + "/check-runs":     runsPage(70000, 3),
+		"example-org/widget/" + exact + "/status":        `{"statuses":[]}`,
+		"example-org/widget/" + exact + "/check-runs#21": `{"check_runs":[]}`,
+	}
+	for p := 1; p <= ciPages; p++ {
+		f.ci["example-org/widget/"+exact+"/check-runs#"+strconv.Itoa(p)] = runsPage(p*1000, 100)
+	}
+	f.mu.Unlock()
+	got, err := app.CommitChecks(context.Background(), "example-org/widget", many)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := cichecks.Summarize(got); !got.Truncated || sum.Done() || sum.AllGreen() {
+		t.Fatalf("statuses past the cap: truncated %v, done %v; want truncated, not done", got.Truncated, sum.Done())
+	}
+	got, err = app.CommitChecks(context.Background(), "example-org/widget", exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := cichecks.Summarize(got); len(got.Runs) != 2000 || got.Truncated || !sum.Done() {
+		t.Fatalf("exactly the cap: %d runs, truncated %v, done %v; want 2000, whole, done", len(got.Runs), got.Truncated, sum.Done())
+	}
+}

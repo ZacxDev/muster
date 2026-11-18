@@ -913,8 +913,13 @@ func ciReadMintRequest(name string) map[string]any {
 }
 
 // ciPages bounds CommitChecks' reads: 100 statuses and 100 check runs a page,
-// so at most 2,000 of each. A commit with more is read as TRUNCATED
-// (cichecks.Checks.Truncated): pending, never done or green.
+// so at most 2,000 of each. A commit with exactly that many is read whole (a
+// full last page is followed by one probe of the next, whose items are never
+// kept); one with more is read as TRUNCATED (cichecks.Checks.Truncated):
+// pending, never done or green. ⚠ The fleet's whole read shares ONE deadline
+// (fleet_answers.go fleetCIRead: fleetPRReadTimeout, 4 s), so a commit near the
+// cap may not finish its pages in time: it then reads as unknown — no card —
+// never as green. Both ways fail closed.
 const ciPages = 20
 
 // CommitChecks reads commit sha of repo's CI — its commit statuses (the
@@ -934,7 +939,7 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 	}
 	base := a.cfg.BaseURL + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/commits/" + sha
 	out := cichecks.Checks{Statuses: map[string]cichecks.Status{}}
-	for page := 1; page <= ciPages; page++ {
+	for page := 1; ; page++ {
 		var r struct {
 			Statuses []struct {
 				Context   string    `json:"context"`
@@ -946,6 +951,11 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 			"reading the commit statuses of "+repo+" "+sha[:12], owner); err != nil {
 			return cichecks.Checks{}, err
 		}
+		if page > ciPages {
+			// The probe past a full last page: anything here is unread.
+			out.Truncated = out.Truncated || len(r.Statuses) > 0
+			break
+		}
 		for _, st := range r.Statuses {
 			if _, seen := out.Statuses[st.Context]; !seen {
 				out.Statuses[st.Context] = cichecks.Status{State: st.State, UpdatedAt: st.UpdatedAt.UTC()}
@@ -954,11 +964,8 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 		if len(r.Statuses) < 100 {
 			break
 		}
-		if page == ciPages {
-			out.Truncated = true
-		}
 	}
-	for page := 1; page <= ciPages; page++ {
+	for page := 1; ; page++ {
 		var r struct {
 			CheckRuns []struct {
 				ID          int64      `json:"id"`
@@ -972,6 +979,10 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 			"reading the check runs of "+repo+" "+sha[:12], owner); err != nil {
 			return cichecks.Checks{}, err
 		}
+		if page > ciPages {
+			out.Truncated = out.Truncated || len(r.CheckRuns) > 0
+			break
+		}
 		for _, c := range r.CheckRuns {
 			run := cichecks.Run{ID: c.ID, Name: c.Name, Status: c.Status, Conclusion: c.Conclusion}
 			if c.CompletedAt != nil {
@@ -981,9 +992,6 @@ func (a *App) CommitChecks(ctx context.Context, repo, sha string) (cichecks.Chec
 		}
 		if len(r.CheckRuns) < 100 {
 			break
-		}
-		if page == ciPages {
-			out.Truncated = true
 		}
 	}
 	return out, nil

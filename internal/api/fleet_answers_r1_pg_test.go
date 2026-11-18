@@ -2,19 +2,21 @@ package api
 
 import (
 	"context"
+	"html"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/asklog"
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cichecks"
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
@@ -208,5 +210,34 @@ func TestAnOutsideTurnCardsTextIsAtMost4KiB(t *testing.T) {
 	}
 	if out := f.srv.toolRouteToSession(f.asOwner, f.chief, `{"subject":`+strconv.Quote(s1)+`,"text":"`+exact+`","owner_asked":true}`); !strings.Contains(out, `"state":"proposed"`) {
 		t.Fatalf("control: exactly 4 KiB: %.200s", out)
+	}
+}
+
+// TestAnUnreadableSpawnStoreSendsNothing (round 2): when the officers' spawn
+// store cannot be read, whether a window is an officer's is UNKNOWN — the tap
+// queues nothing (the card stays proposed, "could not read"), and a row
+// already queued is held at the paste (SendQueueNudgeWait), never pasted.
+// Controls: before the store failed, the same tap queued its row.
+func TestAnUnreadableSpawnStoreSendsNothing(t *testing.T) {
+	f := newFleetAnswerFixture(t)
+	declareHostOfficerOn(t, f.srv, f.owner, "bench-"+strconv.FormatInt(f.owner, 10))
+	s1, _, _ := f.stopped(t, f.owner)
+	s2, _, _ := f.stopped(t, f.owner)
+	id1 := f.propose(t, s1, fleet.ClassStopNote)
+	id2 := f.propose(t, s2, fleet.ClassContinue)
+	f.card(t, fresh(f.asOwner), id1, "approve", nil)
+	a1 := f.action(t, id1)
+	if a1.State != fleet.StateQueued || a1.SendQueueID == 0 || len(f.rows(t)) != 1 {
+		t.Fatalf("control: the tap before the store failed: %+v rows %v", a1, f.rows(t))
+	}
+	f.srv.officerRT.hostSpawns = failingSpawns{f.srv.officerRT.hostSpawns}
+	if rec := f.card(t, fresh(f.asOwner), id2, "approve", nil); !strings.Contains(rec.Body.String(), html.EscapeString(FleetUnreadable)) || len(f.rows(t)) != 1 {
+		t.Fatalf("a tap with the spawn store down: %s rows %v", rec.Body.String(), f.rows(t))
+	}
+	if a := f.action(t, id2); a.State != fleet.StateProposed {
+		t.Fatalf("the card after the unreadable tap: %+v; want still proposed", a)
+	}
+	if got := f.srv.sendQueueFleetGate(f.asOwner, sendqueue.Item{ID: a1.SendQueueID, FleetActionID: id1}); got != SendQueueNudgeWait {
+		t.Fatalf("the paste with the spawn store down: %q; want %q", got, SendQueueNudgeWait)
 	}
 }

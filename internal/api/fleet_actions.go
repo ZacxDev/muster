@@ -614,8 +614,10 @@ const (
 
 // fleetEditable reports whether a's card may be sent as the owner's own
 // edited text: never a reassign (its route is the point), an agent's turn,
-// or a close (nothing is typed — an edit would close the session and drop
-// the owner's text). ONE predicate: the card's Edit form and the approve.
+// a close (nothing is typed — an edit would close the session and drop the
+// owner's text) or a pick (an option is typed into a picker, not a text: an
+// edit would type the chief's option and drop the owner's words). ONE
+// predicate: the card's Edit form and the approve.
 func fleetEditable(a fleet.Action) bool {
 	return a.Class != fleet.ClassReassign && a.Class != fleet.ClassClose && a.Class != fleet.ClassAnswerPick && a.SubjectKind != chiefnudge.KindAgent
 }
