@@ -88,7 +88,7 @@ func notifyOwnerToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: notifyOwnerTool,
 		Description: "Send your owner a notification on their phone and browsers, which opens a link when they tap it. Use it for something they " +
 			"should look at now — a result, a finished piece of work, a page to review — not for progress or chatter. It always says it is from you. " +
-			"url is a muster path (\"/tasks/42\", \"/pages/7/preview\") or an https address on a host your owner's server allows " +
+			"url is a muster path (\"/tasks/42\", \"/pages/7/view\") or an https address on a host your owner's server allows " +
 			"(MUSTER_NOTIFY_LINK_HOSTS; none by default); anything else is refused. At most " + strconv.Itoa(notifySenderBurst) + " per " +
 			strconv.Itoa(int(notifySenderWindow/time.Minute)) + " minutes from you, and your owner can turn these off. The result's status says what happened: " +
 			"\"delivered\" (a push service accepted it for that many devices — not proof they read it), \"suppressed\" (with the reason: your cap, their cap, or they turned these off), " +
@@ -514,7 +514,7 @@ func (s *Server) accountNotifyLog(r *http.Request) string {
 // --- page_update's push ---
 
 // pageUpdated tells the owner an agent published a NEW VERSION of a page:
-// "Page updated: <title> (v<N>)", opening that version's preview, under the
+// "Page updated: <title> (v<N>)", opening that version in the owner's view, under the
 // page_updated toggle and the sender's own cap (its page_update bucket), so
 // an agent iterating on a page buzzes at most notifySenderBurst times per
 // notifySenderWindow — and each version replaces the last on the device
@@ -530,7 +530,7 @@ func (s *Server) pageUpdated(c toolCaller, p pageUpdatedRef) {
 		Title: "Page updated: " + truncate(p.title, 70) + " (v" + strconv.Itoa(p.version) + ")",
 		Body:  "From " + truncate(p.label, 60) + ". Tap to open this version.",
 		Tag:   tag,
-		Data:  map[string]string{"url": ui.PagePreviewPath(p.id) + "?v=" + strconv.Itoa(p.version)},
+		Data:  map[string]string{"url": ui.PageViewPath(p.id) + "?v=" + strconv.Itoa(p.version)},
 	})
 }
 

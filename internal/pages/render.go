@@ -106,31 +106,28 @@ type RenderOptions struct {
 	// Markdown renders a markdown block to SAFE HTML (every author character
 	// escaped; only the renderer's own tags). nil shows the source as text.
 	Markdown func(string) string
-	// Preview: the owner's preview. The SDK records nothing and says so.
-	Preview bool
 	// Uploads: the server can store files. Without it an upload block is drawn
 	// disabled, saying so.
 	Uploads bool
 }
 
 // Content is the content document of version v: muster's base styles, the
-// SDK, then every block. It is served with ContentHeaders.
+// SDK, then every block. It is served with ContentHeaders. A link's viewer
+// and the page's owner get the SAME document: whose a response is, is the
+// shell's route's to say (ShellScript), never the content's.
 func Content(v Version, o RenderOptions) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
 		"<title>" + esc(v.Title) + "</title>\n<style>" + contentCSS + "</style>\n<script>")
-	b.WriteString(sdkScript(v, o.Preview))
-	b.WriteString("</script></head>\n<body><main class=\"mp\">\n")
-	if o.Preview {
-		b.WriteString(`<p class="mp-preview" data-muster-preview>Preview — nothing you send here is recorded.</p>` + "\n")
-	}
+	var blocks strings.Builder
 	for _, blk := range v.Blocks {
-		b.WriteString(renderBlock(blk, o))
-		b.WriteString("\n")
+		blocks.WriteString(renderBlock(blk, o))
+		blocks.WriteString("\n")
 	}
-	b.WriteString("</main></body></html>\n")
+	b.WriteString(sdkScript(v, blocks.String()))
+	b.WriteString("</script></head>\n<body><main class=\"mp\"></main></body></html>\n")
 	return b.String()
 }
 
@@ -253,43 +250,98 @@ func jsString(s string) string {
 	return string(b)
 }
 
-// sdkScript is the SDK every content document carries (docs/pages.md#the-sdk):
-// muster.submit and muster.upload post a message to the PARENT window (the
-// shell), which alone talks to muster; and the built-in components' wiring.
+// sdkScript is the SDK every content document carries (docs/pages.md#the-sdk),
+// and the page's blocks (markup, its whole HTML, as one string).
 //
 // 🔴 IT HOLDS NO CREDENTIAL AND MAKES NO REQUEST: the document has no network
 // (ContentCSP), and the token is the shell's, not the SDK's. The parent is
 // muster's shell because only 'self' may frame the document (frame-ancestors).
-func sdkScript(v Version, preview bool) string {
-	p := "false"
-	if preview {
-		p = "true"
-	}
+//
+// 🔴 EVERYTHING BETWEEN THE PAGE AND THE SHELL GOES OVER ONE PRIVATE PORT THE
+// PAGE'S OWN SCRIPT NEVER HOLDS — sends, their answers, and the scroll
+// reports that hide the shell's header:
+//   - The page's markup is NOT in the document: it is blocks, a string in this
+//     script (JSON-escaped, so no "</script>" in it ends this one). This
+//     script — the document's only one until then — asks the shell for the
+//     port ("hello", repeated until it comes), takes it in a capture listener
+//     on window registered first, and only THEN, once the document is parsed,
+//     puts the blocks in the page (createContextualFragment, so the page's own
+//     <script>s run, in order). So no script of the page's runs before the
+//     port is held here: not even one that replaces the document
+//     (document.open erases every listener; before this order a page that
+//     did it took the port — measured, at 390x844 and 1280x800).
+//   - After those scripts run, DOMContentLoaded is dispatched to document
+//     (and on to window), and load to window when it has already passed —
+//     once each. The insertion is a task AFTER the real DOMContentLoaded, so
+//     a window listener the page adds never sees both. A type="module"
+//     script runs later still, after both: it should not wait for either.
+//   - The functions the port's safety rests on are saved before any page
+//     script and called through Reflect.apply — postMessage (a patched one
+//     would be handed the port as this), the message-event getters, the
+//     scroll offset — and every message is an object literal the SDK builds,
+//     with its own op: a page cannot post a scroll report, whatever it does
+//     to Array or Object prototypes (what it CAN choose — a send's data —
+//     it could send anyway).
+//     Kept on purpose (round 3's D1): the header's guarantee rests on the
+//     port being muster's alone, and a patched postMessage would be handed
+//     it.
+//
+// What the page sends is NOT checked here: in the owner's view the SHELL
+// shows it to the owner and posts it only on their own tap (ShellScript);
+// through a link it is recorded, as it always was.
+func sdkScript(v Version, blocks string) string {
 	return `(function(){"use strict";
-var PREVIEW=` + p + `,seq=0,waiting={};
-function send(op,payload){
- if(PREVIEW)return Promise.resolve({preview:true});
- if(window.parent===window)return Promise.reject(new Error("open this page through its link"));
- return new Promise(function(res,rej){
-  var id="m"+(++seq);waiting[id]={res:res,rej:rej};
-  var msg={muster:1,id:id,op:op};for(var k in payload)msg[k]=payload[k];
-  window.parent.postMessage(msg,"*");
-  setTimeout(function(){if(waiting[id]){delete waiting[id];rej(new Error("muster did not answer"));}},120000);
- });
+var R=Reflect.apply,W=window,D=document,PARENT=W.parent,gd=function(p,k){var x=p&&Object.getOwnPropertyDescriptor(p,k);return x&&x.get;},
+ PM=MessagePort.prototype.postMessage,RAF=W.requestAnimationFrame,AEL=EventTarget.prototype.addEventListener,SIP=Event.prototype.stopImmediatePropagation,
+ DE=EventTarget.prototype.dispatchEvent,EV=W.Event,P=W.Promise,ST=W.setTimeout,
+ gSrc=gd(MessageEvent.prototype,"source"),gData=gd(MessageEvent.prototype,"data"),gPorts=gd(MessageEvent.prototype,"ports"),
+ gTarget=gd(Event.prototype,"target"),gTop=gd(Element.prototype,"scrollTop"),gRS=gd(Document.prototype,"readyState"),
+ SE=D.scrollingElement||D.documentElement,
+ BLOCKS=` + jsString(blocks) + `,port=null,shown=false,waitedDCL=false,queued=false,seq=0,waiting=Object.create(null),tries=0;
+function later(){R(ST,W,[show,0]);}
+function show(){
+ if(shown)return;var m=D.querySelector("main.mp");
+ if(!m||R(gRS,D,[])==="loading"){if(!waitedDCL){waitedDCL=true;R(AEL,D,["DOMContentLoaded",later]);}return;}
+ shown=true;var r=D.createRange();r.selectNodeContents(m);m.appendChild(r.createContextualFragment(BLOCKS));
+ R(DE,D,[new EV("DOMContentLoaded",{bubbles:true})]);
+ if(R(gRS,D,[])==="complete")R(DE,W,[new EV("load")]);
 }
-window.addEventListener("message",function(ev){
- if(ev.source!==window.parent)return;
- var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||!waiting[d.id])return;
- var w=waiting[d.id];delete waiting[d.id];
- if(d.ok)w.res(d.result);else w.rej(new Error(d.error||"refused"));
-});
+function report(){queued=false;if(port)R(PM,port,[{muster:1,op:"scroll",y:R(gTop,SE,[])}]);}
+function answer(ev){
+ var d=R(gData,ev,[]);if(!d||d.muster!==1||typeof d.id!=="string")return;
+ var cb=waiting[d.id];if(!cb)return;delete waiting[d.id];
+ if(d.ok===true)cb(true,d.result);else cb(false,typeof d.error==="string"?d.error:"refused");
+}
+R(AEL,W,["message",function(ev){
+ if(R(gSrc,ev,[])!==PARENT)return;var ps=R(gPorts,ev,[]);if(!ps||!ps.length)return;
+ R(SIP,ev,[]);var d=R(gData,ev,[]);
+ if(!port&&ps.length===1&&d&&d.muster===1&&d.op==="port"){port=ps[0];port.onmessage=answer;report();show();}
+},true]);
+// Only the browser's own scroll of the document reports: not a dispatched
+// "scroll" (isTrusted is unforgeable), not an inner element's.
+R(AEL,W,["scroll",function(ev){if(ev.isTrusted!==true||R(gTarget,ev,[])!==D)return;if(port&&!queued){queued=true;R(RAF,W,[report]);}},{capture:true,passive:true}]);
+function hello(){
+ if(port)return;
+ if(++tries>50){var m=D.querySelector("main.mp");if(m)m.textContent="This page could not be loaded. Reload it.";return;}
+ PARENT.postMessage({muster:1,op:"hello"},"*");R(ST,W,[hello,200]);
+}
+if(PARENT===W)show();else hello();
+// send posts one message, an object literal with its own op, and calls
+// done(ok, x) with the shell's answer.
+function send(op,component,value,done){
+ if(!port)return done(false,"open this page through its link");
+ var id="m"+(++seq);waiting[id]=done;
+ R(PM,port,[op==="upload"?{muster:1,id:id,op:"upload",component:component,files:value}:{muster:1,id:id,op:"submit",component:component,data:value}]);
+ R(ST,W,[function(){var c=waiting[id];if(c){delete waiting[id];c(false,"muster did not answer");}},` + sdkWaitMs + `]);
+}
+function promise(op,component,value){return new P(function(res,rej){send(op,component,value,function(ok,x){if(ok)res(x);else rej(new Error(x));});});}
 function name(o){return o&&typeof o.component==="string"?o.component:"custom";}
-window.muster=Object.freeze({
+W.muster=Object.freeze({
  page:Object.freeze({title:` + jsString(v.Title) + `,version:` + strconv.Itoa(v.Version) + `}),
- submit:function(data,o){return send("submit",{component:name(o),data:data===undefined?null:data});},
+ submit:function(data,o){return promise("submit",name(o),data===undefined?null:data);},
  upload:function(file,o){
-  if(!(file instanceof Blob))return Promise.reject(new TypeError("muster.upload takes a File"));
-  return send("upload",{component:name(o),file:file,name:(file.name||"file")});
+  if(!(file instanceof Blob))return P.reject(new TypeError("muster.upload takes a File"));
+  return promise("upload",name(o),[{file:file,name:String(file.name||"file")}]);
  }
 });
 function collect(kind,form,submitter){
@@ -302,23 +354,28 @@ function collect(kind,form,submitter){
  });
  return {fields:f};
 }
-document.addEventListener("submit",function(ev){
+R(AEL,D,["submit",function(ev){
  var form=ev.target,sec=form.closest&&form.closest("[data-muster-component]");
  if(!sec)return;
  ev.preventDefault();
  var id=sec.getAttribute("data-muster-component"),kind=sec.getAttribute("data-muster-kind");
  var status=form.querySelector("[data-muster-status]"),btns=form.querySelectorAll("button");
  function say(t,bad){if(status){status.textContent=t;status.className="mp-status"+(bad?" mp-bad":" mp-good");}}
- btns.forEach(function(b){b.disabled=true;});say("Sending…");
- var p;
+ var value;
  if(kind==="upload"){
-  var files=Array.prototype.slice.call(form.elements.file.files||[]);
-  if(!files.length){btns.forEach(function(b){b.disabled=false;});say("Choose a file first.",true);return;}
-  p=files.reduce(function(acc,f){return acc.then(function(){return window.muster.upload(f,{component:id});});},Promise.resolve());
- }else p=window.muster.submit(collect(kind,form,ev.submitter),{component:id});
- p.then(function(r){say(r&&r.preview?"Preview: not recorded.":"Sent. Thank you.");form.reset();},function(e){say(e.message||"It could not be sent.",true);})
-  .then(function(){btns.forEach(function(b){b.disabled=false;});});
-});
+  var fl=form.elements.file.files,files=[],i;
+  for(i=0;fl&&i<fl.length;i++)files.push({file:fl[i],name:String(fl[i].name||"file")});
+  if(!files.length){say("Choose a file first.",true);return;}
+  value=files;
+ }else value=collect(kind,form,ev.submitter);
+ btns.forEach(function(b){b.disabled=true;});say("Sending…");
+ // Every file goes in one send (the owner confirms them together; the shell
+ // sends them in turn and stops at the first refusal).
+ send(kind==="upload"?"upload":"submit",id,value,function(ok,x){
+  if(ok){say("Sent. Thank you.");form.reset();}else say(x||"It could not be sent.",true);
+  btns.forEach(function(b){b.disabled=false;});
+ });
+}]);
 })();`
 }
 
@@ -327,8 +384,8 @@ document.addEventListener("submit",function(ev){
 const contentCSS = `:root{color-scheme:light dark;--fg:#1d1d1f;--fg2:#5b5b63;--bg:#fff;--line:#d9d9de;--accent:#2f6fde;--bad:#b3261e;--good:#1b7f3b}
 @media (prefers-color-scheme:dark){:root{--fg:#f2f2f5;--fg2:#a8a8b3;--bg:#141416;--line:#34343a;--accent:#7aa7ff;--bad:#ff8a80;--good:#7bd88f}}
 *{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-.mp{max-width:44rem;margin:0 auto;padding:16px}.mp-block{margin:0 0 20px}
-.mp-preview{padding:8px 12px;border:1px dashed var(--line);border-radius:8px;color:var(--fg2);font-size:14px}
+html{scroll-padding-top:` + shellHeaderPx + `px}
+.mp{max-width:44rem;margin:0 auto;padding:` + contentTopPx + `px 16px 16px}.mp-block{margin:0 0 20px}
 img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}
 form{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px}
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}legend,.mp-label{font-weight:600;padding:0;margin:0 0 4px}
@@ -340,9 +397,40 @@ button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(
 .mp-buttons{display:flex;gap:10px;flex-wrap:wrap}.mp-status{margin:0;font-size:14px;color:var(--fg2);min-height:1.5em}
 .mp-status.mp-bad{color:var(--bad)}.mp-status.mp-good{color:var(--good)}`
 
+// The shell's header is ONE slim row (shellHeaderPx high) laid OVER the frame,
+// which fills the window; the content document leaves room for it at its top
+// (contentTopPx: the header and the page's own 16px), so hiding the header
+// moves nothing: it slides away by a transform, and the frame never moves
+// (no layout shift).
+const (
+	shellHeaderPx = "40"
+	contentTopPx  = "56"
+	// revealMs is how long a hidden header waits for the next report further
+	// down before it comes back on its own (ShellScript).
+	revealMs = "3000"
+	// hideCapMs is the longest the header stays hidden, whatever the reports
+	// say (ShellScript).
+	hideCapMs = "8000"
+	// confirmGuardMs is the owner's confirm's quiet window: a press of the bar
+	// inside it does nothing and starts it again (ShellScript).
+	confirmGuardMs = "500"
+	// confirmWaitMs is how long the owner's confirm waits before it answers
+	// the page "Not sent" on its own; sdkWaitMs, how long the SDK waits for any
+	// answer — longer, so the page is never told "muster did not answer"
+	// while the bar could still be confirmed (and a send it approves has
+	// sdkWaitMs - confirmWaitMs to finish).
+	confirmWaitMs = "600000"
+	sdkWaitMs     = "1800000"
+	// confirmMaxChars bounds the confirm's summary: a send whose summary is
+	// longer is refused, never shown in part.
+	confirmMaxChars = "65536"
+)
+
 // ShellView is what the shell draws.
 type ShellView struct {
-	// Title is the page's title (an agent's words, escaped here).
+	// Title is the page's title (an agent's words, escaped here). The header
+	// draws it on one line, truncated, with the whole of it in its title
+	// attribute.
 	Title string
 	// BrandName and BrandLogo are the instance's branding as every branded
 	// surface draws it (ui.Brand): the name drawn beside the logo ("" when none
@@ -357,23 +445,114 @@ type ShellView struct {
 	Icon string
 	// FrameSrc is the content document's path.
 	FrameSrc string
-	// Base is the path the relay posts to (Base+"/submit", Base+"/upload");
-	// "" in a preview, which relays nothing.
+	// Base is the path the relay posts to (Base+"/submit", Base+"/upload").
 	Base string
 	// Nonce is the script's CSP nonce (ShellCSP).
 	Nonce string
-	// Banner, when set, is a line above the frame (the owner's preview says
-	// what it is).
-	Banner string
+	// Owner is the page's signed-in OWNER's own view (/pages/{id}/view): the
+	// relay sends their session, and the header draws the version chip. nil
+	// for a link's viewer, who gets the same header without it.
+	Owner *OwnerChrome
 }
 
-// Shell is the shell document: the instance branding, the title, the
-// sandboxed frame of the content and the relay script (ShellScript).
+// OwnerChrome is what the owner's own view draws beyond a link's: the version
+// chip and its popover.
+type OwnerChrome struct {
+	// Version is the version the frame shows.
+	Version int
+	// Versions is every version, newest first.
+	Versions []ShellVersion
+	// DetailHref is the page's own screen (links, responses, delete).
+	DetailHref string
+	// SessionHref is where the session that made the page is NOW (internal/api
+	// pageSessionLink: a mirrored session's current window, or an agent's
+	// page), and SessionLabel its short name. "" when it cannot be resolved:
+	// then no session button and no "Made by" link are drawn — never a guess.
+	SessionHref  string
+	SessionLabel string
+	// ShareButton is the page's Share button (ui.PageShareButton) and
+	// ShareScript its behaviour (ui.PageShareScript): the ONE share flow, the
+	// chat's and the Pages screens' own.
+	//
+	// 🔴 TRUSTED MARKUP AND SCRIPT, written as they are: muster's own
+	// renderer's output (every page-derived value in it escaped there), never
+	// a page's words.
+	ShareButton string
+	ShareScript string
+}
+
+// ShellVersion is one version as the popover lists it.
+type ShellVersion struct {
+	Version int
+	// Made is when it was made, in words.
+	Made string
+	// Current: the page's current version (what its links show).
+	Current bool
+	// Href views it (/pages/{id}/view?v=N).
+	Href string
+}
+
+// sessionIcon is the session button's icon: a terminal prompt, drawn inline
+// (the shell's CSP takes no image but its brand logo).
+const sessionIcon = `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">` +
+	`<rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6.5 6.5 8.5 4.5 10.5M8.5 10.5h3"/></svg>`
+
+// shellCSS is the shell's styles. The popover is a bottom sheet on a phone
+// and anchored under the chip from 640px, every target in it at least 44px.
+// The header's own two buttons are 30px boxes at y 5 to 35 (border-box, top
+// aligned, so both sit exactly there); each takes taps over 44px, its ::after
+// from y -4 (past the screen's top edge) to 40, the header's bottom (an
+// ::after is placed against the padding box, inside the 1px border, so
+// bottom -6px is the box's bottom edge plus 5): never over the page below.
+const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{position:fixed;top:0;left:0;right:0;z-index:2;box-sizing:border-box;height:` + shellHeaderPx + `px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
+background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent);transition:transform .18s ease-out}
+header[data-hidden]:not(:focus-within){transform:translateY(-100%)}
+header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
+header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
+header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
+.sess{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
+border:1px solid color-mix(in srgb,CanvasText 25%,transparent);color:inherit;text-decoration:none;font-size:13px}
+.sess::after{content:"";position:absolute;left:-2px;right:-2px;bottom:-6px;height:44px}.sess svg{flex:none;width:14px;height:14px}
+.sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
+.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
+background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
+.scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
+.pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
+padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:24rem;max-width:calc(100vw - 16px);border-radius:12px;padding:8px;
+box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid color-mix(in srgb,CanvasText 15%,transparent)}}
+.scrim[hidden],.pop[hidden]{display:none}
+.pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop ul{list-style:none;margin:0;padding:0}.pop form{display:contents}
+.pop a,.pop button{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;
+background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;white-space:nowrap;cursor:pointer}
+.pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:color-mix(in srgb,CanvasText 9%,transparent)}
+.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
+#action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
+.confirm{position:fixed;z-index:6;left:0;right:0;bottom:0;box-sizing:border-box;max-height:60vh;overflow:auto;background:Canvas;
+padding:12px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid color-mix(in srgb,CanvasText 20%,transparent);box-shadow:0 -4px 24px rgb(0 0 0/.25)}
+@media (min-width:640px){.confirm{left:auto;right:16px;bottom:16px;width:26rem;border-radius:12px;border:1px solid color-mix(in srgb,CanvasText 20%,transparent)}}
+.confirm[hidden]{display:none}.confirm:focus{outline:none}
+.confirm .ch{margin:0 0 4px;font-weight:600}.confirm .cw{margin:0 0 6px;color:color-mix(in srgb,CanvasText 70%,transparent);font-size:14px}
+.confirm .cs{margin:0 0 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,monospace;
+padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,transparent)}
+.confirm .cb{display:flex;justify-content:flex-end;gap:8px}
+.confirm button{min-height:44px;min-width:5.5rem;padding:0 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;color:inherit;
+background:transparent;border:1px solid color-mix(in srgb,CanvasText 25%,transparent)}.confirm button.go{background:#2f6fde;border-color:#2f6fde;color:#fff}
+#action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
+
+// Shell is the shell document: the instance branding and the title in one
+// slim header (and, for the owner, the version chip), the sandboxed frame of
+// the content and the relay script (ShellScript).
 func Shell(v ShellView) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow">
 <title>` + esc(v.Title) + `</title>
 `)
@@ -381,11 +560,7 @@ func Shell(v ShellView) string {
 		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
 `)
 	}
-	b.WriteString(`<style>:root{color-scheme:light dark}html,body{margin:0;height:100%;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
-body{display:flex;flex-direction:column;min-height:100dvh}header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent)}
-header img{height:28px;width:auto;max-width:8rem;object-fit:contain}header .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-header .n{color:color-mix(in srgb,CanvasText 65%,transparent);white-space:nowrap}.banner{padding:8px 16px;font-size:14px;background:color-mix(in srgb,CanvasText 7%,transparent)}
-iframe{flex:1;width:100%;border:0;min-height:70vh}</style></head>
+	b.WriteString(`<style>` + shellCSS + `</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
 		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
@@ -393,47 +568,269 @@ iframe{flex:1;width:100%;border:0;min-height:70vh}</style></head>
 	if v.BrandName != "" {
 		b.WriteString(`<span class="n" data-brand-name>` + esc(v.BrandName) + `</span>`)
 	}
-	b.WriteString(`<span class="t" data-page-title>` + esc(v.Title) + `</span></header>`)
-	if v.Banner != "" {
-		b.WriteString(`<p class="banner" data-page-banner>` + esc(v.Banner) + `</p>`)
+	b.WriteString(`<span class="t" data-page-title title="` + esc(v.Title) + `">` + esc(v.Title) + `</span>`)
+	o := v.Owner
+	if o != nil && o.SessionHref != "" {
+		b.WriteString(`<a class="sess" href="` + esc(o.SessionHref) + `" data-page-session title="Made by ` + esc(o.SessionLabel) +
+			`" aria-label="Open the session that made this page: ` + esc(o.SessionLabel) + `">` + sessionIcon + `<span class="sl">` + esc(o.SessionLabel) + `</span></a>`)
 	}
-	b.WriteString(`<iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
-<script nonce="` + esc(v.Nonce) + `">` + ShellScript(v.Base) + `</script>
+	if o != nil {
+		vn := strconv.Itoa(o.Version)
+		b.WriteString(`<button type="button" class="chip" data-version-chip aria-haspopup="dialog" aria-expanded="false" aria-controls="page-versions" ` +
+			`aria-label="Version ` + vn + `: show versions">v` + vn + ` <span aria-hidden="true">▾</span></button>`)
+	}
+	b.WriteString(`</header>
+<iframe id="page" title="` + esc(v.Title) + `" src="` + esc(v.FrameSrc) + `" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+`)
+	script := ShellScript(v.Base, o != nil)
+	if o != nil {
+		b.WriteString(`<div class="scrim" data-versions-scrim hidden></div>
+<div class="pop" id="page-versions" role="dialog" aria-label="Versions of this page" data-versions hidden>
+<h2>Versions</h2><ul>`)
+		for _, x := range o.Versions {
+			xn := strconv.Itoa(x.Version)
+			cur, what := "", esc(x.Made)
+			if x.Version == o.Version {
+				cur = ` aria-current="page"`
+			}
+			if x.Current {
+				what = "current · " + what
+			}
+			b.WriteString(`<li><a href="` + esc(x.Href) + `" data-version-link="` + xn + `"` + cur + `>Version ` + xn + `<span class="w">` + what + `</span></a></li>`)
+		}
+		made := ""
+		if o.SessionHref != "" {
+			made = `<a href="` + esc(o.SessionHref) + `" data-page-made-by>Made by ` + esc(o.SessionLabel) + `</a>`
+		}
+		b.WriteString(`</ul><hr>` + o.ShareButton + made + `<a href="` + esc(o.DetailHref) + `" data-page-details>Page details</a></div>
+<div id="action-toasts" aria-live="polite"></div>
+<div class="confirm" role="dialog" aria-labelledby="send-confirm-h" aria-describedby="send-confirm-what send-confirm-summary" tabindex="-1" data-send-confirm hidden>
+<p class="ch" id="send-confirm-h">Send as you?</p><p class="cw" id="send-confirm-what" data-send-what></p><pre class="cs" id="send-confirm-summary" data-send-summary></pre>
+<div class="cb"><button type="button" data-send-cancel>Cancel</button><button type="button" class="go" data-send-go>Send</button></div></div>
+`)
+		script += "\n" + ownerScript + "\n" + o.ShareScript
+	}
+	b.WriteString(`<script nonce="` + esc(v.Nonce) + `">` + script + `</script>
 </body></html>
 `)
 	return b.String()
 }
 
-// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell):
-// a message from the shell's OWN frame asking to submit or upload is sent to
-// base+"/submit" or base+"/upload" with credentials omitted, and the answer
-// posted back. base "" (a preview) answers every message as a preview.
+// ShellScript is the relay (docs/design/pages.md#how-the-sdk-talks-to-muster-postmessage-to-the-shell),
+// the owner's confirm, and the header's hide-on-scroll.
 //
 // 🔴 THE SHELL IS THE ONLY CODE ON MUSTER'S ORIGIN A VIEWER RUNS, SO IT TRUSTS
-// NOTHING IT IS SENT: it accepts only its own frame's window, two ops, and
-// sends only the component name, the data as JSON, or a Blob, to two fixed
-// routes that authenticate by the link alone.
-func ShellScript(base string) string {
+// NOTHING IT IS SENT. From window messages it takes ONE thing: its own
+// frame's first "hello", answered with a MessagePort (sdkScript holds it
+// before any script of the page's runs). Everything else comes on that port
+// or not at all. A send is checked on receipt, in the shell's own realm, on
+// the shell's own structured-clone copy: a fixed field set; a submit's data
+// normalised by a JSON round-trip (undefined dropped, a Date its ISO string,
+// NaN null — what a link's viewer's sends always became) and then measured
+// in BYTES against the server's cap; an upload's files 1 to 20
+// {file: Blob, name} pairs. That one copy is what is shown and what is posted.
+//
+// A link's shell posts it at once, with credentials omitted (the link in base
+// is the credential), as it always has.
+//
+// 🔴 THE OWNER'S SHELL (owner) POSTS NOTHING THE OWNER HAS NOT CONFIRMED HERE,
+// in muster's own realm, where the page's script cannot reach (another
+// origin, a sandboxed frame): a send opens the shell's "Send as you?" bar —
+// the component and EVERY field, one per line, name and value as JSON with
+// control, invisible and direction-changing characters escaped (show), so a
+// newline cannot fake a second field nor U+202E reorder one; never cut (a
+// summary over confirmMaxChars is refused, not shown in part); or the files'
+// names and sizes — and only the owner's tap on its Send posts exactly that
+// copy, with their session, same-origin (the route's own session and Origin
+// checks; the same-origin referrer policy keeps a Referer for
+// requireSameOrigin's fallback). Cancel, Escape (while the keyboard is in the
+// shell: inside the frame the shell cannot see keys, and Cancel is the
+// reliable path), or confirmWaitMs of nothing records nothing.
+// Send is not focused when the bar opens (the bar itself is). A press of the
+// bar within confirmGuardMs does nothing and starts the window again, so a
+// burst of taps that opened the bar never reaches Send; Send then takes a
+// press that begins on it after the window. One send waits at a time:
+// another while the bar is open is answered "Another send is waiting for
+// your answer." and dropped.
+//
+// Requests go one at a time, in the order received; a several-file upload's
+// files in turn, stopping at the first one refused.
+//
+// 🔴 THE HEADER IS THE BRAND, THE TRUST SIGNAL OF A SHARE LINK, AND A PAGE'S
+// SCRIPT MUST NEVER BE ABLE TO KEEP IT HIDDEN FOR GOOD. It hides on a scroll
+// down and returns on a scroll up, by these rules, and only these:
+//   - it is visible on load (nothing hides it until a report arrives);
+//   - a report at or near the top (y no more than the header's height) shows it;
+//   - any report above the last one (a scroll up) shows it;
+//   - only a report below the last one, past the header's height AND more
+//     than the header's height below where it last came back, hides it;
+//   - keyboard focus inside it (CSS :focus-within) and the open version
+//     popover show it whatever the reports say;
+//   - 🔴 and, needing nothing of the page: it comes back once no report
+//     FURTHER DOWN has arrived for revealMs, and in any case hideCapMs after
+//     it hid, whatever the reports say. So it is never hidden for longer
+//     than hideCapMs at a time, and after that only a fresh scroll down past
+//     its own height hides it again: a page creeping down by script a pixel
+//     at a time, re-dispatching scroll events, or scrolling an inner
+//     element cannot hold it.
+//
+// The one op that moves it is "scroll" {y: a finite number >= 0}, and only on
+// the port: a page's script posting one to the shell is ignored, as is one
+// from any other window, and a y that is not such a number.
+// TestTheShellHidesItsHeaderOnlyByTheRules and e2e pages.spec.ts.
+func ShellScript(base string, owner bool) string {
+	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
+	if owner {
+		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
+	}
 	return `(function(){"use strict";
-var f=document.getElementById("page"),base=` + jsString(base) + `;
-window.addEventListener("message",function(ev){
- if(!f||ev.source!==f.contentWindow)return;
- var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||d.id.length>32)return;
- function reply(ok,x){f.contentWindow.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)},"*");}
- if(!base)return reply(true,{preview:true});
- var comp=typeof d.component==="string"?d.component.slice(0,64):"",req;
- var opts={method:"POST",credentials:"omit",cache:"no-store",referrerPolicy:"no-referrer"};
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,OWNER=` + gate + `,port=null;
+var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0,floorY=0,quiet=0,cap=0,queue=Promise.resolve(),MAXBODY=` + strconv.Itoa(MaxSubmitBytes+4<<10) + `;
+function hidden(){return !!hdr&&hdr.hasAttribute("data-hidden");}
+function setHidden(h){
+ if(!hdr||h===hidden())return;
+ clearTimeout(cap);clearTimeout(quiet);
+ if(h){hdr.setAttribute("data-hidden","");cap=setTimeout(reveal,` + hideCapMs + `);}
+ else{hdr.removeAttribute("data-hidden");floorY=lastY;}
+}
+function reveal(){setHidden(false);}
+window.__musterHeader=function(show){setHidden(!show);};
+function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
+function onY(y){
+ if(typeof y!=="number"||!isFinite(y)||y<0)return;
+ var prev=lastY,down=y>prev;lastY=y;
+ if(y<=H||y<prev||popOpen()){setHidden(false);return;}
+ if(!down)return;
+ if(!hidden()&&y>floorY+H)setHidden(true);
+ if(hidden()){clearTimeout(quiet);quiet=setTimeout(reveal,` + revealMs + `);}
+}
+function only(o,keys){var ks=Object.keys(o);for(var i=0;i<ks.length;i++)if(keys.indexOf(ks[i])<0)return false;return true;}
+// show is a value as the owner reads it: its JSON, with every control,
+// invisible and direction-changing character written as an escape.
+function show(v){
+ return JSON.stringify(v).replace(/[\u007f-\u009f\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\ufff9-\ufffb]/g,
+  function(c){return "\\u"+("000"+c.charCodeAt(0).toString(16)).slice(-4);});
+}
+// summarise is EVERY field of data, one per line, each as show() writes it.
+function summarise(v){
+ if(v&&typeof v==="object"&&!Array.isArray(v)){
+  var src=v,ks=Object.keys(v);
+  if(ks.length===1&&ks[0]==="fields"&&v.fields&&typeof v.fields==="object"&&!Array.isArray(v.fields)){src=v.fields;ks=Object.keys(src);}
+  if(!ks.length)return "(nothing)";
+  return ks.map(function(k){return show(k)+": "+show(src[k]);}).join("\n");
+ }
+ return show(v);
+}
+function bytes(s){return new TextEncoder().encode(s).length;}
+function size(n){return n<1024?n+" B":n<1048576?Math.round(n/1024)+" KB":(n/1048576).toFixed(1)+" MB";}
+function fetchJSON(path,opts,done){
+ queue=queue.then(function(){return fetch(path,opts).then(function(r){
+  return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
+   if(r.ok)done(true,j);else done(false,(j&&j.error)||("muster answered "+r.status));});},
+  function(){done(false,"muster could not be reached");});});
+}
+function opts(body,headers){var o={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `,body:body};if(headers)o.headers=headers;return o;}
+// The owner's confirm (owner only: its elements are in the owner's shell).
+var box=document.querySelector("[data-send-confirm]"),asking=null,openAt=0,armed=false,giveUp=0;
+// guard (re)starts the window in which a press of the bar does nothing: on
+// opening, and on EVERY press inside it, so a burst of taps never reaches
+// past it; Send then needs a press that STARTS on it after a quiet window.
+function guard(){openAt=Date.now();armed=false;}
+function settled(){return Date.now()-openAt>=` + confirmGuardMs + `;}
+function ask(what,summary,cb){
+ if(asking)return false;
+ asking=cb;
+ box.querySelector("[data-send-what]").textContent=what;
+ box.querySelector("[data-send-summary]").textContent=summary;
+ box.hidden=false;guard();box.focus();
+ giveUp=setTimeout(function(){decide(false);},` + confirmWaitMs + `);
+ return true;
+}
+function decide(yes){
+ var cb=asking;if(!cb)return;
+ asking=null;armed=false;clearTimeout(giveUp);box.hidden=true;if(f)f.focus();cb(yes);
+}
+if(box){
+ var go=box.querySelector("[data-send-go]");
+ box.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&!settled())guard();},true);
+ go.addEventListener("pointerdown",function(e){if(e.isTrusted&&asking&&settled())armed=true;});
+ go.addEventListener("keydown",function(e){
+  if(!e.isTrusted||!asking||(e.key!=="Enter"&&e.key!==" "))return;
+  if(settled())armed=true;else{guard();e.preventDefault();}
+ });
+ go.addEventListener("click",function(e){
+  if(!e.isTrusted||!asking)return;
+  if(armed&&settled())decide(true);else guard();
+ });
+ box.querySelector("[data-send-cancel]").addEventListener("click",function(e){if(e.isTrusted)decide(false);});
+}
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&asking){e.preventDefault();decide(false);}},true);
+function relay(d){
+ if(typeof d.id!=="string"||d.id.length>32)return;
+ function reply(ok,x){port.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)});}
+ if(!base)return reply(false,"nothing can be sent from here");
+ var comp=typeof d.component==="string"?d.component.slice(0,64):"",what,summary,run,i;
  if(d.op==="submit"){
-  var body;try{body=JSON.stringify({component:comp,data:d.data===undefined?null:d.data});}catch(e){return reply(false,"the data is not JSON");}
-  opts.headers={"Content-Type":"application/json"};opts.body=body;req=fetch(base+"/submit",opts);
+  if(!only(d,["muster","id","op","component","data"]))return reply(false,"muster does not take that");
+  // The data as JSON would carry it (undefined dropped, a Date as its ISO
+  // string, NaN as null), for a link's viewer as before and for the owner:
+  // what the owner is shown below IS this, and so is what is posted.
+  var data,body;
+  try{var js=JSON.stringify(d.data===undefined?null:d.data);data=js===undefined?null:JSON.parse(js);body=JSON.stringify({component:comp,data:data});}
+  catch(e){return reply(false,"the data is not JSON");}
+  if(bytes(body)>MAXBODY)return reply(false,"the data is too large");
+  what="To “"+comp+"”";summary=summarise(data);
+  run=function(done){fetchJSON(base+"/submit",opts(body,{"Content-Type":"application/json"}),done);};
  }else if(d.op==="upload"){
-  if(!(d.file instanceof Blob))return reply(false,"not a file");
-  var fd=new FormData();fd.append("component",comp);fd.append("file",d.file,String(d.name||"file").slice(0,200));
-  opts.body=fd;req=fetch(base+"/upload",opts);
+  if(!only(d,["muster","id","op","component","files"])||!Array.isArray(d.files)||d.files.length<1||d.files.length>20)return reply(false,"muster does not take that");
+  var files=[];
+  for(i=0;i<d.files.length;i++){
+   var x=d.files[i];
+   if(!x||typeof x!=="object"||!only(x,["file","name"])||!(x.file instanceof Blob)||typeof x.name!=="string")return reply(false,"not a file");
+   files.push({file:x.file,name:x.name.slice(0,200)||"file"});
+  }
+  what=(files.length===1?"A file":files.length+" files")+" to “"+comp+"”";
+  summary=files.map(function(x){return show(x.name)+" ("+size(x.file.size)+")";}).join("\n");
+  run=function(done){
+   var k=0,last=null;
+   (function next(){
+    if(k>=files.length)return done(true,last);
+    var fd=new FormData();fd.append("component",comp);fd.append("file",files[k].file,files[k].name);k++;
+    fetchJSON(base+"/upload",opts(fd),function(ok,x){if(!ok)return done(false,x);last=x;next();});
+   })();
+  };
  }else return reply(false,"unknown request");
- req.then(function(r){return r.json().catch(function(){return {error:"muster answered "+r.status};}).then(function(j){
-  if(r.ok)reply(true,j);else reply(false,(j&&j.error)||("muster answered "+r.status));});},
-  function(){reply(false,"muster could not be reached");});
+ if(!OWNER)return run(reply);
+ if(!box)return reply(false,"nothing can be sent from here");
+ // Everything, or nothing: a summary too long to show whole is refused,
+ // never shown in part.
+ if(summary.length>` + confirmMaxChars + `)return reply(false,"This is too much to show you before sending; nothing was sent.");
+ if(!ask(what,summary,function(yes){if(!yes)return reply(false,"Not sent");run(reply);}))
+  return reply(false,"Another send is waiting for your answer.");
+}
+window.addEventListener("message",function(ev){
+ if(!f||port||ev.source!==f.contentWindow)return;
+ var d=ev.data;if(!d||d.muster!==1||d.op!=="hello")return;
+ var ch=new MessageChannel();port=ch.port1;
+ port.onmessage=function(e){var m=e.data;if(!m||typeof m!=="object"||m.muster!==1)return;if(m.op==="scroll")onY(m.y);else relay(m);};
+ f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
 });
 })();`
 }
+
+// ownerScript is the version chip's popover: a real button (aria-expanded)
+// opening a dialog; on open the header shows and focus goes to the version
+// shown; Escape, a tap outside (the scrim) or the chip again closes it, and
+// focus returns to the chip.
+const ownerScript = `(function(){"use strict";
+var chip=document.querySelector("[data-version-chip]"),pop=document.getElementById("page-versions"),scrim=document.querySelector("[data-versions-scrim]");
+if(!chip||!pop||!scrim)return;
+function set(open,back){
+ chip.setAttribute("aria-expanded",open?"true":"false");pop.hidden=!open;scrim.hidden=!open;
+ if(open){window.__musterHeader&&window.__musterHeader(true);var c=pop.querySelector("a[aria-current]")||pop.querySelector("a,button");if(c)c.focus();}
+ else if(back)chip.focus();
+}
+chip.addEventListener("click",function(){set(pop.hidden,true);});
+scrim.addEventListener("click",function(){set(false,false);});
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!pop.hidden){e.preventDefault();set(false,true);}});
+})();`

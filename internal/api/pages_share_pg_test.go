@@ -409,15 +409,16 @@ func TestShareWithoutAKeyMakesANewLinkEachTime(t *testing.T) {
 }
 
 // TestPublishPushesTheOwnerOnce: page_create pushes its OWNER (only) "Page
-// ready: <title>", opening the preview; page_update sends no second "ready"
-// (its own "Page updated" push is TestEveryPageVersionPushesItsOwnerUnderTheSendersCap's).
+// ready: <title>", opening the owner's view; page_update sends no second
+// "ready" (its own "Page updated" push is
+// TestEveryPageVersionPushesItsOwnerUnderTheSendersCap's).
 func TestPublishPushesTheOwnerOnce(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Fresh page", `[{"type":"markdown","text":"v1"}]`)
 	f.tool(t, f.agent, pageUpdateTool, map[string]any{"page_id": id, "blocks": json.RawMessage(`[{"type":"markdown","text":"v2"}]`)})
 	sent, to := f.pagePushesTagged("page-" + strconv.FormatInt(id, 10) + "-ready")
 	if len(sent) != 1 || to[0] != f.owner || sent[0].Title != "Page ready: Fresh page" ||
-		sent[0].Data["url"] != "/pages/"+strconv.FormatInt(id, 10)+"/preview" {
+		sent[0].Data["url"] != "/pages/"+strconv.FormatInt(id, 10)+"/view" {
 		t.Fatalf("the publish push: %+v to %v", sent, to)
 	}
 	_, all := f.pushes.snapshot()
@@ -436,7 +437,7 @@ func TestThePageCardRoute(t *testing.T) {
 	path := "/pages/" + strconv.FormatInt(id, 10) + "/card?tool=page_create"
 	w := f.get(t, path, f.ownerHdr())
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `data-page-card=""`) || !strings.Contains(w.Body.String(), "Carded") ||
-		!strings.Contains(w.Body.String(), `href="/pages/`+strconv.FormatInt(id, 10)+`/preview"`) {
+		!strings.Contains(w.Body.String(), `href="/pages/`+strconv.FormatInt(id, 10)+`/view"`) {
 		t.Fatalf("the card: %d %s", w.Code, w.Body.String())
 	}
 	f.session = f.other

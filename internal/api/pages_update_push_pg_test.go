@@ -15,7 +15,7 @@ import (
 )
 
 // TestEveryPageVersionPushesItsOwnerUnderTheSendersCap: page_update pushes
-// "Page updated: <title> (v<N>)", opening THAT version's preview, under the
+// "Page updated: <title> (v<N>)", opening THAT version in the owner's view, under the
 // page_updated toggle, one tag per page (a newer version replaces the older on
 // the device) — at most notifySenderBurst per notifySenderWindow from one
 // sender, each sender its own bucket, and every drop past it logged. The
@@ -57,7 +57,7 @@ func TestEveryPageVersionPushesItsOwnerUnderTheSendersCap(t *testing.T) {
 	if len(got) != notifySenderBurst {
 		t.Fatalf("%d update pushes from one sender; want the cap, %d", len(got), notifySenderBurst)
 	}
-	if got[0].Title != "Page updated: Launch plan (v2)" || got[0].Data["url"] != "/pages/"+sid+"/preview?v=2" ||
+	if got[0].Title != "Page updated: Launch plan (v2)" || got[0].Data["url"] != "/pages/"+sid+"/view?v=2" ||
 		!strings.HasPrefix(got[0].Body, "From ") {
 		t.Fatalf("the first update push: %+v", got[0])
 	}
