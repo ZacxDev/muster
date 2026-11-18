@@ -1003,7 +1003,8 @@ arrives with its token: it can only ever reach that instance's own chat claims.
    can never touch the chat's claim, and the wake loop never reads it as the
    primary's;
 2. **read** the chat's messages after the last seq the lane has seen
-   (`GET /officers/{id}/chats/{chat}/messages?after=<seq>`);
+   (`GET /officers/{id}/chats/{chat}/messages?after=<seq>`), following
+   `more: true` page after page (at most 50 pages a turn);
 3. **send** them to the lane as one user turn: the line "A team member is
    chatting with you in session <name>; reply in plain text; this is not a
    queue item.", then each message under who typed it (`Display Name
@@ -1011,7 +1012,8 @@ arrives with its token: it can only ever reach that instance's own chat claims.
    runs (a 5-minute lease);
 4. **reply** with the lane's final assistant text
    (`POST /officers/{id}/chats/{chat}/reply {text, in_reply_to}`; the HQ
-   server caps its length, muster does not; a turn that ended with no text
+   server caps its length, muster does not; a NUL, which HQ refuses, is
+   removed; a turn that ended with no text
    replies "(The officer's turn ended without a text reply.)"). HQ completes
    the item.
 
@@ -1023,8 +1025,13 @@ restarts mid-turn, or a reply HQ never took, leaves seen past answered: the
 next claim sends the lane no message again and asks it to reply to the last one
 again. A lane `ccd` evicted is resumed from its transcript on its next turn, as
 every lane is. The reply is idempotent on `in_reply_to` (HQ answers the reply
-it already holds), so a post retried after an outage, or an item HQ re-offers
-for a turn already answered, posts once.
+it already holds, `replayed: true`), so a post retried after an outage, or an
+item HQ re-offers for a turn already answered, posts once. **A refusal that is
+final for the turn drops it**: `409 chat_closed` (the member closed the chat)
+and `409 stale_turn` (a newer member turn is the one to answer) mark the turn
+answered — it is never re-asked — and leave the item to HQ (released, so a
+newer turn it carries runs next). `409 not_claimed` (the lease lapsed) is not
+final: the next claim asks the lane to answer again.
 
 **Capacity.** Each instance runs at most `chat_sessions` chats at once
 (MUSTER_OFFICERS, 1–5, default 3; [configuration.md](configuration.md)), one

@@ -177,6 +177,9 @@ const (
 type ChatPage struct {
 	Name     string
 	Messages []ChatMessage
+	// More: HQ left later messages out of this page; read again after the
+	// last one's seq.
+	More bool
 }
 
 // ChatsBackend is the chat routes.
@@ -194,8 +197,10 @@ func (c *Client) chatPath(chat string) string {
 }
 
 // ChatMessages is GET /officers/{id}/chats/{chat}/messages?after=<seq>,
-// answered {messages: [{seq, role, author_login, author_name, text}],
-// chat: {name}}.
+// answered {chat: {name, …}, messages: [{seq, role, author_login,
+// author_name, text, in_reply_to?, at}], more, state}; muster reads the
+// messages' seq, role, author_login, author_name and text, the chat's name and
+// more.
 func (c *Client) ChatMessages(ctx context.Context, chat string, after int64) (ChatPage, error) {
 	raw, err := c.Do(ctx, http.MethodGet, c.chatPath(chat)+"/messages?after="+strconv.FormatInt(after, 10), nil)
 	if err != nil {
@@ -210,11 +215,12 @@ func decodeChatPage(raw []byte) (ChatPage, error) {
 		Chat     *struct {
 			Name string `json:"name"`
 		} `json:"chat"`
+		More bool `json:"more"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return ChatPage{}, fmt.Errorf("%w: chat messages: %v", ErrHQUnavailable, err)
 	}
-	page := ChatPage{Messages: env.Messages}
+	page := ChatPage{Messages: env.Messages, More: env.More}
 	if env.Chat != nil {
 		page.Name = env.Chat.Name
 	}
@@ -634,11 +640,24 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 		release("no session")
 		return ChatReadFailed
 	}
-	page, err := cb.ChatMessages(ctx, chat, marks.Seen)
-	if err != nil {
-		r.log.Printf("officers: %s: chat %s: read its messages after %d: %v", o.label(), chat, marks.Seen, err)
-		release("messages unreadable")
-		return ChatReadFailed
+	// Every message after the lane's mark: HQ pages them (more: true), read
+	// to the end, up to maxChatPages pages.
+	page := ChatPage{}
+	for i, after := 0, marks.Seen; ; i++ {
+		p, err := cb.ChatMessages(ctx, chat, after)
+		if err != nil {
+			r.log.Printf("officers: %s: chat %s: read its messages after %d: %v", o.label(), chat, after, err)
+			release("messages unreadable")
+			return ChatReadFailed
+		}
+		if page.Name == "" {
+			page.Name = p.Name
+		}
+		page.Messages = append(page.Messages, p.Messages...)
+		if !p.More || len(p.Messages) == 0 || i+1 >= maxChatPages {
+			break
+		}
+		after = p.Messages[len(p.Messages)-1].Seq
 	}
 	var fresh []ChatMessage
 	var lastMember int64
@@ -704,7 +723,8 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 	} else {
 		reply = ChatNoTextReply
 	}
-	text := reply
+	// HQ refuses a NUL (400): it is removed, never the reason a reply is lost.
+	text := strings.ReplaceAll(reply, "\x00", "")
 	if strings.TrimSpace(text) == "" {
 		text = ChatNoTextReply
 	}
@@ -718,6 +738,29 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 		case <-ctx.Done():
 		case <-time.After(r.replyRetries[attempt]):
 		}
+	}
+	if err != nil && chatReplyFinal(err) {
+		// 🔴 FINAL FOR THIS TURN (409 chat_closed: the member closed the chat;
+		// 409 stale_turn: a newer member turn is the one to answer). Dropped:
+		// marked answered so no later claim asks the lane again, and the item
+		// left to HQ — released, so a newer turn it carries is run next; an
+		// item re-offered for a turn already answered is completed instead.
+		marks.Answered = marks.Seen
+		if merr := r.lanes.Mark(context.WithoutCancel(ctx), o, n, chat, marks); merr != nil {
+			r.log.Printf("officers: %s: chat %s: record the dropped turn: %v", o.label(), chat, merr)
+		}
+		r.log.Printf("officers: %s: chat %s: HQ refused the reply to seq %d for good (%v); the turn is dropped", o.label(), chat, inReplyTo, err)
+		if lastMember == 0 && !retry {
+			stop()
+			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			_, cerr := b.Complete(cctx, it.ID, holder, Completion{Outcome: "no_action", Summary: "chat turn already answered; HQ refused a repeat reply: " + err.Error()})
+			cancel()
+			if cerr == nil {
+				return ChatReplyDropped
+			}
+		}
+		release("reply refused for good")
+		return ChatReplyDropped
 	}
 	if err != nil {
 		r.log.Printf("officers: %s: chat %s: post the reply to seq %d: %v (released; the next claim asks the lane to answer again)", o.label(), chat, inReplyTo, err)
@@ -733,6 +776,24 @@ func (r *ChatRunner) Run(ctx context.Context, o Officer, n int, it Item) ChatOut
 		r.log.Printf("officers: %s: chat %s: record the reply %d: %v", o.label(), chat, seq, err)
 	}
 	return ChatReplied
+}
+
+// maxChatPages bounds the messages pages one turn reads (ChatPage.More).
+const maxChatPages = 50
+
+// chatReplyFinal reports whether err is HQ refusing a reply for good: 409
+// chat_closed or stale_turn. 409 not_claimed (the lease lapsed) is not: the
+// next claim posts it again.
+func chatReplyFinal(err error) bool {
+	var he *HQError
+	if !errors.As(err, &he) || he.Status != http.StatusConflict {
+		return false
+	}
+	switch he.Code() {
+	case "chat_closed", "stale_turn":
+		return true
+	}
+	return false
 }
 
 // NonChat is items less the chat items: what the transcript forwarder and the
