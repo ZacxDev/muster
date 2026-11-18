@@ -999,11 +999,11 @@ func (s *Server) episodeRowsHTMLExcept(ctx context.Context, rd asksRead, now tim
 		return "", 0
 	}
 	var b strings.Builder
-	b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-waiting" data-testid="attention-episodes" data-attention-episodes>
+	b.WriteString(`<ul class="` + ui.AsksFeedClass + `" aria-label="Stalled and waiting sessions" data-testid="attention-episodes" data-attention-episodes>
 `)
 	if err != nil {
 		s.logger.Printf("attention: episodes: %v", err)
-		b.WriteString(`<li class="text-sm text-fg2" data-attention-episodes-error>The stalled and waiting sessions could not be read.</li>` + "\n")
+		b.WriteString(ui.AsksEmptyHTML(` data-asks-empty="episodes-error" data-attention-episodes-error`, "", "", "The stalled and waiting sessions could not be read.", "") + "\n")
 	}
 	esc := html.EscapeString
 	teamHosts := map[int64][]mirror.HostView{}
@@ -1017,29 +1017,45 @@ func (s *Server) episodeRowsHTMLExcept(ctx context.Context, rd asksRead, now tim
 			hosts = teamHosts[ep.Owner]
 		}
 		who, _, _, _ := s.episodeWho(ctx, ep, hosts)
-		state := "Stalled"
-		if ep.State == sessionstate.StateNeedsYou {
-			state = "Needs you"
-		}
-		cls := ui.AsksRowClass
+		cls := ""
 		quiet := ""
 		// A quiet reason is only ever held by an unpushed episode (SetQuiet
 		// refuses a pushed one, ClaimPush clears it).
 		if q, ok := episodeQuietText[ep.Quiet]; ok {
-			cls += " " + ui.AsksQuietCardClass
+			cls = ui.AsksQuietCardClass
 			quiet = ` · <span data-attention-episode-quiet="` + esc(ep.Quiet) + `">` + esc(q) + `</span>`
 		}
 		line := ""
 		if it, ok := waits[ep.Key]; ok && ep.Owner == own && ep.Kind == sessionstate.KindMirror {
 			line = attentionWaitLineHTML(it)
 		}
-		key := episodeKey(ep.ID)
-		b.WriteString(`<li id="` + esc(key) + `" class="min-w-0" data-attention-episode data-state="` + esc(ep.State) + `"><a href="` + esc(attentionOpenURL(key)) + `" class="` + cls + `" data-attention-episode-open>
-<span class="` + ui.AsksHeadTextClass + ` gap-0.5"><span class="` + ui.AsksTitleClass + `" data-attention-episode-where>` + esc(who) + `</span>
-<span class="` + ui.AsksSubClass + `"><span class="font-semibold" data-attention-episode-state>` + esc(state) + `</span> · <time datetime="` +
-			ep.OpenedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(ep.OpenedAt))) + `</time>` + quiet + `</span>` + line + `</span>` + ui.AsksChevron + `</a></li>
-`)
+		b.WriteString(episodeCardHTML(episodeKey(ep.ID), ep.State, who, cls, quiet, line, ep.OpenedAt, now))
 	}
 	b.WriteString("</ul>\n")
 	return b.String(), len(eps)
+}
+
+// episodeCardHTML is one "Stalled / waiting" row as THE FEED CARD (the design
+// review: it was a third card design, a one-link row): its head the state as a
+// badge, the session (who) and its age; what it waits on (line); View in
+// session in its footer — the way in, through the tap route. extra is a class
+// added to the card (a quiet episode's dimming), quiet the sub line's quiet
+// reason.
+func episodeCardHTML(key, state, who, extra, quiet, line string, opened, now time.Time) string {
+	esc := html.EscapeString
+	words, tone := "Stalled", "stalled"
+	if state == sessionstate.StateNeedsYou {
+		words, tone = "Needs you", "waiting"
+	}
+	cls := ui.AsksCardClass
+	if extra != "" {
+		cls += " " + extra
+	}
+	return `<li id="` + esc(key) + `" class="` + cls + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-attention-episode data-state="` + esc(state) + `">
+` + ui.AsksFixedHeadHTML(ui.AsksKindBadge(tone, words),
+		`<span class="`+ui.AsksTitleClass+`" data-attention-episode-where>`+esc(who)+`</span>`,
+		`<span class="sr-only" data-attention-episode-state>`+esc(words)+`</span><time datetime="`+opened.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(opened)))+`</time>`+quiet) +
+		line + `
+<div class="` + ui.AsksCardFooterClass + `" data-asks-footer><a href="` + esc(attentionOpenURL(key)) + `" class="` + ui.AsksCardLinkClass + `" data-asks-view-session data-attention-episode-open>` + askViewInSession + `</a></div></li>
+`
 }

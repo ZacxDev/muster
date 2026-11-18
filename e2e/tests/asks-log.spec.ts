@@ -98,11 +98,22 @@ for (const vp of [
       await page.screenshot({ path: shot, fullPage: true });
       await testInfo.attach(`asks-log-${vp.key}.png`, { path: shot, contentType: 'image/png' });
 
-      // Filter: Kind = Picker, applied — the page reloads on the Log tab.
+      // THE FILTERS ARE BEHIND ONE "Filters" TOGGLE, SHUT (the design review):
+      // the tab's first screen is the summary, not eight fields. RED at
+      // origin/main, where every field was laid out on top.
+      const toggle = panel.locator('[data-asklog-filters-toggle]');
+      await expect(toggle).toHaveText('Filters');
+      await expect(panel.locator('select[name="kind"]'), 'the filters start shut').toBeHidden();
+      await expect(panel.locator('[data-asklog-summary]')).toBeInViewport();
+      await toggle.click();
+      // Filter: Kind = Question with choices, applied — the page reloads on the Log tab.
+      await expect(panel.locator('select[name="kind"] option[value="ask_user_question"]')).toHaveText('Question with choices');
       await panel.locator('select[name="kind"]').selectOption('ask_user_question');
       await Promise.all([page.waitForURL(/[?&]kind=ask_user_question/), panel.getByRole('button', { name: 'Apply' }).click()]);
       await expect(page).toHaveURL(/[?&]tab=log/);
       const filtered = page.getByTestId('asklog-panel');
+      // Filtered: the toggle says how many are set, so it never reads as the whole log.
+      await expect(filtered.locator('[data-asklog-filters-toggle]')).toHaveText('Filters (1)');
       await expect(filtered.locator('[data-asklog-row]')).toHaveCount(1);
       await expect(filtered.locator('[data-asklog-row]')).toHaveAttribute('data-kind', 'ask_user_question');
       await expect(filtered.locator('[data-asklog-stat="total"] span').first()).toHaveText('1');
