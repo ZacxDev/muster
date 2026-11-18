@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest something muster should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [documentation](https://github.com/ZacxDev/muster/blob/main/docs/README.md) and
+        [the known limits](https://github.com/ZacxDev/muster/blob/main/docs/limits.md) first: the feature may exist behind a setting, or be a documented limit.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How you would like it to work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you have considered, or how you work around it now.
