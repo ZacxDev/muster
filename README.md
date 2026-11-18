@@ -185,8 +185,10 @@ The components and what each trusts: [docs/architecture.md](docs/architecture.md
 
 
 What each part needs, and what is optional: [Core vs optional](#core-vs-optional).
-While there is no session yet, home shows how to start an agent in tmux
-(`tmux new -A -s work claude`) and the same prompt, to connect another machine.
+While there is no session yet, home walks an admin through connecting a
+computer and starting an agent in plain steps; the same prompt and the tmux
+command (`tmux new -A -s work claude`) are each behind an ⓘ with a Copy
+button. Anyone who is not an admin is told to ask their admin.
 
 <details>
 <summary><b>Install from inside Claude Code, or as a skill</b></summary>

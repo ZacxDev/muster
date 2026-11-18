@@ -67,27 +67,53 @@ func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
 }
 
 // TestTheEmptyAgentsListSaysHowToConnect: home with nothing to open (no
-// agents and no mirrored windows: RenderAgentsHome) draws the connect
-// instructions — the tmux one-liner, the exact prompt and the guide's link —
-// inside the navigation. It offers no dispatch (docs/design/chief-dispatch.md
-// phase 2; TestTheDispatchUIIsGone pins the absence).
+// agents and no mirrored windows: RenderAgentsHome) draws, inside the
+// navigation, the connect steps in plain words for an admin (Features.Setup) —
+// the exact prompt and the tmux one-liner each inside its ⓘ details sheet with
+// a Copy button, and the guide's link — and for anyone else only "ask your
+// admin", the prompt and the command ABSENT from the markup. It offers no
+// dispatch (docs/design/chief-dispatch.md phase 2; TestTheDispatchUIIsGone
+// pins the absence).
 func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
-	var empty bytes.Buffer
-	if err := RenderAgentsHome(&empty, Features{}); err != nil {
-		t.Fatal(err)
+	render := func(setup bool) string {
+		var b bytes.Buffer
+		if err := RenderAgentsHome(&b, Features{Setup: setup}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
 	}
-	html := empty.String()
-	if !strings.Contains(html, `id="sidebar-root"`) {
-		t.Errorf("the onboarding page is not inside the nav:\n%s", html)
-	}
-	for _, want := range []string{`id="agents-empty"`, `id="onboarding-prompt"`} {
-		if !strings.Contains(html, want) {
-			t.Errorf("the empty state lacks %s:\n%s", want, html)
+	admin, member := render(true), render(false)
+	for who, html := range map[string]string{"admin": admin, "member": member} {
+		if !strings.Contains(html, `id="sidebar-root"`) || !strings.Contains(html, `id="agents-empty"`) {
+			t.Errorf("%s: the onboarding page is not inside the nav:\n%s", who, html)
 		}
 	}
-	for _, want := range []string{TmuxOneLiner, OnboardingPrompt, InstallGuideURL} {
-		if !strings.Contains(html, escapeForHTML(want)) {
-			t.Errorf("the empty state lacks %q:\n%s", want, html)
+	// The admin's: each code inside its own sheet, copied whole.
+	for id, code := range map[string]string{OnboardingPromptSheetID: OnboardingPrompt, OnboardingStartSheetID: TmuxOneLiner} {
+		i := strings.Index(admin, `id="`+id+`" popover="auto"`)
+		if i < 0 {
+			t.Errorf("admin: no ⓘ sheet %q:\n%s", id, admin)
+			continue
+		}
+		sheet := admin[i:]
+		sheet = sheet[:strings.Index(sheet, "</div></div></div>")]
+		if !strings.Contains(sheet, `data-info-code="">`+escapeForHTML(code)+`<`) || !strings.Contains(sheet, `data-copy-text="`+escapeForHTML(code)+`"`) {
+			t.Errorf("admin: sheet %q does not hold and copy %q:\n%s", id, code, sheet)
+		}
+		if !strings.Contains(admin, `id="`+id+`-open" popovertarget="`+id+`"`) {
+			t.Errorf("admin: no ⓘ trigger for %q", id)
+		}
+	}
+	if !strings.Contains(admin, `href="`+InstallGuideURL+`"`) || strings.Contains(admin, "data-onboarding-ask-admin") {
+		t.Errorf("admin: no install guide link, or told to ask an admin:\n%s", admin)
+	}
+	// The member's: told to ask, and nothing of the setup in the markup.
+	if !strings.Contains(member, "data-onboarding-ask-admin") || !strings.Contains(member, OnboardingAskAdminText) {
+		t.Errorf("member: not told to ask their admin:\n%s", member)
+	}
+	for _, absent := range []string{"Set up muster for me", "muster-install.md", "tmux new", InstallGuideURL, "data-info-sheet", `id="` + OnboardingPromptSheetID} {
+		if strings.Contains(member, absent) {
+			t.Errorf("member: the page carries %q", absent)
 		}
 	}
 }

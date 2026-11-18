@@ -142,15 +142,29 @@ func TestTaskDetailPageBackLinkIsNotBoosted(t *testing.T) {
 	}
 }
 
-// TestTaskDetailPageHeadingFallsBackToTheTaskNumber: an untitled, directory-less
-// task still gets a heading with TEXT. An <h1> that renders nothing fails axe's
-// page-has-heading-one exactly like having no <h1> at all, and
-// TestEveryDocumentHasExactlyOneH1 asserts both halves — but only against ONE
-// fixture, so the empty-label case needs its own.
-func TestTaskDetailPageHeadingFallsBackToTheTaskNumber(t *testing.T) {
-	out := renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 614, Status: notes.StatusOpen}})
-	if !strings.Contains(out, "Task #614") {
-		t.Errorf("an untitled, directory-less task must still get a named heading\n---\n%s", out)
+// TestTaskDetailPageHeadingFallsBackToTheTasksWordsNotItsNumber: an untitled,
+// directory-less task still gets a heading with TEXT. An <h1> that renders
+// nothing fails axe's page-has-heading-one exactly like having no <h1> at all,
+// and TestEveryDocumentHasExactlyOneH1 asserts both halves — but only against
+// ONE fixture, so the empty-label case needs its own. The text is the task's
+// own words (its body's first line), else "Untitled task" — never "Task #<id>",
+// an id in the top layer (the jargon audit's F123).
+func TestTaskDetailPageHeadingFallsBackToTheTasksWordsNotItsNumber(t *testing.T) {
+	h1 := func(out string) string {
+		i := strings.Index(out, "<h1")
+		j := strings.Index(out[i:], "</h1>")
+		if i < 0 || j < 0 {
+			t.Fatalf("no <h1>\n---\n%s", out)
+		}
+		tag := out[i : i+j]
+		return tag[strings.Index(tag, ">")+1:]
+	}
+	if got := h1(renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 614, Status: notes.StatusOpen}})); got != "Untitled task" {
+		t.Errorf("an untitled, directory-less, empty task's heading = %q, want %q", got, "Untitled task")
+	}
+	bodied := TaskCardView{Note: notes.Note{ID: 616, Body: "\n  Write the 2.5 release notes\nwith the changelog", Status: notes.StatusOpen}}
+	if got := h1(renderTaskDetail(t, bodied)); got != "Write the 2.5 release notes" {
+		t.Errorf("an untitled task's heading = %q, want its body's first line %q", got, "Write the 2.5 release notes")
 	}
 	// And the title falls back through TaskTitle to the directory when there is
 	// one — the label every other surface uses, so the page agrees with them.

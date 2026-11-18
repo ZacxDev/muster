@@ -729,7 +729,7 @@ test.describe('the onboarding page', () => {
         const page = await ctx.newPage();
         await signIn(page, oorigin);
         await page.addInitScript(clsInit);
-        const r = await measure(page, oorigin + '/agents', '#agents-empty #onboarding-prompt');
+        const r = await measure(page, oorigin + '/agents', '#agents-empty #onboarding-prompt-open');
         expect(new URL(page.url()).pathname, 'the onboarding page, not a redirect').toBe('/agents');
         console.log(`[cls ${vp.name}] GET /agents (onboarding) ${r.total}`);
         if (r.total >= BAR) bad.push(report(`${vp.name} onboarding`, r));
