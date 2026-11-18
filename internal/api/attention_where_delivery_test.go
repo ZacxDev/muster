@@ -47,19 +47,25 @@ func whereAnsweredAsks() []attention.Ask {
 }
 
 // whereDeliveries are whereAnsweredAsks' card source (the place under its
-// title, or the title itself when the place IS its name) and delivery line,
-// by id. The card's TITLE is the one naming rule's (whereTitles): until the
-// Asks design review it was the place, "mango:1 · tmux scratch3:5 @ ws".
+// title, in words — or the title itself when the place IS its name) and
+// delivery line, by id. The line names the session as the title does, never
+// by its tmux target: that is the card's ⓘ (whereTargets).
 var whereDeliveries = map[int64][2]string{
-	101: {"tmux scratch3:5 @ ws", "Queued for mango:1 · tmux scratch3:5 @ ws — waiting: the session is busy. muster keeps trying."},
+	101: {"on ws", "Queued for mango — waiting: the session is busy. muster keeps trying."},
 	102: {"pear:2 @ ws (not shown in any mirrored window now)", "Queued for pear:2 @ ws (not shown in any mirrored window now): delivering it as a new message in its session."},
-	103: {"tmux build:7 @ ws", "Waiting for tmux build:7 @ ws to read it: a mirrored session reads its answer itself (attention_wait); muster does not type into it."},
-	104: {"tmux scratch3:5 @ ws", "Delivery failed: the paste was not seen."},
+	103: {"on ws", "Waiting for build to read it: a mirrored session reads its answer itself (attention_wait); muster does not type into it."},
+	104: {"on ws", "Delivery failed: the paste was not seen."},
 }
 
 // whereTitles are the Answered cards' titles: the window's own name (its
-// label, else its tmux address), as an Open card's (attentionTitle).
-var whereTitles = map[int64]string{101: "mango:1", 102: "pear:2 @ ws (not shown in any mirrored window now)", 103: "build:7", 104: "mango:1"}
+// label, else its tmux session, without tmux's window index), as an Open
+// card's (attentionTitle).
+var whereTitles = map[int64]string{101: "mango", 102: "pear:2 @ ws (not shown in any mirrored window now)", 103: "build", 104: "mango"}
+
+// whereTargets are the exact tmux targets the Answered cards' ⓘ hold, by id
+// — where a queued or waiting delivery sends the owner; "" for the ask no
+// window shows now (no ⓘ).
+var whereTargets = map[int64]string{101: "tmux scratch3:5 @ ws", 102: "", 103: "tmux build:7 @ ws", 104: "tmux scratch3:5 @ ws"}
 
 var (
 	answeredCardTitle  = regexp.MustCompile(`data-attention-title([^>]*)>([^<]*)</span>`)
@@ -100,6 +106,14 @@ func TestAnAnswersDeliveryLineNamesTheExactTmuxTarget(t *testing.T) {
 		}
 		if got := html.UnescapeString(line[1]); got != want[1] {
 			t.Errorf("answer %d: delivery %q, want %q", id, got, want[1])
+		}
+		// The exact target is reachable: in the card's ⓘ, copied whole.
+		if target := whereTargets[id]; target == "" {
+			if strings.Contains(c, "data-info-code") {
+				t.Errorf("answer %d: an ⓘ on an ask no window shows", id)
+			}
+		} else if !strings.Contains(c, `data-info-code="">`+target+`</code>`) || !strings.Contains(c, `data-copy-text="`+target+`"`) {
+			t.Errorf("answer %d: the ⓘ does not hold %q", id, target)
 		}
 	}
 }

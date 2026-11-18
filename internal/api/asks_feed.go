@@ -437,10 +437,10 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 	esc := html.EscapeString
 	id := strconv.FormatInt(a.ID, 10)
 	who, src, srcIsTitle := attentionTitle(it)
-	// The delivery line keeps naming the window by its exact place (askSource,
-	// what the ask's own page says too): a queued or waiting delivery sends the
-	// owner to that window.
-	text, retry := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), proposal)
+	// The delivery line names the session as the card's title does (who: in
+	// words, never a tmux target); the exact target — where a queued or
+	// waiting delivery sends the owner — is the card's ⓘ, beside the line.
+	text, retry := answerDeliveryText(a, who, proposal)
 	var sub []string
 	if !a.ResolvedAt.IsZero() {
 		sub = append(sub, `<time datetime="`+a.ResolvedAt.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(a.ResolvedAt)))+`</time>`)
@@ -464,7 +464,7 @@ func answeredCardHTML(a attention.Ask, it attentionItem, now time.Time, proposal
 		`<span id="` + key + `-who" class="` + ui.AsksCardWhoClass + `"><span class="` + ui.AsksTitleClass + `"` + titleAttrs + `>` + esc(who) + `</span>` + age + `</span>` + ui.AsksCardChevron + `</button>
 <p class="` + ui.AsksCardQuestionClass + ` text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
-<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>
+` + answeredDeliveryRowHTML(it, key, `<p class="break-words text-xs text-fg2" data-attention-delivery>`+esc(text)+`</p>`) + `
 `)
 	if retry {
 		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver" data-asks-controls><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
@@ -501,4 +501,15 @@ func (s *Server) answeredItems(ctx context.Context, asks []attention.Ask, hosts 
 	}
 	s.withNames(ctx, items)
 	return items
+}
+
+// answeredDeliveryRowHTML is an Answered card's delivery line and, when the
+// ask names a window, its ⓘ (attentionPlaceSheetHTML) beside it — outside the
+// card's toggle, which a button cannot sit inside.
+func answeredDeliveryRowHTML(it attentionItem, key, line string) string {
+	info := attentionPlaceSheetHTML(it, key)
+	if info == "" {
+		return line
+	}
+	return `<div class="flex min-w-0 items-center gap-1" data-asks-place><div class="min-w-0 flex-1">` + line + `</div>` + info + `</div>`
 }
