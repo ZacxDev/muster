@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"strconv"
 	"strings"
 	"testing"
 
@@ -113,16 +112,29 @@ func foldedPageCase(t *testing.T, chief bool) {
 	if _, ok := ccAttr(menu, "data-menu-align"); ok {
 		t.Error("the folded menu is aligned to its trigger's start")
 	}
-	// The tools are gap-1 and their box is their own width: three 2.75rem
-	// controls, two 0.25rem gaps (agentHeaderToolsWidth's compact arithmetic).
+	// The tools are gap-1 and ONE control wide (agentHeaderToolsWith's compact
+	// row: New chat, or the chief's list icon); Chat history and Focus
+	// history are ⋯ menu items, not tools — a worker's; the chief's list icon
+	// opens both.
 	v := chiefPageView(chief)
 	v.FocusHistory = FocusHistoryPath("agent:7", "")
-	for n, d := range map[int]AgentDetailView{2: chiefPageView(chief), 3: v} {
-		tools := ccFirst(t, ccParse(t, renderString(t, AgentDetailPage(d, Features{}))), "data-header-tools", "")
-		cls, _ := ccAttr(tools, "class")
-		want := "w-[" + strconv.FormatFloat(float64(n)*2.75+float64(n-1)*0.25, 'f', -1, 64) + "rem]"
-		if !strings.Contains(" "+cls+" ", " gap-1 ") || !strings.Contains(" "+cls+" ", " "+want+" ") {
-			t.Errorf("%d tools: class %q, want gap-1 and %s", n, cls, want)
+	vdoc := ccParse(t, renderString(t, AgentDetailPage(v, Features{})))
+	tools := ccFirst(t, vdoc, "data-header-tools", "")
+	if cls, _ := ccAttr(tools, "class"); !strings.Contains(" "+cls+" ", " gap-1 ") || !strings.Contains(" "+cls+" ", " w-11 ") {
+		t.Errorf("tools: class %q, want gap-1 and w-11", cls)
+	}
+	vmenu := ccFirst(t, vdoc, "id", AgentMenuID)
+	hist, focusOpen := ccWithAttr(vdoc, "data-chat-history", ""), ccWithAttr(vdoc, "id", "focus-history-open")
+	if v.ChiefChat != nil {
+		if len(hist)+len(focusOpen) != 0 {
+			t.Errorf("the chief's page carries Chat history (%d) or Focus history (%d) items", len(hist), len(focusOpen))
+		}
+	} else {
+		if len(hist) != 1 || !ccInside(hist[0], vmenu) || len(focusOpen) != 1 || !ccInside(focusOpen[0], vmenu) {
+			t.Errorf("a worker's Chat history (%d) and Focus history (%d) are not the ⋯ menu's", len(hist), len(focusOpen))
+		}
+		if ccInside(focusOpen[0], tools) {
+			t.Error("Focus history is still a header tool")
 		}
 	}
 	// The badge is the chip: there is one, in the header.

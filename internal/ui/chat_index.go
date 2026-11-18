@@ -64,6 +64,26 @@ func chatIndexButtonNamed(logID, label string) g.Node {
 	)
 }
 
+// chatIndexMenuItem is chatIndexButton as an item of a header's ⋯ menu
+// (mirrorHeaderMenu): the same id and wiring, so chatIndexScript opens the
+// same sheet; it closes its menu as it is picked (data-menu-close).
+func chatIndexMenuItem(logID string) g.Node {
+	return Button(
+		Type("button"),
+		ID("chat-index-open"),
+		g.Attr("role", "menuitem"),
+		g.Attr("data-menu-close", ""),
+		g.Attr("data-chat-index-log", logID),
+		g.Attr("aria-label", chatIndexLabel),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", "chat-index"),
+		g.Attr("aria-expanded", "false"),
+		Class(headerMenuItemClass),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>`),
+		Span(g.Text("Messages and focus history")),
+	)
+}
+
 // chatIndexSheet is the index's sheet, closed: a bottom sheet over a backdrop,
 // with two tabs — the reader's messages (built by chatIndexScript) and the
 // session's focus history (historyPath, FocusHistoryPath of its newest page;

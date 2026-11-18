@@ -531,6 +531,7 @@ var agentReadCallers = map[string]string{
 	"Get officerFleet.Reprompt":               "machine: an officer's door",
 	"Get officerChatLanes.Home":               "machine: an officer's door (a chat lane's instance)",
 
+	"GetByName Server.agentPagesOf":              "visible: the Open button and Pages tab of an agent the member sees; its pages are read as the member (owner-only rows), so a team agent's are never listed",
 	"GetByName Server.handleAgentChatLog":        "visible: GET /ui/agents/{name}/chat-log (teamAgentRead)",
 	"GetByName Server.officerInstances":          "visible: a team officer's page links each instance agent's page to its members (a read; GET /officers/{officer}?owner=)",
 	"GetByName Server.handleAgentDetail":         "visible: GET /agents/{name} (teamAgentRead)",

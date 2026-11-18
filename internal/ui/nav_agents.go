@@ -661,11 +661,17 @@ func navPreviewOf(e listEntry) g.Node {
 // the window's Preview button is there to open — so internal/api's
 // handleNavAgents (gatePreviewMarks) zeroes the counts unless the owner has a live viewer plugin,
 // the button's own gate.
+//
+// 🔴 IT COUNTS PREVIEWS ONLY, NOT THE SESSION'S PAGES (the Open button counts
+// both): the sidebar's refresh reads the hosts' in-memory counts for every
+// row, and a page count would be a pages query per refresh for every window
+// — for a mark that says "something is running to look at", which a page made
+// an hour ago is not.
 func navPreview(p mirror.WindowPreviews) g.Node {
 	if p.IsZero() {
 		return nil
 	}
-	label := "Preview: " + previewWords(p)
+	label := "Preview: " + openWords(OpenCounts{Previews: p})
 	return Span(
 		g.Attr("data-nav-preview", strconv.Itoa(p.Total())),
 		g.Attr("role", "img"),

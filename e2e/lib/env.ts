@@ -484,6 +484,9 @@ export const sidebarOfficersConnectPort = port + 441;
 export const featuresMemberMainPort = port + 442;
 export const featuresMemberBrowserPort = port + 443;
 export const featuresMemberGotruePort = Number(process.env.MUSTER_E2E_FEATURES_MEMBER_GOTRUE_PORT ?? port + 444);
+// The session view's Open button and its Previews | Pages panel
+// (session-open.spec.ts): its own mirror server (plugins and pages on).
+export const sessionOpenPort = port + 445;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

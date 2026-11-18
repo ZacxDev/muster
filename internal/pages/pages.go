@@ -116,6 +116,38 @@ type Creator struct {
 // Valid reports whether c names exactly one creator.
 func (c Creator) Valid() bool { return (c.AgentID > 0) != (c.MirrorHost != "") }
 
+// SessionRef names ONE session whose pages are listed (Store.SessionPages): a
+// dispatched agent (AgentID), or a mirrored window's session on its host —
+// MirrorHost and the session keys the window runs now (MirrorSessions: what
+// Creator.MirrorSession recorded at create, mirror.Window.MCPCallerKeys).
+//
+// 🔴 A MIRRORED SESSION IS MATCHED BY ITS SESSION, NEVER BY ITS HOST ALONE: a
+// host's every window would otherwise list every page any of them made. So a
+// page made before 0152 recorded the session (mirror_session NULL) is listed
+// for no window (docs/pages.md).
+type SessionRef struct {
+	AgentID        int64
+	MirrorHost     string
+	MirrorSessions []string
+}
+
+// Valid reports whether s names exactly one session: an agent, or a host with
+// at least one session key.
+func (s SessionRef) Valid() bool {
+	if s.AgentID > 0 {
+		return s.MirrorHost == "" && len(s.MirrorSessions) == 0
+	}
+	if s.MirrorHost == "" {
+		return false
+	}
+	for _, k := range s.MirrorSessions {
+		if k != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Page is one page.
 type Page struct {
 	ID             int64

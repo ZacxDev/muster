@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
+import { menuItem } from '../lib/menu';
 import { signIn } from '../lib/signin';
 import { binDir, dsn, focusPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -441,13 +442,12 @@ for (const vp of [
       // Start from no stored choice.
       await page.evaluate(() => { try { localStorage.clear(); } catch (e) {} });
       await page.reload();
-      const opener = page.locator('#chat-index-open');
       const sheet = page.locator('#chat-index');
       const msgsTab = sheet.locator('[role="tab"][data-tab="messages"]');
       const histTab = sheet.locator('[role="tab"][data-tab="focus"]');
       const msgsPanel = sheet.locator('#chat-index-tabs-panel-messages');
       const histPanel = sheet.locator('#chat-index-tabs-panel-focus');
-      await opener.click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet).toBeVisible();
       await expect(sheet.locator('[role="tablist"]')).toBeVisible();
       await expect(msgsTab).toHaveAttribute('aria-selected', 'true');
@@ -478,21 +478,21 @@ for (const vp of [
       await expect(histTab).toHaveAttribute('aria-selected', 'true');
       // Kept across a reload, for this window.
       await page.reload();
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet.locator('[role="tab"][data-tab="focus"]')).toHaveAttribute('aria-selected', 'true');
       await expect(sheet.locator('#chat-index-tabs-panel-focus')).toBeVisible();
       await expect(sheet.locator('#chat-index-tabs-panel-messages')).toBeHidden();
       // A click selects too, and is kept.
       await sheet.locator('[role="tab"][data-tab="messages"]').click();
       await page.reload();
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await expect(sheet.locator('[role="tab"][data-tab="messages"]')).toHaveAttribute('aria-selected', 'true');
     });
 
     test('the focus history scrolls back through every page, newest first, to its start', async ({ page }) => {
       await signIn(page, origin);
       await page.goto(viewURL);
-      await page.locator('#chat-index-open').click();
+      await (await menuItem(page, '#chat-index-open')).click();
       await page.locator('#chat-index [role="tab"][data-tab="focus"]').click();
       const panel = page.locator('#chat-index-tabs-panel-focus');
       const items = panel.locator('[data-focus-history-item]');

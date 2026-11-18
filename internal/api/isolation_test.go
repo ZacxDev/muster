@@ -330,6 +330,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/agents/{name}/chat-log":           classParam,
 	"GET /ui/dispatch-card":                    classParam,
 	"GET /ui/agents/{name}/task":               classParam,
+	"GET /ui/agents/{name}/open-button":        classParam, // by name, as the viewer (GetByName, then the pages store)
+	"GET /ui/agents/{name}/session-pages":      classParam,
 	"GET /ui/connectors/{name}/rotate":         classParam,
 	"GET /ui/tasks/{id}/card":                  classParam,
 	"GET /ui/tasks/{id}/edit":                  classParam,
@@ -634,8 +636,12 @@ var isolationClasses = map[string]routeClass{
 	// window from a ghost even to A, and the walk holds it to the stricter
 	// rule instead: no identifier of A's in an outsider's answer.
 	"GET /ui/mirror/preview-button": classMirror,
-	"GET /mirror/view/ws":           classMirror,
-	"POST /mirror/view/send":        classMirror,
+	// Its panel's Pages tab: the same address; the pages are the viewer's
+	// own rows (the store's row-level security), and an outsider's request
+	// for A's window answers the empty list, as one for a ghost does.
+	"GET /ui/mirror/session-pages": classMirror,
+	"GET /mirror/view/ws":          classMirror,
+	"POST /mirror/view/send":       classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
 	// Drag-to-scroll: the same address fields, plus `lines`.
@@ -1874,7 +1880,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" || path == "/ui/mirror/session-pages" ||
 		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
 		q := url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}
 		if o.mirrorOwner != 0 {

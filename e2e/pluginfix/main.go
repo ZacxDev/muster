@@ -23,6 +23,9 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix branding clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ccagent <owner-id> <name> <token>   → prints the agent id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix page <owner-id> <title> <agent-id|0> <mirror-host|-> <mirror-session|-> <versions> <live 0|1> <age-seconds>   → prints the page id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmpage <page-id>
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -68,6 +71,11 @@
 //	    so a spec that used the Account page's switch leaves the default behind.
 //	  - notifypref: clears the owner's notification preferences
 //	    (notify_preferences), the same way: off, the default, is left behind.
+//	  - ccagent: a running claude-code agent (the folded header's page).
+//	  - page / rmpage: a page as a session's create_page writes it — its
+//	    creator (an agent, or a mirrored session on its host), its versions
+//	    and, optionally, a live link — and its removal (session-open.spec.ts:
+//	    the session view's Pages tab).
 //	  - branding: clears the instance's branding (instance_branding, 0105) —
 //	    the server's, not an owner's, so it takes no owner: nothing set, the
 //	    built-in mark, is left behind for every later spec on the shared
@@ -461,6 +469,78 @@ func run(args []string) error {
 			return fmt.Errorf("usage: rmplugin <owner-id> <plugin-name>")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM plugins WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "ccagent":
+		// A running claude-code agent (its page draws the folded header).
+		owner, err := num(1)
+		if err != nil || len(args) != 4 {
+			return fmt.Errorf("usage: ccagent <owner-id> <name> <token>")
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off, kind, cc_account)
+			VALUES ($1, $2, $3, $2, 'running', $4, true, 'claude-code', 'e2e-account') RETURNING id`, owner, args[2], "devpod-"+args[2], args[3]).Scan(&id); err != nil {
+			return err
+		}
+		fmt.Println(id)
+	case "page":
+		// A page as a session's create_page writes it: made <age> seconds ago
+		// by agent <agent-id> (0 for none) or by session <mirror-session> on
+		// host <mirror-host> ("-" for none), with <versions> versions (the
+		// last current) and, when <live> is 1, a live link.
+		owner, err := num(1)
+		if err != nil || len(args) != 9 {
+			return fmt.Errorf("usage: page <owner-id> <title> <agent-id|0> <mirror-host|-> <mirror-session|-> <versions> <live 0|1> <age-seconds>")
+		}
+		agent, err := num(3)
+		if err != nil {
+			return err
+		}
+		versions, err := num(6)
+		if err != nil || versions < 1 {
+			return fmt.Errorf("page: versions must be 1 or more")
+		}
+		age, err := num(8)
+		if err != nil {
+			return err
+		}
+		var agentArg, sessArg any
+		host := ""
+		if agent > 0 {
+			agentArg = agent
+		} else {
+			host = args[4]
+			if args[5] != "-" {
+				sessArg = args[5]
+			}
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO pages (owner_id, title, current_version, agent_id, mirror_host, mirror_session, creator_label, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, 'e2e', now() - make_interval(secs => $7), now() - make_interval(secs => $7)) RETURNING id`,
+			owner, args[2], versions, agentArg, host, sessArg, float64(age)).Scan(&id); err != nil {
+			return err
+		}
+		for v := int64(1); v <= versions; v++ {
+			blocks := fmt.Sprintf(`[{"type":"markdown","text":"# %s\n\nVersion %d of this page."}]`, args[2], v)
+			if _, err := conn.Exec(ctx, `INSERT INTO page_versions (owner_id, page_id, version, title, blocks, size_bytes, created_by)
+				VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'e2e')`, owner, id, v, args[2], blocks, len(blocks)); err != nil {
+				return err
+			}
+		}
+		if args[7] == "1" {
+			if _, err := conn.Exec(ctx, `INSERT INTO page_links (owner_id, page_id, token_sha256, state, requested_by, decided_at)
+				VALUES ($1, $2::bigint, encode(sha256(convert_to('e2e-page-link-' || $2::bigint::text || '-' || clock_timestamp()::text, 'UTF8')), 'hex'), 'live', 'e2e', now())`, owner, id); err != nil {
+				return err
+			}
+		}
+		fmt.Println(id)
+	case "rmpage":
+		// Deletes one page by id (its versions and links cascade).
+		id, err := num(1)
+		if err != nil || len(args) != 2 {
+			return fmt.Errorf("usage: rmpage <page-id>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM pages WHERE id = $1`, id); err != nil {
 			return err
 		}
 	default:

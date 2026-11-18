@@ -185,6 +185,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
+	// The agent page's Open button and its panel's Pages tab (plugin_chip.go).
+	mux.HandleFunc("GET /ui/agents/{name}/open-button", s.requireSession(s.handleAgentOpenButton))
+	mux.HandleFunc("GET /ui/agents/{name}/session-pages", s.requireSession(s.handleAgentSessionPages))
 	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
 	// card's own refresh, and the live stream's.
 	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))
@@ -1658,6 +1661,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		view.StepUp = s.stepUpView(r)
 		view.StepUp.Why = TeamDispatchCardWhy()
 	}
+	// The header's Open button and its panel: the agent's pages
+	// (plugin_chip.go); nil with pages off.
+	view.Open = s.agentOpenChips(op.begin("pages"), a)
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

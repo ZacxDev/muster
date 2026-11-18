@@ -136,6 +136,26 @@ func focusHistoryButton() g.Node {
 	)
 }
 
+// focusHistoryMenuItem is focusHistoryButton as an item of a claude-code
+// agent's ⋯ menu (foldedMenuItems): the same id and data-focus-history-open,
+// so focusHistoryScript opens the same dialog; it closes the menu as it is
+// picked (data-menu-close).
+func focusHistoryMenuItem() g.Node {
+	return Button(
+		Type("button"),
+		ID("focus-history-open"),
+		g.Attr("role", "menuitem"),
+		g.Attr("data-menu-close", ""),
+		g.Attr("data-focus-history-open", "focus-history"),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", "focus-history"),
+		g.Attr("aria-expanded", "false"),
+		Class(headerMenuItemClass),
+		g.Raw(`<svg class="h-4 w-4 shrink-0 text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>`),
+		Span(g.Text("Focus history")),
+	)
+}
+
 // focusHistoryDialog is the agent page's focus history: a native modal
 // <dialog> (the browser traps focus in it and closes it on Escape), a bottom
 // sheet on a phone and centred from sm up, of a FIXED height so a page

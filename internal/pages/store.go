@@ -39,6 +39,10 @@ type Store interface {
 	Page(ctx context.Context, id int64) (Page, error)
 	// Pages is the caller's pages, newest activity first.
 	Pages(ctx context.Context) ([]Summary, error)
+	// SessionPages is the caller's pages that session s CREATED, newest
+	// first (by when each was made). Nothing, and no query, for an s that
+	// names no session (SessionRef.Valid).
+	SessionPages(ctx context.Context, s SessionRef) ([]Summary, error)
 	// Versions is page id's versions, newest first, without their blocks.
 	Versions(ctx context.Context, id int64) ([]Version, error)
 	// Version is version v of page id; v 0 is the current one.
@@ -284,7 +288,13 @@ const summaryCols = pageCols + `,
 	(SELECT count(*) FROM page_responses r WHERE r.page_id = p.id)`
 
 func (s *PGStore) summaries(ctx context.Context, where string, args ...any) ([]Summary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY p.updated_at DESC, p.id DESC LIMIT 500`, args...)
+	return s.summariesOrdered(ctx, where, `p.updated_at DESC, p.id DESC`, args...)
+}
+
+// summariesOrdered is summaries in order (a constant ORDER BY list, never a
+// caller's words).
+func (s *PGStore) summariesOrdered(ctx context.Context, where, order string, args ...any) ([]Summary, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+summaryCols+` FROM pages p WHERE true`+where+` ORDER BY `+order+` LIMIT 500`, args...)
 	if err != nil {
 		return nil, wrap("list", err)
 	}
@@ -310,6 +320,22 @@ func (s *PGStore) PagesFor(ctx context.Context, c Creator) ([]Summary, error) {
 
 // Pages lists the caller's pages.
 func (s *PGStore) Pages(ctx context.Context) ([]Summary, error) { return s.summaries(ctx, "") }
+
+// SessionPages lists the pages session x made, newest made first. Row-level
+// security scopes it to the caller's own rows, whatever x names.
+func (s *PGStore) SessionPages(ctx context.Context, x SessionRef) ([]Summary, error) {
+	if !x.Valid() {
+		return nil, nil
+	}
+	var where string
+	var args []any
+	if x.AgentID > 0 {
+		where, args = ` AND p.agent_id = $1`, []any{x.AgentID}
+	} else {
+		where, args = ` AND p.agent_id IS NULL AND p.mirror_host = $1 AND p.mirror_session = ANY($2)`, []any{x.MirrorHost, x.MirrorSessions}
+	}
+	return s.summariesOrdered(ctx, where, `p.created_at DESC, p.id DESC`, args...)
+}
 
 // Versions lists a page's versions without their blocks.
 func (s *PGStore) Versions(ctx context.Context, id int64) ([]Version, error) {

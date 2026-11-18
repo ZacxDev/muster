@@ -13,26 +13,37 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE SESSION VIEWS' PREVIEW BUTTON AND PANEL (docs/plugins.md#the-session-view-chip;
-// docs/previews.md): the owner's live viewer plugin (the preview gateway),
-// opened from a mirrored window's Rendered and Terminal views — and ONLY while
-// that window has something to preview (operator decision: a control above
-// every chat whether or not anything was running was noise).
+// THE SESSION VIEWS' OPEN BUTTON AND PANEL (docs/plugins.md#the-session-view-chip;
+// docs/previews.md; docs/pages.md#a-sessions-pages): what a session has made
+// to look at — a mirrored window's previews (the owner's live viewer plugin,
+// the preview gateway) and the pages the session CREATED — in ONE header
+// button and ONE panel (operator decision: the header had no room for a second
+// button, so pages fold in with the preview button and the two are tabs of
+// its panel).
 //
-//   - THE BUTTON: "Preview" and a count (the window's offers plus its open
-//     previews, mirror.WindowPreviews, which the window's host reports),
-//     drawn only while that count is above zero. From `sm` (640px) up it is
-//     in the header row, beside the Rendered | Terminal switch. 🔴 BELOW `sm`
-//     IT IS IN THE HEADER'S SECOND ROW (the status line under the title) —
-//     operator decision: at a phone's width the header row holds no room for
-//     another 44px button, and taking it would leave the title a few pixels.
-//     There it is a 20px pill, the height the row already has, so neither the
-//     title row nor the header grows when it appears; its hit area is 44px
-//     tall (a ::before over the header's padding, above the title's own hit
-//     area). TWO SLOTS, one per place, each `display:none` at the other's
-//     width and each re-reading its button (PreviewButtonPath, Place) every
-//     previewPollEvery only while the tab is shown AND the page is at its
-//     width — so one request per tick, and the page holds no event stream.
+//   - THE BUTTON: "Open" (an icon alone below `sm`) and ONE count — the
+//     window's offers plus its open previews (mirror.WindowPreviews, which the
+//     window's host reports; counted only while the owner has a live viewer
+//     plugin to open them with, as before) plus the session's pages — drawn
+//     only while that count is above zero. It is in the header row at every
+//     width, at a FIXED width with its count laid over its corner, so neither
+//     its arrival (the title, which is flex-1, gives it the room; nothing
+//     right of it moves) nor a new count moves anything. ONE slot re-reads it
+//     (OpenButtonSrc) every previewPollEvery while the tab is shown, so the
+//     page holds no event stream.
+//   - 🔴 PAGES NEED NO VIEWER PLUGIN. The slot and the panel are drawn while
+//     the owner has a live viewer plugin OR the pages feature is on (PagesOn);
+//     without a plugin the Previews tab says there is nothing to preview and
+//     nothing is minted.
+//   - THE PANEL'S TABS: "Previews (n) · Pages (n)" (tabs.go's tablist, with
+//     the shared tab swipe on the panel below it, tab_swipe.go). It opens on
+//     the tab that has something; when both do, on the one this viewer used
+//     last (tabs.go's stored choice, per viewer: openTabsKey). The Previews tab
+//     is the preview panel as it was; the Pages tab lists the session's pages
+//     newest first (SessionPagesList), and a tap on one shows it in the panel
+//     — the owner's own view of it (/pages/{id}/view?embed=1, its version
+//     chip in its header) — under a line with the way back to the list and
+//     "Open full page" (/pages/{id}/view).
 //   - THE PANEL opens on the button: the plugin's page (the gateway's session
 //     page) in a sandboxed frame. Close (or Escape, when
 //     no other dialog or popover is open to take it) unloads the page. "New
@@ -102,70 +113,78 @@ import (
 //     allow-same-origin is safe because the frame's origin is the plugin's,
 //     never muster's (a Host under MUSTER_PLUGIN_ORIGINS is refused 421).
 //   - 🔴 THE PAGE'S CSP CARRIES frame-src 'self' <the plugins' origins>
-//     WHENEVER THE SLOT IS DRAWN — the owner has a live viewer plugin — and
-//     not only while the count is above zero: the button can appear after the
-//     page loaded, and its panel must then be allowed to frame the plugin
-//     (api's allowSameOriginFrame). With no live viewer plugin nothing here is
-//     drawn, nothing polls, and the CSP is the switch's own.
-//   - The panel is position:fixed, and the button takes room only inside a
-//     row that already has its height (the header row's 44px controls, the
-//     second row's 20px), so neither moves the conversation: the views with a
-//     live preview are measured by cls.spec.ts, and plugin-chip.spec.ts
-//     measures the title and the header unchanged when the button appears
-//     at a phone's width. Every layout change above is keyed on attributes
-//     the script sets on <html> only while the panel is open
-//     (previewPanelStyle), so a page loads exactly as before;
+//     WHENEVER THE OWNER HAS A LIVE VIEWER PLUGIN, and not only while the
+//     count is above zero: the button can appear after the page loaded, and
+//     its panel must then be allowed to frame the plugin (api's
+//     allowSameOriginFrame). Without one the CSP is the switch's own, whose
+//     default-src 'self' frames the Pages tab's page (muster's own origin).
+//   - The panel is position:fixed, and the button takes room only inside the
+//     header row, which already has its 44px height, so neither moves the
+//     conversation: the views with a live preview are measured by cls.spec.ts,
+//     and session-open.spec.ts measures the header unchanged when the button
+//     appears and when its count changes, at both widths. Every layout change
+//     above is keyed on attributes the script sets on <html> only while the
+//     panel is open (previewPanelStyle), so a page loads exactly as before;
 //     preview-composer.spec.ts measures the open panel at rest.
 
 // PluginChipSandbox is the panel's frame's sandbox, exactly: no
 // allow-top-navigation of any kind.
 const PluginChipSandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
 
-// PreviewButtonPath is the header button's refresh: GET with the window's
-// host, session and window, answering PreviewButton for its counts NOW.
+// SessionPageSandbox is the Pages tab's frame's sandbox: the owner's own view
+// of a page (muster's shell, which frames the page's content in its own
+// sandbox, pages.ContentCSP). Same-origin and scripts, as the shell needs;
+// a top navigation only on the owner's tap (its "Page details" link).
+const SessionPageSandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-top-navigation-by-user-activation"
+
+// PreviewButtonPath is a mirrored window's Open button's refresh: GET with the
+// window's host, session and window (and owner= for a team's), answering
+// OpenButton for its counts NOW.
 const PreviewButtonPath = "/ui/mirror/preview-button"
+
+// SessionPagesPath is a mirrored window's Pages tab: GET, addressed as
+// PreviewButtonPath, answering SessionPagesList.
+const SessionPagesPath = "/ui/mirror/session-pages"
+
+// AgentOpenButtonPath is an agent page's Open button's refresh, and
+// AgentSessionPagesPath its Pages tab, for the agent named name.
+func AgentOpenButtonPath(name string) string {
+	return "/ui/agents/" + url.PathEscape(name) + "/open-button"
+}
+
+// AgentSessionPagesPath is an agent page's Pages tab (see AgentOpenButtonPath).
+func AgentSessionPagesPath(name string) string {
+	return "/ui/agents/" + url.PathEscape(name) + "/session-pages"
+}
 
 // previewPollEvery is how often the slot re-reads the button while the tab is
 // shown. The host reports its counts every refresh (5 s) after its own 5 s
 // listener scan, so this is the same order of delay.
 const previewPollEvery = "10s"
 
-// PreviewPlace is where a Preview button is drawn: the header row (from `sm`
-// up) or the header's second row (below `sm`).
-type PreviewPlace string
-
-const (
-	PreviewInHeader PreviewPlace = "header"
-	PreviewInRow    PreviewPlace = "row"
-)
-
-// PreviewPlaceOf is the place a query's `place` names; anything else is the
-// header.
-func PreviewPlaceOf(s string) PreviewPlace {
-	if s == string(PreviewInRow) {
-		return PreviewInRow
-	}
-	return PreviewInHeader
-}
-
-// PreviewButtonSrc is PreviewButtonPath for one window's button at place.
-func PreviewButtonSrc(host, session, window string, place PreviewPlace) string {
+// mirrorQuery is a window's address as PreviewButtonPath and
+// SessionPagesPath take it: host, session, window, and owner= for a TEAM
+// host's (owner != 0, team sharing 2b.3b).
+func mirrorQuery(owner int64, host, session, window string) string {
 	q := url.Values{}
 	q.Set("host", host)
 	q.Set("session", session)
 	q.Set("window", window)
-	q.Set("place", string(place))
-	return PreviewButtonPath + "?" + q.Encode()
+	if owner != 0 {
+		q.Set("owner", strconv.FormatInt(owner, 10))
+	}
+	return q.Encode()
+}
+
+// PreviewButtonSrc is PreviewButtonPath for one window's button.
+func PreviewButtonSrc(host, session, window string) string {
+	return PreviewButtonPath + "?" + mirrorQuery(0, host, session, window)
 }
 
 // PreviewButtonSrcOf is PreviewButtonSrc for owner's entry: a TEAM host's
 // (owner != 0, team sharing 2b.3b) names it as owner=.
-func PreviewButtonSrcOf(owner int64, host, session, window string, place PreviewPlace) string {
-	src := PreviewButtonSrc(host, session, window, place)
-	if owner != 0 {
-		src += "&owner=" + strconv.FormatInt(owner, 10)
-	}
-	return src
+func PreviewButtonSrcOf(owner int64, host, session, window string) string {
+	return PreviewButtonPath + "?" + mirrorQuery(owner, host, session, window)
 }
 
 // PluginChip is one live viewer plugin the panel can open.
@@ -174,9 +193,10 @@ type PluginChip struct {
 	Label string
 }
 
-// PluginChips is a session view's preview control: the owner's live viewer
+// PluginChips is a session view's Open control: the owner's live viewer
 // plugins (newest first), the mint route, the window every hand-off is aimed
-// at, and what that window has to preview now. nil draws nothing.
+// at, what that window has to preview now, and the session's pages. nil draws
+// nothing.
 type PluginChips struct {
 	MintPath              string
 	Host, Session, Window string
@@ -187,15 +207,63 @@ type PluginChips struct {
 	// Previews is the window's counts when the page was drawn
 	// (mirror.SessionView.Previews): the button's first state.
 	Previews mirror.WindowPreviews
+	// PagesOn: the pages feature is on, so the session's pages are listed
+	// (the slot and the panel are drawn even with no viewer plugin). Pages is
+	// how many it has made, when the page was drawn.
+	PagesOn bool
+	Pages   int
+	// Agent is a dispatched agent's name on ITS page (no window, no
+	// previews): the button's and the list's routes are the agent's.
+	Agent string
+	// Viewer is the signed-in viewer, whose last-used tab is remembered.
+	Viewer int64
 }
 
-// on: there is a plugin to open, so the slot, the panel and the frame-src
+// on: there is a plugin to open or pages to list, so the slot and the panel
 // are drawn.
-func (c *PluginChips) on() bool { return c != nil && len(c.Chips) > 0 }
+func (c *PluginChips) on() bool { return c != nil && (len(c.Chips) > 0 || c.PagesOn) }
 
-// previewWords is what a window has to preview, as words: "1 preview open,
-// 2 servers to preview".
-func previewWords(p mirror.WindowPreviews) string {
+// previewsOn: there is a viewer plugin to open the window's previews with.
+func (c *PluginChips) previewsOn() bool { return c != nil && len(c.Chips) > 0 }
+
+// counts is the button's first state.
+func (c *PluginChips) counts() OpenCounts {
+	o := OpenCounts{Pages: c.Pages}
+	if c.previewsOn() {
+		o.Previews = c.Previews
+	}
+	return o
+}
+
+// buttonSrc is the slot's refresh route.
+func (c *PluginChips) buttonSrc() string {
+	if c.Agent != "" {
+		return AgentOpenButtonPath(c.Agent)
+	}
+	return PreviewButtonSrcOf(c.Owner, c.Host, c.Session, c.Window)
+}
+
+// pagesSrc is the Pages tab's route.
+func (c *PluginChips) pagesSrc() string {
+	if c.Agent != "" {
+		return AgentSessionPagesPath(c.Agent)
+	}
+	return SessionPagesPath + "?" + mirrorQuery(c.Owner, c.Host, c.Session, c.Window)
+}
+
+// OpenCounts is what the Open button counts: the window's previews (zero
+// without a live viewer plugin) and the session's pages.
+type OpenCounts struct {
+	Previews mirror.WindowPreviews
+	Pages    int
+}
+
+// Total is the button's one count.
+func (o OpenCounts) Total() int { return o.Previews.Total() + o.Pages }
+
+// openWords is what a session has to open, as words: "1 preview open,
+// 2 servers to preview, 3 pages".
+func openWords(o OpenCounts) string {
 	var parts []string
 	plural := func(n int, one, many string) string {
 		if n == 1 {
@@ -203,11 +271,15 @@ func previewWords(p mirror.WindowPreviews) string {
 		}
 		return strconv.Itoa(n) + " " + many
 	}
+	p := o.Previews
 	if p.Open > 0 {
 		parts = append(parts, plural(p.Open, "preview open", "previews open"))
 	}
 	if p.Offered > 0 {
 		parts = append(parts, plural(p.Offered, "server to preview", "servers to preview"))
+	}
+	if o.Pages > 0 {
+		parts = append(parts, plural(o.Pages, "page", "pages"))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -222,83 +294,66 @@ func previewCount(n int) string {
 
 const previewIcon = `<svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>`
 
-// PreviewButton is the Preview button for a window's counts p at place: nil
-// while it has nothing to preview. It carries no htmx wiring (the slot does),
-// so a swapped-in button never re-arms a trigger. The two places' buttons have
-// their own ids (preview-toggle, preview-toggle-row) and share
-// data-preview-toggle, which the panel's script reads.
-func PreviewButton(p mirror.WindowPreviews, place PreviewPlace) g.Node {
-	if p.IsZero() {
+// OpenButtonLabel is the Open button's word and the start of its name.
+const OpenButtonLabel = "Open"
+
+// OpenButton is the Open button for counts o: nil while there is nothing to
+// open. It carries no htmx wiring (the slot does), so a swapped-in button
+// never re-arms a trigger.
+//
+// 🔴 ITS WIDTH IS FIXED (w-11; from `sm` w-[5.5rem] with its word), and its
+// count is laid over its top right corner: a count of 1 and one of 99+ are one
+// box, so a new count moves nothing in the header.
+func OpenButton(o OpenCounts) g.Node {
+	n := o.Total()
+	if n <= 0 {
 		return nil
 	}
-	words := previewWords(p)
-	id, cls, icon := "preview-toggle",
-		"press relative inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent",
-		previewIcon
-	badge := "inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent"
-	if place == PreviewInRow {
-		badge = "inline-flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none tabular-nums text-on-accent"
-		// 20px tall with -2px margins above and below: it lays out as 16px,
-		// the status line's own height, so the row — and the title row above
-		// it, which the header centres with it — does not move when it
-		// appears. The ::before is its 44px
-		// thumb target (centred on it, so it reaches over the header's
-		// padding, not the title row's text), z-20 above the title's z-10 hit
-		// area (mirrorTitleHitClass), which spans this row too.
-		id = "preview-toggle-row"
-		cls = "press relative z-20 -my-0.5 inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-s2 px-2 text-[11px] font-semibold leading-none text-fg ring-1 ring-inset ring-line aria-expanded:ring-2 aria-expanded:ring-accent " +
-			"before:absolute before:-inset-x-1 before:top-1/2 before:h-11 before:-translate-y-1/2 before:content-['']"
-		icon = strings.Replace(previewIcon, `class="h-5 w-5 shrink-0"`, `class="h-3.5 w-3.5 shrink-0"`, 1)
-	}
+	words := openWords(o)
 	return Button(
 		Type("button"),
-		ID(id),
-		g.Attr("data-preview-toggle", string(place)),
-		g.Attr("data-preview-count", strconv.Itoa(p.Total())),
+		ID("preview-toggle"),
+		g.Attr("data-preview-toggle", ""),
+		g.Attr("data-preview-count", strconv.Itoa(n)),
+		g.Attr("data-open-previews", strconv.Itoa(o.Previews.Total())),
+		g.Attr("data-open-pages", strconv.Itoa(o.Pages)),
 		g.Attr("aria-controls", "preview-panel"),
 		g.Attr("aria-expanded", "false"),
-		g.Attr("aria-label", "Preview: "+words),
-		g.Attr("title", "Preview: "+words),
-		Class(cls),
-		g.Raw(icon),
-		g.If(place == PreviewInHeader, Span(g.Text("Preview"))),
-		Span(g.Attr("aria-hidden", "true"), Class(badge), g.Text(previewCount(p.Total()))),
+		g.Attr("aria-label", OpenButtonLabel+": "+words),
+		g.Attr("title", OpenButtonLabel+": "+words),
+		Class("press relative inline-flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent sm:w-[5.5rem]"),
+		g.Raw(previewIcon),
+		Span(Class("max-sm:hidden"), g.Text(OpenButtonLabel)),
+		Span(g.Attr("aria-hidden", "true"), g.Attr("data-open-badge", ""),
+			Class("pointer-events-none absolute -right-1 -top-1 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent ring-2 ring-bg"),
+			g.Text(previewCount(n))),
 	)
 }
 
-// RenderPreviewButton writes PreviewButton(p, place) (nothing at zero).
-func RenderPreviewButton(w io.Writer, p mirror.WindowPreviews, place PreviewPlace) error {
-	n := PreviewButton(p, place)
+// RenderOpenButton writes OpenButton(o) (nothing at zero).
+func RenderOpenButton(w io.Writer, o OpenCounts) error {
+	n := OpenButton(o)
 	if n == nil {
 		return nil
 	}
 	return n.Render(w)
 }
 
-// previewWide is the slots' width test: the page is at `sm` (640px) or
-// wider — Tailwind's sm, a min-width on the viewport, which innerWidth is.
-const previewWide = "window.innerWidth>=640"
-
-// previewButtonSlot is the slot for place: the button as the page was drawn,
-// re-read every previewPollEvery while the tab is shown and the page is at
-// the place's width. Hidden at the other width, and while empty (empty:hidden:
-// an empty slot takes no room and adds no gap to its row).
-func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
+// previewButtonSlot is the header's slot: the button as the page was drawn,
+// re-read every previewPollEvery while the tab is shown. Hidden while empty
+// (empty:hidden: an empty slot takes no room and adds no gap to its row).
+func previewButtonSlot(c *PluginChips) g.Node {
 	if !c.on() {
 		return nil
 	}
-	id, cls, at := "preview-slot", "inline-flex shrink-0 empty:hidden max-sm:hidden", previewWide
-	if place == PreviewInRow {
-		id, cls, at = "preview-slot-row", "ml-auto inline-flex shrink-0 empty:hidden sm:hidden", "!("+previewWide+")"
-	}
 	return Span(
-		ID(id),
-		Class(cls),
-		hx("hx-get", PreviewButtonSrcOf(c.Owner, c.Host, c.Session, c.Window, place)),
-		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden&&"+at+"]"),
+		ID("preview-slot"),
+		Class("inline-flex shrink-0 empty:hidden"),
+		hx("hx-get", c.buttonSrc()),
+		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden]"),
 		hx("hx-swap", "innerHTML"),
 		hx("hx-target", "this"),
-		PreviewButton(c.Previews, place),
+		OpenButton(c.counts()),
 	)
 }
 
@@ -347,35 +402,115 @@ const (
 	previewBarHideLabel   = "Hide message bar"
 )
 
+// The panel's tabs (tabs.go): the tablist's id, its tabs' ids, and the key
+// the viewer's last choice is stored under (per viewer: openTabsKey).
+const (
+	openTabsID      = "open-tabs"
+	OpenTabPreviews = "previews"
+	OpenTabPages    = "pages"
+)
+
+// openTabsKey is the tablist's storage key for viewer (tabs.go stores it as
+// "muster:tabs:<key>"): one choice per signed-in viewer on this browser.
+func openTabsKey(viewer int64) string {
+	if viewer <= 0 {
+		return "session-open"
+	}
+	return "session-open:" + strconv.FormatInt(viewer, 10)
+}
+
+// openTabCount is a tab's count, "(n)", which the script keeps current.
+func openTabCount(tab string, n int) g.Node {
+	return Span(g.Attr("data-open-count", tab), Class("ml-1 tabular-nums"), g.Text("("+previewCount(n)+")"))
+}
+
+// NothingToPreview is the Previews tab with no viewer plugin to open a
+// preview with, and SessionPagesNone the Pages tab of a session that made none.
+const (
+	NothingToPreview = "Nothing to preview in this session."
+	SessionPagesNone = "This session has made no pages."
+)
+
 // previewPanel is the panel the button opens (closed), and its script.
 func previewPanel(c *PluginChips) g.Node {
 	if !c.on() {
 		return nil
 	}
-	first := c.Chips[0]
+	previews := c.previewsOn()
 	// More than one live viewer plugin: the panel's header picks which one
 	// it shows (newest first, the first chosen).
 	var picker g.Node
-	if len(c.Chips) > 1 {
+	if previews && len(c.Chips) > 1 {
 		opts := make([]g.Node, 0, len(c.Chips))
 		for _, p := range c.Chips {
 			opts = append(opts, Option(Value(strconv.FormatInt(p.ID, 10)), g.Text(textplain.Title(p.Label))))
 		}
 		picker = Select(g.Attr("data-preview-plugin", ""), g.Attr("aria-label", "Plugin"),
-			Class("min-h-[44px] max-w-[9rem] shrink-0 truncate rounded-lg bg-s2 px-2 text-xs text-fg ring-1 ring-inset ring-line"),
+			Class("min-h-[44px] max-w-[9rem] shrink-0 truncate rounded-lg bg-s2 px-2 text-xs text-fg ring-1 ring-inset ring-line group-data-[open-tab=pages]:hidden"),
 			g.Group(opts))
 	}
 	btn := "press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-3 text-sm font-semibold hover:bg-s2"
+	var previewsBody g.Node
+	if previews {
+		previewsBody = g.Group{
+			P(ID("preview-error"), g.Attr("role", "status"), g.Attr("hidden", ""),
+				Class("shrink-0 border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words")),
+			IFrame(
+				g.Attr("data-preview-frame", ""),
+				g.Attr("sandbox", PluginChipSandbox),
+				g.Attr("allow", ""),
+				g.Attr("referrerpolicy", "no-referrer"),
+				g.Attr("title", "Preview"),
+				Class("min-h-0 w-full flex-1 border-0 bg-bg"),
+			),
+		}
+	} else {
+		previewsBody = P(g.Attr("data-open-empty", OpenTabPreviews), Class("px-4 py-6 text-sm text-fg2"), g.Text(NothingToPreview))
+	}
+	pagesBody := Div(
+		Class("flex min-h-0 flex-1 flex-col"),
+		// The list (SessionPagesList), read each time the tab is shown.
+		Div(g.Attr("data-session-pages-list", ""), g.Attr("aria-live", "polite"), Class("min-h-0 flex-1 overflow-y-auto overscroll-contain"),
+			P(Class("px-4 py-6 text-sm text-fg2"), g.Text("Loading…"))),
+		// One page, in the owner's own view.
+		Div(g.Attr("data-page-open", ""), g.Attr("hidden", ""), Class("min-h-0 flex-1 flex-col [&:not([hidden])]:flex"),
+			Div(Class("flex h-11 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1"),
+				Button(Type("button"), g.Attr("data-page-back", ""), g.Attr("aria-label", "Back to this session's pages"),
+					Class(btn+" gap-1 px-2 text-fg2"), g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`), g.Text("Pages")),
+				Span(g.Attr("data-page-title", ""), Class("min-w-0 flex-1 truncate text-sm font-semibold")),
+				Span(g.Attr("data-page-version", ""), Class(sessionPageChipClass)),
+				A(g.Attr("data-page-full", ""), Href("#"), Target("_top"), Class(btn+" text-accent"), g.Text("Open full page")),
+			),
+			IFrame(
+				g.Attr("data-page-frame", ""),
+				g.Attr("sandbox", SessionPageSandbox),
+				g.Attr("title", "Page"),
+				Class("min-h-0 w-full flex-1 border-0 bg-bg"),
+			),
+		),
+	)
+	tabs := TabsSelected(openTabsID, openTabsKey(c.Viewer), "Previews and pages", OpenTabPreviews,
+		Tab{ID: OpenTabPreviews, Label: "Previews", Count: openTabCount(OpenTabPreviews, c.counts().Previews.Total()), Panel: previewsBody},
+		Tab{ID: OpenTabPages, Label: "Pages", Count: openTabCount(OpenTabPages, c.Pages), Panel: pagesBody},
+	)
+	var first PluginChip
+	if previews {
+		first = c.Chips[0]
+	}
 	return g.Group{
 		Aside(
 			ID("preview-panel"),
 			g.Attr("hidden", ""),
 			g.Attr("aria-labelledby", "preview-panel-title"),
-			g.Attr("data-mint", c.MintPath),
-			g.Attr("data-host", c.Host),
-			g.Attr("data-window", c.Window),
-			g.If(c.Owner != 0, g.Attr("data-owner", strconv.FormatInt(c.Owner, 10))),
-			g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
+			g.If(previews, g.Group{
+				g.Attr("data-mint", c.MintPath),
+				g.Attr("data-host", c.Host),
+				g.Attr("data-window", c.Window),
+				g.If(c.Owner != 0, g.Attr("data-owner", strconv.FormatInt(c.Owner, 10))),
+				g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
+			}),
+			g.Attr("data-pages-src", c.pagesSrc()),
+			g.Attr("data-open-tab", OpenTabPreviews),
 			// The screen above the message bar below `sm` (the script sets
 			// its bottom to the bar's top); a full-height side panel from
 			// `sm` up, the page narrowed beside it (z-40: above the page,
@@ -386,10 +521,14 @@ func previewPanel(c *PluginChips) g.Node {
 			// 🔴 sm:w-[…] IS previewSideWidth, spelled out for Tailwind.
 			Class("group fixed inset-0 z-40 flex-col bg-s1 text-fg shadow-2xl ring-1 ring-line [&:not([hidden])]:flex sm:left-auto sm:w-[min(40rem,60vw)] sm:border-l sm:border-line "+
 				"data-[preview-full]:ring-0 data-[preview-full]:sm:left-0 data-[preview-full]:sm:w-full data-[preview-full]:sm:border-l-0"),
-			Div(Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-4 pr-1 group-data-[preview-full]:hidden"),
-				Div(Class("flex min-w-0 flex-1 items-center gap-2"),
-					H2(ID("preview-panel-title"), Class("min-w-0 truncate text-sm font-semibold"), g.Text("Preview")),
-					// The new-reply dot (see the file comment).
+			// The header is a swipe area too (tab_swipe.go): a frame's touches
+			// are its own document's, so over a preview or a page the tabs are
+			// swiped here.
+			Div(g.Attr(TabSwipeAttr, openTabsID), Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1 group-data-[preview-full]:hidden"),
+				H2(ID("preview-panel-title"), Class("sr-only"), g.Text("Previews and pages")),
+				// The tabs (tabs.go), and the new-reply dot (see the file comment).
+				Div(Class("flex min-w-0 flex-1 items-center gap-1 overflow-hidden"),
+					tabs.List,
 					Span(g.Attr("data-preview-dot", "header"), g.Attr("title", "New reply"),
 						Class("hidden h-2.5 w-2.5 shrink-0 rounded-full bg-accent group-data-[preview-unread]:inline-block"),
 						Span(Class("sr-only"), g.Text("New reply"))),
@@ -397,17 +536,18 @@ func previewPanel(c *PluginChips) g.Node {
 				picker,
 				// ONE hand-off control: New tab in a browser; in the Android
 				// app the script relabels it Full screen when the panel opens,
-				// and its tap keeps the preview in this frame.
-				A(
+				// and its tap keeps the preview in this frame. The Previews
+				// tab's only.
+				g.If(previews, A(
 					g.Attr("data-preview-newtab", ""),
 					Href("#"),
 					Target("_blank"),
 					Rel("noopener noreferrer"),
 					g.Attr("aria-label", "Open the preview in a new tab"),
-					Class(btn+" text-accent"),
+					Class(btn+" text-accent group-data-[open-tab=pages]:hidden"),
 					g.Text("New tab"),
-				),
-				Button(Type("button"), g.Attr("data-preview-close", ""), g.Attr("aria-label", "Close the preview"),
+				)),
+				Button(Type("button"), g.Attr("data-preview-close", ""), g.Attr("aria-label", "Close the panel"),
 					Class(btn+" text-fg2"), g.Text("Close")),
 			),
 			// Full screen's way out, over the preview's top right corner:
@@ -427,19 +567,71 @@ func previewPanel(c *PluginChips) g.Node {
 				g.Raw(chatIcon), g.Raw(hideBarIcon),
 				Span(g.Attr("data-preview-dot", "full"), g.Attr("aria-hidden", "true"),
 					Class("absolute right-0.5 top-0.5 hidden h-3 w-3 rounded-full bg-accent ring-2 ring-s1 group-data-[preview-unread]:block"))),
-			P(ID("preview-error"), g.Attr("role", "status"), g.Attr("hidden", ""),
-				Class("shrink-0 border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words")),
-			IFrame(
-				g.Attr("sandbox", PluginChipSandbox),
-				g.Attr("allow", ""),
-				g.Attr("referrerpolicy", "no-referrer"),
-				g.Attr("title", "Preview"),
-				Class("min-h-0 w-full flex-1 border-0 bg-bg"),
-			),
+			// The tabs' panels, in the shared tab swipe's area (tab_swipe.go).
+			Div(g.Attr(TabSwipeAttr, openTabsID), Class("flex min-h-0 flex-1 flex-col"), tabs.Panels),
 		),
 		StyleEl(g.Raw(previewPanelStyle)),
+		tabsScript(),
+		tabSwipeScript(),
 		staticScript(previewPanelScriptSrc),
 	}
+}
+
+// sessionPageChipClass is a page's version chip in the Pages tab.
+const sessionPageChipClass = "inline-flex h-6 shrink-0 items-center rounded-full bg-s2 px-2 text-xs font-semibold tabular-nums text-fg2 ring-1 ring-inset ring-line"
+
+// SessionPage is one page in a session's Pages tab.
+type SessionPage struct {
+	ID      int64
+	Title   string
+	Version int
+	// Shared: it has a live link (someone without an account can open it).
+	Shared bool
+	// Made is when it was made, in words.
+	Made string
+}
+
+// SessionPageViewPath is a page's full owner's view; SessionPageEmbedPath it
+// framed in the panel.
+func SessionPageViewPath(id int64) string  { return PageViewPath(id) }
+func SessionPageEmbedPath(id int64) string { return PageViewPath(id) + "?embed=1" }
+
+// SessionPagesList is the Pages tab's list: the session's pages as given
+// (newest first), each a button that shows it in the panel, with its current
+// version and whether it is shared. A page's title is an agent's words:
+// plained (textplain.Title) and escaped.
+func SessionPagesList(ps []SessionPage) g.Node {
+	if len(ps) == 0 {
+		return P(g.Attr("data-open-empty", OpenTabPages), Class("px-4 py-6 text-sm text-fg2"), g.Text(SessionPagesNone))
+	}
+	items := make([]g.Node, 0, len(ps))
+	for _, p := range ps {
+		title := textplain.Title(p.Title)
+		v := "v" + strconv.Itoa(p.Version)
+		share, shareCls := "Not shared", "text-muted"
+		if p.Shared {
+			share, shareCls = "Shared · live link", "text-st-complete-fg"
+		}
+		items = append(items, Li(Button(
+			Type("button"),
+			g.Attr("data-session-page", strconv.FormatInt(p.ID, 10)),
+			g.Attr("data-page-embed", SessionPageEmbedPath(p.ID)),
+			g.Attr("data-page-view", SessionPageViewPath(p.ID)),
+			g.Attr("data-page-title", title),
+			g.Attr("data-page-version", v),
+			g.Attr("aria-label", title+", version "+strconv.Itoa(p.Version)+", "+strings.ToLower(share)),
+			Class("press flex min-h-[44px] w-full flex-col gap-1 px-4 py-2.5 text-left transition hover:bg-s2"),
+			Span(Class("flex min-w-0 w-full items-center gap-2"),
+				Span(Class("min-w-0 flex-1 truncate text-sm font-semibold text-fg"), g.Text(title)),
+				Span(Class(sessionPageChipClass), g.Text(v)),
+			),
+			Span(Class("flex min-w-0 items-center gap-2 text-xs"),
+				Span(g.Attr("data-page-share", strconv.FormatBool(p.Shared)), Class(shareCls), g.Text(share)),
+				g.If(p.Made != "", Span(Class("truncate text-muted"), g.Text("made "+p.Made))),
+			),
+		)))
+	}
+	return Ul(g.Attr("data-session-pages", ""), Class("divide-y divide-line"), g.Group(items))
 }
 
 // previewPanelScriptSrc opens and closes the panel, mints at click time and
@@ -462,7 +654,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     for (var i = 0; i < ts.length; i++) if (ts[i].getClientRects().length) return ts[i];
     return null;
   }
-  function frame() { return panel().querySelector('iframe'); }
+  function frame() { return panel().querySelector('[data-preview-frame]'); }
   function say(msg) {
     var e = document.getElementById('preview-error');
     if (!e) return;
@@ -506,8 +698,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // entry. ⚠ Only the panel's own loads: the previewed page's own
   // navigations in the frame (an app's pushState, a link it follows) still
   // add entries, which outlive the frame (docs/plugins.md).
-  function load(url) {
-    var old = frame();
+  function load(url) { loadInto(frame(), url); }
+  function loadInto(old, url) {
     if (!old) return;
     var f = document.createElement('iframe');
     for (var i = 0; i < old.attributes.length; i++) {
@@ -517,12 +709,20 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     f.src = url;
     old.replaceWith(f);
   }
+  // previewsOn: the owner has a viewer plugin to open previews with (the
+  // panel then carries the mint's data); without one the Previews tab says
+  // there is nothing to preview, and nothing is minted.
+  function previewsOn() { var p = panel(); return !!(p && p.getAttribute('data-mint')); }
+  // minted: the Previews tab has loaded its hand-off since the panel opened
+  // (so switching back to it does not mint again).
+  var minted = false;
   function show() {
-    if (busy) return;
+    if (busy || !previewsOn()) return;
     busy = true;
+    minted = true;
     say('');
     mint().then(function (url) {
-      if (!panel().hidden) load(url);
+      if (!panel().hidden && tabNow() === 'previews') load(url);
     }).catch(function (e) {
       say(e && e.message ? e.message : 'the hand-off failed');
     }).then(function () { busy = false; });
@@ -839,7 +1039,9 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (c) c.focus();
     hookBack();
     hold(true);
-    show();
+    minted = false;
+    chooseTab();
+    onTab();
   }
   // close closes the panel; true when it was open.
   function close() {
@@ -850,8 +1052,11 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     watchReplies(false);
     shield();
     // The plugin's page ends with the panel: nothing of it runs on hidden.
-    // A new blank frame, never a navigation of this one (see load).
+    // A new blank frame, never a navigation of this one (see load). So does
+    // the Pages tab's page.
     load('about:blank');
+    minted = false;
+    pageBack(true);
     hold(false);
     say('');
     expanded();
@@ -906,7 +1111,111 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // The slot's refresh swaps the button in fresh: keep it saying whether the
   // panel is open.
   document.addEventListener('htmx:afterSwap', function (ev) {
-    if (ev.target && (ev.target.id === 'preview-slot' || ev.target.id === 'preview-slot-row')) expanded();
+    if (ev.target && ev.target.id === 'preview-slot') { expanded(); recount(); }
+  });
+
+  // 🔴 THE TABS (Previews | Pages): tabs.go's tablist, its choice stored per
+  // viewer. The panel opens on the tab that HAS something; when both do, on
+  // the stored one (tabs.go restored it on load, and a tap or a swipe stores
+  // it again); when neither does, on Previews. Choosing on open stores
+  // nothing: only the viewer's own choice is remembered.
+  function tabsList() { return document.getElementById('`+openTabsID+`'); }
+  function tabEl(name) { var l = tabsList(); return l ? l.querySelector('[data-tab="' + name + '"]') : null; }
+  function tabNow() {
+    var l = tabsList(), t = l && l.querySelector('[role="tab"][aria-selected="true"]');
+    return t ? t.getAttribute('data-tab') : 'previews';
+  }
+  function storedTab() {
+    var l = tabsList(), k = l && l.getAttribute('data-tabs-key');
+    try { return k ? window.localStorage.getItem('muster:tabs:' + k) : null; } catch (e) { return null; }
+  }
+  // countsNow is what the button on screen counts (the slot's last answer),
+  // else what the tabs were drawn with.
+  function countsNow() {
+    var t = toggle();
+    if (t) return { previews: Number(t.getAttribute('data-open-previews')) || 0, pages: Number(t.getAttribute('data-open-pages')) || 0 };
+    var out = { previews: 0, pages: 0 };
+    ['previews', 'pages'].forEach(function (n) {
+      var c = panel() && panel().querySelector('[data-open-count="' + n + '"]');
+      out[n] = c ? Number(String(c.textContent).replace(/[^0-9]/g, '')) || 0 : 0;
+    });
+    return out;
+  }
+  function recount() {
+    var n = countsNow(), p = panel();
+    if (!p) return;
+    ['previews', 'pages'].forEach(function (k) {
+      var c = p.querySelector('[data-open-count="' + k + '"]');
+      var v = '(' + (n[k] > `+strconv.Itoa(mirror.MaxPreviewCount)+` ? '`+strconv.Itoa(mirror.MaxPreviewCount)+`+' : n[k]) + ')';
+      if (c && c.textContent !== v) c.textContent = v;
+    });
+  }
+  function chooseTab() {
+    recount();
+    var n = countsNow(), want = 'previews';
+    if (n.pages > 0 && n.previews === 0) want = 'pages';
+    else if (n.pages > 0 && n.previews > 0) want = storedTab() === 'pages' ? 'pages' : 'previews';
+    var t = tabEl(want), l = tabsList();
+    if (t && l && window.muTabs && t.getAttribute('aria-selected') !== 'true') window.muTabs.select(l, t, {});
+  }
+  // onTab follows the tab shown: the panel's header shows the Previews
+  // tab's controls only on it (data-open-tab); the Previews tab mints once
+  // per opening, the Pages tab reads its list each time it is shown.
+  function onTab() {
+    var p = panel();
+    if (!p || p.hidden) return;
+    var t = tabNow();
+    p.setAttribute('data-open-tab', t);
+    if (t === 'previews') { if (!minted) show(); }
+    else loadPages();
+  }
+  document.addEventListener('click', function (ev) {
+    if (ev.target && ev.target.closest && ev.target.closest('#`+openTabsID+` [role="tab"]')) setTimeout(onTab, 0);
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.target && ev.target.closest && ev.target.closest('#`+openTabsID+` [role="tab"]')) setTimeout(onTab, 0);
+  });
+  // THE PAGES TAB: the session's pages (the list route, read fresh), and one
+  // of them shown in the panel — the owner's own view, framed.
+  var pagesSeq = 0;
+  function pagesList() { return panel().querySelector('[data-session-pages-list]'); }
+  function pageView() { return panel().querySelector('[data-page-open]'); }
+  function loadPages() {
+    var p = panel(), list = pagesList();
+    if (!list || (pageView() && !pageView().hidden)) return;
+    var seq = ++pagesSeq;
+    fetch(p.getAttribute('data-pages-src'), { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
+      .then(function (res) { if (!res.ok) throw new Error(String(res.status)); return res.text(); })
+      .then(function (html) { if (seq === pagesSeq) list.innerHTML = html; })
+      .catch(function () { if (seq === pagesSeq) list.textContent = 'Could not read this session\'s pages. Close the panel and open it again.'; });
+  }
+  function openPage(b) {
+    var v = pageView(), list = pagesList();
+    if (!v || !list) return;
+    v.querySelector('[data-page-title]').textContent = b.getAttribute('data-page-title') || '';
+    v.querySelector('[data-page-version]').textContent = b.getAttribute('data-page-version') || '';
+    v.querySelector('[data-page-full]').setAttribute('href', b.getAttribute('data-page-view') || '#');
+    list.hidden = true;
+    v.hidden = false;
+    loadInto(v.querySelector('[data-page-frame]'), b.getAttribute('data-page-embed'));
+    var back = v.querySelector('[data-page-back]');
+    if (back) back.focus({ preventScroll: true });
+  }
+  // pageBack leaves the page for the list (quiet: no focus move, the panel
+  // is closing) and unloads it.
+  function pageBack(quiet) {
+    var p = panel(), v = p && pageView(), list = p && pagesList();
+    if (!v || v.hidden) return;
+    v.hidden = true;
+    if (list) list.hidden = false;
+    loadInto(v.querySelector('[data-page-frame]'), 'about:blank');
+    if (quiet !== true) { loadPages(); var f = list && list.querySelector('[data-session-page]'); if (f) f.focus({ preventScroll: true }); }
+  }
+  document.addEventListener('click', function (ev) {
+    var t = ev.target, b;
+    if (!t || !t.closest || !panel()) return;
+    if ((b = t.closest('[data-session-page]'))) { ev.preventDefault(); openPage(b); return; }
+    if (t.closest('[data-page-back]')) { ev.preventDefault(); pageBack(); }
   });
 })();
 `)

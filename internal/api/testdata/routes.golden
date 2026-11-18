@@ -191,6 +191,8 @@ GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
 GET /ui/agents/{name}/chat-context
 GET /ui/agents/{name}/chat-log
+GET /ui/agents/{name}/open-button
+GET /ui/agents/{name}/session-pages
 GET /ui/agents/{name}/task
 GET /ui/chief/fleet
 GET /ui/chief/fleet/session
@@ -203,6 +205,7 @@ GET /ui/connectors/{name}/rotate
 GET /ui/dispatch-card
 GET /ui/focus/history
 GET /ui/mirror/preview-button
+GET /ui/mirror/session-pages
 GET /ui/nav/agents
 GET /ui/nav/waiting
 GET /ui/notifications

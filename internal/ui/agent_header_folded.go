@@ -21,12 +21,15 @@ import (
 // So a claude-code agent's page — the chief's and every dispatched one's — draws
 // (foldedHeader):
 //
-//   - ONE header row: ☰, the status dot, the title, the asks badge, New chat,
-//     Chat history, Focus history, and the ⋯ — at the row's END, where a
+//   - ONE header row: ☰, the status dot, the title, the asks badge, the Open
+//     button (its pages, plugin_chip.go), New chat, and the ⋯ — at the row's
+//     END, where a
 //     mirrored session's last control is. The CHIEF's row has the one list
 //     icon a mirrored session's has instead of the three (its sheet holds its
 //     chats: chief_chats.go) and its context chip under the title
 //     (foldedTitle);
+//   - Chat history and Focus history IN THE ⋯ MENU too (session-open: the
+//     row left the title 8px at 390px with the Open button drawn);
 //   - the status row's other controls IN THE ⋯ MENU (foldedMenuItems): the Claude
 //     account, the failover ("Account switched" and its whole line — in the menu
 //     itself, no second popover), the worker pool, and Terminal (the same
@@ -79,6 +82,9 @@ func foldedHeader(v AgentDetailView) g.Node {
 			foldedTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
 			g.If(v.AsksSrc != "", askerAsksBadge()),
+			// The agent's Open button (its pages), while it has any
+			// (plugin_chip.go).
+			previewButtonSlot(v.Open),
 			agentHeaderToolsWith(v, true),
 			g.If(v.Card.ID != 0, Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(v.Card, "", foldedMenuItems(v)))),
 		),
@@ -155,6 +161,10 @@ func foldedMenuItems(v AgentDetailView) g.Node {
 				Span(g.Attr("data-worker-pool", v.WorkerPool), Class("ml-auto min-w-0 truncate text-fg2"), g.Text(v.WorkerPool)),
 			)),
 		),
+		// The chat's history and its focus history (the header kept New chat
+		// alone, agentHeaderToolsWith): not on the chief's page, whose list
+		// icon opens both (chatIndexButtonNamed).
+		historyMenuItems(v),
 		// The Rendered | Terminal switch's link (viewToggle), as a menu item: the
 		// same id and data-view-swap, so the terminal opens in the kept frame
 		// (view_swap.go) and is a plain link without script. The view swap's
