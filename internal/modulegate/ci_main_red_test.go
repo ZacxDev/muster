@@ -3,6 +3,7 @@ package modulegate
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -17,9 +18,11 @@ import (
 // What it pins, each a way the notifier goes quiet or over-reaches:
 //   - the job exists, runs only on a push to main, and runs when its needs
 //     FAILED (`!cancelled()`, never an implicit success());
-//   - its needs are EXACTLY publish-gate's, both ways: a test job added to
-//     publish-gate and not here would go red without a notification, and one
-//     here and not there would call main red over a job nothing gates on;
+//   - its needs are EXACTLY publish-gate's plus docshots, both ways: a test
+//     job added to publish-gate and not here would go red without a
+//     notification, and one here and not there would call main red over a job
+//     nothing gates on (docshots is the one exception: the release tool refuses
+//     a sha whose docshots went red);
 //   - it is the ONLY job granted `issues: write`, and it is granted nothing
 //     beyond `contents: read` besides;
 //   - its step hands main_red.py the needs context.
@@ -66,8 +69,10 @@ func TestCIMainRedNeedsWhatPublishGateNeeds(t *testing.T) {
 	if len(gate) == 0 {
 		t.Fatalf("positive control FAILED: read no needs for publish-gate in %s", path)
 	}
-	if got := needs(job); strings.Join(got, ",") != strings.Join(gate, ",") {
-		t.Errorf("main-red needs %v, want exactly publish-gate's %v", got, gate)
+	want := append(append([]string{}, gate...), "docshots")
+	sort.Strings(want)
+	if got := needs(job); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("main-red needs %v, want exactly publish-gate's plus docshots %v", got, want)
 	}
 
 	wantIf := "if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
@@ -104,9 +109,10 @@ func TestCIMainRedNeedsWhatPublishGateNeeds(t *testing.T) {
 		t.Errorf("main-red's permissions are %q, want exactly contents: read and issues: write", perms)
 	}
 
-	// No OTHER line in the workflow grants issues: write.
-	if n := strings.Count(src, "issues: write"); n != 1 {
-		t.Errorf("%d `issues: write` grants in %s, want 1 (main-red's)", n, path)
+	// No OTHER line in the workflow grants issues write, in any spelling.
+	grant := regexp.MustCompile(`(?m)^\s*(issues:\s*['"]?write['"]?|permissions:\s*['"]?write-all)`)
+	if n := len(grant.FindAllString(src, -1)); n != 1 {
+		t.Errorf("%d grants of issues write (or write-all) in %s, want 1 (main-red's)", n, path)
 	}
 
 	var step string

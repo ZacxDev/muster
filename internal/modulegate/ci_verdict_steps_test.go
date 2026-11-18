@@ -45,6 +45,17 @@ var wantVerdictPipes = map[string]string{
 	"mirror-macos": "go test -race -json ./internal/mirrorhost/... ./cmd/muster-mirror/... | python3 -u tests/verdict.py --echo summary --require TestDarwinSourceReadsThisHostsOwnProcesses",
 }
 
+// 🔴 THE `test` JOB IS THE EXCEPTION: its left side is `cat` over the
+// processes' -json files, so pipefail there carries only a missing file. Its
+// `go test` exit statuses are carried by the two lines after the pipe, which
+// check one recorded status per process and fail on any non-zero one; they are
+// pinned exactly below (wantTestExitChecks), because deleting them leaves a
+// process that died over a clean stream green.
+var wantTestExitChecks = []string{
+	`[ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }`,
+	`while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"`,
+}
+
 // TestCIGoSuitesPipeIntoTheVerdictUnderPipefail pins every verdict step.
 func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 	path := filepath.Join(moduleRoot(t), ".github", "workflows", "ci.yml")
@@ -73,6 +84,13 @@ func TestCIGoSuitesPipeIntoTheVerdictUnderPipefail(t *testing.T) {
 		i := at[0]
 		if lines[i] != want {
 			t.Errorf("job %q: the verdict line is\n  %s\nwant\n  %s", job, lines[i], want)
+		}
+		if job == "test" {
+			for k, w := range wantTestExitChecks {
+				if i+1+k >= len(lines) || lines[i+1+k] != w {
+					t.Errorf("job \"test\": line %d after the verdict pipe is not\n  %s\n(without it a go test process that exited non-zero over a clean stream is green)", k+1, w)
+				}
+			}
 		}
 		if i < 2 || lines[i-1] != "set -o pipefail" || lines[i-2] != "run: |" {
 			t.Errorf("job %q: the verdict pipe must be directly under `run: |` and "+

@@ -1726,15 +1726,22 @@ jobs:
   # opens (or comments on) ONE issue labelled main-red, which GitHub notifies the
   # repository's watchers about; the next green main run closes it — that is the
   # issue's closing condition. Operator decision 2026-11-18, after main HEAD
-  # 4c3d54f was red with nobody notified. The verdict is the SAME set of jobs
-  # publish-gate needs (pinned by TestCIMainRedNeedsWhatPublishGateNeeds), read
-  # by .github/scripts/main_red.py: any failure is red, a cancellation decides
-  # nothing, and only main's current head may open or close the issue.
+  # 4c3d54f was red with nobody notified. The verdict is every job publish-gate
+  # needs plus docshots (the release tool refuses a sha whose docshots went red),
+  # pinned by TestCIMainRedNeedsWhatPublishGateNeeds and read by
+  # .github/scripts/main_red.py: any failure, or any skip other than
+  # main-verdict's (an undecided skip, as tag_gate.py gate treats it), is red; a
+  # cancellation decides nothing; only main's current head may open or close
+  # the issue. The issue is ASSIGNED to the repository owner, because an
+  # assignee is notified whether or not they watch the repository.
+  # ⚠ NOT COVERED: the image jobs downstream of publish-gate (a failed GHCR push).
+  # They would make this job downstream of publish-gate, and every such job must
+  # require publish-gate's success (TestCIPublishJobsCheckTheirNeedsExplicitly).
   # `!cancelled()` and not success(): it must run when its needs FAILED.
   # The ONLY job that can write issues, and it can do nothing else.
   main-red:
     name: main red? (open or close the main-red issue)
-    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
+    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind, docshots]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
@@ -1748,6 +1755,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: >-
           python3 .github/scripts/main_red.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
+          --assignee "$GITHUB_REPOSITORY_OWNER"
           --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   # Local: docker buildx build --platform linux/amd64,linux/arm64 .

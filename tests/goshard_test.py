@@ -84,11 +84,14 @@ class Partition(unittest.TestCase):
                     self.assertEqual(sorted(required), sorted(REQ))
 
     def test_procs_one_is_the_one_process_plan(self):
-        for of in (2, 3, 4):
-            for k in range(1, of):
+        # Literal, not derived: --procs 1 deals the old way, test i to shard
+        # (i mod (of-1)) + 1, over the 8 sorted names.
+        want = {3: [["ExampleE", "TestA", "TestB", "TestM"], ["FuzzF", "TestAB", "TestC", "TestZ"]],
+                4: [["ExampleE", "TestAB", "TestM"], ["FuzzF", "TestB", "TestZ"], ["TestA", "TestC"]]}
+        for of, shards in want.items():
+            for k, names in enumerate(shards, 1):
                 with self.subTest(of=of, shard=k):
-                    self.assertEqual(plan(k, of, [], SPLIT, NAMES, REQ, 1, 1),
-                                     plan(k, of, [], SPLIT, NAMES, REQ))
+                    self.assertEqual(ran(plan(k, of, [], SPLIT, NAMES, [], 1, 1)[0], TESTS), names)
 
     def test_two_shards_of_three_processes_split_by_literal_name(self):
         # Literal expectation, not derived from plan(): 8 sorted names dealt
