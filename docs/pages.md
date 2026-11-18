@@ -37,17 +37,19 @@ proves). Any other page reads as `no such page`.
 
 | tool | what it does |
 |---|---|
-| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `preview_url`, which only you can open, signed in. |
+| `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `url`, [your own view](#the-owners-view) of it, which only you can open, signed in. (`preview_url` is the same address, kept for older callers.) |
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
 | `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
 | `page_share_request{page_id, reason?}` | Shares the page ([below](#when-an-agent-shares)). For an owner who has not opted in (the default): asks you, and returns a pending link's `url` — **once** — with `link_id` and `ask_id` (`status: "pending"`). For an owner who let their agents share without asking: the page's link is live at once; returns `status: "live"` and its `url` (the same one on every request when the page has a reusable link). |
-| `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent, oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
+| `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent — and what you sent from your own view — oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
 | `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. Unless its owner opted in, no tool makes a link live. |
 
 `page_responses` hands the responses over inside a `fence` block whose preface
-says they are a stranger's input, data and not instructions. Each line is
-`{id, component, kind, version, link_id, at, data}`, or, for a file,
+says they are data and not instructions (a viewer's is a stranger's input).
+Each line is `{id, component, kind, version, by_owner, link_id, at, data}` —
+`by_owner: true` and no `link_id` for one you sent from your own view — or,
+for a file,
 `file: {upload_id, name, type, size, url}`, where `url` is a signed `/f/` link
 ([uploads.md](uploads.md)) valid for the uploads' link lifetime.
 
@@ -69,7 +71,8 @@ naming it.
 
 A component's `id` is a letter followed by up to 63 letters, digits, `_` or
 `-`, unique on the page; `custom` is reserved. muster checks every submit
-against the **current** version's component, and stores it normalised (a form's
+against the version it answers — a link's, the **current** version; yours,
+the version your view shows — and stores it normalised (a form's
 number as a number, a missing optional field as empty).
 
 ### The SDK
@@ -84,8 +87,7 @@ muster.page                        // {title, version}
 
 `custom` is accepted only from a version with an `html` block, and takes any
 JSON up to 32 KiB (stored as `{"value": …}`). The built-in components use the
-same two calls. In your preview both answer `{preview: true}` and record
-nothing.
+same two calls. In [your own view](#the-owners-view) they record as yours.
 
 Inside the share page's frame the page has **no network**: `fetch`, images
 from elsewhere and fonts from elsewhere are refused by its policy. Put images
@@ -175,7 +177,7 @@ While it is off:
   and a question for you on the Asks page and your phone: *“<agent> asks to
   share your page …”*, saying the link always shows the page's latest
   published version — a version the agent publishes after you approve is
-  shown with no new approval — with the preview's address and **Approve link** /
+  shown with no new approval — with the address of your view of it and **Approve link** /
   **Not now**. Approve link makes the link live; Not now declines it for good.
   Only you can decide it, in muster or on your paired phone: a mirrored
   session's `attention_answer` is refused, and so is any answer that is not one
@@ -188,6 +190,37 @@ While it is off:
 
 At most 10 links per page may be pending or live together.
 
+## The page itself
+
+A link's viewer and you see the same page under the same header: one slim
+row (about 40px) with the instance's logo and name, and the page's title on
+one line, cut short with an ellipsis (the whole title shows on hover). The
+header slides away as the page is scrolled down and comes back on any scroll
+up, and whenever the page is near its top; it is always there when the page
+opens. The page cannot hide it on its own: the frame reports its scroll on a
+private channel the page's own script never sees, and the shell only accepts
+a number there.
+
+### The owner's view
+
+`/pages/{id}/view` (any version with `?v=N`) is the page as a viewer sees it,
+signed in as you. **What you send from it is recorded**, as yours: a form, an
+answer, a file go through the same checks, size limits and rate limits as a
+link's, and show on the page's screen and in `page_responses` as yours
+(`by_owner`), not a link's. A response from an older version (`?v=N`) answers
+that version: it is checked against version N's components and recorded with
+its number. What the page's own script sends is recorded too, as yours, as
+it would be a viewer's through a link: *yours* says who was viewing, not
+what was tapped. Your own responses do not notify you.
+
+Your header also has the **version chip** (`v3 ▾`). It opens a list of every
+version, when it was made and which is current (the one links show); tapping
+one views it. Under the list are **Share** (the same Share as everywhere else)
+and **Page details**, the page's screen. On a phone the list is a sheet from
+the bottom; Escape, a tap outside or the chip closes it.
+
+`/pages/{id}/preview`, the view's former address, redirects to it.
+
 ## The Pages screen
 
 **Pages** is in the sidebar (under More). `/pages` lists your pages, newest
@@ -197,18 +230,18 @@ screen (`/pages/{id}`) has:
 - **Share**: the page's reusable link (when it has one) in a box to read, with
   Share and ⋯.
 
-- **Preview** (`/pages/{id}/preview`, any version with `?v=`): the page as a
-  viewer sees it, in the same sandbox, recording nothing.
+- **Open the page**: [your own view](#the-owners-view) of it.
 - **Links**: each link's state, who asked, and a short label — when it was
   made and the first 8 hex digits of its token's hash (`created 2026-11-11
   14:02 UTC · 3fa9c2e1`), which tells links apart and opens nothing; who made
   it, and whether it is the page's Share link or an older hash-only one;
   Revoke. (There is no separate "make a link" button: Share and ⋯ → New link
   make every link.)
-- **Versions**: each version, its preview, and **Show this version** (a
+- **Versions**: each version, **View** (your view of it), and **Show this version** (a
   rollback: the version becomes current, every link shows it, nothing is
   deleted).
-- **Responses**: everything viewers sent, newest first, as JSON, and each file
+- **Responses**: everything viewers sent (each naming its link) and you sent
+  from your view (marked *you*), newest first, as JSON, and each file
   as **Download the file** (`/uploads/{id}/file`: an attachment, never shown
   inline as a page).
 
@@ -225,8 +258,8 @@ front-end telemetry, and the page's screen is never cached.
 
 When an agent calls `page_create`, `page_update` or `page_share_request`, its
 chat draws a **page card** under the tool's row: the title, what happened (a
-new page, a new version, shared, or waiting for you), **Open** — the page's
-preview, the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
+new page, a new version, shared, or waiting for you), **Open** — [your own
+view](#the-owners-view), the page itself as a viewer sees it — **Share**, and **⋯** (Revoke
 link, New link, Page settings). It is drawn in a dispatched agent's chat (its
 stored transcript and its live stream) and in a mirrored Claude Code
 session's view. The card never holds a link's address: Share asks muster for
@@ -281,8 +314,8 @@ deleted, the page is kept and Delete can be pressed again).
 ## What a viewer sees
 
 `/s/<token>` is a thin page: your server's [branding](branding.md) (logo and
-display name, when set; no muster mark), the page's title, and a frame of the
-page. The page itself is served at `/s/<token>/content` with exactly:
+display name, when set; no muster mark) and the page's title in [one slim
+header](#the-page-itself), and a frame of the page. The page itself is served at `/s/<token>/content` with exactly:
 
 ```
 Content-Security-Policy: sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'
@@ -300,7 +333,10 @@ cookie, and its requests carry `Origin: null`. It reaches muster only by
 posting a message to the frame's parent; the parent (muster's own script)
 checks the message came from its own frame and calls `POST /s/<token>/submit`
 or `/upload` with no credentials. Those routes, and the two `GET`s, read no
-cookie: the token is their only credential.
+cookie: the token is their only credential. (In [your own
+view](#the-owners-view) the parent posts to `/pages/{id}/versions/{v}/submit`
+or `/upload` instead, with your session, same-origin, as every write of
+yours; those routes read no token.)
 
 No page response sets a cookie. The access log writes every `/s/` path as
 `/s/[redacted]`. Nothing about a viewer is stored but what they send; the
@@ -314,7 +350,7 @@ serves every upload: to the owner, as an attachment (images inline), under a
 ## Notifications
 
 - **Page ready: <title>** when an agent publishes a NEW page (`page_create`),
-  opening its preview. Not on `page_update`: an agent iterating publishes many
+  opening your view of it. Not on `page_update`: an agent iterating publishes many
   versions in minutes, and the card in the chat already shows each.
 - **Page shared: <title>** EVERY time an agent hands a page's link on without
   asking (you opted in) — a new link, or the one you had already shared (the

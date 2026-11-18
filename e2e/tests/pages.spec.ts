@@ -312,7 +312,8 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   const created = await call('page_create', { title: 'Checkout launch ' + stamp, blocks: BLOCKS });
   expect(created.isError, JSON.stringify(created.body)).toBe(false);
   const pageID = created.body.page_id as number;
-  expect(created.body.preview_url).toBe(`${origin}/pages/${pageID}/preview`);
+  expect(created.body.url).toBe(`${origin}/pages/${pageID}/view`);
+  expect(created.body.preview_url).toBe(`${origin}/pages/${pageID}/view`);
 
   // 2. It asks for a link; the owner taps Approve link on the Asks page.
   const req = await call('page_share_request', { page_id: pageID, reason: 'to collect the launch date' });
@@ -326,7 +327,7 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await page.goto(origin + '/attention');
   const card = page.locator(`#ask-${askID}`);
   await expect(card).toContainText('asks to share your page');
-  await expect(card).toContainText(`/pages/${pageID}/preview`);
+  await expect(card).toContainText(`/pages/${pageID}/view`);
   await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
   // (Its push to the owner's phone is muster's own Web Push, which the
   // router never carries — goNotify skips attention events there. The Go
@@ -442,7 +443,7 @@ test('the Pages screens do not shift on load', async ({ page }) => {
   for (const [url, ready] of [
     ['/pages', '[data-testid="pages"] li'],
     [`/pages/${pageID}`, '[data-testid="page-versions"] li'],
-    [`/pages/${pageID}/preview`, 'iframe#page'],
+    [`/pages/${pageID}/view`, 'iframe#page'],
   ] as const) {
     await page.addInitScript(clsInit);
     await page.goto(origin + url);
@@ -474,3 +475,184 @@ test('with no link key, a press or a focus on Share makes no link; the tap makes
   await expect(page.locator('[data-page-toast]').first()).toBeVisible();
   await expect.poll(links).toBe(1);
 });
+
+// --- THE OWNER'S OWN VIEW, THE SLIM HEADER AND THE VERSION CHIP --------------
+// (internal/pages render.go Shell/ShellScript/sdkScript; docs/pages.md "The
+// page itself"), at a phone (touch) and a desktop:
+//
+//   the header is one row of at most 44px, visible on load, its long title
+//   cut with an ellipsis (the whole title in its title attribute); the chip
+//   opens the version popover (a bottom sheet on the phone, 44px targets),
+//   Escape closes it and gives the chip its focus back; a version in it loads
+//   ?v=N; the owner's own submit there says "Sent" and is recorded as theirs,
+//   at that version; the header hides on a scroll
+//   down, returns on a scroll up and at the top, without the frame moving or
+//   any layout shift; a scroll op a page's script posts to the shell, one
+//   from another window, and a non-numeric y on the private port itself are
+//   all ignored (the port's positive control: the same scroll unmangled
+//   hides it); a link's viewer gets the same header without the chip.
+//
+// MUSTER_E2E_PAGES_SHOTS=<dir> also saves screenshots of each state there.
+
+const VIEW_TITLE = 'Quarterly launch plan: ' + 'every milestone, owner and date spelled out in full, '.repeat(3) + stamp;
+const LONG = Array.from({ length: 60 }, (_, i) => `Paragraph ${i + 1}: the plan, in more words than fit on one screen.`).join('\n\n');
+const viewBlocks = (v: string) => [
+  { type: 'question', id: 'pick', label: 'Your pick (' + v + ')', submit_label: 'Send pick' },
+  { type: 'markdown', text: '# ' + v + '\n\n' + LONG },
+];
+// The test's hook on the SDK's port: it runs before the SDK (an init script),
+// so the SDK captures THIS postMessage, and window.__mutate (set by the test)
+// can corrupt what it sends — how a non-numeric y reaches the shell's port.
+const portHook = `(() => { const pm = MessagePort.prototype.postMessage;
+  MessagePort.prototype.postMessage = function (m, ...r) { if (window.__mutate) m = window.__mutate(m); return pm.call(this, m, ...r); }; })()`;
+const shots = process.env.MUSTER_E2E_PAGES_SHOTS ?? '';
+const shot = async (p: Page, name: string) => {
+  if (shots) await p.screenshot({ path: path.join(shots, name + '.png') });
+};
+
+for (const vp of [
+  { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
+  { name: 'desktop', viewport: { width: 1280, height: 800 }, touch: false },
+]) {
+  test(`the owner's view at ${vp.name}: a slim header that hides on scroll, the version chip, and what the owner sends is recorded`, async ({ browser }) => {
+    test.setTimeout(150_000);
+    const created = await call('page_create', { title: VIEW_TITLE, blocks: viewBlocks('version one') });
+    expect(created.isError, JSON.stringify(created.body)).toBe(false);
+    const pageID = created.body.page_id as number;
+    await call('page_update', { page_id: pageID, blocks: viewBlocks('version two') });
+    const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+    const stranger = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.touch, isMobile: vp.touch });
+    try {
+      await ctx.addInitScript(portHook);
+      const page = await ctx.newPage();
+      await page.addInitScript(clsInit);
+      await signIn(page, origin);
+      await page.goto(origin + `/pages/${pageID}/view`);
+      const header = page.locator('header[data-page-brand]');
+      const frameEl = page.locator('iframe#page');
+      const frame = page.frameLocator('iframe#page');
+      const inFrame = (fn: () => void) => frame.locator('body').evaluate(fn);
+      await expect(frame.locator('h1')).toHaveText('version two');
+
+      // 1. Visible on load; one row of at most 44px; the title cut short.
+      await expect(header).not.toHaveAttribute('data-hidden');
+      const hb = (await header.boundingBox())!;
+      expect(hb.y).toBe(0);
+      expect(hb.height, 'the header is one slim row').toBeLessThanOrEqual(44);
+      const title = page.locator('[data-page-title]');
+      await expect(title).toHaveAttribute('title', VIEW_TITLE);
+      const t = await title.evaluate((e) => ({ cut: e.scrollWidth > e.clientWidth, overflow: getComputedStyle(e).textOverflow, height: e.getBoundingClientRect().height }));
+      expect(t.cut, 'the title is cut short').toBe(true);
+      expect(t.overflow).toBe('ellipsis');
+      expect(t.height, 'the title is one line').toBeLessThan(24);
+      await settle(page);
+      expect((await readCls(page)).total, 'the owner\'s view does not shift on load').toBeLessThan(0.01);
+      await shot(page, `owner-${vp.name}-closed`);
+
+      // 2. The chip opens the popover; Escape closes it.
+      const chip = page.locator('[data-version-chip]');
+      const pop = page.locator('#page-versions');
+      await expect(chip).toHaveText('v2 ▾');
+      await expect(chip).toHaveAttribute('aria-expanded', 'false');
+      await chip.click();
+      await expect(chip).toHaveAttribute('aria-expanded', 'true');
+      await expect(pop).toBeVisible();
+      await expect(pop.locator('[data-version-link]')).toHaveText([/^Version 2current · \d{4}-\d\d-\d\d \d\d:\d\d UTC$/, /^Version 1\d{4}-\d\d-\d\d \d\d:\d\d UTC$/]);
+      await expect(pop.locator('[data-page-share]')).toBeVisible();
+      await expect(pop.locator('[data-page-details]')).toHaveAttribute('href', `/pages/${pageID}`);
+      await expect(pop.locator('[data-version-link="2"]')).toBeFocused();
+      for (const el of await pop.locator('a, button').all()) {
+        expect((await el.boundingBox())!.height, 'a popover target is at least 44px').toBeGreaterThanOrEqual(44);
+      }
+      if (vp.touch) {
+        const pb = (await pop.boundingBox())!;
+        expect(Math.round(pb.y + pb.height), 'on a phone the popover is a bottom sheet').toBe(vp.viewport.height);
+        expect(Math.round(pb.width)).toBe(vp.viewport.width);
+      }
+      await shot(page, `owner-${vp.name}-open`);
+      await page.keyboard.press('Escape');
+      await expect(pop).toBeHidden();
+      await expect(chip).toHaveAttribute('aria-expanded', 'false');
+      await expect(chip).toBeFocused();
+
+      // 3. Selecting a version loads it.
+      await chip.click();
+      await Promise.all([page.waitForURL(origin + `/pages/${pageID}/view?v=1`), pop.locator('[data-version-link="1"]').click()]);
+      await expect(frame.locator('h1')).toHaveText('version one');
+      await expect(chip).toHaveText('v1 ▾');
+
+      // 4. The owner submits from it: "Sent", recorded as theirs, at version 1.
+      const pick = frame.locator('[data-muster-component="pick"]');
+      await pick.locator('input[name="answer"]').fill('the ' + vp.name + ' pick');
+      await pick.getByRole('button', { name: 'Send pick' }).click();
+      await expect(pick.locator('[data-muster-status]')).toHaveText('Sent. Thank you.');
+      const read = await call('page_responses', { page_id: pageID });
+      expect(read.body.count, JSON.stringify(read.body)).toBe(1);
+      const fenced = read.body.responses as string;
+      expect(fenced).toContain('"answer":"the ' + vp.name + ' pick"');
+      expect(fenced).toContain('"by_owner":true');
+      expect(fenced).toContain('"version":1');
+      expect(fenced).not.toContain('"link_id"');
+
+      // 5. The header hides on a scroll down, returns on a scroll up and at
+      // the top; the frame never moves, and nothing shifts.
+      await page.goto(origin + `/pages/${pageID}/view`);
+      await expect(frame.locator('h1')).toHaveText('version two');
+      await settle(page);
+      const fb = await frameEl.boundingBox();
+      await page.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+      await page.mouse.wheel(0, 900);
+      await expect(header).toHaveAttribute('data-hidden', '');
+      await expect.poll(() => header.evaluate((h) => h.getBoundingClientRect().bottom), 'the header slid away').toBeLessThanOrEqual(0);
+      expect(await frameEl.boundingBox(), 'the frame did not move').toEqual(fb);
+      await page.mouse.wheel(0, -150);
+      await expect(header).not.toHaveAttribute('data-hidden');
+      await page.mouse.wheel(0, 900);
+      await expect(header).toHaveAttribute('data-hidden', '');
+      await inFrame(() => window.scrollTo(0, 0));
+      await expect(header).not.toHaveAttribute('data-hidden');
+      expect((await readCls(page)).total, 'hiding and showing the header shifts nothing').toBeLessThan(0.01);
+
+      // 6. Forged reports are ignored: a scroll op the page's own script
+      // posts to the shell, and one from another window (the shell itself).
+      await inFrame(() => parent.postMessage({ muster: 1, op: 'scroll', y: 5000 }, '*'));
+      await page.evaluate(() => window.postMessage({ muster: 1, op: 'scroll', y: 5000 }, '*'));
+      await page.waitForTimeout(400);
+      await expect(header).not.toHaveAttribute('data-hidden');
+      // A non-numeric y on the port itself: ignored. The control, the same
+      // scroll with y left a number: it hides.
+      await inFrame(() => { (window as unknown as { __mutate: unknown }).__mutate = (m: { y: number }) => ({ ...m, y: String(m.y) }); });
+      await inFrame(() => window.scrollTo(0, 1200));
+      await page.waitForTimeout(400);
+      await expect(header, 'a non-numeric y moved the header').not.toHaveAttribute('data-hidden');
+      await inFrame(() => { (window as unknown as { __mutate: unknown }).__mutate = null; window.scrollTo(0, 1400); });
+      await expect(header, 'control: the same scroll, y a number, hides it').toHaveAttribute('data-hidden', '');
+      await inFrame(() => window.scrollTo(0, 0));
+      await expect(header).not.toHaveAttribute('data-hidden');
+
+      // 7. A link's viewer: the same header, no chip.
+      const shared = await page.request.post(origin + `/pages/${pageID}/share`, { headers: { Origin: origin, Accept: 'application/json' } });
+      expect(shared.status()).toBe(200);
+      const link = (await shared.json()).url as string;
+      const sp = await stranger.newPage();
+      await sp.addInitScript(clsInit);
+      await sp.goto(link);
+      await expect(sp.frameLocator('iframe#page').locator('h1')).toHaveText('version two');
+      const sh = (await sp.locator('header[data-page-brand]').boundingBox())!;
+      expect(sh.height).toBeLessThanOrEqual(44);
+      await expect(sp.locator('[data-version-chip]')).toHaveCount(0);
+      await expect(sp.locator('#page-versions')).toHaveCount(0);
+      await settle(sp);
+      expect((await readCls(sp)).total).toBeLessThan(0.01);
+      await shot(sp, `link-${vp.name}`);
+      await sp.mouse.move(vp.viewport.width / 2, vp.viewport.height / 2);
+      await sp.mouse.wheel(0, 900);
+      await expect(sp.locator('header[data-page-brand]')).toHaveAttribute('data-hidden', '');
+      await sp.mouse.wheel(0, -150);
+      await expect(sp.locator('header[data-page-brand]')).not.toHaveAttribute('data-hidden');
+    } finally {
+      await ctx.close();
+      await stranger.close();
+    }
+  });
+}

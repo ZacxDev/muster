@@ -445,15 +445,15 @@ background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
 .pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
 padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}
-@media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:20rem;border-radius:12px;padding:8px;
+@media (min-width:640px){.scrim{background:transparent}.pop{left:auto;bottom:auto;top:44px;right:8px;width:24rem;max-width:calc(100vw - 16px);border-radius:12px;padding:8px;
 box-shadow:0 6px 24px rgb(0 0 0/.25);border:1px solid color-mix(in srgb,CanvasText 15%,transparent)}}
 .scrim[hidden],.pop[hidden]{display:none}
 .pop h2{margin:4px 12px 4px;font-size:13px;font-weight:600;color:color-mix(in srgb,CanvasText 65%,transparent)}
 .pop ul{list-style:none;margin:0;padding:0}.pop form{display:contents}
 .pop a,.pop button{box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;
-background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;cursor:pointer}
+background:transparent;color:inherit;font:inherit;text-align:left;text-decoration:none;white-space:nowrap;cursor:pointer}
 .pop a:hover,.pop button:hover,.pop a:focus-visible,.pop button:focus-visible{background:color-mix(in srgb,CanvasText 9%,transparent)}
-.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
+.pop a[aria-current]{font-weight:600}.pop .w{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:400;color:color-mix(in srgb,CanvasText 65%,transparent)}
 .pop hr{border:0;border-top:1px solid color-mix(in srgb,CanvasText 15%,transparent);margin:6px 4px}
 #action-toasts{position:fixed;z-index:5;left:50%;bottom:16px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;max-width:90vw}
 #action-toasts>*{padding:8px 12px;border-radius:8px;background:CanvasText;color:Canvas;font-size:14px;overflow-wrap:anywhere}`
@@ -525,11 +525,10 @@ func Shell(v ShellView) string {
 // is sent to base+"/submit" or base+"/upload", and the answer posted back. A
 // link's shell sends it with credentials omitted (the link in base is the
 // credential). The OWNER's (owner) sends their session, same-origin — the
-// route's own session and Origin checks, as every owner write — and only
-// within a few seconds of a real tap or key press in the page
-// (navigator.userActivation, which a click inside the frame gives its
-// parent too): the page's own script cannot record something as its owner's
-// while the owner merely looks at it.
+// route's own session and Origin checks, as every owner write. Either way it
+// relays what the page sends, its own script's included: the owner's view
+// records what a link's would, as the owner's (by_owner says who was
+// viewing, not what they tapped).
 //
 // 🔴 THE SHELL IS THE ONLY CODE ON MUSTER'S ORIGIN A VIEWER RUNS, SO IT TRUSTS
 // NOTHING IT IS SENT: it accepts only its own frame's window, two ops, and
@@ -552,14 +551,14 @@ func Shell(v ShellView) string {
 // one from any other window, and a y that is not such a number.
 // TestTheShellScriptHidesTheHeaderOnlyByTheRules and e2e pages.spec.ts.
 func ShellScript(base string, owner bool) string {
-	creds, refpol, gate := `"omit"`, `"no-referrer"`, "false"
+	creds, refpol := `"omit"`, `"no-referrer"`
 	if owner {
 		// same-origin: the Origin a same-origin POST carries is muster's only
 		// when the referrer policy lets it (no-referrer would send "null").
-		creds, refpol, gate = `"same-origin"`, `"same-origin"`, "true"
+		creds, refpol = `"same-origin"`, `"same-origin"`
 	}
 	return `(function(){"use strict";
-var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `,GATE=` + gate + `,acted=0;
+var f=document.getElementById("page"),hdr=document.querySelector("header"),base=` + jsString(base) + `;
 var H=hdr?(hdr.offsetHeight||` + shellHeaderPx + `):` + shellHeaderPx + `,lastY=0;
 window.__musterHeader=function(show){if(!hdr)return;if(show)hdr.removeAttribute("data-hidden");else hdr.setAttribute("data-hidden","");};
 function popOpen(){var c=document.querySelector("[data-version-chip]");return !!c&&c.getAttribute("aria-expanded")==="true";}
@@ -574,17 +573,12 @@ if(f){var sent=false;f.addEventListener("load",function(){
  ch.port1.onmessage=function(ev){var d=ev.data;if(d&&d.muster===1&&d.op==="scroll")onY(d.y);};
  f.contentWindow.postMessage({muster:1,op:"port"},"*",[ch.port2]);
 });}
-function activated(){
- if(!GATE)return true;var u=navigator.userActivation;if(!u)return true;
- if(u.isActive){acted=Date.now();return true;}return Date.now()-acted<10000;
-}
 window.addEventListener("message",function(ev){
  if(!f||ev.source!==f.contentWindow)return;
  var d=ev.data;if(!d||d.muster!==1||typeof d.id!=="string"||d.id.length>32)return;
  function reply(ok,x){f.contentWindow.postMessage(ok?{muster:1,id:d.id,ok:true,result:x}:{muster:1,id:d.id,ok:false,error:String(x)},"*");}
  if(!base)return reply(false,"nothing can be sent from here");
  if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");
- if(!activated())return reply(false,"Tap the page's button to send this as you.");
  var comp=typeof d.component==="string"?d.component.slice(0,64):"",req;
  var opts={method:"POST",credentials:` + creds + `,cache:"no-store",referrerPolicy:` + refpol + `};
  if(d.op==="submit"){

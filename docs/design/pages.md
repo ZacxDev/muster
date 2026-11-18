@@ -22,7 +22,7 @@ questions, upload things, fill out a form etc."*
 |---|---|
 | What a page is | A row the owner owns, with **versions** (immutable) and a current-version pointer. A version is a list of **blocks**: markdown, built-in components (question, choice, form, upload, approval) and raw `html` (custom HTML and JavaScript) |
 | Who makes one | An agent, with MCP tools on both agent doors (`POST /mcp` and `POST /mirror/mcp`): `page_create`, `page_update`, `page_get`, `page_list`, `page_share_request`, `page_responses`, `page_link_revoke`. **As built:** a mirrored *opencode* session's narrower set (attention and task tools only, #595) does not include them |
-| Who sees it | Its owner, signed in, at any time (a preview). Anyone else only through a **share link**: `/s/<token>`, 256 random bits, revocable |
+| Who sees it | Its owner, signed in, at any time (their own view, `/pages/{id}/view`, where what they send is recorded as theirs). Anyone else only through a **share link**: `/s/<token>`, 256 random bits, revocable |
 | Making a link | An agent **asks**; the owner **approves** it on the Asks page or their phone (an attention ask, owner's door only). The owner can also mint and revoke links on the Pages screen |
 | Serving | From muster's own host. The page's bytes are served at `/s/<token>/content` with `Content-Security-Policy: sandbox allow-scripts allow-forms; …` as an **HTTP header** (an opaque origin even on direct navigation), framed by a thin muster shell at `/s/<token>` that draws the instance branding |
 | Talking to muster | Inside the shell's frame, page script has **no network** (`connect-src 'none'`), and the content is served only into that frame. The SDK (`muster.submit`, `muster.upload`) posts a message to the shell, and the shell — muster's own fixed code — calls the capability routes with `credentials: 'omit'` |
@@ -32,7 +32,7 @@ questions, upload things, fill out a form etc."*
 ## Goals
 
 - An agent can publish a page in one tool call, iterate on it, and ask its
-  owner to share it; the owner previews before anyone else sees it.
+  owner to share it; the owner sees it first, in their own view.
 - A page can **collect** things: answers, choices, form fields, files, an
   approval, and whatever custom script sends.
 - What a viewer sends reaches the agent as **data**, never as instructions.
@@ -107,7 +107,7 @@ All four tables are owned, under forced row-level security, with
 | `pages` | `title` (≤ 200), `current_version`, creator: `agent_id` **or** `mirror_host` (+ `creator_label`), `created_at`, `updated_at` |
 | `page_versions` | `page_id`, `version` (1, 2, …; unique per page), `title`, `blocks` JSONB, `size_bytes`, `created_by` label, `created_at`. Immutable: no `UPDATE` path |
 | `page_links` | `page_id`, `token_sha256` (unique, the lookup), `state` ∈ `pending`, `live`, `denied`, `revoked`; `ask_id` (the approval), `requested_by`, `created_at`, `decided_at` |
-| `page_responses` | `page_id`, `link_id`, `version`, `component`, `kind` ∈ `submit`, `upload`; `data` JSONB (≤ 32 KiB), `upload_public_id`, `created_at` |
+| `page_responses` | `page_id`, `link_id` (NULL for the owner's own), `by_owner` (0148), `version`, `component`, `kind` ∈ `submit`, `upload`; `data` JSONB (≤ 32 KiB), `upload_public_id`, `created_at` |
 
 - **Only the token's sha256 is stored** (operator decision, round 0). A link
   is shown once — to the agent in `page_share_request`'s result, or to the
@@ -243,15 +243,30 @@ muster.page                        // {title, version}
 ```
 
 `component` defaults to `custom` and must name a block of the version (or
-`custom` when the version has an `html` block). In the owner's preview the
-SDK answers `{preview: true}` and records nothing.
+`custom` when the version has an `html` block).
+
+**As built (the owner's view):** the owner's view records. Its shell is the
+link's shell with the owner's chrome (a version chip), and its relay posts
+to `/pages/{id}/versions/{v}/submit` and `/upload` with the owner's session,
+same-origin (`requireOperatorWrite`). The row is `by_owner`, with no link; the caps and rate limits are one link's.
+A response from `?v=N` answers version N. The content document is the same
+for both, so it has no preview mode.
+
+**As built (the header):** the shell's header is one ~40px row over a
+full-window frame and hides on a scroll down by a transform (the frame never
+moves). The SDK reports the document's scroll offset to the shell on a
+private `MessagePort` the shell hands the frame on its load, taken in a
+capture listener registered before any page script, with every primitive it
+calls captured first — so a page's script posting a scroll op to the shell is
+ignored. The header shows on load, near the top, and on any scroll up, and
+hides only on a scroll down past its own height.
 
 ## Approval flow
 
 1. `page_share_request{page_id}` files a `pending` link and an **owner card**
    (an attention ask) from the caller: *"<agent> asks to share page “<title>”
    with anyone who has its link …"* with **Approve link** / **Not now**, and
-   the preview's address. The owner sees it on the Asks page and their phone.
+   the address of the owner's own view of it. The owner sees it on the Asks page and their phone.
 2. The card's answer runs `pageShareForAnswer` **before** it is recorded, as
    `ruleForAnswer` does: it requires the owner's own door
    (`attention.IsOwnerDoor`; a mirrored session's `attention_answer` is
@@ -316,6 +331,8 @@ label. Viewer data is never logged.
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
 | The link leaks | 256 bits, looked up only by its sha256; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push. A page's **reusable** link (the Share button's) also keeps its token **encrypted** (AES-256-GCM, a key derived from `MUSTER_CONNECTOR_ENCRYPTION_KEY`, bound to the row's owner, page and hash), wiped when it stops being live: a database read alone yields no live link, a database read **plus** that key yields each page's current Share link. Without the key, links are hash-only as before | whoever it was given to; anyone holding both the database and the key |
 | A link outlives intent | revoke on the Pages screen, on the page card's ⋯ (Revoke link, New link), or with `page_link_revoke`; checked on every request | until revoked |
+| Page script keeps the brand header hidden (a share link's trust signal) | scroll reports only on a private port taken before any page script, with captured primitives; the shell accepts only a finite number ≥ 0 there; visible on load, near the top and on any scroll up; focus inside it shows it | a page that scrolls its own document down is really scrolled, and hides the header until the next scroll up; a page that replaces its own document before load (`document.open`, which erases the SDK's listeners) can take the port — then it can report what it likes |
+| Page script records something as the owner (their view records) | `by_owner` is muster's field, outside the data, and says only that the owner's session was viewing; `page_responses` hands it over as fenced data that authorises nothing | the page's own script (the agent's) can send while the owner only looks, and it is recorded as the owner's. A tap gate (`navigator.userActivation`) was tried and dropped: a browser-initiated navigation gives the new page transient activation (measured in Chromium under Playwright), so it could not tell a script on load from a tap |
 | An agent shares without the owner | **Owner not opted in (every user's default):** only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer`. **Owner opted in** (*Let my agents share pages without asking*, that owner's own switch on Account, `notify_preferences.pages_agent_share`): there is **no** owner gate for that owner's pages — the agent's request makes the page's link live at once and hands the agent its address. The controls left: the opt-in is per owner and only the owner flips it (a signed-in, same-origin write of their own row under row-level security; no agent or mirror token reaches the route); it is read for the PAGE's owner, never the caller's or the operator's; only a page the agent itself made, under its owner's row-level security (never another creator's or owner's); the owner is pushed (*Page shared*, its own toggle so muting *Page ready* never hides it), and the chat's page card and the page's screen say who made it live without asking, with Revoke one tap away | Not opted in: the owner approving what they did not preview. Opted in: **anything that owner's agent publishes can be public before the owner looks** — content, a phishing form, a leak of data the agent can read — until the owner revokes it; that owner chose this, for their own pages only |
 | A transcript draws a misleading page card | only muster's own page tools draw one (bare, or `mcp__muster__…`; another MCP server's same-named tool draws none), and only as a page reference: the title, share state and maker are read from the page under the viewer's row-level security, so a forged title is never drawn and a page that is not the viewer's draws no card | none known |
 | A link goes live while its page is being deleted | the delete's first step marks the page (`pages.links_closed_at`) under the row lock every link maker takes; from then on no link — an agent's, the owner's Share — is made on it | a failed delete leaves the page taking no new link until Delete is pressed again |
@@ -348,8 +365,8 @@ are kept under its own prefix until the page is deleted. Still open:
 1. **Link access:** anyone with the link — an unguessable capability URL
    (≥ 128 bits), revocable. No expiry (round 0 deleted the stored field). Optional
    "require the viewer's email" is later.
-2. **Approval:** agents create and publish privately (the owner previews
-   signed in); a link outsiders can open needs the owner's approval through the
+2. **Approval:** agents create and publish privately (the owner sees it
+   signed in, in their own view, which records as theirs); a link outsiders can open needs the owner's approval through the
    attention ask (Asks page + phone). The owner can mint and revoke directly.
 3. **Interactivity:** built-in components backed by muster, and custom
    JavaScript in a locked-down frame with a small SDK.

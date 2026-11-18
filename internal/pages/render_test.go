@@ -167,13 +167,12 @@ func TestTheSDKReportsScrollOnlyOnItsPrivatePort(t *testing.T) {
 }
 
 // TestTheShellRelayOfALinkOmitsCredentials pins a link's relay's trust rules
-// as text: its frame only, two ops, credentials omitted, no tap gate (a
-// stranger's page records what its script sends, as it always has).
+// as text: its frame only, two ops, credentials omitted.
 func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 	js := ShellScript("/s/TOKEN", false)
 	for _, want := range []string{`ev.source!==f.contentWindow`, `credentials:"omit"`, `referrerPolicy:"no-referrer"`,
 		`if(d.op!=="submit"&&d.op!=="upload")return reply(false,"unknown request");`, `if(d.op==="submit"){`,
-		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`, `base="/s/TOKEN"`, `GATE=false`} {
+		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`, `base="/s/TOKEN"`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the relay lacks %q", want)
 		}
@@ -186,18 +185,17 @@ func TestTheShellRelayOfALinkOmitsCredentials(t *testing.T) {
 	}
 }
 
-// TestTheOwnersRelaySendsTheirSessionOnlyAfterATap: the owner's relay sends
-// their session same-origin, with a referrer policy that keeps muster's
-// Origin on the POST (no-referrer would make it "null", which every owner
-// write refuses), and only within a few seconds of a real tap or key press
-// (navigator.userActivation), so the page's own script cannot record
-// something as the owner's while they only look at it.
-func TestTheOwnersRelaySendsTheirSessionOnlyAfterATap(t *testing.T) {
+// TestTheOwnersRelaySendsTheirSession: the owner's relay sends their session
+// same-origin, with a referrer policy that keeps muster's Origin on the POST
+// (no-referrer would make it "null", which every owner write refuses), to
+// the same two routes under their view's base.
+func TestTheOwnersRelaySendsTheirSession(t *testing.T) {
 	js := ShellScript("/pages/7/versions/2", true)
-	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `GATE=true`, `base="/pages/7/versions/2"`,
-		`var u=navigator.userActivation;if(!u)return true;
- if(u.isActive){acted=Date.now();return true;}return Date.now()-acted<10000;`,
-		`if(!activated())return reply(false,"Tap the page's button to send this as you.");`} {
+	if strings.Count(js, "fetch(") != 2 {
+		t.Errorf("the owner's relay makes %d kinds of request, want exactly the two", strings.Count(js, "fetch("))
+	}
+	for _, want := range []string{`credentials:"same-origin"`, `referrerPolicy:"same-origin"`, `base="/pages/7/versions/2"`,
+		`fetch(base+"/submit",opts)`, `fetch(base+"/upload",opts)`} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the owner's relay lacks %q", want)
 		}
