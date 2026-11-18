@@ -1,4 +1,4 @@
--- muster 0153 — WHEN EACH PERSON LAST LOOKED AT EACH OFFICER (internal/officers
+-- muster 0155 — WHEN EACH PERSON LAST LOOKED AT EACH OFFICER (internal/officers
 -- builtin seen.go; docs/officers-builtin.md "An officer's page").
 --
 --   officer_seen   one row per (viewer, officer): seen_at, the last time the
@@ -25,13 +25,13 @@
 -- access). rollback/rls_off.sql turns it off with the rest, and --rls-on
 -- re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after its predecessor, 0152_page_owner_view (the contiguity test
--- refuses a gap). 🔴 RENUMBER IT (and db.officerSeenMigrationVersion) at merge
+-- Must apply after its predecessor, 0154_plugin_autostart (the contiguity
+-- test refuses a gap). 🔴 RENUMBER IT (and db.officerSeenMigrationVersion) at merge
 -- if main moved.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE public.officer_seen;
---   DELETE FROM schema_migrations WHERE version = 153;
+--   DELETE FROM schema_migrations WHERE version = 155;
 
 SET LOCAL lock_timeout = '3s';
 

@@ -21,7 +21,7 @@ import (
 //     refused that the officer has not redrafted, and the owner's choice on
 //     it — re-file it at a time (the officer files it again then, and the
 //     owner approves the re-filed draft), or drop it;
-//   - when the viewer last LOOKED at the officer (officer_seen, 0153), and how
+//   - when the viewer last LOOKED at the officer (officer_seen, 0155), and how
 //     many of its items finished since: the "N new" of the sidebar and the
 //     Officers list.
 // ---------------------------------------------------------------------------

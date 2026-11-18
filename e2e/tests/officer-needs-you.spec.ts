@@ -55,6 +55,22 @@ async function noSidewaysScroll(page: Page) {
   expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(iw);
 }
 
+// shoot is a full-page screenshot, attached. Chromium's capture of a tall
+// page failed ONCE in five local runs with "Unable to capture screenshot"
+// (a protocol error before any assertion, the page fully drawn): it is
+// retried once, so the evidence shot never fails the behaviour under test.
+async function shoot(page: Page, testInfo: { outputPath: (n: string) => string; attach: (n: string, o: { path: string; contentType: string }) => Promise<void> }, name: string) {
+  const path = testInfo.outputPath(name);
+  try {
+    await page.screenshot({ path, fullPage: true });
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes('Unable to capture screenshot')) throw e;
+    await page.waitForTimeout(250);
+    await page.screenshot({ path, fullPage: true });
+  }
+  await testInfo.attach(name, { path, contentType: 'image/png' });
+}
+
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.beforeAll(async () => {
@@ -111,9 +127,7 @@ for (const vp of [
       const refusal = needs.locator(`[data-refusal="${ids.refusal}"]`);
       await expect(refusal.locator('[data-refusal-why]')).toContainText(REFUSAL_DETAIL);
       await noSidewaysScroll(page);
-      const shot = testInfo.outputPath(`officer-needs-you-${vp.key}.png`);
-      await page.screenshot({ path: shot, fullPage: true });
-      await testInfo.attach(`officer-needs-you-${vp.key}.png`, { path: shot, contentType: 'image/png' });
+      await shoot(page, testInfo, `officer-needs-you-${vp.key}.png`);
 
       // 1. Approve the post where it is: back on this page, the card gone.
       await post.locator('[data-draft-approve]').click();
@@ -151,9 +165,7 @@ for (const vp of [
       await expect(page.locator(`[data-info-sheet]:popover-open [data-info-code]`)).toContainText(SENT_REF);
       await page.keyboard.press('Escape');
       await noSidewaysScroll(page);
-      const after = testInfo.outputPath(`officer-needs-you-${vp.key}-after.png`);
-      await page.screenshot({ path: after, fullPage: true });
-      await testInfo.attach(`officer-needs-you-${vp.key}-after.png`, { path: after, contentType: 'image/png' });
+      await shoot(page, testInfo, `officer-needs-you-${vp.key}-after.png`);
     });
   });
 }
