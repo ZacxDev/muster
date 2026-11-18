@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
-	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -200,7 +199,10 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), it.proposalCard)
+			// The session in words (attentionTitle), as the card's head names
+			// it; its exact target is the card's ⓘ.
+			who, _, _ := attentionTitle(it)
+			text, _ := answerDeliveryText(a, who, it.proposalCard)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}

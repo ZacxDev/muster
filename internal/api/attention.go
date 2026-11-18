@@ -1661,8 +1661,8 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	b.WriteString(ui.AsksFeedNoticeHTML)
 	askList := `<ul id="attention-items" class="` + ui.AsksFeedClass + `" data-testid="attention-items" data-asks-feed aria-live="polite">` + feed + `</ul>`
 	answered := `<ul id="attention-answered" class="` + ui.AsksFeedClass + `" data-testid="attention-answered" data-asks-feed>` + s.answeredAsksNow(r.Context(), now) + `</ul>`
-	// ALWAYS TABS: the Log tab (ask_log_read.go) is drawn whatever else is
-	// served — with the ask log off it says how to turn it on.
+	// ALWAYS TABS (Open and Answered at least). The Log tab
+	// (ask_log_read.go) is drawn only with the ask log on.
 	var pending, archived []plugins.DraftCard
 	if s.ext.Plugins != nil {
 		var ok bool
@@ -1677,14 +1677,20 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	// The log is read only when the page is opened ON its tab; otherwise the
 	// panel is a placeholder the page's script fills when the tab is opened.
-	logPanel := askLogLazyHTML(r.URL.Query())
-	if tab == asksTabLog {
+	logPanel := ""
+	switch {
+	case s.askLogStore() == nil:
+		// The ask log off: no Log tab (asksTabsHTML), and ?tab=log opens Open.
+	case tab == asksTabLog:
 		logPanel = s.askLogPanelHTML(r.Context(), r.URL.Query())
+	default:
+		logPanel = askLogLazyHTML(r.URL.Query())
 	}
 	b.WriteString(s.asksTabsHTML(askList, answered, s.ext.Plugins != nil, pending, archived, nudges, logPanel, tab))
 	b.WriteString(`
 </section>
 <template id="asks-empty-tpl">` + ui.AsksAllClearHTML + `</template>
+<template id="asks-drafts-wait-tpl">` + ui.AsksDraftsWaitHTML(2) + `</template>
 `)
 	b.WriteString(attentionPageScript)
 	// The answer boxes' mic (once, after the list it reveals; the live
@@ -1737,13 +1743,15 @@ func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	items, err := s.attentionItems(r.Context())
+	// THE ONE OPEN COUNT (asks_count.go): the page's "N open", the ☰ badge
+	// and the Log's Open pill show the same number.
+	n, err := s.asksPendingCount(r.Context())
 	if err != nil {
 		s.logger.Printf("attention: badge: %v", err)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(ui.AttentionBadgeHTML(len(waitingOnReader(r.Context(), items)))))
+	_, _ = w.Write([]byte(ui.AttentionBadgeHTML(n)))
 }
 
 // waitingOnReader is items without the asks ctx's person only WATCHES — a
@@ -2452,7 +2460,7 @@ func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
 			proposals[a.ID] = true
 		}
 	}
-	return answeredFeedHTML(asks, hosts, now, proposals)
+	return answeredFeedHTML(asks, s.answeredItems(ctx, asks, hosts), now, proposals)
 }
 
 // answerLabel names who gave an answer on the Answered tab: the owner, or —

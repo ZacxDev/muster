@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -219,6 +220,41 @@ func TestNoTopLayerOfASessionsPagesSpellsATmuxAddress(t *testing.T) {
 		assertNoJargon(t, "the rename dialog of "+w, `<div `+rename)
 		title := page[strings.Index(page, "<title>"):strings.Index(page, "</title>")]
 		assertNoJargon(t, "the <title> of "+w, title+"</title>")
+	}
+}
+
+// TestNoTopLayerOfTheAnsweredCardsSpellsATmuxAddress: the Asks page's
+// Answered tab (#787's card: its title, its place, its delivery line) and an
+// answered ask's own page name the session in words; each card's ⓘ holds the
+// target. The answer whose window is gone (whereAnsweredAsks' 102) is left
+// out: it keeps its stored label (named under "Not done" in #806).
+//
+// REGRESSION TEST: red before this PR's merge of #787, whose delivery line
+// read "Queued for mango:1 · tmux scratch3:5 @ ws — …".
+func TestNoTopLayerOfTheAnsweredCardsSpellsATmuxAddress(t *testing.T) {
+	s := whereServer(t)
+	var answered []attention.Ask
+	for _, a := range whereAnsweredAsks() {
+		if a.ID != 102 {
+			answered = append(answered, a)
+		}
+	}
+	s.ext.Attention = whereAnswered{answered: answered}
+	ctx := s.attentionPrincipal(context.Background(), 1)
+	rec := httptest.NewRecorder()
+	s.handleAttentionItems(rec, httptest.NewRequest("GET", "/attention/items?part=answered", nil).WithContext(ctx))
+	feed := rec.Body.String()
+	if n := strings.Count(feed, `<li id="answered-`); n != 3 {
+		t.Fatalf("CONTROL: %d answered cards, want 3:\n%s", n, feed)
+	}
+	assertNoJargon(t, "the Answered feed", feed)
+	for _, a := range answered {
+		rec := httptest.NewRecorder()
+		s.renderAskPage(rec, httptest.NewRequest("GET", askPagePath(a.ID), nil).WithContext(ctx), a)
+		body := rec.Body.String()
+		live := body[strings.Index(body, `id="ask-live"`):]
+		live = live[:strings.Index(live, `Back to Asks`)]
+		assertNoJargon(t, "an answered ask page's delivery line", `<div `+live)
 	}
 }
 
