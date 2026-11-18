@@ -569,6 +569,12 @@ type ClaudeCodeSession struct {
 	// file on the instance's volume would be a second, hidden channel outside
 	// it — one a fresh conversation per item would still read.
 	DisableAutoMemory bool
+	// MaxSessions, when above 0, is how many session CLIs the pod's ccd runs
+	// beside its primary ([EnvCCDMaxSessions]): an officer's declared
+	// `chat_sessions` (internal/api OfficerClaudeCodeSession), the lanes its
+	// chats run in. 0 sets nothing, so ccd keeps its own default and a pod
+	// that declares none keeps the spec — and the fingerprint — it had.
+	MaxSessions int
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443

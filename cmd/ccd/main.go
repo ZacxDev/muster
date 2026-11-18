@@ -339,7 +339,7 @@ func serve() error {
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		bin := envOr("CCD_CLAUDE_BIN", "claude")
 		srv.supervisePrimary(newSupervisor(term, bin, configDir, workspace), term.PanePID)
-		maxLanes, err := envCount("CCD_MAX_SESSIONS", defaultMaxLanes)
+		maxLanes, err := envCount(envMaxLanes, defaultMaxLanes)
 		if err != nil {
 			return err
 		}
