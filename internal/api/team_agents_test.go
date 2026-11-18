@@ -472,6 +472,7 @@ var agentReadCallers = map[string]string{
 
 	"Get Server.acceptEndSession":            "own: ag.OwnerID == requestOwner(ctx)",
 	"Get Server.askingAgentHref":             "own: a.OwnerID == owner",
+	"Get Server.approvalItems":               "own: a.OwnerID == requestOwner(ctx)",
 	"Get Server.approveFromStanding":         "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.decideConnectorGrant":        "own: the grant is owner-isolated (connector_grants)",
 	"Get Server.kubeGrantsDescription":       "own: the grant is owner-isolated (connector_grants)",

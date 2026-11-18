@@ -72,14 +72,17 @@ func (s *Server) approvalItems(ctx context.Context, items []attentionItem) []att
 	}
 	var out []attentionItem
 	// Only the agents the approval ledger holds as blocked (a handful at
-	// most), each read as ctx's principal: one that is not the reader's is
-	// not found and is skipped. No list of every agent on each count.
+	// most), each read as ctx's principal and kept only when it is the
+	// reader's OWN (its prompt is its owner's to answer; a team's agent the
+	// reader may see is not waiting on them). No list of every agent on each
+	// count.
+	owner := requestOwner(ctx)
 	for _, id := range s.awaitingApprovalIDs() {
 		if asked[id] {
 			continue
 		}
 		a, err := s.ext.Agents.Get(ctx, id)
-		if err != nil || !a.Provisioned() {
+		if err != nil || !a.Provisioned() || a.OwnerID != owner {
 			continue
 		}
 		it := attentionItem{Key: approvalKey(a.ID), Kind: attentionKindSession, Source: firstNonBlank(a.DisplayName, a.Name),
