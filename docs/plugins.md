@@ -1,5 +1,10 @@
 # Plugins
 
+**New here? Start with the [quickstart](plugins-quickstart.md)**: a working
+plugin in about 15 minutes. For a plugin that works for an officer, the
+[recipe](officer-plugin-recipe.md); for what others have built,
+[ecosystem.md](ecosystem.md). This page is the reference.
+
 A **plugin** is a separate process that connects muster to another system, such
 as an inbox. It brings that system's messages to your **chief** agent, and it
 sends the replies you approve back. muster never calls a plugin. The plugin
@@ -621,7 +626,7 @@ example `officer:example:main` (an officer id is `<type>:<area>`). Set it:
 
 Every door refuses a binding unless the officer is **defined in the built-in
 store for the plugin's owner** (`muster officer def put`), and the built-in
-store is on (`MUSTER_OFFICERS` set). One owner's plugin can never name another
+store is on (whenever muster has a database). One owner's plugin can never name another
 owner's officer: the officer is read under the owner's row-level security, so
 another owner's officer reads as missing. Each change writes a
 `plugin.deliver_to.changed` audit row. `GET /plugin/v1/self` answers

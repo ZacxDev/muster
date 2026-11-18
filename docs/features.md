@@ -757,7 +757,8 @@ recorded on the Asks page's Nudges tab, nothing is sent.
 ### Plugins
 
 Out-of-process plugins bring another system's messages (an inbox, ClankMail)
-to your chief and send the replies you approve. [plugins.md](plugins.md).
+to your chief and send the replies you approve. [plugins.md](plugins.md); to
+build one, [plugins-quickstart.md](plugins-quickstart.md).
 
 - **Needs a plugin process you run** (this repository has the ClankMail one,
   `muster-clankmail`), and something to deliver its messages to: the
