@@ -499,6 +499,11 @@ const sessionIcon = `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" str
 
 // shellCSS is the shell's styles. The popover is a bottom sheet on a phone
 // and anchored under the chip from 640px, every target in it at least 44px.
+// The header's own two buttons are 30px boxes at y 5 to 35 (border-box, top
+// aligned, so both sit exactly there); each takes taps over 44px, its ::after
+// from y -4 (past the screen's top edge) to 40, the header's bottom (an
+// ::after is placed against the padding box, inside the 1px border, so
+// bottom -6px is the box's bottom edge plus 5): never over the page below.
 const shellCSS = `:root{color-scheme:light dark}html,body{margin:0;height:100%;overflow:hidden;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 header{position:fixed;top:0;left:0;right:0;z-index:2;box-sizing:border-box;height:` + shellHeaderPx + `px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
 background:Canvas;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent);transition:transform .18s ease-out}
@@ -507,13 +512,13 @@ header img{flex:none;height:20px;width:auto;max-width:6rem;object-fit:contain}
 header .n{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,CanvasText 65%,transparent)}
 header .t{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 iframe{position:fixed;top:0;left:0;width:100%;height:100%;border:0}
-.sess{position:relative;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
+.sess{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;display:flex;align-items:center;gap:4px;height:30px;max-width:9rem;padding:0 8px;border-radius:999px;
 border:1px solid color-mix(in srgb,CanvasText 25%,transparent);color:inherit;text-decoration:none;font-size:13px}
-.sess::after{content:"";position:absolute;inset:-3px -2px -11px}.sess svg{flex:none;width:14px;height:14px}
+.sess::after{content:"";position:absolute;left:-2px;right:-2px;bottom:-6px;height:44px}.sess svg{flex:none;width:14px;height:14px}
 .sess .sl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:480px){.sess{max-width:5.5rem}header .n{max-width:22%}}
-.chip{position:relative;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
-background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;inset:-7px -4px}
+.chip{position:relative;box-sizing:border-box;align-self:flex-start;margin-top:5px;flex:none;height:30px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);
+background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}.chip::after{content:"";position:absolute;left:-4px;right:-4px;bottom:-6px;height:44px}
 .scrim{position:fixed;inset:0;z-index:3;background:rgb(0 0 0/.35)}
 .pop{position:fixed;z-index:4;left:0;right:0;bottom:0;box-sizing:border-box;max-height:75vh;overflow:auto;background:Canvas;
 padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:14px 14px 0 0;box-shadow:0 -4px 24px rgb(0 0 0/.25)}

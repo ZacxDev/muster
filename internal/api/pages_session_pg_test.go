@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 )
@@ -22,14 +23,13 @@ import (
 // agent's page links its agent. Unresolvable: no link. A link's viewer: none.
 // Every name, id and host is invented.
 
-// pageMirror is a mirror whose hosts are per OWNER: byOwner[uid] is the
-// windows of that owner's host "workstation". Hosts is the one method the
-// page's session link reads; the rest is fakeMirror's (nothing, for these
-// owners).
+// pageMirror is a mirror whose hosts are per OWNER: byOwner[uid][host] is the
+// windows of that owner's host. Hosts is the one method the page's session
+// link reads; the rest is fakeMirror's (nothing, for these owners).
 type pageMirror struct {
 	*fakeMirror
 	mu      sync.Mutex
-	byOwner map[int64][]mirror.Window
+	byOwner map[int64]map[string][]mirror.Window
 }
 
 func (m *pageMirror) Hosts(ctx context.Context) []mirror.HostView {
@@ -38,21 +38,36 @@ func (m *pageMirror) Hosts(ctx context.Context) []mirror.HostView {
 		return nil
 	}
 	m.mu.Lock()
-	ws := m.byOwner[p.UserID]
-	m.mu.Unlock()
-	if ws == nil {
-		return nil
+	defer m.mu.Unlock()
+	var out []mirror.HostView
+	for _, host := range []string{"laptop", "workstation"} {
+		ws, ok := m.byOwner[p.UserID][host]
+		if !ok {
+			continue
+		}
+		hv := mirror.HostView{Host: host, Online: true}
+		hv.Windows = mirror.NormalizeWindows(ws, 0)
+		hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
+		out = append(out, hv)
 	}
-	hv := mirror.HostView{Host: "workstation", Online: true}
-	hv.Windows = mirror.NormalizeWindows(ws, 0)
-	hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
-	return []mirror.HostView{hv}
+	return out
 }
 
-func (m *pageMirror) set(owner int64, ws ...mirror.Window) {
+// set makes owner's host "workstation" exactly ws (no ws: the host is gone)
+// and leaves their other hosts as they are.
+func (m *pageMirror) set(owner int64, ws ...mirror.Window) { m.setHost(owner, "workstation", ws...) }
+
+func (m *pageMirror) setHost(owner int64, host string, ws ...mirror.Window) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.byOwner[owner] = ws
+	if m.byOwner[owner] == nil {
+		m.byOwner[owner] = map[string][]mirror.Window{}
+	}
+	if ws == nil {
+		delete(m.byOwner[owner], host)
+		return
+	}
+	m.byOwner[owner][host] = ws
 }
 
 const (
@@ -70,7 +85,7 @@ func sessionWindow(id string, index int, sid string) mirror.Window {
 func newSessionPageFixture(t *testing.T) (*pageFixture, *pageMirror) {
 	t.Helper()
 	f := newPageFixture(t)
-	m := &pageMirror{fakeMirror: &fakeMirror{}, byOwner: map[int64][]mirror.Window{}}
+	m := &pageMirror{fakeMirror: &fakeMirror{}, byOwner: map[int64]map[string][]mirror.Window{}}
 	m.set(f.owner, sessionWindow("@3", 3, makerSID), sessionWindow("@4", 4, otherSID))
 	f.srv.ext.Mirror = m
 	return f, m
@@ -79,7 +94,13 @@ func newSessionPageFixture(t *testing.T) (*pageFixture, *pageMirror) {
 // mirrorPage has the session makerSID on host workstation make a page; its id.
 func mirrorPage(t *testing.T, f *pageFixture, title string) int64 {
 	t.Helper()
-	out := f.toolAs(t, f.as(f.owner, authz.ViaMirrorHost), mirrorCaller("workstation", makerSID), pageCreateTool,
+	return mirrorPageOn(t, f, "workstation", title)
+}
+
+// mirrorPageOn is mirrorPage from host.
+func mirrorPageOn(t *testing.T, f *pageFixture, host, title string) int64 {
+	t.Helper()
+	out := f.toolAs(t, f.as(f.owner, authz.ViaMirrorHost), mirrorCaller(host, makerSID), pageCreateTool,
 		map[string]any{"title": title, "blocks": json.RawMessage(`[{"type":"markdown","text":"hi"}]`)})
 	id := pnum(out["page_id"])
 	if id <= 0 {
@@ -235,5 +256,67 @@ func TestAnotherOwnersSessionIsNeverResolved(t *testing.T) {
 	f.session = f.other
 	if w := f.get(t, "/pages/"+strconv.FormatInt(id, 10)+"/view", f.ownerHdr()); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "/mirror/view") {
 		t.Errorf("another member's view: %d", w.Code)
+	}
+}
+
+// TestTheSessionIsLookedUpOnItsOwnHost (two hosts): a page made on "laptop"
+// links laptop's window, workstation running another session; and a page
+// made on "workstation" is not linked to a window of ANOTHER host that
+// happens to run the same session id.
+func TestTheSessionIsLookedUpOnItsOwnHost(t *testing.T) {
+	f, m := newSessionPageFixture(t)
+	m.setHost(f.owner, "laptop", sessionWindow("@2", 2, makerSID))
+	m.set(f.owner, sessionWindow("@4", 4, otherSID))
+	id := mirrorPageOn(t, f, "laptop", "On the laptop")
+	if href, _ := f.viewSessionHref(t, id); href != "/mirror/view?host=laptop&amp;session=main&amp;window=%402" {
+		t.Fatalf("a laptop page's session button: %q", href)
+	}
+	ws := mirrorPage(t, f, "On the workstation")
+	if href, _ := f.viewSessionHref(t, ws); href != "" {
+		t.Errorf("a workstation page linked another host's window: %q", href)
+	}
+}
+
+// TestTheSessionIsNamedAsMusterNamesIt: the label is the session's CURRENT
+// human name (mirrorLabel: its stored manual name here), plained — in the
+// header button, the popover's "Made by" and on the page's screen; with no
+// name, its window and host.
+func TestTheSessionIsNamedAsMusterNamesIt(t *testing.T) {
+	f, _ := newSessionPageFixture(t)
+	id := mirrorPage(t, f, "Named")
+	if _, doc := f.viewSessionHref(t, id); !strings.Contains(doc, `<span class="sl">main:3 @ workstation</span>`) {
+		t.Fatal("control: an unnamed session is not its window and host")
+	}
+	f.srv.ext.Focus = &memFocus{rows: map[focus.Subject]focus.Focus{
+		focus.MirrorSubject(makerSID): {Subject: focus.MirrorSubject(makerSID), Name: focus.Name{Manual: "**Checkout** rewrite"}},
+	}}
+	_, doc := f.viewSessionHref(t, id)
+	for _, want := range []string{`<span class="sl">Checkout rewrite</span>`, `data-page-made-by>Made by Checkout rewrite</a>`,
+		`aria-label="Open the session that made this page: Checkout rewrite"`} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("the owner's view lacks %q", want)
+		}
+	}
+	if detail := pageDetailSection(t, f.get(t, "/pages/"+strconv.FormatInt(id, 10), f.ownerHdr()).Body.String()); !strings.Contains(detail, `data-page-session>Checkout rewrite</a>.`) {
+		t.Errorf("the page's screen: %s", detail)
+	}
+}
+
+// TestAForeignAgentIsNeverLinked — an INVARIANT GUARD: a page whose agent_id
+// names another owner's agent (it cannot be made so through the tools; set
+// by hand here) links nothing. Row-level security already hides that agent
+// from the owner's Agents.Get, so pageSessionLink's own OwnerID check is not
+// what holds it here (it stays for a team agent a member can read, 0131).
+func TestAForeignAgentIsNeverLinked(t *testing.T) {
+	f, _ := newSessionPageFixture(t)
+	id := f.create(t, f.agent, "Agent page", `[{"type":"markdown","text":"x"}]`)
+	if href, _ := f.viewSessionHref(t, id); href == "" {
+		t.Fatal("control: the page's own agent is not linked")
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE pages SET agent_id = $2 WHERE id = $1`, id, f.otherAgent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if href, doc := f.viewSessionHref(t, id); href != "" || strings.Contains(doc, f.otherAgent.Name) {
+		t.Errorf("another owner's agent is linked: %q", href)
 	}
 }

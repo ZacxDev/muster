@@ -910,7 +910,11 @@ func prettyJSON(raw []byte) string {
 // the session id recorded at create to wherever it runs now
 // (claudeSessionEntry, claudeSessionWindow's own lookup — the resolver the
 // Asks' "View in session" uses — over the viewer's OWN hosts only,
-// s.ext.Mirror.Hosts(ctx)), labelled by where it runs now.
+// s.ext.Mirror.Hosts(ctx)), labelled by its CURRENT name (mirrorLabel).
+//
+// 🔴 THE LABEL IS PLAINED HERE (textplain.Title), its one builder: pages.Shell
+// and the page's screen only escape it. internal/textplain's title-sink
+// ledger scans this function (apiLabelBuilders) for exactly that.
 //
 // 🔴 "" — no link, never a guess — when it cannot be resolved: no session
 // recorded (a mirrored window's page made before 0150), the session no longer
@@ -918,7 +922,6 @@ func prettyJSON(raw []byte) string {
 // is not the page owner's. Another owner's hosts are never searched (Hosts
 // is the principal's own), so their session is never resolved.
 func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label string) {
-	label = textplain.Title(p.Creator.Label)
 	switch {
 	case p.Creator.AgentID > 0:
 		if s.ext.Agents == nil {
@@ -933,14 +936,22 @@ func (s *Server) pageSessionLink(ctx context.Context, p pages.Page) (href, label
 		if s.ext.Mirror == nil {
 			return "", ""
 		}
-		// claudeSessionEntry: claudeSessionWindow's own lookup, with the
-		// window's CURRENT name, so the label says where the link goes now
-		// (the label stored at create named the window it was in then).
+		// claudeSessionEntry: claudeSessionWindow's own lookup, the window
+		// the session runs in NOW.
 		e, ok := claudeSessionEntry(s.ext.Mirror.Hosts(ctx), p.Creator.MirrorHost, p.Creator.MirrorSession)
 		if !ok {
 			return "", ""
 		}
-		return ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath(), e.TitleAt()
+		href = ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}.ViewPath()
+		// Its name as the rest of muster names it NOW (mirrorLabel: its
+		// human name, else its window and host), keyed by the session — the
+		// entry is the window's, which does not carry it — and plained.
+		// Nothing resolved: the name stored when the page was made.
+		e.Claude, e.ClaudeSession = true, p.Creator.MirrorSession
+		if label = textplain.Title(s.mirrorLabel(ctx, e)); label == "" {
+			label = textplain.Title(p.Creator.Label)
+		}
+		return href, label
 	}
 	return "", ""
 }

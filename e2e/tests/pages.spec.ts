@@ -1197,11 +1197,16 @@ for (const vp of ROUND_VIEWPORTS) {
       expect(href, 'the button links the mirrored window of the session').toMatch(new RegExp(`^/mirror/view\\?host=${host}&session=[^&]+&window=%40\\d+$`));
       const box = (await sess.boundingBox())!;
       expect(box.height, 'the button fits the slim header').toBeLessThanOrEqual(32);
-      // Its tap target (the ::after) is 44px tall from the top of the screen:
-      // y=1 and y=43, at its middle, are still the button.
-      for (const y of [1, 43]) {
-        expect(await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('[data-page-session]'), [box.x + box.width / 2, y]),
-          `the button's target at y=${y}`).toBe(true);
+      // The tap targets of the header's two buttons (their ::after) are 44px
+      // tall, and stay INSIDE the 40px header: the whole header's height at
+      // their middle is the button, and the page just below it is the page.
+      for (const sel of ['[data-page-session]', '[data-version-chip]']) {
+        const b = (await page.locator('header ' + sel).boundingBox())!;
+        const at = (y: number) => page.evaluate(([px, py, s]) => !!document.elementFromPoint(px as number, py as number)?.closest(s as string), [b.x + b.width / 2, y, sel]);
+        for (const y of [1, 20, 39]) expect(await at(y), `${sel}'s target at y=${y}`).toBe(true);
+        // y=40.25: the page's first quarter-pixel row, just below the header.
+        expect.soft(await at(40.25), `${sel}'s target overhangs the header onto the page`).toBe(false);
+        expect(await page.locator('header ' + sel).evaluate((e) => getComputedStyle(e, '::after').height), `${sel}'s target height`).toBe('44px');
       }
       await shot(page, `owner-${vp.name}-session`);
       if (vp.touch) await sess.tap();
