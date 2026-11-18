@@ -884,8 +884,7 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, rd asks
 // asks_count.go) over the same items — the drafts in, the watched team asks
 // out — the number every other surface shows.
 func (s *Server) askFeedNow(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) (string, int) {
-	rows, n := s.episodeRowsHTML(ctx, rd, now)
-	page := s.asksPageItems(ctx, items, rd.hosts)
+	page, rows, n := s.asksPage(ctx, items, rd, now)
 	out, _ := askFeedHTML(page, rows, n, now)
 	return out, asksPendingOf(ctx, page, n)
 }
@@ -957,6 +956,13 @@ func episodeCarded(rd asksRead) map[string]bool {
 // hub read (asksRead): the carded stops, the lines and the names all come
 // from it, so a refresh reads the hosts once, not once per part.
 func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time) (string, int) {
+	return s.episodeRowsHTMLExcept(ctx, rd, now, nil)
+}
+
+// episodeRowsHTMLExcept is episodeRowsHTML without the reader's own agents
+// in approved — agents the Asks page already draws as an approval card
+// (asksPage): one blocked agent, one card.
+func (s *Server) episodeRowsHTMLExcept(ctx context.Context, rd asksRead, now time.Time, approved map[int64]bool) (string, int) {
 	if !s.sessionStateOn() {
 		return "", 0
 	}
@@ -973,6 +979,9 @@ func (s *Server) episodeRowsHTML(ctx context.Context, rd asksRead, now time.Time
 			// only for whom its push went to (teamEpisodeShown): an
 			// operator or a manager, never a viewer (#690 round 1, 🟡3).
 			if ep.Owner != own && !teamEpisodeShown(ctx, ep.Owner) {
+				continue
+			}
+			if ep.Owner == own && ep.Kind == sessionstate.KindAgent && approved[ep.AgentID] {
 				continue
 			}
 			if !(ep.Owner == own && ep.Kind == sessionstate.KindMirror && carded[ep.Key]) {

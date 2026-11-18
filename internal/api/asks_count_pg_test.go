@@ -11,8 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/asklog"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -155,5 +158,45 @@ func TestAPairingRequestIsNotADraft(t *testing.T) {
 	out, _ = askFeedHTML([]attentionItem{pair, designItems()[5]}, "", 0, designNow)
 	if !strings.Contains(out, `data-asks-drafts="1"`) || !strings.Contains(out, `id="`+pairKey(9)+`"`) {
 		t.Errorf("a draft and a pairing request:\n%s", out)
+	}
+}
+
+// TestABlockedAgentThatIsAlsoStalledIsOneCard (audit of #787, the gap it
+// left): with session state on (MUSTER_SESSION_STATE=1, as production runs) an
+// agent blocked at a permission prompt that is ALSO an open stalled episode,
+// with no ask of its own, is ONE card — the approval card, the more specific
+// one — and ONE in the count (the ☰ and the header say 1), never also a
+// "Stalled / waiting" row. RED before: the approval card and the episode row,
+// counted 2.
+func TestABlockedAgentThatIsAlsoStalledIsOneCard(t *testing.T) {
+	f := newAttnFixture(t)
+	f.setWindows(mirror.StatusIdle)
+	eps := sessionstate.NewPG(f.pool)
+	f.srv.ext.Episodes = eps
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_episodes WHERE owner_id = $1`, authz.OperatorUserID)
+	})
+	octx := f.srv.attentionPrincipal(context.Background(), authz.OperatorUserID)
+	ep, claimed, err := eps.Open(octx, sessionstate.Episode{Kind: sessionstate.KindAgent, Key: chiefnudge.AgentKey(f.op.ID, 0), AgentID: f.op.ID,
+		State: sessionstate.StateStalled})
+	if err != nil || !claimed {
+		t.Fatalf("open the stalled episode: %v %v", claimed, err)
+	}
+	// Control: stalled alone, it is the one row and the one count.
+	page := f.page(t, "/attention")
+	if !strings.Contains(askList(page), `id="`+episodeKey(ep.ID)+`"`) || !strings.Contains(page, `data-asks-open-count aria-live="polite">1 open</span>`) {
+		t.Fatalf("control: a stalled agent alone is not one row and 1 open:\n%s", askList(page))
+	}
+	blockAgent(f.srv, f.op.ID)
+	page = f.page(t, "/attention")
+	list := askList(page)
+	if strings.Contains(list, `id="`+episodeKey(ep.ID)+`"`) || !strings.Contains(list, `id="approval-`+strconv.FormatInt(f.op.ID, 10)+`"`) {
+		t.Errorf("want the approval card alone, not the stalled row too:\n%s", list)
+	}
+	if !strings.Contains(page, `data-asks-open-count aria-live="polite">1 open</span>`) {
+		t.Errorf("the page header: %s", regexp.MustCompile(`data-asks-open-count[^<]*<`).FindString(page))
+	}
+	if got := regexp.MustCompile(`id="nav-waiting-badge" data-nav-waiting="" data-count="(\d+)"`).FindStringSubmatch(f.page(t, ui.NavWaitingPath)); got == nil || got[1] != "1" {
+		t.Errorf("the ☰ badge: %v, want 1", got)
 	}
 }

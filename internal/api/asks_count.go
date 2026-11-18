@@ -4,9 +4,9 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE ONE OPEN COUNT. Four surfaces say how much waits on the reader — the ☰
@@ -35,18 +35,28 @@ func asksPendingOf(ctx context.Context, pageItems []attentionItem, episodes int)
 func (s *Server) asksPendingCount(ctx context.Context) (int, error) {
 	rd := s.readAsks(ctx)
 	items, err := s.attentionItemsWith(ctx, rd.hosts, rd.waiting)
-	_, n := s.episodeRowsHTML(ctx, rd, s.now())
-	return asksPendingOf(ctx, s.asksPageItems(ctx, items, rd.hosts), n), err
+	page, _, n := s.asksPage(ctx, items, rd, s.now())
+	return asksPendingOf(ctx, page, n), err
 }
 
-// asksPageItems is the Asks page's items — what the Open feed and the drafts
-// draw and THE ONE OPEN COUNT counts: pageAttentionItems, and an agent of the
-// reader's blocked on a permission prompt (approvalItems). One function for
-// the feed (askFeedNow) and the count (asksPendingCount), so they cannot
-// disagree about what is open.
-func (s *Server) asksPageItems(ctx context.Context, items []attentionItem, hs []mirror.HostView) []attentionItem {
-	page := s.pageAttentionItems(items, hs)
-	return append(page, s.approvalItems(ctx, items)...)
+// asksPage is the Asks page's items — what the Open feed and the drafts draw
+// and THE ONE OPEN COUNT counts: pageAttentionItems, and an agent of the
+// reader's blocked on a permission prompt (approvalItems) — and session
+// state's stalled / waiting rows (rows, n of them). One function for the feed
+// (askFeedNow) and the count (asksPendingCount), so they cannot disagree.
+//
+// 🔴 ONE BLOCKED AGENT IS ONE CARD: an agent that has an approval card is not
+// also a stalled row (episodeRowsHTMLExcept), though session state holds an
+// episode for it — the approval card is the more specific of the two (it says
+// the agent waits on a prompt). Counted twice before (audit of #787).
+func (s *Server) asksPage(ctx context.Context, items []attentionItem, rd asksRead, now time.Time) (page []attentionItem, rows string, n int) {
+	approvals := s.approvalItems(ctx, items)
+	carded := make(map[int64]bool, len(approvals))
+	for _, it := range approvals {
+		carded[it.card.agentID] = true
+	}
+	rows, n = s.episodeRowsHTMLExcept(ctx, rd, now, carded)
+	return append(s.pageAttentionItems(items, rd.hosts), approvals...), rows, n
 }
 
 // approvalKey is an approval-blocked agent's item key (approvalItems).

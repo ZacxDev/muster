@@ -15,7 +15,8 @@ on, Log with the ask log on). Its heading carries **N open**.
 same number: everything the Open tab lists that waits on you (a team's
 question you only watch is listed, not counted), its stalled rows, an agent
 of yours blocked on a permission prompt (listed as a waiting card that opens
-the agent), and your pending drafts. A plugin's pairing request is its own
+the agent; with session state on, that card replaces its stalled row, so one
+blocked agent is one card and one in the count), and your pending drafts. A plugin's pairing request is its own
 card on the Open tab (*Review on Plugins*), never counted as a draft. The
 **Open** tab lists
 everything waiting on you in one vertically scrolling feed: **questions**
