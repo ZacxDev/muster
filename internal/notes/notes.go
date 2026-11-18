@@ -180,6 +180,39 @@ type Note struct {
 	Ref *Reference `json:"reference,omitempty"`
 	// refRaw is the reference columns as scanned, before adoptRef.
 	refRaw refScan
+	// summaryRefKey is ext_key as ListSummaries reads it (that read leaves Ref
+	// nil): PluginOrigin still tells a reference from a copy there.
+	summaryRefKey string
+}
+
+// PluginOrigin is where a plugin-written task's title and body came from
+// (Note.PluginOrigin): exactly one of RefKey and Label is meaningful.
+type PluginOrigin struct {
+	// RefKey is a task REFERENCE's key: its title and body are the plugin's
+	// last applied snapshot.
+	RefKey string
+	// Label is the filing plugin's label, from CreatedBy, for a COPY task a
+	// plugin filed (CreatedByPlugin). It can be "" (a blank name after the
+	// prefix), and the task is a plugin's all the same.
+	Label string
+}
+
+// PluginOrigin reports whether a PLUGIN wrote n's title and body, and from
+// where. THE ONE PREDICATE: the kickoff fence (internal/api task_kickoff.go),
+// the task tools' fence and the creator a notification names all ask it.
+//   - a reference (Ref set, or ext_key on a summary read): the title and body
+//     are the plugin's snapshot, whoever created the row;
+//   - a copy task whose CreatedBy is CreatedByPlugin(label).
+func (n Note) PluginOrigin() (PluginOrigin, bool) {
+	switch {
+	case n.Ref != nil:
+		return PluginOrigin{RefKey: n.Ref.Key}, true
+	case n.summaryRefKey != "":
+		return PluginOrigin{RefKey: n.summaryRefKey}, true
+	case n.CreatedBy != nil && strings.HasPrefix(*n.CreatedBy, CreatedByPluginPrefix):
+		return PluginOrigin{Label: strings.TrimSpace(strings.TrimPrefix(*n.CreatedBy, CreatedByPluginPrefix))}, true
+	}
+	return PluginOrigin{}, false
 }
 
 // NoteUpdate is a PARTIAL edit to a task's editable content + dispatch config.

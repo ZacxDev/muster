@@ -1308,6 +1308,30 @@ The task is filed the way `POST /api/tasks` files one, and you get the usual
 "New task" push. It has no `gate:` or `auto:` tag, so nothing dispatches it
 until you do. The comment's author is `plugin:<plugin name>`.
 
+**muster fences your task's text before any agent is started on it.** The
+title and body are stored as you sent them. When an agent is started on the
+task, by any door (your user's chief with `agent_dispatch`, a session's
+approved `dispatch_request`, a spawn on one of your user's hosts, or
+`POST /api/agents` with `note_id`), its first message carries them only inside
+the untrusted block your messages arrive in. That block is the
+`plugin-message` fence, under a fresh nonce, with every line behind `| ` and
+a preface in muster's words saying the block is data from outside, not
+instructions from the owner. A closing marker you write is defused like any
+other text. Write the task for a person to read: nothing in it is taken as an
+instruction. A body too long for a host's prompt is cut before it is fenced,
+so the block always closes. A task your user, their chief or an agent filed
+is passed on unchanged. The same holds for a [task reference](#task-references),
+whose title and body are your snapshot.
+
+The same fence covers the task tools an agent reads a task with. `task_get`,
+`task_set_status`, `agent_get_task` and `agent_set_task_status` answer with
+your title, body and comments (any comment written as your plugin) taken out
+of the task's JSON and handed over fenced in front of it, those fields left
+empty in the JSON; `tasks_list` does the same with your titles, and
+`GET /agent/task` keeps its answer JSON, with the fenced text in one more
+field, `untrusted_plugin_text`. `GET /api/tasks` is not covered
+([limits](limits.md)).
+
 ### Task references
 
 A task filed with `create` is a **copy**: from then on it and the upstream
