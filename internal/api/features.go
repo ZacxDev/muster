@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	g "maragu.dev/gomponents"
+
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -18,8 +20,9 @@ import (
 // it here with UseFeatures. What reads that Set, exactly:
 //
 //   - GET /account/features: the Features page, one row per feature with its
-//     state and the line(s) that turn it on; every hint beside a hidden
-//     control links to its row.
+//     plain name, what it does and its state, and an ⓘ sheet holding the
+//     line(s) that turn it on (an admin's only); every hint beside a hidden
+//     control opens its sheet.
 //   - /api/doctor's `features` (doctor.go), which `muster doctor` prints and
 //     FAILs on when a feature is misconfigured.
 //   - the Account page's suggested-replies note and the Credentials page's
@@ -248,25 +251,66 @@ func (s *Server) mcpFeatureHooks(door mcpDoor) (func(string) string, func() ([]m
 
 // --- the page ------------------------------------------------------------------
 
+// THE FEATURES PAGE'S TOP LAYER IS PLAIN (the operator rule: muster is for
+// people who are not engineers, so its own chrome shows no variable, Compose
+// profile, flag or command in its top layer). Each row is the feature's plain
+// name, one plain sentence of what it does and its state; everything that sets
+// it up — the .env lines, the reason it is off, the settings, the docs path —
+// is in the row's ⓘ sheet (ui.InfoSheet), with a Copy button.
+//
+// 🔴 THE SETUP IS AN ADMIN'S, AND ABSENT — NOT HIDDEN — FOR ANYONE ELSE. The
+// viewer may see setup details exactly when the shell's Setup is true
+// (authz.IsAdmin, shellFeatures); a member's sheet is Withheld, so its HTML
+// carries no variable, line or reason at all, and its rows say to ask their
+// admin. Every "how to turn it on" link elsewhere opens a row's sheet
+// (ui.FeatureHref, ui.FeaturesSheetJS).
+
+// The page's own plain words (its tests pin them as literals).
+const (
+	// FeatureAskAdminText is a member's line under a feature that is not on,
+	// and what its sheet says.
+	FeatureAskAdminText = "Ask your admin to turn this on."
+	// FeatureOpenSheetText is an admin's line under a feature that is off.
+	FeatureOpenSheetText = "To turn it on, open its ⓘ."
+	// FeatureNeedsSetupText is an admin's line under a misconfigured feature.
+	FeatureNeedsSetupText = "Something it needs is missing. Its ⓘ says what."
+	// FeatureLearnMoreText is each row's docs link.
+	FeatureLearnMoreText = "Learn more"
+)
+
 func (s *Server) handleFeaturesPage(w http.ResponseWriter, r *http.Request) {
+	admin := s.shellFeatures(r.Context()).Setup
 	var b strings.Builder
 	b.WriteString(`<div class="flex flex-col gap-4" data-features-page>`)
 	b.WriteString(`<section class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
-<h1 class="text-balance text-base font-semibold text-fg">Features</h1>
-<p class="text-sm text-fg2">What this server runs. Core features come with the install; everything else is optional. To turn one on, add its line(s) to the server's <code>.env</code> and run <code>docker compose up -d --wait</code>.</p>`)
+<h1 class="text-balance text-base font-semibold text-fg">Features</h1>`)
+	if admin {
+		b.WriteString(`<p class="text-sm text-fg2" data-features-intro>What this server can do. Some features come built in; the rest are optional. To turn one on, open its ⓘ: it has the exact setting to copy.</p>`)
+	} else {
+		b.WriteString(`<p class="text-sm text-fg2" data-features-intro>What this server can do. Some features come built in; the rest are optional, and your admin turns them on.</p>`)
+	}
 	if s.features.Len() == 0 {
 		b.WriteString(`<p class="text-sm text-fg" data-features-empty>This server did not report its features.</p>`)
 	} else {
 		n := s.features.Counts()
 		b.WriteString(`<p class="text-sm text-fg" data-features-counts>` + strconv.Itoa(n[features.On]) + ` on · ` + strconv.Itoa(n[features.Off]) +
-			` off · ` + strconv.Itoa(n[features.Misconfigured]) + ` misconfigured</p>`)
+			` off · ` + strconv.Itoa(n[features.Misconfigured]) + ` ` + needSetup(n[features.Misconfigured]) + `</p>`)
 	}
 	b.WriteString(`</section>`)
 	for _, f := range s.features.All() {
-		b.WriteString(featureRow(f))
+		b.WriteString(featureRow(f, admin))
 	}
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
+	b.WriteString(`<script>` + ui.FeaturesSheetJS + `</script>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Features", ui.NavFeatures, false, b.String())
+}
+
+// needSetup is the counts line's verb for n misconfigured features.
+func needSetup(n int) string {
+	if n == 1 {
+		return "needs setup"
+	}
+	return "need setup"
 }
 
 // featureStateLabel is a state as the page's pill reads it.
@@ -275,7 +319,7 @@ func featureStateLabel(st features.State) string {
 	case features.On:
 		return "On"
 	case features.Misconfigured:
-		return "Misconfigured"
+		return "Needs setup"
 	}
 	return "Off"
 }
@@ -290,43 +334,105 @@ func featureStateTone(st features.State) string {
 	return "bg-s2 text-fg2"
 }
 
-// featureRow is one feature on the page, anchored by its id so a hint can
-// link straight to it (/account/features#dictation).
-//
-// A Kubernetes feature shows no .env block: on the documented install there is
-// nothing to set, and the hint says what it needs instead.
-func featureRow(f features.Feature) string {
+// featureRow is one feature on the page, anchored by its id (a docs anchor),
+// with its ⓘ sheet (ui.FeatureSheetID) the place every hint links to.
+// admin: the viewer may see setup details (ui.Features.Setup).
+func featureRow(f features.Feature, admin bool) string {
 	e := html.EscapeString
+	name := f.ShownName()
 	var b strings.Builder
 	b.WriteString(`<section id="` + e(f.ID) + `" data-feature="` + e(f.ID) + `" data-state="` + e(string(f.State)) +
 		`" class="flex min-w-0 flex-col gap-2 rounded-2xl border border-line bg-s1/70 px-5 py-4 ring-1 ring-line">`)
-	b.WriteString(`<div class="flex items-center justify-between gap-3"><h2 class="text-sm font-semibold text-fg">` + e(f.Name))
+	b.WriteString(`<div class="flex items-center gap-2"><h2 data-feature-name class="min-w-0 flex-1 text-sm font-semibold text-fg">` + e(name))
 	if f.Core {
-		b.WriteString(` <span class="text-xs font-normal text-muted">core</span>`)
+		b.WriteString(` <span class="text-xs font-normal text-muted">built in</span>`)
 	}
 	b.WriteString(`</h2><span data-feature-state class="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ` +
-		featureStateTone(f.State) + `">` + featureStateLabel(f.State) + `</span></div>`)
-	b.WriteString(`<p class="text-sm text-fg2">` + e(f.Description) + `</p>`)
-	if f.Reason != "" {
-		b.WriteString(`<p data-feature-reason class="break-words text-sm text-fg">` + e(f.Reason) + `</p>`)
+		featureStateTone(f.State) + `">` + featureStateLabel(f.State) + `</span>`)
+	b.WriteString(ui.InfoSheetHTML(featureSheet(f, name, admin)))
+	b.WriteString(`</div>`)
+	if f.OneLine != "" {
+		b.WriteString(`<p data-feature-oneline class="text-sm text-fg2">` + e(f.OneLine) + `</p>`)
 	}
-	if f.State != features.On {
-		switch lines := f.EnableLines(); {
-		case f.Kubernetes:
-			b.WriteString(`<p data-feature-kubernetes class="break-words text-sm text-fg2">` + e(features.KubernetesHint) +
-				`: not available in the Compose stack.</p>`)
-		case len(lines) > 0:
-			where := "Add to .env, then run docker compose up -d --wait:"
-			if f.HostSide {
-				where = "On each host, in muster-mirror's environment:"
-			}
-			b.WriteString(`<p class="text-xs text-muted">` + e(where) + `</p><pre data-feature-enable class="min-w-0 max-w-full overflow-x-auto rounded-md bg-bg px-3 py-2 text-xs text-fg ring-1 ring-inset ring-line">` +
-				e(strings.Join(lines, "\n")) + `</pre>`)
-		}
-		if f.Note != "" {
-			b.WriteString(`<p data-feature-note class="break-words text-sm text-fg2">` + e(f.Note) + `.</p>`)
-		}
+	switch {
+	case f.State == features.On:
+	case f.State == features.Off && f.Replaced != "":
+		b.WriteString(`<p data-feature-replaced class="text-sm text-fg">` + e(f.Replaced) + `</p>`)
+	case !admin:
+		b.WriteString(`<p data-feature-ask class="text-sm text-fg">` + FeatureAskAdminText + `</p>`)
+	case f.State == features.Misconfigured:
+		b.WriteString(`<p data-feature-next class="text-sm text-fg">` + FeatureNeedsSetupText + `</p>`)
+	default:
+		b.WriteString(`<p data-feature-next class="text-sm text-fg">` + FeatureOpenSheetText + `</p>`)
 	}
-	b.WriteString(`<a href="` + e(f.DocsLink()) + `" class="break-all text-xs text-accent underline">` + e(f.Docs()) + `</a></section>`)
+	b.WriteString(`<a href="` + e(f.DocsLink()) + `" data-feature-docs class="inline-flex min-h-[44px] items-center self-start text-xs text-accent underline">` +
+		FeatureLearnMoreText + `<span class="sr-only"> about ` + e(name) + `</span></a></section>`)
 	return b.String()
+}
+
+// featureSheet is a row's ⓘ: for an admin, what turns the feature on (its
+// .env lines, copied whole), why it is in its state, what else it needs and
+// what tunes it; for anyone else, Withheld — the plain state and "ask your
+// admin", with none of the setup in the HTML.
+//
+// A Kubernetes feature's sheet says the Compose stack cannot run it; its lines
+// are still shown, for a Kubernetes deployment.
+func featureSheet(f features.Feature, name string, admin bool) ui.InfoSheet {
+	on := f.State == features.On
+	replaced := f.State == features.Off && f.Replaced != ""
+	sh := ui.InfoSheet{ID: ui.FeatureSheetID(f.ID), Label: "How to turn on " + name, Heading: "Turn on " + name}
+	if on || replaced {
+		sh.Label, sh.Heading = "Setup of "+name, name
+	}
+	if !admin {
+		// Nothing a member can turn on: the sheet is about the feature.
+		sh.Withheld, sh.Label, sh.Heading = true, "About "+name, name
+		switch {
+		case replaced:
+			sh.Lead, sh.WithheldText = name+" is not used on this server.", f.Replaced
+		case on:
+			sh.Lead, sh.WithheldText = name+" is on.", "Ask your admin if it needs changing."
+		case f.State == features.Misconfigured:
+			sh.Lead, sh.WithheldText = name+" is not fully set up on this server.", FeatureAskAdminText
+		default:
+			sh.Lead, sh.WithheldText = name+" is off on this server.", FeatureAskAdminText
+		}
+		return sh
+	}
+	e := html.EscapeString
+	lines := f.EnableLines()
+	switch {
+	case len(lines) == 0:
+	case on && f.Kubernetes:
+		sh.Lead = "It is on. In a Kubernetes deployment, these lines turn it on:"
+	case on && f.HostSide:
+		sh.Lead = "It is on. On each computer, these lines in muster-mirror's environment turn it on:"
+	case on:
+		sh.Lead = "It is on. These lines in the server's .env file turn it on:"
+	case f.Kubernetes:
+		sh.Lead = "In a Kubernetes deployment, set:"
+	case f.HostSide:
+		sh.Lead = "On each computer, in muster-mirror's environment:"
+	default:
+		sh.Lead = "Add these lines to the server's .env file, then run docker compose up -d --wait:"
+	}
+	sh.Code, sh.Multiline = strings.Join(lines, "\n"), true
+	var x strings.Builder
+	x.WriteString(`<p data-feature-description class="text-sm text-fg2">` + e(f.Description) + `</p>`)
+	if f.Reason != "" {
+		x.WriteString(`<p data-feature-reason class="break-words text-sm text-fg">` + e(f.Reason) + `</p>`)
+	}
+	if !on && f.Kubernetes {
+		x.WriteString(`<p data-feature-kubernetes class="break-words text-sm text-fg2">` + e(features.KubernetesHint) +
+			`: not available in the Compose stack.</p>`)
+	}
+	if !on && f.Note != "" {
+		x.WriteString(`<p data-feature-note class="break-words text-sm text-fg2">` + e(f.Note) + `.</p>`)
+	}
+	if len(f.Settings) > 0 {
+		x.WriteString(`<p data-feature-settings class="break-words text-xs text-muted">Other settings: ` + e(strings.Join(f.Settings, ", ")) + `</p>`)
+	}
+	x.WriteString(`<a href="` + e(f.DocsLink()) + `" class="break-all text-xs text-accent underline">` + e(f.Docs()) + `</a>`)
+	sh.Extra = g.Raw(x.String())
+	return sh
 }
