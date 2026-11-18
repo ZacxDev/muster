@@ -513,7 +513,7 @@ func NotesCards(v TasksView) g.Node {
 			Class("mt-16 flex flex-col items-center justify-center gap-2 text-center"),
 			Div(Class("text-4xl"), g.Text("📋")),
 			P(Class("text-lg font-medium text-fg2"), g.Text("No tasks yet")),
-			P(Class("text-sm text-muted"), g.Text("Tap + to capture a task for a working directory.")),
+			P(Class("text-sm text-muted"), g.Text(TasksEmptyHint)),
 		)
 	}
 	return Div(
@@ -803,9 +803,9 @@ func noteCard(v TaskCardView) g.Node {
 	switch {
 	case v.Detail:
 		// The detail document's ONE <h1>. Always rendered (an untitled task falls
-		// back to "Task #<id>"), because a document with zero — or with an empty —
-		// h1 is the axe page-has-heading-one violation TestEveryDocumentHasExactly
-		// OneH1 pins.
+		// back to its body's plain words, else "Untitled task": taskDetailHeading),
+		// because a document with zero — or with an empty — h1 is the axe
+		// page-has-heading-one violation TestEveryDocumentHasExactlyOneH1 pins.
 		scannable = append(scannable, H1(
 			g.Attr("data-task-title", ""),
 			Class("break-words text-base font-semibold leading-snug text-fg"),
@@ -1178,16 +1178,54 @@ func taskCardClass(status string) string {
 }
 
 // taskDetailHeading is the /tasks/{id} document's <h1> text: the task's display
-// label, falling back to "Task #<id>" when it has neither a title nor a
-// directory. The fallback is load-bearing, not cosmetic — an <h1> that renders
-// no text is the same axe page-has-heading-one violation as having none, and
-// TestEveryDocumentHasExactlyOneH1 asserts both halves.
+// label, else its own words (TaskBodyTitle: the body, plained WHOLE and then
+// cut to taskHeadingRunes, so a leading code fence or image does not leave it
+// empty while the card shows words), else UntitledTaskHeading — never its
+// number, which is an id (the operator rule: no id in the top layer; the
+// card's "#<id>" chip still carries it). The fallback is load-bearing, not
+// cosmetic — an <h1> that renders no text is the same axe page-has-heading-one
+// violation as having none, and TestEveryDocumentHasExactlyOneH1 asserts both
+// halves.
 func taskDetailHeading(n notes.Note) string {
 	if t := textplain.Title(TaskTitle(n)); t != "" {
 		return t
 	}
-	return "Task #" + strconv.FormatInt(n.ID, 10)
+	if t := truncate(textplain.Title(TaskBodyTitle(n)), taskHeadingRunes); t != "" {
+		return t
+	}
+	return UntitledTaskHeading
 }
+
+// TaskBodyTitle is a task's body read as its title: what an untitled task's
+// heading falls back to. Raw — every display caller plains it (the title
+// sink ledger, internal/textplain's titleNames, holds them to it).
+func TaskBodyTitle(n notes.Note) string { return n.Body }
+
+// taskHeadingRunes caps a heading made from a task's body, as a card's
+// snippet is capped (markdownSnippet): a body is not a title.
+const taskHeadingRunes = 80
+
+// Plain words of the task board's empty state and its new-task and edit forms
+// (the operator rule: no shell term, path or abbreviation in the top layer).
+const (
+	// TasksEmptyHint is the board's line when it holds no task at all.
+	TasksEmptyHint = "Tap + to add something for an agent to do."
+	// DirectoryFieldLabel names the folder an agent started on a task works in.
+	DirectoryFieldLabel = "Project folder"
+	// DirectoryPlaceholder is that field's empty text.
+	DirectoryPlaceholder = "Pick a folder (optional)"
+	// RepoFieldLabel, RepoSearchPlaceholder: the repository picker (the
+	// GitHub repository an agent started on the task works in).
+	RepoFieldLabel        = "GitHub project"
+	RepoSearchPlaceholder = "Search your GitHub projects… (optional)"
+	// BranchFieldLabel, BranchPlaceholder: the branch an agent starts from.
+	BranchFieldLabel  = "Starting version"
+	BranchPlaceholder = "Optional — the project's main version"
+	// ModelFieldLabel: which AI model an agent started on the task runs.
+	ModelFieldLabel = "AI model"
+	// UntitledTaskHeading heads a task with no title, folder or text.
+	UntitledTaskHeading = "Untitled task"
+)
 
 // taskActionTrailing is the right-hand side of a task card's action row. With NO
 // linked agent it draws nothing: the card's Dispatch button was deleted with the
@@ -1971,7 +2009,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
-			H2(Class("text-base font-semibold text-fg"), g.Text("Edit task #"+ids)),
+			H2(Class("text-base font-semibold text-fg"), g.Text("Edit task")),
 			Span(Class("flex-1")),
 			Button(
 				Type("button"),
@@ -2018,16 +2056,17 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			labelledField("Tags", tagEditor(n.Tags, v.Vocabulary, n.Status == notes.StatusInProgress)),
 			// Dispatch config (all editable) — shown expanded (not hidden behind
 			// Advanced) since editing config is the whole point of the edit modal.
-			labelledField("Directory", directoryCombobox(v.Directories, n.Directory, v.DirectoriesFailed)),
-			labelledField("Model", modelFieldFor(n.Model, "")),
-			labelledField("Repository",
-				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", repoOptionsURL(n.OwnerID), "repos", n.Repo, n.Repo)),
-			labelledField("Branch",
+			labelledField(DirectoryFieldLabel, directoryCombobox(v.Directories, n.Directory, v.DirectoriesFailed)),
+			labelledField(ModelFieldLabel, modelFieldFor(n.Model, "")),
+			labelledFieldInfo(RepoFieldLabel, repoFieldInfo("task-edit-repo-info"),
+				lazyComboboxPreselect("repo", RepoFieldLabel, RepoSearchPlaceholder, "repo", repoOptionsURL(n.OwnerID), "repos", n.Repo, n.Repo)),
+			labelledFieldInfo(BranchFieldLabel, branchFieldInfo("task-edit-branch-info"),
 				Input(
 					Type("text"),
 					Name("repo_branch"),
 					Value(n.RepoBranch),
-					Placeholder("branch (optional — repo default)"),
+					g.Attr("aria-label", BranchFieldLabel),
+					Placeholder(BranchPlaceholder),
 					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 				),
 			),
@@ -2110,9 +2149,10 @@ func NotesModalBodyFor(directories []string, directoriesFailed bool, prefill str
 			// returning user's sane defaults ride along even while collapsed.
 			taskOwnerSelect(owners),
 			advancedDisclosure(
-				labelledField("Directory", directoryCombobox(directories, "", directoriesFailed)),
-				labelledField("Model", modelField()),
-				labelledField("Repository", lazyComboboxFollowing("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", "", "", ownerFollow(owners))),
+				labelledField(DirectoryFieldLabel, directoryCombobox(directories, "", directoriesFailed)),
+				labelledField(ModelFieldLabel, modelField()),
+				labelledFieldInfo(RepoFieldLabel, repoFieldInfo("task-new-repo-info"),
+					lazyComboboxFollowing("repo", RepoFieldLabel, RepoSearchPlaceholder, "repo", "/ui/agents/repos", "repos", "", "", ownerFollow(owners))),
 			),
 			// labelledFieldFor (not labelledField): the file input had NO associated
 			// label at all, which axe reports as a CRITICAL `label` violation — an
@@ -2206,10 +2246,10 @@ func directoryCombobox(seed []string, current string, failed bool) g.Node {
 			g.Attr("aria-controls", listID),
 			// labelledField's <label> is a SIBLING, not an ancestor, so it confers no
 			// accessible name (see labelledFieldFor). The old input had none at all.
-			g.Attr("aria-label", "Directory — recent directories, or type to search"),
+			g.Attr("aria-label", DirectoryFieldLabel+" — recent folders, or type to search"),
 			g.Attr("autocomplete", "off"),
 			Value(current),
-			Placeholder("/path/to/project (optional)"),
+			Placeholder(DirectoryPlaceholder),
 			Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
 		Ul(
@@ -2254,8 +2294,36 @@ func directoryPickerFailed(failed bool) g.Node {
 	}
 	return P(
 		Class("text-xs text-st-warning-fg"),
-		g.Text("Directory suggestions could not be loaded — this is not an empty list. Type a path to file the task anyway."),
+		g.Text("Folder suggestions could not be loaded — this is not an empty list. Type the folder to file the task anyway."),
 	)
+}
+
+// labelledFieldInfo is labelledField with an ⓘ beside the label: the plain
+// label up front, the technical name behind the ⓘ (InfoSheet, a sibling of the
+// label, never inside it). The ⓘ is the full 44px button, not Inline: a
+// form's controls are held to 44px boxes (e2e layout.spec.ts).
+func labelledFieldInfo(label string, info InfoSheet, control g.Node) g.Node {
+	return Div(
+		Class("flex flex-col gap-1.5"),
+		Div(Class("flex items-center gap-1"),
+			Label(Class("text-xs font-medium text-muted"), g.Text(label)),
+			info.Node(),
+		),
+		control,
+	)
+}
+
+// repoFieldInfo and branchFieldInfo are the ⓘs of the task forms' GitHub
+// fields: what each plain label is called in git, for whoever needs it. id is
+// the sheet's id, unique in its document.
+func repoFieldInfo(id string) InfoSheet {
+	return InfoSheet{ID: id, Label: "About " + RepoFieldLabel, Heading: RepoFieldLabel,
+		Lead: "The GitHub repository an agent started on this task works in. Leave it empty for none."}
+}
+
+func branchFieldInfo(id string) InfoSheet {
+	return InfoSheet{ID: id, Label: "About " + BranchFieldLabel, Heading: BranchFieldLabel,
+		Lead: "The git branch the agent starts from. Leave it empty for the repository's default branch."}
 }
 
 func labelledField(label string, control g.Node) g.Node {

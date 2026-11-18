@@ -346,7 +346,7 @@ var agentsListCallers = map[string]string{
 	"Server.chiefOnFor":             "own: chiefOn reads ownedBy(list, owner)",
 	"Server.accountChiefSection":    "own: chiefToggleAvailable / primaryChief over ownedBy(list, owner)",
 	"Server.handleAccountChief":     "own: primaryChief(ownedBy(list, owner))",
-	"Server.homeTarget":             "own: primaryChief(ownedBy(list, requestOwner(ctx)))",
+	"Server.homeResolve":            "own: primaryChief(ownedBy(list, requestOwner(ctx))); its team entries only set the onboarding page's team bit",
 	"Server.toolChiefRestart":       "own: resolveChief(ownedBy(list, owner)); on the mirror door, refused to a team token (teamHostTools)",
 	"Server.reapplyComposeChief":    "own: ownedBy(list, owner)",
 	"Server.liveOnTask":             "own: x.OwnerID == owner",
@@ -471,7 +471,7 @@ var agentReadCallers = map[string]string{
 	"AgentsByNoteIDs Server.apiAgentsByNote": "machine: GET /api/tasks, hook and API tokens",
 
 	"Get Server.acceptEndSession": "own: ag.OwnerID == requestOwner(ctx)",
-	"Get Server.fleetTarget":                 "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
+	"Get Server.fleetTarget":      "own: ag.OwnerID == requestOwner(ctx) (a team's agent is never a fleet subject)",
 	"Get Server.askingAgentHref":  "own: a.OwnerID == owner",
 	// A page's maker, for its owner's view (pages.go): only an agent of the
 	// page's own owner — the viewer, whose page it is under row-level
