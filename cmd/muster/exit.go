@@ -34,8 +34,9 @@ const (
 	// 🔴 THE 503 IT MAPS FROM IS NOT AN OUTAGE, AND THE DISCRIMINATOR IS THE
 	// BODY RATHER THAN THE STATUS. Nearly every hook-tier route is
 	// enforce-when-set, so a 503 there really is a sick backend and stays
-	// exitServerError. api.requireArmedHookToken is the exception — it is
-	// fail-CLOSED and marks its refusal with api.HookUnarmedField. Folding that
+	// exitServerError. A fail-CLOSED surface (the service tier, the approval
+	// relay, the connector store) is the exception: it marks its refusal with
+	// api.HookUnarmedField. Folding that
 	// into exitServerError would report "the server broke" about a server doing
 	// exactly what it was built to do. See unarmedHookSurface.
 	exitUnarmed = 9 // a SERVER-side surface is not armed (503)

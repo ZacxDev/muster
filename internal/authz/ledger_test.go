@@ -453,7 +453,6 @@ var (
 		"internal/api.(*Server).admitAttributedService", // requireServiceToken + the service branch of requireHookOrServiceToken
 		"internal/api.(*Server).admitAPIToken",          // personal tokens: the hook-tier wrappers + requireAPIToken (accounts PR 6)
 		"internal/api.(*Server).requireAgentToken",
-		"internal/api.(*Server).requireArmedHookToken",
 		"internal/api.(*Server).requireConnectorAgent",
 		"internal/api.(*Server).requireGoTrueSession", // requireSession's gotrue-mode half (accounts PR 4)
 		"internal/api.(*Server).requireHookOrServiceToken",

@@ -397,9 +397,10 @@ func classify(req request, resp *http.Response, body []byte, envFile string) ([]
 		// DISCRIMINATOR IS THE MARKER, NOT THE STATUS. Nearly every hook-tier route
 		// is enforce-when-set, so an unconfigured server SERVES them and a 503 there
 		// really is a sick backend (exitServerError below is right for that).
-		// api.requireArmedHookToken is the exception — the agent-steering write
-		// refuses outright rather than inherit the open default — and its refusal is
-		// a CONFIGURATION fact with a different remedy: arm the server.
+		// A fail-closed surface that marks its refusal with api.HookUnarmedField
+		// (the service tier, the approval relay, the connector store) is the
+		// exception: its refusal is a CONFIGURATION fact with a different remedy —
+		// arm the server.
 		return nil, failf(exitUnarmed,
 			"%s %s: the muster SERVER refuses to serve this write — %s.\n"+
 				"This route is fail-CLOSED on purpose while the rest of the hook tier serves when "+
@@ -444,7 +445,7 @@ func crossHost(req *http.Request, loc string) bool {
 	return u.Host != req.URL.Host
 }
 
-// hookUnarmedField is the JSON key api.requireArmedHookToken sets on its 503.
+// hookUnarmedField is the JSON key a fail-closed server surface sets on its 503.
 // The server owns the spelling as api.HookUnarmedField; this binary does not
 // import internal/api, so the two are pinned together by a test rather than by
 // a shared constant — see TestTheUnarmedMarkerMatchesTheServer.
