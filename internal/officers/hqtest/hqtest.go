@@ -175,9 +175,17 @@ type Ask struct {
 type Server struct {
 	*httptest.Server
 
+	// ChatPageSize bounds a chat messages page (0: every message); a page
+	// that leaves messages out says more: true (chats.go).
+	ChatPageSize int
+	// replyRefusal and charterVersions: RefuseReplies, SetCharterVersion.
+	replyRefusal    *chatRefusal
+	charterVersions map[string]int
+
 	mu       sync.Mutex
 	tokens   map[string]string // token -> officer id
 	items    map[string]*Item
+	chats    map[string]*fakeChat // chat id -> chat (chats.go)
 	nextID   int
 	down     bool
 	status   int
@@ -1431,7 +1439,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && parts[1] == "brief" && r.Method == http.MethodGet:
 		s.write(w, http.StatusOK, map[string]any{
 			"officer":    map[string]any{"id": officer},
-			"type":       map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": 1},
+			"type":       map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": s.charterVersion(officer)},
 			"open_items": s.list(officer, "open", now), "recent_items": []any{}, "cairn": map[string]any{"scopes": []any{}},
 			"generated_at": now,
 		})
@@ -1520,6 +1528,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.write(w, http.StatusOK, map[string]any{"pr": 7251, "pr_key": "acme/widgets#7251", "item": r.URL.Query().Get("item"), "use": "attribution evidence only"})
 		}
+	case len(parts) == 4 && parts[1] == "chats":
+		s.chatRoute(w, officer, parts[2], parts[3], r.Method, r.URL.Query().Get("after"), body, now)
 	case len(parts) == 3 && parts[1] == "obs":
 		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
@@ -2233,4 +2243,13 @@ func DecodeMergeAsk(raw []byte) (MergeAskRequest, error) {
 		return MergeAskRequest{}, errors.New("more than one JSON value")
 	}
 	return r, nil
+}
+
+// charterVersion is the charter_version officer's brief answers: 1 unless
+// SetCharterVersion said otherwise. Called with s.mu held.
+func (s *Server) charterVersion(officer string) int {
+	if v, ok := s.charterVersions[officer]; ok {
+		return v
+	}
+	return 1
 }

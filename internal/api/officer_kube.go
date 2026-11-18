@@ -210,7 +210,7 @@ func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers
 	}
 
 	// The item the read counts against: one live claim of this instance.
-	held, err := s.heldItem(ctx, c, a.Name, itemArg, true)
+	held, err := s.heldItem(ctx, c, officerCallerName(ctx, a), itemArg, true)
 	if err != nil {
 		return heldItemRefusal(officers.ToolKubeRead, err)
 	}

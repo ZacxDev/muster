@@ -211,8 +211,19 @@ def features_links(text: str) -> set[str]:
     return set(re.findall(r"docs/features\.md#([a-z0-9-]+)", text))
 
 
-# The link text may wrap over lines, as prose does; the target may not.
-MD_LINK = re.compile(r"(?<!\!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# The link text may wrap over lines, as prose does; the target may not. The
+# text may hold an image (`[![badge](img)](target)`), whose own target
+# MD_IMG checks.
+MD_LINK = re.compile(r"(?<!\!)\[(?:[^\[\]]|!\[[^\]]*\]\([^)\s]*\))*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# Images: `![alt](path)` and `<img src="path">`. Their targets must exist too.
+MD_IMG = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img\b[^>]*?\bsrc=\"([^\"]+)\"")
+
+
+def link_targets(text: str) -> list[str]:
+    """Every link and image target in text outside code."""
+    body = strip_code(text)
+    return [m.group(1) for m in MD_LINK.finditer(body)] + \
+        [m.group(1) or m.group(2) for m in MD_IMG.finditer(body)]
 
 
 def github_slugs(md: str) -> set[str]:
@@ -227,16 +238,22 @@ def github_slugs(md: str) -> set[str]:
     return out
 
 
+# An inline code span may wrap onto the next line of its paragraph, never past
+# a blank line.
+CODE_SPAN = re.compile(r"`[^`\n]*(?:\n(?![ \t]*\n)[^`\n]*)*`")
+
+
 def strip_code(md: str) -> str:
-    """md without fenced blocks and inline code spans (their brackets are not links)."""
+    """md without fenced blocks and inline code spans (their brackets are not
+    links). A span's line breaks are kept, so line numbers do not move."""
     out, fenced = [], False
     for line in md.splitlines():
         if line.lstrip().startswith("```"):
             fenced = not fenced
             out.append("")
             continue
-        out.append("" if fenced else re.sub(r"`[^`]*`", "", line))
-    return "\n".join(out)
+        out.append("" if fenced else line)
+    return CODE_SPAN.sub(lambda m: "\n" * m.group(0).count("\n"), "\n".join(out))
 
 
 def broken_links(files: dict[str, str]) -> list[str]:
@@ -245,8 +262,8 @@ def broken_links(files: dict[str, str]) -> list[str]:
     errs = []
     for path, text in files.items():
         here = Path(path).parent
-        for m in MD_LINK.finditer(strip_code(text)):
-            target = m.group(1).strip("<>")
+        for target in link_targets(text):
+            target = target.strip("<>")
             if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("//"):
                 continue  # http(s), mailto: and the like
             file_part, _, anchor = target.partition("#")
@@ -352,18 +369,27 @@ class FeaturesConfig(unittest.TestCase):
         self.assertGreater(len(files), 30, "positive control: git ls-files found few markdown files")
         links = sum(len(MD_LINK.findall(strip_code(t))) for t in files.values())
         self.assertGreater(links, 200, "positive control: the link pattern found almost nothing")
+        images = sum(len(MD_IMG.findall(strip_code(t))) for t in files.values())
+        self.assertGreater(images, 10, "positive control: the image pattern found almost nothing")
         self.assertEqual(broken_links(files), [])
         # Negative controls: a planted missing file, a planted missing anchor
         # on another page and on the page itself are each reported; a heading
         # repeated (its -1 anchor) and a link in a code span are not.
         planted = dict(files)
         planted["docs/planted.md"] = ("# Title\n\n## Twice\n\n## Twice\n\n[a](nope.md) [b](features.md#no-such-feature) "
-                                      "[c](#nowhere) [d](#twice-1) `[e](nope-in-code.md)`\n")
+                                      "[c](#nowhere) [d](#twice-1) `[e](nope-in-code.md)`\n"
+                                      "![f](img/nope.png) <img alt=\"g\" src=\"img/nope2.png\"> `![h](nope3.png)`\n"
+                                      "[![i](https://example.com/b.svg)](nope4.md) and `a wrapped\n"
+                                      "span` then [j](#nowhere-2)\n")
         errs = broken_links(planted)
         self.assertEqual(sorted(e.split(": ", 1)[1] for e in errs if e.startswith("docs/planted.md")),
                          sorted(["nope.md -> docs/nope.md does not exist",
                                  "features.md#no-such-feature -> #no-such-feature is not a heading of docs/features.md",
-                                 "#nowhere -> #nowhere is not a heading of docs/planted.md"]))
+                                 "#nowhere -> #nowhere is not a heading of docs/planted.md",
+                                 "img/nope.png -> docs/img/nope.png does not exist",
+                                 "img/nope2.png -> docs/img/nope2.png does not exist",
+                                 "nope4.md -> docs/nope4.md does not exist",
+                                 "#nowhere-2 -> #nowhere-2 is not a heading of docs/planted.md"]))
 
     def test_the_ask_cards_settings_file_is_the_doctors(self) -> None:
         # Round 3: a blind install had only a JSON fragment to wrap. The Ask
