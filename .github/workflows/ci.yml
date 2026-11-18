@@ -184,7 +184,7 @@ jobs:
   # the matrix list cannot leave an index unrun or run one twice. Adding a
   # shard is one more matrix entry and nothing else.
   test:
-    name: test (postgres, shard ${{ strategy.job-index }} of ${{ strategy.job-total }})
+    name: test (postgres, shard ${{ strategy.job-index }})
     needs: main-verdict
     if: ${{ !cancelled() && needs.main-verdict.outputs.retest != 'false' }}
     runs-on: ubuntu-latest
