@@ -67,6 +67,7 @@ func TestTheFleetReportsAChatPoolsChatOnlyInstances(t *testing.T) {
 		}
 		if fmt.Sprint(ns) != c.want {
 			t.Errorf("%s pool's instances %v, want %s", c.pool, ns, c.want)
+			continue
 		}
 		if c.pool == officers.TierJudgement && !insts[1].Exists {
 			t.Errorf("chat-only instance 2's agent exists but the fleet says it does not")
