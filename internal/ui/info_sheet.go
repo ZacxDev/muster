@@ -62,9 +62,10 @@ type InfoSheet struct {
 	// (plugin_chip.go), so the row does not grow and the title keeps its
 	// width.
 	Inline bool
-	// Block: the code is many lines (a whole message muster handed an
-	// agent): drawn with its line breaks, in a scroller, not wrapped onto one.
-	Block bool
+	// Multiline keeps Code's line breaks (a whole message muster handed an
+	// agent): drawn as written, in a scroller bounded to half the screen so
+	// the sheet's Copy stays on it, and copied as written.
+	Multiline bool
 }
 
 // InfoSheetWithheldText is what a withheld sheet says instead of its code.
@@ -113,7 +114,7 @@ func (s InfoSheet) sheet() g.Node {
 		code = P(Class("text-sm text-fg"), g.Attr("data-info-withheld", ""), g.Text(InfoSheetWithheldText))
 	case s.Code != "":
 		codeClass, rowClass := "min-w-0 flex-1 break-all font-mono text-sm text-fg", "flex items-center gap-2 rounded-lg bg-s2 px-3 py-2"
-		if s.Block {
+		if s.Multiline {
 			codeClass = "block max-h-[50dvh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs text-fg"
 			rowClass = "flex items-start gap-2 rounded-lg bg-s2 px-3 py-2"
 		}

@@ -90,7 +90,7 @@ func routedFrom(rb plugins.RoutedBlock) (from, line string) {
 func routedPromptCard(rb plugins.RoutedBlock, raw, id, sheetID string) g.Node {
 	from, line := routedFrom(rb)
 	return routedCard("prompt", id, "From "+from, line, rb.Subject, rb.Body,
-		InfoSheet{ID: sheetID, Label: routedSheetPromptLabel, Heading: routedSheetPromptHeading, Lead: routedSheetPromptLead, Code: raw, Block: true})
+		InfoSheet{ID: sheetID, Label: routedSheetPromptLabel, Heading: routedSheetPromptHeading, Lead: routedSheetPromptLead, Code: raw, Multiline: true})
 }
 
 // routeAnswerRow draws a chief-chat row holding route answers: one card per
@@ -106,7 +106,7 @@ func routeAnswerRow(m ChatLine, cards []RouteAnswerCard) g.Node {
 		}
 		var sheet InfoSheet
 		if i == 0 {
-			sheet = InfoSheet{ID: sheetID, Label: routedSheetAnswerLabel, Heading: routedSheetAnswerHeading, Lead: routedSheetAnswerLead, Code: m.Content, Block: true}
+			sheet = InfoSheet{ID: sheetID, Label: routedSheetAnswerLabel, Heading: routedSheetAnswerHeading, Lead: routedSheetAnswerLead, Code: m.Content, Multiline: true}
 		}
 		nodes = append(nodes, routedCard("answer", "", "From "+c.From, line, "", c.Body, sheet))
 	}
