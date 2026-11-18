@@ -52,9 +52,9 @@ type InfoSheet struct {
 	// Withheld: the code is a SETUP detail (an environment variable, a
 	// command) and the viewer is not an admin — the sheet says to ask their
 	// admin instead, and carries no code at all (not hidden: absent).
-	// A session's own address is never withheld from its owner. No caller
-	// sets it yet: the jargon audit's settings and features themes (the next
-	// PRs) move setup details behind an ⓘ, admin-only, and are its callers.
+	// A session's own address is never withheld from its owner. Its callers
+	// are the setup ⓘs (HostSettingSheet, HostDetailSheet), for a viewer who
+	// is not an admin (Features.Setup).
 	Withheld bool
 	// Inline draws the ⓘ for a 16px text line (a header's status row): a
 	// 20px-tall glyph whose 44px thumb target is its ::before, raised above a

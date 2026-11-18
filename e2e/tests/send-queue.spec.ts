@@ -281,7 +281,7 @@ test.describe('phone 390×844 touch', () => {
   test('an older muster-mirror: Queue is off and says why, and the server refuses it', async ({ page }) => {
     await openView(page, oldHost);
     await expect(page.locator('#mv-queue-send')).toBeDisabled();
-    await expect(page.locator('#mv-queue-off')).toContainText('does not report whether Claude Code is busy');
+    await expect(page.locator('#mv-queue-off')).toContainText('needs a muster update before messages can wait for it');
     const res = await page.evaluate(async (host) => {
       const r = await fetch('/send-queue', {
         method: 'POST',
@@ -292,7 +292,7 @@ test.describe('phone 390×844 touch', () => {
       return { status: r.status, text: await r.text() };
     }, oldHost);
     expect(res.status).toBe(409);
-    expect(res.text).toContain('does not report whether Claude Code is busy');
+    expect(res.text).toContain('needs a muster update before messages can wait for it');
     // Send still works there: the queue being off is not the composer being
     // off — and a send does not switch Queue back on.
     await page.locator('#mv-input').fill('sent to the older host');

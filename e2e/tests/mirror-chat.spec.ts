@@ -648,7 +648,7 @@ test('against a host that predates the index, the list is the loaded messages an
   await page.locator('#chat-index-open').tap();
   const sheet = page.locator('#chat-index');
   await expect(sheet.locator('#chat-index-partial')).toBeVisible();
-  await expect(sheet.locator('#chat-index-partial')).toContainText('Only loaded messages shown');
+  await expect(sheet.locator('#chat-index-partial')).toContainText('Only the messages loaded so far are listed');
   await expect(sheet.locator('[data-chat-index-item]')).toHaveCount(150);
   await expect(sheet.locator('[data-chat-index-unloaded]')).toHaveCount(0);
   await expect(sheet.locator('[data-chat-index-item]').first()).toContainText('message number 51');

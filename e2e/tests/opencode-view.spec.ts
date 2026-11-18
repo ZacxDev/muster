@@ -124,7 +124,7 @@ test('an opencode window opens a read-only rendered view of the session its titl
   await expect(page).toHaveURL(/\/mirror\/view\?/);
   const log = page.locator('#mv-log');
   // It says how it found the session.
-  await expect(log.locator('[data-notice-row="opencode"]').first()).toContainText('matched by title: Fix the flaky fixture loader', { timeout: 20_000 });
+  await expect(log.locator('[data-notice-row="opencode"]').first()).toContainText('Showing “Fix the flaky fixture loader', { timeout: 20_000 });
   await expect(log.locator('[data-bubble="user"]').first()).toContainText('list the opencode fixtures');
   await expect(log).toContainText('Listing them now.');
   await expect(log.locator('[data-tool-row]').first()).toContainText('ls fixtures/');
@@ -135,7 +135,7 @@ test('an opencode window opens a read-only rendered view of the session its titl
   // 🔴 Read-only on an interactive host that did not opt in to the opencode
   // send (-opencode-send): disabled, saying why, no queue.
   await expect(page.locator('#mv-input')).toBeDisabled();
-  await expect(page.locator('#mv-readonly')).toContainText('does not send to opencode (it needs -interactive and -opencode-send)');
+  await expect(page.locator('#mv-readonly')).toContainText('replying to opencode from muster is not turned on for this computer');
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   // A turn arrives without a reload: the prompt, busy while it streams, the
@@ -273,7 +273,7 @@ test('back to an opencode view restores it, reconnects, draws a message that cam
     expect(await log.getByText('Second reply, also live.').count()).toBe(1);
     // Still read-only after the restore.
     await expect(page.locator('#mv-input')).toBeDisabled();
-    await expect(page.locator('#mv-readonly')).toContainText('does not send to opencode (it needs -interactive and -opencode-send)');
+    await expect(page.locator('#mv-readonly')).toContainText('replying to opencode from muster is not turned on for this computer');
     await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
     await ctx.close();
   } finally {

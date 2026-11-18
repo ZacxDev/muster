@@ -292,7 +292,7 @@ func TestTheOfferIsAnsweredInPlace(t *testing.T) {
 	if got := rec.Header().Get("HX-Trigger"); got != "agents:changed" {
 		t.Errorf("HX-Trigger %q, want agents:changed (the sidebar's refresh)", got)
 	}
-	if title, focusOn := settled(t, rec); title != offer+" · Mirrored · muster" || focusOn != "mv-heading" {
+	if title, focusOn := settled(t, rec); title != offer+" · On ws · muster" || focusOn != "mv-heading" {
 		t.Errorf("rename settles title %q focus %q", title, focusOn)
 	}
 	body := rec.Body.String()

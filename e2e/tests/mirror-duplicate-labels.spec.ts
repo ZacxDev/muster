@@ -194,8 +194,8 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await a.tap();
   await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('host') === hostA);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(aTitle);
-  await expect(page).toHaveTitle(`${aTitle} · Mirrored · muster`);
-  await expect(page.locator('header [data-term-badge]')).toContainText(`Mirrored · ${hostA}`);
+  await expect(page).toHaveTitle(`${aTitle} · On ${hostA} · muster`);
+  await expect(page.locator('header [data-term-badge]')).toContainText(`On ${hostA}`);
 
   await openSidebar(page);
   const bTitle = await rowTitle(mangoCard(page, hostB));
