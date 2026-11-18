@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS public.fleet_actions (
                     DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                     REFERENCES public.users (id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    class           TEXT        NOT NULL CHECK (class IN ('continue', 'handoff', 'stop_note', 'custom', 'wrap', 'reassign')),
+    class           TEXT        NOT NULL CHECK (class IN ('continue', 'handoff', 'stop_note', 'custom', 'wrap', 'reassign', 'close')),
     -- What authorised it. Every class is `propose` in this phase; the policy
     -- columns are the later phases' (NULL until then).
     tier_resolved   TEXT        NOT NULL DEFAULT 'propose' CHECK (tier_resolved IN ('propose')),

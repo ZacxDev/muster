@@ -138,7 +138,7 @@ func featureCatalog() []features.Feature {
 			Enable:      []features.Var{is(envFleetDigest, "1")}},
 		{ID: features.FleetOrchestration, Name: "Fleet proposals",
 			Description: "The chief proposes what to send each of your sessions; nothing is sent until you tap Approve on its card in the fleet digest.",
-			Enable:      []features.Var{is(envFleetDigest, "1"), is(envFleetOrchestration, "propose")}, NeedsChief: true},
+			Enable:      []features.Var{is(envSessionState, "1"), is(envFleetDigest, "1"), is(envFleetOrchestration, "propose")}, NeedsChief: true},
 		{ID: features.AskLog, Name: "Ask log",
 			Description: "Every question an agent asks you, with your answer and how long it took, recorded for review.",
 			Enable:      []features.Var{is(envAskLog, "1")},

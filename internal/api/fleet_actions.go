@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/fleet"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -77,9 +78,12 @@ const (
 )
 
 // fleetProposeOn reports whether fleet proposals are on: the flag, the digest
-// (their cards are its), and the action log.
+// (their cards are its), the action log, and session state (a proposal is
+// filed on a stop: without episodes every call could only answer
+// not_stopped, so there is no such mode — the server also refuses to boot
+// with the flag and no MUSTER_SESSION_STATE).
 func (s *Server) fleetProposeOn() bool {
-	return s.ext.FleetPropose && s.ext.FleetDigest && s.ext.FleetActions != nil
+	return s.ext.FleetPropose && s.ext.FleetDigest && s.ext.FleetActions != nil && s.sessionStateOn()
 }
 
 // fleetWriteToolDefs is the chief's fleet tools (offered only with
@@ -531,13 +535,13 @@ func (s *Server) fleetStillOn(ctx context.Context, a fleet.Action) nudgeState {
 
 // The approve's answers (fleetApprove), each the card's note.
 const (
-	FleetSent          = "Sent."
-	FleetQueued        = "Queued: it is pasted once the session is idle."
-	FleetMovedOn       = "Not sent: the session moved on since the chief proposed it."
-	FleetDecided       = "Not sent: this proposal was already decided."
-	FleetExpiredNote   = "Not sent: this proposal expired."
-	FleetUnreadable    = "Not sent: muster could not read the session's state just now. Try again."
-	FleetNotDeliverale = "Not sent: "
+	FleetSent           = "Sent."
+	FleetQueued         = "Queued: it is pasted once the session is idle."
+	FleetMovedOn        = "Not sent: the session moved on since the chief proposed it."
+	FleetDecided        = "Not sent: this proposal was already decided."
+	FleetExpiredNote    = "Not sent: this proposal expired."
+	FleetUnreadable     = "Not sent: muster could not read the session's state just now. Try again."
+	FleetNotDeliverable = "Not sent: "
 )
 
 // fleetApproveResult is one approve: its note, and whether it moved on.
@@ -580,8 +584,11 @@ func (s *Server) fleetApprove(ctx context.Context, id int64, via string, edited 
 	if a.Class == fleet.ClassReassign {
 		if why := s.fleetRouteTask(ctx, &a); why != "" {
 			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: why, Finish: true}, fleet.StateApproved)
-			return fleetApproveResult{note: FleetNotDeliverale + why}
+			return fleetApproveResult{note: FleetNotDeliverable + why}
 		}
+	}
+	if a.Class == fleet.ClassClose {
+		return s.fleetDeliverClose(ctx, a)
 	}
 	body := fleet.Body(s.personName(ctx, requestOwner(ctx)), s.now(), a.Text)
 	if edited != nil {
@@ -612,7 +619,7 @@ func (s *Server) fleetDeliver(ctx context.Context, a fleet.Action, body string, 
 		if err != nil {
 			why := "it could not be queued: " + unprefixed(err)
 			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: why, Finish: true}, fleet.StateApproved)
-			return fleetApproveResult{note: FleetNotDeliverale + why}
+			return fleetApproveResult{note: FleetNotDeliverable + why}
 		}
 		m := fleet.Move{State: fleet.StateQueued, SendQueueID: row.ID}
 		if owners {
@@ -628,13 +635,13 @@ func (s *Server) fleetDeliver(ctx context.Context, a fleet.Action, body string, 
 		// starts the turn (fleetStartTurn), re-reading the stop first.
 		if owners {
 			s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: "an agent's proposal is not edited", Finish: true}, fleet.StateApproved)
-			return fleetApproveResult{note: FleetNotDeliverale + "an agent's proposal is approved or rejected, not edited"}
+			return fleetApproveResult{note: FleetNotDeliverable + "an agent's proposal is approved or rejected, not edited"}
 		}
 		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateQueued, Outcome: "its turn starts on the next session-state pass"}, fleet.StateApproved)
 		return fleetApproveResult{note: FleetQueued, sent: true}
 	}
 	s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: t.why, Finish: true}, fleet.StateApproved)
-	return fleetApproveResult{note: FleetNotDeliverale + t.why}
+	return fleetApproveResult{note: FleetNotDeliverable + t.why}
 }
 
 // fleetRouteTask is a reassign's first step: its task routed to its `to`
@@ -758,28 +765,29 @@ func (s *Server) sendQueueFleetGate(ctx context.Context, it sendqueue.Item) stri
 
 // --- the pass ----------------------------------------------------------------------
 
-// fleetPassEvery bounds how often one owner's fleet step runs (it reads the
-// whole fleet, its pull-request states behind their own two-minute cache):
-// at most once per session-state pass, whoever else calls it.
-const fleetPassEvery = SessionStateInterval - time.Second
-
-// fleetPass is one owner's fleet step in the session-state pass, when the
-// fleet judges the owner's stops (stopJudgeOf): settle the actions in flight
-// (a queued row sent or failed; a wrap whose handoff turn ended closed),
-// expire the proposals whose stop ended or that waited 12 h, propose a
-// handoff for each finished session (fleetProposeHandoffs) and push "N
-// proposals waiting" when one is due. octx is the owner's.
+// fleetPass is one owner's fleet step in the session-state pass (its one
+// caller, once per pass): settle the actions in flight (a queued row sent or
+// failed; an approved agent action's turn started; a wrap whose handoff turn
+// ended closed, or offered a close after 24 h), expire the proposals whose
+// stop ended or that waited 12 h, propose "Write handoff, then close" for each
+// finished session (fleetProposeWraps), and push "N proposals waiting" when
+// one is due. octx is the owner's.
+//
+// 🔴 IT RUNS ALONGSIDE THE STOP JUDGE, WHOEVER THAT IS (the operator's answer
+// to #796's round 0): the chief keeps judging stops (stopJudgeOf) until the
+// fleet can judge (phase 3's triage), and the fleet's proposals — its own and
+// the chief's — run beside it. So an action in flight settles whatever the
+// judge is: nothing here asks stopJudgeOf. An owner with no chief has no
+// proposals (the cards are the chief's panel's).
 func (s *Server) fleetPass(octx context.Context, owner int64, facts []nudgeCandidate) {
-	if !s.fleetProposeOn() || s.stopJudgeOf(octx, owner) != judgeFleet {
+	if !s.fleetProposeOn() {
 		return
 	}
-	now := s.now()
-	if last, ok := s.fleetPassAt.Load(owner); ok && now.Sub(last.(time.Time)) < fleetPassEvery {
+	if _, err := s.chiefAgent(octx); err != nil {
 		return
 	}
-	s.fleetPassAt.Store(owner, now)
 	s.fleetSettle(octx, facts)
-	s.fleetProposeHandoffs(octx, facts)
+	s.fleetProposeWraps(octx, facts)
 	s.fleetPushWaiting(octx, owner)
 }
 
@@ -886,8 +894,18 @@ func (s *Server) fleetWrapClose(octx context.Context, a fleet.Action, facts []nu
 		}
 	}
 	if c == nil || c.StreakKey == "" || c.StreakKey == a.CloseAfter || c.Status != "idle" {
-		if s.now().Sub(a.DecidedAt) > fleetWrapCloseWait {
-			s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: "not closed: no handoff turn ended within 24 h", Finish: true})
+		if s.now().Sub(a.DecidedAt) <= fleetWrapCloseWait {
+			return
+		}
+		// 🔴 A8's FALLBACK: no handoff turn came within 24 h — the card's
+		// close half is offered on its own, as a close card the owner taps
+		// (still never closed without a tap).
+		if c == nil {
+			s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: "not closed: the session is not listed now", Finish: true})
+			return
+		}
+		if _, ok := s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: "no handoff turn within 24 h: a close card is offered", Finish: true}); ok {
+			s.fleetProposeClose(octx, a)
 		}
 		return
 	}
@@ -898,6 +916,62 @@ func (s *Server) fleetWrapClose(octx context.Context, a fleet.Action, facts []nu
 	outcome := s.fleetCloseSession(octx, a)
 	s.fleetMove(octx, a, fleet.Move{State: fleet.StateSent, Outcome: outcome, Finish: true})
 }
+
+// fleetProposeClose files the close card a wrap with no handoff turn falls
+// back to: the wrap's own session and stop.
+func (s *Server) fleetProposeClose(octx context.Context, w fleet.Action) {
+	runtime := w.Evidence.Runtime
+	p := fleet.Proposal{Class: fleet.ClassClose, Proposer: fleet.ProposerSweep, SubjectKind: w.SubjectKind, SubjectKey: w.SubjectKey,
+		Host: w.Host, TmuxSession: w.TmuxSession, Window: w.Window, AgentID: w.AgentID, ChatSessionID: w.ChatSessionID,
+		EpisodeID: w.EpisodeID, StreakKey: w.StreakKey, Evidence: w.Evidence, TaskID: 0,
+		Reason: "No handoff turn came within 24 h of \"Write handoff, then close\": close it anyway?",
+		Text:   fleetCloseText(runtime)}
+	if _, err := s.ext.FleetActions.Propose(octx, p); err == nil {
+		s.fleetChanged(requestOwner(octx))
+	} else if !errors.Is(err, fleet.ErrAlreadyProposed) {
+		s.logger.Printf("fleet: offer a close for %s: %v", w.SubjectKey, err)
+	}
+}
+
+// fleetCloseText is a close card's text: nothing is typed, and how the
+// session is closed.
+func fleetCloseText(runtime string) string {
+	return "(Nothing is typed. muster closes the session: " + endSessionHow(runtime) + ".)"
+}
+
+// fleetDeliverClose closes an approved close card's session — §5.2's refusals
+// read at the tap (an open pull request, a queued message, background work) —
+// in the background, as end_session's tap does, recording how it went.
+func (s *Server) fleetDeliverClose(ctx context.Context, a fleet.Action) fleetApproveResult {
+	var c nudgeCandidate
+	found := false
+	for _, f := range s.stallInputs(ctx, nil) {
+		if f.Kind == a.SubjectKind && f.Key == a.SubjectKey {
+			c, found = f, true
+		}
+	}
+	if !found {
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.Suppressed(fleet.GuardMovedOn), Outcome: "the session is not listed now", Finish: true}, fleet.StateApproved)
+		return fleetApproveResult{note: FleetMovedOn, movedOn: true}
+	}
+	if why := s.fleetCloseRefusal(ctx, a, c); why != "" {
+		s.fleetMove(ctx, a, fleet.Move{State: fleet.StateFailed, Outcome: "not closed: " + why, Finish: true}, fleet.StateApproved)
+		return fleetApproveResult{note: "Not closed: " + why + "."}
+	}
+	moved, ok := s.fleetMove(ctx, a, fleet.Move{State: fleet.StateQueued, Outcome: "closing"}, fleet.StateApproved)
+	if !ok {
+		return fleetApproveResult{note: FleetDecided}
+	}
+	bctx := context.WithoutCancel(ctx)
+	safeGo(s.logger, "fleet close", func() {
+		outcome := s.fleetCloseSession(bctx, moved)
+		s.fleetMove(bctx, moved, fleet.Move{State: fleet.StateSent, Outcome: outcome, Finish: true}, fleet.StateQueued)
+	})
+	return fleetApproveResult{note: FleetClosing, sent: true}
+}
+
+// FleetClosing is an approved close card's note.
+const FleetClosing = "Closing: muster closes the session now."
 
 // fleetCloseRefusal is why a wrap's session is not closed now (§5.2), "" when
 // it may be.
@@ -966,12 +1040,13 @@ func (s *Server) fleetCloseSession(octx context.Context, a fleet.Action) string 
 	return "closed: " + firstNonBlank(r.Reason, "its window was closed")
 }
 
-// fleetProposeHandoffs proposes a handoff (proposer sweep_code, no model) for
+// fleetProposeWraps proposes "Write handoff, then close" (proposer sweep_code,
+// no model; A8's one card) for
 // each of octx's owner's sessions the digest counts Done — stopped, its latest
 // pull request merged or closed, nothing queued to it — that the stall rule
 // holds as a candidate (stalledSessions: no background work, no open ask, no
 // turn error, an open episode).
-func (s *Server) fleetProposeHandoffs(octx context.Context, facts []nudgeCandidate) {
+func (s *Server) fleetProposeWraps(octx context.Context, facts []nudgeCandidate) {
 	cands := map[string]bool{}
 	for _, c := range s.stalledSessions(octx, facts) {
 		cands[c.Kind+":"+c.Key] = true
@@ -990,12 +1065,14 @@ func (s *Server) fleetProposeHandoffs(octx context.Context, facts []nudgeCandida
 		if fleet.GroupOf(sub.state, sub.prs, sub.inFlight) != fleet.GroupDone {
 			continue
 		}
-		// ONE HANDOFF PROPOSAL PER STOP: a stop the owner already decided a
-		// handoff on (approved, rejected, expired) is not proposed again.
-		if done, err := s.ext.FleetActions.ProposedOn(octx, sub.episode.ID, fleet.ClassHandoff); err != nil || done {
+		// ONE WRAP PROPOSAL PER STOP: a stop the owner already decided a wrap
+		// on (approved, rejected, expired) is not proposed again.
+		if done, err := s.ext.FleetActions.ProposedOn(octx, sub.episode.ID, fleet.ClassWrap); err != nil || done {
 			continue
 		}
-		p := s.fleetProposalFor(sub, fleet.ClassHandoff, fleetHandoffText(sub),
+		// 🔴 THE ONE CARD (A8): "Write handoff, then close" — never a
+		// separate handoff card beside it.
+		p := s.fleetProposalFor(sub, fleet.ClassWrap, fleetHandoffText(sub),
 			"Its pull request "+sub.prs[0].Repo+"#"+strconv.FormatInt(sub.prs[0].Number, 10)+" is "+sub.prs[0].State+" and it stopped with nothing in flight.")
 		p.Proposer = fleet.ProposerSweep
 		if t := s.fleetTarget(octx, fleetActionOf(p)); t.refused != "" {
@@ -1004,7 +1081,7 @@ func (s *Server) fleetProposeHandoffs(octx context.Context, facts []nudgeCandida
 		if _, err := s.ext.FleetActions.Propose(octx, p); err == nil {
 			s.fleetChanged(requestOwner(octx))
 		} else if !errors.Is(err, fleet.ErrAlreadyProposed) {
-			s.logger.Printf("fleet: propose a handoff for %s: %v", sub.row.ID, err)
+			s.logger.Printf("fleet: propose a wrap for %s: %v", sub.row.ID, err)
 		}
 	}
 }
@@ -1026,10 +1103,77 @@ func (s *Server) fleetPushWaiting(octx context.Context, owner int64) {
 		s.logger.Printf("fleet: owner %d: the batched push: %v", owner, err)
 		return
 	}
-	if !due {
+	if due {
+		s.goNotify(owner, push.EventAttention, fleetPushNotification(n), nil)
+	}
+	s.fleetNoticeSync(octx, due, n)
+}
+
+// fleetNoticeLabel is the "N proposals waiting" Attention item's asker label:
+// muster's own (a System notice), how the pass finds the one it filed.
+const fleetNoticeLabel = "Fleet proposals"
+
+// fleetNoticeText is the Attention item for n waiting proposals.
+func fleetNoticeText(n int) string {
+	if n == 1 {
+		return "1 fleet proposal is waiting for you in the chief panel's fleet digest. Nothing is sent until you approve it."
+	}
+	return strconv.Itoa(n) + " fleet proposals are waiting for you in the chief panel's fleet digest. Nothing is sent until you approve them."
+}
+
+// fleetNoticeSync keeps ONE "N proposals waiting" Attention item beside the
+// batched push (A4) — UPDATED, never stacked: when a push went out (due) it
+// replaces the open one with the new count, and once no proposal waits it is
+// withdrawn. A notice (attention.KindNotice): nothing to answer, nothing
+// relayed, never counted toward the open-ask cap; filed without a push of its
+// own (the batched push is the push).
+func (s *Server) fleetNoticeSync(octx context.Context, due bool, n int) {
+	if s.ext.Attention == nil {
 		return
 	}
-	s.goNotify(owner, push.EventAttention, fleetPushNotification(n), nil)
+	open, err := s.ext.Attention.Open(octx)
+	if err != nil {
+		s.logger.Printf("fleet: the proposals notice: %v", err)
+		return
+	}
+	var mine []attention.Ask
+	for _, a := range open {
+		if a.Kind == attention.KindNotice && a.Asker.System && a.Asker.Label == fleetNoticeLabel {
+			mine = append(mine, a)
+		}
+	}
+	waiting := n
+	if !due {
+		// Between pushes: only whether any proposal still waits matters.
+		list, err := s.ext.FleetActions.OpenActions(octx)
+		if err != nil {
+			return
+		}
+		waiting = 0
+		for _, a := range list {
+			if a.State == fleet.StateProposed {
+				waiting++
+			}
+		}
+	}
+	if !due && waiting > 0 {
+		return
+	}
+	for _, a := range mine {
+		if _, err := s.cancelAsk(octx, a.ID); err != nil {
+			s.logger.Printf("fleet: withdraw the proposals notice %d: %v", a.ID, err)
+		}
+	}
+	if waiting == 0 {
+		return
+	}
+	ask, err := s.ext.Attention.Create(octx, attention.New{Asker: attention.Asker{System: true, Label: fleetNoticeLabel},
+		Question: fleetNoticeText(waiting), Notice: true})
+	if err != nil {
+		s.logger.Printf("fleet: the proposals notice: %v", err)
+		return
+	}
+	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
 }
 
 // fleetPushNotification is the batched push for n waiting proposals: muster's

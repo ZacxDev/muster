@@ -144,9 +144,6 @@ type Server struct {
 	// fleetChatOpen is each owner's Fleet-chat lock (fleet_digest.go
 	// fleetChat): owner id → *sync.Mutex.
 	fleetChatOpen sync.Map
-	// fleetPassAt is each owner's last fleet step (fleet_actions.go
-	// fleetPass): it runs at most every fleetPassEvery.
-	fleetPassAt sync.Map
 
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd

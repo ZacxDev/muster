@@ -343,6 +343,10 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 		// MUSTER_OFFICERS roster, the .env.example's.)
 		// By design: the Compose chief is not offered the task-event tools.
 		{[]string{"MUSTER_TASK_ROUTING"}, "MUSTER_CHIEF_RUNTIME=compose runs the chief in its Compose container, which cannot decide a task event"},
+		// By design: the example's session-state line is how to turn it OFF
+		// (MUSTER_SESSION_STATE=0; Compose's default is on), and fleet
+		// proposals are filed on a session's stops (#796 round 0 D3).
+		{[]string{"MUSTER_FLEET_ORCHESTRATION"}, "MUSTER_FLEET_ORCHESTRATION=propose needs MUSTER_SESSION_STATE=1"},
 	}
 	without := func(drop ...string) map[string]string {
 		out := map[string]string{}
@@ -458,7 +462,9 @@ func TestEveryEnvExampleUncommentedTogetherLoads(t *testing.T) {
 	// connector store) goes too — asserted refused first, so it is dropped
 	// for that reason and no other (open: it refuses the boot rather than
 	// turning itself off).
-	chief := []string{"MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL"}
+	// (Fleet proposals go too: the example's session state is OFF, which
+	// they refuse — the exclusive ledger above.)
+	chief := []string{"MUSTER_CHIEF_RUNTIME", "MUSTER_CHIEF_CLAUDE_TOKEN", "MUSTER_CHIEF_LLM_MODEL", "MUSTER_FLEET_ORCHESTRATION"}
 	app := []string{"MUSTER_GITHUB_APP_ID", "MUSTER_GITHUB_APP_PRIVATE_KEY", "MUSTER_GITHUB_APP_ACCOUNTS", "MUSTER_GITHUB_APP_ACCESS"}
 	if _, err := loadComposeExample(t, without(chief...)); err == nil ||
 		!strings.Contains(err.Error(), "MUSTER_GITHUB_APP_ID is set but the agent connector store is not") {

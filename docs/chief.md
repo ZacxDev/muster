@@ -1453,8 +1453,9 @@ your own fleet.
 ## Fleet proposals
 
 **Off by default:** `MUSTER_FLEET_ORCHESTRATION=propose` turns it on, and it
-needs the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`; the server
-refuses to boot with one and not the other). Unset (or `off`): the chief's fleet
+needs the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and session
+state (`MUSTER_SESSION_STATE=1`): the server refuses to boot with it on and
+either of them off. Unset (or `off`): the chief's fleet
 tools are not listed, the digest has no Proposed group, and nothing is written
 to the fleet's action log.
 
@@ -1495,17 +1496,22 @@ that line as one of its own pastes, so a chief text is never later quoted as
 your words (the stall nudges' "your messages" rule,
 [chief-nudges.md](chief-nudges.md)).
 
-**muster's own proposals.** For an owner the fleet judges (below), the
-session-state pass proposes a `handoff`, with no model, for each session the
-digest counts **Done, can wrap** — its latest pull request merged or closed,
-nothing queued to it — that is stopped with no background work, no open ask
-and no turn error. Once per stop: a stop you already decided on is not
-proposed again.
+**muster's own proposals.** For an owner with a chief, the session-state pass
+proposes, with no model, the one card **"Write handoff, then close"** for each
+session the digest counts **Done, can wrap** — its latest pull request merged or
+closed, nothing queued to it — that is stopped with no background work, no open
+ask and no turn error. Once per stop: a stop you already decided on is not
+proposed again. If you approve it and no handoff turn comes within 24 hours,
+its close is offered on its own, as a **Close** card (nothing is typed; the
+window is closed on your tap, unless an open pull request, a queued message or
+background work holds it).
 
-**One judge per owner.** For an owner with a chief, the fleet judges their
-stopped sessions in place of the chief's stall nudges: the nudge sweep skips
-them, and a stop's push does not wait for a nudge decision. An owner with a
-running [Session minder](officers-builtin.md) keeps the minder.
+**The chief still judges stops.** Turning proposals on changes nothing about
+how a stop is judged: the chief's stall nudges, a stop's push wait and the
+per-stop pushes are exactly as with them off. The proposals run alongside.
+(Letting the fleet judge stops in the chief's place waits for its own triage, a
+later phase; an owner with a running [Session minder](officers-builtin.md) keeps
+the minder either way.)
 
 **The cards.** The digest's **Proposed** group, after Needs you, lists each
 open proposal: the session, the class as a verb ("Continue", "Write handoff,
@@ -1545,8 +1551,10 @@ proposals leave the group.
 | a dispatched agent | a turn, as the chief's nudges start one |
 
 **The push.** At most every 30 minutes, and only when a new proposal arrived,
-one push: "N proposals waiting". Tapping it opens the chief panel. The
-per-stop pushes are unchanged.
+one push: "N proposals waiting". Tapping it opens the chief panel. Beside it,
+**one** Attention item says the same: each push replaces it with the new count
+(never a second one), and it is withdrawn once no proposal waits. The per-stop
+pushes are unchanged.
 
 **The action log**, `fleet_actions` ([schema.md](schema.md)), is append-only:
 one row per proposal with its state (`proposed`, `approved`, `rejected`,

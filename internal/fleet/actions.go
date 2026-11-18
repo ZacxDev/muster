@@ -49,6 +49,9 @@ const (
 	// to the session it goes to, then the session it leaves asked for its
 	// handoff.
 	ClassReassign = "reassign"
+	// ClassClose is a session's window closed on the owner's tap: A8's
+	// fallback when a wrap's handoff turn never came within 24 h.
+	ClassClose = "close"
 )
 
 // InstructClasses are session_instruct's classes.
@@ -62,6 +65,7 @@ var ClassVerb = map[string]string{
 	ClassCustom:   "Send the chief's message",
 	ClassWrap:     "Write handoff, then close",
 	ClassReassign: "Move a task",
+	ClassClose:    "Close",
 }
 
 // Who proposed an action (0149's CHECK).
@@ -353,7 +357,7 @@ func collectActions(rows pgx.Rows, err error) ([]Action, error) {
 // validClass reports whether c is a class this phase writes.
 func validClass(c string) bool {
 	switch c {
-	case ClassContinue, ClassHandoff, ClassStopNote, ClassCustom, ClassWrap, ClassReassign:
+	case ClassContinue, ClassHandoff, ClassStopNote, ClassCustom, ClassWrap, ClassClose, ClassReassign:
 		return true
 	}
 	return false

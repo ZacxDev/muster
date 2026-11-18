@@ -398,7 +398,7 @@ func TestFlagOffListsNoToolDrawsNoCardWritesNothing(t *testing.T) {
 		t.Fatalf("control: flag on, the pass proposed %d actions for the finished session, want 1", n)
 	}
 	list, _ := f.srv.ext.FleetActions.OpenActions(f.asOwner)
-	if len(list) != 1 || list[0].Class != fleet.ClassHandoff || list[0].Proposer != fleet.ProposerSweep ||
+	if len(list) != 1 || list[0].Class != fleet.ClassWrap || list[0].Proposer != fleet.ProposerSweep ||
 		list[0].Text != "Your PR #552 is merged and nothing is in flight. Write your handoff (what is done, what is left, where), then stop." {
 		t.Fatalf("control: the pass's proposal: %+v", list)
 	}
@@ -409,7 +409,6 @@ func TestFlagOffListsNoToolDrawsNoCardWritesNothing(t *testing.T) {
 	// Once per stop: the next pass (past its interval) proposes nothing more,
 	// even after the owner rejected the first.
 	f.srv.fleetReject(f.asOwner, list[0].ID, fleet.ViaWeb)
-	f.srv.fleetPassAt.Delete(f.owner)
 	f.srv.fleetPass(f.asOwner, f.owner, f.srv.stallInputs(f.asOwner, nil))
 	if n := count(); n != 1 {
 		t.Fatalf("a second pass on the same stop proposed again: %d actions", n)
@@ -504,7 +503,6 @@ func (f *proposeFixture) setStatus(owner int64, w, status string, since int64) {
 
 // pass runs the owner's fleet step now (past its interval).
 func (f *proposeFixture) pass() {
-	f.srv.fleetPassAt.Delete(f.owner)
 	f.srv.fleetPass(f.asOwner, f.owner, f.srv.stallInputs(f.asOwner, nil))
 }
 

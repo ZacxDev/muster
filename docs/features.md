@@ -468,17 +468,17 @@ sessions — continue, write a handoff, stop and wait, its own words, "write a
 handoff, then close", or a task moved from one session to another — and each
 proposal is a card in the fleet digest's **Proposed** group showing exactly
 what will be sent. **Nothing is sent until you tap Approve** (or Edit it and
-send it as your own words). muster also proposes, with no model, a handoff for
-each session whose pull request merged and that stopped with nothing in flight
-([chief.md](chief.md#fleet-proposals)).
+send it as your own words). muster also proposes, with no model, "Write
+handoff, then close" for each session whose pull request merged and that
+stopped with nothing in flight ([chief.md](chief.md#fleet-proposals)).
 
-- **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`; the
-  server refuses to boot with proposals on and the digest off), and with it
-  [session state](#session-state) and the [chief](#chief). Moving a task
-  needs [session routing](#session-routing).
-- **Turn it on:** `MUSTER_FLEET_ORCHESTRATION=propose` in `.env`. For an owner
-  with a chief, the fleet then judges stopped sessions in place of the chief's
-  stall nudges (a Session minder officer, when the owner has one, still wins).
+- **Needs:** the [fleet digest](#fleet-digest) (`MUSTER_FLEET_DIGEST=1`) and
+  [session state](#session-state) (`MUSTER_SESSION_STATE=1`) — the server
+  refuses to boot with proposals on and either off — and the [chief](#chief).
+  Moving a task needs [session routing](#session-routing).
+- **Turn it on:** `MUSTER_FLEET_ORCHESTRATION=propose` in `.env`. The chief
+  keeps judging stopped sessions (its nudges and the per-stop pushes are
+  unchanged); the proposals run alongside.
 - **Turning it off:** unset it (or `off`). The chief's fleet tools are not
   listed, the digest has no Proposed group, nothing is written to the action
   log, and a message already queued from a card is not sent.

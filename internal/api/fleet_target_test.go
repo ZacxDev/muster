@@ -95,11 +95,11 @@ func TestTheFleetTargetResolverPerSubjectKind(t *testing.T) {
 // its own target.
 func TestTheFleetSeamLedger(t *testing.T) {
 	want := map[string]string{
-		"Propose":     "fleetFile,fleetProposeHandoffs",
+		"Propose":     "fleetFile,fleetProposeClose,fleetProposeWraps",
 		"MoveAction":  "fleetMove",
-		"fleetTarget": "fleetDeliver,fleetFile,fleetProposeHandoffs,fleetStartTurn",
+		"fleetTarget": "fleetDeliver,fleetFile,fleetProposeWraps,fleetStartTurn",
 		// fleetMove is the one door every state change goes through.
-		"fleetMove": "fleetApprove,fleetDeliver,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetStartTurn,fleetWrapClose,sendQueueFleetGate",
+		"fleetMove": "fleetApprove,fleetDeliver,fleetDeliverClose,fleetExpire,fleetReject,fleetRouteTask,fleetSettle,fleetSettleQueued,fleetStartTurn,fleetWrapClose,sendQueueFleetGate",
 	}
 	got := map[string]map[string]bool{}
 	fset := token.NewFileSet()

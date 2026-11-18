@@ -225,9 +225,11 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		"WindowHistory":     "api.collectFleet",
 		"collectFleet":      "api.buildFleetReport",
 		"encodeFleetReport": "api.buildFleetReport",
-		"stallInputs":       "api.nudgeCandidates",
-		"stallFacts":        "api.sessionStateOwner,api.stallInputs",
-		"nudgeCandidates":   "api.sweepOwnerNudges",
+		// A fleet close card's tap reads the session's stall facts for §5.2's
+		// refusals (background work, an open ask) — the same facts, never a copy.
+		"stallInputs":     "api.fleetDeliverClose,api.nudgeCandidates",
+		"stallFacts":      "api.sessionStateOwner,api.stallInputs",
+		"nudgeCandidates": "api.sweepOwnerNudges",
 		// 🔴 THE STALL NUDGES' CANDIDATE RULE (stalledSessions) has exactly two
 		// readers: the chief's sweep and the Session minder's feed
 		// (session_minder.go) — so a minder is fed the stops the chief would
@@ -237,12 +239,12 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		// The fleet's handoff proposals (fleet_actions.go) are its third
 		// reader: a finished session is proposed a handoff only on a stop the
 		// chief would have judged.
-		"stalledSessions": "api.feedSessionMinder,api.fleetProposeHandoffs,api.nudgeCandidates",
+		"stalledSessions": "api.feedSessionMinder,api.fleetProposeWraps,api.nudgeCandidates",
 		// 🔴 ONE JUDGE PER OWNER (stop_judge.go): stopJudgeOf is the one
 		// reader of sessionMinderOf that decides who judges, and the sweep, the
 		// push wait, the minder's feed and the fleet's step all ask it.
 		"sessionMinderOf":   "api.feedSessionMinder,api.stopJudgeOf",
-		"stopJudgeOf":       "api.episodeChiefJudges,api.feedSessionMinder,api.fleetPass,api.sweepOwnerNudges",
+		"stopJudgeOf":       "api.episodeChiefJudges,api.feedSessionMinder,api.sweepOwnerNudges",
 		"feedSessionMinder": "api.sessionStateOwner",
 		"fleetPass":         "api.sessionStateOwner",
 		// 🔴 THE STALL CLASSIFIER'S ONE DOOR (session_state.go): every call to

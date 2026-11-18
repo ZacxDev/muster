@@ -1981,6 +1981,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		if !c.FleetDigest {
 			return config{}, fmt.Errorf("%s=propose needs %s=1: its proposals are the fleet digest's cards", envFleetOrchestration, envFleetDigest)
 		}
+		if !c.SessionState {
+			return config{}, fmt.Errorf("%s=propose needs %s=1: a proposal is filed on a session's stop, and stops are session state's", envFleetOrchestration, envSessionState)
+		}
 		c.FleetPropose = true
 	default:
 		return config{}, fmt.Errorf("invalid %s %q: want off or propose", envFleetOrchestration, v)
