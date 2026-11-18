@@ -94,6 +94,7 @@ var noTmuxAddress = map[string]string{
 	"agents.go Server.handleNotifications":                       "notifications panel: agents only (no tmux window)",
 	"agent_outcome.go Server.agentLabel":                         "an agent outcome's push: an agent (no tmux window)",
 	"agents.go Server.cardViewIndexed":                           "navigation, not a notification",
+	"asks_drafts.go Server.withDraftAgentNames":                  "a draft card on the Asks page: an agent (no tmux window), not a notification",
 	"agents.go Server.handleAgentDetail":                         "a page header, not a notification",
 	"agents.go Server.handleAgentName":                           "the rename form",
 	"chat_log_live.go Server.dispatchCardFor":                    "a chat card, not a notification",
