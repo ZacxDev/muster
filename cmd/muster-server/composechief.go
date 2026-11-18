@@ -164,6 +164,8 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 		{envTeamsOnServerPool, len(c.TeamsOnServerPool) > 0},
 		{envChiefSessionRuntimes, len(c.ChiefSessionRuntimes) > 0},
 		{envTagAutoDispatch, c.TagAutoDispatch},
+		// Plugin auto-start starts agents: dispatch, which this stack has not.
+		{envPluginAutostart, c.PluginAutostart},
 		// The hosted store's credential lands in the chief's spec as a 0600
 		// secret file, which the compose driver refuses (it can only write a
 		// file the agent's group reads): refused here, at boot, instead of at

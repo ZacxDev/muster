@@ -114,6 +114,7 @@ var noStoreLiterals = map[string]string{
 	"handlePageShare":           "the Share button's answer: a page's live link, a bearer capability",
 	"handlePageShareRotate":     "New link's answer: a page's new live link, a bearer capability",
 	"handlePageCard":            "a page card: its page's title and share state, the owner's",
+	"handlePageResponseRaw":     "one response's stored form, as a download: a stranger's words, the owner's",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.

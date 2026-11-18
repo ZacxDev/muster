@@ -657,6 +657,8 @@ var bannerExempt = map[string]string{
 	envHostIcons: "display only: a host's icon by its name, handed to ui.SetHostPreferences. " +
 		"No server posture changes with it, and a value it refuses stops the boot in " +
 		"loadConfig, so there is no silent refusing state to announce",
+	envPluginAutostart: "a kill switch over a per-plugin owner setting (api.Extensions.PluginAutostart): " +
+		"nothing turns on with it alone, and the plugin's card says whether auto-start is available",
 	envTagAutoDispatch: "a feature flag on the task surface (api.Extensions.TagAutoDispatch), " +
 		"not a refusal or a dependency. Nothing about the boot posture changes with it, so " +
 		"a banner line would be noise",

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"html"
 	"strings"
 	"sync"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,19 +98,55 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 	return nil
 }
 
-// pageShareQuestion is the card's question: who asks, which page, where to
-// see it. The title is the agent's words (the Asks page escapes it).
-func (s *Server) pageShareQuestion(asker string, p pages.Page, reason string) string {
+// pageShareQuestion is the card's question: which page, by its title, in
+// plain words, and who asks. The title is the agent's words, plained here
+// (textplain.Title) and escaped by every surface that draws the question.
+//
+// 🔴 NO ADDRESS AND NO ID (the operator rule: none in the top layer). The
+// page is one tap away on the card itself — its "Open the page" button
+// (pageAskOpenHTML), found from the card's link — never a URL in the text.
+func pageShareQuestion(asker string, p pages.Page, reason string) string {
 	// 🔴 THE APPROVAL IS FOR THE PAGE, NOT FOR ONE VERSION (operator
 	// decision, round 1): a live link shows whatever is published last, and a
 	// republish needs no new approval — so the card must not say otherwise.
-	q := asker + " asks to share your page “" + truncate(p.Title, 120) + "” with anyone who has its link. The link always shows " +
-		"the page's latest published version, including versions the agent publishes after you approve. See the page as it is now: " +
-		s.pageViewURL(p.ID) + "."
+	q := "Share the page “" + truncate(textplain.Title(p.Title), 120) + "”? " + pageMakerName(asker, p.Creator.MirrorHost) + " asks to let anyone who has its link open it."
 	if reason = strings.TrimSpace(reason); reason != "" {
 		q += " Its reason: " + truncate(reason, 300)
 	}
-	return q + " Approving makes the link live; you can revoke it on the page at any time."
+	return q + " The link always shows the page's latest version, including changes the agent makes after you approve. " +
+		"Approving makes the link live; you can revoke it on the page at any time."
+}
+
+// pageQuietButton is a quiet button as the page card draws one (ui's
+// pageButtonQuiet), for a link or a button on one line with others.
+const pageQuietButton = "press inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg bg-bg px-3 text-sm font-semibold text-fg ring-1 ring-inset ring-edge"
+
+// pageAskOpenLabel is the ask card's button to the page it asks about.
+const pageAskOpenLabel = "Open the page"
+
+// pageAskOpen is the owner's view of the page whose share link ask id asks for,
+// "" when it is no page's card (or pages are not served): what the card's "Open the
+// page" opens. ctx is the reader's: the link is read under their row-level
+// security, so another owner's card finds none.
+func (s *Server) pageAskOpen(ctx context.Context, id int64) string {
+	if !s.pagesOn() || id <= 0 {
+		return ""
+	}
+	l, err := s.ext.Pages.LinkByAsk(ctx, id)
+	if err != nil || l.PageID <= 0 {
+		return ""
+	}
+	return pageViewPath(l.PageID)
+}
+
+// pageAskOpenHTML is the card's "Open the page" button, "" for none.
+func pageAskOpenHTML(href string) string {
+	if href == "" {
+		return ""
+	}
+	return `<div class="flex flex-wrap items-center gap-2" data-asks-controls><a href="` + html.EscapeString(href) +
+		`" class="` + pageQuietButton + `" data-ask-page-open>` + pageAskOpenLabel + `</a></div>
+`
 }
 
 // withdrawLinkCard cancels a revoked link's still-open card, so a later tap

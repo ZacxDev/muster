@@ -343,7 +343,10 @@ func TestTheOwnersShareButtonGivesOneReusableLink(t *testing.T) {
 	if w := f.get(t, pages.LinkPath(tok), nil); w.Code != http.StatusOK {
 		t.Fatalf("the shared link does not serve: %d", w.Code)
 	}
-	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") {
+	// The page's screen holds its link in the ⓘ beside Share / Copy link —
+	// never drawn in its top layer.
+	if d := f.get(t, base, f.ownerHdr()).Body.String(); !strings.Contains(d, `data-info-code="">`+first["url"].(string)+`</code>`) ||
+		strings.Contains(d, `value="`+first["url"].(string)+`"`) || !strings.Contains(d, "data-page-share") || !strings.Contains(d, "data-page-copy") {
 		t.Fatalf("the page's screen does not show its link: %s", d)
 	}
 	if l := f.get(t, "/pages", f.ownerHdr()).Body.String(); !strings.Contains(l, `data-share-url="`+first["url"].(string)+`"`) {

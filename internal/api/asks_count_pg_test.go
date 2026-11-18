@@ -24,7 +24,7 @@ import (
 // four stale rows that never got an outcome — and every surface that says how
 // much is open says the same literal 3: the Asks page's header, the sidebar's
 // More badge (/attention/badge) and the ☰ menu badge (/ui/nav/waiting). (The
-// Log tab's By-outcome "Open" pill is the log's own breakdown: 5.) And the Open feed is not "All clear" while a draft
+// Log tab's "How it ended" "No answer" row is the log's own breakdown: 5.) And the Open feed is not "All clear" while a draft
 // waits.
 //
 // RED at origin/main d1ff2dbe: the header said 2 (drafts left out), the ☰
@@ -59,12 +59,13 @@ func TestEverySurfaceShowsTheSameOpenCount(t *testing.T) {
 	if got := regexp.MustCompile(`id="nav-waiting-badge" data-nav-waiting="" data-count="(\d+)"`).FindStringSubmatch(f.page(t, ui.NavWaitingPath)); got == nil || got[1] != want {
 		t.Errorf("the ☰ badge: %v", got)
 	}
-	// The Log's By-outcome pills are the LOG's own breakdown (they add up to its
-	// Total): its "Open" is the rows with no outcome yet — the four stale rows
-	// and the live ask's — never the live open count (audit of #787, 🟡4).
+	// The Log's "How it ended" is the LOG's own breakdown (it adds up to its
+	// Total): its "No answer" is the rows with no outcome yet — the four stale
+	// rows and the live ask's — never the live open count (audit of #787, 🟡4),
+	// and never worded "Open" (TestTheLogNeverSaysTheHeadersOpenWord).
 	logPanel := f.page(t, "/attention?tab=log")
-	if got := regexp.MustCompile(`data-count="open">Open (\d+)</span>`).FindStringSubmatch(logPanel); got == nil || got[1] != "5" {
-		t.Errorf("the Log's Open pill: %v, want the log's own 5", got)
+	if got := regexp.MustCompile(`data-count="open"><dt[^>]*>No answer</dt><dd[^>]*>(\d+)</dd>`).FindStringSubmatch(logPanel); got == nil || got[1] != "5" {
+		t.Errorf("the Log's No answer row: %v, want the log's own 5", got)
 	}
 	// The SAME definition, called directly: what the four surfaces drew.
 	if n, err := f.srv.asksPendingCount(f.srv.attentionPrincipal(context.Background(), 1)); err != nil || n != 3 {

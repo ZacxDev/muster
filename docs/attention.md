@@ -151,10 +151,11 @@ With the [ask log](asks.md) on (`MUSTER_ASK_LOG=1`), the page has a **Log**
 tab (`/attention?tab=log`): the [ask log](asks.md#reading-the-log) read back —
 what your agents asked you, how you answered and how long it took, with a
 summary on top and the questions asked most often. Its panel is read when you
-open the tab. Its *By outcome* pills are the log's own breakdown and add up
-to its total: *Open* there is the log's asks with no outcome recorded yet,
-which can differ from the [open count](#what-is-in-it). With the ask log off
-there is no Log tab.
+open the tab. Its *How it ended* counts are the log's own breakdown and add
+up to its total: *No answer* there is the log's asks with no outcome recorded
+yet — history, which can differ from the [open count](#what-is-in-it), and so
+is never worded "open". Rare outcomes fold into one *Other* row, explained by
+its ⓘ. With the ask log off there is no Log tab.
 
 ### Notices
 
