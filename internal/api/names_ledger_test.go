@@ -29,13 +29,14 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.activeNotificationRows", // the notifications panel's active rows
-	"agents.go Server.cardViewIndexed",        // the sidebar rows, switcher pills and palette (agents)
-	"agent_outcome.go Server.agentLabel",      // an agent outcome's push title and its note to the chief
-	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
-	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
-	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
-	"attention.go Server.withNamesFrom",       // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"agents.go Server.activeNotificationRows",   // the notifications panel's active rows
+	"agents.go Server.cardViewIndexed",          // the sidebar rows, switcher pills and palette (agents)
+	"agent_outcome.go Server.agentLabel",        // an agent outcome's push title and its note to the chief
+	"agents.go Server.handleAgentDetail",        // the agent page's header and <title>
+	"agents.go Server.handleAgentName",          // a Save of the unchanged prefilled name is not a rename
+	"agents.go Server.handleNotifications",      // the notifications panel's unread rows
+	"attention.go Server.withNamesFrom",         // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"asks_drafts.go Server.withDraftAgentNames", // a reply draft's card: the drafting agent's name (the Asks Drafts tab)
 	"chat_log_live.go Server.dispatchCardFor",
 	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
@@ -94,6 +95,7 @@ var noTmuxAddress = map[string]string{
 	"agents.go Server.handleNotifications":                       "notifications panel: agents only (no tmux window)",
 	"agent_outcome.go Server.agentLabel":                         "an agent outcome's push: an agent (no tmux window)",
 	"agents.go Server.cardViewIndexed":                           "navigation, not a notification",
+	"asks_drafts.go Server.withDraftAgentNames":                  "a draft card on the Asks page: an agent (no tmux window), not a notification",
 	"agents.go Server.handleAgentDetail":                         "a page header, not a notification",
 	"agents.go Server.handleAgentName":                           "the rename form",
 	"chat_log_live.go Server.dispatchCardFor":                    "a chat card, not a notification",

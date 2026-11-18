@@ -484,9 +484,10 @@ func outreachBatchCardHTML(g batchGroup) string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(`<li id="` + batchKey(g.id) + `" class="` + ui.AsksCardClass + `" data-outreach-batch="` + esc(g.id) + `">
-<div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg">Outreach batch ` + esc(day) + `</span>
-<span class="break-words text-xs text-fg2">Follows and likes by officer ` + esc(officer) + ` · tick what goes out; every entry you leave unticked is rejected</span></div>
+	b.WriteString(`<li id="` + batchKey(g.id) + `" class="` + ui.AsksCardClass + `"` + ui.AsksFixedCardAttrs + ` tabindex="-1" data-outreach-batch="` + esc(g.id) + `">
+` + ui.AsksFixedHeadHTML(ui.AsksKindBadge("draft", "Outreach"),
+		`<span class="`+ui.AsksTitleClass+`">Batch `+esc(day)+`</span>`, `Follows and likes by officer `+esc(officer)) + `
+<span class="break-words text-xs text-fg2">Tick what goes out; every entry you leave unticked is rejected.</span>
 `)
 	if len(g.entries) == 0 {
 		b.WriteString(`<span class="text-xs text-fg2" data-outreach-waiting>` + strconv.Itoa(len(g.waiting)) + ` waiting for the plugin's check before you can decide.</span></li>
