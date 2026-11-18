@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
@@ -1091,6 +1092,21 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			// gets none here, and the message index gives the bubble a
 			// page-unique one (chatIndexScript).
 			t.endRun()
+			// A block muster ROUTED here (a plugin message, a task, the owner's
+			// request) is not the owner's own message: its "From …" card
+			// (routed_card.go), the exact paste in its ⓘ.
+			if rb, ok := plugins.ParseRoutedBlock(ev.Text); ok {
+				id := ""
+				if ev.Line > 0 {
+					id = MirrorPromptID(ev.Line)
+				}
+				sheet := "rp-" + toolRowID(ev.Text)[3:]
+				if id != "" {
+					sheet = id + "-rp"
+				}
+				ops = append(ops, MirrorOp{Op: "append", HTML: render(routedPromptCard(rb, ev.Text, id, sheet))})
+				continue
+			}
 			ops = append(ops, MirrorOp{Op: "append", HTML: render(chatBubbleOf("user",
 				g.If(ev.Line > 0, ID(MirrorPromptID(ev.Line))), g.Attr("data-md-rendered", ""),
 				// data-prompt: the prompt as the transcript holds it, before

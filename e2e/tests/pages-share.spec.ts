@@ -214,6 +214,36 @@ test('desktop: Share on the page card copies the page link, the same one twice, 
   }
 });
 
+// THE PAGE TOOL'S ROW SAYS WHAT IT DID (jargon audit, the Pages filming
+// blocker): the row above the page card reads "Made a page", not the raw
+// mcp__muster__page_create; the raw name is in the opened row's ⓘ. On
+// origin/main the row spells the raw name.
+test('phone: the page tool row above the card says "Made a page"; its ⓘ names the exact step', async ({ browser }, testInfo) => {
+  test.setTimeout(120_000);
+  await publish();
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, baseURL: origin });
+  try {
+    const page = await ctx.newPage();
+    await openCard(page);
+    const log = page.locator('#mv-log');
+    await page.screenshot({ path: testInfo.outputPath('page-tool-row.png') });
+    const row = log.locator('[data-tool-row]').filter({ has: page.locator('[data-tool-label]') });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('summary [data-tool-label]')).toHaveText('Made a page');
+    expect(await log.innerText(), "the chat's visible text spells the raw tool name").not.toContain('mcp__muster__');
+    await row.locator('summary').click();
+    await row.getByRole('button', { name: "The step's exact name" }).click();
+    const sheet = page.locator('[data-info-sheet]:popover-open');
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator('[data-info-code]')).toHaveText('mcp__muster__page_create');
+    await page.screenshot({ path: testInfo.outputPath('page-tool-row-info.png') });
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'nothing overflows 390px').toBeLessThanOrEqual(cw);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('phone: Share opens the native share sheet with the title and the same link', async ({ browser }) => {
   test.setTimeout(120_000);
   await publish();
