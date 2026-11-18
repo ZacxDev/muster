@@ -28,7 +28,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	wantGoCachePrefix = `echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of4"` // TRIAL: main's 4-shard cache identity
+	wantGoCachePrefix = `echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}p${MUSTER_TEST_PROCS}"`
 	wantGoCacheImage  = `echo "image=img${ImageVersion}"`
 	wantGoCacheKey    = `key: ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-${{ steps.gocache.outputs.image }}-${{ github.run_id }}-${{ github.run_attempt }}`
 )

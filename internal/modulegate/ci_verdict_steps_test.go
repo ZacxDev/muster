@@ -33,7 +33,7 @@ var wantVerdictPipes = map[string]string{
 	// The shard's packages / `-run` and its `--require` names come from the
 	// plan step (tests/goshard.py); the required names are pinned there, in
 	// the same job, by TestCIRequiresTheIsolationWalkInTheShardPlan below.
-	// TRIAL (multi-process internal/api): the shard's processes write one
+	// Multi-process internal/api: the shard's processes write one
 	// -json file each, and ONE verdict reads them all; each process's exit
 	// status is checked by the step separately.
 	"test":     `cat "$RUNNER_TEMP"/go-test.*.json | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)`,

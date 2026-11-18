@@ -230,7 +230,7 @@ jobs:
       # executed all of it. A skip is invisible in a verdict. With it, an
       # unavailable database is a hard failure that names the variable.
       MUSTER_TEST_REQUIRE_DB: "1"
-      # 🔴 TRIAL (multi-process internal/api): each api shard runs its share as
+      # 🔴 MULTI-PROCESS internal/api: each api shard runs its share as
       # this many `go test` PROCESSES at once, process k against its own Postgres
       # server on port 5431+k, so no two processes share a server (internal/dbtest
       # names a package's database after the package, so two processes on one
@@ -249,10 +249,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-
-      - name: sample memory every 5 s (trial instrument; read by the last step)
-        run: |
-          nohup bash -c 'while :; do free -m | awk "/^Mem:/{print \$3}" >> "$RUNNER_TEMP/mem.log"; sleep 5; done' >/dev/null 2>&1 &
 
       # 🔴 `cache: false`: setup-go's own cache is keyed on go.sum ALONE, with no
       # restore-keys, and is saved only when that key misses — so it was saved
@@ -290,8 +286,9 @@ jobs:
       #     image and floats on its tag: its image DIGEST is in the key and
       #     every prefix too, so a new server (a tag bump or a minor under
       #     `16-alpine`) starts cold rather than replaying another server's pass.
-      # One cache per shard (the shards run different -run sets, and a cache
-      # key is written once). A restore prefix may come from an older commit;
+      # One cache per shard SHAPE — shard index, shard count and processes per
+      # shard (MUSTER_TEST_PROCS) are all in the prefix, because each changes the
+      # shard's -run sets, and a cache key is written once. A restore prefix may come from an older commit;
       # that is the point, and Go's own keys decide what it can replay.
       # ⚠ NO NIGHTLY EXISTS (removed in #691, see the `on:` block): nothing on
       # `main` currently re-runs the suite uncached, so a cache-replayed green is
@@ -306,7 +303,7 @@ jobs:
             pg=$(docker inspect --format '{{.Image}}' "${{ job.services.postgres.id }}")
             pg=${pg#sha256:}
             [ -n "$pg" ] || { echo "no Postgres service image digest" >&2; exit 1; }
-            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of4"
+            echo "prefix=gotest-${RUNNER_OS}-${ImageOS}-go${{ steps.go.outputs.go-version }}-pg${pg:0:16}-shard${{ strategy.job-index }}of${{ strategy.job-total }}p${MUSTER_TEST_PROCS}"
             echo "image=img${ImageVersion}"
             echo "build=$(go env GOCACHE)"
             echo "mod=$(go env GOMODCACHE)"
@@ -326,9 +323,6 @@ jobs:
             ${{ steps.gocache.outputs.prefix }}-${{ hashFiles('go.sum') }}-
             ${{ steps.gocache.outputs.prefix }}-
 
-      # TRIAL: the cache prefix above keeps main's 4-shard identity (`of4`) so a
-      # PR run of this trial restores main's existing caches; shard 0's package
-      # set does not depend on the shard count, and internal/api never caches.
       - name: start this shard's extra Postgres servers (one per extra process)
         if: ${{ strategy.job-index != 0 }}
         run: |
@@ -360,11 +354,12 @@ jobs:
       # package, unreadable input). Milliseconds, and no database. So is the
       # shard planner: its partition (every test in exactly one shard) and its
       # refusals, on synthetic lists. Both in EVERY shard, before either is used.
-      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed
+      - name: verdict.py can refuse, goshard.py partitions totally, tag_gate.py fails closed, main_red.py acts only on main's head
         run: |
           python3 tests/verdict_test.py
           python3 tests/goshard_test.py
           python3 tests/tag_gate_test.py
+          python3 tests/main_red_test.py
           python3 tests/gomtime_test.py
 
       # The repository-level checks below run once, in shard 0.
@@ -474,7 +469,7 @@ jobs:
         # cached result's key, so removing it costs one cold run, nothing else.
         env:
           GODEBUG: gocachetest=1
-        # TRIAL: the MUSTER_TEST_PROCS processes run at once, each to its own
+        # The MUSTER_TEST_PROCS processes run at once, each to its own
         # -json file, and each exit status is written down; this step itself
         # always exits 0 so the verdict below always reads the streams. The log
         # arrives when the processes end, not streamed.
@@ -504,13 +499,6 @@ jobs:
           cat "$RUNNER_TEMP"/go-test.*.json | python3 -u tests/verdict.py --echo summary $(cat "$RUNNER_TEMP"/verdict-args.*)
           [ "$(wc -l < "$RUNNER_TEMP/go-test.rcs")" = "$MUSTER_TEST_PROCS" ] || { echo "missing exit statuses" >&2; exit 1; }
           while read -r rc; do [ "$rc" = 0 ] || exit "$rc"; done < "$RUNNER_TEMP/go-test.rcs"
-
-      - name: peak memory during the job (trial instrument)
-        if: ${{ always() }}
-        run: |
-          [ -s "$RUNNER_TEMP/mem.log" ] || { echo "no memory samples" >&2; exit 0; }
-          sort -n "$RUNNER_TEMP/mem.log" | tail -1 | sed 's/^/peak used MiB: /'
-          echo "samples: $(wc -l < "$RUNNER_TEMP/mem.log")"
 
       # Saved even when a test failed: Go never caches a failing result, and
       # the build artifacts are still good. 🔴 ON A PUSH TO `main` ONLY: one
@@ -1733,6 +1721,34 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: python3 .github/scripts/tag_gate.py gate
+
+  # 🔴 MAIN IS RED, AND SOMEBODY HEARS ABOUT IT. A push to main that goes red
+  # opens (or comments on) ONE issue labelled main-red, which GitHub notifies the
+  # repository's watchers about; the next green main run closes it — that is the
+  # issue's closing condition. Operator decision 2026-11-18, after main HEAD
+  # 4c3d54f was red with nobody notified. The verdict is the SAME set of jobs
+  # publish-gate needs (pinned by TestCIMainRedNeedsWhatPublishGateNeeds), read
+  # by .github/scripts/main_red.py: any failure is red, a cancellation decides
+  # nothing, and only main's current head may open or close the issue.
+  # `!cancelled()` and not success(): it must run when its needs FAILED.
+  # The ONLY job that can write issues, and it can do nothing else.
+  main-red:
+    name: main red? (open or close the main-red issue)
+    needs: [main-verdict, build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run, chart, chart-kind]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: open, update or close the main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          python3 .github/scripts/main_red.py --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
+          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
   # Local: docker buildx build --platform linux/amd64,linux/arm64 .
   #
