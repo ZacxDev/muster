@@ -730,8 +730,9 @@ var isolationClasses = map[string]routeClass{
 	"POST /uploads/{id}/revoke": classParam,
 	"GET /f/{id}":               classPublic,
 	// Shareable pages (pages.go). The owner's screen lists the caller's pages;
-	// a page, its preview, a version's content and the three writes name A's
-	// page (and link, version) by id. The four share-link routes are public:
+	// a page, the owner's view of it, a version's content and the writes —
+	// the owner's own responses from that view included — name A's page (and
+	// link, version) by id. The four share-link routes are public:
 	// the token in the path is the credential, which no walker holds
 	// (sideEffectControlled).
 	"GET /pages":      classList,
@@ -791,8 +792,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /officers/{officer}/delete":                  classParam,
 	"POST /officers/{officer}/schedules":               classParam,
 	"POST /officers/{officer}/schedules/{name}/delete": classParam,
+	"GET /pages/{id}/view":                             classParam,
 	"GET /pages/{id}/preview":                          classParam,
 	"GET /pages/{id}/versions/{v}/content":             classParam,
+	"POST /pages/{id}/versions/{v}/submit":             classParam,
+	"POST /pages/{id}/versions/{v}/upload":             classParam,
 	"POST /pages/{id}/links/{link}/revoke":             classParam,
 	"POST /pages/{id}/share":                           classParam,
 	"POST /pages/{id}/share/rotate":                    classParam,
@@ -2246,6 +2250,7 @@ var controlMarkers = map[string]string{
 // owner sees that an outsider does not. The leak check still runs on them.
 var echoOnly = map[string]string{
 	"GET /ui/connectors/{name}/rotate": "renders the rotate form for whatever name is in the URL; the rotate itself (POST) is owner-scoped",
+	"GET /pages/{id}/preview":          "the owner's view's former address: a redirect to /pages/{id}/view for whatever id is in the URL; the view itself is owner-scoped",
 }
 
 // checkOutsider asserts what an outsider's (B's, or the admin's against a
