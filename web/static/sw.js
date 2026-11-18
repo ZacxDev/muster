@@ -406,7 +406,7 @@ function sameOriginPath(u) {
   if (raw[0] !== '/' || raw[1] === '/' || raw[1] === '\\' || /[\\\u0000-\u001f\u007f]/.test(raw)) {
     try {
       const abs = new URL(raw);
-      if (abs.origin === self.location.origin) return abs.pathname + abs.search + abs.hash;
+      if (abs.origin === self.location.origin) return notSchemeRelative(abs.pathname + abs.search + abs.hash);
     } catch (e) {
       /* not an absolute URL either */
     }
@@ -415,10 +415,19 @@ function sameOriginPath(u) {
   try {
     const resolved = new URL(raw, self.location.origin);
     if (resolved.origin !== self.location.origin) return '/';
-    return resolved.pathname + resolved.search + resolved.hash;
+    return notSchemeRelative(resolved.pathname + resolved.search + resolved.hash);
   } catch (e) {
     return '/';
   }
+}
+
+// notSchemeRelative is p, or '/' when p begins '//' or '/\'. 🔴 THE CHECK IS
+// ON THE RESULT, AFTER NORMALISATION: URL parsing keeps an empty first
+// segment, so '/.//host', '/%2e//host', '/a/..//host' and this origin's own
+// 'https://<origin>//host' all come out as '//host', which a navigation then
+// reads as another host.
+function notSchemeRelative(p) {
+  return p.startsWith('//') || p.startsWith('/\\') ? '/' : p;
 }
 
 // openNewWindow opens target (a path on this origin) in a new window, and

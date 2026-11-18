@@ -298,7 +298,7 @@ func (s *Server) pagePublished(p pages.Page) {
 	s.pushTask(p.OwnerID, push.EventPagePublished, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page ready: " + truncate(p.Title, 80),
-		Body:  "From " + truncate(p.Creator.Label, 60) + ". Tap to open it.",
+		Body:  "From " + pageCreatorLine(p.Creator) + ". Tap to open it.",
 		Tag:   "page-" + strconv.FormatInt(p.ID, 10) + "-ready",
 		Data:  map[string]string{"url": ui.PageViewPath(p.ID)},
 	})
@@ -343,7 +343,7 @@ func (s *Server) toolPageUpdate(ctx context.Context, caller toolCaller, c pages.
 		}
 		return pageToolRefusal("updated", id, err)
 	}
-	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, label: p.Creator.Label})
+	s.pageUpdated(caller, pageUpdatedRef{id: p.ID, owner: p.OwnerID, version: v.Version, title: p.Title, creator: p.Creator})
 	return toolJSON(map[string]any{"page_id": p.ID, "version": v.Version, "title": p.Title, "preview_url": s.pageViewURL(p.ID),
 		"note": "Every link of this page now shows version " + strconv.Itoa(v.Version) + ".", "next": s.pageNext(ctx, p)})
 }

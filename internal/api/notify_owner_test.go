@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/pages"
 )
 
 // notifyTestHosts is the operator's allowlist in these tests: invented names.
@@ -168,5 +170,43 @@ func TestNotifyOutcomeStatus(t *testing.T) {
 		if s, r := notifyOutcomeStatus(c.delivered, c.drops); s != c.status || r != c.reason {
 			t.Errorf("%d %v: %q %q; want %q %q", c.delivered, c.drops, s, r, c.status, c.reason)
 		}
+	}
+}
+
+// TestASessionNamedLikeAnotherKindIsMarkedAsASession: a mirrored session's
+// name can come from its own transcript's summarized title, so it can be
+// "Your chief" or "Agent Builder (dispatched)". Its "From" line (and its
+// page pushes) still say it is a session, quoted, and never read as the
+// chief's or a dispatched agent's line.
+func TestASessionNamedLikeAnotherKindIsMarkedAsASession(t *testing.T) {
+	chief := notifySender{kind: notifyKindChief, label: "chief"}.fromLine()
+	agent := notifySender{kind: notifyKindDispatched, label: "Builder"}.fromLine()
+	for _, c := range []struct {
+		kind, name, want string
+	}{
+		{notifyKindMirrored, "Your chief", `From session "Your chief"`},
+		{notifyKindMirrored, "chief", `From session "chief"`},
+		{notifyKindMirrored, "Agent Builder (dispatched)", `From session "Agent Builder (dispatched)"`},
+		{notifyKindMirrored, `x" (dispatched) "y`, `From session "x' (dispatched) 'y"`},
+		{notifyKindSpawned, "Your chief", `From session "Your chief" (spawned on a host)`},
+	} {
+		got := notifySender{kind: c.kind, label: c.name}.fromLine()
+		if got != c.want {
+			t.Errorf("%s %q: %q; want %q", c.kind, c.name, got, c.want)
+		}
+		if strings.EqualFold(got, chief) || strings.EqualFold(got, agent) || strings.HasPrefix(strings.ToLower(got), "from your chief") ||
+			strings.HasPrefix(strings.ToLower(got), "from agent ") {
+			t.Errorf("%s %q reads as another kind: %q", c.kind, c.name, got)
+		}
+	}
+	if got := (notifySender{kind: notifyKindMirrored, label: strings.Repeat("n", 200)}).fromLine(); len([]rune(got)) > len(`From session ""`)+notifySenderMax+1 {
+		t.Errorf("a long session name is not capped: %d runes", len([]rune(got)))
+	}
+	// The page pushes name their creator by the same markers.
+	if got := pageCreatorLine((pages.Creator{MirrorHost: "host-a", Label: "Your chief"})); got != `session "Your chief"` {
+		t.Errorf("a session's page: %q", got)
+	}
+	if got := pageCreatorLine((pages.Creator{AgentID: 4, Label: "builder"})); got != "agent builder" {
+		t.Errorf("an agent's page: %q", got)
 	}
 }

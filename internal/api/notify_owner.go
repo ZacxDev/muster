@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -118,9 +119,33 @@ func (n notifySender) fromLine() string {
 	case notifyKindDispatched:
 		return "From agent " + label + " (dispatched)"
 	case notifyKindSpawned:
-		return "From " + label + " (spawned on a host)"
+		return "From " + quotedSessionName(n.label) + " (spawned on a host)"
 	}
-	return "From " + label
+	return "From " + quotedSessionName(n.label)
+}
+
+// quotedSessionName is a mirrored session's name as a push names it:
+// `session "<name>"`, one line, cut to notifySenderMax, with its own double
+// quotes made single so it cannot close the quote.
+//
+// 🔴 EVERY KIND HAS A FIXED MARKER, AND A SESSION'S IS THE QUOTE. A session's
+// name can come from the summarizer's title of its own transcript, so a
+// session can be NAMED "Your chief" or "Agent Builder (dispatched)". Unmarked,
+// its line read exactly as the chief's or a dispatched agent's; quoted after
+// "session", it never can (TestASessionNamedLikeAnotherKindIsMarkedAsASession).
+func quotedSessionName(name string) string {
+	n := strings.ReplaceAll(truncate(pushLine(name), notifySenderMax), `"`, "'")
+	return `session "` + n + `"`
+}
+
+// pageCreatorLine is a page's creator as a page push names it — the same
+// markers as fromLine: "agent <name>" for a dispatched agent's page,
+// quotedSessionName for a mirrored session's.
+func pageCreatorLine(c pages.Creator) string {
+	if c.AgentID > 0 {
+		return "agent " + truncate(pushLine(c.Label), notifySenderMax)
+	}
+	return quotedSessionName(c.Label)
 }
 
 // notifySenderOf is THE rule for naming a notify_owner caller (one rule, one
@@ -528,7 +553,7 @@ func (s *Server) pageUpdated(c toolCaller, p pageUpdatedRef) {
 	s.pushTask(p.owner, push.EventPageUpdated, RouterNotification{
 		Type:  taskNotificationType,
 		Title: "Page updated: " + truncate(p.title, 70) + " (v" + strconv.Itoa(p.version) + ")",
-		Body:  "From " + truncate(p.label, 60) + ". Tap to open this version.",
+		Body:  "From " + pageCreatorLine(p.creator) + ". Tap to open this version.",
 		Tag:   tag,
 		Data:  map[string]string{"url": ui.PageViewPath(p.id) + "?v=" + strconv.Itoa(p.version)},
 	})
@@ -536,9 +561,10 @@ func (s *Server) pageUpdated(c toolCaller, p pageUpdatedRef) {
 
 // pageUpdatedRef is what pageUpdated needs of the page and its new version.
 type pageUpdatedRef struct {
-	id, owner    int64
-	version      int
-	title, label string
+	id, owner int64
+	version   int
+	title     string
+	creator   pages.Creator
 }
 
 // notifyOwnerOn reports whether notify_owner is offered: muster's own push is

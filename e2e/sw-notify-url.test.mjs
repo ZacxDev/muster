@@ -131,3 +131,20 @@ test('no url opens the notification id fallback on this origin', async () => {
   const seen = await tap({ type: 'task', id: '42' });
   assert.deepEqual(seen.navigated, ['/#42']);
 });
+
+test('a path that normalises to a scheme-relative //host opens muster home instead', async () => {
+  // URL parsing keeps an empty first segment: each of these resolves, on
+  // this origin, to a path beginning '//', which a navigation reads as
+  // another host.
+  for (const url of [
+    '/.//evil.example/x',
+    '/%2e//evil.example',
+    '/a/..//evil.example',
+    ORIGIN + '//evil.example/x',
+    ORIGIN + '/.//evil.example',
+  ]) {
+    const seen = await tap({ type: 'task', url });
+    assert.deepEqual(seen.navigated, ['/'], JSON.stringify(url));
+    assert.deepEqual(seen.opened, [], JSON.stringify(url));
+  }
+});
