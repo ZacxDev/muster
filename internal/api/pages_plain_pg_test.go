@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/pages"
 )
@@ -93,6 +95,10 @@ func assertPagePlain(t *testing.T, what, markup string) {
 		if m := pageJargonIn(s); m != "" {
 			t.Errorf("%s: the top layer says %q (%q)", what, s, m)
 		}
+		// A mirrored window's tmux address (#806's scan) is jargon here too.
+		if jargonInTopLayer.MatchString(s) {
+			t.Errorf("%s: the top layer spells a tmux address: %q", what, s)
+		}
 	}
 }
 
@@ -170,6 +176,23 @@ func pagePlainSurfaces(t *testing.T, f *pageFixture) (int64, int64, pages.Link) 
 	return id, askID, l
 }
 
+// pagePlainMirrored publishes a page from a mirrored session whose window had
+// no human name — stored, as mirrorLabel stores it, by its code and host
+// ("work:1 @ atlas") — and has it ask to share the page; the page and its ask.
+func pagePlainMirrored(t *testing.T, f *pageFixture) (int64, int64) {
+	t.Helper()
+	ctx := f.as(f.owner, authz.ViaMirrorHost)
+	c := toolCaller{asker: attention.Asker{MirrorHost: "atlas", MirrorSession: "0d1e2f3a-aaaa-4bbb-8ccc-0000000000f1", Label: "work:1 @ atlas"}}
+	out := f.toolAs(t, ctx, c, pageCreateTool, map[string]any{"title": "Notes from a session", "blocks": json.RawMessage(`[{"type":"markdown","text":"hi"}]`)})
+	id := pnum(out["page_id"])
+	req := f.toolAs(t, ctx, c, pageShareRequestTool, map[string]any{"page_id": id})
+	askID := pnum(req["ask_id"])
+	if id <= 0 || askID <= 0 {
+		t.Fatalf("a mirrored session's page and ask: %v %v", out, req)
+	}
+	return id, askID
+}
+
 // pageAs is the owner's request context in role.
 func (f *pageFixture) pageAs(role authz.Role) context.Context {
 	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: role, Via: authz.ViaSession})
@@ -207,6 +230,7 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 		t.Run(string(role), func(t *testing.T) {
 			f := newPageFixture(t)
 			id, askID, oneOff := pagePlainSurfaces(t, f)
+			mid, mask := pagePlainMirrored(t, f)
 			ctx := f.pageAs(role)
 			sid := strconv.FormatInt(id, 10)
 
@@ -233,6 +257,24 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			// and only it, so the rest of the card is still scanned.
 			card = regexp.MustCompile(`<p class="[^"]*" data-asks-since>.*?</p>`).ReplaceAllString(card, "")
 			assertPagePlain(t, "the Asks feed's share card", card)
+			// A mirrored session's: named in words ("work on atlas").
+			ma, err := f.srv.ext.Attention.Get(ctx, mask)
+			if err != nil || !strings.HasPrefix(ma.Question, "Share the page “Notes from a session”? work on atlas asks") {
+				t.Errorf("a mirrored session's share question: %q %v", ma.Question, err)
+			}
+			rec = httptest.NewRecorder()
+			f.srv.renderAskPage(rec, httptest.NewRequest("GET", askPagePath(mask), nil).WithContext(ctx), ma)
+			mpage := rec.Body.String()
+			// Its question, which this PR words. ⚠ Not its head: an ask whose
+			// session no window shows any more is still headed by its stored
+			// label ("work:1 @ atlas (not shown …)"), the Asks surface's own
+			// open case (TestNoTopLayerOfTheAsksSurfacesSpellsATmuxAddress's
+			// "Not covered").
+			q := regexp.MustCompile(`(?s)<p [^>]*data-ask-question>.*?</p>`).FindString(mpage)
+			if q == "" {
+				t.Fatalf("CONTROL: no question on the mirrored session's ask page")
+			}
+			assertPagePlain(t, "a mirrored session's share question", q)
 			rec = httptest.NewRecorder()
 			f.srv.renderAskPage(rec, httptest.NewRequest("GET", askPagePath(askID), nil).WithContext(ctx), a)
 			body := rec.Body.String()
@@ -325,6 +367,17 @@ func TestNoTopLayerOfThePageScreensSpellsALinkAnIdOrASetting(t *testing.T) {
 			}
 			if strings.Contains(keyed, "Sharing isn't set up") {
 				t.Errorf("a keyed server's page screen says sharing is not set up")
+			}
+
+			// A mirrored session's page screen: "By work on atlas", its pending
+			// link "asked for by work on atlas".
+			msid := strconv.FormatInt(mid, 10)
+			mdetail := pageSection(t, get("/pages/"+msid, func(w *httptest.ResponseRecorder, r *http.Request) {
+				f.srv.renderPageDetail(w, r, mid, 200, "", "", "")
+			}), "page-detail")
+			assertPagePlain(t, "a mirrored session's page screen", mdetail)
+			if !strings.Contains(mdetail, "By work on atlas.") || !strings.Contains(mdetail, "asked for by work on atlas") {
+				t.Errorf("a mirrored session's page screen does not name it in words:\n%s", mdetail)
 			}
 
 			// The Pages list.

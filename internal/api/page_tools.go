@@ -371,7 +371,7 @@ func (s *Server) pageLinkView(l pages.Link) map[string]any {
 // pageLinkMaker is who made link l, as its owner reads it.
 func pageLinkMaker(l pages.Link) string {
 	if l.ByAgent && l.RequestedBy != "" {
-		return l.RequestedBy
+		return pageMakerName(l.RequestedBy)
 	}
 	return "you"
 }
@@ -541,12 +541,12 @@ func (s *Server) pageShareAuto(ctx context.Context, creator pages.Creator, p pag
 	// must hear is that an agent HANDED the page on — an existing link (the
 	// owner's own, or an earlier one) going to a new reader is that too.
 	ownersLink := !l.ByAgent
-	by := "By " + truncate(creator.Label, 60) + "."
+	by := "By " + truncate(pageMakerName(creator.Label), 60) + "."
 	if !created {
 		if ownersLink {
-			by = "By " + truncate(creator.Label, 60) + ", with the link you had already shared."
+			by = "By " + truncate(pageMakerName(creator.Label), 60) + ", with the link you had already shared."
 		} else {
-			by = "By " + truncate(creator.Label, 60) + ", with the page's existing link."
+			by = "By " + truncate(pageMakerName(creator.Label), 60) + ", with the page's existing link."
 		}
 	}
 	body := "Anyone with its link can open it. Tap to see the link or revoke it."

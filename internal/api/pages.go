@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -560,7 +561,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
 <a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
-<span class="text-xs text-fg2">by ` + esc(p.Creator.Label) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
+<span class="text-xs text-fg2">by ` + esc(pageMakerName(p.Creator.Label)) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + pageLinksWords(p.LiveLinks, p.Pending) + ` · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			pageCount(p.Responses, "response", "responses") + `</span> · ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `</span>
 <div class="flex flex-wrap items-center gap-2">` + s.pageShareControls(p.ID, p.Title, shared[p.ID]) + `</div>
@@ -633,7 +634,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
 <h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
-<p class="text-sm text-fg2">By ` + esc(p.Creator.Label) + `. Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + base + `/preview" class="text-accent underline" data-page-preview>Preview it</a> (only you can see a preview, and nothing sent from it is recorded).</p>
+<p class="text-sm text-fg2">By ` + esc(pageMakerName(p.Creator.Label)) + `. Showing version ` + strconv.Itoa(p.CurrentVersion) + `, ` + ui.PlainWhenHTML("updated ", p.UpdatedAt, now) + `. <a href="` + base + `/preview" class="text-accent underline" data-page-preview>Preview it</a> (only you can see a preview, and nothing sent from it is recorded).</p>
 `)
 	b.WriteString(problemNode(problem))
 	if notice != "" {
@@ -768,10 +769,10 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 func pageLinkStateText(l pages.Link) string {
 	by := ""
 	if l.RequestedBy != "" {
-		by = " — asked for by " + l.RequestedBy
+		by = " — asked for by " + pageMakerName(l.RequestedBy)
 	}
 	if l.ByAgent && l.AskID == 0 && l.State != pages.LinkPending && l.RequestedBy != "" {
-		by = " — made live by " + l.RequestedBy + " without asking you"
+		by = " — made live by " + pageMakerName(l.RequestedBy) + " without asking you"
 	}
 	kind := ""
 	switch {
@@ -794,6 +795,25 @@ func pageLinkStateText(l pages.Link) string {
 // --- the page screen's plain words (the operator rule: no address, id,
 // hash, timestamp, JSON or setting name in the top layer; what is needed is
 // behind an ⓘ, and a setup detail is an admin's) ------------------------------
+
+// pageMakerName is who made a page or asked for a link, as the owner reads
+// it: an agent's name as it is; a mirrored session that had no human name is
+// stored as its window's code and host ("work:1 @ atlas", mirrorLabel), and is
+// said "work on atlas" — the window index dropped (mirror.PlainCode), the
+// host in words. The stored label is unchanged (the agents' tools give it).
+func pageMakerName(label string) string {
+	i := strings.LastIndex(label, " @ ")
+	if i <= 0 || i+3 >= len(label) {
+		return label
+	}
+	code, host := label[:i], label[i+3:]
+	if j := strings.Index(code, mirror.QualifierSep); j > 0 {
+		code = mirror.PlainCode(code[:j]) + code[j:]
+	} else {
+		code = mirror.PlainCode(code)
+	}
+	return code + " on " + host
+}
 
 // pageCount is n things in words: "1 response", "3 responses".
 func pageCount(n int, one, many string) string {
