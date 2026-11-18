@@ -431,7 +431,7 @@ func run(args []string) error {
 		fmt.Println(streak)
 	case "rmfleetactions":
 		// Removes the fleet actions on sessions whose key starts with the
-		// prefix. The log is append-only BY TRIGGER (0149), so the trigger is
+		// prefix. The log is append-only BY TRIGGER (0150), so the trigger is
 		// switched off for this one statement, in one transaction (the
 		// fixture's connection owns the table).
 		owner, err := num(1)
